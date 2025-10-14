@@ -1,0 +1,113 @@
+// SettingsView.swift
+// Server configuration UI for voice-code iPhone app
+
+import SwiftUI
+
+struct SettingsView: View {
+    @ObservedObject var settings: AppSettings
+    @Environment(\.dismiss) var dismiss
+
+    @State private var testingConnection = false
+    @State private var testResult: String?
+    @State private var testSuccess = false
+
+    let onServerChange: (String) -> Void
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(header: Text("Server Configuration")) {
+                    TextField("Server Address", text: $settings.serverURL)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        .keyboardType(.URL)
+
+                    TextField("Port", text: $settings.serverPort)
+                        .keyboardType(.numberPad)
+
+                    Text("Full URL: \(settings.fullServerURL)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Section(header: Text("Connection Test")) {
+                    Button(action: testConnection) {
+                        HStack {
+                            Text("Test Connection")
+                            Spacer()
+                            if testingConnection {
+                                ProgressView()
+                            } else if let result = testResult {
+                                Image(systemName: testSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                    .foregroundColor(testSuccess ? .green : .red)
+                            }
+                        }
+                    }
+                    .disabled(testingConnection)
+
+                    if let result = testResult {
+                        Text(result)
+                            .font(.caption)
+                            .foregroundColor(testSuccess ? .green : .red)
+                    }
+                }
+
+                Section(header: Text("Help")) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Tailscale Setup")
+                            .font(.headline)
+                        Text("1. Install Tailscale on your server and iPhone")
+                        Text("2. Check your server's Tailscale IP with: tailscale ip")
+                        Text("3. Enter that IP address above (e.g., 100.64.0.1)")
+                        Text("4. Make sure your server is running on the specified port")
+                    }
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                }
+
+                Section(header: Text("Examples")) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Tailscale: 100.64.0.1")
+                        Text("Local network: 192.168.1.100")
+                        Text("Localhost: 127.0.0.1 (testing only)")
+                    }
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("Settings")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Save") {
+                        // Settings auto-save via didSet
+                        onServerChange(settings.fullServerURL)
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    func testConnection() {
+        testingConnection = true
+        testResult = nil
+
+        settings.testConnection { success, message in
+            testingConnection = false
+            testSuccess = success
+            testResult = message
+        }
+    }
+}
+
+// Preview for SwiftUI Canvas
+struct SettingsView_Previews: PreviewProvider {
+    static var previews: some View {
+        SettingsView(settings: AppSettings(), onServerChange: { _ in })
+    }
+}

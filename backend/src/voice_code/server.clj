@@ -1,0 +1,171 @@
+(ns voice-code.server
+  "Main entry point and WebSocket server for voice-code backend."
+  (:require [org.httpkit.server :as http]
+            [clojure.core.async :as async]
+            [cheshire.core :as json]
+            [clojure.tools.logging :as log]
+            [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [voice-code.claude :as claude])
+  (:gen-class))
+
+(defonce server-state (atom nil))
+
+(defn load-config
+  "Load configuration from resources/config.edn"
+  []
+  (-> (io/resource "config.edn")
+      slurp
+      edn/read-string))
+
+;; Session state management
+;; Map of WebSocket channel -> session state
+(defonce active-sessions (atom {}))
+
+(defn create-session! [channel]
+  (swap! active-sessions assoc channel
+         {:created-at (System/currentTimeMillis)
+          :last-activity (System/currentTimeMillis)
+          :claude-session-id nil
+          :working-directory nil}))
+
+(defn update-session! [channel updates]
+  (swap! active-sessions update channel merge
+         (assoc updates :last-activity (System/currentTimeMillis))))
+
+(defn remove-session! [channel]
+  (swap! active-sessions dissoc channel))
+
+;; Message handling
+(defn handle-message
+  "Handle incoming WebSocket message"
+  [channel msg]
+  (try
+    (let [data (json/parse-string msg true)]
+      (log/debug "Received message" {:type (:type data)})
+
+      (case (:type data)
+        "ping"
+        (do
+          (log/debug "Handling ping")
+          (http/send! channel (json/generate-string {:type "pong"})))
+
+        "prompt"
+        (let [prompt-text (:text data)
+              session (get @active-sessions channel)
+              session-id (:session-id data (:claude-session-id session))
+              working-dir (:working-directory data (:working-directory session))]
+
+          (log/info "Received prompt" {:text (subs prompt-text 0 (min 50 (count prompt-text)))
+                                       :session-id session-id
+                                       :working-directory working-dir})
+
+          ;; Send immediate acknowledgment
+          (http/send! channel
+                      (json/generate-string
+                       {:type "ack"
+                        :message "Processing prompt..."}))
+
+          ;; Invoke Claude asynchronously
+          (claude/invoke-claude-async
+           prompt-text
+           (fn [response]
+             ;; Send response back to client
+             (if (:success response)
+               (do
+                 ;; Update session with new session ID
+                 (when (:session-id response)
+                   (update-session! channel {:claude-session-id (:session-id response)}))
+
+                 (http/send! channel
+                             (json/generate-string
+                              {:type "response"
+                               :success true
+                               :text (:result response)
+                               :session-id (:session-id response)
+                               :usage (:usage response)
+                               :cost (:cost response)})))
+
+               (http/send! channel
+                           (json/generate-string
+                            {:type "response"
+                             :success false
+                             :error (:error response)}))))
+           :session-id session-id
+           :working-directory working-dir
+           :timeout-ms 300000))
+
+        "set-directory"
+        (do
+          (update-session! channel {:working-directory (:path data)})
+          (http/send! channel
+                      (json/generate-string
+                       {:type "ack"
+                        :message (str "Working directory set to: " (:path data))})))
+
+        ;; Unknown message type
+        (do
+          (log/warn "Unknown message type" {:type (:type data)})
+          (http/send! channel
+                      (json/generate-string
+                       {:type "error"
+                        :message (str "Unknown message type: " (:type data))})))))
+
+    (catch Exception e
+      (log/error e "Error handling message")
+      (http/send! channel
+                  (json/generate-string
+                   {:type "error"
+                    :message (str "Error processing message: " (ex-message e))})))))
+
+;; WebSocket handler
+(defn websocket-handler
+  "Handle WebSocket connections"
+  [request]
+  (http/with-channel request channel
+    (if (http/websocket? channel)
+      (do
+        (log/info "WebSocket connection established" {:remote-addr (:remote-addr request)})
+        (create-session! channel)
+
+        ;; Send welcome message
+        (http/send! channel
+                    (json/generate-string
+                     {:type "connected"
+                      :message "Welcome to voice-code backend"
+                      :version "0.1.0"}))
+
+        ;; Handle incoming messages
+        (http/on-receive channel
+                         (fn [msg]
+                           (handle-message channel msg)))
+
+        ;; Handle connection close
+        (http/on-close channel
+                       (fn [status]
+                         (log/info "WebSocket connection closed" {:status status})
+                         (remove-session! channel))))
+
+      ;; Not a WebSocket request
+      (http/send! channel
+                  {:status 400
+                   :headers {"Content-Type" "text/plain"}
+                   :body "This endpoint requires WebSocket connection"}))))
+
+(defn -main
+  "Start the WebSocket server"
+  [& args]
+  (let [config (load-config)
+        port (get-in config [:server :port] 8080)
+        host (get-in config [:server :host] "0.0.0.0")]
+
+    (log/info "Starting voice-code server"
+              {:port port :host host})
+
+    (let [server (http/run-server websocket-handler {:port port :host host})]
+      (reset! server-state server)
+      (println (format "✓ Voice-code WebSocket server running on ws://%s:%d" host port))
+      (println "  Ready for connections. Press Ctrl+C to stop.")
+
+      ;; Keep main thread alive
+      @(promise))))
