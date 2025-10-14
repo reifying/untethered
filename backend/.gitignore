@@ -1,0 +1,12 @@
+# Clojure
+.cpcache/
+.nrepl-port
+.lein-*
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store

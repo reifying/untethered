@@ -1,0 +1,101 @@
+// VoiceOutputManager.swift
+// Text-to-speech using AVSpeechSynthesizer
+
+import Foundation
+import AVFoundation
+import Combine
+
+class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
+    @Published var isSpeaking = false
+
+    private let synthesizer = AVSpeechSynthesizer()
+    var onSpeechComplete: (() -> Void)?
+
+    override init() {
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    // MARK: - Speech Control
+
+    func speak(_ text: String, rate: Float = 0.5) {
+        // Stop any ongoing speech
+        if synthesizer.isSpeaking {
+            synthesizer.stopSpeaking(at: .immediate)
+        }
+
+        // Configure audio session for playback
+        let audioSession = AVAudioSession.sharedInstance()
+        do {
+            try audioSession.setCategory(.playback, mode: .default, options: [])
+            try audioSession.setActive(true)
+        } catch {
+            print("Failed to setup audio session: \(error)")
+            return
+        }
+
+        // Create utterance
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        utterance.rate = rate
+        utterance.pitchMultiplier = 1.0
+        utterance.volume = 1.0
+
+        // Speak
+        synthesizer.speak(utterance)
+
+        DispatchQueue.main.async {
+            self.isSpeaking = true
+        }
+    }
+
+    func stop() {
+        synthesizer.stopSpeaking(at: .immediate)
+        DispatchQueue.main.async {
+            self.isSpeaking = false
+        }
+    }
+
+    func pause() {
+        synthesizer.pauseSpeaking(at: .word)
+    }
+
+    func resume() {
+        synthesizer.continueSpeaking()
+    }
+
+    // MARK: - AVSpeechSynthesizerDelegate
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        DispatchQueue.main.async {
+            self.isSpeaking = true
+        }
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        // Reset audio session
+        let audioSession = AVAudioSession.sharedInstance()
+        do {
+            try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("Failed to deactivate audio session: \(error)")
+        }
+
+        DispatchQueue.main.async {
+            self.isSpeaking = false
+            self.onSpeechComplete?()
+        }
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        DispatchQueue.main.async {
+            self.isSpeaking = false
+        }
+    }
+
+    deinit {
+        if synthesizer.isSpeaking {
+            synthesizer.stopSpeaking(at: .immediate)
+        }
+    }
+}
