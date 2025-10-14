@@ -140,7 +140,10 @@ class VoiceCodeClient: ObservableObject {
 
                     // Check both underscore and hyphen variants (Clojure uses hyphens)
                     if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
+                        print("📥 [VoiceCodeClient] Received session_id from backend: \(sessionId)")
                         self.onSessionIdReceived?(sessionId)
+                    } else {
+                        print("⚠️ [VoiceCodeClient] No session_id in backend response")
                     }
 
                     self.currentError = nil
@@ -175,12 +178,16 @@ class VoiceCodeClient: ObservableObject {
 
         if let sessionId = sessionId {
             message["session_id"] = sessionId
+            print("📤 [VoiceCodeClient] Sending prompt WITH session_id: \(sessionId)")
+        } else {
+            print("📤 [VoiceCodeClient] Sending prompt WITHOUT session_id (will use backend websocket session)")
         }
 
         if let workingDirectory = workingDirectory {
             message["working_directory"] = workingDirectory
         }
 
+        print("📤 [VoiceCodeClient] Full message: \(message)")
         sendMessage(message)
     }
 

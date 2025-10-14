@@ -6,8 +6,32 @@
             [clojure.tools.logging :as log]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [voice-code.claude :as claude])
   (:gen-class))
+
+;; JSON key conversion utilities
+;; Following STANDARDS.md: JSON uses snake_case, Clojure uses kebab-case
+
+(defn snake->kebab
+  "Convert snake_case string to kebab-case keyword"
+  [s]
+  (keyword (str/replace s #"_" "-")))
+
+(defn kebab->snake
+  "Convert kebab-case keyword to snake_case string"
+  [k]
+  (str/replace (name k) #"-" "_"))
+
+(defn parse-json
+  "Parse JSON string, converting snake_case keys to kebab-case keywords"
+  [s]
+  (json/parse-string s snake->kebab))
+
+(defn generate-json
+  "Generate JSON string, converting kebab-case keywords to snake_case keys"
+  [data]
+  (json/generate-string data {:key-fn kebab->snake}))
 
 (defonce server-state (atom nil))
 
@@ -41,28 +65,35 @@
   "Handle incoming WebSocket message"
   [channel msg]
   (try
-    (let [data (json/parse-string msg true)]
+    (let [data (parse-json msg)]
       (log/debug "Received message" {:type (:type data)})
 
       (case (:type data)
         "ping"
         (do
           (log/debug "Handling ping")
-          (http/send! channel (json/generate-string {:type "pong"})))
+          (http/send! channel (generate-json {:type "pong"})))
 
         "prompt"
         (let [prompt-text (:text data)
               session (get @active-sessions channel)
-              session-id (:session-id data (:claude-session-id session))
+              ;; Use session-id from iOS directly - no fallback to cached value
+              ;; If iOS sends nil, we want a NEW Claude session, not to reuse the cached one
+              raw-session-id (:session-id data)
+              websocket-session-id (:claude-session-id session)
+              session-id raw-session-id ; Use exactly what iOS sends
               working-dir (:working-directory data (:working-directory session))]
 
-          (log/info "Received prompt" {:text (subs prompt-text 0 (min 50 (count prompt-text)))
-                                       :session-id session-id
-                                       :working-directory working-dir})
+          (log/info "Received prompt"
+                    {:text (subs prompt-text 0 (min 50 (count prompt-text)))
+                     :ios-session-id raw-session-id
+                     :websocket-cached-id websocket-session-id
+                     :using-session-id session-id
+                     :working-directory working-dir})
 
           ;; Send immediate acknowledgment
           (http/send! channel
-                      (json/generate-string
+                      (generate-json
                        {:type "ack"
                         :message "Processing prompt..."}))
 
@@ -75,10 +106,13 @@
                (do
                  ;; Update session with new session ID
                  (when (:session-id response)
+                   (log/info "Updating websocket session"
+                             {:old-session-id websocket-session-id
+                              :new-session-id (:session-id response)})
                    (update-session! channel {:claude-session-id (:session-id response)}))
 
                  (http/send! channel
-                             (json/generate-string
+                             (generate-json
                               {:type "response"
                                :success true
                                :text (:result response)
@@ -87,7 +121,7 @@
                                :cost (:cost response)})))
 
                (http/send! channel
-                           (json/generate-string
+                           (generate-json
                             {:type "response"
                              :success false
                              :error (:error response)}))))
@@ -99,7 +133,7 @@
         (do
           (update-session! channel {:working-directory (:path data)})
           (http/send! channel
-                      (json/generate-string
+                      (generate-json
                        {:type "ack"
                         :message (str "Working directory set to: " (:path data))})))
 
@@ -107,14 +141,14 @@
         (do
           (log/warn "Unknown message type" {:type (:type data)})
           (http/send! channel
-                      (json/generate-string
+                      (generate-json
                        {:type "error"
                         :message (str "Unknown message type: " (:type data))})))))
 
     (catch Exception e
       (log/error e "Error handling message")
       (http/send! channel
-                  (json/generate-string
+                  (generate-json
                    {:type "error"
                     :message (str "Error processing message: " (ex-message e))})))))
 
@@ -130,7 +164,7 @@
 
         ;; Send welcome message
         (http/send! channel
-                    (json/generate-string
+                    (generate-json
                      {:type "connected"
                       :message "Welcome to voice-code backend"
                       :version "0.1.0"}))

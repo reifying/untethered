@@ -150,7 +150,10 @@ struct ContentView: View {
 
         client.onSessionIdReceived = { sessionId in
             if let session = sessionManager.currentSession {
+                print("💾 [ContentView] Storing session_id '\(sessionId)' to iOS session: \(session.id) ('\(session.name)')")
                 sessionManager.updateClaudeSessionId(for: session, sessionId: sessionId)
+            } else {
+                print("⚠️ [ContentView] Received session_id but no current session!")
             }
         }
 
@@ -170,6 +173,11 @@ struct ContentView: View {
 
     private func sendPrompt(_ text: String) {
         guard let session = sessionManager.currentSession else { return }
+
+        print("📝 [ContentView] Sending prompt from iOS session: \(session.id)")
+        print("📝 [ContentView] iOS session name: '\(session.name)'")
+        print("📝 [ContentView] claudeSessionId: \(session.claudeSessionId ?? "nil")")
+        print("📝 [ContentView] workingDirectory: \(session.workingDirectory ?? "nil")")
 
         // Add user message
         let userMessage = Message(role: .user, text: text)

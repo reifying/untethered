@@ -21,11 +21,13 @@ class SessionManager: ObservableObject {
         let session = Session(name: name, workingDirectory: workingDirectory)
         sessions.append(session)
         currentSession = session
+        print("🆕 [SessionManager] Created NEW iOS session: \(session.id) ('\(session.name)') - claudeSessionId: nil")
         saveSessions()
         return session
     }
 
     func selectSession(_ session: Session) {
+        print("🔄 [SessionManager] Switching to iOS session: \(session.id) ('\(session.name)') - claudeSessionId: \(session.claudeSessionId ?? "nil")")
         currentSession = session
         saveCurrentSessionId()
     }
@@ -55,6 +57,7 @@ class SessionManager: ObservableObject {
     }
 
     func updateClaudeSessionId(for session: Session, sessionId: String) {
+        print("💾 [SessionManager] Updating iOS session \(session.id) ('\(session.name)') claudeSessionId: \(session.claudeSessionId ?? "nil") -> \(sessionId)")
         var updatedSession = session
         updatedSession.updateClaudeSessionId(sessionId)
         updateSession(updatedSession)

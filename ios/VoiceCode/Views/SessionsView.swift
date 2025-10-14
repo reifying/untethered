@@ -54,7 +54,6 @@ struct SessionsView: View {
                         newSessionName = ""
                         newWorkingDirectory = ""
                         showingNewSession = false
-                        dismiss()
                     },
                     onCancel: {
                         newSessionName = ""
