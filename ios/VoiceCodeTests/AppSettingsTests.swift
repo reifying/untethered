@@ -184,4 +184,59 @@ final class AppSettingsTests: XCTestCase {
         let settings3 = AppSettings()
         XCTAssertEqual(settings3.serverURL, "192.168.1.2")
     }
+
+    // MARK: - Voice Selection Tests
+
+    func testDefaultVoiceSelection() {
+        // Default should be nil (system default)
+        XCTAssertNil(settings.selectedVoiceIdentifier)
+    }
+
+    func testVoiceSelectionPersistence() {
+        let testVoiceIdentifier = "com.apple.voice.premium.en-US.Samantha"
+        settings.selectedVoiceIdentifier = testVoiceIdentifier
+
+        // Value should be saved to UserDefaults
+        let saved = UserDefaults.standard.string(forKey: "selectedVoiceIdentifier")
+        XCTAssertEqual(saved, testVoiceIdentifier)
+
+        // Create new instance and verify it loads the saved value
+        let newSettings = AppSettings()
+        XCTAssertEqual(newSettings.selectedVoiceIdentifier, testVoiceIdentifier)
+    }
+
+    func testVoiceSelectionClear() {
+        // Set a voice
+        settings.selectedVoiceIdentifier = "com.apple.voice.premium.en-US.Samantha"
+        XCTAssertNotNil(settings.selectedVoiceIdentifier)
+
+        // Clear it
+        settings.selectedVoiceIdentifier = nil
+        XCTAssertNil(settings.selectedVoiceIdentifier)
+
+        // Should be removed from UserDefaults
+        let saved = UserDefaults.standard.string(forKey: "selectedVoiceIdentifier")
+        XCTAssertNil(saved)
+    }
+
+    func testAvailableVoices() {
+        // Should return an array of voice tuples
+        let voices = AppSettings.availableVoices
+
+        // Should be able to access tuple properties
+        for voice in voices {
+            XCTAssertFalse(voice.identifier.isEmpty, "Voice identifier should not be empty")
+            XCTAssertFalse(voice.name.isEmpty, "Voice name should not be empty")
+            XCTAssertFalse(voice.quality.isEmpty, "Voice quality should not be empty")
+            XCTAssertFalse(voice.language.isEmpty, "Voice language should not be empty")
+        }
+
+        // All voices should be English
+        for voice in voices {
+            XCTAssertTrue(
+                voice.language.lowercased().hasPrefix("en-") || voice.language.lowercased() == "en",
+                "Voice should be English, got: \(voice.language)"
+            )
+        }
+    }
 }
