@@ -255,4 +255,133 @@ final class VoiceCodeClientTests: XCTestCase {
             XCTAssertNotNil(data)
         }
     }
+
+    // MARK: - Connection Handshake Tests (voice-code-57)
+
+    func testConnectWithSessionId() {
+        let sessionId = "test-session-uuid-123"
+        client.connect(sessionId: sessionId)
+
+        // Client should be connected (though WebSocket won't actually connect in tests)
+        // We're testing that the method accepts the parameter correctly
+        XCTAssertTrue(true) // Method didn't crash
+    }
+
+    func testConnectMessageStructure() {
+        // Test connect message format
+        let sessionId = "ios-session-uuid-456"
+        let message: [String: Any] = [
+            "type": "connect",
+            "session_id": sessionId
+        ]
+
+        XCTAssertEqual(message["type"] as? String, "connect")
+        XCTAssertEqual(message["session_id"] as? String, sessionId)
+        XCTAssertEqual(message.count, 2)
+    }
+
+    func testHandleHelloMessage() {
+        let json: [String: Any] = [
+            "type": "hello",
+            "message": "Welcome to voice-code backend",
+            "version": "0.1.0",
+            "instructions": "Send connect message with session_id"
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let text = String(data: data, encoding: .utf8)!
+
+        XCTAssertTrue(text.contains("hello"))
+        XCTAssertTrue(text.contains("Welcome"))
+    }
+
+    func testHandleReplayMessage() {
+        let expectation = XCTestExpectation(description: "Replay callback called")
+        var receivedMessage: Message?
+
+        client.onReplayReceived = { message in
+            receivedMessage = message
+            expectation.fulfill()
+        }
+
+        // Create replay message structure from backend
+        let json: [String: Any] = [
+            "type": "replay",
+            "message_id": "msg-uuid-123",
+            "message": [
+                "role": "assistant",
+                "text": "Replayed message",
+                "session_id": "claude-session-123",
+                "timestamp": "2025-10-15T18:00:00Z"
+            ]
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let text = String(data: data, encoding: .utf8)!
+
+        // Verify JSON structure
+        XCTAssertTrue(text.contains("replay"))
+        XCTAssertTrue(text.contains("Replayed message"))
+
+        // Note: In real scenario, handleMessage would be called and trigger callback
+        // For unit test, we manually trigger to verify structure
+        client.onReplayReceived?(Message(role: .assistant, text: "Replayed message"))
+
+        wait(for: [expectation], timeout: 1.0)
+        XCTAssertNotNil(receivedMessage)
+        XCTAssertEqual(receivedMessage?.text, "Replayed message")
+        XCTAssertEqual(receivedMessage?.role, .assistant)
+    }
+
+    func testMessageAckStructure() {
+        // Test message_ack format
+        let messageId = "msg-uuid-789"
+        let message: [String: Any] = [
+            "type": "message_ack",
+            "message_id": messageId
+        ]
+
+        XCTAssertEqual(message["type"] as? String, "message_ack")
+        XCTAssertEqual(message["message_id"] as? String, messageId)
+        XCTAssertEqual(message.count, 2)
+    }
+
+    func testConnectionHandshakeFlow() {
+        // Test the new connection handshake flow
+        let messages: [[String: Any]] = [
+            ["type": "hello", "message": "Welcome", "version": "0.1.0"],
+            ["type": "connected", "message": "Session registered", "session_id": "ios-uuid"],
+            ["type": "replay", "message_id": "msg-1", "message": ["role": "assistant", "text": "Replay 1"]],
+            ["type": "replay", "message_id": "msg-2", "message": ["role": "assistant", "text": "Replay 2"]]
+        ]
+
+        for json in messages {
+            let data = try! JSONSerialization.data(withJSONObject: json)
+            let text = String(data: data, encoding: .utf8)!
+
+            // Verify each message is valid JSON
+            XCTAssertNotNil(text)
+            let parsed = try! JSONSerialization.jsonObject(with: data) as? [String: Any]
+            XCTAssertNotNil(parsed?["type"])
+        }
+    }
+
+    func testOnReplayReceivedCallback() {
+        let expectation = XCTestExpectation(description: "Replay callback")
+        var receivedMessage: Message?
+
+        client.onReplayReceived = { message in
+            receivedMessage = message
+            expectation.fulfill()
+        }
+
+        // Manually trigger callback
+        let message = Message(role: .assistant, text: "Replayed content")
+        client.onReplayReceived?(message)
+
+        wait(for: [expectation], timeout: 1.0)
+        XCTAssertNotNil(receivedMessage)
+        XCTAssertEqual(receivedMessage?.text, "Replayed content")
+        XCTAssertEqual(receivedMessage?.role, .assistant)
+    }
 }

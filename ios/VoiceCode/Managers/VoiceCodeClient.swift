@@ -15,6 +15,9 @@ class VoiceCodeClient: ObservableObject {
 
     var onMessageReceived: ((Message) -> Void)?
     var onSessionIdReceived: ((String) -> Void)?
+    var onReplayReceived: ((Message) -> Void)?
+
+    private var sessionId: String?
 
     init(serverURL: String) {
         self.serverURL = serverURL
@@ -22,7 +25,9 @@ class VoiceCodeClient: ObservableObject {
 
     // MARK: - Connection Management
 
-    func connect() {
+    func connect(sessionId: String? = nil) {
+        self.sessionId = sessionId
+
         guard let url = URL(string: serverURL) else {
             currentError = "Invalid server URL"
             return
@@ -118,9 +123,34 @@ class VoiceCodeClient: ObservableObject {
 
         DispatchQueue.main.async {
             switch type {
+            case "hello":
+                // Initial welcome message from server
+                print("📡 [VoiceCodeClient] Received hello from server")
+                // Send connect message with session UUID
+                self.sendConnectMessage()
+
             case "connected":
-                // Welcome message received
-                print("Connected to server: \(json["message"] as? String ?? "")")
+                // Connected confirmation received
+                print("✅ [VoiceCodeClient] Session registered: \(json["message"] as? String ?? "")")
+                if let sessionId = json["session_id"] as? String {
+                    print("📥 [VoiceCodeClient] Backend confirmed session: \(sessionId)")
+                }
+
+            case "replay":
+                // Replayed message from undelivered queue
+                if let messageData = json["message"] as? [String: Any],
+                   let roleString = messageData["role"] as? String,
+                   let text = messageData["text"] as? String {
+                    print("🔄 [VoiceCodeClient] Received replayed message")
+                    let role: MessageRole = roleString == "assistant" ? .assistant : .user
+                    let message = Message(role: role, text: text)
+                    self.onReplayReceived?(message)
+
+                    // Send ACK for replayed message
+                    if let messageId = json["message_id"] as? String {
+                        self.sendMessageAck(messageId)
+                    }
+                }
 
             case "ack":
                 // Acknowledgment received
@@ -201,6 +231,29 @@ class VoiceCodeClient: ObservableObject {
 
     func ping() {
         let message: [String: Any] = ["type": "ping"]
+        sendMessage(message)
+    }
+
+    private func sendConnectMessage() {
+        guard let sessionId = sessionId else {
+            print("⚠️ [VoiceCodeClient] No session ID to send in connect message")
+            return
+        }
+
+        let message: [String: Any] = [
+            "type": "connect",
+            "session_id": sessionId
+        ]
+        print("📤 [VoiceCodeClient] Sending connect with session_id: \(sessionId)")
+        sendMessage(message)
+    }
+
+    private func sendMessageAck(_ messageId: String) {
+        let message: [String: Any] = [
+            "type": "message_ack",
+            "message_id": messageId
+        ]
+        print("✅ [VoiceCodeClient] Sending ACK for message: \(messageId)")
         sendMessage(message)
     }
 

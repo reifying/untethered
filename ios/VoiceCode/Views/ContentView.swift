@@ -161,7 +161,22 @@ struct ContentView: View {
             }
         }
 
-        client.connect()
+        client.onReplayReceived = { message in
+            if let session = sessionManager.currentSession {
+                print("🔄 [ContentView] Adding replayed message to session")
+                sessionManager.addMessage(to: session, message: message)
+            }
+        }
+
+        // Connect with iOS session UUID
+        if let session = sessionManager.currentSession {
+            print("🔌 [ContentView] Connecting with iOS session UUID: \(session.id)")
+            client.connect(sessionId: session.id.uuidString)
+        } else {
+            print("⚠️ [ContentView] No current session, connecting without session ID")
+            client.connect()
+        }
+
         self.client = client
     }
 
