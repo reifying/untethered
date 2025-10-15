@@ -2,6 +2,7 @@
 // Server configuration UI for voice-code iPhone app
 
 import SwiftUI
+import AVFoundation
 
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
@@ -10,8 +11,10 @@ struct SettingsView: View {
     @State private var testingConnection = false
     @State private var testResult: String?
     @State private var testSuccess = false
+    @State private var previewingVoice = false
 
     let onServerChange: (String) -> Void
+    let voiceOutputManager: VoiceOutputManager?
 
     var body: some View {
         NavigationView {
@@ -26,6 +29,44 @@ struct SettingsView: View {
                         .keyboardType(.numberPad)
 
                     Text("Full URL: \(settings.fullServerURL)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Section(header: Text("Voice Selection")) {
+                    Picker("Voice", selection: $settings.selectedVoiceIdentifier) {
+                        Text("System Default").tag(nil as String?)
+                        ForEach(AppSettings.availableVoices, id: \.identifier) { voice in
+                            Text(voice.name).tag(voice.identifier as String?)
+                        }
+                    }
+
+                    if let selectedId = settings.selectedVoiceIdentifier,
+                       let voice = AppSettings.availableVoices.first(where: { $0.identifier == selectedId }) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Quality: \(voice.quality)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text("Language: \(voice.language)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    Button(action: previewVoice) {
+                        HStack {
+                            Text("Preview Voice")
+                            Spacer()
+                            if previewingVoice {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "speaker.wave.2.fill")
+                            }
+                        }
+                    }
+                    .disabled(previewingVoice)
+
+                    Text("Premium voices require download in Settings → Accessibility → Spoken Content → Voices")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -103,11 +144,31 @@ struct SettingsView: View {
             testResult = message
         }
     }
+
+    func previewVoice() {
+        guard let manager = voiceOutputManager else { return }
+
+        previewingVoice = true
+
+        let previewText = "Hello! This is a preview of the selected voice. Premium voices sound more natural and expressive."
+
+        // Use the selected voice identifier
+        manager.speak(previewText, voiceIdentifier: settings.selectedVoiceIdentifier)
+
+        // Reset state after a delay (approximate speech duration)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) {
+            previewingVoice = false
+        }
+    }
 }
 
 // Preview for SwiftUI Canvas
 struct SettingsView_Previews: PreviewProvider {
     static var previews: some View {
-        SettingsView(settings: AppSettings(), onServerChange: { _ in })
+        SettingsView(
+            settings: AppSettings(),
+            onServerChange: { _ in },
+            voiceOutputManager: nil
+        )
     }
 }

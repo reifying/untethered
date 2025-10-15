@@ -120,10 +120,14 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showingSettings) {
-            SettingsView(settings: settings) { newURL in
-                // Update client with new server URL
-                client?.updateServerURL(newURL)
-            }
+            SettingsView(
+                settings: settings,
+                onServerChange: { newURL in
+                    // Update client with new server URL
+                    client?.updateServerURL(newURL)
+                },
+                voiceOutputManager: voiceOutput
+            )
         }
         .sheet(isPresented: $showingSessions) {
             SessionsView(sessionManager: sessionManager)
@@ -143,8 +147,8 @@ struct ContentView: View {
             if let session = sessionManager.currentSession {
                 sessionManager.addMessage(to: session, message: message)
 
-                // Speak the response
-                voiceOutput.speak(message.text)
+                // Speak the response using selected voice
+                voiceOutput.speak(message.text, voiceIdentifier: settings.selectedVoiceIdentifier)
             }
         }
 

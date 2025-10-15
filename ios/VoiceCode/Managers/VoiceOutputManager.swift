@@ -18,7 +18,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
     // MARK: - Speech Control
 
-    func speak(_ text: String, rate: Float = 0.5) {
+    func speak(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil) {
         // Stop any ongoing speech
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
@@ -36,7 +36,18 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
         // Create utterance
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+
+        // Select voice based on identifier, or use default
+        if let identifier = voiceIdentifier,
+           let voice = AVSpeechSynthesisVoice(identifier: identifier) {
+            utterance.voice = voice
+            print("Using voice: \(voice.name) [\(voice.language)]")
+        } else {
+            // Fallback to default en-US voice
+            utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+            print("Using default en-US voice")
+        }
+
         utterance.rate = rate
         utterance.pitchMultiplier = 1.0
         utterance.volume = 1.0
