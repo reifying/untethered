@@ -267,3 +267,100 @@
             (when-let [parent (.getParentFile file)]
               (when (.exists parent)
                 (.delete parent)))))))))
+
+(deftest test-message-buffering
+  (testing "Message buffering and acknowledgment"
+    (let [test-path (str (System/getProperty "java.io.tmpdir")
+                         "/voice-code-server-test-"
+                         (System/currentTimeMillis)
+                         "/sessions.edn")]
+      (try
+        (with-redefs [storage/storage-file test-path]
+          (reset! server/channel-to-session {})
+          (reset! storage/sessions-atom {:sessions {}})
+          (storage/ensure-storage-file test-path)
+
+          (let [ios-session-id "test-ios-uuid-buffering"]
+            ;; Create session
+            (storage/create-session! ios-session-id "/tmp")
+
+            ;; Buffer a message
+            (let [msg (server/buffer-message! ios-session-id
+                                              :assistant
+                                              "Test response"
+                                              "claude-session-123")]
+              ;; Verify message has UUID
+              (is (some? (:id msg)) "Message should have UUID")
+              (is (= :assistant (:role msg)))
+              (is (= "Test response" (:text msg)))
+              (is (= "claude-session-123" (:session-id msg)))
+
+              ;; Verify message is in undelivered queue
+              (let [undelivered (storage/get-undelivered-messages ios-session-id)]
+                (is (= 1 (count undelivered)))
+                (is (= (:id msg) (:id (first undelivered)))))
+
+              ;; Acknowledge message (simulating iOS receipt)
+              (storage/remove-undelivered-message! ios-session-id (:id msg))
+
+              ;; Verify message removed from queue
+              (let [undelivered-after (storage/get-undelivered-messages ios-session-id)]
+                (is (= 0 (count undelivered-after)) "Queue should be empty after ack")))))
+
+        (finally
+          (let [file (io/file test-path)]
+            (when (.exists file)
+              (.delete file))
+            (when-let [parent (.getParentFile file)]
+              (when (.exists parent)
+                (.delete parent))))))))
+
+  (testing "Generate unique message IDs"
+    (let [id1 (server/generate-message-id)
+          id2 (server/generate-message-id)]
+      (is (string? id1) "Message ID should be a string")
+      (is (string? id2) "Message ID should be a string")
+      (is (not= id1 id2) "Message IDs should be unique")
+      ;; Verify UUID v4 format (loose check)
+      (is (re-matches #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" id1)
+          "Should be valid UUID format")))
+
+  (testing "Multiple undelivered messages"
+    (let [test-path (str (System/getProperty "java.io.tmpdir")
+                         "/voice-code-server-test-"
+                         (System/currentTimeMillis)
+                         "/sessions.edn")]
+      (try
+        (with-redefs [storage/storage-file test-path]
+          (reset! storage/sessions-atom {:sessions {}})
+          (storage/ensure-storage-file test-path)
+
+          (let [ios-session-id "test-ios-uuid-multi"]
+            (storage/create-session! ios-session-id "/tmp")
+
+            ;; Buffer three messages
+            (let [msg1 (server/buffer-message! ios-session-id :assistant "Response 1" "session-1")
+                  msg2 (server/buffer-message! ios-session-id :assistant "Response 2" "session-2")
+                  msg3 (server/buffer-message! ios-session-id :assistant "Response 3" "session-3")]
+
+              ;; Verify all three in queue
+              (let [undelivered (storage/get-undelivered-messages ios-session-id)]
+                (is (= 3 (count undelivered))))
+
+              ;; Acknowledge middle message
+              (storage/remove-undelivered-message! ios-session-id (:id msg2))
+
+              ;; Verify only msg1 and msg3 remain
+              (let [undelivered (storage/get-undelivered-messages ios-session-id)]
+                (is (= 2 (count undelivered)))
+                (is (some #(= (:id msg1) (:id %)) undelivered))
+                (is (some #(= (:id msg3) (:id %)) undelivered))
+                (is (not (some #(= (:id msg2) (:id %)) undelivered)))))))
+
+        (finally
+          (let [file (io/file test-path)]
+            (when (.exists file)
+              (.delete file))
+            (when-let [parent (.getParentFile file)]
+              (when (.exists parent)
+                (.delete parent)))))))))

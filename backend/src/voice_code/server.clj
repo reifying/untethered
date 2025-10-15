@@ -108,6 +108,41 @@
   [channel]
   (swap! channel-to-session dissoc channel))
 
+(defn generate-message-id
+  "Generate a UUID v4 for message tracking"
+  []
+  (str (java.util.UUID/randomUUID)))
+
+(defn buffer-message!
+  "Buffer a message in the undelivered queue.
+  Returns the message with assigned ID."
+  [ios-session-id role text session-id]
+  (let [message-id (generate-message-id)
+        message {:id message-id
+                 :role role
+                 :text text
+                 :session-id session-id}]
+    (storage/add-undelivered-message! ios-session-id message)
+    (log/debug "Buffered message" {:ios-session-id ios-session-id
+                                   :message-id message-id
+                                   :role role})
+    message))
+
+(defn send-with-buffer!
+  "Send message to channel and buffer it for delivery tracking.
+  If send fails (disconnected), message remains in buffer for replay."
+  [channel ios-session-id message-data]
+  (let [message-id (:message-id message-data)
+        json-message (generate-json message-data)]
+    (try
+      (http/send! channel json-message)
+      (log/debug "Sent message" {:ios-session-id ios-session-id
+                                 :message-id message-id})
+      (catch Exception e
+        (log/warn e "Failed to send message, will replay on reconnect"
+                  {:ios-session-id ios-session-id
+                   :message-id message-id})))))
+
 ;; Message handling
 (defn handle-message
   "Handle incoming WebSocket message"
@@ -188,14 +223,19 @@
                                   :new-claude-session-id (:session-id response)})
                        (update-session! ios-session-id {:claude-session-id (:session-id response)}))
 
-                     (http/send! channel
-                                 (generate-json
-                                  {:type "response"
-                                   :success true
-                                   :text (:result response)
-                                   :session-id (:session-id response)
-                                   :usage (:usage response)
-                                   :cost (:cost response)})))
+                     ;; Buffer message and send with tracking
+                     (let [buffered-msg (buffer-message! ios-session-id
+                                                         :assistant
+                                                         (:result response)
+                                                         (:session-id response))
+                           response-data {:type "response"
+                                          :message-id (:id buffered-msg)
+                                          :success true
+                                          :text (:result response)
+                                          :session-id (:session-id response)
+                                          :usage (:usage response)
+                                          :cost (:cost response)}]
+                       (send-with-buffer! channel ios-session-id response-data)))
 
                    (http/send! channel
                                (generate-json
@@ -222,7 +262,24 @@
                            {:type "ack"
                             :message (str "Working directory set to: " (:path data))})))))
 
+        "message-ack"
+        (let [ios-session-id (get @channel-to-session channel)
+              message-id (:message-id data)]
+          (if-not ios-session-id
+            (log/warn "message-ack received before session registration"
+                      {:message-id message-id})
+            (if message-id
+              (do
+                (log/info "Message acknowledged, removing from queue"
+                          {:ios-session-id ios-session-id
+                           :message-id message-id})
+                (storage/remove-undelivered-message! ios-session-id message-id))
+              (log/warn "message-ack missing message-id"
+                        {:ios-session-id ios-session-id}))))
+
         ;; Unknown message type
+
+;; Unknown message type
         (do
           (log/warn "Unknown message type" {:type (:type data)})
           (http/send! channel
