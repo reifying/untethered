@@ -490,3 +490,111 @@
             (when-let [parent (.getParentFile file)]
               (when (.exists parent)
                 (.delete parent)))))))))
+
+(deftest test-session-lifecycle
+  (testing "Sessions persist across simulated server restarts"
+    (let [test-path (str (System/getProperty "java.io.tmpdir")
+                         "/voice-code-server-test-"
+                         (System/currentTimeMillis)
+                         "/sessions.edn")]
+      (try
+        (with-redefs [storage/storage-file test-path]
+          ;; Simulate server startup
+          (reset! storage/sessions-atom {:sessions {}})
+          (storage/ensure-storage-file test-path)
+          (storage/initialize! test-path)
+
+          ;; Create some sessions during server operation
+          (let [ios-uuid-1 "ios-session-1"
+                ios-uuid-2 "ios-session-2"]
+            (storage/create-session! ios-uuid-1 "/project1")
+            (storage/create-session! ios-uuid-2 "/project2")
+
+            ;; Update sessions with activity
+            (storage/update-session! ios-uuid-1 {:claude-session-id "claude-123"})
+            (server/buffer-message! ios-uuid-1 :assistant "Response 1" "claude-123")
+            (server/buffer-message! ios-uuid-2 :assistant "Response 2" nil)
+
+            ;; Verify sessions exist
+            (is (= 2 (count (:sessions @storage/sessions-atom))))
+
+            ;; Simulate graceful shutdown - save sessions
+            (storage/save-sessions! @storage/sessions-atom test-path)
+
+            ;; Verify file was written
+            (is (.exists (io/file test-path)))
+
+            ;; Simulate server restart - clear memory
+            (reset! storage/sessions-atom {:sessions {}})
+            (reset! server/channel-to-session {})
+
+            ;; Verify memory is empty
+            (is (= 0 (count (:sessions @storage/sessions-atom))))
+
+            ;; Simulate server startup - load from disk
+            (storage/initialize! test-path)
+
+            ;; Verify sessions were restored
+            (is (= 2 (count (:sessions @storage/sessions-atom)))
+                "Should restore 2 sessions from disk")
+
+            ;; Verify session data is intact
+            (let [session1 (storage/get-session ios-uuid-1)
+                  session2 (storage/get-session ios-uuid-2)]
+              (is (= "claude-123" (:claude-session-id session1))
+                  "Session 1 should have Claude session ID")
+              (is (= "/project1" (:working-directory session1))
+                  "Session 1 should have working directory")
+              (is (= 1 (count (:undelivered-messages session1)))
+                  "Session 1 should have 1 undelivered message")
+              (is (nil? (:claude-session-id session2))
+                  "Session 2 should have nil Claude session ID")
+              (is (= 1 (count (:undelivered-messages session2)))
+                  "Session 2 should have 1 undelivered message"))))
+
+        (finally
+          (let [file (io/file test-path)]
+            (when (.exists file)
+              (.delete file))
+            (when-let [parent (.getParentFile file)]
+              (when (.exists parent)
+                (.delete parent))))))))
+
+  (testing "Session metadata tracked correctly"
+    (let [test-path (str (System/getProperty "java.io.tmpdir")
+                         "/voice-code-server-test-"
+                         (System/currentTimeMillis)
+                         "/sessions.edn")]
+      (try
+        (with-redefs [storage/storage-file test-path]
+          (reset! storage/sessions-atom {:sessions {}})
+          (storage/ensure-storage-file test-path)
+
+          (let [ios-uuid "metadata-test-uuid"
+                session (storage/create-session! ios-uuid "/tmp")]
+            ;; Verify initial metadata
+            (is (some? (:created-at session)) "Should have created-at timestamp")
+            (is (some? (:last-active session)) "Should have initial last-active timestamp")
+
+            (let [initial-last-active (:last-active session)]
+              ;; Wait a bit to ensure timestamp difference
+              (Thread/sleep 10)
+
+              ;; Update session
+              (storage/update-session! ios-uuid {:claude-session-id "new-id"})
+
+              ;; Verify last-active was updated
+              (let [updated-session (storage/get-session ios-uuid)]
+                (is (.after (:last-active updated-session) initial-last-active)
+                    "last-active should be updated on session update")
+                (is (= (:created-at session) (:created-at updated-session))
+                    "created-at should not change on update")))))
+
+        (finally
+          (let [file (io/file test-path)]
+            (when (.exists file)
+              (.delete file))
+            (when-let [parent (.getParentFile file)]
+              (when (.exists parent)
+                (.delete parent)))))))))
+

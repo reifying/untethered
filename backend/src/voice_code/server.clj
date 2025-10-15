@@ -373,6 +373,19 @@
 
     (let [server (http/run-server websocket-handler {:port port :host host})]
       (reset! server-state server)
+
+      ;; Add graceful shutdown hook
+      (.addShutdownHook
+       (Runtime/getRuntime)
+       (Thread. (fn []
+                  (log/info "Shutting down voice-code server gracefully")
+                  ;; Save any pending session changes
+                  (storage/save-sessions! @storage/sessions-atom)
+                  ;; Stop HTTP server with 100ms timeout
+                  (when @server-state
+                    (@server-state :timeout 100))
+                  (log/info "Server shutdown complete"))))
+
       (println (format "✓ Voice-code WebSocket server running on ws://%s:%d" host port))
       (when default-dir
         (println (format "  Default working directory: %s" default-dir)))
