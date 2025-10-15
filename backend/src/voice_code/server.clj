@@ -35,12 +35,38 @@
 
 (defonce server-state (atom nil))
 
-(defn load-config
-  "Load configuration from resources/config.edn"
+(defn ensure-config-file
+  "Ensure config.edn exists in resources/, creating with defaults if needed.
+  Only works in development (not when running from JAR)."
   []
-  (-> (io/resource "config.edn")
-      slurp
-      edn/read-string))
+  (let [config-path "resources/config.edn"
+        config-file (io/file config-path)]
+    (when-not (.exists config-file)
+      (log/info "Creating default config.edn at" config-path)
+      (io/make-parents config-file)
+      (spit config-file
+            (str "{:server {:port 8080\n"
+                 "          :host \"0.0.0.0\"}\n\n"
+                 " :claude {:cli-path \"claude\"\n"
+                 "          :default-timeout 86400000}  ; 24 hours in milliseconds\n\n"
+                 " :logging {:level :info}}\n")))))
+
+(defn load-config
+  "Load configuration from resources/config.edn, creating with defaults if needed"
+  []
+  (ensure-config-file)
+  (if-let [config-resource (io/resource "config.edn")]
+    (-> config-resource
+        slurp
+        edn/read-string)
+    ;; Fallback to defaults if resource not found (e.g., in JAR)
+    (do
+      (log/warn "config.edn not found on classpath, using defaults")
+      {:server {:port 8080
+                :host "0.0.0.0"}
+       :claude {:cli-path "claude"
+                :default-timeout 86400000}
+       :logging {:level :info}})))
 
 ;; Session state management
 ;; Map of WebSocket channel -> session state
@@ -127,7 +153,7 @@
                              :error (:error response)}))))
            :session-id session-id
            :working-directory working-dir
-           :timeout-ms 300000))
+           :timeout-ms 86400000))
 
         "set-directory"
         (do

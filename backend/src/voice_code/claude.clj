@@ -83,13 +83,13 @@
   - session-id: Optional Claude session ID for resumption
   - working-directory: Optional working directory for Claude
   - model: Model to use (default: sonnet)
-  - timeout-ms: Timeout in milliseconds (default: 300000 = 5 minutes)
+  - timeout-ms: Timeout in milliseconds (default: 86400000 = 24 hours)
   
   Returns immediately. Calls callback-fn when done or on timeout.
   Response map will have :success true/false and either :result or :error."
   [prompt callback-fn & {:keys [session-id working-directory model timeout-ms]
                          :or {model "sonnet"
-                              timeout-ms 300000}}]
+                              timeout-ms 86400000}}]
   (async/go
     (let [response-ch (async/thread
                         (try
