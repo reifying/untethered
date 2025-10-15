@@ -36,20 +36,23 @@
 (defonce server-state (atom nil))
 
 (defn ensure-config-file
-  "Ensure config.edn exists in resources/, creating with defaults if needed.
-  Only works in development (not when running from JAR)."
-  []
-  (let [config-path "resources/config.edn"
-        config-file (io/file config-path)]
-    (when-not (.exists config-file)
-      (log/info "Creating default config.edn at" config-path)
-      (io/make-parents config-file)
-      (spit config-file
-            (str "{:server {:port 8080\n"
-                 "          :host \"0.0.0.0\"}\n\n"
-                 " :claude {:cli-path \"claude\"\n"
-                 "          :default-timeout 86400000}  ; 24 hours in milliseconds\n\n"
-                 " :logging {:level :info}}\n")))))
+  "Ensure config.edn exists, creating with defaults if needed.
+  Only works in development (not when running from JAR).
+  
+  Accepts optional config-path for testing purposes."
+  ([]
+   (ensure-config-file "resources/config.edn"))
+  ([config-path]
+   (let [config-file (io/file config-path)]
+     (when-not (.exists config-file)
+       (log/info "Creating default config.edn at" config-path)
+       (io/make-parents config-file)
+       (spit config-file
+             (str "{:server {:port 8080\n"
+                  "          :host \"0.0.0.0\"}\n\n"
+                  " :claude {:cli-path \"claude\"\n"
+                  "          :default-timeout 86400000}  ; 24 hours in milliseconds\n\n"
+                  " :logging {:level :info}}\n"))))))
 
 (defn load-config
   "Load configuration from resources/config.edn, creating with defaults if needed"
@@ -73,11 +76,13 @@
 (defonce active-sessions (atom {}))
 
 (defn create-session! [channel]
-  (swap! active-sessions assoc channel
-         {:created-at (System/currentTimeMillis)
-          :last-activity (System/currentTimeMillis)
-          :claude-session-id nil
-          :working-directory nil}))
+  (let [config (load-config)
+        default-dir (get-in config [:claude :default-working-directory])]
+    (swap! active-sessions assoc channel
+           {:created-at (System/currentTimeMillis)
+            :last-activity (System/currentTimeMillis)
+            :claude-session-id nil
+            :working-directory default-dir})))
 
 (defn update-session! [channel updates]
   (swap! active-sessions update channel merge
@@ -217,14 +222,19 @@
   [& args]
   (let [config (load-config)
         port (get-in config [:server :port] 8080)
-        host (get-in config [:server :host] "0.0.0.0")]
+        host (get-in config [:server :host] "0.0.0.0")
+        default-dir (get-in config [:claude :default-working-directory])]
 
     (log/info "Starting voice-code server"
-              {:port port :host host})
+              {:port port
+               :host host
+               :default-working-directory default-dir})
 
     (let [server (http/run-server websocket-handler {:port port :host host})]
       (reset! server-state server)
       (println (format "✓ Voice-code WebSocket server running on ws://%s:%d" host port))
+      (when default-dir
+        (println (format "  Default working directory: %s" default-dir)))
       (println "  Ready for connections. Press Ctrl+C to stop.")
 
       ;; Keep main thread alive

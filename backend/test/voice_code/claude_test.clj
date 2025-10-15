@@ -8,6 +8,15 @@
     (let [path (claude/get-claude-cli-path)]
       (is (or (nil? path) (string? path))))))
 
+(deftest test-expand-tilde
+  (testing "Tilde expansion in paths"
+    (let [home (System/getProperty "user.home")]
+      (is (= (str home "/code/mono") (claude/expand-tilde "~/code/mono")))
+      (is (= (str home "/Documents") (claude/expand-tilde "~/Documents")))
+      (is (= "/absolute/path" (claude/expand-tilde "/absolute/path")))
+      (is (= "relative/path" (claude/expand-tilde "relative/path")))
+      (is (nil? (claude/expand-tilde nil))))))
+
 (deftest test-invoke-claude-missing-cli
   (testing "Error when CLI not found"
     (with-redefs [claude/get-claude-cli-path (fn [] nil)]
@@ -52,6 +61,24 @@
         (claude/invoke-claude "continue" :session-id "test-456")
         (is (some #(= "--resume" %) @called-args))
         (is (some #(= "test-456" %) @called-args))))))
+
+(deftest test-invoke-claude-with-tilde-working-directory
+  (testing "Working directory with tilde gets expanded"
+    (let [called-with-dir (atom nil)
+          home (System/getProperty "user.home")]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    clojure.java.shell/sh
+                    (fn [cli-path & args]
+                      ;; Extract :dir from args
+                      (let [dir-idx (.indexOf args :dir)]
+                        (when (>= dir-idx 0)
+                          (reset! called-with-dir (nth args (inc dir-idx)))))
+                      {:exit 0
+                       :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
+
+        (claude/invoke-claude "test" :working-directory "~/code/mono")
+        (is (= (str home "/code/mono") @called-with-dir)
+            "Tilde should be expanded to home directory")))))
 
 (deftest test-invoke-claude-cli-failure
   (testing "Handle CLI execution failure"

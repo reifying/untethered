@@ -15,6 +15,15 @@
           default-path
           nil))))
 
+(defn expand-tilde
+  "Expand ~ to user home directory in path.
+  Java's ProcessBuilder doesn't expand tildes, so we must do it manually."
+  [path]
+  (when path
+    (if (clojure.string/starts-with? path "~")
+      (clojure.string/replace-first path "~" (System/getProperty "user.home"))
+      path)))
+
 (defn invoke-claude
   [prompt & {:keys [session-id model working-directory timeout]
              :or {model "sonnet"
@@ -23,7 +32,8 @@
     (when-not cli-path
       (throw (ex-info "Claude CLI not found" {})))
 
-    (let [args (cond-> ["--dangerously-skip-permissions"
+    (let [expanded-dir (expand-tilde working-directory)
+          args (cond-> ["--dangerously-skip-permissions"
                         "--print"
                         "--output-format" "json"
                         "--model" model]
@@ -31,11 +41,11 @@
                  true (concat [prompt]))
 
           shell-opts (cond-> {}
-                       working-directory (assoc :dir working-directory))
+                       expanded-dir (assoc :dir expanded-dir))
 
           _ (log/info "Invoking Claude CLI"
                       {:session-id session-id
-                       :working-directory working-directory
+                       :working-directory expanded-dir
                        :model model})
 
           result (apply shell/sh cli-path (concat args (apply concat shell-opts)))]
