@@ -364,3 +364,129 @@
             (when-let [parent (.getParentFile file)]
               (when (.exists parent)
                 (.delete parent)))))))))
+
+(deftest test-reconnection-and-replay
+  (testing "Reconnection replays undelivered messages"
+    (let [test-path (str (System/getProperty "java.io.tmpdir")
+                         "/voice-code-server-test-"
+                         (System/currentTimeMillis)
+                         "/sessions.edn")
+          sent-messages (atom [])]
+      (try
+        (with-redefs [storage/storage-file test-path
+                      ;; Mock http/send! to capture sent messages
+                      org.httpkit.server/send! (fn [channel msg]
+                                                 (swap! sent-messages conj msg))]
+          (reset! server/channel-to-session {})
+          (reset! storage/sessions-atom {:sessions {}})
+          (storage/ensure-storage-file test-path)
+
+          (let [ios-session-id "test-reconnection-uuid"
+                channel1 :channel-1
+                channel2 :channel-2]
+
+            ;; Initial connection
+            (storage/create-session! ios-session-id "/tmp")
+
+            ;; Buffer some undelivered messages (simulating messages sent while disconnected)
+            (server/buffer-message! ios-session-id :assistant "Message 1" "session-1")
+            (server/buffer-message! ios-session-id :assistant "Message 2" "session-2")
+            (server/buffer-message! ios-session-id :assistant "Message 3" "session-3")
+
+            ;; Verify 3 messages in queue
+            (is (= 3 (count (storage/get-undelivered-messages ios-session-id))))
+
+            ;; Simulate reconnection - replay should happen
+            (reset! sent-messages [])
+            (server/replay-undelivered-messages! channel2 ios-session-id)
+
+            ;; Verify 3 replay messages were sent
+            (is (= 3 (count @sent-messages)) "Should replay 3 messages")
+
+            ;; Verify replay message format
+            (let [first-replay (json/parse-string (first @sent-messages) true)]
+              (is (= "replay" (:type first-replay)))
+              (is (some? (:message_id first-replay)))
+              (is (= "assistant" (get-in first-replay [:message :role])))
+              (is (= "Message 1" (get-in first-replay [:message :text])))
+              (is (= "session-1" (get-in first-replay [:message :session_id]))))))
+
+        (finally
+          (let [file (io/file test-path)]
+            (when (.exists file)
+              (.delete file))
+            (when-let [parent (.getParentFile file)]
+              (when (.exists parent)
+                (.delete parent))))))))
+
+  (testing "Replay sends messages in order"
+    (let [test-path (str (System/getProperty "java.io.tmpdir")
+                         "/voice-code-server-test-"
+                         (System/currentTimeMillis)
+                         "/sessions.edn")
+          sent-messages (atom [])]
+      (try
+        (with-redefs [storage/storage-file test-path
+                      org.httpkit.server/send! (fn [channel msg]
+                                                 (swap! sent-messages conj msg))]
+          (reset! storage/sessions-atom {:sessions {}})
+          (storage/ensure-storage-file test-path)
+
+          (let [ios-session-id "test-replay-order"]
+            (storage/create-session! ios-session-id "/tmp")
+
+            ;; Buffer messages in specific order
+            (server/buffer-message! ios-session-id :assistant "First" "s1")
+            (server/buffer-message! ios-session-id :assistant "Second" "s2")
+            (server/buffer-message! ios-session-id :assistant "Third" "s3")
+
+            ;; Replay
+            (reset! sent-messages [])
+            (server/replay-undelivered-messages! :test-channel ios-session-id)
+
+            ;; Verify order preserved
+            (let [messages (map #(json/parse-string % true) @sent-messages)
+                  texts (map #(get-in % [:message :text]) messages)]
+              (is (= ["First" "Second" "Third"] texts) "Messages should be replayed in order"))))
+
+        (finally
+          (let [file (io/file test-path)]
+            (when (.exists file)
+              (.delete file))
+            (when-let [parent (.getParentFile file)]
+              (when (.exists parent)
+                (.delete parent))))))))
+
+  (testing "No replay when queue is empty"
+    (let [test-path (str (System/getProperty "java.io.tmpdir")
+                         "/voice-code-server-test-"
+                         (System/currentTimeMillis)
+                         "/sessions.edn")
+          sent-messages (atom [])]
+      (try
+        (with-redefs [storage/storage-file test-path
+                      org.httpkit.server/send! (fn [channel msg]
+                                                 (swap! sent-messages conj msg))]
+          (reset! storage/sessions-atom {:sessions {}})
+          (storage/ensure-storage-file test-path)
+
+          (let [ios-session-id "test-empty-queue"]
+            (storage/create-session! ios-session-id "/tmp")
+
+            ;; No messages buffered
+            (is (= 0 (count (storage/get-undelivered-messages ios-session-id))))
+
+            ;; Attempt replay
+            (reset! sent-messages [])
+            (server/replay-undelivered-messages! :test-channel ios-session-id)
+
+            ;; Verify no messages sent
+            (is (= 0 (count @sent-messages)) "Should not send any messages when queue empty")))
+
+        (finally
+          (let [file (io/file test-path)]
+            (when (.exists file)
+              (.delete file))
+            (when-let [parent (.getParentFile file)]
+              (when (.exists parent)
+                (.delete parent)))))))))

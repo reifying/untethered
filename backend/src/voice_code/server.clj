@@ -143,6 +143,27 @@
                   {:ios-session-id ios-session-id
                    :message-id message-id})))))
 
+(defn replay-undelivered-messages!
+  "Replay all undelivered messages to reconnected client.
+  Sends each buffered message as a 'replay' type message."
+  [channel ios-session-id]
+  (let [undelivered (storage/get-undelivered-messages ios-session-id)]
+    (when (seq undelivered)
+      (log/info "Replaying undelivered messages"
+                {:ios-session-id ios-session-id
+                 :count (count undelivered)})
+      (doseq [msg undelivered]
+        (let [replay-data {:type "replay"
+                           :message-id (:id msg)
+                           :message {:role (:role msg)
+                                     :text (:text msg)
+                                     :session-id (:session-id msg)
+                                     :timestamp (str (:timestamp msg))}}]
+          (log/debug "Replaying message"
+                     {:ios-session-id ios-session-id
+                      :message-id (:id msg)})
+          (send-with-buffer! channel ios-session-id replay-data))))))
+
 ;; Message handling
 (defn handle-message
   "Handle incoming WebSocket message"
@@ -159,16 +180,22 @@
 
         "connect"
         ;; iOS client sends this on connection with its session UUID
+        ;; This handles both initial connection and reconnection
         (let [ios-session-id (:session-id data)]
           (if ios-session-id
             (do
               (log/info "Registering iOS session" {:ios-session-id ios-session-id})
               (register-channel! channel ios-session-id)
+
+              ;; Send connected confirmation
               (http/send! channel
                           (generate-json
                            {:type "connected"
                             :message "Session registered"
-                            :session-id ios-session-id})))
+                            :session-id ios-session-id}))
+
+              ;; Replay any undelivered messages (reconnection scenario)
+              (replay-undelivered-messages! channel ios-session-id))
             (do
               (log/warn "Connect message missing session-id")
               (http/send! channel
