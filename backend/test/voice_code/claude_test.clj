@@ -25,6 +25,21 @@
         (is (= "Hello from Claude" (:result result)))
         (is (= "test-123" (:session-id result)))))))
 
+(deftest test-invoke-claude-cli-flags
+  (testing "Claude CLI is invoked with correct flags"
+    (let [called-args (atom nil)]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    clojure.java.shell/sh
+                    (fn [& args]
+                      (reset! called-args args)
+                      {:exit 0
+                       :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
+        (claude/invoke-claude "test")
+        (is (some #(= "--print" %) @called-args) "Missing --print flag")
+        (is (some #(= "--output-format" %) @called-args) "Missing --output-format flag")
+        (is (some #(= "json" %) @called-args) "Missing json output format")
+        (is (some #(= "--dangerously-skip-permissions" %) @called-args))))))
+
 (deftest test-invoke-claude-with-session
   (testing "Claude invocation with session resumption"
     (let [called-args (atom nil)]

@@ -10,6 +10,69 @@
       (is (contains? config :server))
       (is (= 8080 (get-in config [:server :port]))))))
 
+(deftest test-ensure-config-file
+  (testing "Creates default config.edn when missing and doesn't overwrite existing"
+    (let [temp-dir (str (System/getProperty "java.io.tmpdir") "/voice-code-test-" (System/currentTimeMillis))
+          test-resources-dir (str temp-dir "/resources")
+          test-config-path (str test-resources-dir "/config.edn")
+          test-config-file (clojure.java.io/file test-config-path)]
+
+      (try
+        ;; Ensure clean slate
+        (.mkdirs (clojure.java.io/file test-resources-dir))
+        (when (.exists test-config-file)
+          (.delete test-config-file))
+
+        ;; Verify file doesn't exist initially
+        (is (not (.exists test-config-file)) "Config should not exist initially")
+
+        ;; First call should create the file - testing the REAL function
+        (server/ensure-config-file test-config-path)
+        (is (.exists test-config-file) "Config file should be created")
+
+        ;; Verify content is valid EDN with correct default values
+        (let [config (clojure.edn/read-string (slurp test-config-file))]
+          (is (map? config))
+          (is (= 8080 (get-in config [:server :port])))
+          (is (= "0.0.0.0" (get-in config [:server :host])))
+          (is (= "claude" (get-in config [:claude :cli-path])))
+          (is (= 300000 (get-in config [:claude :default-timeout])))
+          (is (= :info (get-in config [:logging :level]))))
+
+        ;; Modify the file to verify ensure-config-file doesn't overwrite
+        (spit test-config-path "{:modified true :custom-value 42}")
+
+        ;; Second call should NOT overwrite existing file
+        (server/ensure-config-file test-config-path)
+        (let [config (clojure.edn/read-string (slurp test-config-file))]
+          (is (= true (:modified config)) "Should not overwrite existing config")
+          (is (= 42 (:custom-value config)) "Custom values should be preserved"))
+
+        (finally
+          ;; Clean up temp directory
+          (when (.exists test-config-file)
+            (.delete test-config-file))
+          (let [resources-dir (clojure.java.io/file test-resources-dir)]
+            (when (.exists resources-dir)
+              (.delete resources-dir)))
+          (let [temp-dir-file (clojure.java.io/file temp-dir)]
+            (when (.exists temp-dir-file)
+              (.delete temp-dir-file))))))))
+
+(deftest test-load-config-with-fallback
+  (testing "Falls back to defaults when config.edn not found"
+    (with-redefs [clojure.java.io/resource (constantly nil)
+                  server/ensure-config-file (fn
+                                              ([] nil)
+                                              ([_] nil))]
+      (let [config (server/load-config)]
+        (is (map? config))
+        (is (= 8080 (get-in config [:server :port])))
+        (is (= "0.0.0.0" (get-in config [:server :host])))
+        (is (= "claude" (get-in config [:claude :cli-path])))
+        (is (= 300000 (get-in config [:claude :default-timeout])))
+        (is (= :info (get-in config [:logging :level])))))))
+
 (deftest test-session-management
   (testing "Session creation"
     (reset! server/active-sessions {})

@@ -24,6 +24,7 @@
       (throw (ex-info "Claude CLI not found" {})))
 
     (let [args (cond-> ["--dangerously-skip-permissions"
+                        "--print"
                         "--output-format" "json"
                         "--model" model]
                  session-id (concat ["--resume" session-id])
