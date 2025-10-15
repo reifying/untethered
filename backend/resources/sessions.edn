@@ -1,1 +1,1 @@
-{:sessions {"uuid-1" {:claude-session-id nil, :working-directory "/tmp", :created-at #inst "2025-10-15T15:28:26.328-00:00", :last-active #inst "2025-10-15T15:28:26.328-00:00", :undelivered-messages [{:id "msg-1", :text "First", :timestamp #inst "2025-10-15T15:28:26.328-00:00"} {:id "msg-3", :text "Third", :timestamp #inst "2025-10-15T15:28:26.328-00:00"}]}}}
+{:sessions {}}
