@@ -104,3 +104,5 @@ iOSInjectionProject/
 
 .clojure-mcp
 
+# Backend runtime data
+backend/resources/sessions.edn
