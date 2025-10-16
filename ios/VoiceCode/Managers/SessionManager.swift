@@ -63,6 +63,10 @@ class SessionManager: ObservableObject {
         updateSession(updatedSession)
     }
 
+    func findSession(byId id: UUID) -> Session? {
+        return sessions.first { $0.id == id }
+    }
+
     // MARK: - Persistence
 
     private func loadSessions() {

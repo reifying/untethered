@@ -204,14 +204,16 @@
                             :message "session_id required in connect message"})))))
 
         "prompt"
-        (let [ios-session-id (get @channel-to-session channel)]
+        ;; Get iOS session ID from message data (for multiplexing) or channel mapping (fallback)
+        (let [websocket-session-id (get @channel-to-session channel)
+              ios-session-id (or (:ios-session-id data) websocket-session-id)]
           (if-not ios-session-id
             (do
-              (log/warn "Prompt received before session registration")
+              (log/warn "Prompt received without session identifier")
               (http/send! channel
                           (generate-json
                            {:type "error"
-                            :message "Must send connect message with session_id first"})))
+                            :message "Must send connect message with session_id first or include ios_session_id in prompt"})))
 
             (let [prompt-text (:text data)
                   session (storage/get-session ios-session-id)
@@ -224,7 +226,9 @@
 
               (log/info "Received prompt"
                         {:text (subs prompt-text 0 (min 50 (count prompt-text)))
-                         :ios-session-id ios-session-id
+                         :websocket-session-id websocket-session-id
+                         :message-ios-session-id (:ios-session-id data)
+                         :using-ios-session-id ios-session-id
                          :stored-claude-session-id stored-claude-session-id
                          :using-claude-session-id claude-session-id
                          :working-directory working-dir})
@@ -260,14 +264,20 @@
                                           :success true
                                           :text (:result response)
                                           :session-id (:session-id response)
+                                          :ios-session-id ios-session-id ;; Include iOS session UUID for routing
                                           :usage (:usage response)
                                           :cost (:cost response)}]
+                       (log/info "Sending response"
+                                 {:ios-session-id ios-session-id
+                                  :claude-session-id (:session-id response)
+                                  :message-id (:id buffered-msg)})
                        (send-with-buffer! channel ios-session-id response-data)))
 
                    (http/send! channel
                                (generate-json
                                 {:type "response"
                                  :success false
+                                 :ios-session-id ios-session-id
                                  :error (:error response)}))))
                :session-id claude-session-id
                :working-directory working-dir
