@@ -3,6 +3,7 @@
 
 import Foundation
 import Combine
+import UIKit
 
 class VoiceCodeClient: ObservableObject {
     @Published var isConnected = false
@@ -12,6 +13,8 @@ class VoiceCodeClient: ObservableObject {
     private var webSocket: URLSessionWebSocketTask?
     private var reconnectionTimer: DispatchSourceTimer?
     private var serverURL: String
+    private var reconnectionAttempts = 0
+    private var maxReconnectionDelay: TimeInterval = 60.0 // Max 60 seconds
 
     var onMessageReceived: ((Message) -> Void)?
     var onSessionIdReceived: ((String) -> Void)?
@@ -21,6 +24,33 @@ class VoiceCodeClient: ObservableObject {
 
     init(serverURL: String) {
         self.serverURL = serverURL
+        setupLifecycleObservers()
+    }
+
+    private func setupLifecycleObservers() {
+        // Reconnect when app returns to foreground
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            if !self.isConnected {
+                print("📱 [VoiceCodeClient] App entering foreground, attempting reconnection...")
+                self.reconnectionAttempts = 0 // Reset backoff on foreground
+                self.connect(sessionId: self.sessionId)
+            }
+        }
+
+        // Optionally pause reconnection when app goes to background
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            print("📱 [VoiceCodeClient] App entering background")
+        }
     }
 
     // MARK: - Connection Management
@@ -71,11 +101,16 @@ class VoiceCodeClient: ObservableObject {
         reconnectionTimer?.cancel()
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
-        timer.schedule(deadline: .now() + 5.0, repeating: 5.0)
+
+        // Calculate exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s (max)
+        let delay = min(pow(2.0, Double(reconnectionAttempts)), maxReconnectionDelay)
+
+        timer.schedule(deadline: .now() + delay, repeating: delay)
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
             if !self.isConnected {
-                print("Attempting reconnection...")
+                self.reconnectionAttempts += 1
+                print("Attempting reconnection (attempt \(self.reconnectionAttempts), next delay: \(min(pow(2.0, Double(self.reconnectionAttempts)), self.maxReconnectionDelay))s)...")
                 self.connect()
             }
         }
@@ -130,7 +165,8 @@ class VoiceCodeClient: ObservableObject {
                 self.sendConnectMessage()
 
             case "connected":
-                // Connected confirmation received
+                // Connected confirmation received - reset reconnection attempts
+                self.reconnectionAttempts = 0
                 print("✅ [VoiceCodeClient] Session registered: \(json["message"] as? String ?? "")")
                 if let sessionId = json["session_id"] as? String {
                     print("📥 [VoiceCodeClient] Backend confirmed session: \(sessionId)")
@@ -274,6 +310,7 @@ class VoiceCodeClient: ObservableObject {
     }
 
     deinit {
+        NotificationCenter.default.removeObserver(self)
         disconnect()
     }
 }
