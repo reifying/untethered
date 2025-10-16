@@ -143,12 +143,24 @@ struct ContentView: View {
     private func setupClient() {
         let client = VoiceCodeClient(serverURL: settings.fullServerURL)
 
-        client.onMessageReceived = { message in
-            if let session = sessionManager.currentSession {
-                sessionManager.addMessage(to: session, message: message)
+        client.onMessageReceived = { message, iosSessionIdString in
+            print("📨 [ContentView] Received message for iOS session: \(iosSessionIdString)")
+            print("📨 [ContentView] Current session: \(sessionManager.currentSession?.id.uuidString ?? "nil")")
 
-                // Speak the response using selected voice
+            guard let iosSessionId = UUID(uuidString: iosSessionIdString),
+                  let session = sessionManager.findSession(byId: iosSessionId) else {
+                print("⚠️ [ContentView] Received message for unknown session: \(iosSessionIdString)")
+                return
+            }
+
+            sessionManager.addMessage(to: session, message: message)
+
+            // Only speak if viewing this session
+            if sessionManager.currentSession?.id == iosSessionId {
+                print("🔊 [ContentView] Speaking response for current session")
                 voiceOutput.speak(message.text, voiceIdentifier: settings.selectedVoiceIdentifier)
+            } else {
+                print("🔇 [ContentView] Silencing response for background session")
             }
         }
 
@@ -202,9 +214,10 @@ struct ContentView: View {
         let userMessage = Message(role: .user, text: text)
         sessionManager.addMessage(to: session, message: userMessage)
 
-        // Send to backend
+        // Send to backend with iOS session UUID for routing
         client?.sendPrompt(
             text,
+            iosSessionId: session.id.uuidString,
             sessionId: session.claudeSessionId,
             workingDirectory: session.workingDirectory
         )

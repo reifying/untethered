@@ -16,7 +16,7 @@ class VoiceCodeClient: ObservableObject {
     private var reconnectionAttempts = 0
     private var maxReconnectionDelay: TimeInterval = 60.0 // Max 60 seconds
 
-    var onMessageReceived: ((Message) -> Void)?
+    var onMessageReceived: ((Message, String) -> Void)?  // (message, iosSessionId)
     var onSessionIdReceived: ((String) -> Void)?
     var onReplayReceived: ((Message) -> Void)?
 
@@ -198,18 +198,22 @@ class VoiceCodeClient: ObservableObject {
             case "response":
                 self.isProcessing = false
                 if let success = json["success"] as? Bool, success {
+                    // Extract iOS session UUID for routing
+                    let iosSessionId = (json["ios_session_id"] as? String) ?? (json["ios-session-id"] as? String) ?? ""
+
                     // Successful response from Claude
                     if let text = json["text"] as? String {
                         let message = Message(role: .assistant, text: text)
-                        self.onMessageReceived?(message)
+                        print("📥 [VoiceCodeClient] Response for iOS session: \(iosSessionId)")
+                        self.onMessageReceived?(message, iosSessionId)
                     }
 
                     // Check both underscore and hyphen variants (Clojure uses hyphens)
                     if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
-                        print("📥 [VoiceCodeClient] Received session_id from backend: \(sessionId)")
+                        print("📥 [VoiceCodeClient] Received claude session_id from backend: \(sessionId)")
                         self.onSessionIdReceived?(sessionId)
                     } else {
-                        print("⚠️ [VoiceCodeClient] No session_id in backend response")
+                        print("⚠️ [VoiceCodeClient] No claude session_id in backend response")
                     }
 
                     self.currentError = nil
@@ -236,23 +240,25 @@ class VoiceCodeClient: ObservableObject {
 
     // MARK: - Send Messages
 
-    func sendPrompt(_ text: String, sessionId: String? = nil, workingDirectory: String? = nil) {
+    func sendPrompt(_ text: String, iosSessionId: String, sessionId: String? = nil, workingDirectory: String? = nil) {
         var message: [String: Any] = [
             "type": "prompt",
-            "text": text
+            "text": text,
+            "ios_session_id": iosSessionId  // Always include iOS session UUID for multiplexing
         ]
 
         if let sessionId = sessionId {
             message["session_id"] = sessionId
-            print("📤 [VoiceCodeClient] Sending prompt WITH session_id: \(sessionId)")
+            print("📤 [VoiceCodeClient] Sending prompt WITH claude session_id: \(sessionId)")
         } else {
-            print("📤 [VoiceCodeClient] Sending prompt WITHOUT session_id (will use backend websocket session)")
+            print("📤 [VoiceCodeClient] Sending prompt WITHOUT claude session_id (will create new)")
         }
 
         if let workingDirectory = workingDirectory {
             message["working_directory"] = workingDirectory
         }
 
+        print("📤 [VoiceCodeClient] Sending from iOS session: \(iosSessionId)")
         print("📤 [VoiceCodeClient] Full message: \(message)")
         sendMessage(message)
     }
