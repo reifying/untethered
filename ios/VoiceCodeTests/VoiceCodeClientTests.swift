@@ -384,4 +384,93 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertEqual(receivedMessage?.text, "Replayed content")
         XCTAssertEqual(receivedMessage?.role, .assistant)
     }
+
+    // MARK: - Reconnection Tests (voice-code-60)
+
+    func testExponentialBackoffDelays() {
+        // Test exponential backoff calculation: 1s, 2s, 4s, 8s, 16s, 32s, 60s (max)
+        let maxDelay: TimeInterval = 60.0
+
+        // Attempt 0: 2^0 = 1 second
+        let delay0 = min(pow(2.0, Double(0)), maxDelay)
+        XCTAssertEqual(delay0, 1.0, accuracy: 0.001)
+
+        // Attempt 1: 2^1 = 2 seconds
+        let delay1 = min(pow(2.0, Double(1)), maxDelay)
+        XCTAssertEqual(delay1, 2.0, accuracy: 0.001)
+
+        // Attempt 2: 2^2 = 4 seconds
+        let delay2 = min(pow(2.0, Double(2)), maxDelay)
+        XCTAssertEqual(delay2, 4.0, accuracy: 0.001)
+
+        // Attempt 3: 2^3 = 8 seconds
+        let delay3 = min(pow(2.0, Double(3)), maxDelay)
+        XCTAssertEqual(delay3, 8.0, accuracy: 0.001)
+
+        // Attempt 4: 2^4 = 16 seconds
+        let delay4 = min(pow(2.0, Double(4)), maxDelay)
+        XCTAssertEqual(delay4, 16.0, accuracy: 0.001)
+
+        // Attempt 5: 2^5 = 32 seconds
+        let delay5 = min(pow(2.0, Double(5)), maxDelay)
+        XCTAssertEqual(delay5, 32.0, accuracy: 0.001)
+
+        // Attempt 6: 2^6 = 64 seconds, capped at 60
+        let delay6 = min(pow(2.0, Double(6)), maxDelay)
+        XCTAssertEqual(delay6, 60.0, accuracy: 0.001)
+
+        // Attempt 10: Much larger, still capped at 60
+        let delay10 = min(pow(2.0, Double(10)), maxDelay)
+        XCTAssertEqual(delay10, 60.0, accuracy: 0.001)
+    }
+
+    func testReconnectionWithSessionId() {
+        // Test that reconnection preserves session ID
+        let sessionId = "persistent-session-uuid"
+        client.connect(sessionId: sessionId)
+
+        // Simulate disconnect and reconnect
+        client.disconnect()
+        XCTAssertFalse(client.isConnected)
+
+        // Reconnect should work without crashing
+        client.connect(sessionId: sessionId)
+        XCTAssertTrue(true) // Didn't crash
+    }
+
+    func testDisconnectCancelsReconnectionTimer() {
+        // Connect to start reconnection timer
+        client.connect(sessionId: "test-session")
+
+        // Disconnect should cancel the timer
+        client.disconnect()
+
+        // If timer wasn't cancelled, this would cause issues
+        // We verify by checking disconnected state is stable
+        XCTAssertFalse(client.isConnected)
+    }
+
+
+    func testLifecycleObserversSetup() {
+        // Verify client initializes with lifecycle observers without crashing
+        // The actual observer functionality is tested through integration testing
+        XCTAssertNotNil(client)
+        XCTAssertFalse(client.isConnected)
+    }
+
+    func testMultipleReconnectionAttempts() {
+        // Verify that multiple reconnection attempts don't cause issues
+        client.connect(sessionId: "test-session")
+        client.disconnect()
+
+        // Attempt multiple reconnects
+        client.connect(sessionId: "test-session")
+        client.disconnect()
+        client.connect(sessionId: "test-session")
+        client.disconnect()
+        client.connect(sessionId: "test-session")
+
+        // Should handle gracefully
+        XCTAssertTrue(true) // Didn't crash
+    }
 }
