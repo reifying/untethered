@@ -72,9 +72,10 @@ final class VoiceCodeClientTests: XCTestCase {
     func testHandleResponseMessage() {
         let expectation = XCTestExpectation(description: "Message callback called")
 
-        client.onMessageReceived = { message in
+        client.onMessageReceived = { message, iosSessionId in
             XCTAssertEqual(message.role, .assistant)
             XCTAssertEqual(message.text, "Test response")
+            XCTAssertEqual(iosSessionId, "ios-session-123")
             expectation.fulfill()
         }
 
@@ -82,7 +83,8 @@ final class VoiceCodeClientTests: XCTestCase {
             "type": "response",
             "success": true,
             "text": "Test response",
-            "session_id": "session-123"
+            "session_id": "session-123",
+            "ios_session_id": "ios-session-123"
         ]
 
         let data = try! JSONSerialization.data(withJSONObject: json)
@@ -152,19 +154,23 @@ final class VoiceCodeClientTests: XCTestCase {
     func testOnMessageReceivedCallback() {
         let expectation = XCTestExpectation(description: "Message callback")
         var receivedMessage: Message?
+        var receivedSessionId: String?
 
-        client.onMessageReceived = { message in
+        client.onMessageReceived = { message, iosSessionId in
             receivedMessage = message
+            receivedSessionId = iosSessionId
             expectation.fulfill()
         }
 
-        // Manually trigger callback
+        // Manually trigger callback with iOS session UUID
         let message = Message(role: .assistant, text: "Test")
-        client.onMessageReceived?(message)
+        let iosSessionId = "test-ios-session-uuid"
+        client.onMessageReceived?(message, iosSessionId)
 
         wait(for: [expectation], timeout: 1.0)
         XCTAssertNotNil(receivedMessage)
         XCTAssertEqual(receivedMessage?.text, "Test")
+        XCTAssertEqual(receivedSessionId, iosSessionId)
     }
 
     func testOnSessionIdReceivedCallback() {
@@ -472,5 +478,153 @@ final class VoiceCodeClientTests: XCTestCase {
 
         // Should handle gracefully
         XCTAssertTrue(true) // Didn't crash
+    }
+
+    // MARK: - Multi-Session Routing Tests (Session Multiplexing Fix)
+
+    func testMultiSessionMessageRouting() {
+        // Test that messages are routed to correct sessions based on iOS session UUID
+        let session1Id = "ios-session-1-uuid"
+        let session2Id = "ios-session-2-uuid"
+
+        var session1Messages: [(Message, String)] = []
+        var session2Messages: [(Message, String)] = []
+
+        let expectation1 = XCTestExpectation(description: "Session 1 receives its message")
+        let expectation2 = XCTestExpectation(description: "Session 2 receives its message")
+
+        client.onMessageReceived = { message, iosSessionId in
+            if iosSessionId == session1Id {
+                session1Messages.append((message, iosSessionId))
+                expectation1.fulfill()
+            } else if iosSessionId == session2Id {
+                session2Messages.append((message, iosSessionId))
+                expectation2.fulfill()
+            }
+        }
+
+        // Simulate response for session 1
+        client.onMessageReceived?(
+            Message(role: .assistant, text: "Response for session 1"),
+            session1Id
+        )
+
+        // Simulate response for session 2
+        client.onMessageReceived?(
+            Message(role: .assistant, text: "Response for session 2"),
+            session2Id
+        )
+
+        wait(for: [expectation1, expectation2], timeout: 1.0)
+
+        // Verify each session got only its message
+        XCTAssertEqual(session1Messages.count, 1)
+        XCTAssertEqual(session1Messages[0].0.text, "Response for session 1")
+        XCTAssertEqual(session1Messages[0].1, session1Id)
+
+        XCTAssertEqual(session2Messages.count, 1)
+        XCTAssertEqual(session2Messages[0].0.text, "Response for session 2")
+        XCTAssertEqual(session2Messages[0].1, session2Id)
+    }
+
+    func testSendPromptWithIosSessionId() {
+        // Test that prompts include iOS session UUID
+        let iosSessionId = "test-ios-session-uuid"
+        let claudeSessionId = "claude-session-123"
+        let promptText = "Test prompt"
+        let workingDir = "/test/dir"
+
+        // Verify message structure for sending prompt
+        var message: [String: Any] = [
+            "type": "prompt",
+            "text": promptText,
+            "ios_session_id": iosSessionId
+        ]
+        message["session_id"] = claudeSessionId
+        message["working_directory"] = workingDir
+
+        XCTAssertEqual(message["type"] as? String, "prompt")
+        XCTAssertEqual(message["text"] as? String, promptText)
+        XCTAssertEqual(message["ios_session_id"] as? String, iosSessionId)
+        XCTAssertEqual(message["session_id"] as? String, claudeSessionId)
+        XCTAssertEqual(message["working_directory"] as? String, workingDir)
+    }
+
+    func testResponseWithIosSessionId() {
+        // Test that responses include ios_session_id for routing
+        let iosSessionId = "ios-uuid-789"
+        let claudeSessionId = "claude-session-456"
+
+        let json: [String: Any] = [
+            "type": "response",
+            "success": true,
+            "text": "Claude response",
+            "session_id": claudeSessionId,
+            "ios_session_id": iosSessionId
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let parsed = try! JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        XCTAssertEqual(parsed?["ios_session_id"] as? String, iosSessionId)
+        XCTAssertEqual(parsed?["session_id"] as? String, claudeSessionId)
+        XCTAssertNotNil(parsed?["text"])
+    }
+
+    func testConcurrentSessionResponses() {
+        // Test handling concurrent responses from multiple sessions
+        let sessionIds = ["session-a", "session-b", "session-c"]
+        var receivedMessages: [String: [Message]] = [:]
+
+        let expectations = sessionIds.map { sessionId in
+            XCTestExpectation(description: "Session \(sessionId) receives message")
+        }
+
+        client.onMessageReceived = { message, iosSessionId in
+            if receivedMessages[iosSessionId] == nil {
+                receivedMessages[iosSessionId] = []
+            }
+            receivedMessages[iosSessionId]?.append(message)
+
+            if let index = sessionIds.firstIndex(of: iosSessionId) {
+                expectations[index].fulfill()
+            }
+        }
+
+        // Simulate concurrent responses
+        for (index, sessionId) in sessionIds.enumerated() {
+            client.onMessageReceived?(
+                Message(role: .assistant, text: "Response \(index) for \(sessionId)"),
+                sessionId
+            )
+        }
+
+        wait(for: expectations, timeout: 1.0)
+
+        // Verify each session got exactly one message
+        XCTAssertEqual(receivedMessages.count, 3)
+        for sessionId in sessionIds {
+            XCTAssertEqual(receivedMessages[sessionId]?.count, 1)
+        }
+    }
+
+    func testEmptyIosSessionIdHandling() {
+        // Test handling of missing or empty iOS session ID
+        let expectation = XCTestExpectation(description: "Handles empty session ID")
+        var receivedSessionId: String?
+
+        client.onMessageReceived = { message, iosSessionId in
+            receivedSessionId = iosSessionId
+            expectation.fulfill()
+        }
+
+        // Simulate response with empty session ID (should still be passed through)
+        client.onMessageReceived?(
+            Message(role: .assistant, text: "Test"),
+            ""
+        )
+
+        wait(for: [expectation], timeout: 1.0)
+        XCTAssertEqual(receivedSessionId, "")
     }
 }

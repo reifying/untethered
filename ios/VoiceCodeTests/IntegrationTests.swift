@@ -41,8 +41,9 @@ final class IntegrationTests: XCTestCase {
     func testPingPong() {
         let connectExpectation = XCTestExpectation(description: "Connect")
         let pingExpectation = XCTestExpectation(description: "Ping/Pong")
+        let testSessionId = UUID().uuidString
 
-        client.connect()
+        client.connect(sessionId: testSessionId)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             XCTAssertTrue(self.client.isConnected)
@@ -70,15 +71,16 @@ final class IntegrationTests: XCTestCase {
 
         var receivedAck = false
         var receivedResponse = false
+        let testSessionId = UUID().uuidString
 
         // Set up message callback
-        client.onMessageReceived = { message in
-            print("Received message: \(message.text)")
+        client.onMessageReceived = { message, iosSessionId in
+            print("Received message: \(message.text) for session: \(iosSessionId)")
             receivedResponse = true
             responseExpectation.fulfill()
         }
 
-        client.connect()
+        client.connect(sessionId: testSessionId)
 
         // Wait for connection, then send prompt
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
@@ -88,6 +90,7 @@ final class IntegrationTests: XCTestCase {
             // Send a simple prompt
             self.client.sendPrompt(
                 "echo 'hello from iOS test'",
+                iosSessionId: testSessionId,
                 workingDirectory: "/tmp"
             )
 
@@ -109,8 +112,9 @@ final class IntegrationTests: XCTestCase {
 
     func testSetWorkingDirectory() {
         let expectation = XCTestExpectation(description: "Set directory")
+        let testSessionId = UUID().uuidString
 
-        client.connect()
+        client.connect(sessionId: testSessionId)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             XCTAssertTrue(self.client.isConnected)
@@ -133,6 +137,7 @@ final class IntegrationTests: XCTestCase {
     func testSessionIdTracking() {
         let connectExpectation = XCTestExpectation(description: "Connect")
         let sessionExpectation = XCTestExpectation(description: "Receive session ID")
+        let testSessionId = UUID().uuidString
 
         var receivedSessionId: String?
 
@@ -142,7 +147,7 @@ final class IntegrationTests: XCTestCase {
             sessionExpectation.fulfill()
         }
 
-        client.connect()
+        client.connect(sessionId: testSessionId)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             XCTAssertTrue(self.client.isConnected)
@@ -150,7 +155,7 @@ final class IntegrationTests: XCTestCase {
 
             // Send a prompt that will trigger Claude CLI
             // (will only get session_id if Claude CLI is actually installed)
-            self.client.sendPrompt("echo test", workingDirectory: "/tmp")
+            self.client.sendPrompt("echo test", iosSessionId: testSessionId, workingDirectory: "/tmp")
         }
 
         wait(for: [connectExpectation], timeout: 3.0)
@@ -163,21 +168,22 @@ final class IntegrationTests: XCTestCase {
         let connectExpectation = XCTestExpectation(description: "Connect")
         let firstPromptExpectation = XCTestExpectation(description: "First prompt ack")
         let secondPromptExpectation = XCTestExpectation(description: "Second prompt ack")
+        let testSessionId = UUID().uuidString
 
-        client.connect()
+        client.connect(sessionId: testSessionId)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             XCTAssertTrue(self.client.isConnected)
             connectExpectation.fulfill()
 
             // Send first prompt
-            self.client.sendPrompt("echo 'first'", workingDirectory: "/tmp")
+            self.client.sendPrompt("echo 'first'", iosSessionId: testSessionId, workingDirectory: "/tmp")
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 firstPromptExpectation.fulfill()
 
                 // Send second prompt
-                self.client.sendPrompt("echo 'second'", workingDirectory: "/tmp")
+                self.client.sendPrompt("echo 'second'", iosSessionId: testSessionId, workingDirectory: "/tmp")
 
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     secondPromptExpectation.fulfill()
@@ -208,8 +214,9 @@ final class IntegrationTests: XCTestCase {
     func testDisconnectAndReconnect() {
         let connectExpectation = XCTestExpectation(description: "Initial connect")
         let reconnectExpectation = XCTestExpectation(description: "Reconnect")
+        let testSessionId = UUID().uuidString
 
-        client.connect()
+        client.connect(sessionId: testSessionId)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             XCTAssertTrue(self.client.isConnected)
@@ -221,8 +228,8 @@ final class IntegrationTests: XCTestCase {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 XCTAssertFalse(self.client.isConnected)
 
-                // Reconnect
-                self.client.connect()
+                // Reconnect with same session ID
+                self.client.connect(sessionId: testSessionId)
 
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                     XCTAssertTrue(self.client.isConnected)
