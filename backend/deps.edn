@@ -33,4 +33,11 @@
                   :extra-deps {io.github.cognitect-labs/test-runner
                                {:git/tag "v0.5.1"
                                 :git/sha "dfb30dd"}}
-                  :main-opts ["-m" "cognitect.test-runner"]}}}
+                  :main-opts ["-m" "cognitect.test-runner"]}
+
+           ;; Manual test runner (includes tests that invoke Claude CLI and cost money)
+           :manual-test {:extra-paths ["manual_test"]
+                         :extra-deps {io.github.cognitect-labs/test-runner
+                                      {:git/tag "v0.5.1"
+                                       :git/sha "dfb30dd"}}
+                         :main-opts ["-m" "cognitect.test-runner"]}}}
