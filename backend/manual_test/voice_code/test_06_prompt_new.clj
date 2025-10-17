@@ -29,8 +29,8 @@
         (fixtures/send-ws! client {:type "connect"})
         (fixtures/receive-ws-type client :session-list)
 
-        ;; Generate unique session ID
-        (let [session-id (str "test-prompt-new-" (UUID/randomUUID))
+        ;; Generate unique session ID (must be valid UUID)
+        (let [session-id (str (UUID/randomUUID))
               working-dir (System/getProperty "user.dir")]
 
           (log/info "Sending prompt with new-session-id:" session-id)
@@ -49,15 +49,7 @@
               (is (:message ack) "Ack should have message")
               (log/info "Received ack:" (:message ack))))
 
-          ;; Should receive session-created broadcast (within 5 seconds)
-          (let [created (fixtures/receive-ws-type client :session-created 5000)]
-            (is (not= created :timeout) "Should receive session-created")
-            (when (not= created :timeout)
-              (fixtures/assert-message-type created :session-created)
-              (is (= session-id (:session-id created)) "Session ID should match")
-              (log/info "Received session-created for:" (:session-id created))))
-
-          ;; Should receive response (may take longer)
+          ;; Should receive response (may arrive before session-created due to watcher delay)
           (let [response (fixtures/receive-ws-type client :response 30000)]
             (is (not= response :timeout) "Should receive response within 30 seconds")
 
@@ -75,6 +67,14 @@
                          :text-length (count (:text response))
                          :usage (:usage response)
                          :cost (:cost response)})))
+
+          ;; Should receive session-created broadcast (after response due to watcher delay)
+          (let [created (fixtures/receive-ws-type client :session-created 5000)]
+            (is (not= created :timeout) "Should receive session-created")
+            (when (not= created :timeout)
+              (fixtures/assert-message-type created :session-created)
+              (is (= session-id (:session-id created)) "Session ID should match")
+              (log/info "Received session-created for:" (:session-id created))))
 
           ;; Verify session file exists
           (let [projects-dir (io/file (System/getProperty "user.home") ".claude" "projects")

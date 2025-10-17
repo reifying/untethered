@@ -28,8 +28,8 @@
         (fixtures/send-ws! client {:type "connect"})
         (fixtures/receive-ws-type client :session-list)
 
-        ;; Generate unique session ID for this test
-        (let [session-id (str "test-watcher-" (UUID/randomUUID))
+        ;; Generate unique session ID for this test (must be valid UUID)
+        (let [session-id (str (UUID/randomUUID))
               ;; Use current directory as working directory
               working-dir (System/getProperty "user.dir")]
 
@@ -39,13 +39,15 @@
           ;; Invoke Claude CLI to create new session
           ;; This will cost money!
           (let [result (shell/sh "claude"
+                                 "-p"  ; Print mode (non-interactive)
                                  "--session-id" session-id
-                                 "--directory" working-dir
                                  "Hello, this is a test session. Please respond briefly."
                                  :dir working-dir)]
 
             (log/info "Claude CLI result:" {:exit (:exit result)
-                                            :out (subs (:out result) 0 (min 100 (count (:out result))))})
+                                            :out (subs (:out result) 0 (min 100 (count (:out result))))
+                                            :err (when (:err result)
+                                                   (subs (:err result) 0 (min 100 (count (:err result)))))})
 
             (is (zero? (:exit result)) "Claude CLI should succeed")
 
