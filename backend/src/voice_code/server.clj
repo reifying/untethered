@@ -126,14 +126,17 @@
   "Called when a new session file is detected"
   [session-metadata]
   (log/info "Broadcasting new session" {:session-id (:session-id session-metadata)})
-  (broadcast-to-all-clients!
-   {:type "session-created"
-    :session-id (:session-id session-metadata)
-    :name (:name session-metadata)
-    :working-directory (:working-directory session-metadata)
-    :last-modified (:last-modified session-metadata)
-    :message-count (:message-count session-metadata)
-    :preview (:preview session-metadata)}))
+  ;; Broadcast to clients who haven't deleted this session
+  (doseq [[channel client-info] @connected-clients]
+    (when-not (is-session-deleted-for-client? channel (:session-id session-metadata))
+      (send-to-client! channel
+                       {:type "session-created"
+                        :session-id (:session-id session-metadata)
+                        :name (:name session-metadata)
+                        :working-directory (:working-directory session-metadata)
+                        :last-modified (:last-modified session-metadata)
+                        :message-count (:message-count session-metadata)
+                        :preview (:preview session-metadata)}))))
 
 (defn on-session-updated
   "Called when a subscribed session has new messages"

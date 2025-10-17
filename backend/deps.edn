@@ -39,5 +39,6 @@
            :manual-test {:extra-paths ["manual_test"]
                          :extra-deps {io.github.cognitect-labs/test-runner
                                       {:git/tag "v0.5.1"
-                                       :git/sha "dfb30dd"}}
+                                       :git/sha "dfb30dd"}
+                                      stylefruits/gniazdo {:mvn/version "1.2.2"}}
                          :main-opts ["-m" "cognitect.test-runner"]}}}

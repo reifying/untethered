@@ -2,48 +2,48 @@
 
 # Run regular automated tests (free, no Claude invocations)
 test:
-	clojure -X:test
+	clojure -M:test
 
 # Individual manual tests
 
 test-manual-startup:
 	@echo "Running Test 3: Backend Startup & Session Discovery (FREE)"
-	clojure -X:manual-test :dirs '["manual_test"]' :patterns '["test_03_.*"]'
+	clojure -M:manual-test -d manual_test -n voice-code.test-03-startup
 
 test-manual-protocol:
 	@echo "Running Test 4: WebSocket Protocol (FREE)"
-	clojure -X:manual-test :dirs '["manual_test"]' :patterns '["test_04_.*"]'
+	clojure -M:manual-test -d manual_test -n voice-code.test-04-protocol
 
 test-manual-watcher-new:
 	@echo "Running Test 5: Filesystem Watcher - New Session (COSTS MONEY)"
 	@echo "Press Ctrl+C to cancel or Enter to continue..."
 	@read confirm
-	clojure -X:manual-test :dirs '["manual_test"]' :patterns '["test_05_.*"]'
+	clojure -M:manual-test -d manual_test -n voice-code.test-05-watcher-new
 
 test-manual-prompt-new:
 	@echo "Running Test 6: Prompt Sending - New Session (COSTS MONEY)"
 	@echo "Press Ctrl+C to cancel or Enter to continue..."
 	@read confirm
-	clojure -X:manual-test :dirs '["manual_test"]' :patterns '["test_06_.*"]'
+	clojure -M:manual-test -d manual_test -n voice-code.test-06-prompt-new
 
 test-manual-prompt-resume:
 	@echo "Running Test 7: Prompt Sending - Resume Session (COSTS MONEY)"
 	@echo "Press Ctrl+C to cancel or Enter to continue..."
 	@read confirm
-	clojure -X:manual-test :dirs '["manual_test"]' :patterns '["test_07_.*"]'
+	clojure -M:manual-test -d manual_test -n voice-code.test-07-prompt-resume
 
 test-manual-broadcast:
 	@echo "Running Test 8: Multi-Client Broadcast (FREE)"
-	clojure -X:manual-test :dirs '["manual_test"]' :patterns '["test_08_.*"]'
+	clojure -M:manual-test -d manual_test -n voice-code.test-08-broadcast
 
 test-manual-errors:
 	@echo "Running Test 9: Error Handling (FREE)"
-	clojure -X:manual-test :dirs '["manual_test"]' :patterns '["test_09_.*"]'
+	clojure -M:manual-test -d manual_test -n voice-code.test-09-errors
 
 # Run all free manual tests
 test-manual-free:
 	@echo "Running all FREE manual tests (no Claude invocations)..."
-	clojure -X:manual-test :dirs '["manual_test"]' :patterns '["test_0[3489]_.*"]'
+	clojure -M:manual-test -d manual_test -r "voice-code\.test-0[3489]-.*"
 
 # Run ALL manual tests (including paid)
 test-manual-all:
@@ -51,7 +51,7 @@ test-manual-all:
 	@echo "Tests 5, 6, 7 will make Claude API calls."
 	@echo "Press Ctrl+C to cancel or Enter to continue..."
 	@read confirm
-	clojure -X:manual-test :dirs '["manual_test"]'
+	clojure -M:manual-test -d manual_test
 
 # Clean up test artifacts
 clean:
