@@ -226,8 +226,8 @@
 (deftest test-new-protocol-connect
   (testing "Connect message returns session list"
     (with-redefs [voice-code.replication/get-all-sessions
-                  (fn [] [{:session-id "s1" :name "Session 1"}
-                          {:session-id "s2" :name "Session 2"}])]
+                  (fn [] [{:session-id "s1" :name "Session 1" :last-modified 1000}
+                          {:session-id "s2" :name "Session 2" :last-modified 2000}])]
       (reset! server/connected-clients {})
       (let [sent-message (atom nil)]
         (with-redefs [org.httpkit.server/send! (fn [channel msg]
@@ -242,10 +242,12 @@
           (let [msg (json/parse-string @sent-message true)]
             (is (= "session-list" (:type msg)))
             (is (= 2 (count (:sessions msg))))
-            (is (= "s1" (:session_id (first (:sessions msg)))))))))))
+            ;; Sessions are sorted by last-modified descending, so s2 comes first
+            (is (= "s2" (:session_id (first (:sessions msg)))))))))))
 
 (deftest test-prompt-session-id-distinction
   (testing "Prompt with new_session_id uses --session-id flag"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
     (let [claude-args (atom nil)]
       (with-redefs [voice-code.claude/invoke-claude-async
                     (fn [prompt callback & {:keys [new-session-id resume-session-id]}]
@@ -260,6 +262,7 @@
         (is (nil? (:resume-session-id @claude-args))))))
 
   (testing "Prompt with resume_session_id uses --resume flag"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
     (let [claude-args (atom nil)]
       (with-redefs [voice-code.claude/invoke-claude-async
                     (fn [prompt callback & {:keys [new-session-id resume-session-id]}]
