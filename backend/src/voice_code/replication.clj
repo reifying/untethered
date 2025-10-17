@@ -276,6 +276,7 @@
   (atom {:watch-service nil
          :watch-thread nil
          :running false
+         :watch-keys {} ;; Map of WatchKey -> directory path for tracking watched directories
          :subscribed-sessions #{} ;; Set of session IDs being watched
          :event-queue (atom {}) ;; session-id -> last-event-time
          :debounce-ms 200
@@ -329,6 +330,17 @@
         (do
           (log/error e "Parse failed after retries" {:file file-path})
           [])))))
+
+(defn find-project-directories
+  "Find all project subdirectories in the Claude projects directory.
+  Returns a sequence of File objects representing project directories."
+  []
+  (let [projects-dir (get-claude-projects-dir)]
+    (if (.exists projects-dir)
+      (->> (.listFiles projects-dir)
+           (filter #(.isDirectory %))
+           (remove #(str/starts-with? (.getName %) "."))) ; Exclude hidden dirs
+      [])))
 
 (defn handle-file-created
   "Handle ENTRY_CREATE event for a .jsonl file"
@@ -394,21 +406,21 @@
       (log/info "Session deleted from filesystem" {:session-id session-id}))))
 
 (defn process-watch-events
-  "Process watch events from the WatchService"
-  [watch-key]
+  "Process watch events from the WatchService.
+  watch-key: The WatchKey that triggered the events
+  watched-dir: The File object of the directory being watched"
+  [watch-key watched-dir]
   (doseq [event (.pollEvents watch-key)]
     (let [kind (.kind event)
           context (.context event)
           file-name (str context)]
       (cond
         (= kind StandardWatchEventKinds/ENTRY_CREATE)
-        (let [projects-dir (get-claude-projects-dir)
-              file (io/file projects-dir file-name)]
+        (let [file (io/file watched-dir file-name)]
           (handle-file-created file))
 
         (= kind StandardWatchEventKinds/ENTRY_MODIFY)
-        (let [projects-dir (get-claude-projects-dir)
-              file (io/file projects-dir file-name)]
+        (let [file (io/file watched-dir file-name)]
           (handle-file-modified file))
 
         (= kind StandardWatchEventKinds/ENTRY_DELETE)
@@ -419,6 +431,7 @@
 
 (defn start-watcher!
   "Start the filesystem watcher thread.
+  Watches all project subdirectories in ~/.claude/projects/ for .jsonl file changes.
   Callbacks:
   - :on-session-created (fn [session-metadata])
   - :on-session-updated (fn [session-id new-messages])
@@ -434,16 +447,31 @@
         (throw (ex-info "Claude projects directory does not exist" {:dir (.getPath projects-dir)})))
 
       (let [watch-service (.newWatchService (FileSystems/getDefault))
-            path (.toPath projects-dir)
-            _watch-key (.register path
-                                  watch-service
-                                  (into-array [StandardWatchEventKinds/ENTRY_CREATE
-                                               StandardWatchEventKinds/ENTRY_MODIFY
-                                               StandardWatchEventKinds/ENTRY_DELETE]))]
+            project-dirs (find-project-directories)
+            _ (log/info "Found project directories" {:count (count project-dirs)
+                                                      :dirs (mapv #(.getName %) project-dirs)})
 
-        ;; Update state with callbacks
+            ;; Register watch for each project directory
+            watch-keys (reduce (fn [acc dir]
+                                (try
+                                  (let [path (.toPath dir)
+                                        watch-key (.register path
+                                                            watch-service
+                                                            (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                                                        StandardWatchEventKinds/ENTRY_MODIFY
+                                                                        StandardWatchEventKinds/ENTRY_DELETE]))]
+                                    (log/debug "Watching directory" {:dir (.getPath dir)})
+                                    (assoc acc watch-key dir))
+                                  (catch Exception e
+                                    (log/warn e "Failed to watch directory" {:dir (.getPath dir)})
+                                    acc)))
+                              {}
+                              project-dirs)]
+
+        ;; Update state with callbacks and watch keys
         (swap! watcher-state assoc
                :watch-service watch-service
+               :watch-keys watch-keys
                :running true
                :on-session-created on-session-created
                :on-session-updated on-session-updated
@@ -452,12 +480,14 @@
         ;; Start watcher thread
         (let [watcher-thread (Thread.
                               (fn []
-                                (log/info "Filesystem watcher started" {:dir (.getPath projects-dir)})
+                                (log/info "Filesystem watcher started" {:project-count (count project-dirs)})
                                 (try
                                   (while (:running @watcher-state)
                                     (try
-                                      (let [key (.take watch-service)]
-                                        (process-watch-events key))
+                                      (let [key (.take watch-service)
+                                            watched-dir (get (:watch-keys @watcher-state) key)]
+                                        (when watched-dir
+                                          (process-watch-events key watched-dir)))
                                       (catch InterruptedException e
                                         (log/info "Watcher thread interrupted"))
                                       (catch Exception e
@@ -472,7 +502,7 @@
           (.start watcher-thread)
           (swap! watcher-state assoc :watch-thread watcher-thread)
 
-          (log/info "Filesystem watcher initialized"))))
+          (log/info "Filesystem watcher initialized" {:watching-dirs (count watch-keys)}))))
     (catch Exception e
       (log/error e "Failed to start filesystem watcher")
       (throw e))))
@@ -489,6 +519,7 @@
     (swap! watcher-state assoc
            :watch-service nil
            :watch-thread nil
+           :watch-keys {}
            :subscribed-sessions #{}
            :on-session-created nil
            :on-session-updated nil
