@@ -8,7 +8,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [voice-code.claude :as claude]
-            [voice-code.storage :as storage])
+            [voice-code.replication :as repl])
   (:gen-class))
 
 ;; JSON key conversion utilities
@@ -75,94 +75,84 @@
 ;; Ephemeral mapping: WebSocket channel -> iOS session UUID
 ;; This is just for routing messages during an active connection
 ;; Persistent session data is stored via voice-code.storage
-(defonce channel-to-session (atom {}))
 
-(defn register-channel!
-  "Register WebSocket channel with iOS session UUID.
-  Creates persistent session if it doesn't exist.
-  Returns the session data."
-  [channel ios-session-id]
-  (swap! channel-to-session assoc channel ios-session-id)
-  (if-let [session (storage/get-session ios-session-id)]
-    (do
-      (log/info "Reconnected to existing session"
-                {:ios-session-id ios-session-id
-                 :claude-session-id (:claude-session-id session)})
-      session)
-    (let [config (load-config)
-          default-dir (get-in config [:claude :default-working-directory])]
-      (log/info "Creating new persistent session"
-                {:ios-session-id ios-session-id
-                 :working-directory default-dir})
-      (storage/create-session! ios-session-id default-dir))))
-
-(defn update-session!
-  "Update persistent session data by iOS session UUID.
-  Returns updated session or nil if not found."
-  [ios-session-id updates]
-  (storage/update-session! ios-session-id updates))
+(defonce connected-clients
+  ;; Track all connected WebSocket clients: channel -> {:session-id, :deleted-sessions #{}}
+  (atom {}))
 
 (defn unregister-channel!
-  "Remove WebSocket channel mapping.
-  Does NOT delete the persistent session - only removes the active connection mapping."
+  "Remove WebSocket channel from connected clients"
   [channel]
-  (swap! channel-to-session dissoc channel))
+  (swap! connected-clients dissoc channel))
 
 (defn generate-message-id
   "Generate a UUID v4 for message tracking"
   []
   (str (java.util.UUID/randomUUID)))
 
-(defn buffer-message!
-  "Buffer a message in the undelivered queue.
-  Returns the message with assigned ID."
-  [ios-session-id role text session-id]
-  (let [message-id (generate-message-id)
-        message {:id message-id
-                 :role role
-                 :text text
-                 :session-id session-id}]
-    (storage/add-undelivered-message! ios-session-id message)
-    (log/debug "Buffered message" {:ios-session-id ios-session-id
-                                   :message-id message-id
-                                   :role role})
-    message))
-
-(defn send-with-buffer!
-  "Send message to channel and buffer it for delivery tracking.
-  If send fails (disconnected), message remains in buffer for replay."
-  [channel ios-session-id message-data]
-  (let [message-id (:message-id message-data)
-        json-message (generate-json message-data)]
+(defn broadcast-to-all-clients!
+  "Broadcast a message to all connected clients"
+  [message-data]
+  (doseq [[channel _client-info] @connected-clients]
     (try
-      (http/send! channel json-message)
-      (log/debug "Sent message" {:ios-session-id ios-session-id
-                                 :message-id message-id})
+      (http/send! channel (generate-json message-data))
       (catch Exception e
-        (log/warn e "Failed to send message, will replay on reconnect"
-                  {:ios-session-id ios-session-id
-                   :message-id message-id})))))
+        (log/warn e "Failed to broadcast to client")))))
 
-(defn replay-undelivered-messages!
-  "Replay all undelivered messages to reconnected client.
-  Sends each buffered message as a 'replay' type message."
-  [channel ios-session-id]
-  (let [undelivered (storage/get-undelivered-messages ios-session-id)]
-    (when (seq undelivered)
-      (log/info "Replaying undelivered messages"
-                {:ios-session-id ios-session-id
-                 :count (count undelivered)})
-      (doseq [msg undelivered]
-        (let [replay-data {:type "replay"
-                           :message-id (:id msg)
-                           :message {:role (:role msg)
-                                     :text (:text msg)
-                                     :session-id (:session-id msg)
-                                     :timestamp (str (:timestamp msg))}}]
-          (log/debug "Replaying message"
-                     {:ios-session-id ios-session-id
-                      :message-id (:id msg)})
-          (send-with-buffer! channel ios-session-id replay-data))))))
+(defn send-to-client!
+  "Send message to a specific channel if it's connected"
+  [channel message-data]
+  (when (contains? @connected-clients channel)
+    (try
+      (http/send! channel (generate-json message-data))
+      (catch Exception e
+        (log/warn e "Failed to send to client")))))
+
+(defn is-session-deleted-for-client?
+  "Check if a client has deleted a session locally"
+  [channel session-id]
+  (let [client-info (get @connected-clients channel)]
+    (contains? (:deleted-sessions client-info) session-id)))
+
+(defn mark-session-deleted-for-client!
+  "Mark a session as deleted for a specific client"
+  [channel session-id]
+  (swap! connected-clients update-in [channel :deleted-sessions] (fnil conj #{}) session-id)
+  (log/debug "Marked session as deleted for client" {:session-id session-id}))
+
+;; Filesystem watcher callbacks
+
+(defn on-session-created
+  "Called when a new session file is detected"
+  [session-metadata]
+  (log/info "Broadcasting new session" {:session-id (:session-id session-metadata)})
+  (broadcast-to-all-clients!
+   {:type "session-created"
+    :session-id (:session-id session-metadata)
+    :name (:name session-metadata)
+    :working-directory (:working-directory session-metadata)
+    :last-modified (:last-modified session-metadata)
+    :message-count (:message-count session-metadata)
+    :preview (:preview session-metadata)}))
+
+(defn on-session-updated
+  "Called when a subscribed session has new messages"
+  [session-id new-messages]
+  (log/debug "Broadcasting session update" {:session-id session-id :message-count (count new-messages)})
+  ;; Send to all clients subscribed to this session (and haven't deleted it)
+  (doseq [[channel client-info] @connected-clients]
+    (when-not (is-session-deleted-for-client? channel session-id)
+      (send-to-client! channel
+                       {:type "session-updated"
+                        :session-id session-id
+                        :messages new-messages}))))
+
+(defn on-session-deleted
+  "Called when a session file is deleted from filesystem"
+  [session-id]
+  (log/info "Session deleted from filesystem" {:session-id session-id})
+  ;; This is informational - we don't broadcast deletes since it's just local cleanup
+  )
 
 ;; Message handling
 (defn handle-message
@@ -179,58 +169,119 @@
           (http/send! channel (generate-json {:type "pong"})))
 
         "connect"
-        ;; iOS client sends this on connection with its session UUID
-        ;; This handles both initial connection and reconnection
-        (let [ios-session-id (:session-id data)]
-          (if ios-session-id
+        ;; iOS client sends this on connection
+        ;; Now we send session_list instead of old session mapping
+        (let [session-id (:session-id data)]
+          (if-not session-id
+            (http/send! channel
+                        (generate-json
+                         {:type "error"
+                          :message "session_id required in connect message"}))
             (do
-              (log/info "Registering iOS session" {:ios-session-id ios-session-id})
-              (register-channel! channel ios-session-id)
+              (log/info "Client connected")
 
-              ;; Send connected confirmation
-              (http/send! channel
-                          (generate-json
-                           {:type "connected"
-                            :message "Session registered"
-                            :session-id ios-session-id}))
+              ;; Register client
+              (swap! connected-clients assoc channel {:session-id session-id
+                                                      :deleted-sessions #{}})
 
-              ;; Replay any undelivered messages (reconnection scenario)
-              (replay-undelivered-messages! channel ios-session-id))
+              ;; Send session list (limit to 50 most recent, lightweight fields only)
+              (let [all-sessions (repl/get-all-sessions)
+                    ;; Sort by last-modified descending, take 50
+                    recent-sessions (->> all-sessions
+                                         (sort-by :last-modified >)
+                                         (take 50)
+                                         ;; Remove heavy fields to reduce payload size
+                                         (mapv #(select-keys % [:session-id :name :working-directory
+                                                                :last-modified :message-count])))]
+                (log/info "Sending session list" {:count (count recent-sessions) :total (count all-sessions)})
+                (http/send! channel
+                            (generate-json
+                             {:type "session-list"
+                              :sessions recent-sessions
+                              :total-count (count all-sessions)}))))))
+
+        "subscribe"
+        ;; Client requests full history for a session
+        (let [session-id (:session-id data)]
+          (if-not session-id
+            (http/send! channel
+                        (generate-json
+                         {:type "error"
+                          :message "session_id required in subscribe message"}))
             (do
-              (log/warn "Connect message missing session-id")
-              (http/send! channel
-                          (generate-json
-                           {:type "error"
-                            :message "session_id required in connect message"})))))
+              (log/info "Client subscribing to session" {:session-id session-id})
+
+              ;; Subscribe in replication system
+              (repl/subscribe-to-session! session-id)
+
+              ;; Get session metadata
+              (if-let [metadata (repl/get-session-metadata session-id)]
+                (let [file-path (:file metadata)
+                      all-messages (repl/parse-jsonl-file file-path)
+;; Limit to most recent 20 messages to prevent payload size issues
+                      messages (vec (take-last 20 all-messages))]
+                  (log/info "Sending session history" {:session-id session-id :message-count (count messages) :total (count all-messages)})
+                  (http/send! channel
+                              (generate-json
+                               {:type "session-history"
+                                :session-id session-id
+                                :messages messages
+                                :total-count (count all-messages)})))
+                (do
+                  (log/warn "Session not found" {:session-id session-id})
+                  (http/send! channel
+                              (generate-json
+                               {:type "error"
+                                :message (str "Session not found: " session-id)})))))))
+
+        "unsubscribe"
+        ;; Client stops watching a session
+        (let [session-id (:session-id data)]
+          (when session-id
+            (log/info "Client unsubscribing from session" {:session-id session-id})
+            (repl/unsubscribe-from-session! session-id)))
+
+        "session-deleted"
+        ;; Client marks session as deleted locally
+        (let [session-id (:session-id data)]
+          (when session-id
+            (log/info "Client deleted session locally" {:session-id session-id})
+            (mark-session-deleted-for-client! channel session-id)
+            (repl/unsubscribe-from-session! session-id)))
 
         "prompt"
-        ;; Get iOS session ID from message data (for multiplexing) or channel mapping (fallback)
-        (let [websocket-session-id (get @channel-to-session channel)
-              ios-session-id (or (:ios-session-id data) websocket-session-id)]
-          (if-not ios-session-id
+        ;; Updated to use new_session_id vs resume_session_id
+        (let [new-session-id (:new-session-id data)
+              resume-session-id (:resume-session-id data)
+              prompt-text (:text data)
+              working-dir (:working-directory data)]
+
+          (cond
+            ;; Check if client has connected first
+            (not (contains? @connected-clients channel))
+            (http/send! channel
+                        (generate-json
+                         {:type "error"
+                          :message "Must send connect message with session_id first"}))
+
+            (not prompt-text)
+            (http/send! channel
+                        (generate-json
+                         {:type "error"
+                          :message "text required in prompt message"}))
+
+            (and new-session-id resume-session-id)
+            (http/send! channel
+                        (generate-json
+                         {:type "error"
+                          :message "Cannot specify both new_session_id and resume_session_id"}))
+
+            :else
             (do
-              (log/warn "Prompt received without session identifier")
-              (http/send! channel
-                          (generate-json
-                           {:type "error"
-                            :message "Must send connect message with session_id first or include ios_session_id in prompt"})))
-
-            (let [prompt-text (:text data)
-                  session (storage/get-session ios-session-id)
-                  ;; Use session-id from iOS for Claude (supports explicit session switching)
-                  ;; If nil, Claude will create a new session
-                  claude-session-id-from-ios (:session-id data)
-                  stored-claude-session-id (:claude-session-id session)
-                  claude-session-id claude-session-id-from-ios
-                  working-dir (:working-directory data (:working-directory session))]
-
               (log/info "Received prompt"
                         {:text (subs prompt-text 0 (min 50 (count prompt-text)))
-                         :websocket-session-id websocket-session-id
-                         :message-ios-session-id (:ios-session-id data)
-                         :using-ios-session-id ios-session-id
-                         :stored-claude-session-id stored-claude-session-id
-                         :using-claude-session-id claude-session-id
+                         :new-session-id new-session-id
+                         :resume-session-id resume-session-id
                          :working-directory working-dir})
 
               ;; Send immediate acknowledgment
@@ -245,78 +296,57 @@
                (fn [response]
                  ;; Send response back to client
                  (if (:success response)
+                   (let [usage (:usage response)
+                         input-tokens (get usage :input_tokens 0)
+                         output-tokens (get usage :output_tokens 0)
+                         ;; Claude CLI pricing (approximate for Sonnet)
+                         input-cost-per-token 0.000003
+                         output-cost-per-token 0.000015
+                         input-cost (* input-tokens input-cost-per-token)
+                         output-cost (* output-tokens output-cost-per-token)
+                         total-cost (or (:cost response) (+ input-cost output-cost))]
+                     (log/info "Prompt completed successfully"
+                               {:session-id (:session-id response)})
+                     (send-to-client! channel
+                                      {:type "response"
+                                       :message-id (generate-message-id)
+                                       :success true
+                                       :text (:result response)
+                                       :session-id (:session-id response)
+                                       :usage usage
+                                       :cost {:input-cost input-cost
+                                              :output-cost output-cost
+                                              :total-cost total-cost}}))
                    (do
-                     ;; Update persistent session with new Claude session ID
-                     (when (:session-id response)
-                       (log/info "Updating persistent session"
-                                 {:ios-session-id ios-session-id
-                                  :old-claude-session-id stored-claude-session-id
-                                  :new-claude-session-id (:session-id response)})
-                       (update-session! ios-session-id {:claude-session-id (:session-id response)}))
-
-                     ;; Buffer message and send with tracking
-                     (let [buffered-msg (buffer-message! ios-session-id
-                                                         :assistant
-                                                         (:result response)
-                                                         (:session-id response))
-                           response-data {:type "response"
-                                          :message-id (:id buffered-msg)
-                                          :success true
-                                          :text (:result response)
-                                          :session-id (:session-id response)
-                                          :ios-session-id ios-session-id ;; Include iOS session UUID for routing
-                                          :usage (:usage response)
-                                          :cost (:cost response)}]
-                       (log/info "Sending response"
-                                 {:ios-session-id ios-session-id
-                                  :claude-session-id (:session-id response)
-                                  :message-id (:id buffered-msg)})
-                       (send-with-buffer! channel ios-session-id response-data)))
-
-                   (http/send! channel
-                               (generate-json
-                                {:type "response"
-                                 :success false
-                                 :ios-session-id ios-session-id
-                                 :error (:error response)}))))
-               :session-id claude-session-id
+                     (log/error "Prompt failed" {:error (:error response)})
+                     (send-to-client! channel
+                                      {:type "response"
+                                       :success false
+                                       :error (:error response)}))))
+               :new-session-id new-session-id
+               :resume-session-id resume-session-id
                :working-directory working-dir
                :timeout-ms 86400000))))
 
         "set-directory"
-        (let [ios-session-id (get @channel-to-session channel)]
-          (if-not ios-session-id
+        (let [path (:path data)]
+          (if-not path
+            (http/send! channel
+                        (generate-json
+                         {:type "error"
+                          :message "path required in set-directory message"}))
             (do
-              (log/warn "set-directory received before session registration")
-              (http/send! channel
-                          (generate-json
-                           {:type "error"
-                            :message "Must send connect message with session_id first"})))
-            (do
-              (update-session! ios-session-id {:working-directory (:path data)})
+              (log/info "Working directory set" {:path path})
               (http/send! channel
                           (generate-json
                            {:type "ack"
-                            :message (str "Working directory set to: " (:path data))})))))
+                            :message (str "Working directory set to: " path)})))))
 
         "message-ack"
-        (let [ios-session-id (get @channel-to-session channel)
-              message-id (:message-id data)]
-          (if-not ios-session-id
-            (log/warn "message-ack received before session registration"
-                      {:message-id message-id})
-            (if message-id
-              (do
-                (log/info "Message acknowledged, removing from queue"
-                          {:ios-session-id ios-session-id
-                           :message-id message-id})
-                (storage/remove-undelivered-message! ios-session-id message-id))
-              (log/warn "message-ack missing message-id"
-                        {:ios-session-id ios-session-id}))))
+        (let [message-id (:message-id data)]
+          (log/debug "Message acknowledged" {:message-id message-id}))
 
         ;; Unknown message type
-
-;; Unknown message type
         (do
           (log/warn "Unknown message type" {:type (:type data)})
           (http/send! channel
@@ -340,13 +370,12 @@
       (do
         (log/info "WebSocket connection established" {:remote-addr (:remote-addr request)})
 
-        ;; Send welcome message - client must send "connect" message with session UUID
+        ;; Send hello message
         (http/send! channel
                     (generate-json
                      {:type "hello"
                       :message "Welcome to voice-code backend"
-                      :version "0.1.0"
-                      :instructions "Send connect message with session_id"}))
+                      :version "0.2.0"}))
 
         ;; Handle incoming messages
         (http/on-receive channel
@@ -373,8 +402,19 @@
         host (get-in config [:server :host] "0.0.0.0")
         default-dir (get-in config [:claude :default-working-directory])]
 
-    ;; Initialize persistent storage
-    (storage/initialize!)
+    ;; Initialize replication system
+    (log/info "Initializing session replication system")
+    (repl/initialize-index!)
+
+    ;; Start filesystem watcher
+    (try
+      (repl/start-watcher!
+       :on-session-created on-session-created
+       :on-session-updated on-session-updated
+       :on-session-deleted on-session-deleted)
+      (log/info "Filesystem watcher started successfully")
+      (catch Exception e
+        (log/error e "Failed to start filesystem watcher")))
 
     (log/info "Starting voice-code server"
               {:port port
@@ -389,8 +429,10 @@
        (Runtime/getRuntime)
        (Thread. (fn []
                   (log/info "Shutting down voice-code server gracefully")
-                  ;; Save any pending session changes
-                  (storage/save-sessions! @storage/sessions-atom)
+                  ;; Stop filesystem watcher
+                  (repl/stop-watcher!)
+                  ;; Save session index
+                  (repl/save-index! @repl/session-index)
                   ;; Stop HTTP server with 100ms timeout
                   (when @server-state
                     (@server-state :timeout 100))

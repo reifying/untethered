@@ -58,9 +58,21 @@
                       (reset! called-args args)
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"Resumed\",\"session_id\":\"test-456\",\"is_error\":false}]"})]
-        (claude/invoke-claude "continue" :session-id "test-456")
+        (claude/invoke-claude "continue" :resume-session-id "test-456")
         (is (some #(= "--resume" %) @called-args))
-        (is (some #(= "test-456" %) @called-args))))))
+        (is (some #(= "test-456" %) @called-args)))))
+
+  (testing "Claude invocation with new session ID"
+    (let [called-args (atom nil)]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    clojure.java.shell/sh
+                    (fn [& args]
+                      (reset! called-args args)
+                      {:exit 0
+                       :out "[{\"type\":\"result\",\"result\":\"New session\",\"session_id\":\"new-789\",\"is_error\":false}]"})]
+        (claude/invoke-claude "hello" :new-session-id "new-789")
+        (is (some #(= "--session-id" %) @called-args))
+        (is (some #(= "new-789" %) @called-args))))))
 
 (deftest test-invoke-claude-with-tilde-working-directory
   (testing "Working directory with tilde gets expanded"

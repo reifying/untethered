@@ -1,7 +1,6 @@
 (ns voice-code.server-test
   (:require [clojure.test :refer :all]
             [voice-code.server :as server]
-            [voice-code.storage :as storage]
             [cheshire.core :as json]
             [clojure.java.io :as io]))
 
@@ -75,120 +74,6 @@
         (is (= 86400000 (get-in config [:claude :default-timeout])))
         (is (= :info (get-in config [:logging :level])))))))
 
-(deftest test-session-management
-  (testing "Channel registration and session creation"
-    (let [test-path (str (System/getProperty "java.io.tmpdir")
-                         "/voice-code-server-test-"
-                         (System/currentTimeMillis)
-                         "/sessions.edn")]
-      (try
-        ;; Setup
-        (with-redefs [storage/storage-file test-path]
-          (reset! server/channel-to-session {})
-          (reset! storage/sessions-atom {:sessions {}})
-          (storage/ensure-storage-file test-path)
-
-          (let [channel :test-channel
-                ios-session-id "test-ios-uuid-123"]
-            ;; Register channel - should create new persistent session
-            (server/register-channel! channel ios-session-id)
-
-            ;; Verify channel mapping
-            (is (= ios-session-id (get @server/channel-to-session channel)))
-
-            ;; Verify persistent session was created
-            (let [session (storage/get-session ios-session-id)]
-              (is (some? session))
-              (is (nil? (:claude-session-id session)))
-              (is (some? (:created-at session)))
-              (is (= [] (:undelivered-messages session))))))
-
-        (finally
-          ;; Cleanup
-          (let [file (io/file test-path)]
-            (when (.exists file)
-              (.delete file))
-            (when-let [parent (.getParentFile file)]
-              (when (.exists parent)
-                (.delete parent))))))))
-
-  (testing "Session update by iOS UUID"
-    (let [test-path (str (System/getProperty "java.io.tmpdir")
-                         "/voice-code-server-test-"
-                         (System/currentTimeMillis)
-                         "/sessions.edn")]
-      (try
-        (with-redefs [storage/storage-file test-path]
-          (reset! storage/sessions-atom {:sessions {}})
-          (storage/ensure-storage-file test-path)
-
-          (let [ios-session-id "test-ios-uuid-456"]
-            ;; Create session
-            (storage/create-session! ios-session-id "/tmp")
-
-            ;; Update via server function
-            (server/update-session! ios-session-id {:working-directory "/home"
-                                                    :claude-session-id "claude-123"})
-
-            ;; Verify update
-            (let [session (storage/get-session ios-session-id)]
-              (is (= "/home" (:working-directory session)))
-              (is (= "claude-123" (:claude-session-id session))))))
-
-        (finally
-          (let [file (io/file test-path)]
-            (when (.exists file)
-              (.delete file))
-            (when-let [parent (.getParentFile file)]
-              (when (.exists parent)
-                (.delete parent))))))))
-
-  (testing "Channel unregistration"
-    (reset! server/channel-to-session {})
-    (let [channel :test-channel]
-      ;; Register
-      (swap! server/channel-to-session assoc channel "some-ios-uuid")
-      (is (contains? @server/channel-to-session channel))
-
-      ;; Unregister
-      (server/unregister-channel! channel)
-      (is (not (contains? @server/channel-to-session channel)))))
-
-  (testing "Reconnection to existing session"
-    (let [test-path (str (System/getProperty "java.io.tmpdir")
-                         "/voice-code-server-test-"
-                         (System/currentTimeMillis)
-                         "/sessions.edn")]
-      (try
-        (with-redefs [storage/storage-file test-path]
-          (reset! server/channel-to-session {})
-          (reset! storage/sessions-atom {:sessions {}})
-          (storage/ensure-storage-file test-path)
-
-          (let [ios-session-id "test-ios-uuid-reconnect"
-                channel1 :channel-1
-                channel2 :channel-2]
-            ;; First connection
-            (server/register-channel! channel1 ios-session-id)
-            (server/update-session! ios-session-id {:claude-session-id "claude-abc"})
-
-            ;; Simulate disconnect
-            (server/unregister-channel! channel1)
-
-            ;; Second connection with same iOS UUID (reconnection)
-            (let [session (server/register-channel! channel2 ios-session-id)]
-              ;; Should get the same session with preserved Claude session ID
-              (is (= "claude-abc" (:claude-session-id session)))
-              (is (= ios-session-id (get @server/channel-to-session channel2))))))
-
-        (finally
-          (let [file (io/file test-path)]
-            (when (.exists file)
-              (.delete file))
-            (when-let [parent (.getParentFile file)]
-              (when (.exists parent)
-                (.delete parent)))))))))
-
 (deftest test-json-key-conversion
   (testing "snake_case to kebab-case conversion"
     (is (= :session-id (server/snake->kebab "session_id")))
@@ -230,371 +115,161 @@
           parsed-back (server/parse-json json-str)]
       (is (= original-data parsed-back)))))
 
-(deftest test-session-id-behavior
-  (testing "Session ID handling - iOS controls Claude session ID"
-    (let [test-path (str (System/getProperty "java.io.tmpdir")
-                         "/voice-code-server-test-"
-                         (System/currentTimeMillis)
-                         "/sessions.edn")]
-      (try
-        (with-redefs [storage/storage-file test-path]
-          (reset! server/channel-to-session {})
-          (reset! storage/sessions-atom {:sessions {}})
-          (storage/ensure-storage-file test-path)
+(deftest test-broadcast-functions
+  (testing "Broadcast to all clients"
+    (reset! server/connected-clients {:ch1 {:deleted-sessions #{}}
+                                      :ch2 {:deleted-sessions #{}}})
+    (let [sent-messages (atom {})]
+      (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                               (swap! sent-messages assoc channel msg))]
+        (server/broadcast-to-all-clients! {:type "test" :data "hello"})
 
-          (let [channel :test-channel
-                ios-session-id "test-ios-uuid-session-id-test"]
-            ;; Create session and store a Claude session ID
-            (server/register-channel! channel ios-session-id)
-            (server/update-session! ios-session-id {:claude-session-id "cached-session-123"})
+        ;; Verify both clients received message
+        (is (= 2 (count @sent-messages)))
+        (is (contains? @sent-messages :ch1))
+        (is (contains? @sent-messages :ch2))
 
-            ;; Verify the session has a cached Claude session ID
-            (let [session (storage/get-session ios-session-id)]
-              (is (= "cached-session-123" (:claude-session-id session))))
+        ;; Verify message content
+        (let [msg1 (json/parse-string (get @sent-messages :ch1) true)]
+          (is (= "test" (:type msg1)))
+          (is (= "hello" (:data msg1)))))))
 
-            ;; The important behavior: iOS controls which Claude session to use
-            ;; - If iOS sends a session_id in prompt, use that (even if nil)
-            ;; - This allows iOS to explicitly start a new Claude session by sending nil
-            ;; - Or iOS can resume a specific Claude session by sending that ID
-            ;; The cached value is only used if iOS doesn't specify one in the prompt
-            (is (nil? nil) "iOS can send nil to create a new Claude session")
-            (is (= "specific-id" "specific-id") "iOS can send specific ID to resume that session")))
+  (testing "Send to specific client"
+    (reset! server/connected-clients {:ch1 {:deleted-sessions #{}}})
+    (let [sent-message (atom nil)]
+      (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                               (reset! sent-message msg))]
+        (server/send-to-client! :ch1 {:type "test" :data "specific"})
 
-        (finally
-          (let [file (io/file test-path)]
-            (when (.exists file)
-              (.delete file))
-            (when-let [parent (.getParentFile file)]
-              (when (.exists parent)
-                (.delete parent)))))))))
+        ;; Verify message sent
+        (is (some? @sent-message))
+        (let [msg (json/parse-string @sent-message true)]
+          (is (= "test" (:type msg)))
+          (is (= "specific" (:data msg))))
 
-(deftest test-message-buffering
-  (testing "Message buffering and acknowledgment"
-    (let [test-path (str (System/getProperty "java.io.tmpdir")
-                         "/voice-code-server-test-"
-                         (System/currentTimeMillis)
-                         "/sessions.edn")]
-      (try
-        (with-redefs [storage/storage-file test-path]
-          (reset! server/channel-to-session {})
-          (reset! storage/sessions-atom {:sessions {}})
-          (storage/ensure-storage-file test-path)
+        ;; Try sending to non-existent client
+        (reset! sent-message nil)
+        (server/send-to-client! :ch-nonexistent {:type "test"})
+        (is (nil? @sent-message) "Should not send to non-existent client")))))
 
-          (let [ios-session-id "test-ios-uuid-buffering"]
-            ;; Create session
-            (storage/create-session! ios-session-id "/tmp")
+(deftest test-session-deletion-tracking
+  (testing "Mark session as deleted for client"
+    (reset! server/connected-clients {:ch1 {:deleted-sessions #{}}})
 
-            ;; Buffer a message
-            (let [msg (server/buffer-message! ios-session-id
-                                              :assistant
-                                              "Test response"
-                                              "claude-session-123")]
-              ;; Verify message has UUID
-              (is (some? (:id msg)) "Message should have UUID")
-              (is (= :assistant (:role msg)))
-              (is (= "Test response" (:text msg)))
-              (is (= "claude-session-123" (:session-id msg)))
+    ;; Initially not deleted
+    (is (not (server/is-session-deleted-for-client? :ch1 "session-1")))
 
-              ;; Verify message is in undelivered queue
-              (let [undelivered (storage/get-undelivered-messages ios-session-id)]
-                (is (= 1 (count undelivered)))
-                (is (= (:id msg) (:id (first undelivered)))))
+    ;; Mark as deleted
+    (server/mark-session-deleted-for-client! :ch1 "session-1")
 
-              ;; Acknowledge message (simulating iOS receipt)
-              (storage/remove-undelivered-message! ios-session-id (:id msg))
+    ;; Verify marked as deleted
+    (is (server/is-session-deleted-for-client? :ch1 "session-1"))
+    (is (not (server/is-session-deleted-for-client? :ch1 "session-2")))
 
-              ;; Verify message removed from queue
-              (let [undelivered-after (storage/get-undelivered-messages ios-session-id)]
-                (is (= 0 (count undelivered-after)) "Queue should be empty after ack")))))
+    ;; Multiple deletions
+    (server/mark-session-deleted-for-client! :ch1 "session-2")
+    (is (server/is-session-deleted-for-client? :ch1 "session-1"))
+    (is (server/is-session-deleted-for-client? :ch1 "session-2")))
 
-        (finally
-          (let [file (io/file test-path)]
-            (when (.exists file)
-              (.delete file))
-            (when-let [parent (.getParentFile file)]
-              (when (.exists parent)
-                (.delete parent))))))))
+  (testing "Deleted sessions are client-specific"
+    (reset! server/connected-clients {:ch1 {:deleted-sessions #{}}
+                                      :ch2 {:deleted-sessions #{}}})
 
-  (testing "Generate unique message IDs"
-    (let [id1 (server/generate-message-id)
-          id2 (server/generate-message-id)]
-      (is (string? id1) "Message ID should be a string")
-      (is (string? id2) "Message ID should be a string")
-      (is (not= id1 id2) "Message IDs should be unique")
-      ;; Verify UUID v4 format (loose check)
-      (is (re-matches #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" id1)
-          "Should be valid UUID format")))
+    ;; Mark deleted for ch1 only
+    (server/mark-session-deleted-for-client! :ch1 "session-1")
 
-  (testing "Multiple undelivered messages"
-    (let [test-path (str (System/getProperty "java.io.tmpdir")
-                         "/voice-code-server-test-"
-                         (System/currentTimeMillis)
-                         "/sessions.edn")]
-      (try
-        (with-redefs [storage/storage-file test-path]
-          (reset! storage/sessions-atom {:sessions {}})
-          (storage/ensure-storage-file test-path)
+    ;; Verify only ch1 sees it as deleted
+    (is (server/is-session-deleted-for-client? :ch1 "session-1"))
+    (is (not (server/is-session-deleted-for-client? :ch2 "session-1")))))
 
-          (let [ios-session-id "test-ios-uuid-multi"]
-            (storage/create-session! ios-session-id "/tmp")
+(deftest test-watcher-callbacks
+  (testing "on-session-created broadcasts to all clients"
+    (reset! server/connected-clients {:ch1 {:deleted-sessions #{}}
+                                      :ch2 {:deleted-sessions #{}}})
+    (let [sent-messages (atom {})]
+      (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                               (swap! sent-messages assoc channel msg))]
+        (server/on-session-created {:session-id "new-session-123"
+                                    :name "Test Session"
+                                    :working-directory "/tmp"
+                                    :last-modified 1234567890
+                                    :message-count 0
+                                    :preview ""})
 
-            ;; Buffer three messages
-            (let [msg1 (server/buffer-message! ios-session-id :assistant "Response 1" "session-1")
-                  msg2 (server/buffer-message! ios-session-id :assistant "Response 2" "session-2")
-                  msg3 (server/buffer-message! ios-session-id :assistant "Response 3" "session-3")]
+        ;; Verify broadcast to both clients
+        (is (= 2 (count @sent-messages)))
 
-              ;; Verify all three in queue
-              (let [undelivered (storage/get-undelivered-messages ios-session-id)]
-                (is (= 3 (count undelivered))))
+        ;; Verify message format
+        (let [msg (json/parse-string (get @sent-messages :ch1) true)]
+          (is (= "session-created" (:type msg)))
+          (is (= "new-session-123" (:session_id msg)))
+          (is (= "Test Session" (:name msg)))))))
 
-              ;; Acknowledge middle message
-              (storage/remove-undelivered-message! ios-session-id (:id msg2))
+  (testing "on-session-updated respects deleted sessions"
+    (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"}}
+                                      :ch2 {:deleted-sessions #{}}})
+    (let [sent-messages (atom {})]
+      (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                               (swap! sent-messages assoc channel msg))]
+        (server/on-session-updated "session-1" [{:role "user" :text "test"}])
 
-              ;; Verify only msg1 and msg3 remain
-              (let [undelivered (storage/get-undelivered-messages ios-session-id)]
-                (is (= 2 (count undelivered)))
-                (is (some #(= (:id msg1) (:id %)) undelivered))
-                (is (some #(= (:id msg3) (:id %)) undelivered))
-                (is (not (some #(= (:id msg2) (:id %)) undelivered)))))))
+        ;; ch1 deleted it, should not receive update
+        (is (not (contains? @sent-messages :ch1)))
 
-        (finally
-          (let [file (io/file test-path)]
-            (when (.exists file)
-              (.delete file))
-            (when-let [parent (.getParentFile file)]
-              (when (.exists parent)
-                (.delete parent)))))))))
+        ;; ch2 should receive update
+        (is (contains? @sent-messages :ch2))
+        (let [msg (json/parse-string (get @sent-messages :ch2) true)]
+          (is (= "session-updated" (:type msg)))
+          (is (= "session-1" (:session_id msg)))
+          (is (= 1 (count (:messages msg)))))))))
 
-(deftest test-reconnection-and-replay
-  (testing "Reconnection replays undelivered messages"
-    (let [test-path (str (System/getProperty "java.io.tmpdir")
-                         "/voice-code-server-test-"
-                         (System/currentTimeMillis)
-                         "/sessions.edn")
-          sent-messages (atom [])]
-      (try
-        (with-redefs [storage/storage-file test-path
-                      ;; Mock http/send! to capture sent messages
-                      org.httpkit.server/send! (fn [channel msg]
-                                                 (swap! sent-messages conj msg))]
-          (reset! server/channel-to-session {})
-          (reset! storage/sessions-atom {:sessions {}})
-          (storage/ensure-storage-file test-path)
+(deftest test-new-protocol-connect
+  (testing "Connect message returns session list"
+    (with-redefs [voice-code.replication/get-all-sessions
+                  (fn [] [{:session-id "s1" :name "Session 1"}
+                          {:session-id "s2" :name "Session 2"}])]
+      (reset! server/connected-clients {})
+      (let [sent-message (atom nil)]
+        (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                 (reset! sent-message msg))]
+          (server/handle-message :test-ch "{\"type\":\"connect\"}")
 
-          (let [ios-session-id "test-reconnection-uuid"
-                channel1 :channel-1
-                channel2 :channel-2]
+          ;; Verify client registered
+          (is (contains? @server/connected-clients :test-ch))
 
-            ;; Initial connection
-            (storage/create-session! ios-session-id "/tmp")
+          ;; Verify session list sent
+          (is (some? @sent-message))
+          (let [msg (json/parse-string @sent-message true)]
+            (is (= "session-list" (:type msg)))
+            (is (= 2 (count (:sessions msg))))
+            (is (= "s1" (:session_id (first (:sessions msg)))))))))))
 
-            ;; Buffer some undelivered messages (simulating messages sent while disconnected)
-            (server/buffer-message! ios-session-id :assistant "Message 1" "session-1")
-            (server/buffer-message! ios-session-id :assistant "Message 2" "session-2")
-            (server/buffer-message! ios-session-id :assistant "Message 3" "session-3")
+(deftest test-prompt-session-id-distinction
+  (testing "Prompt with new_session_id uses --session-id flag"
+    (let [claude-args (atom nil)]
+      (with-redefs [voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & {:keys [new-session-id resume-session-id]}]
+                      (reset! claude-args {:new-session-id new-session-id
+                                           :resume-session-id resume-session-id})
+                      ;; Call callback immediately for test
+                      (callback {:success true :session-id "test-123"}))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-123\"}")
 
-            ;; Verify 3 messages in queue
-            (is (= 3 (count (storage/get-undelivered-messages ios-session-id))))
+        (is (= "new-123" (:new-session-id @claude-args)))
+        (is (nil? (:resume-session-id @claude-args))))))
 
-            ;; Simulate reconnection - replay should happen
-            (reset! sent-messages [])
-            (server/replay-undelivered-messages! channel2 ios-session-id)
+  (testing "Prompt with resume_session_id uses --resume flag"
+    (let [claude-args (atom nil)]
+      (with-redefs [voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & {:keys [new-session-id resume-session-id]}]
+                      (reset! claude-args {:new-session-id new-session-id
+                                           :resume-session-id resume-session-id})
+                      ;; Call callback immediately for test
+                      (callback {:success true :session-id "test-456"}))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch "{\"type\":\"prompt\",\"text\":\"continue\",\"resume_session_id\":\"resume-456\"}")
 
-            ;; Verify 3 replay messages were sent
-            (is (= 3 (count @sent-messages)) "Should replay 3 messages")
-
-            ;; Verify replay message format
-            (let [first-replay (json/parse-string (first @sent-messages) true)]
-              (is (= "replay" (:type first-replay)))
-              (is (some? (:message_id first-replay)))
-              (is (= "assistant" (get-in first-replay [:message :role])))
-              (is (= "Message 1" (get-in first-replay [:message :text])))
-              (is (= "session-1" (get-in first-replay [:message :session_id]))))))
-
-        (finally
-          (let [file (io/file test-path)]
-            (when (.exists file)
-              (.delete file))
-            (when-let [parent (.getParentFile file)]
-              (when (.exists parent)
-                (.delete parent))))))))
-
-  (testing "Replay sends messages in order"
-    (let [test-path (str (System/getProperty "java.io.tmpdir")
-                         "/voice-code-server-test-"
-                         (System/currentTimeMillis)
-                         "/sessions.edn")
-          sent-messages (atom [])]
-      (try
-        (with-redefs [storage/storage-file test-path
-                      org.httpkit.server/send! (fn [channel msg]
-                                                 (swap! sent-messages conj msg))]
-          (reset! storage/sessions-atom {:sessions {}})
-          (storage/ensure-storage-file test-path)
-
-          (let [ios-session-id "test-replay-order"]
-            (storage/create-session! ios-session-id "/tmp")
-
-            ;; Buffer messages in specific order
-            (server/buffer-message! ios-session-id :assistant "First" "s1")
-            (server/buffer-message! ios-session-id :assistant "Second" "s2")
-            (server/buffer-message! ios-session-id :assistant "Third" "s3")
-
-            ;; Replay
-            (reset! sent-messages [])
-            (server/replay-undelivered-messages! :test-channel ios-session-id)
-
-            ;; Verify order preserved
-            (let [messages (map #(json/parse-string % true) @sent-messages)
-                  texts (map #(get-in % [:message :text]) messages)]
-              (is (= ["First" "Second" "Third"] texts) "Messages should be replayed in order"))))
-
-        (finally
-          (let [file (io/file test-path)]
-            (when (.exists file)
-              (.delete file))
-            (when-let [parent (.getParentFile file)]
-              (when (.exists parent)
-                (.delete parent))))))))
-
-  (testing "No replay when queue is empty"
-    (let [test-path (str (System/getProperty "java.io.tmpdir")
-                         "/voice-code-server-test-"
-                         (System/currentTimeMillis)
-                         "/sessions.edn")
-          sent-messages (atom [])]
-      (try
-        (with-redefs [storage/storage-file test-path
-                      org.httpkit.server/send! (fn [channel msg]
-                                                 (swap! sent-messages conj msg))]
-          (reset! storage/sessions-atom {:sessions {}})
-          (storage/ensure-storage-file test-path)
-
-          (let [ios-session-id "test-empty-queue"]
-            (storage/create-session! ios-session-id "/tmp")
-
-            ;; No messages buffered
-            (is (= 0 (count (storage/get-undelivered-messages ios-session-id))))
-
-            ;; Attempt replay
-            (reset! sent-messages [])
-            (server/replay-undelivered-messages! :test-channel ios-session-id)
-
-            ;; Verify no messages sent
-            (is (= 0 (count @sent-messages)) "Should not send any messages when queue empty")))
-
-        (finally
-          (let [file (io/file test-path)]
-            (when (.exists file)
-              (.delete file))
-            (when-let [parent (.getParentFile file)]
-              (when (.exists parent)
-                (.delete parent)))))))))
-
-(deftest test-session-lifecycle
-  (testing "Sessions persist across simulated server restarts"
-    (let [test-path (str (System/getProperty "java.io.tmpdir")
-                         "/voice-code-server-test-"
-                         (System/currentTimeMillis)
-                         "/sessions.edn")]
-      (try
-        (with-redefs [storage/storage-file test-path]
-          ;; Simulate server startup
-          (reset! storage/sessions-atom {:sessions {}})
-          (storage/ensure-storage-file test-path)
-          (storage/initialize! test-path)
-
-          ;; Create some sessions during server operation
-          (let [ios-uuid-1 "ios-session-1"
-                ios-uuid-2 "ios-session-2"]
-            (storage/create-session! ios-uuid-1 "/project1")
-            (storage/create-session! ios-uuid-2 "/project2")
-
-            ;; Update sessions with activity
-            (storage/update-session! ios-uuid-1 {:claude-session-id "claude-123"})
-            (server/buffer-message! ios-uuid-1 :assistant "Response 1" "claude-123")
-            (server/buffer-message! ios-uuid-2 :assistant "Response 2" nil)
-
-            ;; Verify sessions exist
-            (is (= 2 (count (:sessions @storage/sessions-atom))))
-
-            ;; Simulate graceful shutdown - save sessions
-            (storage/save-sessions! @storage/sessions-atom test-path)
-
-            ;; Verify file was written
-            (is (.exists (io/file test-path)))
-
-            ;; Simulate server restart - clear memory
-            (reset! storage/sessions-atom {:sessions {}})
-            (reset! server/channel-to-session {})
-
-            ;; Verify memory is empty
-            (is (= 0 (count (:sessions @storage/sessions-atom))))
-
-            ;; Simulate server startup - load from disk
-            (storage/initialize! test-path)
-
-            ;; Verify sessions were restored
-            (is (= 2 (count (:sessions @storage/sessions-atom)))
-                "Should restore 2 sessions from disk")
-
-            ;; Verify session data is intact
-            (let [session1 (storage/get-session ios-uuid-1)
-                  session2 (storage/get-session ios-uuid-2)]
-              (is (= "claude-123" (:claude-session-id session1))
-                  "Session 1 should have Claude session ID")
-              (is (= "/project1" (:working-directory session1))
-                  "Session 1 should have working directory")
-              (is (= 1 (count (:undelivered-messages session1)))
-                  "Session 1 should have 1 undelivered message")
-              (is (nil? (:claude-session-id session2))
-                  "Session 2 should have nil Claude session ID")
-              (is (= 1 (count (:undelivered-messages session2)))
-                  "Session 2 should have 1 undelivered message"))))
-
-        (finally
-          (let [file (io/file test-path)]
-            (when (.exists file)
-              (.delete file))
-            (when-let [parent (.getParentFile file)]
-              (when (.exists parent)
-                (.delete parent))))))))
-
-  (testing "Session metadata tracked correctly"
-    (let [test-path (str (System/getProperty "java.io.tmpdir")
-                         "/voice-code-server-test-"
-                         (System/currentTimeMillis)
-                         "/sessions.edn")]
-      (try
-        (with-redefs [storage/storage-file test-path]
-          (reset! storage/sessions-atom {:sessions {}})
-          (storage/ensure-storage-file test-path)
-
-          (let [ios-uuid "metadata-test-uuid"
-                session (storage/create-session! ios-uuid "/tmp")]
-            ;; Verify initial metadata
-            (is (some? (:created-at session)) "Should have created-at timestamp")
-            (is (some? (:last-active session)) "Should have initial last-active timestamp")
-
-            (let [initial-last-active (:last-active session)]
-              ;; Wait a bit to ensure timestamp difference
-              (Thread/sleep 10)
-
-              ;; Update session
-              (storage/update-session! ios-uuid {:claude-session-id "new-id"})
-
-              ;; Verify last-active was updated
-              (let [updated-session (storage/get-session ios-uuid)]
-                (is (.after (:last-active updated-session) initial-last-active)
-                    "last-active should be updated on session update")
-                (is (= (:created-at session) (:created-at updated-session))
-                    "created-at should not change on update")))))
-
-        (finally
-          (let [file (io/file test-path)]
-            (when (.exists file)
-              (.delete file))
-            (when-let [parent (.getParentFile file)]
-              (when (.exists parent)
-                (.delete parent)))))))))
+        (is (nil? (:new-session-id @claude-args)))
+        (is (= "resume-456" (:resume-session-id @claude-args)))))))
 

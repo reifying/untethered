@@ -25,7 +25,7 @@
       path)))
 
 (defn invoke-claude
-  [prompt & {:keys [session-id model working-directory timeout]
+  [prompt & {:keys [new-session-id resume-session-id model working-directory timeout]
              :or {model "sonnet"
                   timeout 3600000}}]
   (let [cli-path (get-claude-cli-path)]
@@ -37,14 +37,16 @@
                         "--print"
                         "--output-format" "json"
                         "--model" model]
-                 session-id (concat ["--resume" session-id])
+                 new-session-id (concat ["--session-id" new-session-id])
+                 resume-session-id (concat ["--resume" resume-session-id])
                  true (concat [prompt]))
 
           shell-opts (cond-> {}
                        expanded-dir (assoc :dir expanded-dir))
 
           _ (log/info "Invoking Claude CLI"
-                      {:session-id session-id
+                      {:new-session-id new-session-id
+                       :resume-session-id resume-session-id
                        :working-directory expanded-dir
                        :model model})
 
@@ -60,12 +62,12 @@
 
             (let [success (and result-obj (not (:is_error result-obj)))
                   result-text (:result result-obj)
-                  new-session-id (:session_id result-obj)]
+                  session-id (:session_id result-obj)]
 
               (if success
                 {:success true
                  :result result-text
-                 :session-id new-session-id
+                 :session-id session-id
                  :usage (:usage result-obj)
                  :cost (:total_cost_usd result-obj)}
                 {:success false
@@ -91,21 +93,23 @@
   Parameters:
   - prompt: The prompt to send to Claude
   - callback-fn: Function to call with result (takes one arg: response map)
-  - session-id: Optional Claude session ID for resumption
+  - new-session-id: Optional Claude session ID for new session (uses --session-id)
+  - resume-session-id: Optional Claude session ID for resuming (uses --resume)
   - working-directory: Optional working directory for Claude
   - model: Model to use (default: sonnet)
   - timeout-ms: Timeout in milliseconds (default: 86400000 = 24 hours)
   
   Returns immediately. Calls callback-fn when done or on timeout.
   Response map will have :success true/false and either :result or :error."
-  [prompt callback-fn & {:keys [session-id working-directory model timeout-ms]
+  [prompt callback-fn & {:keys [new-session-id resume-session-id working-directory model timeout-ms]
                          :or {model "sonnet"
                               timeout-ms 86400000}}]
   (async/go
     (let [response-ch (async/thread
                         (try
                           (invoke-claude prompt
-                                         :session-id session-id
+                                         :new-session-id new-session-id
+                                         :resume-session-id resume-session-id
                                          :model model
                                          :working-directory working-directory
                                          :timeout timeout-ms)
