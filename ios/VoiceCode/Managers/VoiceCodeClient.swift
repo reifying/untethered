@@ -21,9 +21,11 @@ class VoiceCodeClient: ObservableObject {
     var onReplayReceived: ((Message) -> Void)?
 
     private var sessionId: String?
+    private let sessionSyncManager: SessionSyncManager
 
-    init(serverURL: String) {
+    init(serverURL: String, sessionSyncManager: SessionSyncManager = SessionSyncManager()) {
         self.serverURL = serverURL
+        self.sessionSyncManager = sessionSyncManager
         setupLifecycleObservers()
     }
 
@@ -231,6 +233,26 @@ class VoiceCodeClient: ObservableObject {
             case "pong":
                 // Pong response to ping
                 break
+
+            case "session_list":
+                // Initial session list received after connection
+                if let sessions = json["sessions"] as? [[String: Any]] {
+                    print("📋 [VoiceCodeClient] Received session_list with \(sessions.count) sessions")
+                    self.sessionSyncManager.handleSessionList(sessions)
+                }
+
+            case "session_created":
+                // New session created (terminal or iOS)
+                print("✨ [VoiceCodeClient] Received session_created")
+                self.sessionSyncManager.handleSessionCreated(json)
+
+            case "session_updated":
+                // Incremental updates for subscribed session
+                if let sessionId = json["session_id"] as? String,
+                   let messages = json["messages"] as? [[String: Any]] {
+                    print("🔄 [VoiceCodeClient] Received session_updated for \(sessionId) with \(messages.count) messages")
+                    self.sessionSyncManager.handleSessionUpdated(sessionId: sessionId, messages: messages)
+                }
 
             default:
                 print("Unknown message type: \(type)")
