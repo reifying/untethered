@@ -6,6 +6,7 @@ import CoreData
 
 struct SessionsView: View {
     @ObservedObject var sessionManager: SessionManager
+    @ObservedObject var client: VoiceCodeClient
     @Environment(\.dismiss) var dismiss
     @Environment(\.managedObjectContext) private var viewContext
 
@@ -18,6 +19,7 @@ struct SessionsView: View {
     @State private var showingNewSession = false
     @State private var newSessionName = ""
     @State private var newWorkingDirectory = ""
+    @State private var selectedSession: CDSession?
 
     var body: some View {
         NavigationView {
@@ -40,17 +42,26 @@ struct SessionsView: View {
                 } else {
                     List {
                         ForEach(sessions) { session in
-                            CDSessionRow(
-                                session: session,
-                                isSelected: sessionManager.currentSessionId == session.id,
-                                onSelect: {
-                                    sessionManager.selectSession(id: session.id)
-                                    dismiss()
-                                },
-                                onDelete: {
+                            NavigationLink(
+                                destination: ConversationView(session: session, client: client),
+                                tag: session,
+                                selection: $selectedSession
+                            ) {
+                                CDSessionRowContent(
+                                    session: session,
+                                    isSelected: sessionManager.currentSessionId == session.id
+                                )
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
                                     deleteSession(session)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
                                 }
-                            )
+                            }
+                            .onTapGesture {
+                                sessionManager.selectSession(id: session.id)
+                            }
                         }
                     }
                 }
@@ -109,55 +120,46 @@ struct SessionsView: View {
     }
 }
 
-// MARK: - CoreData Session Row
+// MARK: - CoreData Session Row Content
 
-struct CDSessionRow: View {
+struct CDSessionRowContent: View {
     @ObservedObject var session: CDSession
     let isSelected: Bool
-    let onSelect: () -> Void
-    let onDelete: () -> Void
 
     var body: some View {
-        Button(action: onSelect) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(session.displayName)
-                        .font(.headline)
-                        .foregroundColor(isSelected ? .blue : .primary)
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(session.displayName)
+                    .font(.headline)
+                    .foregroundColor(isSelected ? .blue : .primary)
 
-                    Text(session.workingDirectory)
-                        .font(.caption)
+                Text(session.workingDirectory)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+
+                HStack(spacing: 8) {
+                    Text("\(session.messageCount) messages")
+                        .font(.caption2)
                         .foregroundColor(.secondary)
-                        .lineLimit(1)
-
-                    HStack(spacing: 8) {
-                        Text("\(session.messageCount) messages")
+                    
+                    if !session.preview.isEmpty {
+                        Text("•")
                             .font(.caption2)
                             .foregroundColor(.secondary)
-                        
-                        if !session.preview.isEmpty {
-                            Text("•")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            Text(session.preview)
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
-                        }
+                        Text(session.preview)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
                     }
                 }
-
-                Spacer()
-
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.blue)
-                }
             }
-        }
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button(role: .destructive, action: onDelete) {
-                Label("Delete", systemImage: "trash")
+
+            Spacer()
+
+            if isSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.blue)
             }
         }
     }
@@ -258,6 +260,10 @@ struct NewSessionView: View {
 
 struct SessionsView_Previews: PreviewProvider {
     static var previews: some View {
-        SessionsView(sessionManager: SessionManager())
+        let settings = AppSettings()
+        let client = VoiceCodeClient(serverURL: settings.fullServerURL)
+        
+        SessionsView(sessionManager: SessionManager(), client: client)
+            .environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
     }
 }

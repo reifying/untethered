@@ -130,7 +130,9 @@ struct ContentView: View {
             )
         }
         .sheet(isPresented: $showingSessions) {
-            SessionsView(sessionManager: sessionManager)
+            if let client = client {
+                SessionsView(sessionManager: sessionManager, client: client)
+            }
         }
         .onAppear {
             setupClient()

@@ -70,6 +70,58 @@ class SessionSyncManager {
         }
     }
     
+    // MARK: - Session History Handling
+    
+    /// Handle session_history message from backend (full conversation history)
+    /// - Parameters:
+    ///   - sessionId: Session UUID
+    ///   - messages: Array of all message dictionaries for the session
+    func handleSessionHistory(sessionId: String, messages: [[String: Any]]) {
+        logger.info("Received session_history for: \(sessionId) with \(messages.count) messages")
+        
+        persistenceController.performBackgroundTask { [weak self] backgroundContext in
+            guard let self = self else { return }
+            
+            // Fetch the session
+            let fetchRequest = CDSession.fetchSession(id: UUID(uuidString: sessionId)!)
+            
+            guard let session = try? backgroundContext.fetch(fetchRequest).first else {
+                logger.warning("Session not found for history: \(sessionId)")
+                return
+            }
+            
+            // Clear existing messages (if any) and add all from history
+            if let existingMessages = session.messages?.allObjects as? [CDMessage] {
+                for message in existingMessages {
+                    backgroundContext.delete(message)
+                }
+            }
+            
+            // Add all messages from history
+            for messageData in messages {
+                self.createMessage(messageData, sessionId: sessionId, in: backgroundContext, session: session)
+            }
+            
+            // Update session metadata
+            session.messageCount = Int32(messages.count)
+            session.lastModified = Date()
+            
+            if let lastMessage = messages.last,
+               let text = lastMessage["text"] as? String {
+                session.preview = String(text.prefix(100))
+            }
+            
+            do {
+                if backgroundContext.hasChanges {
+                    try backgroundContext.save()
+                    logger.info("Loaded session history: \(sessionId) (\(messages.count) messages)")
+                }
+            } catch {
+                logger.error("Failed to save session_history: \(error.localizedDescription)")
+            }
+        }
+    }
+    
     // MARK: - Session Updated Handling
     
     /// Handle session_updated message from backend
