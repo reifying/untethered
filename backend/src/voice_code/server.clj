@@ -102,11 +102,15 @@
 (defn send-to-client!
   "Send message to a specific channel if it's connected"
   [channel message-data]
-  (when (contains? @connected-clients channel)
-    (try
-      (http/send! channel (generate-json message-data))
-      (catch Exception e
-        (log/warn e "Failed to send to client")))))
+  (if (contains? @connected-clients channel)
+    (do
+      (log/info "Sending message to client" {:type (:type message-data)})
+      (try
+        (http/send! channel (generate-json message-data))
+        (log/info "Message sent successfully" {:type (:type message-data)})
+        (catch Exception e
+          (log/warn e "Failed to send to client"))))
+    (log/warn "Channel not in connected-clients, skipping send" {:type (:type message-data)})))
 
 (defn is-session-deleted-for-client?
   "Check if a client has deleted a session locally"
