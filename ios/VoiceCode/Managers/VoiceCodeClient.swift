@@ -21,7 +21,7 @@ class VoiceCodeClient: ObservableObject {
     var onReplayReceived: ((Message) -> Void)?
 
     private var sessionId: String?
-    private let sessionSyncManager: SessionSyncManager
+    let sessionSyncManager: SessionSyncManager
 
     init(serverURL: String, sessionSyncManager: SessionSyncManager = SessionSyncManager()) {
         self.serverURL = serverURL
@@ -347,7 +347,7 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
-    private func sendMessage(_ message: [String: Any]) {
+    func sendMessage(_ message: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: message),
               let text = String(data: data, encoding: .utf8) else {
             return

@@ -122,6 +122,83 @@ class SessionSyncManager {
         }
     }
     
+    // MARK: - Optimistic UI
+    
+    /// Create an optimistic message immediately when user sends a prompt
+    /// - Parameters:
+    ///   - sessionId: Session UUID
+    ///   - text: User's prompt text
+    ///   - completion: Called on main thread with the created message ID
+    func createOptimisticMessage(sessionId: UUID, text: String, completion: @escaping (UUID) -> Void) {
+        logger.info("Creating optimistic message for session: \(sessionId.uuidString)")
+        
+        let messageId = UUID()
+        
+        persistenceController.performBackgroundTask { [weak self] backgroundContext in
+            guard let self = self else { return }
+            
+            // Fetch the session
+            let fetchRequest = CDSession.fetchSession(id: sessionId)
+            
+            guard let session = try? backgroundContext.fetch(fetchRequest).first else {
+                logger.warning("Session not found for optimistic message: \(sessionId.uuidString)")
+                return
+            }
+            
+            // Create optimistic message
+            let message = CDMessage(context: backgroundContext)
+            message.id = messageId
+            message.sessionId = sessionId
+            message.role = "user"
+            message.text = text
+            message.timestamp = Date()
+            message.messageStatus = .sending
+            message.session = session
+            
+            // Update session metadata optimistically
+            session.lastModified = Date()
+            session.messageCount += 1
+            session.preview = String(text.prefix(100))
+            
+            do {
+                if backgroundContext.hasChanges {
+                    try backgroundContext.save()
+                    logger.info("Created optimistic message: \(messageId)")
+                    
+                    DispatchQueue.main.async {
+                        completion(messageId)
+                    }
+                }
+            } catch {
+                logger.error("Failed to save optimistic message: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    /// Reconcile an optimistic message with server confirmation
+    /// - Parameters:
+    ///   - sessionId: Session UUID
+    ///   - role: Message role (should be "user" for optimistic messages)
+    ///   - text: Message text to match
+    ///   - serverTimestamp: Server-provided timestamp
+    private func reconcileMessage(sessionId: UUID, role: String, text: String, serverTimestamp: Date?, in context: NSManagedObjectContext) {
+        // Find optimistic message by session, role, and text
+        let fetchRequest = CDMessage.fetchMessage(sessionId: sessionId, role: role, text: text)
+        
+        guard let message = try? context.fetch(fetchRequest).first else {
+            logger.info("No optimistic message found to reconcile (backend-originated message)")
+            return
+        }
+        
+        // Update status and server timestamp
+        message.messageStatus = .confirmed
+        if let serverTimestamp = serverTimestamp {
+            message.serverTimestamp = serverTimestamp
+        }
+        
+        logger.info("Reconciled optimistic message: \(message.id)")
+    }
+    
     // MARK: - Session Updated Handling
     
     /// Handle session_updated message from backend
@@ -142,19 +219,46 @@ class SessionSyncManager {
                 return
             }
             
-            // Update session metadata
+            // Process each message - reconcile optimistic ones, create new ones
+            var newMessageCount = 0
+            
+            for messageData in messages {
+                guard let role = messageData["role"] as? String,
+                      let text = messageData["text"] as? String else {
+                    continue
+                }
+                
+                // Extract server timestamp
+                var serverTimestamp: Date? = nil
+                if let timestamp = messageData["timestamp"] as? TimeInterval {
+                    serverTimestamp = Date(timeIntervalSince1970: timestamp / 1000.0)
+                }
+                
+                // Try to reconcile optimistic message first
+                let fetchRequest = CDMessage.fetchMessage(sessionId: UUID(uuidString: sessionId)!, role: role, text: text)
+                
+                if let existingMessage = try? backgroundContext.fetch(fetchRequest).first {
+                    // Reconcile optimistic message
+                    existingMessage.messageStatus = .confirmed
+                    if let serverTimestamp = serverTimestamp {
+                        existingMessage.serverTimestamp = serverTimestamp
+                    }
+                    logger.info("Reconciled optimistic message")
+                } else {
+                    // Create new message (backend-originated or not found)
+                    self.createMessage(messageData, sessionId: sessionId, in: backgroundContext, session: session)
+                    newMessageCount += 1
+                }
+            }
+            
+            // Update session metadata (only count truly new messages)
             session.lastModified = Date()
-            session.messageCount += Int32(messages.count)
+            session.messageCount += Int32(newMessageCount)
             
             // Update preview with last message text
             if let lastMessage = messages.last,
                let text = lastMessage["text"] as? String {
                 session.preview = String(text.prefix(100))
-            }
-            
-            // Add new messages
-            for messageData in messages {
-                self.createMessage(messageData, sessionId: sessionId, in: backgroundContext, session: session)
             }
             
             do {

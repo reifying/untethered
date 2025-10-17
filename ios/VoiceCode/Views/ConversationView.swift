@@ -11,6 +11,7 @@ struct ConversationView: View {
     
     @State private var isLoading = false
     @State private var hasLoadedMessages = false
+    @State private var promptText = ""
     
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
@@ -27,50 +28,71 @@ struct ConversationView: View {
     }
     
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                if isLoading {
-                    VStack(spacing: 16) {
-                        ProgressView()
-                        Text("Loading conversation...")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+        VStack(spacing: 0) {
+            // Messages area
+            ScrollViewReader { proxy in
+                ScrollView {
+                    if isLoading {
+                        VStack(spacing: 16) {
+                            ProgressView()
+                            Text("Loading conversation...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(.top, 100)
+                    } else if messages.isEmpty && hasLoadedMessages {
+                        VStack(spacing: 16) {
+                            Image(systemName: "message")
+                                .font(.system(size: 64))
+                                .foregroundColor(.secondary)
+                            Text("No messages yet")
+                                .font(.title2)
+                                .foregroundColor(.secondary)
+                            Text("Start a conversation to see messages here.")
+                                .font(.body)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 100)
+                    } else {
+                        LazyVStack(spacing: 12) {
+                            ForEach(messages) { message in
+                                CDMessageView(message: message)
+                                    .id(message.id)
+                            }
+                        }
+                        .padding()
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.top, 100)
-                } else if messages.isEmpty && hasLoadedMessages {
-                    VStack(spacing: 16) {
-                        Image(systemName: "message")
-                            .font(.system(size: 64))
-                            .foregroundColor(.secondary)
-                        Text("No messages yet")
-                            .font(.title2)
-                            .foregroundColor(.secondary)
-                        Text("Start a conversation to see messages here.")
-                            .font(.body)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 100)
-                } else {
-                    LazyVStack(spacing: 12) {
-                        ForEach(messages) { message in
-                            CDMessageView(message: message)
-                                .id(message.id)
+                }
+                .onChange(of: messages.count) { _ in
+                    // Auto-scroll to bottom on new message
+                    if let lastMessage = messages.last {
+                        withAnimation {
+                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
                         }
                     }
-                    .padding()
                 }
             }
-            .onChange(of: messages.count) { _ in
-                // Auto-scroll to bottom on new message
-                if let lastMessage = messages.last {
-                    withAnimation {
-                        proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                    }
+            
+            Divider()
+            
+            // Prompt input area
+            HStack(alignment: .bottom, spacing: 12) {
+                TextField("Type your message...", text: $promptText, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...5)
+                
+                Button(action: sendPrompt) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 32))
+                        .foregroundColor(promptText.isEmpty ? .gray : .blue)
                 }
+                .disabled(promptText.isEmpty)
             }
+            .padding()
+            .background(Color(UIColor.systemBackground))
         }
         .navigationTitle(session.displayName)
         .navigationBarTitleDisplayMode(.inline)
@@ -96,6 +118,29 @@ struct ConversationView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             isLoading = false
         }
+    }
+    
+    private func sendPrompt() {
+        let text = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        
+        // Clear input immediately
+        promptText = ""
+        
+        // Create optimistic message
+        client.sessionSyncManager.createOptimisticMessage(sessionId: session.id, text: text) { messageId in
+            print("Created optimistic message: \(messageId)")
+        }
+        
+        // Send prompt to backend with resume_session_id
+        // Note: This will eventually trigger session_updated which reconciles the optimistic message
+        let message: [String: Any] = [
+            "type": "prompt",
+            "text": text,
+            "resume_session_id": session.id.uuidString,
+            "working_directory": session.workingDirectory
+        ]
+        client.sendMessage(message)
     }
 }
 
