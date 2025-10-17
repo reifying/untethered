@@ -246,6 +246,14 @@ class VoiceCodeClient: ObservableObject {
                 print("✨ [VoiceCodeClient] Received session_created")
                 self.sessionSyncManager.handleSessionCreated(json)
 
+            case "session_history":
+                // Full conversation history (response to subscribe)
+                if let sessionId = json["session_id"] as? String,
+                   let messages = json["messages"] as? [[String: Any]] {
+                    print("📚 [VoiceCodeClient] Received session_history for \(sessionId) with \(messages.count) messages")
+                    self.sessionSyncManager.handleSessionHistory(sessionId: sessionId, messages: messages)
+                }
+
             case "session_updated":
                 // Incremental updates for subscribed session
                 if let sessionId = json["session_id"] as? String,
@@ -295,6 +303,24 @@ class VoiceCodeClient: ObservableObject {
 
     func ping() {
         let message: [String: Any] = ["type": "ping"]
+        sendMessage(message)
+    }
+    
+    func subscribe(sessionId: String) {
+        let message: [String: Any] = [
+            "type": "subscribe",
+            "session_id": sessionId
+        ]
+        print("📖 [VoiceCodeClient] Subscribing to session: \(sessionId)")
+        sendMessage(message)
+    }
+    
+    func unsubscribe(sessionId: String) {
+        let message: [String: Any] = [
+            "type": "unsubscribe",
+            "session_id": sessionId
+        ]
+        print("📕 [VoiceCodeClient] Unsubscribing from session: \(sessionId)")
         sendMessage(message)
     }
 
