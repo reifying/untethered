@@ -1,8 +1,36 @@
 # Manual Testing Guide
 
+## Overview
+
+Manual tests are written in Clojure and located in `manual_test/voice_code/`. These tests verify backend functionality with real Claude sessions and WebSocket connections.
+
+**Test Categories:**
+- **Free tests** - No Claude invocations (Tests 3, 4, 8, 9, 10)
+- **Paid tests** - Invoke Claude CLI (Tests 5, 6, 7) - use sparingly
+
+**Running Tests:**
+```bash
+# Run individual tests
+make test-manual-startup        # Test 3 (startup)
+make test-manual-protocol       # Test 4 (protocol)
+make test-manual-watcher-new    # Test 5 (watcher create) - COSTS MONEY
+make test-manual-prompt-new     # Test 6 (prompt new) - COSTS MONEY
+make test-manual-prompt-resume  # Test 7 (prompt resume) - COSTS MONEY
+make test-manual-broadcast      # Test 8 (broadcast)
+make test-manual-errors         # Test 9 (errors)
+
+# Run all free tests
+make test-manual-free
+
+# Run ALL tests (including paid)
+make test-manual-all
+```
+
 ## Pre-iOS Integration Testing
 
 Before implementing the iOS client, we should verify the backend works correctly with real Claude sessions and WebSocket connections.
+
+**NOTE:** The tests below describe what each test should verify. The actual tests are implemented in Clojure in `manual_test/voice_code/`. The steps below are for reference when implementing the tests.
 
 ---
 
@@ -13,7 +41,8 @@ Before implementing the iOS client, we should verify the backend works correctly
 **Steps:**
 1. Ensure you have some existing Claude sessions in `~/.claude/projects/`
    ```bash
-   ls -la ~/.claude/projects/mono/  # or your project name
+   # Claude uses sanitized directory names with hyphens
+   ls -la ~/.claude/projects/-Users-*/  # Shows project directories
    ```
 
 2. Start the backend server:
@@ -156,21 +185,22 @@ brew install websocat  # macOS
    cd ~/code/mono  # or any project
    claude "hello, this is a test session"
    ```
+   **NOTE:** Claude stores sessions in sanitized subdirectories like `~/.claude/projects/-Users-you-code-mono/`
 
 5. **Expected in websocat:** New session_created message:
    ```json
    {
      "type":"session_created",
      "session_id":"<new-session-uuid>",
-     "name":"Terminal: mono - 2025-10-17 09:00",
-     "working_directory":"/Users/you/code/mono",
+     "name":"Terminal: -Users-you-code-mono - 2025-10-17 09:00",
+     "working_directory":"/Users/you/-Users-you-code-mono",
      "message_count":1,
      "preview":"hello, this is a test session"
    }
    ```
 
 **Pass Criteria:**
-- [ ] session_created message appears within ~200ms
+- [ ] session_created message appears within ~2 seconds (includes 200ms debounce)
 - [ ] Session ID matches the new .jsonl file
 - [ ] Working directory is correct
 - [ ] Name is formatted correctly with current timestamp
@@ -213,7 +243,7 @@ brew install websocat  # macOS
    ```
 
 **Pass Criteria:**
-- [ ] Update message appears within ~200ms after file write
+- [ ] Update message appears within ~2 seconds after file write (includes 200ms debounce)
 - [ ] Only new messages are sent (not full history)
 - [ ] Messages are correctly parsed from .jsonl
 - [ ] Update only sent if subscribed to that session
@@ -267,8 +297,8 @@ brew install websocat  # macOS
 
 4. Verify the session file was created:
    ```bash
-   ls ~/.claude/projects/mono/test-new-session-123.jsonl
-   cat ~/.claude/projects/mono/test-new-session-123.jsonl
+   # Find the project directory (uses sanitized path names)
+   find ~/.claude/projects/ -name "test-new-session-123.jsonl"
    ```
 
 **Pass Criteria:**
@@ -304,7 +334,8 @@ brew install websocat  # macOS
 
 4. Verify the session file was appended:
    ```bash
-   tail -5 ~/.claude/projects/mono/<session-id>.jsonl
+   # Find the file and check it was appended (not recreated)
+   find ~/.claude/projects/ -name "<session-id>.jsonl" -exec tail -5 {} \;
    ```
 
 **Pass Criteria:**
@@ -447,7 +478,7 @@ websocat ws://localhost:8080
 
 **Pass Criteria:**
 - [ ] All connected clients receive session_created
-- [ ] Broadcast happens within ~200ms
+- [ ] Broadcast happens within ~2 seconds (includes 200ms debounce)
 - [ ] Both clients receive identical messages
 
 ---
