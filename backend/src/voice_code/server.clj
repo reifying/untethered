@@ -169,36 +169,28 @@
           (http/send! channel (generate-json {:type "pong"})))
 
         "connect"
-        ;; iOS client sends this on connection
-        ;; Now we send session_list instead of old session mapping
-        (let [session-id (:session-id data)]
-          (if-not session-id
+        ;; New protocol: no session-id needed, just send session list
+        (do
+          (log/info "Client connected")
+
+          ;; Register client (no session-id needed in new architecture)
+          (swap! connected-clients assoc channel {:deleted-sessions #{}})
+
+          ;; Send session list (limit to 50 most recent, lightweight fields only)
+          (let [all-sessions (repl/get-all-sessions)
+                ;; Sort by last-modified descending, take 50
+                recent-sessions (->> all-sessions
+                                     (sort-by :last-modified >)
+                                     (take 50)
+                                     ;; Remove heavy fields to reduce payload size
+                                     (mapv #(select-keys % [:session-id :name :working-directory
+                                                            :last-modified :message-count])))]
+            (log/info "Sending session list" {:count (count recent-sessions) :total (count all-sessions)})
             (http/send! channel
                         (generate-json
-                         {:type "error"
-                          :message "session_id required in connect message"}))
-            (do
-              (log/info "Client connected")
-
-              ;; Register client
-              (swap! connected-clients assoc channel {:session-id session-id
-                                                      :deleted-sessions #{}})
-
-              ;; Send session list (limit to 50 most recent, lightweight fields only)
-              (let [all-sessions (repl/get-all-sessions)
-                    ;; Sort by last-modified descending, take 50
-                    recent-sessions (->> all-sessions
-                                         (sort-by :last-modified >)
-                                         (take 50)
-                                         ;; Remove heavy fields to reduce payload size
-                                         (mapv #(select-keys % [:session-id :name :working-directory
-                                                                :last-modified :message-count])))]
-                (log/info "Sending session list" {:count (count recent-sessions) :total (count all-sessions)})
-                (http/send! channel
-                            (generate-json
-                             {:type "session-list"
-                              :sessions recent-sessions
-                              :total-count (count all-sessions)}))))))
+                         {:type "session-list"
+                          :sessions recent-sessions
+                          :total-count (count all-sessions)}))))
 
         "subscribe"
         ;; Client requests full history for a session
@@ -262,7 +254,7 @@
             (http/send! channel
                         (generate-json
                          {:type "error"
-                          :message "Must send connect message with session_id first"}))
+                          :message "Must send connect message first"}))
 
             (not prompt-text)
             (http/send! channel
