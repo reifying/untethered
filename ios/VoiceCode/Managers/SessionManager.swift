@@ -7,12 +7,30 @@ import Combine
 class SessionManager: ObservableObject {
     @Published var sessions: [Session] = []
     @Published var currentSession: Session?
+    @Published var currentSessionId: UUID? // For CoreData session tracking
 
     private let sessionsKey = "voice_code_sessions"
     private let currentSessionKey = "voice_code_current_session"
+    private let currentCoreDataSessionKey = "voice_code_current_coredata_session"
 
     init() {
         loadSessions()
+        loadCurrentSessionId()
+    }
+    
+    // MARK: - CoreData Session Selection
+    
+    func selectSession(id: UUID) {
+        currentSessionId = id
+        UserDefaults.standard.set(id.uuidString, forKey: currentCoreDataSessionKey)
+        print("🔄 [SessionManager] Selected CoreData session: \(id)")
+    }
+    
+    private func loadCurrentSessionId() {
+        if let idString = UserDefaults.standard.string(forKey: currentCoreDataSessionKey),
+           let id = UUID(uuidString: idString) {
+            currentSessionId = id
+        }
     }
 
     // MARK: - Session Management
