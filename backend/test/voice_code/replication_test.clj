@@ -202,12 +202,25 @@
 
   (testing "Add session to index"
     (reset! repl/session-index {})
-    (swap! repl/session-index assoc "test-123" {:session-id "test-123" :name "Test Session"})
-    (is (= 1 (count (repl/get-all-sessions))))
-    (is (= "Test Session" (:name (repl/get-session-metadata "test-123")))))
+    (let [test-uuid "550e8400-e29b-41d4-a716-446655440000"]
+      (swap! repl/session-index assoc test-uuid {:session-id test-uuid :name "Test Session"})
+      (is (= 1 (count (repl/get-all-sessions))))
+      (is (= "Test Session" (:name (repl/get-session-metadata test-uuid))))))
 
   (testing "Get non-existent session"
-    (is (nil? (repl/get-session-metadata "non-existent")))))
+    (is (nil? (repl/get-session-metadata "non-existent"))))
+
+  (testing "Filter out non-UUID sessions"
+    (reset! repl/session-index {})
+    (let [valid-uuid "550e8400-e29b-41d4-a716-446655440000"
+          invalid-id "not-a-uuid"]
+      (swap! repl/session-index assoc valid-uuid {:session-id valid-uuid :name "Valid Session"})
+      (swap! repl/session-index assoc invalid-id {:session-id invalid-id :name "Invalid Session"})
+      ;; get-all-sessions should only return the valid UUID session
+      (is (= 1 (count (repl/get-all-sessions))))
+      (is (= "Valid Session" (:name (first (repl/get-all-sessions)))))
+      ;; But get-session-metadata should still work for invalid IDs (direct index access)
+      (is (= "Invalid Session" (:name (repl/get-session-metadata invalid-id)))))))
 
 (deftest test-parse-with-retry
   (testing "Parse succeeds on first try"

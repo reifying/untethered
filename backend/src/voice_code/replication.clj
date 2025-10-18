@@ -40,12 +40,24 @@
            (filter #(str/ends-with? (.getName %) ".jsonl")))
       [])))
 
+(defn valid-uuid?
+  "Check if a string is a valid UUID format"
+  [s]
+  (boolean (re-matches #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" s)))
+
 (defn extract-session-id-from-path
   "Extract session ID from .jsonl file path.
-  Example: /path/to/projects/mono/abc-123.jsonl -> abc-123"
+  Example: /path/to/projects/mono/abc-123.jsonl -> abc-123
+  Logs a warning if the session ID is not a valid UUID."
   [file]
-  (let [name (.getName file)]
-    (str/replace name #"\.jsonl$" "")))
+  (let [name (.getName file)
+        session-id (str/replace name #"\.jsonl$" "")]
+    (when-not (valid-uuid? session-id)
+      (log/warn "Non-UUID session file detected"
+                {:filename name
+                 :session-id session-id
+                 :path (.getPath file)}))
+    session-id))
 
 (defn extract-working-dir
   "Extract working directory from .jsonl file by reading cwd from first message.
@@ -223,9 +235,18 @@
   (get @session-index session-id))
 
 (defn get-all-sessions
-  "Get all session metadata as a vector"
+  "Get all session metadata as a vector.
+  Filters out sessions with invalid UUIDs and logs them."
   []
-  (vec (vals @session-index)))
+  (let [all-sessions (vals @session-index)
+        valid-sessions (filter #(valid-uuid? (:session-id %)) all-sessions)
+        invalid-sessions (remove #(valid-uuid? (:session-id %)) all-sessions)]
+    (when (seq invalid-sessions)
+      (log/warn "Filtering out sessions with invalid UUIDs"
+                {:count (count invalid-sessions)
+                 :invalid-sessions (mapv #(select-keys % [:session-id :file :name])
+                                         invalid-sessions)}))
+    (vec valid-sessions)))
 
 ;; ============================================================================
 ;; .jsonl File Parsing
