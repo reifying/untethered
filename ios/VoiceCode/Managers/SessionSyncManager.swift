@@ -310,6 +310,114 @@ class SessionSyncManager {
     
     // MARK: - Private Helpers
 
+    /// Format content size in human-readable format
+    /// - Parameter bytes: Size in bytes
+    /// - Returns: Formatted string (e.g., "1.2KB", "345 bytes")
+    private func formatContentSize(_ bytes: Int) -> String {
+        if bytes < 1024 {
+            return "\(bytes) bytes"
+        } else if bytes < 1024 * 1024 {
+            let kb = Double(bytes) / 1024.0
+            return String(format: "%.1fKB", kb)
+        } else {
+            let mb = Double(bytes) / (1024.0 * 1024.0)
+            return String(format: "%.1fMB", mb)
+        }
+    }
+
+    /// Summarize a tool_use content block
+    /// - Parameter block: Content block dictionary
+    /// - Returns: Abbreviated summary string
+    private func summarizeToolUse(_ block: [String: Any]) -> String {
+        guard let toolName = block["name"] as? String else {
+            return "🔧 Tool call"
+        }
+
+        // Get input parameters
+        guard let input = block["input"] as? [String: Any], !input.isEmpty else {
+            return "🔧 \(toolName)"
+        }
+
+        // Format abbreviated parameters
+        var paramSummary: String = ""
+
+        // Common parameter patterns
+        if let path = input["file_path"] as? String ?? input["path"] as? String {
+            let fileName = (path as NSString).lastPathComponent
+            paramSummary = fileName
+        } else if let pattern = input["pattern"] as? String {
+            paramSummary = "pattern \"\(pattern.prefix(30))\(pattern.count > 30 ? "..." : "")\""
+        } else if let command = input["command"] as? String {
+            paramSummary = command.prefix(40) + (command.count > 40 ? "..." : "")
+        } else if let code = input["code"] as? String {
+            paramSummary = code.prefix(40) + (code.count > 40 ? "..." : "")
+        } else {
+            // Generic: show first key-value pair
+            if let firstKey = input.keys.first, let value = input[firstKey] {
+                let valueStr = String(describing: value)
+                paramSummary = "\(firstKey): \(valueStr.prefix(30))\(valueStr.count > 30 ? "..." : "")"
+            }
+        }
+
+        if paramSummary.isEmpty {
+            return "🔧 \(toolName)"
+        } else {
+            return "🔧 \(toolName): \(paramSummary)"
+        }
+    }
+
+    /// Summarize a tool_result content block
+    /// - Parameter block: Content block dictionary
+    /// - Returns: Abbreviated summary string
+    private func summarizeToolResult(_ block: [String: Any]) -> String {
+        // Check for error
+        if let isError = block["is_error"] as? Bool, isError {
+            if let content = block["content"] as? String {
+                // Extract error message (first line or first 60 chars)
+                let errorMessage = content.components(separatedBy: .newlines).first ?? content
+                let truncated = errorMessage.prefix(60)
+                return "✗ Error: \(truncated)\(errorMessage.count > 60 ? "..." : "")"
+            } else {
+                return "✗ Error"
+            }
+        }
+
+        // Success - show size
+        if let content = block["content"] as? String {
+            let size = content.utf8.count
+            return "✓ Result (\(formatContentSize(size)))"
+        } else if let contentArray = block["content"] as? [[String: Any]] {
+            // Some results might be structured
+            return "✓ Result (\(contentArray.count) items)"
+        } else {
+            return "✓ Result"
+        }
+    }
+
+    /// Summarize a thinking content block
+    /// - Parameter block: Content block dictionary
+    /// - Returns: Abbreviated summary string
+    private func summarizeThinking(_ block: [String: Any]) -> String {
+        guard let thinking = block["thinking"] as? String else {
+            return "💭 Thinking..."
+        }
+
+        // Take first ~60 chars and find a good break point
+        let maxLength = 60
+        if thinking.count <= maxLength {
+            return "💭 \(thinking)"
+        }
+
+        let truncated = thinking.prefix(maxLength)
+        // Try to break at a sentence or word boundary
+        if let lastSpace = truncated.lastIndex(of: " ") {
+            let breakPoint = truncated[..<lastSpace]
+            return "💭 \(breakPoint)..."
+        } else {
+            return "💭 \(truncated)..."
+        }
+    }
+
     /// Extract text from Claude Code message format
     /// - Parameter messageData: Raw .jsonl message data
     /// - Returns: Extracted text string, or nil if extraction fails
@@ -325,10 +433,29 @@ class SessionSyncManager {
 
         // Assistant messages have array of content blocks
         if let contentArray = message["content"] as? [[String: Any]] {
-            let textBlocks = contentArray
-                .filter { ($0["type"] as? String) == "text" }
-                .compactMap { $0["text"] as? String }
-            return textBlocks.joined(separator: "\n\n")
+            var summaries: [String] = []
+
+            for block in contentArray {
+                guard let blockType = block["type"] as? String else { continue }
+
+                switch blockType {
+                case "text":
+                    if let text = block["text"] as? String {
+                        summaries.append(text)
+                    }
+                case "tool_use":
+                    summaries.append(summarizeToolUse(block))
+                case "tool_result":
+                    summaries.append(summarizeToolResult(block))
+                case "thinking":
+                    summaries.append(summarizeThinking(block))
+                default:
+                    // Unknown block type - show placeholder
+                    summaries.append("[\(blockType)]")
+                }
+            }
+
+            return summaries.isEmpty ? nil : summaries.joined(separator: "\n\n")
         }
 
         return nil

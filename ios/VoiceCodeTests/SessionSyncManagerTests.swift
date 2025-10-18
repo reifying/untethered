@@ -303,4 +303,328 @@ final class SessionSyncManagerTests: XCTestCase {
         XCTAssertNotNil(updated)
         XCTAssertEqual(updated?.messageCount, 0)
     }
+
+    // MARK: - Content Extraction Tests
+
+    func testExtractTextFromTextBlock() throws {
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": [
+                    ["type": "text", "text": "This is a text response"]
+                ]
+            ]
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertEqual(text, "This is a text response")
+    }
+
+    func testExtractTextFromMultipleTextBlocks() throws {
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": [
+                    ["type": "text", "text": "First block"],
+                    ["type": "text", "text": "Second block"]
+                ]
+            ]
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertEqual(text, "First block\n\nSecond block")
+    }
+
+    func testExtractTextFromToolUseBlock() throws {
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": [
+                    [
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": ["file_path": "/path/to/file.swift"]
+                    ]
+                ]
+            ]
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertNotNil(text)
+        XCTAssertTrue(text!.contains("🔧 Read"))
+        XCTAssertTrue(text!.contains("file.swift"))
+    }
+
+    func testExtractTextFromToolUseWithPattern() throws {
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": [
+                    [
+                        "type": "tool_use",
+                        "name": "Grep",
+                        "input": ["pattern": "VPN|vpn"]
+                    ]
+                ]
+            ]
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertNotNil(text)
+        XCTAssertTrue(text!.contains("🔧 Grep"))
+        XCTAssertTrue(text!.contains("pattern"))
+        XCTAssertTrue(text!.contains("VPN|vpn"))
+    }
+
+    func testExtractTextFromToolUseWithCommand() throws {
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": [
+                    [
+                        "type": "tool_use",
+                        "name": "Bash",
+                        "input": ["command": "clj -M:test"]
+                    ]
+                ]
+            ]
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertNotNil(text)
+        XCTAssertTrue(text!.contains("🔧 Bash"))
+        XCTAssertTrue(text!.contains("clj -M:test"))
+    }
+
+    func testExtractTextFromToolResultSuccess() throws {
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": [
+                    [
+                        "type": "tool_result",
+                        "content": String(repeating: "x", count: 6000)
+                    ]
+                ]
+            ]
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertNotNil(text)
+        XCTAssertTrue(text!.contains("✓ Result"))
+        XCTAssertTrue(text!.contains("KB"))
+    }
+
+    func testExtractTextFromToolResultError() throws {
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": [
+                    [
+                        "type": "tool_result",
+                        "is_error": true,
+                        "content": "File not found: /path/to/missing.file"
+                    ]
+                ]
+            ]
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertNotNil(text)
+        XCTAssertTrue(text!.contains("✗ Error"))
+        XCTAssertTrue(text!.contains("File not found"))
+    }
+
+    func testExtractTextFromThinkingBlock() throws {
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": [
+                    [
+                        "type": "thinking",
+                        "thinking": "The user is asking about VPN setup. I should search the codebase for VPN-related documentation."
+                    ]
+                ]
+            ]
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertNotNil(text)
+        XCTAssertTrue(text!.hasPrefix("💭"))
+        XCTAssertTrue(text!.contains("VPN setup"))
+    }
+
+    func testExtractTextFromThinkingBlockTruncated() throws {
+        let longThinking = String(repeating: "This is a very long thinking process. ", count: 10)
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": [
+                    [
+                        "type": "thinking",
+                        "thinking": longThinking
+                    ]
+                ]
+            ]
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertNotNil(text)
+        XCTAssertTrue(text!.hasPrefix("💭"))
+        XCTAssertTrue(text!.hasSuffix("..."))
+        XCTAssertLessThan(text!.count, 80) // Should be truncated
+    }
+
+    func testExtractTextFromMixedContentBlocks() throws {
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": [
+                    ["type": "thinking", "thinking": "I need to search for VPN config"],
+                    ["type": "text", "text": "Let me search for VPN configuration."],
+                    [
+                        "type": "tool_use",
+                        "name": "Grep",
+                        "input": ["pattern": "VPN"]
+                    ],
+                    [
+                        "type": "tool_result",
+                        "content": "No matches found"
+                    ]
+                ]
+            ]
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertNotNil(text)
+
+        // Verify all parts are present
+        XCTAssertTrue(text!.contains("💭"))
+        XCTAssertTrue(text!.contains("Let me search for VPN configuration."))
+        XCTAssertTrue(text!.contains("🔧 Grep"))
+        XCTAssertTrue(text!.contains("✓ Result"))
+
+        // Verify they're separated
+        let parts = text!.components(separatedBy: "\n\n")
+        XCTAssertEqual(parts.count, 4)
+    }
+
+    func testExtractTextFromOnlyToolCalls() throws {
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": [
+                    [
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": ["file_path": "/test.swift"]
+                    ]
+                ]
+            ]
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertNotNil(text, "Should extract tool call summary even without text blocks")
+        XCTAssertTrue(text!.contains("🔧 Read"))
+    }
+
+    func testExtractTextFromUserMessage() throws {
+        let messageData: [String: Any] = [
+            "type": "user",
+            "message": [
+                "role": "user",
+                "content": "Help me fix this bug"
+            ]
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertEqual(text, "Help me fix this bug")
+    }
+
+    func testExtractTextWithUnknownBlockType() throws {
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": [
+                    ["type": "unknown_type", "data": "something"],
+                    ["type": "text", "text": "Normal text"]
+                ]
+            ]
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertNotNil(text)
+        XCTAssertTrue(text!.contains("[unknown_type]"))
+        XCTAssertTrue(text!.contains("Normal text"))
+    }
+
+    func testExtractTextFromEmptyContentArray() throws {
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": []
+            ]
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertNil(text, "Should return nil for empty content array")
+    }
+
+    func testExtractTextFromMissingMessage() throws {
+        let messageData: [String: Any] = [
+            "type": "assistant"
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertNil(text, "Should return nil when message field is missing")
+    }
+
+    func testFormatContentSize() throws {
+        // Test small sizes (bytes)
+        let messageData1: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": [
+                    [
+                        "type": "tool_result",
+                        "content": "test"  // 4 bytes
+                    ]
+                ]
+            ]
+        ]
+        let text1 = syncManager.extractText(from: messageData1)
+        XCTAssertNotNil(text1)
+        XCTAssertTrue(text1!.contains("bytes"))
+
+        // Test KB sizes
+        let messageData2: [String: Any] = [
+            "type": "assistant",
+            "message": [
+                "role": "assistant",
+                "content": [
+                    [
+                        "type": "tool_result",
+                        "content": String(repeating: "x", count: 5000)  // ~5KB
+                    ]
+                ]
+            ]
+        ]
+        let text2 = syncManager.extractText(from: messageData2)
+        XCTAssertNotNil(text2)
+        XCTAssertTrue(text2!.contains("KB"))
+    }
 }
