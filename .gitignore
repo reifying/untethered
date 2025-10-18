@@ -106,3 +106,8 @@ iOSInjectionProject/
 
 # Backend runtime data
 backend/resources/sessions.edn
+
+# Node.js (not used - backend is Clojure)
+backend/node_modules/
+backend/package-lock.json
+backend/package.json
