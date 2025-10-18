@@ -123,23 +123,35 @@ struct ConversationView: View {
     private func sendPrompt() {
         let text = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        
+
         // Clear input immediately
         promptText = ""
-        
+
         // Create optimistic message
         client.sessionSyncManager.createOptimisticMessage(sessionId: session.id, text: text) { messageId in
             print("Created optimistic message: \(messageId)")
         }
-        
-        // Send prompt to backend with resume_session_id
-        // Note: This will eventually trigger session_updated which reconciles the optimistic message
-        let message: [String: Any] = [
+
+        // Determine if this is a new session (no messages yet) or existing session
+        let isNewSession = session.messageCount == 0
+
+        // Send prompt to backend
+        // - New sessions: use new_session_id (backend will create .jsonl file)
+        // - Existing sessions: use resume_session_id (backend appends to existing file)
+        var message: [String: Any] = [
             "type": "prompt",
             "text": text,
-            "resume_session_id": session.id.uuidString,
             "working_directory": session.workingDirectory
         ]
+
+        if isNewSession {
+            message["new_session_id"] = session.id.uuidString
+            print("📤 [ConversationView] Sending prompt with new_session_id: \(session.id.uuidString)")
+        } else {
+            message["resume_session_id"] = session.id.uuidString
+            print("📤 [ConversationView] Sending prompt with resume_session_id: \(session.id.uuidString)")
+        }
+
         client.sendMessage(message)
     }
 }
