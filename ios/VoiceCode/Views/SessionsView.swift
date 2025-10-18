@@ -19,7 +19,6 @@ struct SessionsView: View {
     @State private var showingNewSession = false
     @State private var newSessionName = ""
     @State private var newWorkingDirectory = ""
-    @State private var selectedSession: CDSession?
 
     var body: some View {
         NavigationView {
@@ -43,14 +42,9 @@ struct SessionsView: View {
                     List {
                         ForEach(sessions) { session in
                             NavigationLink(
-                                destination: ConversationView(session: session, client: client),
-                                tag: session,
-                                selection: $selectedSession
+                                destination: ConversationView(session: session, client: client)
                             ) {
-                                CDSessionRowContent(
-                                    session: session,
-                                    isSelected: sessionManager.currentSessionId == session.id
-                                )
+                                CDSessionRowContent(session: session)
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button(role: .destructive) {
@@ -58,9 +52,6 @@ struct SessionsView: View {
                                 } label: {
                                     Label("Delete", systemImage: "trash")
                                 }
-                            }
-                            .onTapGesture {
-                                sessionManager.selectSession(id: session.id)
                             }
                         }
                     }
@@ -124,12 +115,8 @@ struct SessionsView: View {
             try viewContext.save()
             print("📝 [SessionsView] Created new session: \(sessionId.uuidString)")
 
-            // Subscribe to the session to receive updates
-            client.subscribe(sessionId: sessionId.uuidString)
-
-            // Navigate to the new session
-            selectedSession = session
-            sessionManager.selectSession(id: sessionId)
+            // Note: ConversationView will handle subscription when it appears (lazy loading)
+            // This prevents duplicate subscriptions
 
         } catch {
             print("❌ [SessionsView] Failed to create session: \(error)")
@@ -164,14 +151,12 @@ struct SessionsView: View {
 
 struct CDSessionRowContent: View {
     @ObservedObject var session: CDSession
-    let isSelected: Bool
 
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text(session.displayName)
                     .font(.headline)
-                    .foregroundColor(isSelected ? .blue : .primary)
 
                 Text(session.workingDirectory)
                     .font(.caption)
@@ -207,11 +192,6 @@ struct CDSessionRowContent: View {
                     .padding(.vertical, 4)
                     .background(Color.red)
                     .clipShape(Capsule())
-            }
-
-            if isSelected {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.blue)
             }
         }
     }

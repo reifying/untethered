@@ -368,20 +368,17 @@ class SessionSyncManager {
     private func upsertSession(_ sessionData: [String: Any], in context: NSManagedObjectContext) {
         // Check if session_id is present
         guard let sessionIdString = sessionData["session_id"] as? String else {
-            logger.warning("Missing session_id in session data", metadata: [
-                "session_name": "\(sessionData["name"] ?? "unknown")",
-                "working_directory": "\(sessionData["working_directory"] ?? "unknown")"
-            ])
+            let sessionName = String(describing: sessionData["name"] ?? "unknown")
+            let workingDir = String(describing: sessionData["working_directory"] ?? "unknown")
+            logger.warning("Missing session_id in session data - name: \(sessionName, privacy: .public), working_directory: \(workingDir, privacy: .public)")
             return
         }
-        
+
         // Validate that session_id is a valid UUID
         guard let sessionId = UUID(uuidString: sessionIdString) else {
-            logger.warning("Invalid session_id format (not a UUID)", metadata: [
-                "session_id": "\(sessionIdString)",
-                "session_name": "\(sessionData["name"] ?? "unknown")",
-                "working_directory": "\(sessionData["working_directory"] ?? "unknown")"
-            ])
+            let sessionName = String(describing: sessionData["name"] ?? "unknown")
+            let workingDir = String(describing: sessionData["working_directory"] ?? "unknown")
+            logger.warning("Invalid session_id format (not a UUID) - session_id: \(sessionIdString, privacy: .public), name: \(sessionName, privacy: .public), working_directory: \(workingDir, privacy: .public)")
             return
         }
         

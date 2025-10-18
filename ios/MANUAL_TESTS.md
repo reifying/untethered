@@ -124,6 +124,29 @@ These tests invoke Claude CLI and consume AI requests, so they should be run man
 - ✅ Second response indicates `/Users` (or shows directory changed)
 - ✅ Claude recognizes the context change
 
+## Test 7: Session List Navigation (UI Only)
+
+**Purpose**: Verify that tapping a session in the list navigates to the conversation view.
+
+**Steps**:
+1. Launch the app
+2. Tap the sessions list icon (three horizontal lines)
+3. Create 2-3 test sessions using the + button
+4. Tap on any session in the list
+
+**Expected Results**:
+- ✅ Single tap immediately navigates to ConversationView
+- ✅ No checkbox appears when tapping
+- ✅ No need to long-press to open session
+- ✅ Navigation shows session name in title bar
+- ✅ Conversation view displays with message input field
+- ✅ Behavior matches standard iOS apps (Mail, Messages, Settings)
+
+**What NOT to see**:
+- ❌ Checkbox appearing on tap without navigation
+- ❌ Needing to long-press to open session
+- ❌ Tap doing nothing visible
+
 ## Running These Tests
 
 To run these tests manually:
@@ -140,3 +163,5 @@ Each prompt costs approximately:
 - Complex prompts with code: ~$0.01 - $0.05
 
 Run these tests sparingly to avoid unnecessary AI costs.
+
+**Note**: Test 7 (Session List Navigation) does not consume AI credits as it only tests UI navigation.
