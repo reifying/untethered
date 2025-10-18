@@ -1,0 +1,211 @@
+Stopping voice-code backend server...
+Waiting for server to stop...
+Starting voice-code backend server...
+Starting voice-code backend server...
+clojure -M -m voice-code.server
+Oct 18, 2025 1:11:56 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Initializing session replication system
+Oct 18, 2025 1:11:56 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Loading session index from disk {:path /Users/travisbrown/.claude/.session-index.edn}
+Oct 18, 2025 1:11:56 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Session index loaded {:session-count 704}
+Oct 18, 2025 1:11:56 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Session index initialized from disk {:session-count 704}
+Oct 18, 2025 1:11:56 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Found project directories {:count 72, :dirs [-Users-travisbrown-bio -Users-travisbrown-code-mono-active-hunt910-gear-checklist -Users-travisbrown-code-mono-hunt910-share-location -Users-travisbrown-bin -Users-travisbrown--claude -Users-travisbrown-beads -Users-travisbrown-code-mono-hunt910-stand-filter -private-tmp -Users-travisbrown-code -Users-travisbrown-code-mono-hunt910-waypoints-crash -Users-travisbrown-code-mono-hunt910-photo-delete -Users-travisbrown-code-mono-hunt910-animal-sightings -Users-travisbrown-code-mono-active-hunt910-scripts -Users-travisbrown-code-mono-hunt910-delete-route -Users-travisbrown-code-mono-hunt910-ui-unit-tests -Users-travisbrown-code-mono-hunt910-record-route-orig -Users-travisbrown-code-mono-active-ai-review -Users-travisbrown-code-tmp -Users-travisbrown-code-mono-hunt910-retake-use-photo-dismiss -Users-travisbrown-code-mono-hunt910-weather-conditions-bug -Users-travisbrown-code-mono -Users-travisbrown-code-mono-hunt910-boundary -Users-travisbrown-code-mono-hunt910-route-recording-8 -Users-travisbrown-code-mono-active-voice-code -Users-travisbrown-code-mono-hunt910-solunar-jitter -Users-travisbrown-code-mono-hunt910-trophies -Users-travisbrown-code-mono-hunt910-route-recording-6 -Users-travisbrown-code-mono-hunt910-route-recording-1 -Users-travisbrown-code-mono-hunt910-compass -Users-travisbrown-code-mono-hunt910-weather -Users-travisbrown-code-mono-910labs-website -Users-travisbrown-tmp2 - -Users-travisbrown-code-mono-hunt910-route-recording-0 -Users-travisbrown-code-mono-hunt910-route-recording-7 -Users-travisbrown-code-mono-hunt910-route-recording-9 -Users-travisbrown-code-mono-hunt910-stand-domain-model -Users-travisbrown-code-mono-active-voice-code-backend -Users-travisbrown-code-mono-hunt910-evolutionary-migrations -Users-travisbrown-code-mono-hunt910-prepare -Users-travisbrown-code-mono-hunt910-fix-delete-waypoint -Users-travisbrown-code-mono-hunt910-weather-notes -Users-travisbrown -Users-travisbrown-code-mono-active-hunt910 mono -Users-travisbrown-code-mono-hunt910-journal -Users-travisbrown-code-mono-hunt910-add-waypoint-gps -Users-travisbrown-code-mono-hunt910-code-review-threading -Users-travisbrown-code-mono-active-voice-code-stable-backend -Users-travisbrown-code-mono-active-claude-slack -Users-travisbrown-tmp -Users-travisbrown-code-mono-hunt910-download-event-log -Users-travisbrown-code-mono-hunt910-delete-wrong-photo -Users-travisbrown-code-mono-hunt910-background-route-record -Users-travisbrown-code-mono-hunt910-solunar-refresh -Users-travisbrown-code-mono-hunt910-stand-details -Users-travisbrown-code-mono-hunt910-hunt-areas -Users-travisbrown-code-mono-active-daily-market -Users-travisbrown-code-mono-hunt910-nonfunctional -Users-travisbrown-code-mono-hunt910-sunset-notification -Users-travisbrown-code-mono-hunt910-recording-performance -Users-travisbrown-code-mono-hunt910-compass2 -Users-travisbrown-code-mono-hunt910-route-recording-2 -Users-travisbrown-code-mono-hunt910-recording-interrupted -Users-travisbrown-code-mono-hunt910-route-recording-5 -Users-travisbrown-code-mono-hunt910-record-route -Users-travisbrown-code-mono-hunt910-reduce-solunar-update-frequency -Users-travisbrown-code-mono-hunt910-route-recording-4 -Users-travisbrown-code-mono-hunt910-route-recording-3 -Users-travisbrown-code-mono-hunt910-apple-maps -Users-travisbrown-code-mono-hunt910-edit-waypoint-latency -tmp-test-project]}
+Oct 18, 2025 1:11:56 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Filesystem watcher initialized {:watching-dirs 72}
+Oct 18, 2025 1:11:56 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Filesystem watcher started {:project-count 72}
+Oct 18, 2025 1:11:56 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Filesystem watcher started successfully
+Oct 18, 2025 1:11:56 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Starting voice-code server {:port 8080, :host 0.0.0.0, :default-working-directory ~/code/mono}
+✓ Voice-code WebSocket server running on ws://0.0.0.0:8080
+  Default working directory: ~/code/mono
+  Ready for connections. Press Ctrl+C to stop.
+Oct 18, 2025 1:12:06 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: WebSocket connection established {:remote-addr 100.122.31.10}
+Oct 18, 2025 1:12:06 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client connected
+Oct 18, 2025 1:12:06 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending session list {:count 50, :total 704}
+Oct 18, 2025 1:12:06 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: WebSocket connection closed {:status :going-away}
+Oct 18, 2025 1:12:32 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: WebSocket connection established {:remote-addr 100.122.31.10}
+Oct 18, 2025 1:12:32 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client connected
+Oct 18, 2025 1:12:32 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending session list {:count 50, :total 704}
+Oct 18, 2025 1:12:54 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client subscribing to session {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F}
+Oct 18, 2025 1:12:54 AM clojure.tools.logging$eval10676$fn__10679 invoke
+WARNING: Session not found {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F}
+Oct 18, 2025 1:12:54 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client subscribing to session {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F}
+Oct 18, 2025 1:12:54 AM clojure.tools.logging$eval10676$fn__10679 invoke
+WARNING: Session not found {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F}
+Oct 18, 2025 1:13:03 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Received prompt {:text Say hello, :new-session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :resume-session-id nil, :working-directory /}
+Oct 18, 2025 1:13:03 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Invoking Claude CLI {:new-session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :resume-session-id nil, :working-directory /, :model sonnet}
+Oct 18, 2025 1:13:06 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Prompt completed successfully {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :message Filesystem watcher will send session_updated}
+Oct 18, 2025 1:13:06 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Broadcasting new session {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F}
+Oct 18, 2025 1:13:06 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending message to client {:type :session-created}
+Oct 18, 2025 1:13:06 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: JSON payload {:json {"type":"session_created","session_id":"55B3D304-9B11-42EF-A97B-90A51A7D272F","name":"Terminal:  - 2025-10-18 01:13","working_directory":"/","last_modified":1760767986303,"message_count":4,"preview":""}}
+Oct 18, 2025 1:13:06 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Message sent successfully {:type :session-created}
+Oct 18, 2025 1:13:06 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending initial messages for new session {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :count 2}
+Oct 18, 2025 1:13:06 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending message to client {:type :session-updated}
+Oct 18, 2025 1:13:06 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: JSON payload {:json {"type":"session_updated","session_id":"55B3D304-9B11-42EF-A97B-90A51A7D272F","messages":[{"isSidechain":false,"sessionId":"55B3D304-9B11-42EF-A97B-90A51A7D272F","parentUuid":null,"cwd":"/","type":"user","gitBranch":"","uuid":"bb7cd1eb-7201-4290-8f2e-51f2f88cb7d9","version":"2.0.22","timestamp":"2025-10-18T06:13:04.088Z","message":{"role":"user","content":"Say hello"},"userType":"external"},{"isSidechain":false,"sessionId":"55B3D304-9B11-42EF-A97B-90A51A7D272F","parentUuid":"bb7cd1eb-7201-4290-8f2e-51f2f88cb7d9","cwd":"/","type":"assistant","requestId":"req_011CUEAqWccCq1sXMdLGyBeU","gitBranch":"","uuid":"4a50cb77-44eb-42d0-aa56-607645f393d6","version":"2.0.22","timestamp":"2025-10-18T06:13:06.276Z","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_01X7KaCQfAyC5jBY1uGeFdjV","type":"message","role":"assistant","content":[{"type":"text","text":"Hello! I'm Claude Code, ready to help you with your software engineering tasks. How can I assist you today?"}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":2466,"cache_read_input_tokens":12202,"cache_creation":{"ephemeral_5m_input_tokens":2466,"ephemeral_1h_input_tokens":0},"output_tokens":6,"service_tier":"standard"}},"userType":"external"}]}}
+Oct 18, 2025 1:13:06 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Message sent successfully {:type :session-updated}
+Oct 18, 2025 1:13:06 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: New session detected {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :name Terminal:  - 2025-10-18 01:13}
+Oct 18, 2025 1:13:20 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Received prompt {:text Remember the number 45, :new-session-id nil, :resume-session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :working-directory /}
+Oct 18, 2025 1:13:20 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Invoking Claude CLI {:new-session-id nil, :resume-session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :working-directory /, :model sonnet}
+Oct 18, 2025 1:13:23 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Prompt completed successfully {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :message Filesystem watcher will send session_updated}
+Oct 18, 2025 1:13:24 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending message to client {:type :session-updated}
+Oct 18, 2025 1:13:24 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: JSON payload {:json {"type":"session_updated","session_id":"55B3D304-9B11-42EF-A97B-90A51A7D272F","messages":[{"isSidechain":false,"sessionId":"55B3D304-9B11-42EF-A97B-90A51A7D272F","parentUuid":null,"cwd":"/","type":"user","gitBranch":"","uuid":"bb7cd1eb-7201-4290-8f2e-51f2f88cb7d9","version":"2.0.22","timestamp":"2025-10-18T06:13:04.088Z","message":{"role":"user","content":"Say hello"},"userType":"external"},{"isSidechain":false,"sessionId":"55B3D304-9B11-42EF-A97B-90A51A7D272F","parentUuid":"bb7cd1eb-7201-4290-8f2e-51f2f88cb7d9","cwd":"/","type":"assistant","requestId":"req_011CUEAqWccCq1sXMdLGyBeU","gitBranch":"","uuid":"4a50cb77-44eb-42d0-aa56-607645f393d6","version":"2.0.22","timestamp":"2025-10-18T06:13:06.276Z","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_01X7KaCQfAyC5jBY1uGeFdjV","type":"message","role":"assistant","content":[{"type":"text","text":"Hello! I'm Claude Code, ready to help you with your software engineering tasks. How can I assist you today?"}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":2466,"cache_read_input_tokens":12202,"cache_creation":{"ephemeral_5m_input_tokens":2466,"ephemeral_1h_input_tokens":0},"output_tokens":6,"service_tier":"standard"}},"userType":"external"},{"isSidechain":false,"sessionId":"55B3D304-9B11-42EF-A97B-90A51A7D272F","parentUuid":"4a50cb77-44eb-42d0-aa56-607645f393d6","cwd":"/","type":"user","gitBranch":"","uuid":"02cfedb5-452e-4947-adb7-1655bd88a13c","version":"2.0.22","timestamp":"2025-10-18T06:13:21.262Z","message":{"role":"user","content":"Remember the number 45"},"userType":"external"},{"isSidechain":false,"sessionId":"55B3D304-9B11-42EF-A97B-90A51A7D272F","parentUuid":"02cfedb5-452e-4947-adb7-1655bd88a13c","cwd":"/","type":"assistant","requestId":"req_011CUEArn54u3pT5ufb9SRPG","gitBranch":"","uuid":"91312565-87fb-4dc4-9160-0899234af066","version":"2.0.22","timestamp":"2025-10-18T06:13:23.710Z","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_01RRnNrAt9F5w5PyZiikubWd","type":"message","role":"assistant","content":[{"type":"text","text":"Got it, I'll remember the number 45. Let me know when you need me to recall it or if there's anything else I can help you with!"}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":35,"cache_read_input_tokens":14668,"cache_creation":{"ephemeral_5m_input_tokens":35,"ephemeral_1h_input_tokens":0},"output_tokens":1,"service_tier":"standard"}},"userType":"external"}]}}
+Oct 18, 2025 1:13:24 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Message sent successfully {:type :session-updated}
+Oct 18, 2025 1:13:45 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Received prompt {:text What’s the number I told you?, :new-session-id nil, :resume-session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :working-directory /}
+Oct 18, 2025 1:13:45 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Invoking Claude CLI {:new-session-id nil, :resume-session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :working-directory /, :model sonnet}
+Oct 18, 2025 1:13:48 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Prompt completed successfully {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :message Filesystem watcher will send session_updated}
+Oct 18, 2025 1:13:48 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending message to client {:type :session-updated}
+Oct 18, 2025 1:13:48 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: JSON payload {:json {"type":"session_updated","session_id":"55B3D304-9B11-42EF-A97B-90A51A7D272F","messages":[{"isSidechain":false,"sessionId":"55B3D304-9B11-42EF-A97B-90A51A7D272F","parentUuid":"91312565-87fb-4dc4-9160-0899234af066","cwd":"/","type":"user","gitBranch":"","uuid":"3a818cf9-8fd0-49b7-a365-6b94a39f7e4d","version":"2.0.22","timestamp":"2025-10-18T06:13:46.585Z","message":{"role":"user","content":"What’s the number I told you?"},"userType":"external"},{"isSidechain":false,"sessionId":"55B3D304-9B11-42EF-A97B-90A51A7D272F","parentUuid":"3a818cf9-8fd0-49b7-a365-6b94a39f7e4d","cwd":"/","type":"assistant","requestId":"req_011CUEAteN2PJNN1NM4MHxfW","gitBranch":"","uuid":"388bd7fb-d86d-48c7-b604-03dce8d361c7","version":"2.0.22","timestamp":"2025-10-18T06:13:48.367Z","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_01Bik2fj2hKLKRvrg6uQDZhp","type":"message","role":"assistant","content":[{"type":"text","text":"The number you told me to remember is 45."}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":47,"cache_read_input_tokens":14703,"cache_creation":{"ephemeral_5m_input_tokens":47,"ephemeral_1h_input_tokens":0},"output_tokens":14,"service_tier":"standard"}},"userType":"external"}]}}
+Oct 18, 2025 1:13:48 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Message sent successfully {:type :session-updated}
+Oct 18, 2025 1:13:51 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client unsubscribing from session {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F}
+Oct 18, 2025 1:14:03 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client subscribing to session {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD}
+Oct 18, 2025 1:14:03 AM clojure.tools.logging$eval10676$fn__10679 invoke
+WARNING: Session not found {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD}
+Oct 18, 2025 1:14:03 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client subscribing to session {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD}
+Oct 18, 2025 1:14:03 AM clojure.tools.logging$eval10676$fn__10679 invoke
+WARNING: Session not found {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD}
+Oct 18, 2025 1:14:46 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Received prompt {:text 1. What’s your cwd
+2, did I tell you a number to r, :new-session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD, :resume-session-id nil, :working-directory /}
+Oct 18, 2025 1:14:46 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Invoking Claude CLI {:new-session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD, :resume-session-id nil, :working-directory /, :model sonnet}
+Oct 18, 2025 1:14:49 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Prompt completed successfully {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD, :message Filesystem watcher will send session_updated}
+Oct 18, 2025 1:14:50 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Broadcasting new session {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD}
+Oct 18, 2025 1:14:50 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending message to client {:type :session-created}
+Oct 18, 2025 1:14:50 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: JSON payload {:json {"type":"session_created","session_id":"D929C7F1-DF23-477A-9F5A-7FB705E57ECD","name":"Terminal:  - 2025-10-18 01:14","working_directory":"/","last_modified":1760768089858,"message_count":4,"preview":""}}
+Oct 18, 2025 1:14:50 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Message sent successfully {:type :session-created}
+Oct 18, 2025 1:14:50 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending initial messages for new session {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD, :count 2}
+Oct 18, 2025 1:14:50 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending message to client {:type :session-updated}
+Oct 18, 2025 1:14:50 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: JSON payload {:json {"type":"session_updated","session_id":"D929C7F1-DF23-477A-9F5A-7FB705E57ECD","messages":[{"isSidechain":false,"sessionId":"D929C7F1-DF23-477A-9F5A-7FB705E57ECD","parentUuid":null,"cwd":"/","type":"user","gitBranch":"","uuid":"6a4daa35-1c9e-4edf-8192-fe5291542a2c","version":"2.0.22","timestamp":"2025-10-18T06:14:47.120Z","message":{"role":"user","content":"1. What’s your cwd\n2, did I tell you a number to remember?"},"userType":"external"},{"isSidechain":false,"sessionId":"D929C7F1-DF23-477A-9F5A-7FB705E57ECD","parentUuid":"6a4daa35-1c9e-4edf-8192-fe5291542a2c","cwd":"/","type":"assistant","requestId":"req_011CUEAy77i63Lep5GLNGvLs","gitBranch":"","uuid":"159e976c-5289-44cc-8f02-9bb8536fd15b","version":"2.0.22","timestamp":"2025-10-18T06:14:49.818Z","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_01QrQ8N683DLfnQLSB8PUN9G","type":"message","role":"assistant","content":[{"type":"text","text":"1. My current working directory is `/` (the root directory).\n\n2. No, you haven't told me a number to remember in our conversation so far. This appears to be the beginning of our conversation. If you'd like me to remember a number, please let me know what it is!"}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":340,"cache_read_input_tokens":14346,"cache_creation":{"ephemeral_5m_input_tokens":340,"ephemeral_1h_input_tokens":0},"output_tokens":66,"service_tier":"standard"}},"userType":"external"}]}}
+Oct 18, 2025 1:14:50 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Message sent successfully {:type :session-updated}
+Oct 18, 2025 1:14:50 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: New session detected {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD, :name Terminal:  - 2025-10-18 01:14}
+Oct 18, 2025 1:15:00 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client unsubscribing from session {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD}
+Oct 18, 2025 1:15:05 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client subscribing to session {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F}
+Oct 18, 2025 1:15:05 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending session history {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :message-count 6, :total 10}
+Oct 18, 2025 1:15:21 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Received prompt {:text Again, what number?, :new-session-id nil, :resume-session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :working-directory /}
+Oct 18, 2025 1:15:21 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Invoking Claude CLI {:new-session-id nil, :resume-session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :working-directory /, :model sonnet}
+Oct 18, 2025 1:15:24 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending message to client {:type :session-updated}
+Oct 18, 2025 1:15:24 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: JSON payload {:json {"type":"session_updated","session_id":"55B3D304-9B11-42EF-A97B-90A51A7D272F","messages":[]}}
+Oct 18, 2025 1:15:24 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Message sent successfully {:type :session-updated}
+Oct 18, 2025 1:15:54 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client unsubscribing from session {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F}
+Oct 18, 2025 1:15:58 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client subscribing to session {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD}
+Oct 18, 2025 1:15:58 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending session history {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD, :message-count 2, :total 4}
+Oct 18, 2025 1:16:02 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client unsubscribing from session {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD}
+Oct 18, 2025 1:16:04 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client subscribing to session {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F}
+Oct 18, 2025 1:16:04 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending session history {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :message-count 6, :total 12}
+Oct 18, 2025 1:16:15 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client unsubscribing from session {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F}
+Oct 18, 2025 1:16:22 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client subscribing to session {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F}
+Oct 18, 2025 1:16:22 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending session history {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :message-count 6, :total 12}
+Oct 18, 2025 1:16:26 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Prompt completed successfully {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :message Filesystem watcher will send session_updated}
+Oct 18, 2025 1:16:26 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending message to client {:type :session-updated}
+Oct 18, 2025 1:16:26 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: JSON payload {:json {"type":"session_updated","session_id":"55B3D304-9B11-42EF-A97B-90A51A7D272F","messages":[{"isSidechain":false,"sessionId":"55B3D304-9B11-42EF-A97B-90A51A7D272F","parentUuid":"388bd7fb-d86d-48c7-b604-03dce8d361c7","cwd":"/","type":"user","gitBranch":"","uuid":"a4e4fd05-7a83-41fb-96fd-f7890672a590","version":"2.0.22","timestamp":"2025-10-18T06:15:22.919Z","message":{"role":"user","content":"Again, what number?"},"userType":"external"},{"isSidechain":false,"sessionId":"55B3D304-9B11-42EF-A97B-90A51A7D272F","parentUuid":"a4e4fd05-7a83-41fb-96fd-f7890672a590","cwd":"/","type":"assistant","requestId":"req_011CUEB1kBxQn3VPZaQBdoVE","gitBranch":"","uuid":"b2811268-d8f0-4c4e-98c2-3102089f96af","version":"2.0.22","timestamp":"2025-10-18T06:16:26.206Z","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_019KfzUTEud5B1WX475wPnJR","type":"message","role":"assistant","content":[{"type":"text","text":"45 - that's the number you asked me to remember."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":14772,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":17,"service_tier":"standard"}},"userType":"external"}]}}
+Oct 18, 2025 1:16:26 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Message sent successfully {:type :session-updated}
+Oct 18, 2025 1:16:48 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client unsubscribing from session {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F}
+Oct 18, 2025 1:16:51 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client subscribing to session {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD}
+Oct 18, 2025 1:16:51 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending session history {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD, :message-count 2, :total 4}
+Oct 18, 2025 1:17:03 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Received prompt {:text Reminder the number 46, :new-session-id nil, :resume-session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD, :working-directory /}
+Oct 18, 2025 1:17:03 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Invoking Claude CLI {:new-session-id nil, :resume-session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD, :working-directory /, :model sonnet}
+Oct 18, 2025 1:17:07 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Prompt completed successfully {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD, :message Filesystem watcher will send session_updated}
+Oct 18, 2025 1:17:07 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client unsubscribing from session {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD}
+Oct 18, 2025 1:17:11 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client subscribing to session {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F}
+Oct 18, 2025 1:17:11 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending session history {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :message-count 8, :total 14}
+Oct 18, 2025 1:17:33 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Received prompt {:text Repeat the number (this is a test), :new-session-id nil, :resume-session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :working-directory /}
+Oct 18, 2025 1:17:33 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Invoking Claude CLI {:new-session-id nil, :resume-session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :working-directory /, :model sonnet}
+Oct 18, 2025 1:17:36 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Prompt completed successfully {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F, :message Filesystem watcher will send session_updated}
+Oct 18, 2025 1:17:36 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending message to client {:type :session-updated}
+Oct 18, 2025 1:17:36 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: JSON payload {:json {"type":"session_updated","session_id":"55B3D304-9B11-42EF-A97B-90A51A7D272F","messages":[{"isSidechain":false,"sessionId":"55B3D304-9B11-42EF-A97B-90A51A7D272F","parentUuid":"b2811268-d8f0-4c4e-98c2-3102089f96af","cwd":"/","type":"user","gitBranch":"","uuid":"265d0399-3d76-4679-a38e-32b6b27c49d0","version":"2.0.22","timestamp":"2025-10-18T06:17:34.806Z","message":{"role":"user","content":"Repeat the number (this is a test)"},"userType":"external"},{"isSidechain":false,"sessionId":"55B3D304-9B11-42EF-A97B-90A51A7D272F","parentUuid":"265d0399-3d76-4679-a38e-32b6b27c49d0","cwd":"/","type":"assistant","requestId":"req_011CUEBBU1trwfombdWUdrQ5","gitBranch":"","uuid":"1cf7985a-5d96-409e-b7f4-76fa1593dec7","version":"2.0.22","timestamp":"2025-10-18T06:17:36.260Z","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_01BVj8YtGiNeCPuvZpifnYco","type":"message","role":"assistant","content":[{"type":"text","text":"45"}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":30,"cache_read_input_tokens":14772,"cache_creation":{"ephemeral_5m_input_tokens":30,"ephemeral_1h_input_tokens":0},"output_tokens":5,"service_tier":"standard"}},"userType":"external"}]}}
+Oct 18, 2025 1:17:36 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Message sent successfully {:type :session-updated}
+Oct 18, 2025 1:17:40 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client unsubscribing from session {:session-id 55B3D304-9B11-42EF-A97B-90A51A7D272F}
+Oct 18, 2025 1:17:42 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client subscribing to session {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD}
+Oct 18, 2025 1:17:42 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending session history {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD, :message-count 4, :total 6}
+Oct 18, 2025 1:17:48 AM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client unsubscribing from session {:session-id D929C7F1-DF23-477A-9F5A-7FB705E57ECD}

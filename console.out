@@ -1,57 +1,137 @@
-VoiceCode(47931,0x208a3f200) malloc: xzm: failed to initialize deferred reclamation buffer [2] (null)
-CoreData store loaded: /var/mobile/Containers/Data/Application/0C263A4E-C048-43F3-BCB0-9DB81E4D2EEE/Library/Application Support/VoiceCode.sqlite
+VoiceCode(48201,0x208a3f200) malloc: xzm: failed to initialize deferred reclamation buffer [2] (null)
+CoreData store loaded: /var/mobile/Containers/Data/Application/DFE0CD4B-050F-4228-AF3E-995F1E4DEDD6/Library/Application Support/VoiceCode.sqlite
 🔌 [ContentView] Connecting with iOS session UUID: 054552BF-2174-42B3-A37E-46FE4FFBAB34
+tcp_input [C1:2] flags=[R.] seq=0, ack=726429673, win=0 state=SYN_SENT rcv_nxt=0, snd_una=726429672
+nw_endpoint_flow_failed_with_error [C1 100.71.95.127:8080 in_progress channel-flow (satisfied (Path is satisfied), viable, interface: utun7, ipv4, ipv6, dns, uses wifi, LQM: unknown)] already failing, returning
+Connection 1: received failure notification
+Connection 1: failed to connect 1:61, reason -1
+Connection 1: encountered error(1:61)
+nw_connection_copy_protocol_metadata_internal_block_invoke [C1] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_protocol_metadata_internal_block_invoke [C1] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_connected_local_endpoint_block_invoke [C1] Client called nw_connection_copy_connected_local_endpoint on unconnected nw_connection
+nw_connection_copy_connected_remote_endpoint_block_invoke [C1] Client called nw_connection_copy_connected_remote_endpoint on unconnected nw_connection
+Task <276EA4A8-CB04-4099-BD53-A32777BA769A>.<1> HTTP load failed, 0/0 bytes (error code: -1004 [1:61])
+Task <276EA4A8-CB04-4099-BD53-A32777BA769A>.<1> finished with error [-1004] Error Domain=NSURLErrorDomain Code=-1004 "Could not connect to the server." UserInfo={NSErrorFailingURLStringKey=ws://100.71.95.127:8080/, NSErrorFailingURLKey=ws://100.71.95.127:8080/, _NSURLErrorRelatedURLSessionTaskErrorKey=(
+    "LocalWebSocketTask <276EA4A8-CB04-4099-BD53-A32777BA769A>.<1>"
+), _NSURLErrorFailingURLSessionTaskErrorKey=LocalWebSocketTask <276EA4A8-CB04-4099-BD53-A32777BA769A>.<1>, NSLocalizedDescription=Could not connect to the server.}
+Attempting reconnection (attempt 1, next delay: 2.0s)...
+tcp_input [C2:2] flags=[R.] seq=0, ack=3597673222, win=0 state=SYN_SENT rcv_nxt=0, snd_una=3597673221
+nw_endpoint_flow_failed_with_error [C2 100.71.95.127:8080 in_progress channel-flow (satisfied (Path is satisfied), viable, interface: utun7, ipv4, ipv6, dns, uses wifi, LQM: unknown)] already failing, returning
+Connection 2: received failure notification
+Connection 2: failed to connect 1:61, reason -1
+Connection 2: encountered error(1:61)
+nw_connection_copy_protocol_metadata_internal_block_invoke [C2] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_protocol_metadata_internal_block_invoke [C2] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_connected_local_endpoint_block_invoke [C2] Client called nw_connection_copy_connected_local_endpoint on unconnected nw_connection
+nw_connection_copy_connected_remote_endpoint_block_invoke [C2] Client called nw_connection_copy_connected_remote_endpoint on unconnected nw_connection
+Task <E6DFA69C-4E23-47F1-A606-85E415B8D42B>.<2> HTTP load failed, 0/0 bytes (error code: -1004 [1:61])
+Task <E6DFA69C-4E23-47F1-A606-85E415B8D42B>.<2> finished with error [-1004] Error Domain=NSURLErrorDomain Code=-1004 "Could not connect to the server." UserInfo={NSErrorFailingURLStringKey=ws://100.71.95.127:8080/, NSErrorFailingURLKey=ws://100.71.95.127:8080/, _NSURLErrorRelatedURLSessionTaskErrorKey=(
+    "LocalWebSocketTask <E6DFA69C-4E23-47F1-A606-85E415B8D42B>.<2>"
+), _NSURLErrorFailingURLSessionTaskErrorKey=LocalWebSocketTask <E6DFA69C-4E23-47F1-A606-85E415B8D42B>.<2>, NSLocalizedDescription=Could not connect to the server.}
+Attempting reconnection (attempt 2, next delay: 4.0s)...
+tcp_input [C3:2] flags=[R.] seq=0, ack=1382932919, win=0 state=SYN_SENT rcv_nxt=0, snd_una=1382932918
+nw_endpoint_flow_failed_with_error [C3 100.71.95.127:8080 in_progress channel-flow (satisfied (Path is satisfied), viable, interface: utun7, ipv4, ipv6, dns, uses wifi, LQM: unknown)] already failing, returning
+Connection 3: received failure notification
+Connection 3: failed to connect 1:61, reason -1
+Connection 3: encountered error(1:61)
+nw_connection_copy_protocol_metadata_internal_block_invoke [C3] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_protocol_metadata_internal_block_invoke [C3] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_connected_local_endpoint_block_invoke [C3] Client called nw_connection_copy_connected_local_endpoint on unconnected nw_connection
+nw_connection_copy_connected_remote_endpoint_block_invoke [C3] Client called nw_connection_copy_connected_remote_endpoint on unconnected nw_connection
+Task <CBA2DE98-30E2-4949-B696-468E3A054BE8>.<3> HTTP load failed, 0/0 bytes (error code: -1004 [1:61])
+Task <CBA2DE98-30E2-4949-B696-468E3A054BE8>.<3> finished with error [-1004] Error Domain=NSURLErrorDomain Code=-1004 "Could not connect to the server." UserInfo={NSErrorFailingURLStringKey=ws://100.71.95.127:8080/, NSErrorFailingURLKey=ws://100.71.95.127:8080/, _NSURLErrorRelatedURLSessionTaskErrorKey=(
+    "LocalWebSocketTask <CBA2DE98-30E2-4949-B696-468E3A054BE8>.<3>"
+), _NSURLErrorFailingURLSessionTaskErrorKey=LocalWebSocketTask <CBA2DE98-30E2-4949-B696-468E3A054BE8>.<3>, NSLocalizedDescription=Could not connect to the server.}
+Attempting reconnection (attempt 3, next delay: 8.0s)...
 📡 [VoiceCodeClient] Received hello from server
-📤 [VoiceCodeClient] Sending connect with session_id: 054552BF-2174-42B3-A37E-46FE4FFBAB34
+📤 [VoiceCodeClient] Sending connect without session_id
 📋 [VoiceCodeClient] Received session_list with 50 sessions
 Received session_list with 50 sessions
 Invalid or missing session_id in session data
 Saved 50 sessions to CoreData
+📍 [ActiveSessionManager] Setting active session: 44420F2D-EC8E-4393-8334-4E41CED4977B
+📖 [VoiceCodeClient] Subscribing to session: 44420F2D-EC8E-4393-8334-4E41CED4977B
+📍 [ActiveSessionManager] Clearing active session
+📕 [VoiceCodeClient] Unsubscribing from session: 44420F2D-EC8E-4393-8334-4E41CED4977B
 UIKeyboardLayoutStar implements focusItemsInRect: - caching for linear focus movement is limited as long as this view is on screen.
-Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
-Could not find cached accumulator for token=302A111F type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
-Could not find cached accumulator for token=D5A5E60D type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
-Could not find cached accumulator for token=16CC1B2C type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
-Could not find cached accumulator for token=B6629ED1 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
-📝 [SessionsView] Created new session: C354BD45-BE6F-4051-B543-D925005CEF38
-📖 [VoiceCodeClient] Subscribing to session: C354BD45-BE6F-4051-B543-D925005CEF38
-🔄 [SessionManager] Selected CoreData session: C354BD45-BE6F-4051-B543-D925005CEF38
-📍 [ActiveSessionManager] Setting active session: C354BD45-BE6F-4051-B543-D925005CEF38
-📖 [VoiceCodeClient] Subscribing to session: C354BD45-BE6F-4051-B543-D925005CEF38
-Reporter disconnected or already stopped. { func=stop, reporterID=205862077464577 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
-Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
-Could not find cached accumulator for token=FA6E9286 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
-Could not find cached accumulator for token=43389C10 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
-Could not find cached accumulator for token=50A0FE0C type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
-Could not find cached accumulator for token=10AD674C type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
-Could not find cached accumulator for token=7CBC1CF5 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
-Could not find cached accumulator for token=4A513F8D type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
-Could not find cached accumulator for token=45A24B2D type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
-Could not find cached accumulator for token=E38EA867 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
-Creating optimistic message for session: C354BD45-BE6F-4051-B543-D925005CEF38
-📤 [ConversationView] Sending prompt with new_session_id: C354BD45-BE6F-4051-B543-D925005CEF38
-Created optimistic message: 155C2383-74AF-4C6B-9894-D5A6BEF1C659
-Created optimistic message: 155C2383-74AF-4C6B-9894-D5A6BEF1C659
+Reporter disconnected. { function=sendMessage, reporterID=207021718634499 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634499 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634499 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634499 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634499 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634499 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634499 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634499 }
+Could not find cached accumulator for token=1BFB6150 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=7EA5F008 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+📝 [SessionsView] Created new session: 8C8D36BC-1176-42E7-B234-58E48A814367
+📖 [VoiceCodeClient] Subscribing to session: 8C8D36BC-1176-42E7-B234-58E48A814367
+🔄 [SessionManager] Selected CoreData session: 8C8D36BC-1176-42E7-B234-58E48A814367
+📍 [ActiveSessionManager] Setting active session: 8C8D36BC-1176-42E7-B234-58E48A814367
+📖 [VoiceCodeClient] Subscribing to session: 8C8D36BC-1176-42E7-B234-58E48A814367
+Reporter disconnected or already stopped. { func=stop, reporterID=207021718634499 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634500 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634500 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634500 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634500 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634500 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634500 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634500 }
+Reporter disconnected. { function=sendMessage, reporterID=207021718634500 }
+Could not find cached accumulator for token=C329312B type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=85001711 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=788A0C49 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=EADBBF6C type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=531DB37B type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=9DB137F7 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=B86D9F4D type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Error: this application, or a library it uses, has passed an invalid numeric value (NaN, or not-a-number) to CoreGraphics API and this value is being ignored. Please fix this problem.
+If you want to see the backtrace, please set CG_NUMERICS_SHOW_BACKTRACE environmental variable.
+Error: this application, or a library it uses, has passed an invalid numeric value (NaN, or not-a-number) to CoreGraphics API and this value is being ignored. Please fix this problem.
+If you want to see the backtrace, please set CG_NUMERICS_SHOW_BACKTRACE environmental variable.
+Error: this application, or a library it uses, has passed an invalid numeric value (NaN, or not-a-number) to CoreGraphics API and this value is being ignored. Please fix this problem.
+If you want to see the backtrace, please set CG_NUMERICS_SHOW_BACKTRACE environmental variable.
+Error: this application, or a library it uses, has passed an invalid numeric value (NaN, or not-a-number) to CoreGraphics API and this value is being ignored. Please fix this problem.
+If you want to see the backtrace, please set CG_NUMERICS_SHOW_BACKTRACE environmental variable.
+Error: this application, or a library it uses, has passed an invalid numeric value (NaN, or not-a-number) to CoreGraphics API and this value is being ignored. Please fix this problem.
+If you want to see the backtrace, please set CG_NUMERICS_SHOW_BACKTRACE environmental variable.
+Error: this application, or a library it uses, has passed an invalid numeric value (NaN, or not-a-number) to CoreGraphics API and this value is being ignored. Please fix this problem.
+If you want to see the backtrace, please set CG_NUMERICS_SHOW_BACKTRACE environmental variable.
+Could not find cached accumulator for token=083BD534 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=50E00E73 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Creating optimistic message for session: 8C8D36BC-1176-42E7-B234-58E48A814367
+📤 [ConversationView] Sending prompt with new_session_id: 8C8D36BC-1176-42E7-B234-58E48A814367
+Created optimistic message: 859E66D1-2B2B-40C0-9EF1-8147FC3DB416
+Created optimistic message: 859E66D1-2B2B-40C0-9EF1-8147FC3DB416
 Server ack: Processing prompt...
 ✨ [VoiceCodeClient] Received session_created
-Received session_created for: C354BD45-BE6F-4051-B543-D925005CEF38
-Created session: C354BD45-BE6F-4051-B543-D925005CEF38
-🔄 [VoiceCodeClient] Received session_updated for C354BD45-BE6F-4051-B543-D925005CEF38 with 4 messages
-Received session_updated for: C354BD45-BE6F-4051-B543-D925005CEF38 with 4 messages
+Received session_created for: 8C8D36BC-1176-42E7-B234-58E48A814367
+Created session: 8C8D36BC-1176-42E7-B234-58E48A814367
+🔄 [VoiceCodeClient] Received session_updated for 8C8D36BC-1176-42E7-B234-58E48A814367 with 2 messages
+Received session_updated for: 8C8D36BC-1176-42E7-B234-58E48A814367 with 2 messages
 Reconciled optimistic message
-Active session: will speak 2 assistant messages
-Updated session: C354BD45-BE6F-4051-B543-D925005CEF38
+Active session: will speak 1 assistant messages
+Updated session: 8C8D36BC-1176-42E7-B234-58E48A814367
+Could not find cached accumulator for token=733AB2BE type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=6236ADC1 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=B6EE8447 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=9FC53657 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=53EED415 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=E06DDA41 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=59D0B7EB type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=E78BB093 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=409FC0C5 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=8CBE3FB0 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=6856ABF0 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=265EEDAC type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=5962AF57 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=3F153405 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=5CD04383 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=790DA22A type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=7F57AF6B type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=57DB6CC0 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Creating optimistic message for session: 8C8D36BC-1176-42E7-B234-58E48A814367
+📤 [ConversationView] Sending prompt with resume_session_id: 8C8D36BC-1176-42E7-B234-58E48A814367
+Created optimistic message: E0812298-D706-4466-B58D-DB5309565968
+Created optimistic message: E0812298-D706-4466-B58D-DB5309565968
+Server ack: Processing prompt...
