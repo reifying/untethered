@@ -177,3 +177,42 @@
 
   (testing "Empty list returns empty list"
     (is (empty? (repl/filter-sidechain-messages [])) "Empty list should return empty")))
+
+(deftest session-update-filtering-test
+  (testing "Session updates (filesystem watcher) filter sidechain messages"
+    ;; Simulate what handle-file-modified does: parse new messages, then filter
+    (let [new-messages [{:type "user"
+                         :isSidechain true
+                         :message {:role "user" :content "Warmup"}
+                         :uuid "warmup-1"}
+                        {:type "assistant"
+                         :isSidechain true
+                         :message {:role "assistant" :content [{:type "text" :text "Warmup done"}]}
+                         :uuid "warmup-2"}
+                        {:type "user"
+                         :isSidechain false
+                         :message {:role "user" :content "Real prompt"}
+                         :uuid "real-1"}
+                        {:type "assistant"
+                         :isSidechain false
+                         :message {:role "assistant" :content [{:type "text" :text "Real response"}]}
+                         :uuid "real-2"}]
+          ;; This is what handle-file-modified now does before calling callback
+          filtered (repl/filter-sidechain-messages new-messages)]
+
+      (is (= 2 (count filtered)) "Should filter to only real messages")
+      (is (= ["real-1" "real-2"] (map :uuid filtered)) "Should only have real message UUIDs")))
+
+  (testing "Session history (subscribe) filters sidechain messages"
+    ;; Simulate what subscribe handler does: parse all messages, filter, then take-last 20
+    (let [all-messages [{:type "user" :isSidechain true :uuid "w1"}
+                        {:type "assistant" :isSidechain true :uuid "w2"}
+                        {:type "user" :isSidechain false :uuid "r1"}
+                        {:type "assistant" :isSidechain false :uuid "r2"}
+                        {:type "user" :isSidechain false :uuid "r3"}
+                        {:type "assistant" :isSidechain false :uuid "r4"}]
+          ;; This is what subscribe handler now does
+          messages (vec (take-last 20 (repl/filter-sidechain-messages all-messages)))]
+
+      (is (= 4 (count messages)) "Should have 4 real messages")
+      (is (= ["r1" "r2" "r3" "r4"] (map :uuid messages)) "Should only have real messages in order"))))

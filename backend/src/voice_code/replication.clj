@@ -388,9 +388,9 @@
                     (swap! session-index assoc session-id new-metadata)
                     (save-index! @session-index)))
 
-                ;; Notify callback
+                ;; Notify callback (filter sidechain messages)
                 (when-let [callback (:on-session-updated @watcher-state)]
-                  (callback session-id new-messages))
+                  (callback session-id (filter-sidechain-messages new-messages)))
 
                 (log/debug "Session updated" {:session-id session-id :new-messages (count new-messages)})))
             (catch Exception e

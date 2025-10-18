@@ -242,8 +242,8 @@
               (if-let [metadata (repl/get-session-metadata session-id)]
                 (let [file-path (:file metadata)
                       all-messages (repl/parse-jsonl-file file-path)
-                      ;; Limit to most recent 20 messages to prevent payload size issues
-                      messages (vec (take-last 20 all-messages))]
+                      ;; Filter sidechain messages, then limit to most recent 20
+                      messages (vec (take-last 20 (repl/filter-sidechain-messages all-messages)))]
                   (log/info "Sending session history" {:session-id session-id :message-count (count messages) :total (count all-messages)})
                   (http/send! channel
                               (generate-json
