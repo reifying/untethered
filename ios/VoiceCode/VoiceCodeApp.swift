@@ -7,7 +7,7 @@ import SwiftUI
 struct VoiceCodeApp: App {
     let persistenceController = PersistenceController.shared
     @StateObject private var settings = AppSettings()
-    
+
     var body: some Scene {
         WindowGroup {
             RootView(settings: settings)
@@ -23,10 +23,16 @@ struct RootView: View {
     @StateObject private var voiceOutput = VoiceOutputManager()
     @StateObject private var client: VoiceCodeClient
     @State private var showingSettings = false
-    
+
     init(settings: AppSettings) {
         self.settings = settings
-        _client = StateObject(wrappedValue: VoiceCodeClient(serverURL: settings.fullServerURL))
+        // Create VoiceOutputManager first, then pass to VoiceCodeClient for auto-speak
+        let voiceManager = VoiceOutputManager()
+        _voiceOutput = StateObject(wrappedValue: voiceManager)
+        _client = StateObject(wrappedValue: VoiceCodeClient(
+            serverURL: settings.fullServerURL,
+            voiceOutputManager: voiceManager
+        ))
     }
     
     var body: some View {

@@ -608,4 +608,351 @@ final class SessionSyncManagerTests: XCTestCase {
         XCTAssertNotNil(text2)
         XCTAssertTrue(text2!.contains("KB"))
     }
+
+    // MARK: - Message Filtering Tests
+
+    func testFilterSummaryMessages() throws {
+        // Create session
+        let sessionId = UUID()
+        let session = CDSession(context: context)
+        session.id = sessionId
+        session.backendName = "Test Session"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.unreadCount = 0
+        session.markedDeleted = false
+
+        try context.save()
+
+        // Create a mix of messages including summary types
+        let messages: [[String: Any]] = [
+            // Summary message (should be filtered)
+            [
+                "type": "summary",
+                "summary": "API Error: 401 OAuth not supported"
+            ],
+            // User message (should be kept)
+            [
+                "type": "user",
+                "message": [
+                    "role": "user",
+                    "content": "Hello"
+                ],
+                "timestamp": "2024-01-01T12:00:00.000Z"
+            ],
+            // Another summary message (should be filtered)
+            [
+                "type": "summary",
+                "summary": "Another error message"
+            ],
+            // Assistant message (should be kept)
+            [
+                "type": "assistant",
+                "message": [
+                    "role": "assistant",
+                    "content": [
+                        ["type": "text", "text": "Hi there"]
+                    ]
+                ],
+                "timestamp": "2024-01-01T12:00:01.000Z"
+            ]
+        ]
+
+        syncManager.handleSessionUpdated(sessionId: sessionId.uuidString, messages: messages)
+
+        // Wait for background processing
+        let expectation = XCTestExpectation(description: "Wait for sync")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Verify only user and assistant messages were created
+        context.refreshAllObjects()
+        let messageFetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
+        let savedMessages = try context.fetch(messageFetchRequest)
+
+        XCTAssertEqual(savedMessages.count, 2, "Should only have 2 messages (user and assistant)")
+        XCTAssertEqual(savedMessages.filter { $0.role == "user" }.count, 1)
+        XCTAssertEqual(savedMessages.filter { $0.role == "assistant" }.count, 1)
+        XCTAssertEqual(savedMessages.filter { $0.role == "summary" }.count, 0, "Summary messages should be filtered")
+    }
+
+    func testFilterSystemMessages() throws {
+        // Create session
+        let sessionId = UUID()
+        let session = CDSession(context: context)
+        session.id = sessionId
+        session.backendName = "Test Session"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.unreadCount = 0
+        session.markedDeleted = false
+
+        try context.save()
+
+        // Create a mix of messages including system types
+        let messages: [[String: Any]] = [
+            // System message (should be filtered)
+            [
+                "type": "system",
+                "content": "<command-name>/status</command-name>",
+                "timestamp": "2024-01-01T12:00:00.000Z"
+            ],
+            // User message (should be kept)
+            [
+                "type": "user",
+                "message": [
+                    "role": "user",
+                    "content": "Test"
+                ],
+                "timestamp": "2024-01-01T12:00:01.000Z"
+            ],
+            // Another system message (should be filtered)
+            [
+                "type": "system",
+                "content": "<local-command-stdout>Done</local-command-stdout>",
+                "timestamp": "2024-01-01T12:00:02.000Z"
+            ]
+        ]
+
+        syncManager.handleSessionUpdated(sessionId: sessionId.uuidString, messages: messages)
+
+        // Wait for background processing
+        let expectation = XCTestExpectation(description: "Wait for sync")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Verify only user message was created
+        context.refreshAllObjects()
+        let messageFetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
+        let savedMessages = try context.fetch(messageFetchRequest)
+
+        XCTAssertEqual(savedMessages.count, 1, "Should only have 1 message (user)")
+        XCTAssertEqual(savedMessages.first?.role, "user")
+        XCTAssertEqual(savedMessages.filter { $0.role == "system" }.count, 0, "System messages should be filtered")
+    }
+
+    func testFilterMixedMessageTypes() throws {
+        // Create session
+        let sessionId = UUID()
+        let session = CDSession(context: context)
+        session.id = sessionId
+        session.backendName = "Test Session"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.unreadCount = 0
+        session.markedDeleted = false
+
+        try context.save()
+
+        // Create all message types
+        let messages: [[String: Any]] = [
+            ["type": "summary", "summary": "Error"],
+            ["type": "system", "content": "Command", "timestamp": "2024-01-01T12:00:00.000Z"],
+            ["type": "user", "message": ["role": "user", "content": "Q"], "timestamp": "2024-01-01T12:00:01.000Z"],
+            ["type": "assistant", "message": ["role": "assistant", "content": [["type": "text", "text": "A"]]], "timestamp": "2024-01-01T12:00:02.000Z"]
+        ]
+
+        syncManager.handleSessionUpdated(sessionId: sessionId.uuidString, messages: messages)
+
+        // Wait for background processing
+        let expectation = XCTestExpectation(description: "Wait for sync")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Verify correct message count
+        context.refreshAllObjects()
+        let sessionFetchRequest = CDSession.fetchSession(id: sessionId)
+        let updatedSession = try context.fetch(sessionFetchRequest).first
+
+        XCTAssertEqual(updatedSession?.messageCount, 2, "Message count should only include user and assistant messages")
+
+        let messageFetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
+        let savedMessages = try context.fetch(messageFetchRequest)
+
+        XCTAssertEqual(savedMessages.count, 2, "Should have 2 messages (user and assistant)")
+    }
+
+    // MARK: - Server Change Tests (voice-code-119, voice-code-151)
+
+    func testClearAllSessions() throws {
+        // Create multiple sessions with messages
+        let sessionIds = [UUID(), UUID(), UUID()]
+
+        for sessionId in sessionIds {
+            let session = CDSession(context: context)
+            session.id = sessionId
+            session.backendName = "Test Session \(sessionId)"
+            session.workingDirectory = "/test"
+            session.lastModified = Date()
+            session.messageCount = 0
+            session.preview = ""
+            session.unreadCount = 0
+            session.markedDeleted = false
+
+            // Add messages to each session
+            for i in 0..<3 {
+                let message = CDMessage(context: context)
+                message.id = UUID()
+                message.sessionId = sessionId
+                message.role = "user"
+                message.text = "Message \(i)"
+                message.timestamp = Date()
+                message.messageStatus = .confirmed
+                message.session = session
+            }
+
+            session.messageCount = 3
+        }
+
+        try context.save()
+
+        // Verify sessions exist
+        let initialFetch = CDSession.fetchRequest()
+        let initialSessions = try context.fetch(initialFetch)
+        XCTAssertEqual(initialSessions.count, 3, "Should have 3 sessions initially")
+
+        let initialMessageFetch: NSFetchRequest<CDMessage> = CDMessage.fetchRequest()
+        let initialMessages = try context.fetch(initialMessageFetch)
+        XCTAssertEqual(initialMessages.count, 9, "Should have 9 messages initially (3 per session)")
+
+        // Clear all sessions
+        syncManager.clearAllSessions()
+
+        // Wait for background deletion
+        let expectation = XCTestExpectation(description: "Wait for deletion")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Verify all sessions deleted
+        context.refreshAllObjects()
+        let finalFetch = CDSession.fetchRequest()
+        let finalSessions = try context.fetch(finalFetch)
+        XCTAssertEqual(finalSessions.count, 0, "All sessions should be deleted")
+
+        // Verify all messages deleted (cascade)
+        let finalMessageFetch: NSFetchRequest<CDMessage> = CDMessage.fetchRequest()
+        let finalMessages = try context.fetch(finalMessageFetch)
+        XCTAssertEqual(finalMessages.count, 0, "All messages should be deleted (cascade)")
+    }
+
+    func testClearAllSessionsWhenEmpty() throws {
+        // Test clearing when no sessions exist (should not crash)
+        let initialFetch = CDSession.fetchRequest()
+        let initialSessions = try context.fetch(initialFetch)
+        XCTAssertEqual(initialSessions.count, 0, "Should start with no sessions")
+
+        // Should not crash
+        syncManager.clearAllSessions()
+
+        // Wait for background processing
+        let expectation = XCTestExpectation(description: "Wait for processing")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Verify still no sessions
+        context.refreshAllObjects()
+        let finalFetch = CDSession.fetchRequest()
+        let finalSessions = try context.fetch(finalFetch)
+        XCTAssertEqual(finalSessions.count, 0, "Should still have no sessions")
+    }
+
+    func testClearAllSessionsRemovesLocalMetadata() throws {
+        // Create session with local customizations
+        let sessionId = UUID()
+        let session = CDSession(context: context)
+        session.id = sessionId
+        session.backendName = "Backend Name"
+        session.localName = "My Custom Name" // User renamed
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 5
+        session.preview = "Preview"
+        session.unreadCount = 3 // User has unread messages
+        session.markedDeleted = false
+
+        try context.save()
+
+        // Verify session exists with local customizations
+        let initialFetch = CDSession.fetchSession(id: sessionId)
+        let initialSession = try context.fetch(initialFetch).first
+        XCTAssertNotNil(initialSession)
+        XCTAssertEqual(initialSession?.localName, "My Custom Name")
+        XCTAssertEqual(initialSession?.unreadCount, 3)
+
+        // Clear all sessions
+        syncManager.clearAllSessions()
+
+        // Wait for background deletion
+        let expectation = XCTestExpectation(description: "Wait for deletion")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Verify session and all local metadata is gone
+        context.refreshAllObjects()
+        let finalFetch = CDSession.fetchSession(id: sessionId)
+        let finalSession = try context.fetch(finalFetch).first
+        XCTAssertNil(finalSession, "Session should be completely deleted")
+    }
+
+    func testClearAllSessionsForServerChange() throws {
+        // Test realistic server change scenario
+        let oldServerSessions = [UUID(), UUID()]
+
+        // Create sessions from "old server"
+        for sessionId in oldServerSessions {
+            let session = CDSession(context: context)
+            session.id = sessionId
+            session.backendName = "Old Server Session"
+            session.workingDirectory = "/old-server-project"
+            session.lastModified = Date()
+            session.messageCount = 10
+            session.preview = "Old server preview"
+            session.unreadCount = 0
+            session.markedDeleted = false
+        }
+
+        try context.save()
+
+        // Verify old sessions exist
+        let oldFetch = CDSession.fetchRequest()
+        let oldSessions = try context.fetch(oldFetch)
+        XCTAssertEqual(oldSessions.count, 2, "Should have 2 old server sessions")
+
+        // User changes server URL → clearAllSessions() is called
+        syncManager.clearAllSessions()
+
+        // Wait for background deletion
+        let expectation = XCTestExpectation(description: "Wait for deletion")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Verify old sessions cleared
+        context.refreshAllObjects()
+        let clearedFetch = CDSession.fetchRequest()
+        let clearedSessions = try context.fetch(clearedFetch)
+        XCTAssertEqual(clearedSessions.count, 0, "Old server sessions should be cleared")
+
+        // After this, new server would send session_list with its sessions
+        // (tested separately in handleSessionList tests)
+    }
 }

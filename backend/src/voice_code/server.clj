@@ -157,7 +157,7 @@
   (when (repl/is-subscribed? (:session-id session-metadata))
     (let [file-path (:file session-metadata)
           all-messages (repl/parse-jsonl-file file-path)
-          messages (repl/filter-sidechain-messages all-messages)]
+          messages (repl/filter-internal-messages all-messages)]
       (when (seq messages)
         (log/info "Sending initial messages for new session" {:session-id (:session-id session-metadata) :count (count messages)})
         (doseq [[channel client-info] @connected-clients]
@@ -210,19 +210,22 @@
 
           ;; Send session list (limit to 50 most recent, lightweight fields only)
           (let [all-sessions (repl/get-all-sessions)
+                ;; Filter out sessions with 0 messages (after internal message filtering)
                 ;; Sort by last-modified descending, take 50
                 recent-sessions (->> all-sessions
+                                     (filter #(pos? (or (:message-count %) 0)))
                                      (sort-by :last-modified >)
                                      (take 50)
                                      ;; Remove heavy fields to reduce payload size
                                      (mapv #(select-keys % [:session-id :name :working-directory
-                                                            :last-modified :message-count])))]
-            (log/info "Sending session list" {:count (count recent-sessions) :total (count all-sessions)})
+                                                            :last-modified :message-count])))
+                total-non-empty (count (filter #(pos? (or (:message-count %) 0)) all-sessions))]
+            (log/info "Sending session list" {:count (count recent-sessions) :total total-non-empty :total-all (count all-sessions)})
             (http/send! channel
                         (generate-json
                          {:type :session-list
                           :sessions recent-sessions
-                          :total-count (count all-sessions)}))))
+                          :total-count total-non-empty}))))
 
         "subscribe"
         ;; Client requests full history for a session
@@ -242,8 +245,8 @@
               (if-let [metadata (repl/get-session-metadata session-id)]
                 (let [file-path (:file metadata)
                       all-messages (repl/parse-jsonl-file file-path)
-                      ;; Filter sidechain messages, then limit to most recent 20
-                      messages (vec (take-last 20 (repl/filter-sidechain-messages all-messages)))]
+                      ;; Filter internal messages (sidechain, summary, system), then limit to most recent 20
+                      messages (vec (take-last 20 (repl/filter-internal-messages all-messages)))]
                   (log/info "Sending session history" {:session-id session-id :message-count (count messages) :total (count all-messages)})
                   (http/send! channel
                               (generate-json

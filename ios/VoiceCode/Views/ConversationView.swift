@@ -284,8 +284,9 @@ struct ConversationView: View {
     private func exportSessionToPlainText() {
         // Format session header
         var exportText = "# \(session.displayName)\n"
+        exportText += "Session ID: \(session.id.uuidString)\n"
         exportText += "Working Directory: \(session.workingDirectory)\n"
-        
+
         let dateFormatter = DateFormatter()
         dateFormatter.dateStyle = .medium
         dateFormatter.timeStyle = .short
