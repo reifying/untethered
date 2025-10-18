@@ -85,7 +85,7 @@ struct SessionsView: View {
                     name: $newSessionName,
                     workingDirectory: $newWorkingDirectory,
                     onCreate: {
-                        sessionManager.createSession(
+                        createNewSession(
                             name: newSessionName,
                             workingDirectory: newWorkingDirectory.isEmpty ? nil : newWorkingDirectory
                         )
@@ -103,17 +103,56 @@ struct SessionsView: View {
         }
     }
     
+    private func createNewSession(name: String, workingDirectory: String?) {
+        // Generate new UUID for session
+        let sessionId = UUID()
+
+        // Create CDSession in CoreData
+        let session = CDSession(context: viewContext)
+        session.id = sessionId
+        session.backendName = name
+        session.localName = name
+        session.workingDirectory = workingDirectory ?? FileManager.default.currentDirectoryPath
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.markedDeleted = false
+
+        // Save to CoreData
+        do {
+            try viewContext.save()
+            print("📝 [SessionsView] Created new session: \(sessionId.uuidString)")
+
+            // Subscribe to the session to receive updates
+            client.subscribe(sessionId: sessionId.uuidString)
+
+            // Navigate to the new session
+            selectedSession = session
+            sessionManager.selectSession(id: sessionId)
+
+        } catch {
+            print("❌ [SessionsView] Failed to create session: \(error)")
+        }
+    }
+
     private func deleteSession(_ session: CDSession) {
         // Mark as deleted locally
         session.markedDeleted = true
-        
+
         // Save context
         do {
             try viewContext.save()
-            
-            // TODO: Send session_deleted message to backend
-            // TODO: Send unsubscribe message to backend
-            
+
+            // Unsubscribe from session
+            client.unsubscribe(sessionId: session.id.uuidString)
+
+            // Send session_deleted message to backend
+            let message: [String: Any] = [
+                "type": "session_deleted",
+                "session_id": session.id.uuidString
+            ]
+            client.sendMessage(message)
+
         } catch {
             print("Failed to delete session: \(error)")
         }
