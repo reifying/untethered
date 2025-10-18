@@ -24,8 +24,7 @@ class CopyFeaturesTests: XCTestCase {
         testSession.id = UUID()
         testSession.backendName = "Test Session"
         testSession.workingDirectory = "/Users/test/project"
-        testSession.createdAt = Date()
-        testSession.updatedAt = Date()
+        testSession.lastModified = Date()
         
         try? context.save()
     }
