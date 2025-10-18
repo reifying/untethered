@@ -215,6 +215,12 @@
   ;; Track last-read byte position for each file path
   (atom {}))
 
+(defn filter-sidechain-messages
+  "Filter out sidechain messages (warmup, internal overhead).
+  Returns only messages where isSidechain is false or missing."
+  [messages]
+  (filter #(not (:isSidechain %)) messages))
+
 (defn parse-jsonl-file
   "Parse all messages from a .jsonl file.
   Returns vector of message maps."
@@ -449,24 +455,24 @@
       (let [watch-service (.newWatchService (FileSystems/getDefault))
             project-dirs (find-project-directories)
             _ (log/info "Found project directories" {:count (count project-dirs)
-                                                      :dirs (mapv #(.getName %) project-dirs)})
+                                                     :dirs (mapv #(.getName %) project-dirs)})
 
             ;; Register watch for each project directory
             watch-keys (reduce (fn [acc dir]
-                                (try
-                                  (let [path (.toPath dir)
-                                        watch-key (.register path
-                                                            watch-service
-                                                            (into-array [StandardWatchEventKinds/ENTRY_CREATE
-                                                                        StandardWatchEventKinds/ENTRY_MODIFY
-                                                                        StandardWatchEventKinds/ENTRY_DELETE]))]
-                                    (log/debug "Watching directory" {:dir (.getPath dir)})
-                                    (assoc acc watch-key dir))
-                                  (catch Exception e
-                                    (log/warn e "Failed to watch directory" {:dir (.getPath dir)})
-                                    acc)))
-                              {}
-                              project-dirs)]
+                                 (try
+                                   (let [path (.toPath dir)
+                                         watch-key (.register path
+                                                              watch-service
+                                                              (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                                                           StandardWatchEventKinds/ENTRY_MODIFY
+                                                                           StandardWatchEventKinds/ENTRY_DELETE]))]
+                                     (log/debug "Watching directory" {:dir (.getPath dir)})
+                                     (assoc acc watch-key dir))
+                                   (catch Exception e
+                                     (log/warn e "Failed to watch directory" {:dir (.getPath dir)})
+                                     acc)))
+                               {}
+                               project-dirs)]
 
         ;; Update state with callbacks and watch keys
         (swap! watcher-state assoc

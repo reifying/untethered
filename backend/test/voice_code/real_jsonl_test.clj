@@ -127,3 +127,53 @@
           (is (string? timestamp) "Timestamp should be a string")
           (is (re-matches #"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z" timestamp)
               "Timestamp should be ISO 8601 format with milliseconds"))))))
+
+(deftest sidechain-filtering-test
+  (testing "Sidechain messages (warmup) are filtered out"
+    ;; Create test messages with mixed sidechain and real messages
+    (let [warmup-user {:type "user"
+                       :isSidechain true
+                       :message {:role "user" :content "Warmup"}
+                       :uuid "warmup-user-id"
+                       :timestamp "2025-10-18T04:43:08.988Z"
+                       :sessionId "test-session"}
+          warmup-asst {:type "assistant"
+                       :isSidechain true
+                       :message {:role "assistant" :content [{:type "text" :text "Warmup response"}]}
+                       :uuid "warmup-asst-id"
+                       :timestamp "2025-10-18T04:43:10.847Z"
+                       :sessionId "test-session"}
+          real-user {:type "user"
+                     :isSidechain false
+                     :message {:role "user" :content "Say hello"}
+                     :uuid "real-user-id"
+                     :timestamp "2025-10-18T04:43:09.356Z"
+                     :sessionId "test-session"}
+          real-asst {:type "assistant"
+                     :isSidechain false
+                     :message {:role "assistant" :content [{:type "text" :text "Hello!"}]}
+                     :uuid "real-asst-id"
+                     :timestamp "2025-10-18T04:43:11.079Z"
+                     :sessionId "test-session"}
+          all-messages [warmup-user warmup-asst real-user real-asst]
+          filtered (repl/filter-sidechain-messages all-messages)]
+
+      ;; Should filter out warmup messages
+      (is (= 2 (count filtered)) "Should have 2 messages after filtering")
+      (is (= ["real-user-id" "real-asst-id"] (map :uuid filtered))
+          "Should only have real messages, not warmup")))
+
+  (testing "Messages without isSidechain field are included"
+    ;; Legacy messages may not have isSidechain field
+    (let [legacy-msg {:type "user"
+                      :message {:role "user" :content "Legacy message"}
+                      :uuid "legacy-id"
+                      :timestamp "2025-10-18T04:43:09.356Z"
+                      :sessionId "test-session"}
+          filtered (repl/filter-sidechain-messages [legacy-msg])]
+
+      (is (= 1 (count filtered)) "Legacy messages should be included")
+      (is (= "legacy-id" (:uuid (first filtered))))))
+
+  (testing "Empty list returns empty list"
+    (is (empty? (repl/filter-sidechain-messages [])) "Empty list should return empty")))

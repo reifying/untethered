@@ -292,7 +292,7 @@ final class E2EDeletionWorkflowTests: XCTestCase {
     func testDeletedSessionNotVisibleInUIQueries() {
         let connectExpectation = XCTestExpectation(description: "Connect")
         let sessionCreatedExpectation = XCTestExpectation(description: "Session created")
-        let queryExpectation = XCTestExpectation(description": "Query verification")
+        let queryExpectation = XCTestExpectation(description: "Query verification")
 
         let sessionId = UUID()
 

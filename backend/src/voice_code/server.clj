@@ -156,7 +156,8 @@
   ;; Also send messages if client is subscribed (handles new session race condition)
   (when (repl/is-subscribed? (:session-id session-metadata))
     (let [file-path (:file session-metadata)
-          messages (repl/parse-jsonl-file file-path)]
+          all-messages (repl/parse-jsonl-file file-path)
+          messages (repl/filter-sidechain-messages all-messages)]
       (when (seq messages)
         (log/info "Sending initial messages for new session" {:session-id (:session-id session-metadata) :count (count messages)})
         (doseq [[channel client-info] @connected-clients]

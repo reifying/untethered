@@ -134,7 +134,7 @@ final class E2EPerformanceTests: XCTestCase {
 
     func testPerSessionLoadPerformance() {
         let connectExpectation = XCTestExpectation(description: "Connect")
-        let loadExpectation = XCTestExpectation(description": "Session loaded")
+        let loadExpectation = XCTestExpectation(description: "Session loaded")
 
         var subscribeTime: Date?
         var historyReceivedTime: Date?
