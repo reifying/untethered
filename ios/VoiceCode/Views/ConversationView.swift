@@ -5,7 +5,7 @@ import SwiftUI
 import CoreData
 
 struct ConversationView: View {
-    let session: CDSession
+    @ObservedObject var session: CDSession
     @ObservedObject var client: VoiceCodeClient
     @StateObject var voiceOutput: VoiceOutputManager
     @StateObject var voiceInput: VoiceInputManager
@@ -24,7 +24,7 @@ struct ConversationView: View {
     @FetchRequest private var messages: FetchedResults<CDMessage>
 
     init(session: CDSession, client: VoiceCodeClient, voiceOutput: VoiceOutputManager = VoiceOutputManager(), voiceInput: VoiceInputManager = VoiceInputManager(), settings: AppSettings) {
-        self.session = session
+        _session = ObservedObject(wrappedValue: session)
         self.client = client
         _voiceOutput = StateObject(wrappedValue: voiceOutput)
         _voiceInput = StateObject(wrappedValue: voiceInput)
