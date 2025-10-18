@@ -21,6 +21,27 @@ struct SessionsListView: View {
     @State private var newSessionName = ""
     @State private var newWorkingDirectory = ""
 
+    // Group sessions by working directory
+    private var groupedSessions: [String: [CDSession]] {
+        Dictionary(grouping: sessions, by: { $0.workingDirectory })
+    }
+
+    // Get sorted working directories (most recently modified first)
+    private var sortedWorkingDirectories: [String] {
+        groupedSessions.keys.sorted { dir1, dir2 in
+            let sessions1 = groupedSessions[dir1] ?? []
+            let sessions2 = groupedSessions[dir2] ?? []
+            let maxDate1 = sessions1.map { $0.lastModified }.max() ?? Date.distantPast
+            let maxDate2 = sessions2.map { $0.lastModified }.max() ?? Date.distantPast
+            return maxDate1 > maxDate2
+        }
+    }
+
+    // Default working directory for new sessions (most recently used)
+    private var defaultWorkingDirectory: String {
+        sortedWorkingDirectories.first ?? FileManager.default.currentDirectoryPath
+    }
+
     var body: some View {
             Group {
                 if sessions.isEmpty {
@@ -40,17 +61,42 @@ struct SessionsListView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List {
-                        ForEach(sessions) { session in
-                            NavigationLink(
-                                destination: ConversationView(session: session, client: client, voiceOutput: voiceOutput, settings: settings)
-                            ) {
-                                CDSessionRowContent(session: session)
+                        ForEach(sortedWorkingDirectories, id: \.self) { workingDirectory in
+                            Section(header: HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(workingDirectory)
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                    Text("\(groupedSessions[workingDirectory]?.count ?? 0) session\(groupedSessions[workingDirectory]?.count == 1 ? "" : "s")")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Button(action: {
+                                    // Pre-populate with this directory's working directory
+                                    newWorkingDirectory = workingDirectory
+                                    showingNewSession = true
+                                }) {
+                                    Image(systemName: "plus.circle.fill")
+                                        .foregroundColor(.blue)
+                                        .imageScale(.medium)
+                                }
+                                .buttonStyle(BorderlessButtonStyle())
                             }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    deleteSession(session)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
+                            .textCase(nil)) {
+                                ForEach(groupedSessions[workingDirectory]?.sorted(by: { $0.lastModified > $1.lastModified }) ?? []) { session in
+                                    NavigationLink(
+                                        destination: ConversationView(session: session, client: client, voiceOutput: voiceOutput, settings: settings)
+                                    ) {
+                                        CDSessionRowContent(session: session)
+                                    }
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                        Button(role: .destructive) {
+                                            deleteSession(session)
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -61,10 +107,14 @@ struct SessionsListView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     HStack(spacing: 16) {
-                        Button(action: { showingNewSession = true }) {
+                        Button(action: {
+                            // Pre-populate with most recently used directory
+                            newWorkingDirectory = defaultWorkingDirectory
+                            showingNewSession = true
+                        }) {
                             Image(systemName: "plus")
                         }
-                        
+
                         Button(action: { showingSettings = true }) {
                             Image(systemName: "gear")
                         }

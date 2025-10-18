@@ -534,6 +534,45 @@ final class SessionSyncManagerTests: XCTestCase {
         XCTAssertNil(text, "Should return nil when message field is missing")
     }
 
+    func testExtractTextFromSystemMessage() throws {
+        // System messages have content at top level, not nested in "message"
+        let messageData: [String: Any] = [
+            "type": "system",
+            "subtype": "local_command",
+            "content": "<command-name>/status</command-name>\n<command-message>status</command-message>",
+            "level": "info",
+            "timestamp": "2025-10-18T18:39:56.710Z",
+            "uuid": "63ae4896-db63-4879-86b3-b564c556a0d4"
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertEqual(text, "<command-name>/status</command-name>\n<command-message>status</command-message>")
+    }
+
+    func testExtractTextFromSystemMessageWithPlainContent() throws {
+        // Test system message with simple plain text content
+        let messageData: [String: Any] = [
+            "type": "system",
+            "content": "System notification message",
+            "timestamp": "2025-10-18T18:39:56.710Z"
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertEqual(text, "System notification message")
+    }
+
+    func testExtractTextFromSummaryMessage() throws {
+        // Test summary message (error/status messages with summary field)
+        let messageData: [String: Any] = [
+            "type": "summary",
+            "summary": "API Error: 401 authentication_error · Please run /login",
+            "leafUuid": "00efc773-71db-419a-81a4-da764fbabd30"
+        ]
+
+        let text = syncManager.extractText(from: messageData)
+        XCTAssertEqual(text, "API Error: 401 authentication_error · Please run /login")
+    }
+
     func testFormatContentSize() throws {
         // Test small sizes (bytes)
         let messageData1: [String: Any] = [

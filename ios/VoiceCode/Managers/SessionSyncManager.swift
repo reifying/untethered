@@ -422,40 +422,49 @@ class SessionSyncManager {
     /// - Parameter messageData: Raw .jsonl message data
     /// - Returns: Extracted text string, or nil if extraction fails
     internal func extractText(from messageData: [String: Any]) -> String? {
-        guard let message = messageData["message"] as? [String: Any] else {
-            return nil
+        // Try nested message.content first (user/assistant messages)
+        if let message = messageData["message"] as? [String: Any] {
+            // User messages have simple string content
+            if let content = message["content"] as? String {
+                return content
+            }
+
+            // Assistant messages have array of content blocks
+            if let contentArray = message["content"] as? [[String: Any]] {
+                var summaries: [String] = []
+
+                for block in contentArray {
+                    guard let blockType = block["type"] as? String else { continue }
+
+                    switch blockType {
+                    case "text":
+                        if let text = block["text"] as? String {
+                            summaries.append(text)
+                        }
+                    case "tool_use":
+                        summaries.append(summarizeToolUse(block))
+                    case "tool_result":
+                        summaries.append(summarizeToolResult(block))
+                    case "thinking":
+                        summaries.append(summarizeThinking(block))
+                    default:
+                        // Unknown block type - show placeholder
+                        summaries.append("[\(blockType)]")
+                    }
+                }
+
+                return summaries.isEmpty ? nil : summaries.joined(separator: "\n\n")
+            }
         }
 
-        // User messages have simple string content
-        if let content = message["content"] as? String {
+        // Fall back to top-level content (system messages)
+        if let content = messageData["content"] as? String {
             return content
         }
 
-        // Assistant messages have array of content blocks
-        if let contentArray = message["content"] as? [[String: Any]] {
-            var summaries: [String] = []
-
-            for block in contentArray {
-                guard let blockType = block["type"] as? String else { continue }
-
-                switch blockType {
-                case "text":
-                    if let text = block["text"] as? String {
-                        summaries.append(text)
-                    }
-                case "tool_use":
-                    summaries.append(summarizeToolUse(block))
-                case "tool_result":
-                    summaries.append(summarizeToolResult(block))
-                case "thinking":
-                    summaries.append(summarizeThinking(block))
-                default:
-                    // Unknown block type - show placeholder
-                    summaries.append("[\(blockType)]")
-                }
-            }
-
-            return summaries.isEmpty ? nil : summaries.joined(separator: "\n\n")
+        // Fall back to summary field (summary messages)
+        if let summary = messageData["summary"] as? String {
+            return summary
         }
 
         return nil
