@@ -13,9 +13,10 @@ public class CDSession: NSManagedObject {
     @NSManaged public var lastModified: Date
     @NSManaged public var messageCount: Int32
     @NSManaged public var preview: String
+    @NSManaged public var unreadCount: Int32
     @NSManaged public var markedDeleted: Bool
     @NSManaged public var messages: NSSet?
-    
+
     /// Display name: local custom name if set, otherwise backend name
     var displayName: String {
         localName ?? backendName

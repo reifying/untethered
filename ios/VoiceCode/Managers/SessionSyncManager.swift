@@ -11,10 +11,12 @@ private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "S
 class SessionSyncManager {
     private let persistenceController: PersistenceController
     private let context: NSManagedObjectContext
-    
-    init(persistenceController: PersistenceController = .shared) {
+    private weak var voiceOutputManager: VoiceOutputManager?
+
+    init(persistenceController: PersistenceController = .shared, voiceOutputManager: VoiceOutputManager? = nil) {
         self.persistenceController = persistenceController
         self.context = persistenceController.container.viewContext
+        self.voiceOutputManager = voiceOutputManager
     }
     
     // MARK: - Session List Handling
@@ -219,24 +221,29 @@ class SessionSyncManager {
                 return
             }
             
+            // Check if this session is currently active
+            let sessionUUID = UUID(uuidString: sessionId)!
+            let isActiveSession = ActiveSessionManager.shared.isActive(sessionUUID)
+
             // Process each message - reconcile optimistic ones, create new ones
             var newMessageCount = 0
-            
+            var assistantMessagesToSpeak: [String] = []
+
             for messageData in messages {
                 guard let role = messageData["role"] as? String,
                       let text = messageData["text"] as? String else {
                     continue
                 }
-                
+
                 // Extract server timestamp
                 var serverTimestamp: Date? = nil
                 if let timestamp = messageData["timestamp"] as? TimeInterval {
                     serverTimestamp = Date(timeIntervalSince1970: timestamp / 1000.0)
                 }
-                
+
                 // Try to reconcile optimistic message first
                 let fetchRequest = CDMessage.fetchMessage(sessionId: UUID(uuidString: sessionId)!, role: role, text: text)
-                
+
                 if let existingMessage = try? backgroundContext.fetch(fetchRequest).first {
                     // Reconcile optimistic message
                     existingMessage.messageStatus = .confirmed
@@ -248,23 +255,49 @@ class SessionSyncManager {
                     // Create new message (backend-originated or not found)
                     self.createMessage(messageData, sessionId: sessionId, in: backgroundContext, session: session)
                     newMessageCount += 1
+
+                    // Collect assistant messages for speaking (if active session)
+                    if role == "assistant" {
+                        assistantMessagesToSpeak.append(text)
+                    }
                 }
             }
             
             // Update session metadata (only count truly new messages)
             session.lastModified = Date()
             session.messageCount += Int32(newMessageCount)
-            
+
+            // Update unread count and speaking logic
+            if isActiveSession {
+                // Active session: speak assistant messages, don't increment unread count
+                logger.info("Active session: will speak \(assistantMessagesToSpeak.count) assistant messages")
+            } else {
+                // Background session: increment unread count, don't speak
+                if newMessageCount > 0 {
+                    session.unreadCount += Int32(newMessageCount)
+                    logger.info("Background session: incremented unread count to \(session.unreadCount)")
+                }
+            }
+
             // Update preview with last message text
             if let lastMessage = messages.last,
                let text = lastMessage["text"] as? String {
                 session.preview = String(text.prefix(100))
             }
-            
+
             do {
                 if backgroundContext.hasChanges {
                     try backgroundContext.save()
                     logger.info("Updated session: \(sessionId)")
+                }
+
+                // Speak assistant messages on main thread (only for active session)
+                if isActiveSession && !assistantMessagesToSpeak.isEmpty {
+                    DispatchQueue.main.async { [weak self] in
+                        for text in assistantMessagesToSpeak {
+                            self?.voiceOutputManager?.speak(text)
+                        }
+                    }
                 }
             } catch {
                 logger.error("Failed to save session_updated: \(error.localizedDescription)")
@@ -311,9 +344,10 @@ class SessionSyncManager {
             session.preview = preview
         }
         
-        // Don't override local deletion status
+        // Don't override local deletion status or unread count
         if existingSession == nil {
             session.markedDeleted = false
+            session.unreadCount = 0
         }
     }
     

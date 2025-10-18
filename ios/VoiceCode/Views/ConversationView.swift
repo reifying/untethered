@@ -100,6 +100,9 @@ struct ConversationView: View {
             loadSessionIfNeeded()
         }
         .onDisappear {
+            // Clear active session for smart speaking
+            ActiveSessionManager.shared.clearActiveSession()
+
             // Unsubscribe when leaving the conversation
             client.unsubscribe(sessionId: session.id.uuidString)
         }
@@ -107,13 +110,20 @@ struct ConversationView: View {
     
     private func loadSessionIfNeeded() {
         guard !hasLoadedMessages else { return }
-        
+
         isLoading = true
         hasLoadedMessages = true
-        
+
+        // Mark session as active for smart speaking
+        ActiveSessionManager.shared.setActiveSession(session.id)
+
+        // Clear unread count when opening session
+        session.unreadCount = 0
+        try? viewContext.save()
+
         // Subscribe to the session to load full history
         client.subscribe(sessionId: session.id.uuidString)
-        
+
         // Stop loading indicator after a delay (messages will populate via CoreData sync)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             isLoading = false

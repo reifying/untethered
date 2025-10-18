@@ -116,6 +116,7 @@ struct SessionsView: View {
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
+        session.unreadCount = 0
         session.markedDeleted = false
 
         // Save to CoreData
@@ -195,6 +196,18 @@ struct CDSessionRowContent: View {
             }
 
             Spacer()
+
+            // Show unread badge if there are unread messages
+            if session.unreadCount > 0 {
+                Text("\(session.unreadCount)")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.red)
+                    .clipShape(Capsule())
+            }
 
             if isSelected {
                 Image(systemName: "checkmark.circle.fill")
