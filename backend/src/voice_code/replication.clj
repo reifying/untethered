@@ -48,15 +48,35 @@
     (str/replace name #"\.jsonl$" "")))
 
 (defn extract-working-dir
-  "Extract working directory from file path.
-  Example: ~/.claude/projects/mono/session.jsonl -> /Users/user/mono"
+  "Extract working directory from .jsonl file by reading cwd from first message.
+  Falls back to deriving from file path if cwd not found."
   [file]
-  (let [parent-dir (.getParentFile file)
-        project-name (.getName parent-dir)
-        home (System/getProperty "user.home")]
-    ;; This is a heuristic - the actual working dir might be stored in the .jsonl
-    ;; For now, assume it's ~/project-name
-    (str home "/" project-name)))
+  (try
+    (with-open [rdr (io/reader file)]
+      (when-let [first-line (first (line-seq rdr))]
+        (when-not (str/blank? first-line)
+          (try
+            (let [first-msg (json/parse-string first-line true)]
+              (if-let [cwd (:cwd first-msg)]
+                cwd
+                ;; Fallback: derive from file path
+                (let [parent-dir (.getParentFile file)
+                      project-name (.getName parent-dir)
+                      home (System/getProperty "user.home")]
+                  (str home "/" project-name))))
+            (catch Exception _
+              ;; Fallback if JSON parse fails
+              (let [parent-dir (.getParentFile file)
+                    project-name (.getName parent-dir)
+                    home (System/getProperty "user.home")]
+                (str home "/" project-name)))))))
+    (catch Exception e
+      (log/warn e "Failed to extract working dir from file" {:file (.getPath file)})
+      ;; Fallback on error
+      (let [parent-dir (.getParentFile file)
+            project-name (.getName parent-dir)
+            home (System/getProperty "user.home")]
+        (str home "/" project-name)))))
 
 (defn parse-jsonl-line
   "Parse a single line of JSONL. Returns parsed map or nil if invalid."
