@@ -7,19 +7,21 @@ import CoreData
 struct ConversationView: View {
     let session: CDSession
     @ObservedObject var client: VoiceCodeClient
+    @StateObject var voiceOutput: VoiceOutputManager
     @Environment(\.managedObjectContext) private var viewContext
-    
+
     @State private var isLoading = false
     @State private var hasLoadedMessages = false
     @State private var promptText = ""
-    
+
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
-    
-    init(session: CDSession, client: VoiceCodeClient) {
+
+    init(session: CDSession, client: VoiceCodeClient, voiceOutput: VoiceOutputManager = VoiceOutputManager()) {
         self.session = session
         self.client = client
-        
+        _voiceOutput = StateObject(wrappedValue: voiceOutput)
+
         // Setup fetch request for this session's messages
         _messages = FetchRequest(
             fetchRequest: CDMessage.fetchMessages(sessionId: session.id),
@@ -59,7 +61,7 @@ struct ConversationView: View {
                     } else {
                         LazyVStack(spacing: 12) {
                             ForEach(messages) { message in
-                                CDMessageView(message: message)
+                                CDMessageView(message: message, voiceOutput: voiceOutput)
                                     .id(message.id)
                             }
                         }
@@ -170,25 +172,33 @@ struct ConversationView: View {
 
 struct CDMessageView: View {
     @ObservedObject var message: CDMessage
-    
+    @ObservedObject var voiceOutput: VoiceOutputManager
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             // Role indicator
             Image(systemName: message.role == "user" ? "person.circle.fill" : "cpu")
                 .font(.title3)
                 .foregroundColor(message.role == "user" ? .blue : .green)
-            
+
             VStack(alignment: .leading, spacing: 4) {
                 // Role label
                 Text(message.role.capitalized)
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
-                
+
                 // Message text
                 Text(message.text)
                     .font(.body)
                     .textSelection(.enabled)
+                    .contextMenu {
+                        Button(action: {
+                            voiceOutput.speak(message.text)
+                        }) {
+                            Label("Read Aloud", systemImage: "speaker.wave.2.fill")
+                        }
+                    }
                 
                 // Status and timestamp
                 HStack(spacing: 8) {
