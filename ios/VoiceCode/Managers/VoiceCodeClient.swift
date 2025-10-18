@@ -23,9 +23,16 @@ class VoiceCodeClient: ObservableObject {
     private var sessionId: String?
     let sessionSyncManager: SessionSyncManager
 
-    init(serverURL: String, sessionSyncManager: SessionSyncManager = SessionSyncManager()) {
+    init(serverURL: String, voiceOutputManager: VoiceOutputManager? = nil, sessionSyncManager: SessionSyncManager? = nil) {
         self.serverURL = serverURL
-        self.sessionSyncManager = sessionSyncManager
+
+        // Create SessionSyncManager with VoiceOutputManager for auto-speak
+        if let syncManager = sessionSyncManager {
+            self.sessionSyncManager = syncManager
+        } else {
+            self.sessionSyncManager = SessionSyncManager(voiceOutputManager: voiceOutputManager)
+        }
+
         setupLifecycleObservers()
     }
 
@@ -91,12 +98,22 @@ class VoiceCodeClient: ObservableObject {
     }
 
     func updateServerURL(_ url: String) {
-        let wasConnected = isConnected
+        print("🔄 [VoiceCodeClient] Updating server URL from \(serverURL) to \(url)")
+        
+        // Clear all sessions from old server
+        sessionSyncManager.clearAllSessions()
+        
+        // Disconnect from old server (if connected)
         disconnect()
+        
+        // Update URL
         serverURL = url
-        if wasConnected {
-            connect()
-        }
+        
+        // Always attempt to connect to new server
+        // This ensures connection status updates and sessions load
+        print("🔄 [VoiceCodeClient] Connecting to new server...")
+        reconnectionAttempts = 0
+        connect()
     }
 
     private func setupReconnection() {

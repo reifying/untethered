@@ -62,6 +62,28 @@
                    :path (.getPath file)})
         nil))))
 
+(defn project-name->working-dir
+  "Convert Claude Code project directory name to working directory path.
+
+  Claude Code converts paths like '/Users/foo/my-project' to '-Users-foo-my-project'.
+  However, this transformation is lossy - we can't distinguish between:
+  - /Users/foo/my-project (hyphen in directory name)
+  - /Users/foo/my/project (no hyphens, separate directories)
+
+  Both would produce the same project name: '-Users-foo-my-project'
+
+  Since we can't reliably reverse this transformation, we return a placeholder
+  indicating the working directory couldn't be determined from the project name alone.
+  Sessions with messages will have the correct working directory from the cwd field."
+  [project-name]
+  (if (str/starts-with? project-name "-")
+    ;; Project name looks like it represents an absolute path
+    ;; Return it as-is with a note that it's derived from project name
+    (str "[from project: " project-name "]")
+    ;; Project name is a simple name - append to home directory
+    (let [home (System/getProperty "user.home")]
+      (str home "/" project-name))))
+
 (defn extract-working-dir
   "Extract working directory from .jsonl file by reading cwd from first message.
   Falls back to deriving from file path if cwd not found."
@@ -76,28 +98,24 @@
                              cwd
                              ;; Fallback: derive from file path
                              (let [parent-dir (.getParentFile file)
-                                   project-name (.getName parent-dir)
-                                   home (System/getProperty "user.home")]
-                               (str home "/" project-name))))
+                                   project-name (.getName parent-dir)]
+                               (project-name->working-dir project-name))))
                          (catch Exception _
                            ;; Fallback if JSON parse fails
                            (let [parent-dir (.getParentFile file)
-                                 project-name (.getName parent-dir)
-                                 home (System/getProperty "user.home")]
-                             (str home "/" project-name)))))))]
+                                 project-name (.getName parent-dir)]
+                             (project-name->working-dir project-name)))))))]
       ;; If result is nil (empty file or blank line), use fallback
       (or result
           (let [parent-dir (.getParentFile file)
-                project-name (.getName parent-dir)
-                home (System/getProperty "user.home")]
-            (str home "/" project-name))))
+                project-name (.getName parent-dir)]
+            (project-name->working-dir project-name))))
     (catch Exception e
       (log/warn e "Failed to extract working dir from file" {:file (.getPath file)})
       ;; Fallback on error
       (let [parent-dir (.getParentFile file)
-            project-name (.getName parent-dir)
-            home (System/getProperty "user.home")]
-        (str home "/" project-name)))))
+            project-name (.getName parent-dir)]
+        (project-name->working-dir project-name)))))
 
 (defn parse-jsonl-line
   "Parse a single line of JSONL. Returns parsed map or nil if invalid."
@@ -109,17 +127,34 @@
         (log/debug "Failed to parse JSONL line" {:error (ex-message e) :line (subs line 0 (min 50 (count line)))})
         nil))))
 
+(defn filter-internal-messages
+  "Filter out internal Claude Code messages.
+  Removes:
+  - Sidechain messages (warmup, internal overhead where isSidechain=true)
+  - Summary messages (error summaries, type='summary')
+  - System messages (local command notifications, type='system')
+  Returns only user/assistant messages."
+  [messages]
+  (filter (fn [msg]
+            (and (not (:isSidechain msg))
+                 (not= (:type msg) "summary")
+                 (not= (:type msg) "system")))
+          messages))
+
 (defn extract-metadata-from-file
   "Extract metadata from a .jsonl file without loading all messages.
-  Returns map with :message-count, :preview, :first-message, :last-message"
+  Returns map with :message-count, :preview, :first-message, :last-message
+  Note: message-count reflects only user/assistant messages (after filtering internal messages)"
   [file]
   (try
     (with-open [rdr (io/reader file)]
       (let [lines (line-seq rdr)
-            messages (->> lines
-                          (map parse-jsonl-line)
-                          (filter some?)
-                          (vec))
+            all-messages (->> lines
+                              (map parse-jsonl-line)
+                              (filter some?)
+                              (vec))
+            ;; Filter out internal messages before counting
+            messages (filter-internal-messages all-messages)
             message-count (count messages)
             first-msg (first messages)
             last-msg (last messages)]
@@ -322,11 +357,19 @@
   ;; Track last-read byte position for each file path
   (atom {}))
 
-(defn filter-sidechain-messages
-  "Filter out sidechain messages (warmup, internal overhead).
-  Returns only messages where isSidechain is false or missing."
+(defn filter-internal-messages
+  "Filter out internal Claude Code messages.
+  Removes:
+  - Sidechain messages (warmup, internal overhead where isSidechain=true)
+  - Summary messages (error summaries, type='summary')
+  - System messages (local command notifications, type='system')
+  Returns only user/assistant messages."
   [messages]
-  (filter #(not (:isSidechain %)) messages))
+  (filter (fn [msg]
+            (and (not (:isSidechain msg))
+                 (not= (:type msg) "summary")
+                 (not= (:type msg) "system")))
+          messages))
 
 (defn parse-jsonl-file
   "Parse all messages from a .jsonl file.
@@ -503,8 +546,8 @@
           (try
             ;; Parse new messages with retry
             (let [new-messages (parse-with-retry (.getAbsolutePath file) (:max-retries @watcher-state))
-                  ;; Filter sidechain messages before checking if non-empty
-                  filtered-messages (filter-sidechain-messages new-messages)]
+                  ;; Filter internal messages (sidechain, summary, system) before checking if non-empty
+                  filtered-messages (filter-internal-messages new-messages)]
               (when (seq filtered-messages)
                 ;; Update index metadata with filtered count
                 (when-let [old-metadata (get @session-index session-id)]

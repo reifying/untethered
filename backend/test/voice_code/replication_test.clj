@@ -46,6 +46,25 @@
     (is (nil? (repl/parse-jsonl-line "")))
     (is (nil? (repl/parse-jsonl-line nil)))))
 
+(deftest test-project-name->working-dir
+  (testing "Absolute path project name returns placeholder (transformation is lossy)"
+    (is (= "[from project: -Users-travisbrown-code-mono-hunt910-hunt-areas]"
+           (repl/project-name->working-dir "-Users-travisbrown-code-mono-hunt910-hunt-areas"))))
+
+  (testing "Another absolute path project name returns placeholder"
+    (is (= "[from project: -Users-travisbrown-code-voice-code]"
+           (repl/project-name->working-dir "-Users-travisbrown-code-voice-code"))))
+
+  (testing "Convert simple project name (no leading hyphen)"
+    (let [home (System/getProperty "user.home")
+          expected (str home "/my-project")]
+      (is (= expected (repl/project-name->working-dir "my-project")))))
+
+  (testing "Convert another simple project name"
+    (let [home (System/getProperty "user.home")
+          expected (str home "/test")]
+      (is (= expected (repl/project-name->working-dir "test"))))))
+
 (deftest test-valid-uuid
   (testing "Valid lowercase UUID v4"
     (is (true? (repl/valid-uuid? "550e8400-e29b-41d4-a716-446655440000"))))
@@ -472,26 +491,56 @@
 ;; Sidechain Message Filtering Tests
 ;; ============================================================================
 
-(deftest test-filter-sidechain-messages
+(deftest test-filter-internal-messages
   (testing "Filter out messages with isSidechain true"
     (let [messages [{:role "user" :text "msg1"}
                     {:role "assistant" :text "msg2" :isSidechain true}
                     {:role "user" :text "msg3"}]
-          filtered (repl/filter-sidechain-messages messages)]
+          filtered (repl/filter-internal-messages messages)]
       (is (= 2 (count filtered)))
       (is (= "msg1" (:text (first filtered))))
       (is (= "msg3" (:text (second filtered))))))
 
-  (testing "Keep all messages when none are sidechain"
-    (let [messages [{:role "user" :text "msg1"}
-                    {:role "assistant" :text "msg2"}]
-          filtered (repl/filter-sidechain-messages messages)]
+  (testing "Filter out summary type messages"
+    (let [messages [{:type "user" :text "msg1"}
+                    {:type "summary" :summary "Error 401"}
+                    {:type "assistant" :text "msg3"}]
+          filtered (repl/filter-internal-messages messages)]
+      (is (= 2 (count filtered)))
+      (is (= "msg1" (:text (first filtered))))
+      (is (= "msg3" (:text (second filtered))))))
+
+  (testing "Filter out system type messages"
+    (let [messages [{:type "user" :text "msg1"}
+                    {:type "system" :content "Command"}
+                    {:type "assistant" :text "msg3"}]
+          filtered (repl/filter-internal-messages messages)]
+      (is (= 2 (count filtered)))
+      (is (= "msg1" (:text (first filtered))))
+      (is (= "msg3" (:text (second filtered))))))
+
+  (testing "Filter out all internal message types"
+    (let [messages [{:type "summary" :summary "Error"}
+                    {:type "user" :text "msg1"}
+                    {:type "system" :content "Status"}
+                    {:type "assistant" :text "msg2" :isSidechain true}
+                    {:type "assistant" :text "msg3"}]
+          filtered (repl/filter-internal-messages messages)]
+      (is (= 2 (count filtered)))
+      (is (= "msg1" (:text (first filtered))))
+      (is (= "msg3" (:text (second filtered))))))
+
+  (testing "Keep all messages when none are internal"
+    (let [messages [{:type "user" :text "msg1"}
+                    {:type "assistant" :text "msg2"}]
+          filtered (repl/filter-internal-messages messages)]
       (is (= 2 (count filtered)))))
 
-  (testing "Return empty when all messages are sidechain"
-    (let [messages [{:role "user" :text "msg1" :isSidechain true}
-                    {:role "assistant" :text "msg2" :isSidechain true}]
-          filtered (repl/filter-sidechain-messages messages)]
+  (testing "Return empty when all messages are internal"
+    (let [messages [{:type "summary" :summary "Error"}
+                    {:type "system" :content "Status"}
+                    {:role "user" :text "msg1" :isSidechain true}]
+          filtered (repl/filter-internal-messages messages)]
       (is (= 0 (count filtered))))))
 
 (deftest test-handle-file-modified-sidechain-filtering
