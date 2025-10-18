@@ -201,7 +201,7 @@
 
         ;; Verify message format
         (let [msg (json/parse-string (get @sent-messages :ch1) true)]
-          (is (= "session-created" (:type msg)))
+          (is (= "session_created" (:type msg)))
           (is (= "new-session-123" (:session_id msg)))
           (is (= "Test Session" (:name msg)))))))
 
@@ -219,7 +219,7 @@
         ;; ch2 should receive update
         (is (contains? @sent-messages :ch2))
         (let [msg (json/parse-string (get @sent-messages :ch2) true)]
-          (is (= "session-updated" (:type msg)))
+          (is (= "session_updated" (:type msg)))
           (is (= "session-1" (:session_id msg)))
           (is (= 1 (count (:messages msg)))))))))
 
@@ -240,7 +240,7 @@
           ;; Verify session list sent
           (is (some? @sent-message))
           (let [msg (json/parse-string @sent-message true)]
-            (is (= "session-list" (:type msg)))
+            (is (= "session_list" (:type msg)))
             (is (= 2 (count (:sessions msg))))
             ;; Sessions are sorted by last-modified descending, so s2 comes first
             (is (= "s2" (:session_id (first (:sessions msg)))))))))))

@@ -1,0 +1,16 @@
+{
+  "parentUuid": null,
+  "isSidechain": false,
+  "userType": "external",
+  "cwd": "/",
+  "sessionId": "50E9924C-0E41-44B8-AC11-1E1573722F09",
+  "version": "2.0.22",
+  "gitBranch": "",
+  "type": "user",
+  "message": {
+    "role": "user",
+    "content": "Say hello"
+  },
+  "uuid": "82445b7b-d323-4521-a449-41a21028ce6f",
+  "timestamp": "2025-10-18T04:23:02.272Z"
+}

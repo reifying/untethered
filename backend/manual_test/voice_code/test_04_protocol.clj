@@ -72,7 +72,7 @@
 
             ;; Send subscribe
             (fixtures/send-ws! client {:type "subscribe"
-                                      :session-id session-id})
+                                       :session-id session-id})
 
             ;; Expect session-history
             (let [history (fixtures/receive-ws-type client :session-history 10000)]
@@ -140,5 +140,57 @@
             (Thread/sleep 500)
             (is (not @(:closed? client)) "Connection should remain open")
             (log/info "Unsubscribe successful")))
+        (finally
+          (fixtures/close-ws! client))))))
+
+(deftest test-json-format-validation
+  (testing "Server sends properly formatted JSON with snake_case keys"
+    (let [client (-> (fixtures/create-ws-client "ws://localhost:18080")
+                     fixtures/connect-ws!)
+          raw-messages (atom [])]
+      (try
+        ;; Create a new client that captures raw JSON strings
+        (let [raw-client (gniazdo.core/connect
+                          "ws://localhost:18080"
+                          :on-receive (fn [msg]
+                                        (swap! raw-messages conj msg)))]
+          (try
+            ;; Wait for hello message
+            (Thread/sleep 500)
+
+            ;; Send connect and wait for response
+            (gniazdo.core/send-msg raw-client "{\"type\":\"connect\"}")
+            (Thread/sleep 1000)
+
+            ;; Verify we got at least 2 messages (hello + session-list)
+            (is (>= (count @raw-messages) 2) "Should receive hello and session-list")
+
+            ;; Check each raw message for proper JSON format
+            (doseq [raw-msg @raw-messages]
+              (let [parsed (cheshire.core/parse-string raw-msg true)]
+                (log/info "Raw JSON:" raw-msg)
+
+                ;; Verify keys are snake_case in raw JSON
+                (when (and (contains? parsed :type)
+                           (re-find #"-" (name (:type parsed))))
+                  (is false (str "Message type should use snake_case, not kebab-case: " raw-msg)))
+
+                ;; Common message types we expect
+                (when (= "hello" (:type parsed))
+                  (is (not (clojure.string/includes? raw-msg "\"session-id\""))
+                      "JSON should not contain kebab-case keys like 'session-id'"))
+
+                (when (= "session_list" (:type parsed))
+                  (is (clojure.string/includes? raw-msg "\"session_list\"")
+                      "JSON should contain snake_case type 'session_list'")
+                  (is (clojure.string/includes? raw-msg "\"total_count\"")
+                      "JSON should contain snake_case key 'total_count'")
+                  (is (not (clojure.string/includes? raw-msg "\"total-count\""))
+                      "JSON should not contain kebab-case 'total-count'"))))
+
+            (finally
+              (gniazdo.core/close raw-client)))
+
+          (log/info "JSON format validation passed"))
         (finally
           (fixtures/close-ws! client))))))

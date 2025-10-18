@@ -1,0 +1,56 @@
+Oct 17, 2025 11:42:19 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: WebSocket connection established {:remote-addr 100.122.31.10}
+Oct 17, 2025 11:42:19 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client connected
+Oct 17, 2025 11:42:19 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending session list {:count 50, :total 699}
+Oct 17, 2025 11:42:19 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: WebSocket connection closed {:status :going-away}
+Oct 17, 2025 11:42:20 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: WebSocket connection established {:remote-addr 100.122.31.10}
+Oct 17, 2025 11:42:20 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client connected
+Oct 17, 2025 11:42:20 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending session list {:count 50, :total 699}
+Oct 17, 2025 11:42:24 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: WebSocket connection closed {:status :going-away}
+Oct 17, 2025 11:42:32 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: WebSocket connection established {:remote-addr 100.122.31.10}
+Oct 17, 2025 11:42:32 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client connected
+Oct 17, 2025 11:42:32 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending session list {:count 50, :total 699}
+Oct 17, 2025 11:43:02 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client subscribing to session {:session-id C354BD45-BE6F-4051-B543-D925005CEF38}
+Oct 17, 2025 11:43:02 PM clojure.tools.logging$eval10676$fn__10679 invoke
+WARNING: Session not found {:session-id C354BD45-BE6F-4051-B543-D925005CEF38}
+Oct 17, 2025 11:43:02 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Client subscribing to session {:session-id C354BD45-BE6F-4051-B543-D925005CEF38}
+Oct 17, 2025 11:43:02 PM clojure.tools.logging$eval10676$fn__10679 invoke
+WARNING: Session not found {:session-id C354BD45-BE6F-4051-B543-D925005CEF38}
+Oct 17, 2025 11:43:08 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Received prompt {:text Say hello, :new-session-id C354BD45-BE6F-4051-B543-D925005CEF38, :resume-session-id nil, :working-directory /}
+Oct 17, 2025 11:43:08 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Invoking Claude CLI {:new-session-id C354BD45-BE6F-4051-B543-D925005CEF38, :resume-session-id nil, :working-directory /, :model sonnet}
+Oct 17, 2025 11:43:11 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Prompt completed successfully {:session-id C354BD45-BE6F-4051-B543-D925005CEF38, :message Filesystem watcher will send session_updated}
+Oct 17, 2025 11:43:11 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Broadcasting new session {:session-id C354BD45-BE6F-4051-B543-D925005CEF38}
+Oct 17, 2025 11:43:11 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending message to client {:type :session-created}
+Oct 17, 2025 11:43:11 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: JSON payload {:json {"type":"session_created","session_id":"C354BD45-BE6F-4051-B543-D925005CEF38","name":"Terminal: - - 2025-10-17 23:43","working_directory":"/Users/travisbrown/-","last_modified":1760762591115,"message_count":4,"preview":""}}
+Oct 17, 2025 11:43:11 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Message sent successfully {:type :session-created}
+Oct 17, 2025 11:43:11 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending initial messages for new session {:session-id C354BD45-BE6F-4051-B543-D925005CEF38, :count 4}
+Oct 17, 2025 11:43:11 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Sending message to client {:type :session-updated}
+Oct 17, 2025 11:43:11 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: JSON payload {:json {"type":"session_updated","session_id":"C354BD45-BE6F-4051-B543-D925005CEF38","messages":[{"isSidechain":true,"sessionId":"C354BD45-BE6F-4051-B543-D925005CEF38","parentUuid":null,"cwd":"/","type":"user","gitBranch":"","uuid":"990785cc-e57e-463c-a20e-9ba6182fcba4","version":"2.0.22","timestamp":"2025-10-18T04:43:08.988Z","message":{"role":"user","content":"Warmup"},"userType":"external"},{"isSidechain":true,"sessionId":"C354BD45-BE6F-4051-B543-D925005CEF38","parentUuid":"990785cc-e57e-463c-a20e-9ba6182fcba4","cwd":"/","type":"assistant","requestId":"req_011CUE3ypDBbYsML2h1ZmH2w","gitBranch":"","uuid":"9fc35e4c-d7b4-49bb-ba0e-79c7c9e4a304","version":"2.0.22","timestamp":"2025-10-18T04:43:10.847Z","message":{"model":"claude-haiku-4-5-20251001","id":"msg_019jk1PFz3U2sfCsxxS7QheS","type":"message","role":"assistant","content":[{"type":"text","text":"# Warmup Complete\n\nI'm Claude Code, Anthropic's official CLI assistant for Claude. I'm ready to help you search through and analyze codebases efficiently.\n\nMy capabilities include:\n- **Glob patterns** - Find files by name and extension patterns\n- **Grep/Regex** - Search file contents with powerful pattern matching\n- **Read** - Examine specific file contents\n- **Bash** - Execute file operations (listing, copying, etc.)\n\nI'm standing by to assist with your code search requests. What would you like me to find or analyze?"}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":394,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":127,"service_tier":"standard"}},"userType":"external"},{"isSidechain":false,"sessionId":"C354BD45-BE6F-4051-B543-D925005CEF38","parentUuid":null,"cwd":"/","type":"user","gitBranch":"","uuid":"d206c805-5d57-4ad4-9462-52851527ddb2","version":"2.0.22","timestamp":"2025-10-18T04:43:09.356Z","message":{"role":"user","content":"Say hello"},"userType":"external"},{"isSidechain":false,"sessionId":"C354BD45-BE6F-4051-B543-D925005CEF38","parentUuid":"d206c805-5d57-4ad4-9462-52851527ddb2","cwd":"/","type":"assistant","requestId":"req_011CUE3yqnw9iSrr23tYjKjg","gitBranch":"","uuid":"1eb20036-0315-4681-8989-d2bcd4c54757","version":"2.0.22","timestamp":"2025-10-18T04:43:11.079Z","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_01FY34kBrbDH8LpyKBVUx87b","type":"message","role":"assistant","content":[{"type":"text","text":"Hello! I'm Claude, here to help you with software engineering tasks. How can I assist you today?"}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3,"cache_creation_input_tokens":2465,"cache_read_input_tokens":12202,"cache_creation":{"ephemeral_5m_input_tokens":2465,"ephemeral_1h_input_tokens":0},"output_tokens":25,"service_tier":"standard"}},"userType":"external"}]}}
+Oct 17, 2025 11:43:11 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: Message sent successfully {:type :session-updated}
+Oct 17, 2025 11:43:11 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: New session detected {:session-id C354BD45-BE6F-4051-B543-D925005CEF38, :name Terminal: - - 2025-10-17 23:43}
+Oct 17, 2025 11:43:31 PM clojure.tools.logging$eval10676$fn__10679 invoke
+INFO: WebSocket connection closed {:status :going-away}

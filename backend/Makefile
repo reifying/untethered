@@ -1,4 +1,4 @@
-.PHONY: test test-manual-startup test-manual-protocol test-manual-watcher-new test-manual-prompt-new test-manual-prompt-resume test-manual-broadcast test-manual-errors test-manual-free test-manual-all clean
+.PHONY: test test-manual-startup test-manual-protocol test-manual-watcher-new test-manual-prompt-new test-manual-prompt-resume test-manual-broadcast test-manual-errors test-manual-real-data test-manual-free test-manual-all clean run stop restart
 
 # Run regular automated tests (free, no Claude invocations)
 test:
@@ -40,10 +40,14 @@ test-manual-errors:
 	@echo "Running Test 9: Error Handling (FREE)"
 	clojure -M:manual-test -d manual_test -n voice-code.test-09-errors
 
+test-manual-real-data:
+	@echo "Running Test 10: Real Data Validation with 700+ sessions (FREE)"
+	clojure -M:manual-test -d manual_test -n voice-code.test-10-real-data-validation
+
 # Run all free manual tests
 test-manual-free:
 	@echo "Running all FREE manual tests (no Claude invocations)..."
-	clojure -M:manual-test -d manual_test -r "voice-code\.test-0[3489]-.*"
+	clojure -M:manual-test -d manual_test -r "voice-code\.test-(0[3489]|10)-.*"
 
 # Run ALL manual tests (including paid)
 test-manual-all:
@@ -58,9 +62,31 @@ clean:
 	rm -f server.log
 	rm -f **/test-*.jsonl
 
+# Server management
+run:
+	@echo "Starting voice-code backend server..."
+	clojure -M -m voice-code.server
+
+stop:
+	@echo "Stopping voice-code backend server..."
+	@pkill -f "clojure.*voice-code.*server" || echo "No server running"
+
+restart: stop
+	@echo "Waiting for server to stop..."
+	@sleep 2
+	@echo "Starting voice-code backend server..."
+	@$(MAKE) run
+
 # Help
 help:
 	@echo "Available targets:"
+	@echo ""
+	@echo "Server management:"
+	@echo "  run                       - Start the backend server"
+	@echo "  stop                      - Stop the backend server"
+	@echo "  restart                   - Restart the backend server"
+	@echo ""
+	@echo "Testing:"
 	@echo "  test                      - Run automated tests (FREE)"
 	@echo ""
 	@echo "Manual tests (individual):"
@@ -71,6 +97,7 @@ help:
 	@echo "  test-manual-prompt-resume - Test 7: Prompt resume session (COSTS MONEY)"
 	@echo "  test-manual-broadcast     - Test 8: Multi-client broadcast (FREE)"
 	@echo "  test-manual-errors        - Test 9: Error handling (FREE)"
+	@echo "  test-manual-real-data     - Test 10: Real data validation with 700+ sessions (FREE)"
 	@echo ""
 	@echo "Manual test suites:"
 	@echo "  test-manual-free          - Run all FREE manual tests"

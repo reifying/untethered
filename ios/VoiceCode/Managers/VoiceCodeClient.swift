@@ -325,16 +325,19 @@ class VoiceCodeClient: ObservableObject {
     }
 
     private func sendConnectMessage() {
-        guard let sessionId = sessionId else {
-            print("⚠️ [VoiceCodeClient] No session ID to send in connect message")
-            return
+        // New protocol: session_id is optional in connect message
+        // Backend will send session list regardless
+        var message: [String: Any] = [
+            "type": "connect"
+        ]
+
+        if let sessionId = sessionId {
+            message["session_id"] = sessionId
+            print("📤 [VoiceCodeClient] Sending connect with session_id: \(sessionId)")
+        } else {
+            print("📤 [VoiceCodeClient] Sending connect without session_id")
         }
 
-        let message: [String: Any] = [
-            "type": "connect",
-            "session_id": sessionId
-        ]
-        print("📤 [VoiceCodeClient] Sending connect with session_id: \(sessionId)")
         sendMessage(message)
     }
 

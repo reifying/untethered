@@ -107,9 +107,9 @@ class SessionSyncManager {
             // Update session metadata
             session.messageCount = Int32(messages.count)
             session.lastModified = Date()
-            
+
             if let lastMessage = messages.last,
-               let text = lastMessage["text"] as? String {
+               let text = self.extractText(from: lastMessage) {
                 session.preview = String(text.prefix(100))
             }
             
@@ -230,16 +230,15 @@ class SessionSyncManager {
             var assistantMessagesToSpeak: [String] = []
 
             for messageData in messages {
-                guard let role = messageData["role"] as? String,
-                      let text = messageData["text"] as? String else {
+                // Extract fields from raw .jsonl format
+                guard let role = self.extractRole(from: messageData),
+                      let text = self.extractText(from: messageData) else {
+                    logger.warning("Failed to extract role or text from message")
                     continue
                 }
 
                 // Extract server timestamp
-                var serverTimestamp: Date? = nil
-                if let timestamp = messageData["timestamp"] as? TimeInterval {
-                    serverTimestamp = Date(timeIntervalSince1970: timestamp / 1000.0)
-                }
+                let serverTimestamp = self.extractTimestamp(from: messageData)
 
                 // Try to reconcile optimistic message first
                 let fetchRequest = CDMessage.fetchMessage(sessionId: UUID(uuidString: sessionId)!, role: role, text: text)
@@ -249,6 +248,10 @@ class SessionSyncManager {
                     existingMessage.messageStatus = .confirmed
                     if let serverTimestamp = serverTimestamp {
                         existingMessage.serverTimestamp = serverTimestamp
+                    }
+                    // Update ID to match backend's UUID
+                    if let backendId = self.extractMessageId(from: messageData) {
+                        existingMessage.id = backendId
                     }
                     logger.info("Reconciled optimistic message")
                 } else {
@@ -281,7 +284,7 @@ class SessionSyncManager {
 
             // Update preview with last message text
             if let lastMessage = messages.last,
-               let text = lastMessage["text"] as? String {
+               let text = self.extractText(from: lastMessage) {
                 session.preview = String(text.prefix(100))
             }
 
@@ -306,7 +309,61 @@ class SessionSyncManager {
     }
     
     // MARK: - Private Helpers
-    
+
+    /// Extract text from Claude Code message format
+    /// - Parameter messageData: Raw .jsonl message data
+    /// - Returns: Extracted text string, or nil if extraction fails
+    internal func extractText(from messageData: [String: Any]) -> String? {
+        guard let message = messageData["message"] as? [String: Any] else {
+            return nil
+        }
+
+        // User messages have simple string content
+        if let content = message["content"] as? String {
+            return content
+        }
+
+        // Assistant messages have array of content blocks
+        if let contentArray = message["content"] as? [[String: Any]] {
+            let textBlocks = contentArray
+                .filter { ($0["type"] as? String) == "text" }
+                .compactMap { $0["text"] as? String }
+            return textBlocks.joined(separator: "\n\n")
+        }
+
+        return nil
+    }
+
+    /// Extract role from Claude Code message format
+    /// - Parameter messageData: Raw .jsonl message data
+    /// - Returns: Role string ("user" or "assistant"), or nil if extraction fails
+    internal func extractRole(from messageData: [String: Any]) -> String? {
+        return messageData["type"] as? String
+    }
+
+    /// Extract timestamp from Claude Code message format
+    /// - Parameter messageData: Raw .jsonl message data
+    /// - Returns: Date object, or nil if extraction fails
+    internal func extractTimestamp(from messageData: [String: Any]) -> Date? {
+        guard let timestampString = messageData["timestamp"] as? String else {
+            return nil
+        }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: timestampString)
+    }
+
+    /// Extract message UUID from Claude Code message format
+    /// - Parameter messageData: Raw .jsonl message data
+    /// - Returns: UUID, or nil if extraction fails
+    internal func extractMessageId(from messageData: [String: Any]) -> UUID? {
+        guard let uuidString = messageData["uuid"] as? String else {
+            return nil
+        }
+        return UUID(uuidString: uuidString)
+    }
+
     /// Upsert (update or insert) a session in CoreData
     private func upsertSession(_ sessionData: [String: Any], in context: NSManagedObjectContext) {
         guard let sessionIdString = sessionData["session_id"] as? String,
@@ -353,24 +410,27 @@ class SessionSyncManager {
     
     /// Create a message in CoreData
     private func createMessage(_ messageData: [String: Any], sessionId: String, in context: NSManagedObjectContext, session: CDSession) {
-        guard let role = messageData["role"] as? String,
-              let text = messageData["text"] as? String else {
+        // Extract fields from raw .jsonl format
+        guard let role = extractRole(from: messageData),
+              let text = extractText(from: messageData) else {
             logger.warning("Invalid message data, missing role or text")
             return
         }
-        
+
         let message = CDMessage(context: context)
-        message.id = UUID()  // Generate new UUID for messages without explicit ID
+
+        // Use backend's UUID if available, otherwise generate new one
+        message.id = extractMessageId(from: messageData) ?? UUID()
         message.sessionId = UUID(uuidString: sessionId)!
         message.role = role
         message.text = text
         message.messageStatus = .confirmed
         message.session = session
-        
-        // Timestamp
-        if let timestamp = messageData["timestamp"] as? TimeInterval {
-            message.timestamp = Date(timeIntervalSince1970: timestamp / 1000.0)
-            message.serverTimestamp = message.timestamp
+
+        // Extract and parse timestamp
+        if let timestamp = extractTimestamp(from: messageData) {
+            message.timestamp = timestamp
+            message.serverTimestamp = timestamp
         } else {
             message.timestamp = Date()
         }

@@ -1,0 +1,57 @@
+VoiceCode(47931,0x208a3f200) malloc: xzm: failed to initialize deferred reclamation buffer [2] (null)
+CoreData store loaded: /var/mobile/Containers/Data/Application/0C263A4E-C048-43F3-BCB0-9DB81E4D2EEE/Library/Application Support/VoiceCode.sqlite
+🔌 [ContentView] Connecting with iOS session UUID: 054552BF-2174-42B3-A37E-46FE4FFBAB34
+📡 [VoiceCodeClient] Received hello from server
+📤 [VoiceCodeClient] Sending connect with session_id: 054552BF-2174-42B3-A37E-46FE4FFBAB34
+📋 [VoiceCodeClient] Received session_list with 50 sessions
+Received session_list with 50 sessions
+Invalid or missing session_id in session data
+Saved 50 sessions to CoreData
+UIKeyboardLayoutStar implements focusItemsInRect: - caching for linear focus movement is limited as long as this view is on screen.
+Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464577 }
+Could not find cached accumulator for token=302A111F type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=D5A5E60D type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=16CC1B2C type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=B6629ED1 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+📝 [SessionsView] Created new session: C354BD45-BE6F-4051-B543-D925005CEF38
+📖 [VoiceCodeClient] Subscribing to session: C354BD45-BE6F-4051-B543-D925005CEF38
+🔄 [SessionManager] Selected CoreData session: C354BD45-BE6F-4051-B543-D925005CEF38
+📍 [ActiveSessionManager] Setting active session: C354BD45-BE6F-4051-B543-D925005CEF38
+📖 [VoiceCodeClient] Subscribing to session: C354BD45-BE6F-4051-B543-D925005CEF38
+Reporter disconnected or already stopped. { func=stop, reporterID=205862077464577 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
+Reporter disconnected. { function=sendMessage, reporterID=205862077464578 }
+Could not find cached accumulator for token=FA6E9286 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=43389C10 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=50A0FE0C type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=10AD674C type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=7CBC1CF5 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=4A513F8D type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=45A24B2D type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Could not find cached accumulator for token=E38EA867 type:0 in -[TUIKeyboardCandidateMultiplexer receiveExternalAutocorrectionUpdate:requestToken:]_block_invoke
+Creating optimistic message for session: C354BD45-BE6F-4051-B543-D925005CEF38
+📤 [ConversationView] Sending prompt with new_session_id: C354BD45-BE6F-4051-B543-D925005CEF38
+Created optimistic message: 155C2383-74AF-4C6B-9894-D5A6BEF1C659
+Created optimistic message: 155C2383-74AF-4C6B-9894-D5A6BEF1C659
+Server ack: Processing prompt...
+✨ [VoiceCodeClient] Received session_created
+Received session_created for: C354BD45-BE6F-4051-B543-D925005CEF38
+Created session: C354BD45-BE6F-4051-B543-D925005CEF38
+🔄 [VoiceCodeClient] Received session_updated for C354BD45-BE6F-4051-B543-D925005CEF38 with 4 messages
+Received session_updated for: C354BD45-BE6F-4051-B543-D925005CEF38 with 4 messages
+Reconciled optimistic message
+Active session: will speak 2 assistant messages
+Updated session: C354BD45-BE6F-4051-B543-D925005CEF38

@@ -154,10 +154,15 @@
 ;; Assertions
 
 (defn assert-message-type
-  "Assert message has expected type."
+  "Assert message has expected type.
+  
+  Expected type is a keyword like :session-list.
+  Message type value is a string from JSON like 'session_list'.
+  We convert the expected keyword to snake_case for comparison."
   [msg expected-type]
-  (is (= (name expected-type) (:type msg))
-      (str "Expected message type " expected-type " but got " (:type msg))))
+  (let [expected-str (server/kebab->snake expected-type)]
+    (is (= expected-str (:type msg))
+        (str "Expected message type " expected-str " but got " (:type msg)))))
 
 (defn assert-session-list
   "Assert message is a session-list with sessions."

@@ -147,14 +147,49 @@ Backend maintains a fast in-memory index:
   "session_id": "abc-123-uuid",
   "messages": [
     {
-      "role": "user",
-      "text": "hello world",
-      "timestamp": 1697481234000
+      "isSidechain": false,
+      "sessionId": "abc-123-uuid",
+      "parentUuid": null,
+      "cwd": "/Users/user/project",
+      "type": "user",
+      "gitBranch": "main",
+      "uuid": "msg-uuid-1",
+      "version": "2.0.22",
+      "timestamp": "2025-10-18T04:23:02.272Z",
+      "message": {
+        "role": "user",
+        "content": "hello world"
+      },
+      "userType": "external"
     },
     {
-      "role": "assistant",
-      "text": "Hi! How can I help?",
-      "timestamp": 1697481240000
+      "isSidechain": false,
+      "sessionId": "abc-123-uuid",
+      "parentUuid": "msg-uuid-1",
+      "cwd": "/Users/user/project",
+      "type": "assistant",
+      "requestId": "req_xxx",
+      "gitBranch": "main",
+      "uuid": "msg-uuid-2",
+      "version": "2.0.22",
+      "timestamp": "2025-10-18T04:23:04.233Z",
+      "message": {
+        "model": "claude-sonnet-4-5-20250929",
+        "id": "msg_xxx",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Hi! How can I help?"
+          }
+        ],
+        "stop_reason": "end_turn",
+        "usage": {
+          "input_tokens": 123,
+          "output_tokens": 456
+        }
+      }
     }
   ]
 }
@@ -167,9 +202,20 @@ Backend maintains a fast in-memory index:
   "session_id": "abc-123-uuid",
   "messages": [
     {
-      "role": "user",
-      "text": "what files are here?",
-      "timestamp": 1697481500000
+      "isSidechain": false,
+      "sessionId": "abc-123-uuid",
+      "parentUuid": "msg-uuid-2",
+      "cwd": "/Users/user/project",
+      "type": "user",
+      "gitBranch": "main",
+      "uuid": "msg-uuid-3",
+      "version": "2.0.22",
+      "timestamp": "2025-10-18T04:25:00.000Z",
+      "message": {
+        "role": "user",
+        "content": "what files are here?"
+      },
+      "userType": "external"
     }
   ]
 }
@@ -517,12 +563,73 @@ Example: "Terminal: mono - 2025-10-16 17:30 (fork)"
 
 ### Claude Code .jsonl Format
 
-Each line is a JSON object representing a message:
+The backend sends the raw Claude Code .jsonl format to preserve all metadata and ensure faithful replication. Each line in the .jsonl file is a complete message object with the following structure:
 
+**User Message:**
 ```jsonl
-{"role":"user","text":"hello world","timestamp":1697481234000}
-{"role":"assistant","text":"Hi! How can I help?","timestamp":1697481240000}
+{
+  "isSidechain": false,
+  "sessionId": "session-uuid",
+  "parentUuid": null,
+  "cwd": "/path/to/working/dir",
+  "type": "user",
+  "gitBranch": "main",
+  "uuid": "message-uuid",
+  "version": "2.0.22",
+  "timestamp": "2025-10-18T04:23:02.272Z",
+  "message": {
+    "role": "user",
+    "content": "hello world"
+  },
+  "userType": "external"
+}
 ```
+
+**Assistant Message:**
+```jsonl
+{
+  "isSidechain": false,
+  "sessionId": "session-uuid",
+  "parentUuid": "parent-message-uuid",
+  "cwd": "/path/to/working/dir",
+  "type": "assistant",
+  "requestId": "req_xxx",
+  "gitBranch": "main",
+  "uuid": "message-uuid",
+  "version": "2.0.22",
+  "timestamp": "2025-10-18T04:23:04.233Z",
+  "message": {
+    "model": "claude-sonnet-4-5-20250929",
+    "id": "msg_xxx",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+      {
+        "type": "text",
+        "text": "Hi! How can I help?"
+      }
+    ],
+    "stop_reason": "end_turn",
+    "usage": {
+      "input_tokens": 123,
+      "output_tokens": 456
+    }
+  }
+}
+```
+
+### iOS Message Parsing
+
+iOS clients extract the following fields from the raw .jsonl format:
+
+1. **Role**: Extract from top-level `type` field ("user" or "assistant")
+2. **Text**:
+   - User messages: Extract from `message.content` (simple string)
+   - Assistant messages: Join all `message.content[].text` where `type == "text"` (array of content blocks)
+3. **Timestamp**: Parse ISO 8601 string from `timestamp` field to Date object
+4. **Message ID**: Use the `uuid` field as the unique message identifier
+
+This approach preserves all Claude Code metadata (parentUuid, requestId, usage, etc.) while allowing iOS to extract what it needs for display and text-to-speech.
 
 ### Metadata Extraction
 

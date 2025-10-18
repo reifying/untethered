@@ -24,24 +24,15 @@
   [k]
   (str/replace (name k) #"-" "_"))
 
-(defn convert-keywords
-  "Recursively convert keyword values to snake_case strings"
-  [data]
-  (cond
-    (keyword? data) (kebab->snake data)
-    (map? data) (into {} (map (fn [[k v]] [k (convert-keywords v)]) data))
-    (coll? data) (map convert-keywords data)
-    :else data))
-
 (defn parse-json
   "Parse JSON string, converting snake_case keys to kebab-case keywords"
   [s]
   (json/parse-string s snake->kebab))
 
 (defn generate-json
-  "Generate JSON string, converting kebab-case keywords to snake_case keys and values"
+  "Generate JSON string, converting kebab-case keywords to snake_case keys"
   [data]
-  (json/generate-string (convert-keywords data) {:key-fn kebab->snake}))
+  (json/generate-string data {:key-fn kebab->snake}))
 
 (defonce server-state (atom nil))
 
@@ -114,13 +105,11 @@
   (if (contains? @connected-clients channel)
     (do
       (log/info "Sending message to client" {:type (:type message-data)})
-      (let [json-str (generate-json message-data)]
-        (log/info "JSON payload" {:json json-str}) ; ADD THIS LINE
-        (try
-          (http/send! channel json-str)
-          (log/info "Message sent successfully" {:type (:type message-data)})
-          (catch Exception e
-            (log/warn e "Failed to send to client")))))
+      (try
+        (http/send! channel (generate-json message-data))
+        (log/info "Message sent successfully" {:type (:type message-data)})
+        (catch Exception e
+          (log/warn e "Failed to send to client"))))
     (log/warn "Channel not in connected-clients, skipping send" {:type (:type message-data)})))
 
 (defn is-session-deleted-for-client?
@@ -151,20 +140,7 @@
                         :working-directory (:working-directory session-metadata)
                         :last-modified (:last-modified session-metadata)
                         :message-count (:message-count session-metadata)
-                        :preview (:preview session-metadata)})))
-
-  ;; Also send messages if client is subscribed (handles new session race condition)
-  (when (repl/is-subscribed? (:session-id session-metadata))
-    (let [file-path (:file session-metadata)
-          messages (repl/parse-jsonl-file file-path)]
-      (when (seq messages)
-        (log/info "Sending initial messages for new session" {:session-id (:session-id session-metadata) :count (count messages)})
-        (doseq [[channel client-info] @connected-clients]
-          (when-not (is-session-deleted-for-client? channel (:session-id session-metadata))
-            (send-to-client! channel
-                             {:type :session-updated
-                              :session-id (:session-id session-metadata)
-                              :messages messages})))))))
+                        :preview (:preview session-metadata)}))))
 
 (defn on-session-updated
   "Called when a subscribed session has new messages"
@@ -241,7 +217,7 @@
               (if-let [metadata (repl/get-session-metadata session-id)]
                 (let [file-path (:file metadata)
                       all-messages (repl/parse-jsonl-file file-path)
-                      ;; Limit to most recent 20 messages to prevent payload size issues
+;; Limit to most recent 20 messages to prevent payload size issues
                       messages (vec (take-last 20 all-messages))]
                   (log/info "Sending session history" {:session-id session-id :message-count (count messages) :total (count all-messages)})
                   (http/send! channel
@@ -274,7 +250,6 @@
 
         "prompt"
         ;; Updated to use new_session_id vs resume_session_id
-        ;; In new architecture: NO direct response - rely on filesystem watcher + subscription
         (let [new-session-id (:new-session-id data)
               resume-session-id (:resume-session-id data)
               prompt-text (:text data)
@@ -315,22 +290,38 @@
                             :message "Processing prompt..."}))
 
               ;; Invoke Claude asynchronously
-              ;; NEW ARCHITECTURE: Don't send response directly
-              ;; Filesystem watcher will detect changes and send session_updated
               (claude/invoke-claude-async
                prompt-text
                (fn [response]
-                 ;; Just log completion - let filesystem watcher handle updates
+                 ;; Send response back to client
                  (if (:success response)
-                   (log/info "Prompt completed successfully"
-                             {:session-id (:session-id response)
-                              :message "Filesystem watcher will send session_updated"})
+                   (let [usage (:usage response)
+                         input-tokens (get usage :input_tokens 0)
+                         output-tokens (get usage :output_tokens 0)
+                         ;; Claude CLI pricing (approximate for Sonnet)
+                         input-cost-per-token 0.000003
+                         output-cost-per-token 0.000015
+                         input-cost (* input-tokens input-cost-per-token)
+                         output-cost (* output-tokens output-cost-per-token)
+                         total-cost (or (:cost response) (+ input-cost output-cost))]
+                     (log/info "Prompt completed successfully"
+                               {:session-id (:session-id response)})
+                     (send-to-client! channel
+                                      {:type :response
+                                       :message-id (generate-message-id)
+                                       :success true
+                                       :text (:result response)
+                                       :session-id (:session-id response)
+                                       :usage usage
+                                       :cost {:input-cost input-cost
+                                              :output-cost output-cost
+                                              :total-cost total-cost}}))
                    (do
                      (log/error "Prompt failed" {:error (:error response)})
-                     ;; Still send error responses directly
                      (send-to-client! channel
-                                      {:type :error
-                                       :message (:error response)}))))
+                                      {:type :response
+                                       :success false
+                                       :error (:error response)}))))
                :new-session-id new-session-id
                :resume-session-id resume-session-id
                :working-directory working-dir
