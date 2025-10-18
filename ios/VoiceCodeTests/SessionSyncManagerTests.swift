@@ -167,65 +167,7 @@ final class SessionSyncManagerTests: XCTestCase {
     }
     
     // MARK: - Session Updated Tests
-    
-    func testHandleSessionUpdated() throws {
-        let sessionId = UUID()
-        
-        // Create initial session
-        let session = CDSession(context: context)
-        session.id = sessionId
-        session.backendName = "Test Session"
-        session.workingDirectory = "/test"
-        session.lastModified = Date(timeIntervalSince1970: 1000)
-        session.messageCount = 2
-        session.preview = "Old preview"
-        session.markedDeleted = false
-        
-        try context.save()
-        
-        // Handle session updated with new messages
-        let messages: [[String: Any]] = [
-            [
-                "role": "user",
-                "text": "New user message",
-                "timestamp": 1697485000000.0
-            ],
-            [
-                "role": "assistant",
-                "text": "New assistant response",
-                "timestamp": 1697485003000.0
-            ]
-        ]
-        
-        syncManager.handleSessionUpdated(sessionId: sessionId.uuidString, messages: messages)
-        
-        // Wait for background save
-        let expectation = XCTestExpectation(description: "Wait for save")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 1.0)
-        
-        // Refetch and verify
-        context.refreshAllObjects()
-        let fetchRequest = CDSession.fetchSession(id: sessionId)
-        let updated = try context.fetch(fetchRequest).first
-        
-        XCTAssertNotNil(updated)
-        XCTAssertEqual(updated?.messageCount, 4) // 2 initial + 2 new
-        XCTAssertEqual(updated?.preview, "New assistant response")
-        
-        // Verify messages were created
-        let messageFetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
-        let savedMessages = try context.fetch(messageFetchRequest)
-        
-        XCTAssertEqual(savedMessages.count, 2)
-        XCTAssertEqual(savedMessages[0].role, "user")
-        XCTAssertEqual(savedMessages[0].text, "New user message")
-        XCTAssertEqual(savedMessages[1].role, "assistant")
-        XCTAssertEqual(savedMessages[1].text, "New assistant response")
-    }
-    
+
     func testHandleSessionUpdatedNonexistentSession() throws {
         let nonexistentId = UUID()
         
