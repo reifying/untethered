@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var isVoiceMode = true
     @State private var showingSettings = false
     @State private var showingSessions = false
+    @State private var showingCopyConfirmation = false
 
     var body: some View {
         NavigationView {
@@ -24,7 +25,7 @@ struct ContentView: View {
                         LazyVStack(spacing: 12) {
                             if let session = sessionManager.currentSession {
                                 ForEach(session.messages) { message in
-                                    MessageView(message: message)
+                                    MessageView(message: message, voiceOutput: voiceOutput)
                                 }
                             }
                         }
@@ -113,9 +114,28 @@ struct ContentView: View {
                 }
 
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showingSettings = true }) {
-                        Image(systemName: "gear")
+                    HStack(spacing: 16) {
+                        Button(action: exportSessionToPlainText) {
+                            Image(systemName: "doc.on.clipboard")
+                        }
+                        
+                        Button(action: { showingSettings = true }) {
+                            Image(systemName: "gear")
+                        }
                     }
+                }
+            }
+            .overlay(alignment: .top) {
+                if showingCopyConfirmation {
+                    Text("Conversation copied to clipboard")
+                        .font(.caption)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.green.opacity(0.9))
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                        .padding(.top, 8)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
         }
@@ -203,6 +223,52 @@ struct ContentView: View {
     }
 
     // MARK: - Actions
+    
+    private func exportSessionToPlainText() {
+        guard let session = sessionManager.currentSession else { return }
+        
+        // Format session header
+        var exportText = "# \(session.name)\n"
+        if let workingDir = session.workingDirectory {
+            exportText += "Working Directory: \(workingDir)\n"
+        }
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateStyle = .medium
+        dateFormatter.timeStyle = .short
+        exportText += "Exported: \(dateFormatter.string(from: Date()))\n"
+        exportText += "\n---\n\n"
+        
+        // Add all messages in chronological order
+        for message in session.messages {
+            let roleLabel: String
+            switch message.role {
+            case .user:
+                roleLabel = "User"
+            case .assistant:
+                roleLabel = "Assistant"
+            case .system:
+                roleLabel = "System"
+            }
+            exportText += "[\(roleLabel)]\n"
+            exportText += "\(message.text)\n\n"
+        }
+        
+        // Copy to clipboard
+        UIPasteboard.general.string = exportText
+        
+        // Show confirmation banner
+        withAnimation {
+            showingCopyConfirmation = true
+        }
+        
+        // Hide confirmation after 2 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation {
+                showingCopyConfirmation = false
+            }
+        }
+    }
 
     private func sendPrompt(_ text: String) {
         guard let session = sessionManager.currentSession else { return }
