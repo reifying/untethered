@@ -13,6 +13,8 @@ struct ConversationView: View {
     @State private var isLoading = false
     @State private var hasLoadedMessages = false
     @State private var promptText = ""
+    @State private var showingRenameSheet = false
+    @State private var newSessionName = ""
 
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
@@ -98,6 +100,28 @@ struct ConversationView: View {
         }
         .navigationTitle(session.displayName)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(action: {
+                    newSessionName = session.localName ?? session.backendName
+                    showingRenameSheet = true
+                }) {
+                    Image(systemName: "pencil")
+                }
+            }
+        }
+        .sheet(isPresented: $showingRenameSheet) {
+            RenameSessionView(
+                sessionName: $newSessionName,
+                onSave: {
+                    renameSession(newName: newSessionName)
+                    showingRenameSheet = false
+                },
+                onCancel: {
+                    showingRenameSheet = false
+                }
+            )
+        }
         .onAppear {
             loadSessionIfNeeded()
         }
@@ -132,6 +156,22 @@ struct ConversationView: View {
         }
     }
     
+    private func renameSession(newName: String) {
+        let trimmedName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+
+        // Set localName to the custom name
+        session.localName = trimmedName
+
+        // Save to CoreData
+        do {
+            try viewContext.save()
+            print("📝 [ConversationView] Renamed session to: \(trimmedName)")
+        } catch {
+            print("❌ [ConversationView] Failed to rename session: \(error)")
+        }
+    }
+
     private func sendPrompt() {
         let text = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
@@ -230,5 +270,38 @@ struct CDMessageView: View {
             RoundedRectangle(cornerRadius: 12)
                 .fill(message.role == "user" ? Color.blue.opacity(0.1) : Color.green.opacity(0.1))
         )
+    }
+}
+
+// MARK: - Rename Session View
+
+struct RenameSessionView: View {
+    @Binding var sessionName: String
+    let onSave: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(header: Text("Session Name")) {
+                    TextField("Enter session name", text: $sessionName)
+                        .textInputAutocapitalization(.words)
+                }
+            }
+            .navigationTitle("Rename Session")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel", action: onCancel)
+                }
+
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Save") {
+                        onSave()
+                    }
+                    .disabled(sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
     }
 }
