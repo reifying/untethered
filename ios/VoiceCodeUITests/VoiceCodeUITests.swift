@@ -79,6 +79,53 @@ final class VoiceCodeUITests: XCTestCase {
     }
 
     @MainActor
+    func testSessionTapNavigatesToConversation() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        // Open sessions view
+        let sessionsButton = app.buttons["list.bullet"]
+        XCTAssertTrue(sessionsButton.waitForExistence(timeout: 2))
+        sessionsButton.tap()
+
+        // Verify we're on the sessions view
+        let sessionsTitle = app.navigationBars["Sessions"]
+        XCTAssertTrue(sessionsTitle.waitForExistence(timeout: 2))
+
+        // Create a test session first
+        let addButton = app.buttons["plus"]
+        XCTAssertTrue(addButton.exists)
+        addButton.tap()
+
+        let nameField = app.textFields["Session Name"]
+        XCTAssertTrue(nameField.waitForExistence(timeout: 2))
+        nameField.tap()
+        nameField.typeText("Tap Test Session")
+
+        let createButton = app.buttons["Create"]
+        XCTAssertTrue(createButton.exists)
+        createButton.tap()
+
+        // Wait for the new session to appear in the list
+        let sessionCell = app.staticTexts["Tap Test Session"]
+        XCTAssertTrue(sessionCell.waitForExistence(timeout: 2))
+
+        // TAP the session (this is the key test - single tap should navigate)
+        sessionCell.tap()
+
+        // Verify we navigated to the ConversationView
+        // The navigation bar should show the session name
+        let conversationTitle = app.navigationBars["Tap Test Session"]
+        XCTAssertTrue(conversationTitle.waitForExistence(timeout: 2),
+                     "Single tap on session should navigate to ConversationView")
+
+        // Verify the conversation UI elements exist
+        let messageField = app.textFields["Type your message..."]
+        XCTAssertTrue(messageField.exists,
+                     "ConversationView should display the message input field")
+    }
+
+    @MainActor
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {

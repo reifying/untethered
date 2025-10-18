@@ -46,10 +46,58 @@
     (is (nil? (repl/parse-jsonl-line "")))
     (is (nil? (repl/parse-jsonl-line nil)))))
 
+(deftest test-valid-uuid
+  (testing "Valid lowercase UUID v4"
+    (is (true? (repl/valid-uuid? "550e8400-e29b-41d4-a716-446655440000"))))
+
+  (testing "Valid lowercase UUID with different values"
+    (is (true? (repl/valid-uuid? "123e4567-e89b-12d3-a456-426614174000"))))
+
+  (testing "Valid uppercase UUID"
+    (is (true? (repl/valid-uuid? "550E8400-E29B-41D4-A716-446655440000"))))
+
+  (testing "Valid mixed case UUID"
+    (is (true? (repl/valid-uuid? "550e8400-E29B-41d4-A716-446655440000"))))
+
+  (testing "Invalid - no hyphens"
+    (is (false? (repl/valid-uuid? "550e8400e29b41d4a716446655440000"))))
+
+  (testing "Invalid - wrong format"
+    (is (false? (repl/valid-uuid? "550e8400-e29b-41d4-a716"))))
+
+  (testing "Invalid - not a UUID"
+    (is (false? (repl/valid-uuid? "not-a-uuid"))))
+
+  (testing "Invalid - empty string"
+    (is (false? (repl/valid-uuid? ""))))
+
+  (testing "Invalid - nil"
+    (is (false? (repl/valid-uuid? nil)))))
+
 (deftest test-extract-session-id-from-path
-  (testing "Extract session ID from .jsonl filename"
-    (let [file (io/file "/path/to/abc-123-uuid.jsonl")]
-      (is (= "abc-123-uuid" (repl/extract-session-id-from-path file))))))
+  (testing "Extract valid UUID session ID from .jsonl filename"
+    (let [file (io/file "/path/to/550e8400-e29b-41d4-a716-446655440000.jsonl")]
+      (is (= "550e8400-e29b-41d4-a716-446655440000" (repl/extract-session-id-from-path file)))))
+
+  (testing "Extract valid uppercase UUID session ID from .jsonl filename"
+    (let [file (io/file "/path/to/550E8400-E29B-41D4-A716-446655440000.jsonl")]
+      (is (= "550E8400-E29B-41D4-A716-446655440000" (repl/extract-session-id-from-path file)))))
+
+  (testing "Return nil for non-UUID .jsonl filename"
+    (let [file (io/file "/path/to/not-a-uuid.jsonl")]
+      (is (nil? (repl/extract-session-id-from-path file)))))
+
+  (testing "Return nil for non-UUID numeric filename"
+    (let [file (io/file "/path/to/12345.jsonl")]
+      (is (nil? (repl/extract-session-id-from-path file)))))
+
+  (testing "Return nil for partial UUID"
+    (let [file (io/file "/path/to/550e8400-e29b.jsonl")]
+      (is (nil? (repl/extract-session-id-from-path file)))))
+
+  (testing "Return nil for UUID without hyphens"
+    (let [file (io/file "/path/to/550e8400e29b41d4a716446655440000.jsonl")]
+      (is (nil? (repl/extract-session-id-from-path file))))))
 
 (deftest test-extract-metadata-from-file
   (testing "Extract metadata from .jsonl file"
@@ -71,16 +119,45 @@
       (is (str/includes? name "2023"))))) ; Year from timestamp
 
 (deftest test-build-session-metadata
-  (testing "Build complete session metadata"
+  (testing "Build complete session metadata for valid UUID filename"
     (let [messages ["{\"role\":\"user\",\"text\":\"test\"}"]
-          file (create-test-jsonl-file "test-123.jsonl" messages)
+          file (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)
           metadata (repl/build-session-metadata file)]
-      (is (= "test-123" (:session-id metadata)))
+      (is (= "550e8400-e29b-41d4-a716-446655440000" (:session-id metadata)))
       (is (string? (:name metadata)))
       (is (string? (:working-directory metadata)))
       (is (number? (:created-at metadata)))
       (is (number? (:last-modified metadata)))
-      (is (= 1 (:message-count metadata))))))
+      (is (= 1 (:message-count metadata)))))
+
+  (testing "Build session metadata for non-UUID filename returns nil session-id"
+    (let [messages ["{\"role\":\"user\",\"text\":\"test\"}"]
+          file (create-test-jsonl-file "not-a-uuid.jsonl" messages)
+          metadata (repl/build-session-metadata file)]
+      (is (nil? (:session-id metadata)))
+      (is (string? (:name metadata)))
+      (is (number? (:created-at metadata))))))
+
+(deftest test-build-index-filters-non-uuid-files
+  (testing "build-index! filters out non-UUID session files but includes uppercase UUIDs"
+    (let [messages ["{\"role\":\"user\",\"text\":\"test message\"}"]
+          lowercase-uuid-file (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)
+          uppercase-uuid-file (create-test-jsonl-file "122CD33D-74BD-4272-A8E3-36A52D1B53FA.jsonl" messages)
+          mixed-case-uuid-file (create-test-jsonl-file "4FE5A658-21CE-4122-B752-7E6C25CF87F3.jsonl" messages)
+          non-uuid-file (create-test-jsonl-file "not-a-uuid.jsonl" messages)
+          numeric-file (create-test-jsonl-file "12345.jsonl" messages)
+          readme-file (create-test-jsonl-file "README.jsonl" messages)]
+      ;; Mock find-jsonl-files to return our test files
+      (with-redefs [repl/find-jsonl-files (fn [] [lowercase-uuid-file uppercase-uuid-file mixed-case-uuid-file non-uuid-file numeric-file readme-file])]
+        (let [index (repl/build-index!)]
+          ;; Should include all 3 valid UUID sessions (lowercase, uppercase, and mixed)
+          (is (= 3 (count index)))
+          (is (contains? index "550e8400-e29b-41d4-a716-446655440000"))
+          (is (contains? index "122CD33D-74BD-4272-A8E3-36A52D1B53FA"))
+          (is (contains? index "4FE5A658-21CE-4122-B752-7E6C25CF87F3"))
+          (is (not (contains? index "not-a-uuid")))
+          (is (not (contains? index "12345")))
+          (is (not (contains? index "README"))))))))
 
 ;; ============================================================================
 ;; .jsonl Parser Tests
@@ -170,6 +247,66 @@
   (testing "Check unsubscribed session"
     (is (not (repl/is-subscribed? "non-existent-session")))))
 
+(deftest test-case-insensitive-session-operations
+  (testing "get-session-metadata is case-insensitive"
+    (let [session-id "550e8400-e29b-41d4-a716-446655440000"
+          uppercase-id "550E8400-E29B-41D4-A716-446655440000"
+          mixed-case-id "550e8400-E29B-41d4-A716-446655440000"]
+      ;; Add session to index with lowercase ID
+      (reset! repl/session-index {session-id {:session-id session-id :name "Test Session"}})
+
+      ;; Should find with lowercase
+      (is (some? (repl/get-session-metadata session-id)))
+      ;; Should find with uppercase
+      (is (some? (repl/get-session-metadata uppercase-id)))
+      ;; Should find with mixed case
+      (is (some? (repl/get-session-metadata mixed-case-id)))
+
+      ;; All should return the same session
+      (is (= "Test Session" (:name (repl/get-session-metadata session-id))))
+      (is (= "Test Session" (:name (repl/get-session-metadata uppercase-id))))
+      (is (= "Test Session" (:name (repl/get-session-metadata mixed-case-id))))))
+
+  (testing "subscribe-to-session! is case-insensitive"
+    (reset! repl/watcher-state {:subscribed-sessions #{}
+                                :event-queue (atom {})
+                                :debounce-ms 200
+                                :max-retries 3})
+    (let [lowercase-id "550e8400-e29b-41d4-a716-446655440001"
+          uppercase-id "550E8400-E29B-41D4-A716-446655440001"]
+
+      ;; Subscribe with uppercase
+      (repl/subscribe-to-session! uppercase-id)
+
+      ;; Should be subscribed when checking with lowercase
+      (is (repl/is-subscribed? lowercase-id))
+      ;; Should be subscribed when checking with uppercase
+      (is (repl/is-subscribed? uppercase-id))
+
+      ;; Unsubscribe with lowercase
+      (repl/unsubscribe-from-session! lowercase-id)
+
+      ;; Should not be subscribed anymore
+      (is (not (repl/is-subscribed? lowercase-id)))
+      (is (not (repl/is-subscribed? uppercase-id)))))
+
+  (testing "is-subscribed? is case-insensitive"
+    (reset! repl/watcher-state {:subscribed-sessions #{"550e8400-e29b-41d4-a716-446655440002"}
+                                :event-queue (atom {})
+                                :debounce-ms 200
+                                :max-retries 3})
+
+    ;; Check with various cases
+    (is (repl/is-subscribed? "550e8400-e29b-41d4-a716-446655440002"))
+    (is (repl/is-subscribed? "550E8400-E29B-41D4-A716-446655440002"))
+    (is (repl/is-subscribed? "550e8400-E29B-41d4-A716-446655440002")))
+
+  (testing "handle nil session-id gracefully"
+    (is (nil? (repl/get-session-metadata nil)))
+    (is (nil? (repl/subscribe-to-session! nil)))
+    (is (nil? (repl/unsubscribe-from-session! nil)))
+    (is (nil? (repl/is-subscribed? nil)))))
+
 (deftest test-debounce-event
   (testing "Debounce allows first event immediately"
     (let [session-id "debounce-test-1"]
@@ -222,6 +359,100 @@
       ;; But get-session-metadata should still work for invalid IDs (direct index access)
       (is (= "Invalid Session" (:name (repl/get-session-metadata invalid-id)))))))
 
+(deftest test-validate-index
+  (testing "Empty index returns false"
+    (is (false? (repl/validate-index {}))))
+
+  (testing "Index with matching count validates successfully"
+    (let [messages ["{\"role\":\"user\",\"text\":\"test message\"}"]
+          file1 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)
+          file2 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440001.jsonl" messages)
+          file3 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440002.jsonl" messages)]
+      (with-redefs [repl/find-jsonl-files (fn [] [file1 file2 file3])]
+        (let [index {"550e8400-e29b-41d4-a716-446655440000" {:session-id "550e8400-e29b-41d4-a716-446655440000"
+                                                             :file (.getAbsolutePath file1)}
+                     "550e8400-e29b-41d4-a716-446655440001" {:session-id "550e8400-e29b-41d4-a716-446655440001"
+                                                             :file (.getAbsolutePath file2)}
+                     "550e8400-e29b-41d4-a716-446655440002" {:session-id "550e8400-e29b-41d4-a716-446655440002"
+                                                             :file (.getAbsolutePath file3)}}]
+          (is (true? (repl/validate-index index)))))))
+
+  (testing "Index with significant count mismatch returns false"
+    (let [messages ["{\"role\":\"user\",\"text\":\"test message\"}"]
+          file1 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)
+          file2 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440001.jsonl" messages)
+          file3 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440002.jsonl" messages)]
+      (with-redefs [repl/find-jsonl-files (fn [] [file1 file2 file3])]
+        ;; Index only has 1 session but filesystem has 3 (>10% difference)
+        (let [index {"550e8400-e29b-41d4-a716-446655440000" {:session-id "550e8400-e29b-41d4-a716-446655440000"
+                                                             :file (.getAbsolutePath file1)}}]
+          (is (false? (repl/validate-index index)))))))
+
+  (testing "Index with missing files returns false"
+    (let [messages ["{\"role\":\"user\",\"text\":\"test message\"}"]
+          file1 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)]
+      (with-redefs [repl/find-jsonl-files (fn [] [file1])]
+        ;; Create index with files that don't exist
+        (let [index {"550e8400-e29b-41d4-a716-446655440000" {:session-id "550e8400-e29b-41d4-a716-446655440000"
+                                                             :file "/nonexistent/path1.jsonl"}
+                     "550e8400-e29b-41d4-a716-446655440001" {:session-id "550e8400-e29b-41d4-a716-446655440001"
+                                                             :file "/nonexistent/path2.jsonl"}
+                     "550e8400-e29b-41d4-a716-446655440002" {:session-id "550e8400-e29b-41d4-a716-446655440002"
+                                                             :file "/nonexistent/path3.jsonl"}
+                     "550e8400-e29b-41d4-a716-446655440003" {:session-id "550e8400-e29b-41d4-a716-446655440003"
+                                                             :file "/nonexistent/path4.jsonl"}
+                     "550e8400-e29b-41d4-a716-446655440004" {:session-id "550e8400-e29b-41d4-a716-446655440004"
+                                                             :file "/nonexistent/path5.jsonl"}
+                     "550e8400-e29b-41d4-a716-446655440005" {:session-id "550e8400-e29b-41d4-a716-446655440005"
+                                                             :file "/nonexistent/path6.jsonl"}
+                     "550e8400-e29b-41d4-a716-446655440006" {:session-id "550e8400-e29b-41d4-a716-446655440006"
+                                                             :file "/nonexistent/path7.jsonl"}
+                     "550e8400-e29b-41d4-a716-446655440007" {:session-id "550e8400-e29b-41d4-a716-446655440007"
+                                                             :file "/nonexistent/path8.jsonl"}
+                     "550e8400-e29b-41d4-a716-446655440008" {:session-id "550e8400-e29b-41d4-a716-446655440008"
+                                                             :file "/nonexistent/path9.jsonl"}
+                     "550e8400-e29b-41d4-a716-446655440009" {:session-id "550e8400-e29b-41d4-a716-446655440009"
+                                                             :file "/nonexistent/path10.jsonl"}}]
+          ;; More than half of 10-sample are missing
+          (is (false? (repl/validate-index index)))))))
+
+  (testing "Index with small count difference validates successfully"
+    (let [messages ["{\"role\":\"user\",\"text\":\"test message\"}"]
+          file1 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)
+          file2 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440001.jsonl" messages)
+          file3 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440002.jsonl" messages)
+          file4 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440003.jsonl" messages)
+          file5 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440004.jsonl" messages)
+          file6 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440005.jsonl" messages)
+          file7 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440006.jsonl" messages)
+          file8 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440007.jsonl" messages)
+          file9 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440008.jsonl" messages)
+          file10 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440009.jsonl" messages)
+          file11 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440010.jsonl" messages)]
+      (with-redefs [repl/find-jsonl-files (fn [] [file1 file2 file3 file4 file5 file6 file7 file8 file9 file10 file11])]
+        ;; Index has 10 sessions, filesystem has 11 (9% difference, within 10% threshold)
+        (let [index {"550e8400-e29b-41d4-a716-446655440000" {:session-id "550e8400-e29b-41d4-a716-446655440000"
+                                                             :file (.getAbsolutePath file1)}
+                     "550e8400-e29b-41d4-a716-446655440001" {:session-id "550e8400-e29b-41d4-a716-446655440001"
+                                                             :file (.getAbsolutePath file2)}
+                     "550e8400-e29b-41d4-a716-446655440002" {:session-id "550e8400-e29b-41d4-a716-446655440002"
+                                                             :file (.getAbsolutePath file3)}
+                     "550e8400-e29b-41d4-a716-446655440003" {:session-id "550e8400-e29b-41d4-a716-446655440003"
+                                                             :file (.getAbsolutePath file4)}
+                     "550e8400-e29b-41d4-a716-446655440004" {:session-id "550e8400-e29b-41d4-a716-446655440004"
+                                                             :file (.getAbsolutePath file5)}
+                     "550e8400-e29b-41d4-a716-446655440005" {:session-id "550e8400-e29b-41d4-a716-446655440005"
+                                                             :file (.getAbsolutePath file6)}
+                     "550e8400-e29b-41d4-a716-446655440006" {:session-id "550e8400-e29b-41d4-a716-446655440006"
+                                                             :file (.getAbsolutePath file7)}
+                     "550e8400-e29b-41d4-a716-446655440007" {:session-id "550e8400-e29b-41d4-a716-446655440007"
+                                                             :file (.getAbsolutePath file8)}
+                     "550e8400-e29b-41d4-a716-446655440008" {:session-id "550e8400-e29b-41d4-a716-446655440008"
+                                                             :file (.getAbsolutePath file9)}
+                     "550e8400-e29b-41d4-a716-446655440009" {:session-id "550e8400-e29b-41d4-a716-446655440009"
+                                                             :file (.getAbsolutePath file10)}}]
+          (is (true? (repl/validate-index index))))))))
+
 (deftest test-parse-with-retry
   (testing "Parse succeeds on first try"
     (let [messages ["{\"role\":\"user\",\"text\":\"msg1\"}"]
@@ -236,3 +467,323 @@
   (testing "Parse returns empty on non-existent file after retries"
     (let [result (repl/parse-with-retry "/non/existent/file.jsonl" 2)]
       (is (empty? result)))))
+
+;; ============================================================================
+;; Sidechain Message Filtering Tests
+;; ============================================================================
+
+(deftest test-filter-sidechain-messages
+  (testing "Filter out messages with isSidechain true"
+    (let [messages [{:role "user" :text "msg1"}
+                    {:role "assistant" :text "msg2" :isSidechain true}
+                    {:role "user" :text "msg3"}]
+          filtered (repl/filter-sidechain-messages messages)]
+      (is (= 2 (count filtered)))
+      (is (= "msg1" (:text (first filtered))))
+      (is (= "msg3" (:text (second filtered))))))
+
+  (testing "Keep all messages when none are sidechain"
+    (let [messages [{:role "user" :text "msg1"}
+                    {:role "assistant" :text "msg2"}]
+          filtered (repl/filter-sidechain-messages messages)]
+      (is (= 2 (count filtered)))))
+
+  (testing "Return empty when all messages are sidechain"
+    (let [messages [{:role "user" :text "msg1" :isSidechain true}
+                    {:role "assistant" :text "msg2" :isSidechain true}]
+          filtered (repl/filter-sidechain-messages messages)]
+      (is (= 0 (count filtered))))))
+
+(deftest test-handle-file-modified-sidechain-filtering
+  (testing "session_updated NOT sent when only sidechain messages present"
+    (let [callback-called (atom false)
+          callback-messages (atom nil)
+          ;; Use valid UUID for session ID
+          session-id "550e8400-e29b-41d4-a716-446655440010"
+          ;; Create file with only sidechain messages
+          messages ["{\"role\":\"user\",\"text\":\"warmup1\",\"isSidechain\":true}"
+                    "{\"role\":\"assistant\",\"text\":\"warmup2\",\"isSidechain\":true}"]
+          file (create-test-jsonl-file (str session-id ".jsonl") messages)
+          file-path (.getAbsolutePath file)]
+
+      ;; DO NOT reset position - let it start uninitialized
+
+      ;; Subscribe to session FIRST
+      (repl/subscribe-to-session! session-id)
+
+      ;; Set up initial metadata
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :message-count 0
+              :last-modified (.lastModified file)})
+
+      ;; Set up watcher state with callback AND preserve subscriptions
+      (let [event-queue (atom {})
+            subscribed-sessions (:subscribed-sessions @repl/watcher-state)]
+        (reset! repl/watcher-state
+                {:running false
+                 :watch-service nil
+                 :watcher-thread nil
+                 :subscribed-sessions subscribed-sessions
+                 :event-queue event-queue
+                 :on-session-updated (fn [sid msgs]
+                                       (reset! callback-called true)
+                                       (reset! callback-messages msgs))
+                 :max-retries 3
+                 :debounce-ms 200}))
+
+      ;; Call handle-file-modified
+      (repl/handle-file-modified file)
+
+      ;; Callback should NOT be called because all messages are sidechain
+      (is (false? @callback-called))
+      (is (nil? @callback-messages))
+
+      ;; Metadata should NOT be updated
+      (let [metadata (repl/get-session-metadata session-id)]
+        (is (= 0 (:message-count metadata))))
+
+      ;; Cleanup
+      (repl/unsubscribe-from-session! session-id)
+      (repl/reset-file-position! file-path)))
+
+  (testing "session_updated IS sent when non-sidechain messages present"
+    (let [callback-called (atom false)
+          callback-messages (atom nil)
+          ;; Use valid UUID for session ID
+          session-id "550e8400-e29b-41d4-a716-446655440011"
+          ;; Create file with non-sidechain messages
+          messages ["{\"role\":\"user\",\"text\":\"real message 1\"}"
+                    "{\"role\":\"assistant\",\"text\":\"real message 2\"}"]
+          file (create-test-jsonl-file (str session-id ".jsonl") messages)
+          file-path (.getAbsolutePath file)]
+
+      ;; DO NOT reset position - let it start uninitialized
+
+      ;; Subscribe to session FIRST
+      (repl/subscribe-to-session! session-id)
+
+      ;; Set up initial metadata
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :message-count 0
+              :last-modified (.lastModified file)})
+
+      ;; Set up watcher state with callback AND preserve subscriptions
+      (let [event-queue (atom {})
+            subscribed-sessions (:subscribed-sessions @repl/watcher-state)]
+        (reset! repl/watcher-state
+                {:running false
+                 :watch-service nil
+                 :watcher-thread nil
+                 :subscribed-sessions subscribed-sessions
+                 :event-queue event-queue
+                 :on-session-updated (fn [sid msgs]
+                                       (reset! callback-called true)
+                                       (reset! callback-messages msgs))
+                 :max-retries 3
+                 :debounce-ms 200}))
+
+      ;; Call handle-file-modified
+      (repl/handle-file-modified file)
+
+      ;; Callback SHOULD be called with non-sidechain messages
+      (is (true? @callback-called))
+      (is (= 2 (count @callback-messages)))
+      (is (= "real message 1" (:text (first @callback-messages))))
+      (is (= "real message 2" (:text (second @callback-messages))))
+
+      ;; Metadata should be updated with count of 2
+      (let [metadata (repl/get-session-metadata session-id)]
+        (is (= 2 (:message-count metadata))))
+
+      ;; Cleanup
+      (repl/unsubscribe-from-session! session-id)
+      (repl/reset-file-position! file-path)))
+
+  (testing "session_updated IS sent with correct filtered messages (mixed case)"
+    (let [callback-called (atom false)
+          callback-messages (atom nil)
+          ;; Use valid UUID for session ID
+          session-id "550e8400-e29b-41d4-a716-446655440012"
+          ;; Create file with mix of sidechain and non-sidechain messages
+          messages ["{\"role\":\"user\",\"text\":\"warmup\",\"isSidechain\":true}"
+                    "{\"role\":\"user\",\"text\":\"real message 1\"}"
+                    "{\"role\":\"assistant\",\"text\":\"warmup response\",\"isSidechain\":true}"
+                    "{\"role\":\"assistant\",\"text\":\"real message 2\"}"]
+          file (create-test-jsonl-file (str session-id ".jsonl") messages)
+          file-path (.getAbsolutePath file)]
+
+      ;; DO NOT reset position - let it start uninitialized
+
+      ;; Subscribe to session FIRST
+      (repl/subscribe-to-session! session-id)
+
+      ;; Set up initial metadata
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :message-count 0
+              :last-modified (.lastModified file)})
+
+      ;; Set up watcher state with callback AND preserve subscriptions
+      (let [event-queue (atom {})
+            subscribed-sessions (:subscribed-sessions @repl/watcher-state)]
+        (reset! repl/watcher-state
+                {:running false
+                 :watch-service nil
+                 :watcher-thread nil
+                 :subscribed-sessions subscribed-sessions
+                 :event-queue event-queue
+                 :on-session-updated (fn [sid msgs]
+                                       (reset! callback-called true)
+                                       (reset! callback-messages msgs))
+                 :max-retries 3
+                 :debounce-ms 200}))
+
+      ;; Call handle-file-modified
+      (repl/handle-file-modified file)
+
+      ;; Callback SHOULD be called with only non-sidechain messages
+      (is (true? @callback-called))
+      (is (= 2 (count @callback-messages)))
+      (is (= "real message 1" (:text (first @callback-messages))))
+      (is (= "real message 2" (:text (second @callback-messages))))
+
+      ;; Verify no sidechain messages were included
+      (is (every? #(not (:isSidechain %)) @callback-messages))
+
+      ;; Metadata should be updated with count of 2 (not 4)
+      (let [metadata (repl/get-session-metadata session-id)]
+        (is (= 2 (:message-count metadata))))
+
+      ;; Cleanup
+      (repl/unsubscribe-from-session! session-id)
+      (repl/reset-file-position! file-path))))
+
+;; ============================================================================
+;; File Creation Position Tracking Tests (Issue voice-code-121)
+;; ============================================================================
+
+(deftest test-handle-file-created-initializes-file-position
+  (testing "handle-file-created initializes file-positions to prevent re-parsing"
+    (let [session-id "550e8400-e29b-41d4-a716-446655440000"
+          messages ["{\"role\":\"user\",\"text\":\"initial message\"}"]
+          file (create-test-jsonl-file (str session-id ".jsonl") messages)
+          file-path (.getAbsolutePath file)]
+
+      ;; Reset state
+      (reset! repl/session-index {})
+      (repl/reset-file-position! file-path)
+
+      ;; Call handle-file-created (simulating filesystem watcher)
+      (repl/handle-file-created file)
+
+      ;; Verify file-positions was initialized
+      (let [tracked-position (get @repl/file-positions file-path)]
+        (is (some? tracked-position) "file-positions should be initialized")
+        (is (= (.length file) tracked-position) "Position should be set to current file size"))
+
+      ;; Verify session was added to index
+      (is (= 1 (count @repl/session-index)))
+      (let [session-metadata (get @repl/session-index session-id)]
+        (is (some? session-metadata))
+        (is (= session-id (:session-id session-metadata)))))))
+
+(deftest test-subsequent-modifications-only-parse-new-messages
+  (testing "After file creation, modifications only parse new content, not all content"
+    (let [session-id "550e8400-e29b-41d4-a716-446655440001"
+          initial-messages ["{\"role\":\"user\",\"text\":\"message 1\"}"]
+          file (create-test-jsonl-file (str session-id ".jsonl") initial-messages)
+          file-path (.getAbsolutePath file)]
+
+      ;; Reset state
+      (reset! repl/session-index {})
+      (repl/reset-file-position! file-path)
+
+      ;; Simulate file creation event
+      (repl/handle-file-created file)
+
+      ;; Record position after creation
+      (let [position-after-creation (get @repl/file-positions file-path)]
+
+        ;; Append new messages to the file
+        (spit file "\n{\"role\":\"assistant\",\"text\":\"message 2\"}" :append true)
+        (spit file "\n{\"role\":\"user\",\"text\":\"message 3\"}" :append true)
+
+        ;; Now parse incrementally (as handle-file-modified would do)
+        (let [new-messages (repl/parse-jsonl-incremental file-path)]
+
+          ;; Should only get the 2 new messages, not all 3
+          (is (= 2 (count new-messages)) "Should only parse new messages after creation")
+          (is (= "message 2" (:text (first new-messages))))
+          (is (= "message 3" (:text (second new-messages))))
+
+          ;; Position should have advanced
+          (let [position-after-modification (get @repl/file-positions file-path)]
+            (is (> position-after-modification position-after-creation)
+                "Position should advance after reading new content")))))))
+
+(deftest test-no-duplicate-messages-after-session-creation
+  (testing "Messages are not duplicated/re-sent after session creation"
+    (let [session-id "550e8400-e29b-41d4-a716-446655440002"
+          initial-messages ["{\"role\":\"user\",\"text\":\"message 1\"}"
+                            "{\"role\":\"assistant\",\"text\":\"message 2\"}"]
+          file (create-test-jsonl-file (str session-id ".jsonl") initial-messages)
+          file-path (.getAbsolutePath file)]
+
+      ;; Reset state
+      (reset! repl/session-index {})
+      (repl/reset-file-position! file-path)
+
+      ;; Track all parsed messages across multiple reads
+      (let [all-parsed-messages (atom [])]
+
+        ;; First: simulate file creation
+        (repl/handle-file-created file)
+
+        ;; Parse after creation - should get nothing (file position is at end)
+        (let [messages-after-creation (repl/parse-jsonl-incremental file-path)]
+          (swap! all-parsed-messages concat messages-after-creation)
+          (is (= 0 (count messages-after-creation))
+              "Should not parse existing messages after creation"))
+
+        ;; Add a new message
+        (spit file "\n{\"role\":\"user\",\"text\":\"message 3\"}" :append true)
+
+        ;; Parse again - should only get the new message
+        (let [messages-after-append (repl/parse-jsonl-incremental file-path)]
+          (swap! all-parsed-messages concat messages-after-append)
+          (is (= 1 (count messages-after-append))
+              "Should only parse the newly added message")
+          (is (= "message 3" (:text (first messages-after-append)))))
+
+        ;; Verify no duplicates in total parsed messages
+        (is (= 1 (count @all-parsed-messages))
+            "Should have parsed exactly one message total (the new one)")
+        (is (= "message 3" (:text (first @all-parsed-messages)))
+            "The only parsed message should be the new one")))))
+
+(deftest test-handle-file-created-with-empty-file
+  (testing "handle-file-created works correctly with empty files"
+    (let [session-id "550e8400-e29b-41d4-a716-446655440003"
+          file (create-test-jsonl-file (str session-id ".jsonl") [])
+          file-path (.getAbsolutePath file)]
+
+      ;; Reset state
+      (reset! repl/session-index {})
+      (repl/reset-file-position! file-path)
+
+      ;; Handle creation of empty file
+      (repl/handle-file-created file)
+
+      ;; File position should be 0
+      (is (= 0 (get @repl/file-positions file-path))
+          "Empty file should have position 0")
+
+      ;; Add first message
+      (spit file "{\"role\":\"user\",\"text\":\"first message\"}" :append true)
+
+      ;; Parse should get the new message
+      (let [messages (repl/parse-jsonl-incremental file-path)]
+        (is (= 1 (count messages)))
+        (is (= "first message" (:text (first messages))))))))

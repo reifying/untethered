@@ -41,47 +41,56 @@
       [])))
 
 (defn valid-uuid?
-  "Check if a string is a valid UUID format"
+  "Check if a string is a valid UUID format (case-insensitive)"
   [s]
-  (boolean (re-matches #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" s)))
+  (and (string? s)
+       (boolean (re-matches #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" s))))
 
 (defn extract-session-id-from-path
   "Extract session ID from .jsonl file path.
   Example: /path/to/projects/mono/abc-123.jsonl -> abc-123
-  Logs a warning if the session ID is not a valid UUID."
+  Returns nil if the session ID is not a valid UUID."
   [file]
   (let [name (.getName file)
         session-id (str/replace name #"\.jsonl$" "")]
-    (when-not (valid-uuid? session-id)
-      (log/warn "Non-UUID session file detected"
-                {:filename name
-                 :session-id session-id
-                 :path (.getPath file)}))
-    session-id))
+    (if (valid-uuid? session-id)
+      session-id
+      (do
+        (log/warn "Non-UUID session file detected, skipping"
+                  {:filename name
+                   :session-id session-id
+                   :path (.getPath file)})
+        nil))))
 
 (defn extract-working-dir
   "Extract working directory from .jsonl file by reading cwd from first message.
   Falls back to deriving from file path if cwd not found."
   [file]
   (try
-    (with-open [rdr (io/reader file)]
-      (when-let [first-line (first (line-seq rdr))]
-        (when-not (str/blank? first-line)
-          (try
-            (let [first-msg (json/parse-string first-line true)]
-              (if-let [cwd (:cwd first-msg)]
-                cwd
-                ;; Fallback: derive from file path
-                (let [parent-dir (.getParentFile file)
-                      project-name (.getName parent-dir)
-                      home (System/getProperty "user.home")]
-                  (str home "/" project-name))))
-            (catch Exception _
-              ;; Fallback if JSON parse fails
-              (let [parent-dir (.getParentFile file)
-                    project-name (.getName parent-dir)
-                    home (System/getProperty "user.home")]
-                (str home "/" project-name)))))))
+    (let [result (with-open [rdr (io/reader file)]
+                   (when-let [first-line (first (line-seq rdr))]
+                     (when-not (str/blank? first-line)
+                       (try
+                         (let [first-msg (json/parse-string first-line true)]
+                           (if-let [cwd (:cwd first-msg)]
+                             cwd
+                             ;; Fallback: derive from file path
+                             (let [parent-dir (.getParentFile file)
+                                   project-name (.getName parent-dir)
+                                   home (System/getProperty "user.home")]
+                               (str home "/" project-name))))
+                         (catch Exception _
+                           ;; Fallback if JSON parse fails
+                           (let [parent-dir (.getParentFile file)
+                                 project-name (.getName parent-dir)
+                                 home (System/getProperty "user.home")]
+                             (str home "/" project-name)))))))]
+      ;; If result is nil (empty file or blank line), use fallback
+      (or result
+          (let [parent-dir (.getParentFile file)
+                project-name (.getName parent-dir)
+                home (System/getProperty "user.home")]
+            (str home "/" project-name))))
     (catch Exception e
       (log/warn e "Failed to extract working dir from file" {:file (.getPath file)})
       ;; Fallback on error
@@ -166,7 +175,8 @@
 
 (defn build-index!
   "Scan all .jsonl files and build the session index.
-  Returns map of session-id -> metadata."
+  Returns map of session-id -> metadata.
+  Filters out files with non-UUID session IDs."
   []
   (log/info "Building session index from filesystem...")
   (let [start-time (System/currentTimeMillis)
@@ -175,8 +185,12 @@
         _ (log/info "Found .jsonl files" {:count file-count})
         index (reduce (fn [acc file]
                         (try
-                          (let [metadata (build-session-metadata file)]
-                            (assoc acc (:session-id metadata) metadata))
+                          (let [metadata (build-session-metadata file)
+                                session-id (:session-id metadata)]
+                            ;; Only add to index if session-id is not nil (i.e., is a valid UUID)
+                            (if session-id
+                              (assoc acc session-id metadata)
+                              acc))
                           (catch Exception e
                             (log/error e "Failed to process file" {:file (.getPath file)})
                             acc)))
@@ -216,13 +230,63 @@
       (log/error e "Failed to load session index, will rebuild")
       nil)))
 
+(defn validate-index
+  "Validate a loaded index against the filesystem.
+  Returns true if index is valid, false if it should be rebuilt."
+  [index]
+  (try
+    (if (empty? index)
+      (do
+        (log/warn "Loaded index is empty, will rebuild")
+        false)
+
+      ;; Count actual .jsonl files on disk
+      (let [actual-files (find-jsonl-files)
+            actual-count (count actual-files)
+            index-count (count index)]
+
+        (log/info "Validating session index" {:index-count index-count :filesystem-count actual-count})
+
+        ;; If counts differ significantly, rebuild
+        (if (or (zero? index-count)
+                (> (Math/abs (- actual-count index-count))
+                   (* 0.1 actual-count))) ;; More than 10% difference
+          (do
+            (log/warn "Index count mismatch, will rebuild"
+                      {:index-count index-count
+                       :filesystem-count actual-count})
+            false)
+
+          ;; Sample-check that some files in index still exist
+          (let [sample-size (min 10 index-count)
+                sample (take sample-size (vals index))
+                missing-count (count (filter (fn [metadata]
+                                               (not (.exists (io/file (:file metadata)))))
+                                             sample))]
+            (if (> missing-count (/ sample-size 2)) ;; More than half of sample missing
+              (do
+                (log/warn "Many index entries reference missing files, will rebuild"
+                          {:sample-size sample-size :missing-count missing-count})
+                false)
+              (do
+                (log/info "Session index validation passed")
+                true))))))
+    (catch Exception e
+      (log/error e "Failed to validate index, will rebuild")
+      false)))
+
 (defn initialize-index!
-  "Initialize the session index. Loads from disk if available, otherwise builds from filesystem."
+  "Initialize the session index. Loads from disk if available and valid, otherwise builds from filesystem."
   []
   (if-let [loaded-index (load-index)]
-    (do
-      (reset! session-index loaded-index)
-      (log/info "Session index initialized from disk" {:session-count (count loaded-index)}))
+    (if (validate-index loaded-index)
+      (do
+        (reset! session-index loaded-index)
+        (log/info "Session index initialized from disk" {:session-count (count loaded-index)}))
+      (let [built-index (build-index!)]
+        (reset! session-index built-index)
+        (save-index! built-index)
+        (log/info "Session index rebuilt and initialized from filesystem" {:session-count (count built-index)})))
     (let [built-index (build-index!)]
       (reset! session-index built-index)
       (save-index! built-index)
@@ -230,9 +294,11 @@
   @session-index)
 
 (defn get-session-metadata
-  "Get metadata for a specific session ID"
+  "Get metadata for a specific session ID.
+  Normalizes session-id to lowercase for case-insensitive lookup."
   [session-id]
-  (get @session-index session-id))
+  (when session-id
+    (get @session-index (str/lower-case session-id))))
 
 (defn get-all-sessions
   "Get all session metadata as a vector.
@@ -334,23 +400,31 @@
          :on-session-deleted nil})) ;; Callback: (fn [session-id])
 
 (defn subscribe-to-session!
-  "Subscribe to a session for watching. Returns true if successful."
+  "Subscribe to a session for watching. Returns true if successful.
+  Normalizes session-id to lowercase for case-insensitive matching."
   [session-id]
-  (swap! watcher-state update :subscribed-sessions conj session-id)
-  (log/debug "Subscribed to session" {:session-id session-id})
-  true)
+  (when session-id
+    (let [normalized-id (str/lower-case session-id)]
+      (swap! watcher-state update :subscribed-sessions conj normalized-id)
+      (log/debug "Subscribed to session" {:session-id session-id :normalized-id normalized-id})
+      true)))
 
 (defn unsubscribe-from-session!
-  "Unsubscribe from a session. Returns true if successful."
+  "Unsubscribe from a session. Returns true if successful.
+  Normalizes session-id to lowercase for case-insensitive matching."
   [session-id]
-  (swap! watcher-state update :subscribed-sessions disj session-id)
-  (log/debug "Unsubscribed from session" {:session-id session-id})
-  true)
+  (when session-id
+    (let [normalized-id (str/lower-case session-id)]
+      (swap! watcher-state update :subscribed-sessions disj normalized-id)
+      (log/debug "Unsubscribed from session" {:session-id session-id :normalized-id normalized-id})
+      true)))
 
 (defn is-subscribed?
-  "Check if a session is currently subscribed"
+  "Check if a session is currently subscribed.
+  Normalizes session-id to lowercase for case-insensitive matching."
   [session-id]
-  (contains? (:subscribed-sessions @watcher-state) session-id))
+  (when session-id
+    (contains? (:subscribed-sessions @watcher-state) (str/lower-case session-id))))
 
 (defn debounce-event
   "Record an event for debouncing. Returns true if event should be processed now, false if should wait."
@@ -396,15 +470,24 @@
     (try
       (let [metadata (build-session-metadata file)
             session-id (:session-id metadata)]
-        ;; Add to index
-        (swap! session-index assoc session-id metadata)
-        (save-index! @session-index)
+        ;; Only process if we have a valid session-id
+        (when session-id
+          (let [file-path (.getAbsolutePath file)
+                file-size (.length file)]
+            ;; Add to index
+            (swap! session-index assoc session-id metadata)
+            (save-index! @session-index)
 
-        ;; Notify callback
-        (when-let [callback (:on-session-created @watcher-state)]
-          (callback metadata))
+            ;; Initialize file position to current size so we only parse NEW messages
+            (swap! file-positions assoc file-path file-size)
 
-        (log/info "New session detected" {:session-id session-id :name (:name metadata)}))
+            ;; Notify callback
+            (when-let [callback (:on-session-created @watcher-state)]
+              (callback metadata))
+
+            (log/info "New session detected" {:session-id session-id
+                                              :name (:name metadata)
+                                              :initial-file-position file-size}))))
       (catch Exception e
         (log/error e "Failed to handle file creation" {:file (.getPath file)})))))
 
@@ -419,21 +502,23 @@
         (when (debounce-event session-id)
           (try
             ;; Parse new messages with retry
-            (let [new-messages (parse-with-retry (.getAbsolutePath file) (:max-retries @watcher-state))]
-              (when (seq new-messages)
-                ;; Update index metadata
+            (let [new-messages (parse-with-retry (.getAbsolutePath file) (:max-retries @watcher-state))
+                  ;; Filter sidechain messages before checking if non-empty
+                  filtered-messages (filter-sidechain-messages new-messages)]
+              (when (seq filtered-messages)
+                ;; Update index metadata with filtered count
                 (when-let [old-metadata (get @session-index session-id)]
                   (let [new-metadata (assoc old-metadata
                                             :last-modified (.lastModified file)
-                                            :message-count (+ (:message-count old-metadata) (count new-messages)))]
+                                            :message-count (+ (:message-count old-metadata) (count filtered-messages)))]
                     (swap! session-index assoc session-id new-metadata)
                     (save-index! @session-index)))
 
-                ;; Notify callback (filter sidechain messages)
+                ;; Notify callback with filtered messages
                 (when-let [callback (:on-session-updated @watcher-state)]
-                  (callback session-id (filter-sidechain-messages new-messages)))
+                  (callback session-id filtered-messages))
 
-                (log/debug "Session updated" {:session-id session-id :new-messages (count new-messages)})))
+                (log/debug "Session updated" {:session-id session-id :new-messages (count filtered-messages)})))
             (catch Exception e
               (log/error e "Failed to handle file modification" {:file (.getPath file) :session-id session-id}))))))))
 

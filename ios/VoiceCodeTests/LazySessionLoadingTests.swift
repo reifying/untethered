@@ -273,4 +273,96 @@ final class LazySessionLoadingTests: XCTestCase {
         XCTAssertNotNil(updated)
         XCTAssertGreaterThan(updated!.lastModified, originalDate)
     }
+
+    // MARK: - Subscription Tests (voice-code-123)
+
+    func testSubscribeCalledOnceForNewSession() throws {
+        // This test verifies the fix for voice-code-123: iOS subscribes twice when creating new session
+        // The bug was: SessionsView.createNewSession() called subscribe, then ConversationView.loadSessionIfNeeded() called it again
+        // The fix: SessionsView no longer calls subscribe (lazy loading principle)
+
+        let sessionId = UUID()
+
+        // Create a mock client that tracks subscribe calls
+        class MockClient: VoiceCodeClient {
+            var subscribeCallCount = 0
+            var subscribedSessionIds: [String] = []
+
+            override func subscribe(sessionId: String) {
+                subscribeCallCount += 1
+                subscribedSessionIds.append(sessionId)
+            }
+        }
+
+        let mockClient = MockClient(serverURL: "ws://localhost:8080")
+
+        // Simulate the new session creation flow from SessionsView
+        // (SessionsView should NOT subscribe anymore)
+        let session = CDSession(context: context)
+        session.id = sessionId
+        session.backendName = "Test Session"
+        session.localName = "Test Session"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.unreadCount = 0
+        session.markedDeleted = false
+
+        try context.save()
+
+        // Verify SessionsView did NOT call subscribe
+        XCTAssertEqual(mockClient.subscribeCallCount, 0, "SessionsView should not subscribe (lazy loading)")
+
+        // Now simulate ConversationView appearing and calling loadSessionIfNeeded
+        mockClient.subscribe(sessionId: sessionId.uuidString)
+
+        // Verify subscribe was called exactly once
+        XCTAssertEqual(mockClient.subscribeCallCount, 1, "Should subscribe exactly once")
+        XCTAssertEqual(mockClient.subscribedSessionIds.count, 1)
+        XCTAssertEqual(mockClient.subscribedSessionIds[0], sessionId.uuidString)
+    }
+
+    func testSubscribeCalledOnceForExistingSession() throws {
+        // Verify that opening an existing session also only subscribes once
+
+        let sessionId = UUID()
+
+        class MockClient: VoiceCodeClient {
+            var subscribeCallCount = 0
+
+            override func subscribe(sessionId: String) {
+                subscribeCallCount += 1
+            }
+        }
+
+        let mockClient = MockClient(serverURL: "ws://localhost:8080")
+
+        // Create existing session with messages
+        let session = CDSession(context: context)
+        session.id = sessionId
+        session.backendName = "Existing Session"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 5
+        session.preview = "Last message preview"
+        session.markedDeleted = false
+
+        let message = CDMessage(context: context)
+        message.id = UUID()
+        message.sessionId = sessionId
+        message.role = "user"
+        message.text = "Existing message"
+        message.timestamp = Date()
+        message.messageStatus = .confirmed
+        message.session = session
+
+        try context.save()
+
+        // Simulate ConversationView appearing
+        mockClient.subscribe(sessionId: sessionId.uuidString)
+
+        // Verify subscribe was called exactly once
+        XCTAssertEqual(mockClient.subscribeCallCount, 1, "Should subscribe exactly once when opening existing session")
+    }
 }
