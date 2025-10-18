@@ -21,30 +21,29 @@ struct VoiceCodeApp: App {
 struct RootView: View {
     @ObservedObject var settings: AppSettings
     @StateObject private var voiceOutput = VoiceOutputManager()
-    @State private var client: VoiceCodeClient?
+    @StateObject private var client: VoiceCodeClient
     @State private var showingSettings = false
+    
+    init(settings: AppSettings) {
+        self.settings = settings
+        _client = StateObject(wrappedValue: VoiceCodeClient(serverURL: settings.fullServerURL))
+    }
     
     var body: some View {
         NavigationView {
-            SessionsListView(client: client ?? VoiceCodeClient(serverURL: settings.fullServerURL), settings: settings, voiceOutput: voiceOutput, showingSettings: $showingSettings)
+            SessionsListView(client: client, settings: settings, voiceOutput: voiceOutput, showingSettings: $showingSettings)
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView(
                 settings: settings,
                 onServerChange: { newURL in
-                    client?.updateServerURL(newURL)
+                    client.updateServerURL(newURL)
                 },
                 voiceOutputManager: voiceOutput
             )
         }
         .onAppear {
-            setupClient()
+            client.connect()
         }
-    }
-    
-    private func setupClient() {
-        let newClient = VoiceCodeClient(serverURL: settings.fullServerURL)
-        newClient.connect()
-        client = newClient
     }
 }
