@@ -303,10 +303,12 @@ class SessionSyncManager {
                 }
 
                 // Speak assistant messages on main thread (only for active session)
+                // VoiceOutputManager automatically uses configured voice from AppSettings
                 if isActiveSession && !assistantMessagesToSpeak.isEmpty {
                     DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
                         for text in assistantMessagesToSpeak {
-                            self?.voiceOutputManager?.speak(text)
+                            self.voiceOutputManager?.speak(text)
                         }
                     }
                 }

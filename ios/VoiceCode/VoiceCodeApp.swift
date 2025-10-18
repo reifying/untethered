@@ -26,8 +26,8 @@ struct RootView: View {
 
     init(settings: AppSettings) {
         self.settings = settings
-        // Create VoiceOutputManager first, then pass to VoiceCodeClient for auto-speak
-        let voiceManager = VoiceOutputManager()
+        // Create VoiceOutputManager with AppSettings for centralized voice management
+        let voiceManager = VoiceOutputManager(appSettings: settings)
         _voiceOutput = StateObject(wrappedValue: voiceManager)
         _client = StateObject(wrappedValue: VoiceCodeClient(
             serverURL: settings.fullServerURL,

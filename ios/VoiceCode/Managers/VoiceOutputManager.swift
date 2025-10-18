@@ -9,16 +9,32 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     @Published var isSpeaking = false
 
     private let synthesizer = AVSpeechSynthesizer()
+    private weak var appSettings: AppSettings?
     var onSpeechComplete: (() -> Void)?
 
-    override init() {
+    init(appSettings: AppSettings? = nil) {
+        self.appSettings = appSettings
         super.init()
         synthesizer.delegate = self
     }
 
     // MARK: - Speech Control
 
-    func speak(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil) {
+    /// Speak text using the user's configured voice from AppSettings
+    /// - Parameters:
+    ///   - text: The text to speak
+    ///   - rate: Speech rate (default: 0.5)
+    func speak(_ text: String, rate: Float = 0.5) {
+        let voiceIdentifier = appSettings?.selectedVoiceIdentifier
+        speakWithVoice(text, rate: rate, voiceIdentifier: voiceIdentifier)
+    }
+
+    /// Speak text with a specific voice identifier (for special cases like voice preview)
+    /// - Parameters:
+    ///   - text: The text to speak
+    ///   - rate: Speech rate (default: 0.5)
+    ///   - voiceIdentifier: Optional voice identifier to use instead of user's configured voice
+    func speakWithVoice(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil) {
         // Stop any ongoing speech
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)

@@ -27,6 +27,7 @@ class VoiceCodeClient: ObservableObject {
         self.serverURL = serverURL
 
         // Create SessionSyncManager with VoiceOutputManager for auto-speak
+        // Voice selection is handled by VoiceOutputManager which has AppSettings
         if let syncManager = sessionSyncManager {
             self.sessionSyncManager = syncManager
         } else {

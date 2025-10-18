@@ -152,8 +152,8 @@ struct SettingsView: View {
 
         let previewText = "Hello! This is a preview of the selected voice. Premium voices sound more natural and expressive."
 
-        // Use the selected voice identifier
-        manager.speak(previewText, voiceIdentifier: settings.selectedVoiceIdentifier)
+        // Use speakWithVoice to preview the specific selected voice
+        manager.speakWithVoice(previewText, voiceIdentifier: settings.selectedVoiceIdentifier)
 
         // Reset state after a delay (approximate speech duration)
         DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) {

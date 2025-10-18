@@ -288,7 +288,7 @@ class MockVoiceOutputManager: VoiceOutputManager {
     var speakWasCalled = false
     var lastSpokenText: String?
 
-    override func speak(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil) {
+    override func speak(_ text: String, rate: Float = 0.5) {
         speakWasCalled = true
         lastSpokenText = text
         print("🎤 [MockVoiceOutput] speak() called with text: \(text)")

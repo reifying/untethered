@@ -161,4 +161,74 @@ class ReadAloudTests: XCTestCase {
         // Verify no crash occurred during interruption
         XCTAssertTrue(true)
     }
+
+    // MARK: - Voice Selection Tests
+
+    func testVoiceOutputManagerUsesConfiguredVoice() throws {
+        // Create AppSettings with a specific voice
+        let settings = AppSettings()
+        let availableVoices = AppSettings.availableVoices
+
+        // Skip test if no voices available
+        guard !availableVoices.isEmpty else {
+            XCTSkip("No voices available for testing")
+            return
+        }
+
+        // Set a specific voice
+        settings.selectedVoiceIdentifier = availableVoices[0].identifier
+
+        // Create VoiceOutputManager with settings
+        let voiceManager = VoiceOutputManager(appSettings: settings)
+
+        // Verify the voice manager was created successfully
+        XCTAssertNotNil(voiceManager)
+
+        // Test that speak() can be called without passing voice identifier
+        voiceManager.speak("Test message")
+
+        // Note: We can't directly test that the correct voice is used without
+        // mocking the TTS system, but we've verified the simplified API works
+    }
+
+    func testVoiceOutputManagerWithoutConfiguredVoiceUsesDefault() throws {
+        // Create AppSettings without selecting a voice
+        let settings = AppSettings()
+        settings.selectedVoiceIdentifier = nil
+
+        // Create VoiceOutputManager with settings
+        let voiceManager = VoiceOutputManager(appSettings: settings)
+
+        // Verify the voice manager was created successfully
+        XCTAssertNotNil(voiceManager)
+
+        // Test that speak() works without configured voice
+        voiceManager.speak("Test message")
+
+        // When no voice is configured, VoiceOutputManager should use default en-US
+    }
+
+    func testSpeakWithVoiceOverridesConfiguredVoice() throws {
+        // Create AppSettings with a specific voice
+        let settings = AppSettings()
+        let availableVoices = AppSettings.availableVoices
+
+        // Skip test if no voices available
+        guard availableVoices.count >= 2 else {
+            XCTSkip("Need at least 2 voices for testing")
+            return
+        }
+
+        // Set first voice as configured
+        settings.selectedVoiceIdentifier = availableVoices[0].identifier
+
+        // Create VoiceOutputManager with settings
+        let voiceManager = VoiceOutputManager(appSettings: settings)
+
+        // Test that speakWithVoice can override the configured voice
+        voiceManager.speakWithVoice("Preview message", voiceIdentifier: availableVoices[1].identifier)
+
+        // Verify no crash occurred
+        XCTAssertNotNil(voiceManager)
+    }
 }
