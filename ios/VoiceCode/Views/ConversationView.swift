@@ -15,6 +15,7 @@ struct ConversationView: View {
     @State private var promptText = ""
     @State private var showingRenameSheet = false
     @State private var newSessionName = ""
+    @State private var showingCopyConfirmation = false
 
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
@@ -102,12 +103,31 @@ struct ConversationView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button(action: {
-                    newSessionName = session.localName ?? session.backendName
-                    showingRenameSheet = true
-                }) {
-                    Image(systemName: "pencil")
+                HStack(spacing: 16) {
+                    Button(action: exportSessionToPlainText) {
+                        Image(systemName: "doc.on.clipboard")
+                    }
+                    
+                    Button(action: {
+                        newSessionName = session.localName ?? session.backendName
+                        showingRenameSheet = true
+                    }) {
+                        Image(systemName: "pencil")
+                    }
                 }
+            }
+        }
+        .overlay(alignment: .top) {
+            if showingCopyConfirmation {
+                Text("Conversation copied to clipboard")
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.green.opacity(0.9))
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
         .sheet(isPresented: $showingRenameSheet) {
@@ -206,6 +226,40 @@ struct ConversationView: View {
 
         client.sendMessage(message)
     }
+    
+    private func exportSessionToPlainText() {
+        // Format session header
+        var exportText = "# \(session.displayName)\n"
+        exportText += "Working Directory: \(session.workingDirectory)\n"
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateStyle = .medium
+        dateFormatter.timeStyle = .short
+        exportText += "Exported: \(dateFormatter.string(from: Date()))\n"
+        exportText += "\n---\n\n"
+        
+        // Add all messages in chronological order
+        for message in messages {
+            let roleLabel = message.role == "user" ? "User" : "Assistant"
+            exportText += "[\(roleLabel)]\n"
+            exportText += "\(message.text)\n\n"
+        }
+        
+        // Copy to clipboard
+        UIPasteboard.general.string = exportText
+        
+        // Show confirmation banner
+        withAnimation {
+            showingCopyConfirmation = true
+        }
+        
+        // Hide confirmation after 2 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation {
+                showingCopyConfirmation = false
+            }
+        }
+    }
 }
 
 // MARK: - CoreData Message View
@@ -233,6 +287,12 @@ struct CDMessageView: View {
                     .font(.body)
                     .textSelection(.enabled)
                     .contextMenu {
+                        Button(action: {
+                            UIPasteboard.general.string = message.text
+                        }) {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
+                        
                         Button(action: {
                             voiceOutput.speak(message.text)
                         }) {
