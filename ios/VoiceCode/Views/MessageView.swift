@@ -5,6 +5,7 @@ import SwiftUI
 
 struct MessageView: View {
     let message: Message
+    @ObservedObject var voiceOutput: VoiceOutputManager
 
     var body: some View {
         HStack {
@@ -20,6 +21,19 @@ struct MessageView: View {
                     .foregroundColor(textColor)
                     .cornerRadius(16)
                     .textSelection(.enabled)
+                    .contextMenu {
+                        Button(action: {
+                            UIPasteboard.general.string = message.text
+                        }) {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
+                        
+                        Button(action: {
+                            voiceOutput.speak(message.text)
+                        }) {
+                            Label("Read Aloud", systemImage: "speaker.wave.2.fill")
+                        }
+                    }
 
                 // Metadata
                 HStack(spacing: 8) {
@@ -108,24 +122,35 @@ struct MessageView: View {
 
 struct MessageView_Previews: PreviewProvider {
     static var previews: some View {
+        let voiceOutput = VoiceOutputManager()
+        
         VStack(spacing: 12) {
-            MessageView(message: Message(
-                role: .user,
-                text: "What files are in this directory?"
-            ))
+            MessageView(
+                message: Message(
+                    role: .user,
+                    text: "What files are in this directory?"
+                ),
+                voiceOutput: voiceOutput
+            )
 
-            MessageView(message: Message(
-                role: .assistant,
-                text: "There are 5 files in this directory:\n1. main.swift\n2. ContentView.swift\n3. Models.swift\n4. README.md\n5. Package.swift",
-                usage: Usage(inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0),
-                cost: 0.0025
-            ))
+            MessageView(
+                message: Message(
+                    role: .assistant,
+                    text: "There are 5 files in this directory:\n1. main.swift\n2. ContentView.swift\n3. Models.swift\n4. README.md\n5. Package.swift",
+                    usage: Usage(inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0),
+                    cost: 0.0025
+                ),
+                voiceOutput: voiceOutput
+            )
 
-            MessageView(message: Message(
-                role: .assistant,
-                text: "Error occurred",
-                error: "Connection timeout"
-            ))
+            MessageView(
+                message: Message(
+                    role: .assistant,
+                    text: "Error occurred",
+                    error: "Connection timeout"
+                ),
+                voiceOutput: voiceOutput
+            )
         }
         .padding()
     }
