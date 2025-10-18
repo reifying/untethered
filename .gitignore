@@ -106,6 +106,9 @@ iOSInjectionProject/
 
 # Backend runtime data
 backend/resources/sessions.edn
+backend/server.log
+console.out
+console_frequency.txt
 
 # Node.js (not used - backend is Clojure)
 backend/node_modules/

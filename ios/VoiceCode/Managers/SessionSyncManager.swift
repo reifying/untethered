@@ -366,9 +366,22 @@ class SessionSyncManager {
 
     /// Upsert (update or insert) a session in CoreData
     private func upsertSession(_ sessionData: [String: Any], in context: NSManagedObjectContext) {
-        guard let sessionIdString = sessionData["session_id"] as? String,
-              let sessionId = UUID(uuidString: sessionIdString) else {
-            logger.warning("Invalid or missing session_id in session data")
+        // Check if session_id is present
+        guard let sessionIdString = sessionData["session_id"] as? String else {
+            logger.warning("Missing session_id in session data", metadata: [
+                "session_name": "\(sessionData["name"] ?? "unknown")",
+                "working_directory": "\(sessionData["working_directory"] ?? "unknown")"
+            ])
+            return
+        }
+        
+        // Validate that session_id is a valid UUID
+        guard let sessionId = UUID(uuidString: sessionIdString) else {
+            logger.warning("Invalid session_id format (not a UUID)", metadata: [
+                "session_id": "\(sessionIdString)",
+                "session_name": "\(sessionData["name"] ?? "unknown")",
+                "working_directory": "\(sessionData["working_directory"] ?? "unknown")"
+            ])
             return
         }
         
