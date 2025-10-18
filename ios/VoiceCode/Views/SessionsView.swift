@@ -42,7 +42,7 @@ struct SessionsListView: View {
                     List {
                         ForEach(sessions) { session in
                             NavigationLink(
-                                destination: ConversationView(session: session, client: client, voiceOutput: voiceOutput)
+                                destination: ConversationView(session: session, client: client, voiceOutput: voiceOutput, settings: settings)
                             ) {
                                 CDSessionRowContent(session: session)
                             }

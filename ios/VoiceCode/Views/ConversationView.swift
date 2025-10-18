@@ -9,6 +9,7 @@ struct ConversationView: View {
     @ObservedObject var client: VoiceCodeClient
     @StateObject var voiceOutput: VoiceOutputManager
     @StateObject var voiceInput: VoiceInputManager
+    @ObservedObject var settings: AppSettings
     @Environment(\.managedObjectContext) private var viewContext
 
     @State private var isLoading = false
@@ -22,11 +23,12 @@ struct ConversationView: View {
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
 
-    init(session: CDSession, client: VoiceCodeClient, voiceOutput: VoiceOutputManager = VoiceOutputManager(), voiceInput: VoiceInputManager = VoiceInputManager()) {
+    init(session: CDSession, client: VoiceCodeClient, voiceOutput: VoiceOutputManager = VoiceOutputManager(), voiceInput: VoiceInputManager = VoiceInputManager(), settings: AppSettings) {
         self.session = session
         self.client = client
         _voiceOutput = StateObject(wrappedValue: voiceOutput)
         _voiceInput = StateObject(wrappedValue: voiceInput)
+        self.settings = settings
 
         // Setup fetch request for this session's messages
         _messages = FetchRequest(
@@ -67,7 +69,7 @@ struct ConversationView: View {
                     } else {
                         LazyVStack(spacing: 12) {
                             ForEach(messages) { message in
-                                CDMessageView(message: message, voiceOutput: voiceOutput)
+                                CDMessageView(message: message, voiceOutput: voiceOutput, settings: settings)
                                     .id(message.id)
                             }
                         }
@@ -319,6 +321,7 @@ struct ConversationView: View {
 struct CDMessageView: View {
     @ObservedObject var message: CDMessage
     @ObservedObject var voiceOutput: VoiceOutputManager
+    @ObservedObject var settings: AppSettings
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -346,7 +349,7 @@ struct CDMessageView: View {
                         }
                         
                         Button(action: {
-                            voiceOutput.speak(message.text)
+                            voiceOutput.speak(message.text, voiceIdentifier: settings.selectedVoiceIdentifier)
                         }) {
                             Label("Read Aloud", systemImage: "speaker.wave.2.fill")
                         }
