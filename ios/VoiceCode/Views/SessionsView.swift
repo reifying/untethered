@@ -4,10 +4,11 @@
 import SwiftUI
 import CoreData
 
-struct SessionsView: View {
-    @ObservedObject var sessionManager: SessionManager
+struct SessionsListView: View {
     @ObservedObject var client: VoiceCodeClient
-    @Environment(\.dismiss) var dismiss
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var voiceOutput: VoiceOutputManager
+    @Binding var showingSettings: Bool
     @Environment(\.managedObjectContext) private var viewContext
 
     // Fetch active (non-deleted) sessions from CoreData
@@ -21,7 +22,6 @@ struct SessionsView: View {
     @State private var newWorkingDirectory = ""
 
     var body: some View {
-        NavigationView {
             Group {
                 if sessions.isEmpty {
                     VStack(spacing: 16) {
@@ -42,7 +42,7 @@ struct SessionsView: View {
                     List {
                         ForEach(sessions) { session in
                             NavigationLink(
-                                destination: ConversationView(session: session, client: client)
+                                destination: ConversationView(session: session, client: client, voiceOutput: voiceOutput)
                             ) {
                                 CDSessionRowContent(session: session)
                             }
@@ -59,15 +59,15 @@ struct SessionsView: View {
             }
             .navigationTitle("Sessions")
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showingNewSession = true }) {
-                        Image(systemName: "plus")
+                    HStack(spacing: 16) {
+                        Button(action: { showingNewSession = true }) {
+                            Image(systemName: "plus")
+                        }
+                        
+                        Button(action: { showingSettings = true }) {
+                            Image(systemName: "gear")
+                        }
                     }
                 }
             }
@@ -91,7 +91,6 @@ struct SessionsView: View {
                     }
                 )
             }
-        }
     }
     
     private func createNewSession(name: String, workingDirectory: String?) {
@@ -197,50 +196,6 @@ struct CDSessionRowContent: View {
     }
 }
 
-// MARK: - Legacy Session Row (for SessionManager compatibility)
-
-struct SessionRow: View {
-    let session: Session
-    let isSelected: Bool
-    let onSelect: () -> Void
-    let onDelete: () -> Void
-
-    var body: some View {
-        Button(action: onSelect) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(session.name)
-                        .font(.headline)
-                        .foregroundColor(isSelected ? .blue : .primary)
-
-                    if let workingDir = session.workingDirectory {
-                        Text(workingDir)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-
-                    Text("\(session.messages.count) messages")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-
-                Spacer()
-
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.blue)
-                }
-            }
-        }
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button(role: .destructive, action: onDelete) {
-                Label("Delete", systemImage: "trash")
-            }
-        }
-    }
-}
-
 // MARK: - New Session View
 
 struct NewSessionView: View {
@@ -290,12 +245,20 @@ struct NewSessionView: View {
 
 // MARK: - Preview
 
-struct SessionsView_Previews: PreviewProvider {
+struct SessionsListView_Previews: PreviewProvider {
     static var previews: some View {
         let settings = AppSettings()
         let client = VoiceCodeClient(serverURL: settings.fullServerURL)
+        let voiceOutput = VoiceOutputManager()
         
-        SessionsView(sessionManager: SessionManager(), client: client)
-            .environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
+        NavigationView {
+            SessionsListView(
+                client: client,
+                settings: settings,
+                voiceOutput: voiceOutput,
+                showingSettings: .constant(false)
+            )
+        }
+        .environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
     }
 }

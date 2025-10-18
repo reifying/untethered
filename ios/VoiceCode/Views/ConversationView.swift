@@ -8,11 +8,13 @@ struct ConversationView: View {
     let session: CDSession
     @ObservedObject var client: VoiceCodeClient
     @StateObject var voiceOutput: VoiceOutputManager
+    @StateObject var voiceInput: VoiceInputManager
     @Environment(\.managedObjectContext) private var viewContext
 
     @State private var isLoading = false
     @State private var hasLoadedMessages = false
     @State private var promptText = ""
+    @State private var isVoiceMode = true
     @State private var showingRenameSheet = false
     @State private var newSessionName = ""
     @State private var showingCopyConfirmation = false
@@ -20,10 +22,11 @@ struct ConversationView: View {
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
 
-    init(session: CDSession, client: VoiceCodeClient, voiceOutput: VoiceOutputManager = VoiceOutputManager()) {
+    init(session: CDSession, client: VoiceCodeClient, voiceOutput: VoiceOutputManager = VoiceOutputManager(), voiceInput: VoiceInputManager = VoiceInputManager()) {
         self.session = session
         self.client = client
         _voiceOutput = StateObject(wrappedValue: voiceOutput)
+        _voiceInput = StateObject(wrappedValue: voiceInput)
 
         // Setup fetch request for this session's messages
         _messages = FetchRequest(
@@ -83,20 +86,63 @@ struct ConversationView: View {
             
             Divider()
             
-            // Prompt input area
-            HStack(alignment: .bottom, spacing: 12) {
-                TextField("Type your message...", text: $promptText, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(1...5)
-                
-                Button(action: sendPrompt) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 32))
-                        .foregroundColor(promptText.isEmpty ? .gray : .blue)
+            // Input area
+            VStack(spacing: 12) {
+                // Mode toggle and connection status
+                HStack {
+                    Button(action: { isVoiceMode.toggle() }) {
+                        HStack {
+                            Image(systemName: isVoiceMode ? "mic.fill" : "keyboard")
+                            Text(isVoiceMode ? "Voice Mode" : "Text Mode")
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.blue.opacity(0.1))
+                        .cornerRadius(8)
+                    }
+                    
+                    Spacer()
+                    
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(client.isConnected ? Color.green : Color.red)
+                            .frame(width: 8, height: 8)
+                        Text(client.isConnected ? "Connected" : "Disconnected")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
-                .disabled(promptText.isEmpty)
+                .padding(.horizontal)
+                
+                // Voice mode
+                if isVoiceMode {
+                    ConversationVoiceInputView(
+                        voiceInput: voiceInput,
+                        onTranscriptionComplete: { text in
+                            sendPromptText(text)
+                        }
+                    )
+                } else {
+                    // Text mode
+                    ConversationTextInputView(
+                        text: $promptText,
+                        onSend: {
+                            sendPromptText(promptText)
+                            promptText = ""
+                        }
+                    )
+                }
+                
+                // Error display
+                if let error = client.currentError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .padding(.horizontal)
+                }
             }
-            .padding()
+            .padding(.vertical, 12)
             .background(Color(UIColor.systemBackground))
         }
         .navigationTitle(session.displayName)
@@ -144,6 +190,7 @@ struct ConversationView: View {
         }
         .onAppear {
             loadSessionIfNeeded()
+            setupVoiceInput()
         }
         .onDisappear {
             // Clear active session for smart speaking
@@ -151,6 +198,14 @@ struct ConversationView: View {
 
             // Unsubscribe when leaving the conversation
             client.unsubscribe(sessionId: session.id.uuidString)
+        }
+    }
+    
+    private func setupVoiceInput() {
+        voiceInput.requestAuthorization { authorized in
+            if !authorized {
+                print("Speech recognition not authorized")
+            }
         }
     }
     
@@ -192,15 +247,12 @@ struct ConversationView: View {
         }
     }
 
-    private func sendPrompt() {
-        let text = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-
-        // Clear input immediately
-        promptText = ""
+    private func sendPromptText(_ text: String) {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return }
 
         // Create optimistic message
-        client.sessionSyncManager.createOptimisticMessage(sessionId: session.id, text: text) { messageId in
+        client.sessionSyncManager.createOptimisticMessage(sessionId: session.id, text: trimmedText) { messageId in
             print("Created optimistic message: \(messageId)")
         }
 
@@ -212,7 +264,7 @@ struct ConversationView: View {
         // - Existing sessions: use resume_session_id (backend appends to existing file)
         var message: [String: Any] = [
             "type": "prompt",
-            "text": text,
+            "text": trimmedText,
             "working_directory": session.workingDirectory
         ]
 
@@ -363,5 +415,80 @@ struct RenameSessionView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Voice Input View
+
+struct ConversationVoiceInputView: View {
+    @ObservedObject var voiceInput: VoiceInputManager
+    let onTranscriptionComplete: (String) -> Void
+
+    var body: some View {
+        VStack {
+            if voiceInput.isRecording {
+                Button(action: {
+                    voiceInput.stopRecording()
+                    if !voiceInput.transcribedText.isEmpty {
+                        onTranscriptionComplete(voiceInput.transcribedText)
+                    }
+                }) {
+                    VStack {
+                        Image(systemName: "mic.fill")
+                            .font(.system(size: 40))
+                            .foregroundColor(.red)
+                        Text("Tap to Stop")
+                            .font(.caption)
+                    }
+                    .frame(width: 100, height: 100)
+                    .background(Color.red.opacity(0.1))
+                    .cornerRadius(50)
+                }
+            } else {
+                Button(action: {
+                    voiceInput.startRecording()
+                }) {
+                    VStack {
+                        Image(systemName: "mic")
+                            .font(.system(size: 40))
+                        Text("Tap to Speak")
+                            .font(.caption)
+                    }
+                    .frame(width: 100, height: 100)
+                    .background(Color.blue.opacity(0.1))
+                    .cornerRadius(50)
+                }
+            }
+
+            if !voiceInput.transcribedText.isEmpty {
+                Text(voiceInput.transcribedText)
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .padding()
+            }
+        }
+    }
+}
+
+// MARK: - Text Input View
+
+struct ConversationTextInputView: View {
+    @Binding var text: String
+    let onSend: () -> Void
+
+    var body: some View {
+        HStack {
+            TextField("Type your message...", text: $text, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(1...5)
+
+            Button(action: onSend) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 32))
+                    .foregroundColor(text.isEmpty ? .gray : .blue)
+            }
+            .disabled(text.isEmpty)
+        }
+        .padding(.horizontal)
     }
 }
