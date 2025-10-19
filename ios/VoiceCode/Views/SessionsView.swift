@@ -108,6 +108,12 @@ struct SessionsListView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     HStack(spacing: 16) {
                         Button(action: {
+                            client.requestSessionList()
+                        }) {
+                            Image(systemName: "arrow.clockwise")
+                        }
+
+                        Button(action: {
                             // Pre-populate with most recently used directory
                             newWorkingDirectory = defaultWorkingDirectory
                             showingNewSession = true

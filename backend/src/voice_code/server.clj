@@ -244,10 +244,20 @@
               ;; Get session metadata
               (if-let [metadata (repl/get-session-metadata session-id)]
                 (let [file-path (:file metadata)
+                      ;; Get current file size to update position BEFORE reading
+                      file (io/file file-path)
+                      current-size (.length file)
                       all-messages (repl/parse-jsonl-file file-path)
                       ;; Filter internal messages (sidechain, summary, system), then limit to most recent 20
                       messages (vec (take-last 20 (repl/filter-internal-messages all-messages)))]
-                  (log/info "Sending session history" {:session-id session-id :message-count (count messages) :total (count all-messages)})
+                  ;; Update file position to current size so incremental parsing starts fresh
+                  ;; This ensures we only get NEW messages after this subscription
+                  (repl/reset-file-position! file-path)
+                  (swap! repl/file-positions assoc file-path current-size)
+                  (log/info "Sending session history" {:session-id session-id
+                                                       :message-count (count messages)
+                                                       :total (count all-messages)
+                                                       :file-position current-size})
                   (http/send! channel
                               (generate-json
                                {:type :session-history
