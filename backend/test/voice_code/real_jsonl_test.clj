@@ -156,7 +156,7 @@
                      :timestamp "2025-10-18T04:43:11.079Z"
                      :sessionId "test-session"}
           all-messages [warmup-user warmup-asst real-user real-asst]
-          filtered (repl/filter-sidechain-messages all-messages)]
+          filtered (repl/filter-internal-messages all-messages)]
 
       ;; Should filter out warmup messages
       (is (= 2 (count filtered)) "Should have 2 messages after filtering")
@@ -170,13 +170,13 @@
                       :uuid "legacy-id"
                       :timestamp "2025-10-18T04:43:09.356Z"
                       :sessionId "test-session"}
-          filtered (repl/filter-sidechain-messages [legacy-msg])]
+          filtered (repl/filter-internal-messages [legacy-msg])]
 
       (is (= 1 (count filtered)) "Legacy messages should be included")
       (is (= "legacy-id" (:uuid (first filtered))))))
 
   (testing "Empty list returns empty list"
-    (is (empty? (repl/filter-sidechain-messages [])) "Empty list should return empty")))
+    (is (empty? (repl/filter-internal-messages [])) "Empty list should return empty")))
 
 (deftest session-update-filtering-test
   (testing "Session updates (filesystem watcher) filter sidechain messages"
@@ -198,7 +198,7 @@
                          :message {:role "assistant" :content [{:type "text" :text "Real response"}]}
                          :uuid "real-2"}]
           ;; This is what handle-file-modified now does before calling callback
-          filtered (repl/filter-sidechain-messages new-messages)]
+          filtered (repl/filter-internal-messages new-messages)]
 
       (is (= 2 (count filtered)) "Should filter to only real messages")
       (is (= ["real-1" "real-2"] (map :uuid filtered)) "Should only have real message UUIDs")))
@@ -212,7 +212,7 @@
                         {:type "user" :isSidechain false :uuid "r3"}
                         {:type "assistant" :isSidechain false :uuid "r4"}]
           ;; This is what subscribe handler now does
-          messages (vec (take-last 20 (repl/filter-sidechain-messages all-messages)))]
+          messages (vec (take-last 20 (repl/filter-internal-messages all-messages)))]
 
       (is (= 4 (count messages)) "Should have 4 real messages")
       (is (= ["r1" "r2" "r3" "r4"] (map :uuid messages)) "Should only have real messages in order"))))

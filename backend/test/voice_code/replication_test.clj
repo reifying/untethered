@@ -2,7 +2,8 @@
   (:require [clojure.test :refer :all]
             [voice-code.replication :as repl]
             [clojure.java.io :as io]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [cheshire.core :as json])
   (:import [java.io File]))
 
 ;; Test fixtures and helpers
@@ -836,3 +837,169 @@
       (let [messages (repl/parse-jsonl-incremental file-path)]
         (is (= 1 (count messages)))
         (is (= "first message" (:text (first messages))))))))
+
+(deftest test-handle-directory-created
+  (testing "handle-directory-created adds watch and discovers sessions"
+    ;; Setup: Create test structure with watcher running
+    (let [base-dir (io/file test-dir "projects")
+          _ (.mkdirs base-dir)
+          callback-results (atom [])]
+
+      ;; Initialize watcher state
+      (reset! repl/watcher-state
+              {:watch-service (.newWatchService (java.nio.file.FileSystems/getDefault))
+               :watch-thread nil
+               :running true
+               :watch-keys {}
+               :subscribed-sessions #{}
+               :event-queue (atom {})
+               :debounce-ms 200
+               :retry-delay-ms 100
+               :max-retries 3
+               :on-session-created (fn [metadata]
+                                     (swap! callback-results conj metadata))
+               :on-session-updated nil
+               :on-session-deleted nil})
+
+      (try
+        ;; Create a new project directory with a session file
+        (let [new-project-dir (io/file base-dir "new-project")
+              _ (.mkdirs new-project-dir)
+              session-id "12345678-1234-1234-1234-123456789abc"
+              session-file (io/file new-project-dir (str session-id ".jsonl"))
+              messages [{:role "user" :text "Hello"}
+                        {:role "assistant" :text "Hi there"}]]
+          (spit session-file (str/join "\n" (map json/generate-string messages)))
+
+          ;; Handle directory creation
+          (repl/handle-directory-created new-project-dir)
+
+          ;; Verify watch was added
+          (is (> (count (:watch-keys @repl/watcher-state)) 0)
+              "Should have registered watch for new directory")
+
+          ;; Verify session was discovered and callback invoked
+          (is (= 1 (count @callback-results))
+              "Should have discovered 1 session in new directory")
+
+          (let [metadata (first @callback-results)]
+            (is (= session-id (:session-id metadata)))
+            (is (str/includes? (:file metadata) "new-project"))
+            (is (= 2 (:message-count metadata)))))
+
+        (finally
+          ;; Cleanup watcher
+          (when-let [ws (:watch-service @repl/watcher-state)]
+            (.close ws))
+          (reset! repl/watcher-state
+                  {:watch-service nil
+                   :watch-thread nil
+                   :running false
+                   :watch-keys {}
+                   :subscribed-sessions #{}
+                   :event-queue (atom {})
+                   :debounce-ms 200
+                   :retry-delay-ms 100
+                   :max-retries 3
+                   :on-session-created nil
+                   :on-session-updated nil
+                   :on-session-deleted nil})))))
+
+  (testing "handle-directory-created ignores hidden directories"
+    (let [base-dir (io/file test-dir "projects")
+          _ (.mkdirs base-dir)
+          hidden-dir (io/file base-dir ".hidden")]
+      (.mkdirs hidden-dir)
+
+      ;; Initialize watcher state
+      (reset! repl/watcher-state
+              {:watch-service (.newWatchService (java.nio.file.FileSystems/getDefault))
+               :watch-thread nil
+               :running true
+               :watch-keys {}
+               :subscribed-sessions #{}
+               :event-queue (atom {})
+               :debounce-ms 200
+               :retry-delay-ms 100
+               :max-retries 3
+               :on-session-created nil
+               :on-session-updated nil
+               :on-session-deleted nil})
+
+      (try
+        (let [initial-watch-count (count (:watch-keys @repl/watcher-state))]
+          (repl/handle-directory-created hidden-dir)
+
+          ;; Should not add watch for hidden directory
+          (is (= initial-watch-count (count (:watch-keys @repl/watcher-state)))
+              "Should ignore hidden directories"))
+
+        (finally
+          (when-let [ws (:watch-service @repl/watcher-state)]
+            (.close ws))
+          (reset! repl/watcher-state
+                  {:watch-service nil
+                   :watch-thread nil
+                   :running false
+                   :watch-keys {}
+                   :subscribed-sessions #{}
+                   :event-queue (atom {})
+                   :debounce-ms 200
+                   :retry-delay-ms 100
+                   :max-retries 3
+                   :on-session-created nil
+                   :on-session-updated nil
+                   :on-session-deleted nil}))))))
+
+(deftest test-resubscribe-resets-file-position
+  (testing "Resubscribing to a session resets file position for accurate tracking"
+    (let [session-id "550e8400-e29b-41d4-a716-446655440020"
+          initial-messages ["{\"role\":\"user\",\"text\":\"message 1\"}"
+                            "{\"role\":\"assistant\",\"text\":\"message 2\"}"]
+          file (create-test-jsonl-file (str session-id ".jsonl") initial-messages)
+          file-path (.getAbsolutePath file)]
+
+      ;; Reset state
+      (reset! repl/session-index {})
+      (repl/reset-file-position! file-path)
+
+      ;; Set up session metadata
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :file file-path
+              :message-count 2})
+
+      ;; First subscription - track initial position
+      (repl/subscribe-to-session! session-id)
+      (let [messages-1 (repl/parse-jsonl-incremental file-path)]
+        ;; Should get initial messages
+        (is (= 2 (count messages-1))))
+
+      ;; Add messages while subscribed
+      (spit file "\n{\"role\":\"user\",\"text\":\"message 3\"}" :append true)
+      (let [messages-2 (repl/parse-jsonl-incremental file-path)]
+        ;; Should get new message
+        (is (= 1 (count messages-2)))
+        (is (= "message 3" (:text (first messages-2)))))
+
+      ;; Unsubscribe (simulating user clicking away)
+      (repl/unsubscribe-from-session! session-id)
+
+      ;; Add message while unsubscribed
+      (spit file "\n{\"role\":\"assistant\",\"text\":\"message 4\"}" :append true)
+
+      ;; Resubscribe (simulating refresh button click)
+      ;; In the actual server code, this triggers a reset + position update
+      (repl/subscribe-to-session! session-id)
+      (repl/reset-file-position! file-path)
+      (swap! repl/file-positions assoc file-path (.length file))
+
+      ;; Add new message after resubscribe
+      (spit file "\n{\"role\":\"user\",\"text\":\"message 5\"}" :append true)
+
+      ;; Parse incremental - should ONLY get message 5, not 4
+      (let [messages-3 (repl/parse-jsonl-incremental file-path)]
+        (is (= 1 (count messages-3))
+            "After resubscribe, should only track NEW messages")
+        (is (= "message 5" (:text (first messages-3)))
+            "Should get message added AFTER resubscription, not before")))))

@@ -53,9 +53,16 @@ class SessionSyncManager {
             logger.warning("session_created missing session_id")
             return
         }
-        
+
+        // Filter out sessions with 0 messages (defense in depth)
+        let messageCount = sessionData["message_count"] as? Int ?? 0
+        guard messageCount > 0 else {
+            logger.debug("Ignoring session_created with 0 messages: \(sessionId)")
+            return
+        }
+
         logger.info("Received session_created for: \(sessionId)")
-        
+
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
             

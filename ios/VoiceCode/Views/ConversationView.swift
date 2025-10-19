@@ -152,10 +152,16 @@ struct ConversationView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
+                    Button(action: {
+                        client.requestSessionRefresh(sessionId: session.id.uuidString)
+                    }) {
+                        Image(systemName: "arrow.clockwise")
+                    }
+
                     Button(action: exportSessionToPlainText) {
                         Image(systemName: "doc.on.clipboard")
                     }
-                    
+
                     Button(action: {
                         newSessionName = session.localName ?? session.backendName
                         showingRenameSheet = true

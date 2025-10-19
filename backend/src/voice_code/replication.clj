@@ -524,12 +524,15 @@
             ;; Initialize file position to current size so we only parse NEW messages
             (swap! file-positions assoc file-path file-size)
 
-            ;; Notify callback
-            (when-let [callback (:on-session-created @watcher-state)]
-              (callback metadata))
+            ;; Notify callback only if session has non-internal messages
+            ;; This prevents zero-message sessions from being broadcast to clients
+            (when (pos? (:message-count metadata))
+              (when-let [callback (:on-session-created @watcher-state)]
+                (callback metadata)))
 
             (log/info "New session detected" {:session-id session-id
                                               :name (:name metadata)
+                                              :message-count (:message-count metadata)
                                               :initial-file-position file-size}))))
       (catch Exception e
         (log/error e "Failed to handle file creation" {:file (.getPath file)})))))
@@ -580,33 +583,79 @@
 
       (log/info "Session deleted from filesystem" {:session-id session-id}))))
 
+(defn handle-directory-created
+  "Handle ENTRY_CREATE event for a new project directory.
+  Dynamically adds watch for the new directory and scans for existing sessions."
+  [dir]
+  (when (and (.isDirectory dir)
+             (not (str/starts-with? (.getName dir) ".")))
+    (try
+      (let [watch-service (:watch-service @watcher-state)
+            path (.toPath dir)
+            watch-key (.register path
+                                 watch-service
+                                 (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                              StandardWatchEventKinds/ENTRY_MODIFY
+                                              StandardWatchEventKinds/ENTRY_DELETE]))]
+        ;; Add to watch-keys map
+        (swap! watcher-state update :watch-keys assoc watch-key dir)
+        (log/info "Started watching new project directory" {:dir (.getPath dir)})
+
+        ;; Scan for existing .jsonl files in the new directory
+        (let [jsonl-files (->> (.listFiles dir)
+                               (filter #(.isFile %))
+                               (filter #(str/ends-with? (.getName %) ".jsonl")))]
+          (doseq [file jsonl-files]
+            (handle-file-created file))
+          (when (seq jsonl-files)
+            (log/info "Discovered existing sessions in new directory"
+                      {:dir (.getName dir)
+                       :session-count (count jsonl-files)}))))
+      (catch Exception e
+        (log/error e "Failed to watch new project directory" {:dir (.getPath dir)})))))
+
 (defn process-watch-events
   "Process watch events from the WatchService.
   watch-key: The WatchKey that triggered the events
   watched-dir: The File object of the directory being watched"
   [watch-key watched-dir]
-  (doseq [event (.pollEvents watch-key)]
-    (let [kind (.kind event)
-          context (.context event)
-          file-name (str context)]
-      (cond
-        (= kind StandardWatchEventKinds/ENTRY_CREATE)
-        (let [file (io/file watched-dir file-name)]
-          (handle-file-created file))
+  (let [projects-dir (get-claude-projects-dir)
+        is-parent-dir (= (.getPath watched-dir) (.getPath projects-dir))]
+    (doseq [event (.pollEvents watch-key)]
+      (let [kind (.kind event)
+            context (.context event)
+            file-name (str context)]
+        (if is-parent-dir
+          ;; Parent directory event - watch for new project directories
+          (cond
+            (= kind StandardWatchEventKinds/ENTRY_CREATE)
+            (let [file (io/file watched-dir file-name)]
+              (when (.isDirectory file)
+                (handle-directory-created file)))
 
-        (= kind StandardWatchEventKinds/ENTRY_MODIFY)
-        (let [file (io/file watched-dir file-name)]
-          (handle-file-modified file))
+            (= kind StandardWatchEventKinds/ENTRY_DELETE)
+            (log/debug "Project directory deleted" {:dir file-name}))
 
-        (= kind StandardWatchEventKinds/ENTRY_DELETE)
-        (handle-file-deleted file-name))))
+          ;; Project directory event - watch for .jsonl file changes
+          (cond
+            (= kind StandardWatchEventKinds/ENTRY_CREATE)
+            (let [file (io/file watched-dir file-name)]
+              (handle-file-created file))
+
+            (= kind StandardWatchEventKinds/ENTRY_MODIFY)
+            (let [file (io/file watched-dir file-name)]
+              (handle-file-modified file))
+
+            (= kind StandardWatchEventKinds/ENTRY_DELETE)
+            (handle-file-deleted file-name))))))
 
   ;; Reset the key
   (.reset watch-key))
 
 (defn start-watcher!
   "Start the filesystem watcher thread.
-  Watches all project subdirectories in ~/.claude/projects/ for .jsonl file changes.
+  Watches parent ~/.claude/projects/ directory to detect new project directories,
+  and all existing project subdirectories for .jsonl file changes.
   Callbacks:
   - :on-session-created (fn [session-metadata])
   - :on-session-updated (fn [session-id new-messages])
@@ -626,7 +675,18 @@
             _ (log/info "Found project directories" {:count (count project-dirs)
                                                      :dirs (mapv #(.getName %) project-dirs)})
 
-            ;; Register watch for each project directory
+            ;; Register watch for parent directory to detect new project directories
+            parent-watch-key (try
+                               (let [path (.toPath projects-dir)]
+                                 (.register path
+                                            watch-service
+                                            (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                                         StandardWatchEventKinds/ENTRY_DELETE])))
+                               (catch Exception e
+                                 (log/error e "Failed to watch parent directory" {:dir (.getPath projects-dir)})
+                                 nil))
+
+            ;; Register watch for each existing project directory
             watch-keys (reduce (fn [acc dir]
                                  (try
                                    (let [path (.toPath dir)
@@ -640,7 +700,9 @@
                                    (catch Exception e
                                      (log/warn e "Failed to watch directory" {:dir (.getPath dir)})
                                      acc)))
-                               {}
+                               (if parent-watch-key
+                                 {parent-watch-key projects-dir}
+                                 {})
                                project-dirs)]
 
         ;; Update state with callbacks and watch keys

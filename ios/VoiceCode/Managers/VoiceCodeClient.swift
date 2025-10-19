@@ -364,6 +364,28 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
+    func requestSessionList() {
+        // Request fresh session list from backend
+        // Backend will respond with session_list message
+        let message: [String: Any] = [
+            "type": "connect"
+        ]
+        print("🔄 [VoiceCodeClient] Requesting session list refresh")
+        sendMessage(message)
+    }
+
+    func requestSessionRefresh(sessionId: String) {
+        // Refresh a specific session by unsubscribing and re-subscribing
+        // This will fetch the latest messages from the backend
+        print("🔄 [VoiceCodeClient] Requesting session refresh: \(sessionId)")
+        unsubscribe(sessionId: sessionId)
+
+        // Re-subscribe after a brief delay to ensure clean state
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            self.subscribe(sessionId: sessionId)
+        }
+    }
+
     private func sendConnectMessage() {
         // New protocol: session_id is optional in connect message
         // Backend will send session list regardless

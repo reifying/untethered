@@ -29,10 +29,10 @@ extension CDSession {
         return NSFetchRequest<CDSession>(entityName: "CDSession")
     }
     
-    /// Fetch all non-deleted sessions, sorted by last modified date
+    /// Fetch all non-deleted sessions with messages, sorted by last modified date
     static func fetchActiveSessions() -> NSFetchRequest<CDSession> {
         let request = fetchRequest()
-        request.predicate = NSPredicate(format: "markedDeleted == NO")
+        request.predicate = NSPredicate(format: "markedDeleted == NO AND messageCount > 0")
         request.sortDescriptors = [NSSortDescriptor(keyPath: \CDSession.lastModified, ascending: false)]
         return request
     }

@@ -226,8 +226,8 @@
 (deftest test-new-protocol-connect
   (testing "Connect message returns session list"
     (with-redefs [voice-code.replication/get-all-sessions
-                  (fn [] [{:session-id "s1" :name "Session 1" :last-modified 1000}
-                          {:session-id "s2" :name "Session 2" :last-modified 2000}])]
+                  (fn [] [{:session-id "s1" :name "Session 1" :last-modified 1000 :message-count 5}
+                          {:session-id "s2" :name "Session 2" :last-modified 2000 :message-count 10}])]
       (reset! server/connected-clients {})
       (let [sent-message (atom nil)]
         (with-redefs [org.httpkit.server/send! (fn [channel msg]
