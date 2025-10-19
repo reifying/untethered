@@ -62,50 +62,74 @@
                    :path (.getPath file)})
         nil))))
 
+(defn find-valid-path
+  "Try to find a valid filesystem path by testing dash/slash combinations.
+  Uses greedy approach: build path incrementally, preferring existing directories."
+  [project-name]
+  (when (str/starts-with? project-name "-")
+    (let [parts (str/split (subs project-name 1) #"-")]
+      (loop [remaining parts
+             current-path "/"]
+        (if (empty? remaining)
+          ;; Successfully built complete path
+          (when (.exists (io/file current-path))
+            current-path)
+
+          ;; Try next part - first try as single directory name
+          (let [next-part (first remaining)
+                next-remaining (rest remaining)
+                ;; Option 1: next-part is a complete directory name (had hyphen in original)
+                option1-path (str current-path (when-not (= current-path "/") "/") next-part)
+                ;; Option 2: next-part + next one form directory with hyphen
+                option2-path (when (seq next-remaining)
+                               (str current-path (when-not (= current-path "/") "/")
+                                    next-part "-" (first next-remaining)))]
+
+            ;; Prefer option that exists on filesystem
+            (cond
+              ;; If option2 path exists as directory, use it
+              (and option2-path (.exists (io/file option2-path)) (.isDirectory (io/file option2-path)))
+              (recur (rest next-remaining) option2-path)
+
+              ;; If option1 exists, use it
+              (and (.exists (io/file option1-path)) (.isDirectory (io/file option1-path)))
+              (recur next-remaining option1-path)
+
+              ;; Neither exists - path is invalid
+              :else nil)))))))
+
 (defn project-name->working-dir
   "Convert Claude Code project directory name to working directory path.
 
-  Claude Code converts paths like '/Users/foo/my-project' to '-Users-foo-my-project'.
-  However, this transformation is lossy - we can't distinguish between:
-  - /Users/foo/my-project (hyphen in directory name)
-  - /Users/foo/my/project (no hyphens, separate directories)
+  For paths starting with dash (absolute paths), uses filesystem validation
+  to intelligently reverse the lossy dash transformation. Handles directory
+  names with hyphens (e.g., 'voice-code') by checking filesystem at each step.
 
-  Both would produce the same project name: '-Users-foo-my-project'
-
-  Since we can't reliably reverse this transformation, we return a placeholder
-  indicating the working directory couldn't be determined from the project name alone.
-  Sessions with messages will have the correct working directory from the cwd field."
+  For simple names, appends to home directory."
   [project-name]
   (if (str/starts-with? project-name "-")
-    ;; Project name looks like it represents an absolute path
-    ;; Return it as-is with a note that it's derived from project name
-    (str "[from project: " project-name "]")
-    ;; Project name is a simple name - append to home directory
+    ;; Try to find valid path using filesystem-based approach
+    (or (find-valid-path project-name)
+        ;; If no valid path found, return placeholder
+        (str "[from project: " project-name "]"))
+    ;; Simple project name - append to home directory
     (let [home (System/getProperty "user.home")]
       (str home "/" project-name))))
 
 (defn extract-working-dir
-  "Extract working directory from .jsonl file by reading cwd from first message.
+  "Extract working directory from .jsonl file by searching first N lines for cwd.
   Falls back to deriving from file path if cwd not found."
   [file]
   (try
     (let [result (with-open [rdr (io/reader file)]
-                   (when-let [first-line (first (line-seq rdr))]
-                     (when-not (str/blank? first-line)
-                       (try
-                         (let [first-msg (json/parse-string first-line true)]
-                           (if-let [cwd (:cwd first-msg)]
-                             cwd
-                             ;; Fallback: derive from file path
-                             (let [parent-dir (.getParentFile file)
-                                   project-name (.getName parent-dir)]
-                               (project-name->working-dir project-name))))
-                         (catch Exception _
-                           ;; Fallback if JSON parse fails
-                           (let [parent-dir (.getParentFile file)
-                                 project-name (.getName parent-dir)]
-                             (project-name->working-dir project-name)))))))]
-      ;; If result is nil (empty file or blank line), use fallback
+                   (some (fn [line]
+                           (when-not (str/blank? line)
+                             (try
+                               (let [msg (json/parse-string line true)]
+                                 (:cwd msg))
+                               (catch Exception _ nil))))
+                         (take 10 (line-seq rdr))))]
+      ;; If result is nil (no cwd found in first 10 lines), use fallback
       (or result
           (let [parent-dir (.getParentFile file)
                 project-name (.getName parent-dir)]
@@ -211,7 +235,8 @@
 (defn build-index!
   "Scan all .jsonl files and build the session index.
   Returns map of session-id -> metadata.
-  Filters out files with non-UUID session IDs."
+  Filters out files with non-UUID session IDs.
+  Normalizes session-id to lowercase for case-insensitive lookups."
   []
   (log/info "Building session index from filesystem...")
   (let [start-time (System/currentTimeMillis)
@@ -223,8 +248,9 @@
                           (let [metadata (build-session-metadata file)
                                 session-id (:session-id metadata)]
                             ;; Only add to index if session-id is not nil (i.e., is a valid UUID)
+                            ;; Normalize to lowercase for case-insensitive lookups
                             (if session-id
-                              (assoc acc session-id metadata)
+                              (assoc acc (str/lower-case session-id) metadata)
                               acc))
                           (catch Exception e
                             (log/error e "Failed to process file" {:file (.getPath file)})
@@ -250,7 +276,8 @@
       (log/error e "Failed to save session index"))))
 
 (defn load-index
-  "Load session index from disk. Returns nil if file doesn't exist or is invalid."
+  "Load session index from disk. Returns nil if file doesn't exist or is invalid.
+  Normalizes all session-id keys to lowercase for case-insensitive lookups."
   []
   (try
     (let [index-path (get-index-file-path)
@@ -258,16 +285,23 @@
       (when (.exists index-file)
         (log/info "Loading session index from disk" {:path index-path})
         (let [data (edn/read-string (slurp index-file))
-              sessions (:sessions data)]
-          (log/info "Session index loaded" {:session-count (count sessions)})
-          sessions)))
+              sessions (:sessions data)
+              ;; Normalize all keys to lowercase for case-insensitive lookups
+              normalized-sessions (reduce-kv (fn [acc k v]
+                                               (assoc acc (str/lower-case k) v))
+                                             {}
+                                             sessions)]
+          (log/info "Session index loaded" {:session-count (count normalized-sessions)})
+          normalized-sessions)))
     (catch Exception e
       (log/error e "Failed to load session index, will rebuild")
       nil)))
 
 (defn validate-index
   "Validate a loaded index against the filesystem.
-  Returns true if index is valid, false if it should be rebuilt."
+  Returns true if index is valid, false if it should be rebuilt.
+  Checks both directions: index->filesystem and filesystem->index.
+  Validates ALL files for correctness."
   [index]
   (try
     (if (empty? index)
@@ -275,7 +309,7 @@
         (log/warn "Loaded index is empty, will rebuild")
         false)
 
-      ;; Count actual .jsonl files on disk
+      ;; Get actual files on disk
       (let [actual-files (find-jsonl-files)
             actual-count (count actual-files)
             index-count (count index)]
@@ -292,20 +326,37 @@
                        :filesystem-count actual-count})
             false)
 
-          ;; Sample-check that some files in index still exist
-          (let [sample-size (min 10 index-count)
-                sample (take sample-size (vals index))
-                missing-count (count (filter (fn [metadata]
-                                               (not (.exists (io/file (:file metadata)))))
-                                             sample))]
-            (if (> missing-count (/ sample-size 2)) ;; More than half of sample missing
+          ;; Check 1: Verify ALL index entries reference existing files
+          (let [missing-from-disk (filter (fn [metadata]
+                                            (not (.exists (io/file (:file metadata)))))
+                                          (vals index))
+                missing-count (count missing-from-disk)]
+            (if (> missing-count 0)
               (do
-                (log/warn "Many index entries reference missing files, will rebuild"
-                          {:sample-size sample-size :missing-count missing-count})
+                (log/warn "Index entries reference missing files, will rebuild"
+                          {:total-index-entries index-count
+                           :missing-count missing-count
+                           :example-missing (first missing-from-disk)})
                 false)
-              (do
-                (log/info "Session index validation passed")
-                true))))))
+
+              ;; Check 2: Verify ALL filesystem files are in index (normalized to lowercase)
+              (let [missing-from-index (filter (fn [file]
+                                                 (let [session-id (extract-session-id-from-path file)]
+                                                   (and session-id
+                                                        (not (contains? index (str/lower-case session-id))))))
+                                               actual-files)
+                    missing-count (count missing-from-index)]
+                (if (> missing-count 0)
+                  (do
+                    (log/warn "Files on disk missing from index, will rebuild"
+                              {:total-files actual-count
+                               :missing-from-index missing-count
+                               :example-file (.getPath (first missing-from-index))
+                               :example-session-id (extract-session-id-from-path (first missing-from-index))})
+                    false)
+                  (do
+                    (log/info "Session index validation passed" {:validated-files actual-count})
+                    true))))))))
     (catch Exception e
       (log/error e "Failed to validate index, will rebuild")
       false)))
@@ -507,7 +558,8 @@
       [])))
 
 (defn handle-file-created
-  "Handle ENTRY_CREATE event for a .jsonl file"
+  "Handle ENTRY_CREATE event for a .jsonl file.
+  Normalizes session-id to lowercase for case-insensitive lookups."
   [file]
   (when (str/ends-with? (.getName file) ".jsonl")
     (try
@@ -516,9 +568,11 @@
         ;; Only process if we have a valid session-id
         (when session-id
           (let [file-path (.getAbsolutePath file)
-                file-size (.length file)]
-            ;; Add to index
-            (swap! session-index assoc session-id metadata)
+                file-size (.length file)
+                ;; Normalize session-id to lowercase for consistent lookups
+                normalized-id (str/lower-case session-id)]
+            ;; Add to index with lowercase key
+            (swap! session-index assoc normalized-id metadata)
             (save-index! @session-index)
 
             ;; Initialize file position to current size so we only parse NEW messages
@@ -531,6 +585,7 @@
                 (callback metadata)))
 
             (log/info "New session detected" {:session-id session-id
+                                              :normalized-id normalized-id
                                               :name (:name metadata)
                                               :message-count (:message-count metadata)
                                               :initial-file-position file-size}))))
@@ -538,11 +593,12 @@
         (log/error e "Failed to handle file creation" {:file (.getPath file)})))))
 
 (defn handle-file-modified
-  "Handle ENTRY_MODIFY event for a .jsonl file"
+  "Handle ENTRY_MODIFY event for a .jsonl file.
+  Normalizes session-id to lowercase for case-insensitive lookups."
   [file]
   (when (str/ends-with? (.getName file) ".jsonl")
     (let [session-id (extract-session-id-from-path file)]
-      ;; Only process if subscribed
+      ;; Only process if subscribed (is-subscribed? handles normalization)
       (when (is-subscribed? session-id)
         ;; Debounce
         (when (debounce-event session-id)
@@ -550,14 +606,16 @@
             ;; Parse new messages with retry
             (let [new-messages (parse-with-retry (.getAbsolutePath file) (:max-retries @watcher-state))
                   ;; Filter internal messages (sidechain, summary, system) before checking if non-empty
-                  filtered-messages (filter-internal-messages new-messages)]
+                  filtered-messages (filter-internal-messages new-messages)
+                  ;; Normalize session-id to lowercase for consistent lookups
+                  normalized-id (str/lower-case session-id)]
               (when (seq filtered-messages)
                 ;; Update index metadata with filtered count
-                (when-let [old-metadata (get @session-index session-id)]
+                (when-let [old-metadata (get @session-index normalized-id)]
                   (let [new-metadata (assoc old-metadata
                                             :last-modified (.lastModified file)
                                             :message-count (+ (:message-count old-metadata) (count filtered-messages)))]
-                    (swap! session-index assoc session-id new-metadata)
+                    (swap! session-index assoc normalized-id new-metadata)
                     (save-index! @session-index)))
 
                 ;; Notify callback with filtered messages

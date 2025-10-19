@@ -159,7 +159,7 @@
       (is (number? (:created-at metadata))))))
 
 (deftest test-build-index-filters-non-uuid-files
-  (testing "build-index! filters out non-UUID session files but includes uppercase UUIDs"
+  (testing "build-index! filters out non-UUID session files but includes uppercase UUIDs (normalized to lowercase)"
     (let [messages ["{\"role\":\"user\",\"text\":\"test message\"}"]
           lowercase-uuid-file (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)
           uppercase-uuid-file (create-test-jsonl-file "122CD33D-74BD-4272-A8E3-36A52D1B53FA.jsonl" messages)
@@ -170,11 +170,11 @@
       ;; Mock find-jsonl-files to return our test files
       (with-redefs [repl/find-jsonl-files (fn [] [lowercase-uuid-file uppercase-uuid-file mixed-case-uuid-file non-uuid-file numeric-file readme-file])]
         (let [index (repl/build-index!)]
-          ;; Should include all 3 valid UUID sessions (lowercase, uppercase, and mixed)
+          ;; Should include all 3 valid UUID sessions (normalized to lowercase keys)
           (is (= 3 (count index)))
           (is (contains? index "550e8400-e29b-41d4-a716-446655440000"))
-          (is (contains? index "122CD33D-74BD-4272-A8E3-36A52D1B53FA"))
-          (is (contains? index "4FE5A658-21CE-4122-B752-7E6C25CF87F3"))
+          (is (contains? index "122cd33d-74bd-4272-a8e3-36a52d1b53fa")) ;; normalized to lowercase
+          (is (contains? index "4fe5a658-21ce-4122-b752-7e6c25cf87f3")) ;; normalized to lowercase
           (is (not (contains? index "not-a-uuid")))
           (is (not (contains? index "12345")))
           (is (not (contains? index "README"))))))))
@@ -412,7 +412,7 @@
     (let [messages ["{\"role\":\"user\",\"text\":\"test message\"}"]
           file1 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)]
       (with-redefs [repl/find-jsonl-files (fn [] [file1])]
-        ;; Create index with files that don't exist
+        ;; Create index with files that don't exist - all should be detected
         (let [index {"550e8400-e29b-41d4-a716-446655440000" {:session-id "550e8400-e29b-41d4-a716-446655440000"
                                                              :file "/nonexistent/path1.jsonl"}
                      "550e8400-e29b-41d4-a716-446655440001" {:session-id "550e8400-e29b-41d4-a716-446655440001"
@@ -433,45 +433,39 @@
                                                              :file "/nonexistent/path9.jsonl"}
                      "550e8400-e29b-41d4-a716-446655440009" {:session-id "550e8400-e29b-41d4-a716-446655440009"
                                                              :file "/nonexistent/path10.jsonl"}}]
-          ;; More than half of 10-sample are missing
           (is (false? (repl/validate-index index)))))))
 
-  (testing "Index with small count difference validates successfully"
+  (testing "Files on disk missing from index triggers rebuild"
     (let [messages ["{\"role\":\"user\",\"text\":\"test message\"}"]
+          ;; Create 3 files on disk
           file1 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)
           file2 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440001.jsonl" messages)
-          file3 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440002.jsonl" messages)
-          file4 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440003.jsonl" messages)
-          file5 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440004.jsonl" messages)
-          file6 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440005.jsonl" messages)
-          file7 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440006.jsonl" messages)
-          file8 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440007.jsonl" messages)
-          file9 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440008.jsonl" messages)
-          file10 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440009.jsonl" messages)
-          file11 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440010.jsonl" messages)]
-      (with-redefs [repl/find-jsonl-files (fn [] [file1 file2 file3 file4 file5 file6 file7 file8 file9 file10 file11])]
-        ;; Index has 10 sessions, filesystem has 11 (9% difference, within 10% threshold)
+          file3 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440002.jsonl" messages)]
+      (with-redefs [repl/find-jsonl-files (fn [] [file1 file2 file3])]
+        ;; Index only has 2 of the 3 files (file3 missing from index)
         (let [index {"550e8400-e29b-41d4-a716-446655440000" {:session-id "550e8400-e29b-41d4-a716-446655440000"
                                                              :file (.getAbsolutePath file1)}
                      "550e8400-e29b-41d4-a716-446655440001" {:session-id "550e8400-e29b-41d4-a716-446655440001"
-                                                             :file (.getAbsolutePath file2)}
-                     "550e8400-e29b-41d4-a716-446655440002" {:session-id "550e8400-e29b-41d4-a716-446655440002"
-                                                             :file (.getAbsolutePath file3)}
-                     "550e8400-e29b-41d4-a716-446655440003" {:session-id "550e8400-e29b-41d4-a716-446655440003"
-                                                             :file (.getAbsolutePath file4)}
-                     "550e8400-e29b-41d4-a716-446655440004" {:session-id "550e8400-e29b-41d4-a716-446655440004"
-                                                             :file (.getAbsolutePath file5)}
-                     "550e8400-e29b-41d4-a716-446655440005" {:session-id "550e8400-e29b-41d4-a716-446655440005"
-                                                             :file (.getAbsolutePath file6)}
-                     "550e8400-e29b-41d4-a716-446655440006" {:session-id "550e8400-e29b-41d4-a716-446655440006"
-                                                             :file (.getAbsolutePath file7)}
-                     "550e8400-e29b-41d4-a716-446655440007" {:session-id "550e8400-e29b-41d4-a716-446655440007"
-                                                             :file (.getAbsolutePath file8)}
-                     "550e8400-e29b-41d4-a716-446655440008" {:session-id "550e8400-e29b-41d4-a716-446655440008"
-                                                             :file (.getAbsolutePath file9)}
-                     "550e8400-e29b-41d4-a716-446655440009" {:session-id "550e8400-e29b-41d4-a716-446655440009"
-                                                             :file (.getAbsolutePath file10)}}]
-          (is (true? (repl/validate-index index))))))))
+                                                             :file (.getAbsolutePath file2)}}]
+          (is (false? (repl/validate-index index))
+              "Should detect file on disk missing from index")))))
+
+  (testing "Files on disk missing from index triggers rebuild with larger dataset"
+    (let [messages ["{\"role\":\"user\",\"text\":\"test message\"}"]
+          ;; Create 15 files to verify full validation works with larger datasets
+          files (vec (for [i (range 15)]
+                       (create-test-jsonl-file
+                        (format "550e8400-e29b-41d4-a716-44665544%04d.jsonl" i)
+                        messages)))]
+      (with-redefs [repl/find-jsonl-files (fn [] files)]
+        ;; Index missing file at index 5 - should be detected via full validation
+        (let [index (into {} (for [i (range 15)
+                                   :when (not= i 5)] ; Skip file 5
+                               [(format "550e8400-e29b-41d4-a716-44665544%04d" i)
+                                {:session-id (format "550e8400-e29b-41d4-a716-44665544%04d" i)
+                                 :file (.getAbsolutePath (nth files i))}]))]
+          (is (false? (repl/validate-index index))
+              "Should detect missing file in larger dataset"))))))
 
 (deftest test-parse-with-retry
   (testing "Parse succeeds on first try"
