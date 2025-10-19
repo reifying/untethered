@@ -350,7 +350,8 @@ struct CDMessageView: View {
                         }
                         
                         Button(action: {
-                            voiceOutput.speak(message.text)
+                            let processedText = TextProcessor.removeCodeBlocks(from: message.text)
+                            voiceOutput.speak(processedText)
                         }) {
                             Label("Read Aloud", systemImage: "speaker.wave.2.fill")
                         }
