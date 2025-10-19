@@ -23,6 +23,9 @@ class VoiceCodeClient: ObservableObject {
     private var sessionId: String?
     let sessionSyncManager: SessionSyncManager
 
+    // Track active subscriptions for auto-restore on reconnection
+    private var activeSubscriptions = Set<String>()
+
     init(serverURL: String, voiceOutputManager: VoiceOutputManager? = nil, sessionSyncManager: SessionSyncManager? = nil) {
         self.serverURL = serverURL
 
@@ -192,6 +195,19 @@ class VoiceCodeClient: ObservableObject {
                     print("📥 [VoiceCodeClient] Backend confirmed session: \(sessionId)")
                 }
 
+                // Restore subscriptions after reconnection
+                if !self.activeSubscriptions.isEmpty {
+                    print("🔄 [VoiceCodeClient] Restoring \(self.activeSubscriptions.count) subscription(s) after reconnection")
+                    for sessionId in self.activeSubscriptions {
+                        print("🔄 [VoiceCodeClient] Resubscribing to session: \(sessionId)")
+                        let message: [String: Any] = [
+                            "type": "subscribe",
+                            "session_id": sessionId
+                        ]
+                        self.sendMessage(message)
+                    }
+                }
+
             case "replay":
                 // Replayed message from undelivered queue
                 if let messageData = json["message"] as? [String: Any],
@@ -325,20 +341,26 @@ class VoiceCodeClient: ObservableObject {
     }
     
     func subscribe(sessionId: String) {
+        // Track subscription for auto-restore on reconnection
+        activeSubscriptions.insert(sessionId)
+
         let message: [String: Any] = [
             "type": "subscribe",
             "session_id": sessionId
         ]
-        print("📖 [VoiceCodeClient] Subscribing to session: \(sessionId)")
+        print("📖 [VoiceCodeClient] Subscribing to session: \(sessionId) (total active: \(activeSubscriptions.count))")
         sendMessage(message)
     }
     
     func unsubscribe(sessionId: String) {
+        // Remove from active subscriptions
+        activeSubscriptions.remove(sessionId)
+
         let message: [String: Any] = [
             "type": "unsubscribe",
             "session_id": sessionId
         ]
-        print("📕 [VoiceCodeClient] Unsubscribing from session: \(sessionId)")
+        print("📕 [VoiceCodeClient] Unsubscribing from session: \(sessionId) (total active: \(activeSubscriptions.count))")
         sendMessage(message)
     }
 
