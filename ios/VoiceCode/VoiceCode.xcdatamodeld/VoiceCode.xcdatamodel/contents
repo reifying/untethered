@@ -3,6 +3,7 @@
     <entity name="CDSession" representedClassName="CDSession" syncable="YES">
         <attribute name="backendName" attributeType="String"/>
         <attribute name="id" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="isLocallyCreated" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
         <attribute name="lastModified" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="localName" optional="YES" attributeType="String"/>
         <attribute name="markedDeleted" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>

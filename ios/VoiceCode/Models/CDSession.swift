@@ -15,6 +15,7 @@ public class CDSession: NSManagedObject {
     @NSManaged public var preview: String
     @NSManaged public var unreadCount: Int32
     @NSManaged public var markedDeleted: Bool
+    @NSManaged public var isLocallyCreated: Bool
     @NSManaged public var messages: NSSet?
 
     /// Display name: local custom name if set, otherwise backend name
@@ -32,7 +33,7 @@ extension CDSession {
     /// Fetch all non-deleted sessions with messages, sorted by last modified date
     static func fetchActiveSessions() -> NSFetchRequest<CDSession> {
         let request = fetchRequest()
-        request.predicate = NSPredicate(format: "markedDeleted == NO AND messageCount > 0")
+        request.predicate = NSPredicate(format: "markedDeleted == NO AND (messageCount > 0 OR isLocallyCreated == YES)")
         request.sortDescriptors = [NSSortDescriptor(keyPath: \CDSession.lastModified, ascending: false)]
         return request
     }

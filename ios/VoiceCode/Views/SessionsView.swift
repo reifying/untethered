@@ -165,6 +165,7 @@ struct SessionsListView: View {
         session.preview = ""
         session.unreadCount = 0
         session.markedDeleted = false
+        session.isLocallyCreated = true
 
         // Save to CoreData
         do {
