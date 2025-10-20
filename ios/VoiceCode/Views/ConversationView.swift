@@ -11,6 +11,7 @@ struct ConversationView: View {
     @StateObject var voiceInput: VoiceInputManager
     @ObservedObject var settings: AppSettings
     @Environment(\.managedObjectContext) private var viewContext
+    @EnvironmentObject var draftManager: DraftManager
 
     @State private var isLoading = false
     @State private var hasLoadedMessages = false
@@ -199,6 +200,15 @@ struct ConversationView: View {
         .onAppear {
             loadSessionIfNeeded()
             setupVoiceInput()
+
+            // Restore draft text for this session
+            let sessionID = session.id.uuidString
+            promptText = draftManager.getDraft(sessionID: sessionID)
+        }
+        .onChange(of: promptText) { oldValue, newValue in
+            // Auto-save draft as user types
+            let sessionID = session.id.uuidString
+            draftManager.saveDraft(sessionID: sessionID, text: newValue)
         }
         .onDisappear {
             // Clear active session for smart speaking
@@ -258,6 +268,10 @@ struct ConversationView: View {
     private func sendPromptText(_ text: String) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return }
+
+        // Clear draft after successful send
+        let sessionID = session.id.uuidString
+        draftManager.clearDraft(sessionID: sessionID)
 
         // Create optimistic message
         client.sessionSyncManager.createOptimisticMessage(sessionId: session.id, text: trimmedText) { messageId in
