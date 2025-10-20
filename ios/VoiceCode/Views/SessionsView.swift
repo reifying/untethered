@@ -10,6 +10,7 @@ struct SessionsListView: View {
     @ObservedObject var voiceOutput: VoiceOutputManager
     @Binding var showingSettings: Bool
     @Environment(\.managedObjectContext) private var viewContext
+    @EnvironmentObject var draftManager: DraftManager
 
     // Fetch active (non-deleted) sessions from CoreData
     @FetchRequest(
@@ -181,6 +182,10 @@ struct SessionsListView: View {
     private func deleteSession(_ session: CDSession) {
         // Mark as deleted locally
         session.markedDeleted = true
+
+        // Clean up draft for this session
+        let sessionID = session.id.uuidString
+        draftManager.cleanupDraft(sessionID: sessionID)
 
         // Save context
         do {
