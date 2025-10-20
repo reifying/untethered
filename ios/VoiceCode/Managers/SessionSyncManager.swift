@@ -565,7 +565,10 @@ class SessionSyncManager {
         if let preview = sessionData["preview"] as? String {
             session.preview = preview
         }
-        
+
+        // Clear isLocallyCreated flag since session is now synced from backend
+        session.isLocallyCreated = false
+
         // Don't override local deletion status or unread count
         if existingSession == nil {
             session.markedDeleted = false

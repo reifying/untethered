@@ -38,6 +38,7 @@ class SessionGroupingTests: XCTestCase {
         session1.preview = ""
         session1.unreadCount = 0
         session1.markedDeleted = false
+        session1.isLocallyCreated = true
 
         let session2 = CDSession(context: context)
         session2.id = UUID()
@@ -48,6 +49,7 @@ class SessionGroupingTests: XCTestCase {
         session2.preview = ""
         session2.unreadCount = 0
         session2.markedDeleted = false
+        session2.isLocallyCreated = true
 
         let session3 = CDSession(context: context)
         session3.id = UUID()
@@ -58,6 +60,7 @@ class SessionGroupingTests: XCTestCase {
         session3.preview = ""
         session3.unreadCount = 0
         session3.markedDeleted = false
+        session3.isLocallyCreated = true
 
         try context.save()
 
@@ -88,6 +91,7 @@ class SessionGroupingTests: XCTestCase {
         session1.preview = ""
         session1.unreadCount = 0
         session1.markedDeleted = false
+        session1.isLocallyCreated = true
 
         let session2 = CDSession(context: context)
         session2.id = UUID()
@@ -135,6 +139,7 @@ class SessionGroupingTests: XCTestCase {
         session1.preview = ""
         session1.unreadCount = 0
         session1.markedDeleted = false
+        session1.isLocallyCreated = true
 
         let session2 = CDSession(context: context)
         session2.id = UUID()
@@ -145,6 +150,7 @@ class SessionGroupingTests: XCTestCase {
         session2.preview = ""
         session2.unreadCount = 0
         session2.markedDeleted = false
+        session2.isLocallyCreated = true
 
         let session3 = CDSession(context: context)
         session3.id = UUID()
@@ -155,6 +161,7 @@ class SessionGroupingTests: XCTestCase {
         session3.preview = ""
         session3.unreadCount = 0
         session3.markedDeleted = false
+        session3.isLocallyCreated = true
 
         try context.save()
 
@@ -187,6 +194,7 @@ class SessionGroupingTests: XCTestCase {
         session1.preview = ""
         session1.unreadCount = 0
         session1.markedDeleted = false
+        session1.isLocallyCreated = true
 
         let session2 = CDSession(context: context)
         session2.id = UUID()
@@ -243,6 +251,7 @@ class SessionGroupingTests: XCTestCase {
         session.preview = ""
         session.unreadCount = 0
         session.markedDeleted = false
+        session.isLocallyCreated = true
 
         try context.save()
 
@@ -267,6 +276,7 @@ class SessionGroupingTests: XCTestCase {
         activeSession.preview = ""
         activeSession.unreadCount = 0
         activeSession.markedDeleted = false
+        activeSession.isLocallyCreated = true
 
         let deletedSession = CDSession(context: context)
         deletedSession.id = UUID()
@@ -277,6 +287,7 @@ class SessionGroupingTests: XCTestCase {
         deletedSession.preview = ""
         deletedSession.unreadCount = 0
         deletedSession.markedDeleted = true
+        deletedSession.isLocallyCreated = true
 
         try context.save()
 
@@ -301,6 +312,7 @@ class SessionGroupingTests: XCTestCase {
             session.preview = ""
             session.unreadCount = 0
             session.markedDeleted = false
+            session.isLocallyCreated = true
         }
 
         try context.save()
@@ -328,6 +340,7 @@ class SessionGroupingTests: XCTestCase {
         session1.preview = ""
         session1.unreadCount = 0
         session1.markedDeleted = false
+        session1.isLocallyCreated = true
 
         let session2 = CDSession(context: context)
         session2.id = UUID()

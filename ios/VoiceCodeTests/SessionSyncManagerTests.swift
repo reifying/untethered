@@ -67,7 +67,7 @@ final class SessionSyncManagerTests: XCTestCase {
     
     func testHandleSessionListUpdatesExisting() throws {
         let sessionId = UUID()
-        
+
         // Create initial session
         let initialSession = CDSession(context: context)
         initialSession.id = sessionId
@@ -77,9 +77,10 @@ final class SessionSyncManagerTests: XCTestCase {
         initialSession.messageCount = 5
         initialSession.preview = "Old preview"
         initialSession.markedDeleted = false
-        
+        initialSession.isLocallyCreated = false
+
         try context.save()
-        
+
         // Handle session list with updated data
         let sessions: [[String: Any]] = [
             [
@@ -91,26 +92,76 @@ final class SessionSyncManagerTests: XCTestCase {
                 "preview": "New preview"
             ]
         ]
-        
+
         syncManager.handleSessionList(sessions)
-        
+
         // Wait for background save
         let expectation = XCTestExpectation(description: "Wait for save")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 1.0)
-        
+
         // Refetch and verify updates
         context.refreshAllObjects()
         let fetchRequest = CDSession.fetchSession(id: sessionId)
         let updated = try context.fetch(fetchRequest).first
-        
+
         XCTAssertNotNil(updated)
         XCTAssertEqual(updated?.backendName, "Updated Name")
         XCTAssertEqual(updated?.workingDirectory, "/new/path")
         XCTAssertEqual(updated?.messageCount, 10)
         XCTAssertEqual(updated?.preview, "New preview")
+    }
+
+    func testHandleSessionListClearsLocallyCreatedFlag() throws {
+        let sessionId = UUID()
+
+        // Create locally created session (user created it in iOS app)
+        let localSession = CDSession(context: context)
+        localSession.id = sessionId
+        localSession.backendName = "Local Session"
+        localSession.workingDirectory = "/test"
+        localSession.lastModified = Date()
+        localSession.messageCount = 0
+        localSession.preview = ""
+        localSession.markedDeleted = false
+        localSession.isLocallyCreated = true
+
+        try context.save()
+
+        // Verify flag is set
+        XCTAssertTrue(localSession.isLocallyCreated)
+
+        // Backend syncs session (after first message is sent)
+        let sessions: [[String: Any]] = [
+            [
+                "session_id": sessionId.uuidString,
+                "name": "Local Session",
+                "working_directory": "/test",
+                "last_modified": Date().timeIntervalSince1970 * 1000,
+                "message_count": 2,
+                "preview": "First message"
+            ]
+        ]
+
+        syncManager.handleSessionList(sessions)
+
+        // Wait for background save
+        let expectation = XCTestExpectation(description: "Wait for save")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Refetch and verify isLocallyCreated is cleared
+        context.refreshAllObjects()
+        let fetchRequest = CDSession.fetchSession(id: sessionId)
+        let updated = try context.fetch(fetchRequest).first
+
+        XCTAssertNotNil(updated)
+        XCTAssertFalse(updated!.isLocallyCreated, "isLocallyCreated should be cleared when session is synced from backend")
+        XCTAssertEqual(updated?.messageCount, 2)
     }
     
     // MARK: - Session Created Tests
@@ -215,7 +266,7 @@ final class SessionSyncManagerTests: XCTestCase {
     
     func testHandleSessionUpdatedWithEmptyMessages() throws {
         let sessionId = UUID()
-        
+
         // Create session
         let session = CDSession(context: context)
         session.id = sessionId
@@ -225,7 +276,8 @@ final class SessionSyncManagerTests: XCTestCase {
         session.messageCount = 0
         session.preview = ""
         session.markedDeleted = false
-        
+        session.isLocallyCreated = false
+
         try context.save()
         
         syncManager.handleSessionUpdated(sessionId: sessionId.uuidString, messages: [])
@@ -623,6 +675,7 @@ final class SessionSyncManagerTests: XCTestCase {
         session.preview = ""
         session.unreadCount = 0
         session.markedDeleted = false
+        session.isLocallyCreated = false
 
         try context.save()
 
@@ -692,6 +745,7 @@ final class SessionSyncManagerTests: XCTestCase {
         session.preview = ""
         session.unreadCount = 0
         session.markedDeleted = false
+        session.isLocallyCreated = false
 
         try context.save()
 
@@ -751,6 +805,7 @@ final class SessionSyncManagerTests: XCTestCase {
         session.preview = ""
         session.unreadCount = 0
         session.markedDeleted = false
+        session.isLocallyCreated = false
 
         try context.save()
 
@@ -800,6 +855,7 @@ final class SessionSyncManagerTests: XCTestCase {
             session.preview = ""
             session.unreadCount = 0
             session.markedDeleted = false
+            session.isLocallyCreated = false
 
             // Add messages to each session
             for i in 0..<3 {
@@ -885,6 +941,7 @@ final class SessionSyncManagerTests: XCTestCase {
         session.preview = "Preview"
         session.unreadCount = 3 // User has unread messages
         session.markedDeleted = false
+        session.isLocallyCreated = false
 
         try context.save()
 
@@ -927,6 +984,7 @@ final class SessionSyncManagerTests: XCTestCase {
             session.preview = "Old server preview"
             session.unreadCount = 0
             session.markedDeleted = false
+            session.isLocallyCreated = false
         }
 
         try context.save()

@@ -31,13 +31,15 @@ final class CoreDataTests: XCTestCase {
         session.messageCount = 0
         session.preview = ""
         session.markedDeleted = false
-        
+        session.isLocallyCreated = false
+
         try context.save()
-        
+
         XCTAssertNotNil(session.id)
         XCTAssertEqual(session.backendName, "Terminal: voice-code - 2025-10-17 14:30")
         XCTAssertEqual(session.workingDirectory, "/Users/test/code/voice-code")
         XCTAssertFalse(session.markedDeleted)
+        XCTAssertFalse(session.isLocallyCreated)
     }
     
     func testCDSessionDisplayName() throws {
@@ -49,36 +51,38 @@ final class CoreDataTests: XCTestCase {
         session.messageCount = 0
         session.preview = ""
         session.markedDeleted = false
-        
+        session.isLocallyCreated = false
+
         // When localName is nil, should return backendName
         XCTAssertEqual(session.displayName, "Backend Name")
-        
+
         // When localName is set, should return localName
         session.localName = "Custom Name"
         XCTAssertEqual(session.displayName, "Custom Name")
     }
     
     func testCDSessionFetchRequest() throws {
-        // Create multiple sessions
+        // Create multiple sessions with messages
         for i in 0..<5 {
             let session = CDSession(context: context)
             session.id = UUID()
             session.backendName = "Session \(i)"
             session.workingDirectory = "/test"
             session.lastModified = Date().addingTimeInterval(TimeInterval(i))
-            session.messageCount = 0
+            session.messageCount = Int32(i + 1) // All have messages
             session.preview = ""
             session.markedDeleted = (i == 2) // Mark session 2 as deleted
+            session.isLocallyCreated = false
         }
-        
+
         try context.save()
-        
+
         // Fetch active sessions (should exclude deleted)
         let fetchRequest = CDSession.fetchActiveSessions()
         let sessions = try context.fetch(fetchRequest)
-        
+
         XCTAssertEqual(sessions.count, 4) // 5 total - 1 deleted
-        
+
         // Should be sorted by lastModified descending
         XCTAssertEqual(sessions.first?.backendName, "Session 4")
     }
@@ -93,16 +97,92 @@ final class CoreDataTests: XCTestCase {
         session.messageCount = 0
         session.preview = ""
         session.markedDeleted = false
-        
+        session.isLocallyCreated = false
+
         try context.save()
-        
+
         // Fetch by ID
         let fetchRequest = CDSession.fetchSession(id: sessionId)
         let fetched = try context.fetch(fetchRequest).first
-        
+
         XCTAssertNotNil(fetched)
         XCTAssertEqual(fetched?.id, sessionId)
         XCTAssertEqual(fetched?.backendName, "Test Session")
+    }
+
+    func testCDSessionLocallyCreatedFlagIncludedInFetch() throws {
+        // Test that locally created sessions with 0 messages are included in fetchActiveSessions
+
+        // Create a locally created session with 0 messages
+        let localSession = CDSession(context: context)
+        localSession.id = UUID()
+        localSession.backendName = "New Local Session"
+        localSession.workingDirectory = "/test"
+        localSession.lastModified = Date()
+        localSession.messageCount = 0
+        localSession.preview = ""
+        localSession.markedDeleted = false
+        localSession.isLocallyCreated = true
+
+        // Create a backend session with 0 messages (should be filtered out)
+        let backendEmptySession = CDSession(context: context)
+        backendEmptySession.id = UUID()
+        backendEmptySession.backendName = "Backend Empty Session"
+        backendEmptySession.workingDirectory = "/test"
+        backendEmptySession.lastModified = Date().addingTimeInterval(-100)
+        backendEmptySession.messageCount = 0
+        backendEmptySession.preview = ""
+        backendEmptySession.markedDeleted = false
+        backendEmptySession.isLocallyCreated = false
+
+        // Create a backend session with messages (should be included)
+        let backendActiveSession = CDSession(context: context)
+        backendActiveSession.id = UUID()
+        backendActiveSession.backendName = "Backend Active Session"
+        backendActiveSession.workingDirectory = "/test"
+        backendActiveSession.lastModified = Date().addingTimeInterval(-50)
+        backendActiveSession.messageCount = 5
+        backendActiveSession.preview = "Last message"
+        backendActiveSession.markedDeleted = false
+        backendActiveSession.isLocallyCreated = false
+
+        try context.save()
+
+        // Fetch active sessions
+        let fetchRequest = CDSession.fetchActiveSessions()
+        let sessions = try context.fetch(fetchRequest)
+
+        // Should include: local session (0 messages, isLocallyCreated=true) and backend active (5 messages)
+        // Should exclude: backend empty (0 messages, isLocallyCreated=false)
+        XCTAssertEqual(sessions.count, 2)
+
+        let sessionNames = sessions.map { $0.backendName }
+        XCTAssertTrue(sessionNames.contains("New Local Session"))
+        XCTAssertTrue(sessionNames.contains("Backend Active Session"))
+        XCTAssertFalse(sessionNames.contains("Backend Empty Session"))
+    }
+
+    func testCDSessionLocallyCreatedWithDeletedFlag() throws {
+        // Test that locally created sessions marked deleted are still excluded
+
+        let session = CDSession(context: context)
+        session.id = UUID()
+        session.backendName = "Deleted Local Session"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.markedDeleted = true
+        session.isLocallyCreated = true
+
+        try context.save()
+
+        // Fetch active sessions
+        let fetchRequest = CDSession.fetchActiveSessions()
+        let sessions = try context.fetch(fetchRequest)
+
+        // Should be excluded because markedDeleted=true
+        XCTAssertEqual(sessions.count, 0)
     }
     
     // MARK: - CDMessage Tests
@@ -214,7 +294,7 @@ final class CoreDataTests: XCTestCase {
     
     func testSessionMessageRelationship() throws {
         let sessionId = UUID()
-        
+
         let session = CDSession(context: context)
         session.id = sessionId
         session.backendName = "Test Session"
@@ -223,7 +303,8 @@ final class CoreDataTests: XCTestCase {
         session.messageCount = 0
         session.preview = ""
         session.markedDeleted = false
-        
+        session.isLocallyCreated = false
+
         let message = CDMessage(context: context)
         message.id = UUID()
         message.sessionId = sessionId
@@ -232,13 +313,13 @@ final class CoreDataTests: XCTestCase {
         message.timestamp = Date()
         message.messageStatus = .confirmed
         message.session = session
-        
+
         try context.save()
-        
+
         // Verify relationship
         XCTAssertNotNil(message.session)
         XCTAssertEqual(message.session?.id, sessionId)
-        
+
         // Verify inverse relationship
         let messages = session.messages?.allObjects as? [CDMessage]
         XCTAssertEqual(messages?.count, 1)
@@ -247,7 +328,7 @@ final class CoreDataTests: XCTestCase {
     
     func testCascadeDelete() throws {
         let sessionId = UUID()
-        
+
         let session = CDSession(context: context)
         session.id = sessionId
         session.backendName = "Test Session"
@@ -256,7 +337,8 @@ final class CoreDataTests: XCTestCase {
         session.messageCount = 2
         session.preview = ""
         session.markedDeleted = false
-        
+        session.isLocallyCreated = false
+
         let message1 = CDMessage(context: context)
         message1.id = UUID()
         message1.sessionId = sessionId
@@ -265,7 +347,7 @@ final class CoreDataTests: XCTestCase {
         message1.timestamp = Date()
         message1.messageStatus = .confirmed
         message1.session = session
-        
+
         let message2 = CDMessage(context: context)
         message2.id = UUID()
         message2.sessionId = sessionId
@@ -274,17 +356,17 @@ final class CoreDataTests: XCTestCase {
         message2.timestamp = Date()
         message2.messageStatus = .confirmed
         message2.session = session
-        
+
         try context.save()
-        
+
         // Delete the session
         context.delete(session)
         try context.save()
-        
+
         // Verify messages were cascade deleted
         let fetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
         let remainingMessages = try context.fetch(fetchRequest)
-        
+
         XCTAssertEqual(remainingMessages.count, 0)
     }
     
