@@ -7,11 +7,13 @@ import SwiftUI
 struct VoiceCodeApp: App {
     let persistenceController = PersistenceController.shared
     @StateObject private var settings = AppSettings()
+    @StateObject private var draftManager = DraftManager()
 
     var body: some Scene {
         WindowGroup {
             RootView(settings: settings)
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
+                .environmentObject(draftManager)
         }
     }
 }
