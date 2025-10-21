@@ -24,22 +24,43 @@ class SessionSyncManager {
     /// Handle session_list message from backend
     /// - Parameter sessions: Array of session metadata dictionaries
     func handleSessionList(_ sessions: [[String: Any]]) {
-        logger.info("Received session_list with \(sessions.count) sessions")
-        
+        logger.info("📥 Received session_list with \(sessions.count) sessions")
+
+        // Log all received sessions with their details
+        logger.info("📋 Sessions received from backend:")
+        for (index, sessionData) in sessions.enumerated() {
+            let sessionId = sessionData["session_id"] as? String ?? "unknown"
+            let name = sessionData["name"] as? String ?? "unknown"
+            let workingDir = sessionData["working_directory"] as? String ?? "unknown"
+            let messageCount = sessionData["message_count"] as? Int ?? 0
+            logger.info("  [\(index + 1)] \(sessionId) | \(messageCount) msgs | \(name) | \(workingDir)")
+        }
+
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
-            
+
             for sessionData in sessions {
                 self.upsertSession(sessionData, in: backgroundContext)
             }
-            
+
             do {
                 if backgroundContext.hasChanges {
                     try backgroundContext.save()
-                    logger.info("Saved \(sessions.count) sessions to CoreData")
+                    logger.info("✅ Saved \(sessions.count) sessions to CoreData")
+
+                    // Log what's actually in CoreData after save
+                    let fetchRequest = CDSession.fetchActiveSessions()
+                    if let allSessions = try? backgroundContext.fetch(fetchRequest) {
+                        logger.info("💾 CoreData now contains \(allSessions.count) total active sessions")
+                        let hunt910Sessions = allSessions.filter { $0.workingDirectory.contains("hunt910") }
+                        logger.info("🎯 hunt910 sessions in CoreData: \(hunt910Sessions.count)")
+                        for session in hunt910Sessions.sorted(by: { $0.lastModified > $1.lastModified }).prefix(10) {
+                            logger.info("  - \(session.id.uuidString) | \(session.messageCount) msgs | markedDeleted=\(session.markedDeleted)")
+                        }
+                    }
                 }
             } catch {
-                logger.error("Failed to save session_list: \(error.localizedDescription)")
+                logger.error("❌ Failed to save session_list: \(error.localizedDescription)")
             }
         }
     }
