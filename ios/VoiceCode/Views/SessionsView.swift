@@ -3,6 +3,7 @@
 
 import SwiftUI
 import CoreData
+import OSLog
 
 struct SessionsListView: View {
     @ObservedObject var client: VoiceCodeClient
@@ -21,10 +22,30 @@ struct SessionsListView: View {
     @State private var showingNewSession = false
     @State private var newSessionName = ""
     @State private var newWorkingDirectory = ""
+    @State private var lastLoggedSessionCount = 0
+
+    private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "SessionsView")
 
     // Group sessions by working directory
     private var groupedSessions: [String: [CDSession]] {
-        Dictionary(grouping: sessions, by: { $0.workingDirectory })
+        let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
+
+        // Log sessions displayed in view (only when count changes to avoid spam)
+        if sessions.count != lastLoggedSessionCount {
+            DispatchQueue.main.async {
+                lastLoggedSessionCount = sessions.count
+            }
+            logger.info("📺 Sessions displayed in view: \(sessions.count) total")
+            logger.info("📂 Grouped by working directory:")
+            for (dir, dirSessions) in grouped.sorted(by: { $0.key < $1.key }) {
+                logger.info("  \(dir): \(dirSessions.count) sessions")
+                for session in dirSessions.sorted(by: { $0.lastModified > $1.lastModified }) {
+                    logger.info("    - \(session.id.uuidString) | \(session.messageCount) msgs | \(session.displayName)")
+                }
+            }
+        }
+
+        return grouped
     }
 
     // Get sorted working directories (most recently modified first)
@@ -109,6 +130,7 @@ struct SessionsListView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     HStack(spacing: 16) {
                         Button(action: {
+                            logger.info("🔄 Refresh button tapped - requesting session list from backend")
                             client.requestSessionList()
                         }) {
                             Image(systemName: "arrow.clockwise")
