@@ -25,6 +25,7 @@ struct RootView: View {
     @StateObject private var voiceOutput = VoiceOutputManager()
     @StateObject private var client: VoiceCodeClient
     @State private var showingSettings = false
+    @State private var navigationPath = NavigationPath()
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -36,9 +37,9 @@ struct RootView: View {
             voiceOutputManager: voiceManager
         ))
     }
-    
+
     var body: some View {
-        NavigationView {
+        NavigationStack(path: $navigationPath) {
             SessionsListView(client: client, settings: settings, voiceOutput: voiceOutput, showingSettings: $showingSettings)
         }
         .sheet(isPresented: $showingSettings) {
