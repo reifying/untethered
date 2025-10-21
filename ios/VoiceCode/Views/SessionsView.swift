@@ -107,9 +107,7 @@ struct SessionsListView: View {
                             }
                             .textCase(nil)) {
                                 ForEach(groupedSessions[workingDirectory]?.sorted(by: { $0.lastModified > $1.lastModified }) ?? []) { session in
-                                    NavigationLink(
-                                        destination: ConversationView(session: session, client: client, voiceOutput: voiceOutput, settings: settings)
-                                    ) {
+                                    NavigationLink(value: session.id) {
                                         CDSessionRowContent(session: session)
                                     }
                                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -123,6 +121,31 @@ struct SessionsListView: View {
                             }
                         }
                     }
+                }
+            }
+            .navigationDestination(for: UUID.self) { sessionId in
+                // Look up session by UUID from @FetchRequest results
+                if let session = sessions.first(where: { $0.id == sessionId }) {
+                    ConversationView(session: session, client: client, voiceOutput: voiceOutput, settings: settings)
+                } else {
+                    // Session not found (possibly deleted) - show message and allow back navigation
+                    VStack(spacing: 16) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 48))
+                            .foregroundColor(.orange)
+                        Text("Session Not Found")
+                            .font(.title2)
+                            .fontWeight(.semibold)
+                        Text("This session may have been deleted.")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                        Text(sessionId.uuidString)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.top, 8)
+                    }
+                    .padding()
                 }
             }
             .navigationTitle("Sessions")

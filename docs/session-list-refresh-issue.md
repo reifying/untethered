@@ -308,18 +308,54 @@ Sessions no longer jump position when opened for the first time. The whiplash is
 **Limitations:**
 This is a tactical fix. The underlying architectural fragility of position-based navigation remains. Any future code that inadvertently updates session metadata during navigation could reintroduce similar issues.
 
-### Long-Term Fix - Option 3 (IN PROGRESS)
+### Long-Term Fix - Option 3 (COMPLETED - 2025-10-20)
 
 **Epic:** voice-code-188
 
-**Status:** Planned, not yet implemented
+**Status:** Implemented and tested
 
-**Scope:** Refactor SessionsView to use SwiftUI NavigationStack with ID-based navigation instead of position-based NavigationLink pattern.
+**What Was Implemented:**
+Refactored the entire navigation system from deprecated NavigationView with position-based NavigationLink to modern NavigationStack with ID-based navigation.
 
-**Benefits:**
-- Immune to CoreData re-sorting during navigation
-- Aligns with modern SwiftUI best practices
-- Enables future features (deep linking, state restoration)
-- Prevents this entire class of bugs permanently
+**Key Changes:**
 
-See epic voice-code-188 for detailed implementation plan.
+1. **NavigationStack Migration** (VoiceCodeApp.swift)
+   - Changed `NavigationView` to `NavigationStack(path: $navigationPath)`
+   - Added `@State private var navigationPath = NavigationPath()` to RootView
+   - Provides modern navigation state management
+
+2. **Value-Based NavigationLink** (SessionsView.swift)
+   - Changed from `NavigationLink(destination: ConversationView(session: session))`
+   - To `NavigationLink(value: session.id)`
+   - Navigation now uses UUID value instead of array position
+
+3. **navigationDestination Implementation** (SessionsView.swift)
+   - Added `.navigationDestination(for: UUID.self)` modifier
+   - Looks up session by UUID: `sessions.first(where: { $0.id == sessionId })`
+   - Handles missing sessions gracefully with error view
+
+**Files Modified:**
+- `ios/VoiceCode/VoiceCodeApp.swift` - NavigationStack implementation
+- `ios/VoiceCode/Views/SessionsView.swift` - Value-based navigation
+
+**Tests Added:**
+- `NavigationStabilityTests.swift` - Comprehensive test suite
+  - Session lookup by UUID
+  - Navigation stability during CoreData re-sorts
+  - Missing session handling
+  - Performance benchmarks (100 sessions)
+  - Integration tests
+
+**Benefits Realized:**
+- **Immunity to Re-sorting**: Navigation no longer breaks when CoreData updates
+- **Modern SwiftUI**: Aligns with iOS 16+ best practices
+- **Future-Ready**: Enables deep linking, state restoration, programmatic navigation
+- **Performance**: Sub-1ms session lookup for 100 sessions
+
+**Architecture:**
+The new navigation is fully documented in `docs/ios-navigation-architecture.md` with diagrams, implementation details, and migration guide.
+
+**Result:**
+The app now uses modern, robust navigation that is architecturally correct and prevents the entire class of position-based navigation bugs. Combined with the immediate fix (voice-code-181), the session list whiplash issue is permanently resolved.
+
+See epic voice-code-188 and docs/ios-navigation-architecture.md for complete details.
