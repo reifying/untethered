@@ -111,7 +111,8 @@ final class CoreDataTests: XCTestCase {
     }
 
     func testCDSessionLocallyCreatedFlagIncludedInFetch() throws {
-        // Test that locally created sessions with 0 messages are included in fetchActiveSessions
+        // Test that all non-deleted sessions are included in fetchActiveSessions
+        // Backend already filters to message_count > 0, so iOS doesn't need to filter again
 
         // Create a locally created session with 0 messages
         let localSession = CDSession(context: context)
@@ -124,7 +125,7 @@ final class CoreDataTests: XCTestCase {
         localSession.markedDeleted = false
         localSession.isLocallyCreated = true
 
-        // Create a backend session with 0 messages (should be filtered out)
+        // Create a backend session with 0 messages (should be included now - backend handles filtering)
         let backendEmptySession = CDSession(context: context)
         backendEmptySession.id = UUID()
         backendEmptySession.backendName = "Backend Empty Session"
@@ -152,14 +153,13 @@ final class CoreDataTests: XCTestCase {
         let fetchRequest = CDSession.fetchActiveSessions()
         let sessions = try context.fetch(fetchRequest)
 
-        // Should include: local session (0 messages, isLocallyCreated=true) and backend active (5 messages)
-        // Should exclude: backend empty (0 messages, isLocallyCreated=false)
-        XCTAssertEqual(sessions.count, 2)
+        // Should include all 3 non-deleted sessions (backend handles message count filtering)
+        XCTAssertEqual(sessions.count, 3)
 
         let sessionNames = sessions.map { $0.backendName }
         XCTAssertTrue(sessionNames.contains("New Local Session"))
         XCTAssertTrue(sessionNames.contains("Backend Active Session"))
-        XCTAssertFalse(sessionNames.contains("Backend Empty Session"))
+        XCTAssertTrue(sessionNames.contains("Backend Empty Session"))
     }
 
     func testCDSessionLocallyCreatedWithDeletedFlag() throws {

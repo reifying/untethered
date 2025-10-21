@@ -30,10 +30,11 @@ extension CDSession {
         return NSFetchRequest<CDSession>(entityName: "CDSession")
     }
     
-    /// Fetch all non-deleted sessions with messages, sorted by last modified date
+    /// Fetch all non-deleted sessions, sorted by last modified date
+    /// Backend already filters sessions with message_count > 0, so we don't need to filter again
     static func fetchActiveSessions() -> NSFetchRequest<CDSession> {
         let request = fetchRequest()
-        request.predicate = NSPredicate(format: "markedDeleted == NO AND (messageCount > 0 OR isLocallyCreated == YES)")
+        request.predicate = NSPredicate(format: "markedDeleted == NO")
         request.sortDescriptors = [NSSortDescriptor(keyPath: \CDSession.lastModified, ascending: false)]
         return request
     }
