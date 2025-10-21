@@ -134,7 +134,9 @@ class SessionSyncManager {
             
             // Update session metadata
             session.messageCount = Int32(messages.count)
-            session.lastModified = Date()
+            // Note: Do NOT update lastModified here - we're replaying existing history.
+            // The correct lastModified timestamp was already set from the backend's session_list message.
+            // Only handleSessionUpdated() should update lastModified for truly NEW messages.
 
             if let lastMessage = messages.last,
                let text = self.extractText(from: lastMessage) {
@@ -303,6 +305,7 @@ class SessionSyncManager {
             }
             
             // Update session metadata (only count truly new messages)
+            // Update lastModified to current time because these are NEW messages arriving now
             session.lastModified = Date()
             session.messageCount += Int32(newMessageCount)
 
