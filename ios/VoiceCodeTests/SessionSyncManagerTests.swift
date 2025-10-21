@@ -839,6 +839,155 @@ final class SessionSyncManagerTests: XCTestCase {
         XCTAssertEqual(savedMessages.count, 2, "Should have 2 messages (user and assistant)")
     }
 
+    // MARK: - Session History Tests (voice-code-181)
+
+    func testHandleSessionHistoryDoesNotUpdateLastModified() throws {
+        // voice-code-184: Verify lastModified is NOT updated during history replay
+        let sessionId = UUID()
+        let oldTimestamp = Date(timeIntervalSince1970: Date().timeIntervalSince1970 - 3600) // 1 hour ago
+
+        // Create session with known lastModified timestamp
+        let session = CDSession(context: context)
+        session.id = sessionId
+        session.backendName = "Test Session"
+        session.workingDirectory = "/test"
+        session.lastModified = oldTimestamp
+        session.messageCount = 0
+        session.preview = ""
+        session.unreadCount = 0
+        session.markedDeleted = false
+        session.isLocallyCreated = false
+
+        try context.save()
+
+        // Simulate session_history message (history replay)
+        let messages: [[String: Any]] = [
+            [
+                "type": "user",
+                "message": [
+                    "role": "user",
+                    "content": "First message"
+                ],
+                "timestamp": "2024-01-01T12:00:00.000Z",
+                "uuid": UUID().uuidString
+            ],
+            [
+                "type": "assistant",
+                "message": [
+                    "role": "assistant",
+                    "content": [
+                        ["type": "text", "text": "Response"]
+                    ]
+                ],
+                "timestamp": "2024-01-01T12:00:01.000Z",
+                "uuid": UUID().uuidString
+            ]
+        ]
+
+        syncManager.handleSessionHistory(sessionId: sessionId.uuidString, messages: messages)
+
+        // Wait for background save
+        let expectation = XCTestExpectation(description: "Wait for save")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Verify lastModified was NOT changed
+        context.refreshAllObjects()
+        let fetchRequest = CDSession.fetchSession(id: sessionId)
+        let updated = try context.fetch(fetchRequest).first
+
+        XCTAssertNotNil(updated)
+        XCTAssertEqual(updated!.lastModified.timeIntervalSince1970,
+                      oldTimestamp.timeIntervalSince1970,
+                      accuracy: 1.0,
+                      "lastModified should NOT be updated during history replay")
+
+        // Verify messageCount WAS updated (we are processing the history)
+        XCTAssertEqual(updated?.messageCount, 2, "messageCount should be updated to match history")
+
+        // Verify messages were created
+        let messageFetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
+        let savedMessages = try context.fetch(messageFetchRequest)
+        XCTAssertEqual(savedMessages.count, 2, "Messages should be created from history")
+    }
+
+    func testHandleSessionUpdatedUpdatesLastModified() throws {
+        // voice-code-185: Verify lastModified IS updated for new messages
+        let sessionId = UUID()
+        let oldTimestamp = Date(timeIntervalSince1970: Date().timeIntervalSince1970 - 3600) // 1 hour ago
+
+        // Create session with known lastModified timestamp
+        let session = CDSession(context: context)
+        session.id = sessionId
+        session.backendName = "Test Session"
+        session.workingDirectory = "/test"
+        session.lastModified = oldTimestamp
+        session.messageCount = 2
+        session.preview = "Old preview"
+        session.unreadCount = 0
+        session.markedDeleted = false
+        session.isLocallyCreated = false
+
+        try context.save()
+
+        // Simulate session_updated message (NEW messages arriving)
+        let messages: [[String: Any]] = [
+            [
+                "type": "user",
+                "message": [
+                    "role": "user",
+                    "content": "New question"
+                ],
+                "timestamp": "2024-01-01T13:00:00.000Z",
+                "uuid": UUID().uuidString
+            ],
+            [
+                "type": "assistant",
+                "message": [
+                    "role": "assistant",
+                    "content": [
+                        ["type": "text", "text": "New response"]
+                    ]
+                ],
+                "timestamp": "2024-01-01T13:00:01.000Z",
+                "uuid": UUID().uuidString
+            ]
+        ]
+
+        let beforeUpdate = Date()
+        syncManager.handleSessionUpdated(sessionId: sessionId.uuidString, messages: messages)
+
+        // Wait for background save
+        let expectation = XCTestExpectation(description: "Wait for save")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Verify lastModified WAS updated to recent time
+        context.refreshAllObjects()
+        let fetchRequest = CDSession.fetchSession(id: sessionId)
+        let updated = try context.fetch(fetchRequest).first
+
+        XCTAssertNotNil(updated)
+        XCTAssertGreaterThan(updated!.lastModified, oldTimestamp,
+                            "lastModified should be updated when new messages arrive")
+        XCTAssertGreaterThanOrEqual(updated!.lastModified, beforeUpdate,
+                                   "lastModified should be updated to approximately now")
+        XCTAssertLessThanOrEqual(updated!.lastModified.timeIntervalSince(beforeUpdate), 2.0,
+                                "lastModified should be within 2 seconds of now")
+
+        // Verify messageCount was incremented
+        XCTAssertEqual(updated?.messageCount, 4, "messageCount should be incremented by 2")
+
+        // Verify new messages were created
+        let messageFetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
+        let savedMessages = try context.fetch(messageFetchRequest)
+        XCTAssertEqual(savedMessages.count, 2, "New messages should be created")
+    }
+
     // MARK: - Server Change Tests (voice-code-119, voice-code-151)
 
     func testClearAllSessions() throws {
