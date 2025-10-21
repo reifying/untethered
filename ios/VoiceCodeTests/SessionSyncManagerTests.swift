@@ -172,27 +172,27 @@ final class SessionSyncManagerTests: XCTestCase {
             "name": "Terminal: new-project - 2025-10-17 16:00",
             "working_directory": "/Users/test/code/new-project",
             "last_modified": 1697485600000.0,
-            "message_count": 0,
-            "preview": ""
+            "message_count": 1,
+            "preview": "First message"
         ]
-        
+
         syncManager.handleSessionCreated(sessionData)
-        
+
         // Wait for background save
         let expectation = XCTestExpectation(description: "Wait for save")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 1.0)
-        
+
         // Verify session was created
         let fetchRequest = CDSession.fetchRequest()
         fetchRequest.predicate = NSPredicate(format: "backendName CONTAINS[c] %@", "new-project")
         let sessions = try context.fetch(fetchRequest)
-        
+
         XCTAssertEqual(sessions.count, 1)
-        XCTAssertEqual(sessions.first?.messageCount, 0)
-        XCTAssertEqual(sessions.first?.preview, "")
+        XCTAssertEqual(sessions.first?.messageCount, 1)
+        XCTAssertEqual(sessions.first?.preview, "First message")
     }
     
     func testHandleSessionCreatedIgnoresInvalidData() throws {
@@ -219,31 +219,264 @@ final class SessionSyncManagerTests: XCTestCase {
     
     // MARK: - Session Updated Tests
 
-    func testHandleSessionUpdatedNonexistentSession() throws {
+    func testHandleSessionUpdatedCreatesNonexistentSession() throws {
+        // voice-code-201: Session creation from session_updated
         let nonexistentId = UUID()
-        
+
         let messages: [[String: Any]] = [
             [
-                "role": "user",
-                "text": "Test message",
-                "timestamp": 1697485000000.0
+                "type": "user",
+                "message": [
+                    "role": "user",
+                    "content": "Test message"
+                ],
+                "timestamp": "2024-01-01T12:00:00.000Z",
+                "uuid": UUID().uuidString
+            ],
+            [
+                "type": "assistant",
+                "message": [
+                    "role": "assistant",
+                    "content": [
+                        ["type": "text", "text": "Test response"]
+                    ]
+                ],
+                "timestamp": "2024-01-01T12:00:01.000Z",
+                "uuid": UUID().uuidString
             ]
         ]
-        
+
         syncManager.handleSessionUpdated(sessionId: nonexistentId.uuidString, messages: messages)
-        
-        // Wait a bit
-        let expectation = XCTestExpectation(description: "Wait")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+
+        // Wait for background save
+        let expectation = XCTestExpectation(description: "Wait for save")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             expectation.fulfill()
         }
-        wait(for: [expectation], timeout: 0.5)
-        
-        // Verify no messages were created
+        wait(for: [expectation], timeout: 1.0)
+
+        // Verify session was created
+        context.refreshAllObjects()
+        let sessionFetchRequest = CDSession.fetchSession(id: nonexistentId)
+        let createdSession = try context.fetch(sessionFetchRequest).first
+
+        XCTAssertNotNil(createdSession, "Session should be created from session_updated")
+        XCTAssertEqual(createdSession?.id, nonexistentId)
+        XCTAssertEqual(createdSession?.backendName, "", "backendName should be empty until session_list syncs")
+        XCTAssertEqual(createdSession?.workingDirectory, "", "workingDirectory should be empty until session_list syncs")
+        XCTAssertEqual(createdSession?.messageCount, 2, "messageCount should match messages added")
+        XCTAssertFalse(createdSession?.markedDeleted ?? true)
+        XCTAssertFalse(createdSession?.isLocallyCreated ?? true)
+        XCTAssertEqual(createdSession?.unreadCount, 2, "unreadCount should be incremented for background session")
+
+        // Verify messages were created
         let messageFetchRequest = CDMessage.fetchMessages(sessionId: nonexistentId)
         let savedMessages = try context.fetch(messageFetchRequest)
-        
-        XCTAssertEqual(savedMessages.count, 0)
+
+        XCTAssertEqual(savedMessages.count, 2, "Messages should be created")
+        XCTAssertEqual(savedMessages.filter { $0.role == "user" }.count, 1)
+        XCTAssertEqual(savedMessages.filter { $0.role == "assistant" }.count, 1)
+
+        // Verify lastModified is recent
+        let now = Date()
+        XCTAssertNotNil(createdSession?.lastModified)
+        XCTAssertLessThanOrEqual(createdSession!.lastModified.timeIntervalSince(now), 2.0,
+                                "lastModified should be set to approximately now")
+    }
+
+    func testHandleSessionUpdatedExistingSessionStillWorksNormally() throws {
+        // voice-code-201: Existing session flow unchanged
+        let sessionId = UUID()
+
+        // Create session first via session_list
+        let session = CDSession(context: context)
+        session.id = sessionId
+        session.backendName = "Existing Session"
+        session.workingDirectory = "/test/path"
+        session.lastModified = Date(timeIntervalSince1970: Date().timeIntervalSince1970 - 1000)
+        session.messageCount = 2
+        session.preview = "Old preview"
+        session.unreadCount = 0
+        session.markedDeleted = false
+        session.isLocallyCreated = false
+
+        try context.save()
+
+        // Send update
+        let messages: [[String: Any]] = [
+            [
+                "type": "user",
+                "message": [
+                    "role": "user",
+                    "content": "New message"
+                ],
+                "timestamp": "2024-01-01T12:00:00.000Z",
+                "uuid": UUID().uuidString
+            ]
+        ]
+
+        syncManager.handleSessionUpdated(sessionId: sessionId.uuidString, messages: messages)
+
+        // Wait for background save
+        let expectation = XCTestExpectation(description: "Wait for save")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Verify session was updated (not created)
+        context.refreshAllObjects()
+        let sessionFetchRequest = CDSession.fetchSession(id: sessionId)
+        let updatedSession = try context.fetch(sessionFetchRequest).first
+
+        XCTAssertNotNil(updatedSession)
+        XCTAssertEqual(updatedSession?.backendName, "Existing Session", "Metadata should be preserved")
+        XCTAssertEqual(updatedSession?.workingDirectory, "/test/path", "Metadata should be preserved")
+        XCTAssertEqual(updatedSession?.messageCount, 3, "messageCount should be incremented")
+
+        // Verify only one session exists
+        let allSessionsFetch = CDSession.fetchRequest()
+        let allSessions = try context.fetch(allSessionsFetch)
+        XCTAssertEqual(allSessions.count, 1, "Should only have one session (not duplicated)")
+    }
+
+    func testSessionCreatedFromUpdateSyncsMetadataOnSessionList() throws {
+        // voice-code-201: Created session syncs metadata on next session_list
+        let sessionId = UUID()
+
+        // First: session_updated creates session with partial metadata
+        let messages: [[String: Any]] = [
+            [
+                "type": "user",
+                "message": [
+                    "role": "user",
+                    "content": "Initial message"
+                ],
+                "timestamp": "2024-01-01T12:00:00.000Z",
+                "uuid": UUID().uuidString
+            ]
+        ]
+
+        syncManager.handleSessionUpdated(sessionId: sessionId.uuidString, messages: messages)
+
+        // Wait for background save
+        var expectation = XCTestExpectation(description: "Wait for update save")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Verify session created with empty metadata
+        context.refreshAllObjects()
+        var sessionFetchRequest = CDSession.fetchSession(id: sessionId)
+        var session = try context.fetch(sessionFetchRequest).first
+
+        XCTAssertNotNil(session)
+        XCTAssertEqual(session?.backendName, "")
+        XCTAssertEqual(session?.workingDirectory, "")
+
+        // Second: session_list provides full metadata
+        let sessionList: [[String: Any]] = [
+            [
+                "session_id": sessionId.uuidString,
+                "name": "Terminal: voice-code - 2025-10-20",
+                "working_directory": "/Users/test/code/voice-code",
+                "last_modified": Date().timeIntervalSince1970 * 1000,
+                "message_count": 1,
+                "preview": "Initial message"
+            ]
+        ]
+
+        syncManager.handleSessionList(sessionList)
+
+        // Wait for background save
+        expectation = XCTestExpectation(description: "Wait for list save")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Verify metadata now populated
+        context.refreshAllObjects()
+        sessionFetchRequest = CDSession.fetchSession(id: sessionId)
+        session = try context.fetch(sessionFetchRequest).first
+
+        XCTAssertNotNil(session)
+        XCTAssertEqual(session?.backendName, "Terminal: voice-code - 2025-10-20")
+        XCTAssertEqual(session?.workingDirectory, "/Users/test/code/voice-code")
+
+        // Verify still only one session (no duplicate)
+        let allSessionsFetch = CDSession.fetchRequest()
+        let allSessions = try context.fetch(allSessionsFetch)
+        XCTAssertEqual(allSessions.count, 1, "Should still have exactly one session")
+    }
+
+    func testMultipleUpdatesForNonexistentSessionNoDuplicates() throws {
+        // voice-code-201: Multiple session_updated calls for same session should not create duplicates
+        let sessionId = UUID()
+
+        let firstMessages: [[String: Any]] = [
+            [
+                "type": "user",
+                "message": [
+                    "role": "user",
+                    "content": "First update"
+                ],
+                "timestamp": "2024-01-01T12:00:00.000Z",
+                "uuid": UUID().uuidString
+            ]
+        ]
+
+        let secondMessages: [[String: Any]] = [
+            [
+                "type": "assistant",
+                "message": [
+                    "role": "assistant",
+                    "content": [
+                        ["type": "text", "text": "Second update"]
+                    ]
+                ],
+                "timestamp": "2024-01-01T12:00:01.000Z",
+                "uuid": UUID().uuidString
+            ]
+        ]
+
+        // Send first update
+        syncManager.handleSessionUpdated(sessionId: sessionId.uuidString, messages: firstMessages)
+
+        // Wait for background save
+        var expectation = XCTestExpectation(description: "Wait for first save")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Send second update
+        syncManager.handleSessionUpdated(sessionId: sessionId.uuidString, messages: secondMessages)
+
+        // Wait for background save
+        expectation = XCTestExpectation(description: "Wait for second save")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Verify only one session exists
+        context.refreshAllObjects()
+        let sessionFetchRequest = CDSession.fetchRequest()
+        let allSessions = try context.fetch(sessionFetchRequest)
+
+        XCTAssertEqual(allSessions.count, 1, "Should only have one session")
+
+        let session = allSessions.first!
+        XCTAssertEqual(session.id, sessionId)
+        XCTAssertEqual(session.messageCount, 2, "Should have messages from both updates")
+
+        // Verify both messages exist
+        let messageFetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
+        let savedMessages = try context.fetch(messageFetchRequest)
+
+        XCTAssertEqual(savedMessages.count, 2, "Should have 2 messages total")
     }
     
     // MARK: - Edge Cases

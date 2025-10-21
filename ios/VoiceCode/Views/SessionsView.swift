@@ -264,16 +264,25 @@ struct CDSessionRowContent: View {
                 Text(session.displayName)
                     .font(.headline)
 
-                Text(session.workingDirectory)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 8) {
+                    Text("[\(session.id.uuidString.prefix(8))]")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .fontDesign(.monospaced)
+                    Text("•")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(session.workingDirectory)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
 
                 HStack(spacing: 8) {
                     Text("\(session.messageCount) messages")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    
+
                     if !session.preview.isEmpty {
                         Text("•")
                             .font(.caption2)

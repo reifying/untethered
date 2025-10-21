@@ -243,12 +243,22 @@ class SessionSyncManager {
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
             
-            // Fetch the session
+            // Fetch or create the session
             let fetchRequest = CDSession.fetchSession(id: UUID(uuidString: sessionId)!)
-            
-            guard let session = try? backgroundContext.fetch(fetchRequest).first else {
-                logger.warning("Session not found for update: \(sessionId)")
-                return
+
+            let session: CDSession
+            if let existingSession = try? backgroundContext.fetch(fetchRequest).first {
+                session = existingSession
+            } else {
+                // Session not in our list yet - create it from the update
+                logger.info("Creating new session from update: \(sessionId)")
+                session = CDSession(context: backgroundContext)
+                session.id = UUID(uuidString: sessionId)!
+                session.backendName = "" // Will be updated on next session_list
+                session.workingDirectory = "" // Will be updated on next session_list
+                session.markedDeleted = false
+                session.unreadCount = 0
+                session.isLocallyCreated = false
             }
             
             // Check if this session is currently active
