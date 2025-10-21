@@ -40,7 +40,24 @@ struct RootView: View {
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
-            SessionsListView(client: client, settings: settings, voiceOutput: voiceOutput, showingSettings: $showingSettings)
+            DirectoryListView(client: client, settings: settings, voiceOutput: voiceOutput, showingSettings: $showingSettings)
+                .navigationDestination(for: String.self) { workingDirectory in
+                    SessionsForDirectoryView(
+                        workingDirectory: workingDirectory,
+                        client: client,
+                        settings: settings,
+                        voiceOutput: voiceOutput,
+                        showingSettings: $showingSettings
+                    )
+                }
+                .navigationDestination(for: UUID.self) { sessionId in
+                    SessionLookupView(
+                        sessionId: sessionId,
+                        client: client,
+                        voiceOutput: voiceOutput,
+                        settings: settings
+                    )
+                }
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView(
