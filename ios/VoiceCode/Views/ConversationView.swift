@@ -169,7 +169,7 @@ struct ConversationView: View {
                     .disabled(isCompacting)
 
                     Button(action: {
-                        client.requestSessionRefresh(sessionId: session.id.uuidString)
+                        client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
                     }) {
                         Image(systemName: "arrow.clockwise")
                     }
@@ -229,12 +229,12 @@ struct ConversationView: View {
             setupVoiceInput()
 
             // Restore draft text for this session
-            let sessionID = session.id.uuidString
+            let sessionID = session.id.uuidString.lowercased()
             promptText = draftManager.getDraft(sessionID: sessionID)
         }
         .onChange(of: promptText) { oldValue, newValue in
             // Auto-save draft as user types
-            let sessionID = session.id.uuidString
+            let sessionID = session.id.uuidString.lowercased()
             draftManager.saveDraft(sessionID: sessionID, text: newValue)
         }
         .onDisappear {
@@ -242,7 +242,7 @@ struct ConversationView: View {
             ActiveSessionManager.shared.clearActiveSession()
 
             // Unsubscribe when leaving the conversation
-            client.unsubscribe(sessionId: session.id.uuidString)
+            client.unsubscribe(sessionId: session.id.uuidString.lowercased())
         }
     }
     
@@ -268,7 +268,7 @@ struct ConversationView: View {
         try? viewContext.save()
 
         // Subscribe to the session to load full history
-        client.subscribe(sessionId: session.id.uuidString)
+        client.subscribe(sessionId: session.id.uuidString.lowercased())
 
         // Stop loading indicator after a delay (messages will populate via CoreData sync)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
@@ -297,7 +297,7 @@ struct ConversationView: View {
         guard !trimmedText.isEmpty else { return }
 
         // Clear draft after successful send
-        let sessionID = session.id.uuidString
+        let sessionID = session.id.uuidString.lowercased()
         draftManager.clearDraft(sessionID: sessionID)
 
         // Create optimistic message
@@ -318,11 +318,11 @@ struct ConversationView: View {
         ]
 
         if isNewSession {
-            message["new_session_id"] = session.id.uuidString
-            print("📤 [ConversationView] Sending prompt with new_session_id: \(session.id.uuidString)")
+            message["new_session_id"] = session.id.uuidString.lowercased()
+            print("📤 [ConversationView] Sending prompt with new_session_id: \(session.id.uuidString.lowercased())")
         } else {
-            message["resume_session_id"] = session.id.uuidString
-            print("📤 [ConversationView] Sending prompt with resume_session_id: \(session.id.uuidString)")
+            message["resume_session_id"] = session.id.uuidString.lowercased()
+            print("📤 [ConversationView] Sending prompt with resume_session_id: \(session.id.uuidString.lowercased())")
         }
 
         client.sendMessage(message)
@@ -331,7 +331,7 @@ struct ConversationView: View {
     private func exportSessionToPlainText() {
         // Format session header
         var exportText = "# \(session.displayName)\n"
-        exportText += "Session ID: \(session.id.uuidString)\n"
+        exportText += "Session ID: \(session.id.uuidString.lowercased())\n"
         exportText += "Working Directory: \(session.workingDirectory)\n"
 
         let dateFormatter = DateFormatter()
@@ -368,7 +368,7 @@ struct ConversationView: View {
 
         Task {
             do {
-                let result = try await client.compactSession(sessionId: session.id.uuidString)
+                let result = try await client.compactSession(sessionId: session.id.uuidString.lowercased())
 
                 await MainActor.run {
                     isCompacting = false
@@ -386,7 +386,7 @@ struct ConversationView: View {
                     }
 
                     // Refresh session to update message count
-                    client.requestSessionRefresh(sessionId: session.id.uuidString)
+                    client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
 
                     // Hide confirmation after 3 seconds
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {

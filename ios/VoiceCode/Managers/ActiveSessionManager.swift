@@ -18,7 +18,7 @@ class ActiveSessionManager: ObservableObject {
 
     /// Mark a session as active (user opened it)
     func setActiveSession(_ sessionId: UUID?) {
-        print("📍 [ActiveSessionManager] Setting active session: \(sessionId?.uuidString ?? "nil")")
+        print("📍 [ActiveSessionManager] Setting active session: \(sessionId?.uuidString.lowercased() ?? "nil")")
         activeSessionId = sessionId
     }
 

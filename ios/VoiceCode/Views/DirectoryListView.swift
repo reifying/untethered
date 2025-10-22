@@ -161,7 +161,7 @@ struct DirectoryListView: View {
         // Save to CoreData
         do {
             try viewContext.save()
-            logger.info("📝 Created new session: \(sessionId.uuidString)")
+            logger.info("📝 Created new session: \(sessionId.uuidString.lowercased())")
 
             // Note: ConversationView will handle subscription when it appears (lazy loading)
 

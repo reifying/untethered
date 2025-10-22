@@ -143,7 +143,7 @@ struct SessionsForDirectoryView: View {
         // Save to CoreData
         do {
             try viewContext.save()
-            logger.info("📝 Created new session: \(sessionId.uuidString) in \(workingDirectory)")
+            logger.info("📝 Created new session: \(sessionId.uuidString.lowercased()) in \(workingDirectory)")
 
             // Note: ConversationView will handle subscription when it appears (lazy loading)
 
@@ -157,7 +157,7 @@ struct SessionsForDirectoryView: View {
         session.markedDeleted = true
 
         // Clean up draft for this session
-        let sessionID = session.id.uuidString
+        let sessionID = session.id.uuidString.lowercased()
         draftManager.cleanupDraft(sessionID: sessionID)
 
         // Save context
@@ -165,12 +165,12 @@ struct SessionsForDirectoryView: View {
             try viewContext.save()
 
             // Unsubscribe from session
-            client.unsubscribe(sessionId: session.id.uuidString)
+            client.unsubscribe(sessionId: session.id.uuidString.lowercased())
 
             // Send session_deleted message to backend
             let message: [String: Any] = [
                 "type": "session_deleted",
-                "session_id": session.id.uuidString
+                "session_id": session.id.uuidString.lowercased()
             ]
             client.sendMessage(message)
 

@@ -55,7 +55,7 @@ class SessionSyncManager {
                         let hunt910Sessions = allSessions.filter { $0.workingDirectory.contains("hunt910") }
                         logger.info("🎯 hunt910 sessions in CoreData: \(hunt910Sessions.count)")
                         for session in hunt910Sessions.sorted(by: { $0.lastModified > $1.lastModified }).prefix(10) {
-                            logger.info("  - \(session.id.uuidString) | \(session.messageCount) msgs | markedDeleted=\(session.markedDeleted)")
+                            logger.info("  - \(session.id.uuidString.lowercased()) | \(session.messageCount) msgs | markedDeleted=\(session.markedDeleted)")
                         }
                     }
                 }
@@ -162,18 +162,18 @@ class SessionSyncManager {
     ///   - text: User's prompt text
     ///   - completion: Called on main thread with the created message ID
     func createOptimisticMessage(sessionId: UUID, text: String, completion: @escaping (UUID) -> Void) {
-        logger.info("Creating optimistic message for session: \(sessionId.uuidString)")
-        
+        logger.info("Creating optimistic message for session: \(sessionId.uuidString.lowercased())")
+
         let messageId = UUID()
-        
+
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
-            
+
             // Fetch the session
             let fetchRequest = CDSession.fetchSession(id: sessionId)
-            
+
             guard let session = try? backgroundContext.fetch(fetchRequest).first else {
-                logger.warning("Session not found for optimistic message: \(sessionId.uuidString)")
+                logger.warning("Session not found for optimistic message: \(sessionId.uuidString.lowercased())")
                 return
             }
             

@@ -20,6 +20,42 @@
 - Use **snake_case** for JSON communication with backend
 - Examples: Swift `claudeSessionId` ↔ JSON `session_id` ↔ Clojure `:session-id`
 
+### UUIDs (Session IDs)
+**All UUIDs must be lowercase across the entire system.**
+
+- **iOS**: Always use `.lowercased()` when converting UUIDs to strings
+  - Correct: `session.id.uuidString.lowercased()`
+  - Incorrect: `session.id.uuidString` (produces uppercase)
+- **Backend**: Store and compare UUIDs as lowercase strings without normalization
+- **Rationale**: Eliminates case-sensitivity bugs, ensures consistent logging/debugging, prevents issues on case-sensitive filesystems
+
+#### Examples
+
+**iOS (Swift):**
+```swift
+// Creating/sending session IDs
+let sessionId = session.id.uuidString.lowercased()
+client.subscribe(sessionId: session.id.uuidString.lowercased())
+
+// Always lowercase in JSON payloads
+message["session_id"] = session.id.uuidString.lowercased()
+```
+
+**Backend (Clojure):**
+```clojure
+;; Session IDs arrive lowercase from iOS, use directly
+(get @session-index session-id)  ; No str/lower-case needed
+
+;; Filesystem .jsonl filenames are lowercase
+;; e.g., ~/.claude/projects/mono/abc123de-4567-89ab-cdef-0123456789ab.jsonl
+```
+
+**Logs:**
+```
+✓ Correct: "Subscribing to session: abc123de-4567-89ab-cdef-0123456789ab"
+✗ Wrong:   "Subscribing to session: ABC123DE-4567-89AB-CDEF-0123456789AB"
+```
+
 ## WebSocket Protocol
 
 ### Overview
