@@ -21,8 +21,15 @@ struct ConversationView: View {
     @State private var newSessionName = ""
     @State private var showingCopyConfirmation = false
     @State private var showingCompactConfirmation = false
+    @State private var showingAlreadyCompactedAlert = false
     @State private var isCompacting = false
     @State private var compactSuccessMessage: String?
+    
+    // Compaction feedback state
+    @State private var wasRecentlyCompacted: Bool = false
+    @State private var lastCompactionStats: CompactionResult?
+    @State private var compactionTimestamps: [UUID: Date] = [:]
+    @State private var recentCompactionsBySession: [UUID: CompactionResult] = [:]
 
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
@@ -158,12 +165,17 @@ struct ConversationView: View {
                 HStack(spacing: 16) {
                     // Compact button
                     Button(action: {
-                        showingCompactConfirmation = true
+                        if wasRecentlyCompacted {
+                            showingAlreadyCompactedAlert = true
+                        } else {
+                            showingCompactConfirmation = true
+                        }
                     }) {
                         if isCompacting {
                             ProgressView()
                         } else {
                             Image(systemName: "bolt.fill")
+                                .foregroundColor(wasRecentlyCompacted ? .green : .primary)
                         }
                     }
                     .disabled(isCompacting)
@@ -212,6 +224,19 @@ struct ConversationView: View {
                 Text("⚠️ This cannot be undone")
             }
         }
+        .alert("Session Already Compacted", isPresented: $showingAlreadyCompactedAlert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Compact Again", role: .destructive) {
+                showingCompactConfirmation = true
+            }
+        } message: {
+            if let stats = lastCompactionStats,
+               let timestamp = compactionTimestamps[session.id] {
+                Text("This session was compacted \(timestamp.relativeTimeString()).\n• Removed \(stats.messagesRemoved) messages\n• Saved \(stats.preTokens.map { formatTokenCount($0) + " tokens" } ?? "tokens")")
+            } else {
+                Text("This session was recently compacted.\n\nCompact again?")
+            }
+        }
         .sheet(isPresented: $showingRenameSheet) {
             RenameSessionView(
                 sessionName: $newSessionName,
@@ -231,6 +256,16 @@ struct ConversationView: View {
             // Restore draft text for this session
             let sessionID = session.id.uuidString.lowercased()
             promptText = draftManager.getDraft(sessionID: sessionID)
+            
+            // Restore compaction state for this session
+            if let stats = recentCompactionsBySession[session.id],
+               let timestamp = compactionTimestamps[session.id] {
+                wasRecentlyCompacted = true
+                lastCompactionStats = stats
+            } else {
+                wasRecentlyCompacted = false
+                lastCompactionStats = nil
+            }
         }
         .onChange(of: promptText) { oldValue, newValue in
             // Auto-save draft as user types
@@ -295,6 +330,10 @@ struct ConversationView: View {
     private func sendPromptText(_ text: String) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return }
+
+        // Reset compaction feedback state when user sends a message
+        wasRecentlyCompacted = false
+        lastCompactionStats = nil
 
         // Clear draft after successful send
         let sessionID = session.id.uuidString.lowercased()
@@ -373,6 +412,12 @@ struct ConversationView: View {
                 await MainActor.run {
                     isCompacting = false
 
+                    // Set green state and store stats
+                    wasRecentlyCompacted = true
+                    lastCompactionStats = result
+                    compactionTimestamps[session.id] = Date()
+                    recentCompactionsBySession[session.id] = result
+
                     // Show success message
                     let message = "Session compacted\nRemoved \(result.messagesRemoved) messages"
                     if let preTokens = result.preTokens {
@@ -412,6 +457,28 @@ struct ConversationView: View {
             return String(format: "%.1fK", k)
         }
         return "\(count)"
+    }
+}
+
+// MARK: - Relative Time Formatting
+
+extension Date {
+    func relativeTimeString() -> String {
+        let now = Date()
+        let interval = now.timeIntervalSince(self)
+        
+        if interval < 60 {
+            return "just now"
+        } else if interval < 3600 {
+            let minutes = Int(interval / 60)
+            return "\(minutes) minute\(minutes == 1 ? "" : "s") ago"
+        } else if interval < 86400 {
+            let hours = Int(interval / 3600)
+            return "\(hours) hour\(hours == 1 ? "" : "s") ago"
+        } else {
+            let days = Int(interval / 86400)
+            return "\(days) day\(days == 1 ? "" : "s") ago"
+        }
     }
 }
 
