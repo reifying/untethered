@@ -422,7 +422,7 @@ class VoiceCodeClient: ObservableObject {
         let preTokens: Int?
     }
 
-    func compactSession(claudeSessionId: String) async throws -> CompactionResult {
+    func compactSession(sessionId: String) async throws -> CompactionResult {
         return try await withCheckedThrowingContinuation { continuation in
             var resumed = false
             let resumeLock = NSLock()
@@ -441,14 +441,14 @@ class VoiceCodeClient: ObservableObject {
                            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                            json["type"] as? String == "compaction_complete" {
 
-                            let sessionId = json["session_id"] as? String ?? claudeSessionId
+                            let returnedSessionId = json["session_id"] as? String ?? sessionId
                             let oldCount = json["old_message_count"] as? Int ?? 0
                             let newCount = json["new_message_count"] as? Int ?? 0
                             let removed = json["messages_removed"] as? Int ?? 0
                             let preTokens = json["pre_tokens"] as? Int
 
                             let result = CompactionResult(
-                                sessionId: sessionId,
+                                sessionId: returnedSessionId,
                                 oldMessageCount: oldCount,
                                 newMessageCount: newCount,
                                 messagesRemoved: removed,
@@ -492,9 +492,9 @@ class VoiceCodeClient: ObservableObject {
             // Send compact request
             let message: [String: Any] = [
                 "type": "compact_session",
-                "session_id": claudeSessionId
+                "session_id": sessionId
             ]
-            print("⚡️ [VoiceCodeClient] Sending compact request for session: \(claudeSessionId)")
+            print("⚡️ [VoiceCodeClient] Sending compact request for session: \(sessionId)")
             sendMessage(message)
 
             // Set timeout (60 seconds)

@@ -128,11 +128,11 @@ iOS → Backend: {
 ```json
 {
   "type": "compact_session",
-  "session_id": "<claude-session-id>"
+  "session_id": "<ios-session-uuid>"
 }
 ```
 
-Triggers compaction of the specified Claude session. The session summarizes conversation history to reduce file size and token usage. This operation cannot be undone.
+Triggers compaction of the specified session. The `session_id` must be the iOS session UUID that was registered with the backend via a `connect` message. The session summarizes conversation history to reduce file size and token usage. This operation cannot be undone.
 
 #### Backend → Client
 

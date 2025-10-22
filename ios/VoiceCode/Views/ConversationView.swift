@@ -368,7 +368,7 @@ struct ConversationView: View {
 
         Task {
             do {
-                let result = try await client.compactSession(claudeSessionId: session.id.uuidString)
+                let result = try await client.compactSession(sessionId: session.id.uuidString)
 
                 await MainActor.run {
                     isCompacting = false
