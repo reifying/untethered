@@ -89,7 +89,7 @@
 
 (defn invoke-claude-async
   "Invoke Claude CLI asynchronously with timeout handling.
-  
+
   Parameters:
   - prompt: The prompt to send to Claude
   - callback-fn: Function to call with result (takes one arg: response map)
@@ -98,7 +98,7 @@
   - working-directory: Optional working directory for Claude
   - model: Model to use (default: sonnet)
   - timeout-ms: Timeout in milliseconds (default: 86400000 = 24 hours)
-  
+
   Returns immediately. Calls callback-fn when done or on timeout.
   Response map will have :success true/false and either :result or :error."
   [prompt callback-fn & {:keys [new-session-id resume-session-id working-directory model timeout-ms]
@@ -133,3 +133,114 @@
                         :error (str "Request timed out after " (/ timeout-ms 1000) " seconds")
                         :timeout true})))))
   nil)
+
+(defn count-jsonl-lines
+  "Count lines in a JSONL file.
+
+  Returns nil if file doesn't exist or can't be read."
+  [file-path]
+  (try
+    (when (.exists (io/file file-path))
+      (with-open [rdr (io/reader file-path)]
+        (count (line-seq rdr))))
+    (catch Exception e
+      (log/warn e "Failed to count lines in file" {:file file-path})
+      nil)))
+
+(defn get-session-file-path
+  "Get the file path for a Claude session ID.
+
+  Searches in ~/.claude/projects/ for the session file."
+  [session-id]
+  (let [home (System/getProperty "user.home")
+        claude-dir (str home "/.claude/projects")]
+    ;; Search for session file - it could be in any project directory
+    (when (.exists (io/file claude-dir))
+      (let [session-file-name (str session-id ".jsonl")
+            matching-files (filter #(.endsWith (.getName %) session-file-name)
+                                   (file-seq (io/file claude-dir)))]
+        (when (seq matching-files)
+          (.getAbsolutePath (first matching-files)))))))
+
+(defn compact-session
+  "Compact a Claude session using the CLI.
+
+  Parameters:
+  - session-id: The Claude session ID to compact
+
+  Returns a map with:
+  - :success true/false
+  - :old-message-count - number of messages before compaction
+  - :new-message-count - number of messages after compaction
+  - :messages-removed - difference
+  - :pre-tokens - token count before compaction (from compact metadata)
+  - :error - error message if failed"
+  [session-id]
+  (let [cli-path (get-claude-cli-path)]
+    (when-not cli-path
+      (throw (ex-info "Claude CLI not found" {})))
+
+    ;; Find session file
+    (let [session-file (get-session-file-path session-id)]
+      (if-not session-file
+        {:success false
+         :error (str "Session not found: " session-id)}
+
+        (do
+          ;; Count messages before compaction
+          (let [old-count (count-jsonl-lines session-file)
+                _ (log/info "Compacting session" {:session-id session-id
+                                                   :file session-file
+                                                   :old-message-count old-count})
+
+                ;; Invoke compact command
+                result (shell/sh cli-path
+                                 "-p"
+                                 "--output-format" "json"
+                                 "--resume" session-id
+                                 "/compact")
+
+                _ (log/debug "Compact CLI result" {:exit (:exit result)
+                                                    :stdout-length (count (:out result))
+                                                    :stderr (:err result)})]
+
+            (if (zero? (:exit result))
+              (try
+                ;; Parse JSON output
+                (let [response-array (json/parse-string (:out result) true)
+                      ;; Find compact_boundary in response
+                      compact-boundary (first (filter #(= "compact_boundary" (:subtype %)) response-array))
+                      pre-tokens (get-in compact-boundary [:compact_metadata :preTokens])
+
+                      ;; Count messages after compaction
+                      new-count (count-jsonl-lines session-file)
+                      messages-removed (- (or old-count 0) (or new-count 0))]
+
+                  (log/info "Session compacted successfully"
+                            {:session-id session-id
+                             :old-count old-count
+                             :new-count new-count
+                             :messages-removed messages-removed
+                             :pre-tokens pre-tokens})
+
+                  {:success true
+                   :old-message-count old-count
+                   :new-message-count new-count
+                   :messages-removed messages-removed
+                   :pre-tokens pre-tokens})
+
+                (catch Exception e
+                  (log/error e "Failed to parse compact response" {:session-id session-id})
+                  {:success false
+                   :error (str "Failed to parse compact response: " (ex-message e))}))
+
+              ;; CLI command failed
+              (do
+                (log/error "Compact CLI command failed"
+                           {:session-id session-id
+                            :exit (:exit result)
+                            :stderr (:err result)})
+                {:success false
+                 :error (or (not-empty (:err result))
+                            (str "Compact command exited with code " (:exit result)))}))))))))
+

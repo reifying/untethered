@@ -276,3 +276,113 @@
         (is (nil? (:new-session-id @claude-args)))
         (is (= "resume-456" (:resume-session-id @claude-args)))))))
 
+
+;; Compaction Tests
+
+(deftest test-handle-compact-session-missing-session-id
+  (testing "compact_session message without session_id returns error"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))]
+
+        (server/handle-message :test-ch "{\"type\":\"compact_session\"}")
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (= "session_id required in compact_session message" (:message response))))))))
+
+(deftest test-handle-compact-session-success
+  (testing "compact_session message triggers compaction and returns results"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (let [sent-messages (atom [])
+          compact-called (atom nil)]
+      (with-redefs [voice-code.storage/get-session
+                    (fn [ios-session-id]
+                      {:ios-session-id ios-session-id
+                       :claude-session-id "claude-123"
+                       :working-directory "/test"})
+                    org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    voice-code.claude/compact-session
+                    (fn [session-id]
+                      (reset! compact-called session-id)
+                      {:success true
+                       :old-message-count 150
+                       :new-message-count 23
+                       :messages-removed 127
+                       :pre-tokens 42300})]
+
+        (server/handle-message :test-ch "{\"type\":\"compact_session\",\"session_id\":\"ios-123\"}")
+
+        ;; Give async/go time to complete
+        (Thread/sleep 100)
+
+        (is (= "claude-123" @compact-called))
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "compaction_complete" (:type response)))
+          (is (= "ios-123" (:session_id response)))
+          (is (= 150 (:old_message_count response)))
+          (is (= 23 (:new_message_count response)))
+          (is (= 127 (:messages_removed response)))
+          (is (= 42300 (:pre_tokens response))))))))
+
+(deftest test-handle-compact-session-failure
+  (testing "compact_session returns error when compaction fails"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (let [sent-messages (atom [])]
+      (with-redefs [voice-code.storage/get-session
+                    (fn [ios-session-id]
+                      {:ios-session-id ios-session-id
+                       :claude-session-id "claude-123"
+                       :working-directory "/test"})
+                    org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    voice-code.claude/compact-session
+                    (fn [session-id]
+                      {:success false
+                       :error "Session not found: claude-123"})]
+
+        (server/handle-message :test-ch "{\"type\":\"compact_session\",\"session_id\":\"ios-123\"}")
+
+        ;; Give async/go time to complete
+        (Thread/sleep 100)
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "compaction_error" (:type response)))
+          (is (= "ios-123" (:session_id response)))
+          (is (= "Session not found: claude-123" (:error response))))))))
+
+(deftest test-handle-compact-session-exception
+  (testing "compact_session handles exceptions gracefully"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (let [sent-messages (atom [])]
+      (with-redefs [voice-code.storage/get-session
+                    (fn [ios-session-id]
+                      {:ios-session-id ios-session-id
+                       :claude-session-id "claude-123"
+                       :working-directory "/test"})
+                    org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    voice-code.claude/compact-session
+                    (fn [session-id]
+                      (throw (Exception. "Test exception")))]
+
+        (server/handle-message :test-ch "{\"type\":\"compact_session\",\"session_id\":\"ios-123\"}")
+
+        ;; Give async/go time to complete
+        (Thread/sleep 100)
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "compaction_error" (:type response)))
+          (is (= "ios-123" (:session_id response)))
+          (is (re-find #"Test exception" (:error response))))))))
+

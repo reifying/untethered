@@ -20,6 +20,9 @@ struct ConversationView: View {
     @State private var showingRenameSheet = false
     @State private var newSessionName = ""
     @State private var showingCopyConfirmation = false
+    @State private var showingCompactConfirmation = false
+    @State private var isCompacting = false
+    @State private var compactSuccessMessage: String?
 
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
@@ -153,6 +156,18 @@ struct ConversationView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
+                    // Compact button
+                    Button(action: {
+                        showingCompactConfirmation = true
+                    }) {
+                        if isCompacting {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "bolt.fill")
+                        }
+                    }
+                    .disabled(isCompacting)
+
                     Button(action: {
                         client.requestSessionRefresh(sessionId: session.id.uuidString)
                     }) {
@@ -174,7 +189,7 @@ struct ConversationView: View {
         }
         .overlay(alignment: .top) {
             if showingCopyConfirmation {
-                Text("Conversation copied to clipboard")
+                Text(compactSuccessMessage ?? "Conversation copied to clipboard")
                     .font(.caption)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
@@ -183,6 +198,18 @@ struct ConversationView: View {
                     .cornerRadius(8)
                     .padding(.top, 8)
                     .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .alert("Compact Session?", isPresented: $showingCompactConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Compact", role: .destructive) {
+                compactSession()
+            }
+        } message: {
+            VStack(spacing: 8) {
+                Text("This will summarize your conversation history to reduce file size and improve performance.")
+                Text("\(session.messageCount) messages")
+                Text("⚠️ This cannot be undone")
             }
         }
         .sheet(isPresented: $showingRenameSheet) {
@@ -334,6 +361,57 @@ struct ConversationView: View {
                 showingCopyConfirmation = false
             }
         }
+    }
+
+    private func compactSession() {
+        isCompacting = true
+
+        Task {
+            do {
+                let result = try await client.compactSession(claudeSessionId: session.id.uuidString)
+
+                await MainActor.run {
+                    isCompacting = false
+
+                    // Show success message
+                    let message = "Session compacted\nRemoved \(result.messagesRemoved) messages"
+                    if let preTokens = result.preTokens {
+                        compactSuccessMessage = "\(message), saved \(formatTokenCount(preTokens)) tokens"
+                    } else {
+                        compactSuccessMessage = message
+                    }
+
+                    withAnimation {
+                        showingCopyConfirmation = true
+                    }
+
+                    // Refresh session to update message count
+                    client.requestSessionRefresh(sessionId: session.id.uuidString)
+
+                    // Hide confirmation after 3 seconds
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        withAnimation {
+                            showingCopyConfirmation = false
+                            compactSuccessMessage = nil
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isCompacting = false
+                    print("❌ [ConversationView] Compaction failed: \(error.localizedDescription)")
+                    // Could show error alert here
+                }
+            }
+        }
+    }
+
+    private func formatTokenCount(_ count: Int) -> String {
+        if count >= 1000 {
+            let k = Double(count) / 1000.0
+            return String(format: "%.1fK", k)
+        }
+        return "\(count)"
     }
 }
 

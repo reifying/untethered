@@ -412,6 +412,108 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
+    // MARK: - Session Compaction
+
+    struct CompactionResult {
+        let sessionId: String
+        let oldMessageCount: Int
+        let newMessageCount: Int
+        let messagesRemoved: Int
+        let preTokens: Int?
+    }
+
+    func compactSession(claudeSessionId: String) async throws -> CompactionResult {
+        return try await withCheckedThrowingContinuation { continuation in
+            var resumed = false
+            let resumeLock = NSLock()
+
+            // Set up one-time message handler for compaction responses
+            let originalHandler = onMessageReceived
+            onMessageReceived = { [weak self] message, iosSessionId in
+                // Pass through to original handler
+                originalHandler?(message, iosSessionId)
+
+                // Check for compaction responses
+                if message.role == .system {
+                    if message.text.contains("\"type\":\"compaction_complete\"") {
+                        // Parse compaction_complete message
+                        if let data = message.text.data(using: .utf8),
+                           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           json["type"] as? String == "compaction_complete" {
+
+                            let sessionId = json["session_id"] as? String ?? claudeSessionId
+                            let oldCount = json["old_message_count"] as? Int ?? 0
+                            let newCount = json["new_message_count"] as? Int ?? 0
+                            let removed = json["messages_removed"] as? Int ?? 0
+                            let preTokens = json["pre_tokens"] as? Int
+
+                            let result = CompactionResult(
+                                sessionId: sessionId,
+                                oldMessageCount: oldCount,
+                                newMessageCount: newCount,
+                                messagesRemoved: removed,
+                                preTokens: preTokens
+                            )
+
+                            resumeLock.lock()
+                            if !resumed {
+                                resumed = true
+                                resumeLock.unlock()
+                                continuation.resume(returning: result)
+                                self?.onMessageReceived = originalHandler
+                            } else {
+                                resumeLock.unlock()
+                            }
+                        }
+                    } else if message.text.contains("\"type\":\"compaction_error\"") {
+                        // Parse compaction_error message
+                        if let data = message.text.data(using: .utf8),
+                           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           json["type"] as? String == "compaction_error" {
+
+                            let error = json["error"] as? String ?? "Unknown compaction error"
+
+                            resumeLock.lock()
+                            if !resumed {
+                                resumed = true
+                                resumeLock.unlock()
+                                continuation.resume(throwing: NSError(domain: "VoiceCodeClient",
+                                                                       code: -1,
+                                                                       userInfo: [NSLocalizedDescriptionKey: error]))
+                                self?.onMessageReceived = originalHandler
+                            } else {
+                                resumeLock.unlock()
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Send compact request
+            let message: [String: Any] = [
+                "type": "compact_session",
+                "session_id": claudeSessionId
+            ]
+            print("⚡️ [VoiceCodeClient] Sending compact request for session: \(claudeSessionId)")
+            sendMessage(message)
+
+            // Set timeout (60 seconds)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+                resumeLock.lock()
+                if !resumed {
+                    resumed = true
+                    resumeLock.unlock()
+                    continuation.resume(throwing: NSError(domain: "VoiceCodeClient",
+                                                           code: -2,
+                                                           userInfo: [NSLocalizedDescriptionKey: "Compaction timed out after 60 seconds"]))
+                    self?.onMessageReceived = originalHandler
+                } else {
+                    resumeLock.unlock()
+                }
+            }
+        }
+    }
+
     func sendMessage(_ message: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: message),
               let text = String(data: data, encoding: .utf8) else {

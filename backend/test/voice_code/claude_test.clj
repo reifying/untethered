@@ -197,3 +197,116 @@
           (is (not (:success result)))
           (is (:error result))
           (is (re-find #"Exception" (:error result))))))))
+
+;; Compaction Tests
+
+(deftest test-count-jsonl-lines
+  (testing "Count lines in JSONL file"
+    (let [temp-file (java.io.File/createTempFile "test-session" ".jsonl")]
+      (try
+        ;; Write test data
+        (spit temp-file "{\"line\":1}\n{\"line\":2}\n{\"line\":3}\n")
+        (is (= 3 (claude/count-jsonl-lines (.getAbsolutePath temp-file))))
+        (finally
+          (.delete temp-file)))))
+
+  (testing "Returns nil for non-existent file"
+    (is (nil? (claude/count-jsonl-lines "/nonexistent/file.jsonl")))))
+
+(deftest test-get-session-file-path
+  (testing "Find session file in projects directory"
+    (with-redefs [claude/get-session-file-path
+                  (fn [session-id]
+                    (when (= session-id "test-session-123")
+                      "/mock/path/test-session-123.jsonl"))]
+      (is (= "/mock/path/test-session-123.jsonl"
+             (claude/get-session-file-path "test-session-123")))
+      (is (nil? (claude/get-session-file-path "nonexistent"))))))
+
+(deftest test-compact-session-missing-cli
+  (testing "Error when CLI not found"
+    (with-redefs [claude/get-claude-cli-path (fn [] nil)]
+      (is (thrown? Exception (claude/compact-session "test-123"))))))
+
+(deftest test-compact-session-not-found
+  (testing "Error when session not found"
+    (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                  claude/get-session-file-path (fn [_] nil)]
+      (let [result (claude/compact-session "nonexistent-session")]
+        (is (not (:success result)))
+        (is (= "Session not found: nonexistent-session" (:error result)))))))
+
+(deftest test-compact-session-success
+  (testing "Successful session compaction"
+    (let [temp-file (java.io.File/createTempFile "test-session" ".jsonl")]
+      (try
+        ;; Write test data - 10 lines before compaction
+        (spit temp-file (apply str (repeat 10 "{\"message\":\"test\"}\n")))
+
+        (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                      claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
+                      clojure.java.shell/sh
+                      (fn [& args]
+                        ;; Simulate compaction - reduce file to 3 lines
+                        (spit temp-file (apply str (repeat 3 "{\"message\":\"test\"}\n")))
+                        {:exit 0
+                         :out (str "[{\"type\":\"system\",\"subtype\":\"compact_boundary\","
+                                   "\"compact_metadata\":{\"trigger\":\"manual\",\"preTokens\":17689}}]")})]
+
+          (let [result (claude/compact-session "test-123")]
+            (is (:success result))
+            (is (= 10 (:old-message-count result)))
+            (is (= 3 (:new-message-count result)))
+            (is (= 7 (:messages-removed result)))
+            (is (= 17689 (:pre-tokens result)))))
+
+        (finally
+          (.delete temp-file))))))
+
+(deftest test-compact-session-cli-failure
+  (testing "Handle CLI command failure"
+    (let [temp-file (java.io.File/createTempFile "test-session" ".jsonl")]
+      (try
+        (spit temp-file "{\"message\":\"test\"}\n")
+
+        (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                      claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
+                      clojure.java.shell/sh
+                      (fn [& args]
+                        {:exit 1
+                         :err "Session not found"})]
+
+          (let [result (claude/compact-session "test-123")]
+            (is (not (:success result)))
+            (is (= "Session not found" (:error result)))))
+
+        (finally
+          (.delete temp-file))))))
+
+(deftest test-compact-session-invokes-correct-command
+  (testing "Compact session invokes CLI with correct arguments"
+    (let [temp-file (java.io.File/createTempFile "test-session" ".jsonl")
+          called-args (atom nil)]
+      (try
+        (spit temp-file "{\"message\":\"test\"}\n")
+
+        (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                      claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
+                      clojure.java.shell/sh
+                      (fn [& args]
+                        (reset! called-args args)
+                        {:exit 0
+                         :out "[{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"preTokens\":0}}]"})]
+
+          (claude/compact-session "test-session-id")
+
+          (is (= "/mock/claude" (first @called-args)))
+          (is (some #(= "-p" %) @called-args))
+          (is (some #(= "--output-format" %) @called-args))
+          (is (some #(= "json" %) @called-args))
+          (is (some #(= "--resume" %) @called-args))
+          (is (some #(= "test-session-id" %) @called-args))
+          (is (some #(= "/compact" %) @called-args)))
+
+        (finally
+          (.delete temp-file))))))
