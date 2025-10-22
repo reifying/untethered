@@ -370,54 +370,43 @@
           (log/debug "Message acknowledged" {:message-id message-id}))
 
         "compact_session"
-        (let [ios-session-id (:session-id data)]
-          (if-not ios-session-id
+        (let [session-id (:session-id data)]
+          (if-not session-id
             (http/send! channel
                         (generate-json
                          {:type :error
                           :message "session_id required in compact_session message"}))
-            (if-let [session (storage/get-session ios-session-id)]
-              (if-let [claude-session-id (:claude-session-id session)]
-                (do
-                  (log/info "Compacting session" {:ios-session-id ios-session-id :claude-session-id claude-session-id})
-                  ;; Compact asynchronously
-                  (async/go
-                    (try
-                      (let [result (claude/compact-session claude-session-id)]
-                        (if (:success result)
-                          (do
-                            (log/info "Session compaction successful" {:ios-session-id ios-session-id :result result})
-                            (send-to-client! channel
-                                             {:type :compaction-complete
-                                              :session-id ios-session-id
-                                              :old-message-count (:old-message-count result)
-                                              :new-message-count (:new-message-count result)
-                                              :messages-removed (:messages-removed result)
-                                              :pre-tokens (:pre-tokens result)}))
-                          (do
-                            (log/error "Session compaction failed" {:ios-session-id ios-session-id :error (:error result)})
-                            (send-to-client! channel
-                                             {:type :compaction-error
-                                              :session-id ios-session-id
-                                              :error (:error result)}))))
-                      (catch Exception e
-                        (log/error e "Unexpected error during compaction" {:ios-session-id ios-session-id})
+            ;; Try to find session in storage first (old architecture)
+            ;; If not found, try the session ID directly (new replication-based architecture)
+            (let [session (storage/get-session session-id)
+                  claude-session-id (or (:claude-session-id session) session-id)]
+              (log/info "Compacting session" {:session-id session-id :claude-session-id claude-session-id :found-in-storage (boolean session)})
+              ;; Compact asynchronously
+              (async/go
+                (try
+                  (let [result (claude/compact-session claude-session-id)]
+                    (if (:success result)
+                      (do
+                        (log/info "Session compaction successful" {:session-id session-id :result result})
+                        (send-to-client! channel
+                                         {:type :compaction-complete
+                                          :session-id session-id
+                                          :old-message-count (:old-message-count result)
+                                          :new-message-count (:new-message-count result)
+                                          :messages-removed (:messages-removed result)
+                                          :pre-tokens (:pre-tokens result)}))
+                      (do
+                        (log/error "Session compaction failed" {:session-id session-id :error (:error result)})
                         (send-to-client! channel
                                          {:type :compaction-error
-                                          :session-id ios-session-id
-                                          :error (str "Compaction failed: " (ex-message e))})))))
-                (do
-                  (log/error "No Claude session ID for iOS session" {:ios-session-id ios-session-id})
-                  (http/send! channel
-                              (generate-json
-                               {:type :error
-                                :message (str "No Claude session ID found for session: " ios-session-id)}))))
-              (do
-                (log/error "Session not found" {:ios-session-id ios-session-id})
-                (http/send! channel
-                            (generate-json
-                             {:type :error
-                              :message (str "Session not found: " ios-session-id)}))))))
+                                          :session-id session-id
+                                          :error (:error result)}))))
+                  (catch Exception e
+                    (log/error e "Unexpected error during compaction" {:session-id session-id})
+                    (send-to-client! channel
+                                     {:type :compaction-error
+                                      :session-id session-id
+                                      :error (str "Compaction failed: " (ex-message e))})))))))
 
         ;; Unknown message type
         (do
