@@ -16,7 +16,7 @@ struct CDSessionRowContent: View {
                     .font(.headline)
 
                 HStack(spacing: 8) {
-                    Text("[\(session.id.uuidString.prefix(8))]")
+                    Text("[\(session.id.uuidString.lowercased().prefix(8))]")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .fontDesign(.monospaced)

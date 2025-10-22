@@ -235,8 +235,7 @@
 (defn build-index!
   "Scan all .jsonl files and build the session index.
   Returns map of session-id -> metadata.
-  Filters out files with non-UUID session IDs.
-  Normalizes session-id to lowercase for case-insensitive lookups."
+  Filters out files with non-UUID session IDs."
   []
   (log/info "Building session index from filesystem...")
   (let [start-time (System/currentTimeMillis)
@@ -248,9 +247,8 @@
                           (let [metadata (build-session-metadata file)
                                 session-id (:session-id metadata)]
                             ;; Only add to index if session-id is not nil (i.e., is a valid UUID)
-                            ;; Normalize to lowercase for case-insensitive lookups
                             (if session-id
-                              (assoc acc (str/lower-case session-id) metadata)
+                              (assoc acc session-id metadata)
                               acc))
                           (catch Exception e
                             (log/error e "Failed to process file" {:file (.getPath file)})
@@ -276,8 +274,7 @@
       (log/error e "Failed to save session index"))))
 
 (defn load-index
-  "Load session index from disk. Returns nil if file doesn't exist or is invalid.
-  Normalizes all session-id keys to lowercase for case-insensitive lookups."
+  "Load session index from disk. Returns nil if file doesn't exist or is invalid."
   []
   (try
     (let [index-path (get-index-file-path)
@@ -285,14 +282,9 @@
       (when (.exists index-file)
         (log/info "Loading session index from disk" {:path index-path})
         (let [data (edn/read-string (slurp index-file))
-              sessions (:sessions data)
-              ;; Normalize all keys to lowercase for case-insensitive lookups
-              normalized-sessions (reduce-kv (fn [acc k v]
-                                               (assoc acc (str/lower-case k) v))
-                                             {}
-                                             sessions)]
-          (log/info "Session index loaded" {:session-count (count normalized-sessions)})
-          normalized-sessions)))
+              sessions (:sessions data)]
+          (log/info "Session index loaded" {:session-count (count sessions)})
+          sessions)))
     (catch Exception e
       (log/error e "Failed to load session index, will rebuild")
       nil)))
@@ -339,11 +331,11 @@
                            :example-missing (first missing-from-disk)})
                 false)
 
-              ;; Check 2: Verify ALL filesystem files are in index (normalized to lowercase)
+              ;; Check 2: Verify ALL filesystem files are in index
               (let [missing-from-index (filter (fn [file]
                                                  (let [session-id (extract-session-id-from-path file)]
                                                    (and session-id
-                                                        (not (contains? index (str/lower-case session-id))))))
+                                                        (not (contains? index session-id)))))
                                                actual-files)
                     missing-count (count missing-from-index)]
                 (if (> missing-count 0)
@@ -380,11 +372,10 @@
   @session-index)
 
 (defn get-session-metadata
-  "Get metadata for a specific session ID.
-  Normalizes session-id to lowercase for case-insensitive lookup."
+  "Get metadata for a specific session ID."
   [session-id]
   (when session-id
-    (get @session-index (str/lower-case session-id))))
+    (get @session-index session-id)))
 
 (defn get-all-sessions
   "Get all session metadata as a vector.
@@ -494,31 +485,26 @@
          :on-session-deleted nil})) ;; Callback: (fn [session-id])
 
 (defn subscribe-to-session!
-  "Subscribe to a session for watching. Returns true if successful.
-  Normalizes session-id to lowercase for case-insensitive matching."
+  "Subscribe to a session for watching. Returns true if successful."
   [session-id]
   (when session-id
-    (let [normalized-id (str/lower-case session-id)]
-      (swap! watcher-state update :subscribed-sessions conj normalized-id)
-      (log/debug "Subscribed to session" {:session-id session-id :normalized-id normalized-id})
-      true)))
+    (swap! watcher-state update :subscribed-sessions conj session-id)
+    (log/debug "Subscribed to session" {:session-id session-id})
+    true))
 
 (defn unsubscribe-from-session!
-  "Unsubscribe from a session. Returns true if successful.
-  Normalizes session-id to lowercase for case-insensitive matching."
+  "Unsubscribe from a session. Returns true if successful."
   [session-id]
   (when session-id
-    (let [normalized-id (str/lower-case session-id)]
-      (swap! watcher-state update :subscribed-sessions disj normalized-id)
-      (log/debug "Unsubscribed from session" {:session-id session-id :normalized-id normalized-id})
-      true)))
+    (swap! watcher-state update :subscribed-sessions disj session-id)
+    (log/debug "Unsubscribed from session" {:session-id session-id})
+    true))
 
 (defn is-subscribed?
-  "Check if a session is currently subscribed.
-  Normalizes session-id to lowercase for case-insensitive matching."
+  "Check if a session is currently subscribed."
   [session-id]
   (when session-id
-    (contains? (:subscribed-sessions @watcher-state) (str/lower-case session-id))))
+    (contains? (:subscribed-sessions @watcher-state) session-id)))
 
 (defn debounce-event
   "Record an event for debouncing. Returns true if event should be processed now, false if should wait."
@@ -558,8 +544,7 @@
       [])))
 
 (defn handle-file-created
-  "Handle ENTRY_CREATE event for a .jsonl file.
-  Normalizes session-id to lowercase for case-insensitive lookups."
+  "Handle ENTRY_CREATE event for a .jsonl file."
   [file]
   (when (str/ends-with? (.getName file) ".jsonl")
     (try
@@ -568,11 +553,9 @@
         ;; Only process if we have a valid session-id
         (when session-id
           (let [file-path (.getAbsolutePath file)
-                file-size (.length file)
-                ;; Normalize session-id to lowercase for consistent lookups
-                normalized-id (str/lower-case session-id)]
-            ;; Add to index with lowercase key
-            (swap! session-index assoc normalized-id metadata)
+                file-size (.length file)]
+            ;; Add to index
+            (swap! session-index assoc session-id metadata)
             (save-index! @session-index)
 
             ;; Initialize file position to current size so we only parse NEW messages
@@ -585,7 +568,6 @@
                 (callback metadata)))
 
             (log/info "New session detected" {:session-id session-id
-                                              :normalized-id normalized-id
                                               :name (:name metadata)
                                               :message-count (:message-count metadata)
                                               :initial-file-position file-size}))))
@@ -593,12 +575,11 @@
         (log/error e "Failed to handle file creation" {:file (.getPath file)})))))
 
 (defn handle-file-modified
-  "Handle ENTRY_MODIFY event for a .jsonl file.
-  Normalizes session-id to lowercase for case-insensitive lookups."
+  "Handle ENTRY_MODIFY event for a .jsonl file."
   [file]
   (when (str/ends-with? (.getName file) ".jsonl")
     (let [session-id (extract-session-id-from-path file)]
-      ;; Only process if subscribed (is-subscribed? handles normalization)
+      ;; Only process if subscribed
       (when (is-subscribed? session-id)
         ;; Debounce
         (when (debounce-event session-id)
@@ -606,16 +587,14 @@
             ;; Parse new messages with retry
             (let [new-messages (parse-with-retry (.getAbsolutePath file) (:max-retries @watcher-state))
                   ;; Filter internal messages (sidechain, summary, system) before checking if non-empty
-                  filtered-messages (filter-internal-messages new-messages)
-                  ;; Normalize session-id to lowercase for consistent lookups
-                  normalized-id (str/lower-case session-id)]
+                  filtered-messages (filter-internal-messages new-messages)]
               (when (seq filtered-messages)
                 ;; Update index metadata with filtered count
-                (when-let [old-metadata (get @session-index normalized-id)]
+                (when-let [old-metadata (get @session-index session-id)]
                   (let [new-metadata (assoc old-metadata
                                             :last-modified (.lastModified file)
                                             :message-count (+ (:message-count old-metadata) (count filtered-messages)))]
-                    (swap! session-index assoc normalized-id new-metadata)
+                    (swap! session-index assoc session-id new-metadata)
                     (save-index! @session-index)))
 
                 ;; Notify callback with filtered messages

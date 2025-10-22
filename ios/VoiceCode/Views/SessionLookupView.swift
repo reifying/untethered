@@ -43,7 +43,7 @@ struct SessionLookupView: View {
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
-                Text(sessionId.uuidString)
+                Text(sessionId.uuidString.lowercased())
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding(.top, 8)
