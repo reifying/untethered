@@ -27,9 +27,9 @@ struct ConversationView: View {
     
     // Compaction feedback state
     @State private var wasRecentlyCompacted: Bool = false
-    @State private var lastCompactionStats: CompactionResult?
+    @State private var lastCompactionStats: VoiceCodeClient.CompactionResult?
     @State private var compactionTimestamps: [UUID: Date] = [:]
-    @State private var recentCompactionsBySession: [UUID: CompactionResult] = [:]
+    @State private var recentCompactionsBySession: [UUID: VoiceCodeClient.CompactionResult] = [:]
 
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
