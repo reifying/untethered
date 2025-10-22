@@ -27,6 +27,20 @@
 (use-fixtures :each
   (fn [f]
     (cleanup-test-dir)
+    ;; Reset watcher-state to ensure subscribed-sessions is always a set
+    (reset! repl/watcher-state
+            {:watch-service nil
+             :watch-thread nil
+             :running false
+             :watch-keys {}
+             :subscribed-sessions #{}
+             :event-queue (atom {})
+             :debounce-ms 200
+             :retry-delay-ms 100
+             :max-retries 3
+             :on-session-created nil
+             :on-session-updated nil
+             :on-session-deleted nil})
     (f)
     (cleanup-test-dir)))
 
@@ -48,13 +62,15 @@
     (is (nil? (repl/parse-jsonl-line nil)))))
 
 (deftest test-project-name->working-dir
-  (testing "Absolute path project name returns placeholder (transformation is lossy)"
-    (is (= "[from project: -Users-travisbrown-code-mono-hunt910-hunt-areas]"
+  (testing "Absolute path project name returns real path when directory exists"
+    ;; This directory exists, so should return the real path
+    (is (= "/Users/travisbrown/code/mono/hunt910-hunt-areas"
            (repl/project-name->working-dir "-Users-travisbrown-code-mono-hunt910-hunt-areas"))))
 
-  (testing "Another absolute path project name returns placeholder"
-    (is (= "[from project: -Users-travisbrown-code-voice-code]"
-           (repl/project-name->working-dir "-Users-travisbrown-code-voice-code"))))
+  (testing "Absolute path project name returns placeholder when directory doesn't exist"
+    ;; This directory doesn't exist, so should return placeholder
+    (is (= "[from project: -Users-nonexistent-directory-foo-bar-baz]"
+           (repl/project-name->working-dir "-Users-nonexistent-directory-foo-bar-baz"))))
 
   (testing "Convert simple project name (no leading hyphen)"
     (let [home (System/getProperty "user.home")
@@ -551,15 +567,16 @@
       ;; Subscribe to session FIRST
       (repl/subscribe-to-session! session-id)
 
-      ;; Set up initial metadata
+      ;; Set up initial metadata (with ios-notified true to test normal update flow)
       (swap! repl/session-index assoc session-id
              {:session-id session-id
               :message-count 0
-              :last-modified (.lastModified file)})
+              :last-modified (.lastModified file)
+              :ios-notified true})
 
       ;; Set up watcher state with callback AND preserve subscriptions
       (let [event-queue (atom {})
-            subscribed-sessions (:subscribed-sessions @repl/watcher-state)]
+            subscribed-sessions (or (:subscribed-sessions @repl/watcher-state) #{})]
         (reset! repl/watcher-state
                 {:running false
                  :watch-service nil
@@ -603,15 +620,16 @@
       ;; Subscribe to session FIRST
       (repl/subscribe-to-session! session-id)
 
-      ;; Set up initial metadata
+      ;; Set up initial metadata (with ios-notified true to test normal update flow)
       (swap! repl/session-index assoc session-id
              {:session-id session-id
               :message-count 0
-              :last-modified (.lastModified file)})
+              :last-modified (.lastModified file)
+              :ios-notified true})
 
       ;; Set up watcher state with callback AND preserve subscriptions
       (let [event-queue (atom {})
-            subscribed-sessions (:subscribed-sessions @repl/watcher-state)]
+            subscribed-sessions (or (:subscribed-sessions @repl/watcher-state) #{})]
         (reset! repl/watcher-state
                 {:running false
                  :watch-service nil
@@ -659,15 +677,16 @@
       ;; Subscribe to session FIRST
       (repl/subscribe-to-session! session-id)
 
-      ;; Set up initial metadata
+      ;; Set up initial metadata (with ios-notified true to test normal update flow)
       (swap! repl/session-index assoc session-id
              {:session-id session-id
               :message-count 0
-              :last-modified (.lastModified file)})
+              :last-modified (.lastModified file)
+              :ios-notified true})
 
       ;; Set up watcher state with callback AND preserve subscriptions
       (let [event-queue (atom {})
-            subscribed-sessions (:subscribed-sessions @repl/watcher-state)]
+            subscribed-sessions (or (:subscribed-sessions @repl/watcher-state) #{})]
         (reset! repl/watcher-state
                 {:running false
                  :watch-service nil
@@ -993,3 +1012,209 @@
             "After resubscribe, should only track NEW messages")
         (is (= "message 5" (:text (first messages-3)))
             "Should get message added AFTER resubscription, not before")))))
+
+;; ============================================================================
+;; Delayed Notification Tests (0→N Transition)
+;; ============================================================================
+
+(deftest test-session-created-with-zero-messages-no-notification
+  (testing "Session created with only sidechain messages does not trigger iOS notification"
+    (let [notifications (atom [])
+          session-id "550e8400-e29b-41d4-a716-446655440030"
+          messages ["{\"role\":\"user\",\"text\":\"warmup\",\"isSidechain\":true}"]
+          file (create-test-jsonl-file (str session-id ".jsonl") messages)]
+
+      ;; Reset state
+      (reset! repl/session-index {})
+      (reset! repl/watcher-state
+              {:on-session-created (fn [metadata] (swap! notifications conj metadata))
+               :max-retries 3
+               :debounce-ms 200})
+
+      ;; Call handle-file-created
+      (repl/handle-file-created file)
+
+      ;; Should add to index
+      (is (contains? @repl/session-index session-id))
+      (let [metadata (get @repl/session-index session-id)]
+        (is (= 0 (:message-count metadata)))
+        (is (false? (:ios-notified metadata)))
+        (is (nil? (:first-notification metadata))))
+
+      ;; Should NOT trigger notification callback
+      (is (empty? @notifications)
+          "Should not notify iOS when session has only sidechain messages"))))
+
+(deftest test-session-created-with-messages-immediate-notification
+  (testing "Session created with real messages triggers immediate notification"
+    (let [notifications (atom [])
+          session-id "550e8400-e29b-41d4-a716-446655440031"
+          messages ["{\"role\":\"user\",\"text\":\"hello\"}"]
+          file (create-test-jsonl-file (str session-id ".jsonl") messages)]
+
+      ;; Reset state
+      (reset! repl/session-index {})
+      (reset! repl/watcher-state
+              {:on-session-created (fn [metadata] (swap! notifications conj metadata))
+               :max-retries 3
+               :debounce-ms 200})
+
+      ;; Call handle-file-created
+      (repl/handle-file-created file)
+
+      ;; Should add to index with correct metadata
+      (is (contains? @repl/session-index session-id))
+      (let [metadata (get @repl/session-index session-id)]
+        (is (= 1 (:message-count metadata)))
+        (is (true? (:ios-notified metadata)))
+        (is (number? (:first-notification metadata))))
+
+      ;; Should trigger notification callback
+      (is (= 1 (count @notifications))
+          "Should notify iOS immediately when session has real messages")
+      (is (= session-id (:session-id (first @notifications)))))))
+
+(deftest test-zero-to-n-transition-triggers-delayed-notification
+  (testing "File modification with 0→N transition triggers delayed notification"
+    (let [session-created-notifications (atom [])
+          session-updated-notifications (atom [])
+          session-id "550e8400-e29b-41d4-a716-446655440032"
+          ;; Start with only sidechain
+          initial-messages ["{\"role\":\"user\",\"text\":\"warmup\",\"isSidechain\":true}"]
+          file (create-test-jsonl-file (str session-id ".jsonl") initial-messages)
+          file-path (.getAbsolutePath file)]
+
+      ;; Reset state
+      (reset! repl/session-index {})
+      (repl/reset-file-position! file-path)
+      (reset! repl/watcher-state
+              {:on-session-created (fn [metadata]
+                                     (swap! session-created-notifications conj metadata))
+               :on-session-updated (fn [sid msgs]
+                                     (swap! session-updated-notifications conj {:session-id sid :messages msgs}))
+               :subscribed-sessions #{}
+               :event-queue (atom {})
+               :max-retries 3
+               :debounce-ms 200})
+
+      ;; Create session (should add to index but not notify)
+      (repl/handle-file-created file)
+      (is (empty? @session-created-notifications)
+          "Should not notify on creation with 0 messages")
+
+      (let [metadata (get @repl/session-index session-id)]
+        (is (= 0 (:message-count metadata)))
+        (is (false? (:ios-notified metadata))))
+
+      ;; Add real message
+      (spit file "\n{\"role\":\"user\",\"text\":\"hello world\"}" :append true)
+
+      ;; Trigger modification handler
+      (repl/handle-file-modified file)
+
+      ;; Should detect 0→N transition and send delayed notification
+      (is (= 1 (count @session-created-notifications))
+          "Should trigger delayed session_created on 0→N transition")
+      (is (= session-id (:session-id (first @session-created-notifications))))
+
+      (let [metadata (get @repl/session-index session-id)]
+        (is (= 1 (:message-count metadata)))
+        (is (true? (:ios-notified metadata)))
+        (is (number? (:first-notification metadata))))
+
+      ;; Should NOT send session_updated (not subscribed)
+      (is (empty? @session-updated-notifications)
+          "Should not send session_updated for unsubscribed session"))))
+
+(deftest test-already-notified-session-normal-flow
+  (testing "File modification for already-notified session uses normal subscription flow"
+    (let [session-created-notifications (atom [])
+          session-updated-notifications (atom [])
+          session-id "550e8400-e29b-41d4-a716-446655440033"
+          ;; Start with real message
+          initial-messages ["{\"role\":\"user\",\"text\":\"hello\"}"]
+          file (create-test-jsonl-file (str session-id ".jsonl") initial-messages)
+          file-path (.getAbsolutePath file)]
+
+      ;; Reset state
+      (reset! repl/session-index {})
+      (repl/reset-file-position! file-path)
+
+      ;; Subscribe to session FIRST
+      (repl/subscribe-to-session! session-id)
+
+      (reset! repl/watcher-state
+              {:on-session-created (fn [metadata]
+                                     (swap! session-created-notifications conj metadata))
+               :on-session-updated (fn [sid msgs]
+                                     (swap! session-updated-notifications conj {:session-id sid :messages msgs}))
+               :subscribed-sessions (:subscribed-sessions @repl/watcher-state)
+               :event-queue (atom {})
+               :max-retries 3
+               :debounce-ms 200})
+
+      ;; Create session (should notify immediately since has messages)
+      (repl/handle-file-created file)
+      (is (= 1 (count @session-created-notifications))
+          "Should notify immediately on creation with messages")
+
+      (let [metadata (get @repl/session-index session-id)]
+        (is (= 1 (:message-count metadata)))
+        (is (true? (:ios-notified metadata))))
+
+      ;; Add another message
+      (spit file "\n{\"role\":\"assistant\",\"text\":\"hi there\"}" :append true)
+
+      ;; Trigger modification handler
+      (repl/handle-file-modified file)
+
+      ;; Should NOT send another session_created
+      (is (= 1 (count @session-created-notifications))
+          "Should not send duplicate session_created")
+
+      ;; Should send session_updated (subscribed)
+      (is (= 1 (count @session-updated-notifications))
+          "Should send session_updated for subscribed already-notified session")
+      (is (= session-id (:session-id (first @session-updated-notifications))))
+
+      (let [metadata (get @repl/session-index session-id)]
+        (is (= 2 (:message-count metadata)))
+        (is (true? (:ios-notified metadata))))))
+
+  (testing "Already-notified but unsubscribed session doesn't send updates"
+    (let [session-created-notifications (atom [])
+          session-updated-notifications (atom [])
+          session-id "550e8400-e29b-41d4-a716-446655440034"
+          initial-messages ["{\"role\":\"user\",\"text\":\"hello\"}"]
+          file (create-test-jsonl-file (str session-id ".jsonl") initial-messages)
+          file-path (.getAbsolutePath file)]
+
+      ;; Reset state
+      (reset! repl/session-index {})
+      (repl/reset-file-position! file-path)
+      (reset! repl/watcher-state
+              {:on-session-created (fn [metadata]
+                                     (swap! session-created-notifications conj metadata))
+               :on-session-updated (fn [sid msgs]
+                                     (swap! session-updated-notifications conj {:session-id sid :messages msgs}))
+               :subscribed-sessions #{}
+               :event-queue (atom {})
+               :max-retries 3
+               :debounce-ms 200})
+
+      ;; Create session (notified but not subscribed)
+      (repl/handle-file-created file)
+      (is (= 1 (count @session-created-notifications)))
+
+      ;; Add message
+      (spit file "\n{\"role\":\"assistant\",\"text\":\"response\"}" :append true)
+      (repl/handle-file-modified file)
+
+      ;; Should NOT send session_updated (not subscribed)
+      (is (empty? @session-updated-notifications)
+          "Should not send session_updated for unsubscribed session")
+
+      ;; But should still update index
+      (let [metadata (get @repl/session-index session-id)]
+        (is (= 2 (:message-count metadata)))
+        (is (true? (:ios-notified metadata)))))))

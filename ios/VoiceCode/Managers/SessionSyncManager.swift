@@ -87,12 +87,10 @@ class SessionSyncManager {
             return
         }
 
-        // Filter out sessions with 0 messages (defense in depth)
+        // Backend guarantees all notified sessions have messages via delayed notification pattern
+        // Just log for observability if we receive a 0-message session
         if messageCount == 0 {
-            logger.warning("⚠️ Filtering out session_created with 0 messages: \(sessionId)")
-            logger.warning("  This indicates a potential race condition in backend")
-            logger.warning("  Session name was: \(name)")
-            return
+            logger.info("📝 Note: Received session with 0 messages (may update soon): \(sessionId)")
         }
 
         logger.info("✅ Accepting session_created for: \(sessionId)")

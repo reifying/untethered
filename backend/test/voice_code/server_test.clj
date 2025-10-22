@@ -226,8 +226,8 @@
 (deftest test-new-protocol-connect
   (testing "Connect message returns session list"
     (with-redefs [voice-code.replication/get-all-sessions
-                  (fn [] [{:session-id "s1" :name "Session 1" :last-modified 1000 :message-count 5}
-                          {:session-id "s2" :name "Session 2" :last-modified 2000 :message-count 10}])]
+                  (fn [] [{:session-id "s1" :name "Session 1" :last-modified 1000 :message-count 5 :ios-notified true}
+                          {:session-id "s2" :name "Session 2" :last-modified 2000 :message-count 10 :ios-notified true}])]
       (reset! server/connected-clients {})
       (let [sent-message (atom nil)]
         (with-redefs [org.httpkit.server/send! (fn [channel msg]
@@ -275,7 +275,6 @@
 
         (is (nil? (:new-session-id @claude-args)))
         (is (= "resume-456" (:resume-session-id @claude-args)))))))
-
 
 ;; Compaction Tests
 
@@ -385,4 +384,93 @@
           (is (= "compaction_error" (:type response)))
           (is (= "ios-123" (:session_id response)))
           (is (re-find #"Test exception" (:error response))))))))
+
+(deftest test-prompt-uses-stored-working-dir-for-resume
+  (testing "Prompt with resume_session_id uses stored working directory from session metadata"
+    (reset! server/connected-clients {:test-ch "ios-123"})
+    (let [working-dir-used (atom nil)]
+      (with-redefs [voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      (when (= session-id "resume-456")
+                        {:session-id "resume-456"
+                         :working-directory "/Users/test/real/path"
+                         :message-count 10}))
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & {:keys [working-directory]}]
+                      (reset! working-dir-used working-directory)
+                      (callback {:success true :session-id "resume-456"}))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "continue work"
+                                 :resume_session_id "resume-456"
+                                 :working_directory "[from project: -Users-test-placeholder]"}))
+
+        (is (= "/Users/test/real/path" @working-dir-used)
+            "Should use stored working directory from session metadata, not iOS placeholder")))))
+
+(deftest test-prompt-uses-ios-working-dir-for-new-session
+  (testing "Prompt with new_session_id uses iOS-provided working directory"
+    (reset! server/connected-clients {:test-ch "ios-123"})
+    (let [working-dir-used (atom nil)]
+      (with-redefs [voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & {:keys [working-directory]}]
+                      (reset! working-dir-used working-directory)
+                      (callback {:success true :session-id "new-789"}))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "start new work"
+                                 :new_session_id "new-789"
+                                 :working_directory "/Users/test/new/project"}))
+
+        (is (= "/Users/test/new/project" @working-dir-used)
+            "Should use iOS-provided working directory for new sessions")))))
+
+(deftest test-prompt-converts-placeholder-for-new-session
+  (testing "Prompt with new_session_id converts placeholder working directory"
+    (reset! server/connected-clients {:test-ch "ios-123"})
+    (let [working-dir-used (atom nil)]
+      (with-redefs [voice-code.replication/project-name->working-dir
+                    (fn [project-name]
+                      (if (= project-name "-Users-test-real-path")
+                        "/Users/test/real/path"
+                        (str "[from project: " project-name "]")))
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & {:keys [working-directory]}]
+                      (reset! working-dir-used working-directory)
+                      (callback {:success true :session-id "new-789"}))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "start new work"
+                                 :new_session_id "new-789"
+                                 :working_directory "[from project: -Users-test-real-path]"}))
+
+        (is (= "/Users/test/real/path" @working-dir-used)
+            "Should convert placeholder to real path for new sessions")))))
+
+(deftest test-prompt-handles-missing-session-metadata
+  (testing "Prompt with resume_session_id falls back to iOS dir if session metadata not found"
+    (reset! server/connected-clients {:test-ch "ios-123"})
+    (let [working-dir-used (atom nil)]
+      (with-redefs [voice-code.replication/get-session-metadata
+                    (fn [session-id] nil) ; Session not found
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & {:keys [working-directory]}]
+                      (reset! working-dir-used working-directory)
+                      (callback {:success true :session-id "resume-999"}))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "continue"
+                                 :resume_session_id "resume-999"
+                                 :working_directory "/Users/test/fallback"}))
+
+        (is (= "/Users/test/fallback" @working-dir-used)
+            "Should fall back to iOS working directory if session metadata not found")))))
 
