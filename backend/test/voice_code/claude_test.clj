@@ -1,7 +1,8 @@
 (ns voice-code.claude-test
   (:require [clojure.test :refer :all]
             [clojure.core.async :as async]
-            [voice-code.claude :as claude]))
+            [voice-code.claude :as claude]
+            [voice-code.replication]))
 
 (deftest test-get-claude-cli-path
   (testing "Claude CLI path detection"
@@ -307,6 +308,71 @@
           (is (some #(= "--resume" %) @called-args))
           (is (some #(= "test-session-id" %) @called-args))
           (is (some #(= "/compact" %) @called-args)))
+
+        (finally
+          (.delete temp-file))))))
+
+(deftest test-compact-session-with-working-directory
+  (testing "Compact session passes working directory to shell/sh via :dir option"
+    (let [temp-file (java.io.File/createTempFile "test-session" ".jsonl")
+          called-args (atom nil)]
+      (try
+        (spit temp-file "{\"message\":\"test\"}\n")
+
+        (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                      claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
+                      ;; Mock replication/get-session-metadata to return metadata with working directory
+                      voice-code.replication/get-session-metadata
+                      (fn [_] {:working-directory "/Users/test/project"})
+                      clojure.java.shell/sh
+                      (fn [& args]
+                        (reset! called-args args)
+                        {:exit 0
+                         :out "[{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"preTokens\":0}}]"})]
+
+          (claude/compact-session "test-session-id")
+
+          ;; Verify :dir option is passed in shell/sh args
+          (is (= "/mock/claude" (first @called-args)))
+          (is (some #(= "-p" %) @called-args))
+          (is (some #(= "--resume" %) @called-args))
+          (is (some #(= "test-session-id" %) @called-args))
+          (is (some #(= "/compact" %) @called-args))
+          ;; Verify :dir option with working directory
+          (is (some #(= :dir %) @called-args))
+          (is (some #(= "/Users/test/project" %) @called-args)))
+
+        (finally
+          (.delete temp-file))))))
+
+(deftest test-compact-session-without-working-directory
+  (testing "Compact session works when session metadata has no working directory"
+    (let [temp-file (java.io.File/createTempFile "test-session" ".jsonl")
+          called-args (atom nil)]
+      (try
+        (spit temp-file "{\"message\":\"test\"}\n")
+
+        (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                      claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
+                      ;; Mock replication/get-session-metadata to return metadata without working directory
+                      voice-code.replication/get-session-metadata
+                      (fn [_] {})
+                      clojure.java.shell/sh
+                      (fn [& args]
+                        (reset! called-args args)
+                        {:exit 0
+                         :out "[{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"preTokens\":0}}]"})]
+
+          (claude/compact-session "test-session-id")
+
+          ;; Verify :dir option is NOT included when no working directory
+          (is (= "/mock/claude" (first @called-args)))
+          (is (some #(= "-p" %) @called-args))
+          (is (some #(= "--resume" %) @called-args))
+          (is (some #(= "test-session-id" %) @called-args))
+          (is (some #(= "/compact" %) @called-args))
+          ;; Verify :dir is NOT in args
+          (is (not (some #(= :dir %) @called-args))))
 
         (finally
           (.delete temp-file))))))
