@@ -141,40 +141,77 @@
 (defn on-session-created
   "Called when a new session file is detected"
   [session-metadata]
-  (log/info "Broadcasting new session" {:session-id (:session-id session-metadata)})
-  ;; Broadcast to clients who haven't deleted this session
-  (doseq [[channel client-info] @connected-clients]
-    (when-not (is-session-deleted-for-client? channel (:session-id session-metadata))
+  (let [session-id (:session-id session-metadata)
+        client-count (count @connected-clients)
+        eligible-clients (filter (fn [[channel _]]
+                                   (not (is-session-deleted-for-client? channel session-id)))
+                                 @connected-clients)
+        eligible-count (count eligible-clients)]
+
+    (log/info "Session created callback invoked"
+              {:session-id session-id
+               :name (:name session-metadata)
+               :message-count (:message-count session-metadata)
+               :total-clients client-count
+               :eligible-clients eligible-count
+               :has-preview (boolean (seq (:preview session-metadata)))})
+
+    ;; Broadcast to clients who haven't deleted this session
+    (doseq [[channel client-info] eligible-clients]
+      (log/debug "Sending session-created to client"
+                 {:session-id session-id
+                  :client-session-id (:session-id client-info)
+                  :channel-id (str channel)})
       (send-to-client! channel
                        {:type :session-created
-                        :session-id (:session-id session-metadata)
+                        :session-id session-id
                         :name (:name session-metadata)
                         :working-directory (:working-directory session-metadata)
                         :last-modified (:last-modified session-metadata)
                         :message-count (:message-count session-metadata)
-                        :preview (:preview session-metadata)})))
+                        :preview (:preview session-metadata)}))
 
-  ;; Also send messages if client is subscribed (handles new session race condition)
-  (when (repl/is-subscribed? (:session-id session-metadata))
-    (let [file-path (:file session-metadata)
-          all-messages (repl/parse-jsonl-file file-path)
-          messages (repl/filter-internal-messages all-messages)]
-      (when (seq messages)
-        (log/info "Sending initial messages for new session" {:session-id (:session-id session-metadata) :count (count messages)})
-        (doseq [[channel client-info] @connected-clients]
-          (when-not (is-session-deleted-for-client? channel (:session-id session-metadata))
-            (send-to-client! channel
-                             {:type :session-updated
-                              :session-id (:session-id session-metadata)
-                              :messages messages})))))))
+    ;; Also send messages if client is subscribed (handles new session race condition)
+    (when (repl/is-subscribed? session-id)
+      (let [file-path (:file session-metadata)
+            all-messages (repl/parse-jsonl-file file-path)
+            messages (repl/filter-internal-messages all-messages)]
+        (if (seq messages)
+          (do
+            (log/info "Sending initial messages for new subscribed session"
+                      {:session-id session-id
+                       :message-count (count messages)
+                       :client-count eligible-count})
+            (doseq [[channel client-info] eligible-clients]
+              (send-to-client! channel
+                               {:type :session-updated
+                                :session-id session-id
+                                :messages messages})))
+          (log/debug "No messages to send for new subscribed session"
+                     {:session-id session-id}))))))
 
 (defn on-session-updated
   "Called when a subscribed session has new messages"
   [session-id new-messages]
-  (log/debug "Broadcasting session update" {:session-id session-id :message-count (count new-messages)})
-  ;; Send to all clients subscribed to this session (and haven't deleted it)
-  (doseq [[channel client-info] @connected-clients]
-    (when-not (is-session-deleted-for-client? channel session-id)
+  (let [client-count (count @connected-clients)
+        eligible-clients (filter (fn [[channel _]]
+                                   (not (is-session-deleted-for-client? channel session-id)))
+                                 @connected-clients)
+        eligible-count (count eligible-clients)]
+
+    (log/info "Session updated callback invoked"
+              {:session-id session-id
+               :new-message-count (count new-messages)
+               :total-clients client-count
+               :eligible-clients eligible-count})
+
+    ;; Send to all clients subscribed to this session (and haven't deleted it)
+    (doseq [[channel client-info] eligible-clients]
+      (log/debug "Sending session-updated to client"
+                 {:session-id session-id
+                  :client-session-id (:session-id client-info)
+                  :new-messages (count new-messages)
+                  :channel-id (str channel)})
       (send-to-client! channel
                        {:type :session-updated
                         :session-id session-id

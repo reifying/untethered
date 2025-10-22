@@ -159,11 +159,30 @@
   - System messages (local command notifications, type='system')
   Returns only user/assistant messages."
   [messages]
-  (filter (fn [msg]
-            (and (not (:isSidechain msg))
-                 (not= (:type msg) "summary")
-                 (not= (:type msg) "system")))
-          messages))
+  (let [total-count (count messages)
+        filtered (filter (fn [msg]
+                           (and (not (:isSidechain msg))
+                                (not= (:type msg) "summary")
+                                (not= (:type msg) "system")))
+                         messages)
+        filtered-count (count filtered)
+        removed-count (- total-count filtered-count)]
+    (when (pos? removed-count)
+      (log/debug "Filtered internal messages"
+                 {:total total-count
+                  :kept filtered-count
+                  :removed removed-count
+                  :removed-types (frequencies (map #(cond
+                                                      (:isSidechain %) :sidechain
+                                                      (= (:type %) "summary") :summary
+                                                      (= (:type %) "system") :system
+                                                      :else :unknown)
+                                                   (remove (fn [msg]
+                                                             (and (not (:isSidechain msg))
+                                                                  (not= (:type msg) "summary")
+                                                                  (not= (:type msg) "system")))
+                                                           messages)))}))
+    filtered))
 
 (defn extract-metadata-from-file
   "Extract metadata from a .jsonl file without loading all messages.
@@ -553,7 +572,19 @@
         ;; Only process if we have a valid session-id
         (when session-id
           (let [file-path (.getAbsolutePath file)
-                file-size (.length file)]
+                file-size (.length file)
+                message-count (:message-count metadata)]
+
+            ;; Log file creation details
+            (log/info "File created event detected"
+                      {:session-id session-id
+                       :file-path file-path
+                       :file-size file-size
+                       :message-count message-count
+                       :has-preview (boolean (seq (:preview metadata)))
+                       :has-first-message (boolean (:first-message metadata))
+                       :has-last-message (boolean (:last-message metadata))})
+
             ;; Add to index
             (swap! session-index assoc session-id metadata)
             (save-index! @session-index)
@@ -563,14 +594,27 @@
 
             ;; Notify callback only if session has non-internal messages
             ;; This prevents zero-message sessions from being broadcast to clients
-            (when (pos? (:message-count metadata))
-              (when-let [callback (:on-session-created @watcher-state)]
-                (callback metadata)))
+            (if (pos? message-count)
+              (do
+                (log/info "Notifying iOS of new session (message-count > 0)"
+                          {:session-id session-id
+                           :name (:name metadata)
+                           :message-count message-count})
+                (when-let [callback (:on-session-created @watcher-state)]
+                  (callback metadata)))
+              (log/warn "Skipping iOS notification for zero-message session"
+                        {:session-id session-id
+                         :name (:name metadata)
+                         :message-count message-count
+                         :file-size file-size
+                         :reason "Session has no non-sidechain messages yet - potential race condition"}))
 
-            (log/info "New session detected" {:session-id session-id
-                                              :name (:name metadata)
-                                              :message-count (:message-count metadata)
-                                              :initial-file-position file-size}))))
+            (log/debug "Session added to index"
+                       {:session-id session-id
+                        :name (:name metadata)
+                        :message-count message-count
+                        :initial-file-position file-size
+                        :will-notify-ios (pos? message-count)}))))
       (catch Exception e
         (log/error e "Failed to handle file creation" {:file (.getPath file)})))))
 
@@ -578,32 +622,74 @@
   "Handle ENTRY_MODIFY event for a .jsonl file."
   [file]
   (when (str/ends-with? (.getName file) ".jsonl")
-    (let [session-id (extract-session-id-from-path file)]
+    (let [session-id (extract-session-id-from-path file)
+          subscribed? (is-subscribed? session-id)
+          old-metadata (get @session-index session-id)]
+
+      ;; Log all modification events with subscription status
+      (log/debug "File modified event detected"
+                 {:session-id session-id
+                  :file-path (.getAbsolutePath file)
+                  :is-subscribed subscribed?
+                  :in-index (boolean old-metadata)
+                  :old-message-count (:message-count old-metadata)})
+
       ;; Only process if subscribed
-      (when (is-subscribed? session-id)
+      (if-not subscribed?
+        (log/warn "Skipping file modification - session not subscribed"
+                  {:session-id session-id
+                   :file-path (.getAbsolutePath file)
+                   :in-index (boolean old-metadata)
+                   :old-message-count (:message-count old-metadata)
+                   :reason "iOS never notified or subscription expired - potential race condition"})
+
         ;; Debounce
         (when (debounce-event session-id)
           (try
             ;; Parse new messages with retry
             (let [new-messages (parse-with-retry (.getAbsolutePath file) (:max-retries @watcher-state))
+                  total-new-messages (count new-messages)
                   ;; Filter internal messages (sidechain, summary, system) before checking if non-empty
-                  filtered-messages (filter-internal-messages new-messages)]
-              (when (seq filtered-messages)
-                ;; Update index metadata with filtered count
-                (when-let [old-metadata (get @session-index session-id)]
-                  (let [new-metadata (assoc old-metadata
-                                            :last-modified (.lastModified file)
-                                            :message-count (+ (:message-count old-metadata) (count filtered-messages)))]
-                    (swap! session-index assoc session-id new-metadata)
-                    (save-index! @session-index)))
+                  filtered-messages (filter-internal-messages new-messages)
+                  filtered-count (count filtered-messages)]
 
-                ;; Notify callback with filtered messages
-                (when-let [callback (:on-session-updated @watcher-state)]
-                  (callback session-id filtered-messages))
+              (log/debug "Parsed new messages from file"
+                         {:session-id session-id
+                          :total-new-messages total-new-messages
+                          :filtered-messages filtered-count
+                          :removed-messages (- total-new-messages filtered-count)})
 
-                (log/debug "Session updated" {:session-id session-id :new-messages (count filtered-messages)})))
+              (if (seq filtered-messages)
+                (do
+                  ;; Update index metadata with filtered count
+                  (when old-metadata
+                    (let [old-count (:message-count old-metadata)
+                          new-count (+ old-count filtered-count)
+                          new-metadata (assoc old-metadata
+                                              :last-modified (.lastModified file)
+                                              :message-count new-count)]
+                      (log/info "Updating session index"
+                                {:session-id session-id
+                                 :old-message-count old-count
+                                 :new-message-count new-count
+                                 :added-messages filtered-count})
+                      (swap! session-index assoc session-id new-metadata)
+                      (save-index! @session-index)))
+
+                  ;; Notify callback with filtered messages
+                  (when-let [callback (:on-session-updated @watcher-state)]
+                    (log/debug "Notifying iOS of session update"
+                               {:session-id session-id
+                                :new-messages filtered-count})
+                    (callback session-id filtered-messages)))
+
+                (log/debug "No user/assistant messages to process after filtering"
+                           {:session-id session-id
+                            :total-new-messages total-new-messages})))
             (catch Exception e
-              (log/error e "Failed to handle file modification" {:file (.getPath file) :session-id session-id}))))))))
+              (log/error e "Failed to handle file modification"
+                         {:file (.getPath file)
+                          :session-id session-id}))))))))
 
 (defn handle-file-deleted
   "Handle ENTRY_DELETE event for a .jsonl file"

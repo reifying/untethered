@@ -70,19 +70,32 @@ class SessionSyncManager {
     /// Handle session_created message from backend
     /// - Parameter sessionData: Session metadata dictionary
     func handleSessionCreated(_ sessionData: [String: Any]) {
-        guard let sessionId = sessionData["session_id"] as? String else {
-            logger.warning("session_created missing session_id")
+        let sessionId = sessionData["session_id"] as? String ?? "unknown"
+        let name = sessionData["name"] as? String ?? "unknown"
+        let workingDir = sessionData["working_directory"] as? String ?? "unknown"
+        let messageCount = sessionData["message_count"] as? Int ?? 0
+        let hasPreview = (sessionData["preview"] as? String)?.isEmpty == false
+
+        logger.info("📨 session_created received: \(sessionId)")
+        logger.info("  Name: \(name)")
+        logger.info("  Working dir: \(workingDir)")
+        logger.info("  Message count: \(messageCount)")
+        logger.info("  Has preview: \(hasPreview)")
+
+        guard sessionData["session_id"] as? String != nil else {
+            logger.warning("⚠️ session_created missing session_id, dropping")
             return
         }
 
         // Filter out sessions with 0 messages (defense in depth)
-        let messageCount = sessionData["message_count"] as? Int ?? 0
-        guard messageCount > 0 else {
-            logger.debug("Ignoring session_created with 0 messages: \(sessionId)")
+        if messageCount == 0 {
+            logger.warning("⚠️ Filtering out session_created with 0 messages: \(sessionId)")
+            logger.warning("  This indicates a potential race condition in backend")
+            logger.warning("  Session name was: \(name)")
             return
         }
 
-        logger.info("Received session_created for: \(sessionId)")
+        logger.info("✅ Accepting session_created for: \(sessionId)")
 
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
