@@ -124,6 +124,16 @@ iOS → Backend: {
 }
 ```
 
+**Compact Session Request**
+```json
+{
+  "type": "compact_session",
+  "session_id": "<claude-session-id>"
+}
+```
+
+Triggers compaction of the specified Claude session. The session summarizes conversation history to reduce file size and token usage. This operation cannot be undone.
+
 #### Backend → Client
 
 **Acknowledgment (Prompt Received)**
@@ -190,6 +200,51 @@ iOS → Backend: {
   }
 }
 ```
+
+**Compaction Complete**
+```json
+{
+  "type": "compaction_complete",
+  "session_id": "<claude-session-id>",
+  "old_message_count": 150,
+  "new_message_count": 20,
+  "messages_removed": 130,
+  "pre_tokens": 42300
+}
+```
+
+Sent when session compaction succeeds. Includes statistics about messages removed and token count before compaction.
+
+**Compaction Error**
+```json
+{
+  "type": "compaction_error",
+  "session_id": "<claude-session-id>",
+  "error": "<error-message>"
+}
+```
+
+Sent when session compaction fails. Common errors:
+- "Session not found: <session-id>"
+- "session_id required in compact_session message"
+- Claude CLI errors
+
+### Session Compaction
+
+**Overview:**
+Session compaction reduces conversation history by summarizing older messages. This improves performance and reduces storage/token costs while preserving conversation context.
+
+**Behavior:**
+- Session ID remains the same after compaction
+- Adds `compact_boundary` marker to JSONL file with metadata
+- Conversation history is summarized, not deleted
+- Operation cannot be undone
+- Recommended when sessions exceed ~50K tokens or 100+ messages
+
+**When to use:**
+- Long-running sessions with extensive history
+- Performance degradation due to large session files
+- Approaching context window limits
 
 ### Session Persistence
 
