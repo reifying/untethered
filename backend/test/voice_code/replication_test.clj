@@ -99,9 +99,9 @@
     (let [file (io/file "/path/to/550e8400-e29b-41d4-a716-446655440000.jsonl")]
       (is (= "550e8400-e29b-41d4-a716-446655440000" (repl/extract-session-id-from-path file)))))
 
-  (testing "Extract valid uppercase UUID session ID from .jsonl filename"
+  (testing "Extract uppercase UUID and normalize to lowercase"
     (let [file (io/file "/path/to/550E8400-E29B-41D4-A716-446655440000.jsonl")]
-      (is (= "550E8400-E29B-41D4-A716-446655440000" (repl/extract-session-id-from-path file)))))
+      (is (= "550e8400-e29b-41d4-a716-446655440000" (repl/extract-session-id-from-path file)))))
 
   (testing "Return nil for non-UUID .jsonl filename"
     (let [file (io/file "/path/to/not-a-uuid.jsonl")]
@@ -267,8 +267,8 @@
   (testing "Check unsubscribed session"
     (is (not (repl/is-subscribed? "non-existent-session")))))
 
-(deftest test-case-insensitive-session-operations
-  (testing "get-session-metadata is case-insensitive"
+(deftest test-lowercase-only-session-operations
+  (testing "get-session-metadata only works with lowercase"
     (let [session-id "550e8400-e29b-41d4-a716-446655440000"
           uppercase-id "550E8400-E29B-41D4-A716-446655440000"
           mixed-case-id "550e8400-E29B-41d4-A716-446655440000"]
@@ -277,17 +277,14 @@
 
       ;; Should find with lowercase
       (is (some? (repl/get-session-metadata session-id)))
-      ;; Should find with uppercase
-      (is (some? (repl/get-session-metadata uppercase-id)))
-      ;; Should find with mixed case
-      (is (some? (repl/get-session-metadata mixed-case-id)))
-
-      ;; All should return the same session
       (is (= "Test Session" (:name (repl/get-session-metadata session-id))))
-      (is (= "Test Session" (:name (repl/get-session-metadata uppercase-id))))
-      (is (= "Test Session" (:name (repl/get-session-metadata mixed-case-id))))))
 
-  (testing "subscribe-to-session! is case-insensitive"
+      ;; Should NOT find with uppercase
+      (is (nil? (repl/get-session-metadata uppercase-id)))
+      ;; Should NOT find with mixed case
+      (is (nil? (repl/get-session-metadata mixed-case-id)))))
+
+  (testing "subscribe/unsubscribe only works with exact case"
     (reset! repl/watcher-state {:subscribed-sessions #{}
                                 :event-queue (atom {})
                                 :debounce-ms 200
@@ -295,31 +292,30 @@
     (let [lowercase-id "550e8400-e29b-41d4-a716-446655440001"
           uppercase-id "550E8400-E29B-41D4-A716-446655440001"]
 
-      ;; Subscribe with uppercase
-      (repl/subscribe-to-session! uppercase-id)
+      ;; Subscribe with lowercase
+      (repl/subscribe-to-session! lowercase-id)
 
-      ;; Should be subscribed when checking with lowercase
+      ;; Should be subscribed when checking with exact lowercase
       (is (repl/is-subscribed? lowercase-id))
-      ;; Should be subscribed when checking with uppercase
-      (is (repl/is-subscribed? uppercase-id))
+      ;; Should NOT be subscribed when checking with uppercase
+      (is (not (repl/is-subscribed? uppercase-id)))
 
       ;; Unsubscribe with lowercase
       (repl/unsubscribe-from-session! lowercase-id)
 
       ;; Should not be subscribed anymore
-      (is (not (repl/is-subscribed? lowercase-id)))
-      (is (not (repl/is-subscribed? uppercase-id)))))
+      (is (not (repl/is-subscribed? lowercase-id)))))
 
-  (testing "is-subscribed? is case-insensitive"
+  (testing "is-subscribed? is case-sensitive"
     (reset! repl/watcher-state {:subscribed-sessions #{"550e8400-e29b-41d4-a716-446655440002"}
                                 :event-queue (atom {})
                                 :debounce-ms 200
                                 :max-retries 3})
 
-    ;; Check with various cases
+    ;; Only lowercase matches
     (is (repl/is-subscribed? "550e8400-e29b-41d4-a716-446655440002"))
-    (is (repl/is-subscribed? "550E8400-E29B-41D4-A716-446655440002"))
-    (is (repl/is-subscribed? "550e8400-E29B-41d4-A716-446655440002")))
+    (is (not (repl/is-subscribed? "550E8400-E29B-41D4-A716-446655440002")))
+    (is (not (repl/is-subscribed? "550e8400-E29B-41d4-A716-446655440002"))))
 
   (testing "handle nil session-id gracefully"
     (is (nil? (repl/get-session-metadata nil)))

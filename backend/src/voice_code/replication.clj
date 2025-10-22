@@ -47,14 +47,14 @@
        (boolean (re-matches #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" s))))
 
 (defn extract-session-id-from-path
-  "Extract session ID from .jsonl file path.
-  Example: /path/to/projects/mono/abc-123.jsonl -> abc-123
+  "Extract session ID from .jsonl file path and normalize to lowercase.
+  Example: /path/to/projects/mono/ABC-123.jsonl -> abc-123
   Returns nil if the session ID is not a valid UUID."
   [file]
   (let [name (.getName file)
         session-id (str/replace name #"\.jsonl$" "")]
     (if (valid-uuid? session-id)
-      session-id
+      (str/lower-case session-id)
       (do
         (log/warn "Non-UUID session file detected, skipping"
                   {:filename name
