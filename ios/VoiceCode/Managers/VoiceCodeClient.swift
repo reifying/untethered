@@ -434,13 +434,23 @@ class VoiceCodeClient: ObservableObject {
     }
 
     func compactSession(sessionId: String) async throws -> CompactionResult {
+        // Prevent concurrent compactions
+        guard onCompactionResponse == nil else {
+            throw NSError(domain: "VoiceCodeClient",
+                          code: -3,
+                          userInfo: [NSLocalizedDescriptionKey: "Compaction already in progress"])
+        }
+
         return try await withCheckedThrowingContinuation { continuation in
             var resumed = false
             let resumeLock = NSLock()
+            var timeoutWorkItem: DispatchWorkItem?
 
             // Set up one-time callback for compaction responses
             let originalCallback = onCompactionResponse
             onCompactionResponse = { [weak self] json in
+                guard let self = self else { return }
+
                 // Pass through to original callback if it exists
                 originalCallback?(json)
 
@@ -464,9 +474,11 @@ class VoiceCodeClient: ObservableObject {
                     resumeLock.lock()
                     if !resumed {
                         resumed = true
+                        self.onCompactionResponse = originalCallback
                         resumeLock.unlock()
+                        timeoutWorkItem?.cancel()
                         continuation.resume(returning: result)
-                        self?.onCompactionResponse = originalCallback
+                        print("⚡️ [VoiceCodeClient] Compaction callback restored after success")
                     } else {
                         resumeLock.unlock()
                     }
@@ -476,14 +488,18 @@ class VoiceCodeClient: ObservableObject {
                     resumeLock.lock()
                     if !resumed {
                         resumed = true
+                        self.onCompactionResponse = originalCallback
                         resumeLock.unlock()
+                        timeoutWorkItem?.cancel()
                         continuation.resume(throwing: NSError(domain: "VoiceCodeClient",
                                                                code: -1,
                                                                userInfo: [NSLocalizedDescriptionKey: error]))
-                        self?.onCompactionResponse = originalCallback
+                        print("⚡️ [VoiceCodeClient] Compaction callback restored after error")
                     } else {
                         resumeLock.unlock()
                     }
+                } else if messageType != nil {
+                    print("⚠️ [VoiceCodeClient] Unexpected message type in compaction callback: \(messageType!)")
                 }
             }
 
@@ -495,20 +511,24 @@ class VoiceCodeClient: ObservableObject {
             print("⚡️ [VoiceCodeClient] Sending compact request for session: \(sessionId)")
             sendMessage(message)
 
-            // Set timeout (60 seconds)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+            // Set cancellable timeout (60 seconds)
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self = self else { return }
                 resumeLock.lock()
                 if !resumed {
                     resumed = true
+                    self.onCompactionResponse = originalCallback
                     resumeLock.unlock()
                     continuation.resume(throwing: NSError(domain: "VoiceCodeClient",
                                                            code: -2,
                                                            userInfo: [NSLocalizedDescriptionKey: "Compaction timed out after 60 seconds"]))
-                    self?.onCompactionResponse = originalCallback
+                    print("⚡️ [VoiceCodeClient] Compaction callback restored after timeout")
                 } else {
                     resumeLock.unlock()
                 }
             }
+            timeoutWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: workItem)
         }
     }
 
