@@ -257,7 +257,13 @@
                                      ;; Remove heavy fields to reduce payload size
                                      (mapv #(select-keys % [:session-id :name :working-directory
                                                             :last-modified :message-count])))
-                total-non-empty (count (filter #(pos? (or (:message-count %) 0)) all-sessions))]
+                total-non-empty (count (filter #(pos? (or (:message-count %) 0)) all-sessions))
+                ;; Log any sessions with placeholder working directories
+                placeholder-sessions (filter #(str/starts-with? (or (:working-directory %) "") "[from project:") recent-sessions)]
+            (when (seq placeholder-sessions)
+              (log/warn "Sessions with placeholder working directories being sent to iOS"
+                        {:count (count placeholder-sessions)
+                         :sessions (mapv #(select-keys % [:session-id :name :working-directory]) placeholder-sessions)}))
             (log/info "Sending session list" {:count (count recent-sessions) :total total-non-empty :total-all (count all-sessions)})
             (http/send! channel
                         (generate-json
@@ -330,7 +336,31 @@
         (let [new-session-id (:new-session-id data)
               resume-session-id (:resume-session-id data)
               prompt-text (:text data)
-              working-dir (:working-directory data)]
+              ios-working-dir (:working-directory data)
+              ;; Determine actual working directory to use:
+              ;; - For resumed sessions: Use stored working dir from session metadata (extracted from .jsonl cwd)
+              ;; - For new sessions: Use iOS-provided dir, with fallback if placeholder
+              working-dir (if resume-session-id
+                            (let [session-metadata (repl/get-session-metadata resume-session-id)]
+                              (if session-metadata
+                                (do
+                                  (log/info "Using stored working directory for resumed session"
+                                            {:session-id resume-session-id
+                                             :stored-dir (:working-directory session-metadata)
+                                             :ios-sent-dir ios-working-dir})
+                                  (:working-directory session-metadata))
+                                (do
+                                  (log/warn "Session not found in metadata, using iOS working dir"
+                                            {:session-id resume-session-id})
+                                  ios-working-dir)))
+                            ;; New session: use iOS dir, apply fallback if placeholder
+                            (if (and ios-working-dir (str/starts-with? ios-working-dir "[from project:"))
+                              (let [project-name (second (re-find #"\[from project: ([^\]]+)\]" ios-working-dir))]
+                                (log/info "Converting placeholder to real path for new session"
+                                          {:placeholder ios-working-dir
+                                           :project-name project-name})
+                                (repl/project-name->working-dir project-name))
+                              ios-working-dir))]
 
           (cond
             ;; Check if client has connected first

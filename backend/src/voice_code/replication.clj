@@ -64,7 +64,8 @@
 
 (defn find-valid-path
   "Try to find a valid filesystem path by testing dash/slash combinations.
-  Uses greedy approach: build path incrementally, preferring existing directories."
+  Uses greedy approach: build path incrementally, trying progressively longer
+  combinations of parts to handle directory names with multiple hyphens."
   [project-name]
   (when (str/starts-with? project-name "-")
     (let [parts (str/split (subs project-name 1) #"-")]
@@ -75,28 +76,32 @@
           (when (.exists (io/file current-path))
             current-path)
 
-          ;; Try next part - first try as single directory name
-          (let [next-part (first remaining)
-                next-remaining (rest remaining)
-                ;; Option 1: next-part is a complete directory name (had hyphen in original)
-                option1-path (str current-path (when-not (= current-path "/") "/") next-part)
-                ;; Option 2: next-part + next one form directory with hyphen
-                option2-path (when (seq next-remaining)
-                               (str current-path (when-not (= current-path "/") "/")
-                                    next-part "-" (first next-remaining)))]
+          ;; Try progressively longer combinations of parts
+          ;; For ["hunt910" "share" "location"], try:
+          ;; - "hunt910-share-location" (3 parts)
+          ;; - "hunt910-share" (2 parts)  
+          ;; - "hunt910" (1 part)
+          (let [num-remaining (count remaining)
+                ;; Generate all possible combinations from longest to shortest
+                combinations (for [len (range num-remaining 0 -1)]
+                               (let [combined-parts (take len remaining)
+                                     combined-name (str/join "-" combined-parts)
+                                     path (str current-path
+                                               (when-not (= current-path "/") "/")
+                                               combined-name)
+                                     rest-parts (drop len remaining)]
+                                 {:path path
+                                  :len len
+                                  :remaining rest-parts}))
+                ;; Find first combination that exists as a directory
+                match (first (filter #(and (.exists (io/file (:path %)))
+                                           (.isDirectory (io/file (:path %))))
+                                     combinations))]
 
-            ;; Prefer option that exists on filesystem
-            (cond
-              ;; If option2 path exists as directory, use it
-              (and option2-path (.exists (io/file option2-path)) (.isDirectory (io/file option2-path)))
-              (recur (rest next-remaining) option2-path)
-
-              ;; If option1 exists, use it
-              (and (.exists (io/file option1-path)) (.isDirectory (io/file option1-path)))
-              (recur next-remaining option1-path)
-
-              ;; Neither exists - path is invalid
-              :else nil)))))))
+            (if match
+              (recur (:remaining match) (:path match))
+              ;; No valid combination found
+              nil)))))))
 
 (defn project-name->working-dir
   "Convert Claude Code project directory name to working directory path.
@@ -121,25 +126,42 @@
   Falls back to deriving from file path if cwd not found."
   [file]
   (try
-    (let [result (with-open [rdr (io/reader file)]
+    (let [file-path (.getPath file)
+          result (with-open [rdr (io/reader file)]
                    (some (fn [line]
                            (when-not (str/blank? line)
                              (try
                                (let [msg (json/parse-string line true)]
-                                 (:cwd msg))
-                               (catch Exception _ nil))))
+                                 (when-let [cwd (:cwd msg)]
+                                   (log/info "Found cwd in jsonl file"
+                                             {:file file-path
+                                              :cwd cwd})
+                                   cwd))
+                               (catch Exception e
+                                 (log/debug e "Failed to parse line as JSON" {:file file-path})
+                                 nil))))
                          (take 10 (line-seq rdr))))]
       ;; If result is nil (no cwd found in first 10 lines), use fallback
-      (or result
-          (let [parent-dir (.getParentFile file)
-                project-name (.getName parent-dir)]
-            (project-name->working-dir project-name))))
+      (if result
+        result
+        (let [parent-dir (.getParentFile file)
+              project-name (.getName parent-dir)
+              fallback (project-name->working-dir project-name)]
+          (log/warn "No cwd found in jsonl file, using fallback"
+                    {:file file-path
+                     :project-name project-name
+                     :fallback fallback})
+          fallback)))
     (catch Exception e
-      (log/warn e "Failed to extract working dir from file" {:file (.getPath file)})
-      ;; Fallback on error
-      (let [parent-dir (.getParentFile file)
-            project-name (.getName parent-dir)]
-        (project-name->working-dir project-name)))))
+      (let [file-path (.getPath file)
+            parent-dir (.getParentFile file)
+            project-name (.getName parent-dir)
+            fallback (project-name->working-dir project-name)]
+        (log/error e "Failed to extract working dir from file, using fallback"
+                   {:file file-path
+                    :project-name project-name
+                    :fallback fallback})
+        fallback))))
 
 (defn parse-jsonl-line
   "Parse a single line of JSONL. Returns parsed map or nil if invalid."
@@ -239,17 +261,25 @@
         created-at (.lastModified file)
         last-modified (.lastModified file)
         file-metadata (extract-metadata-from-file file)
-        name (generate-session-name session-id working-dir created-at)]
-    {:session-id session-id
-     :file (.getAbsolutePath file)
-     :name name
-     :working-directory working-dir
-     :created-at created-at
-     :last-modified last-modified
-     :message-count (:message-count file-metadata)
-     :preview (:preview file-metadata)
-     :first-message (:first-message file-metadata)
-     :last-message (:last-message file-metadata)}))
+        name (generate-session-name session-id working-dir created-at)
+        metadata {:session-id session-id
+                  :file (.getAbsolutePath file)
+                  :name name
+                  :working-directory working-dir
+                  :created-at created-at
+                  :last-modified last-modified
+                  :message-count (:message-count file-metadata)
+                  :preview (:preview file-metadata)
+                  :first-message (:first-message file-metadata)
+                  :last-message (:last-message file-metadata)
+                  :ios-notified false
+                  :first-notification nil}]
+    (log/info "Built session metadata"
+              {:session-id session-id
+               :working-directory working-dir
+               :name name
+               :message-count (:message-count file-metadata)})
+    metadata)) ; Timestamp when iOS first notified
 
 (defn build-index!
   "Scan all .jsonl files and build the session index.
@@ -585,36 +615,38 @@
                        :has-first-message (boolean (:first-message metadata))
                        :has-last-message (boolean (:last-message metadata))})
 
-            ;; Add to index
+            ;; ALWAYS add to index (for backend tracking)
             (swap! session-index assoc session-id metadata)
             (save-index! @session-index)
 
             ;; Initialize file position to current size so we only parse NEW messages
             (swap! file-positions assoc file-path file-size)
 
-            ;; Notify callback only if session has non-internal messages
-            ;; This prevents zero-message sessions from being broadcast to clients
+            ;; Only notify iOS if we have real messages
             (if (pos? message-count)
               (do
-                (log/info "Notifying iOS of new session (message-count > 0)"
+                (log/info "Notifying iOS of new session with messages"
                           {:session-id session-id
                            :name (:name metadata)
                            :message-count message-count})
                 (when-let [callback (:on-session-created @watcher-state)]
-                  (callback metadata)))
-              (log/warn "Skipping iOS notification for zero-message session"
+                  (callback metadata))
+                ;; Mark as notified
+                (swap! session-index assoc-in [session-id :ios-notified] true)
+                (swap! session-index assoc-in [session-id :first-notification] (System/currentTimeMillis))
+                (save-index! @session-index))
+              ;; Log but don't notify yet
+              (log/info "Session created with no messages yet, will notify when messages arrive"
                         {:session-id session-id
                          :name (:name metadata)
-                         :message-count message-count
-                         :file-size file-size
-                         :reason "Session has no non-sidechain messages yet - potential race condition"}))
+                         :file-size file-size}))
 
             (log/debug "Session added to index"
                        {:session-id session-id
                         :name (:name metadata)
                         :message-count message-count
                         :initial-file-position file-size
-                        :will-notify-ios (pos? message-count)}))))
+                        :ios-notified (pos? message-count)}))))
       (catch Exception e
         (log/error e "Failed to handle file creation" {:file (.getPath file)})))))
 
@@ -623,69 +655,63 @@
   [file]
   (when (str/ends-with? (.getName file) ".jsonl")
     (let [session-id (extract-session-id-from-path file)
-          subscribed? (is-subscribed? session-id)
           old-metadata (get @session-index session-id)]
 
-      ;; Log all modification events with subscription status
-      (log/debug "File modified event detected"
-                 {:session-id session-id
-                  :file-path (.getAbsolutePath file)
-                  :is-subscribed subscribed?
-                  :in-index (boolean old-metadata)
-                  :old-message-count (:message-count old-metadata)})
-
-      ;; Only process if subscribed
-      (if-not subscribed?
-        (log/warn "Skipping file modification - session not subscribed"
-                  {:session-id session-id
-                   :file-path (.getAbsolutePath file)
-                   :in-index (boolean old-metadata)
-                   :old-message-count (:message-count old-metadata)
-                   :reason "iOS never notified or subscription expired - potential race condition"})
-
+      ;; Only process if we have metadata in index
+      (when old-metadata
         ;; Debounce
         (when (debounce-event session-id)
           (try
             ;; Parse new messages with retry
             (let [new-messages (parse-with-retry (.getAbsolutePath file) (:max-retries @watcher-state))
-                  total-new-messages (count new-messages)
-                  ;; Filter internal messages (sidechain, summary, system) before checking if non-empty
-                  filtered-messages (filter-internal-messages new-messages)
-                  filtered-count (count filtered-messages)]
+                  ;; Filter internal messages (sidechain, summary, system)
+                  filtered-messages (filter-internal-messages new-messages)]
 
-              (log/debug "Parsed new messages from file"
-                         {:session-id session-id
-                          :total-new-messages total-new-messages
-                          :filtered-messages filtered-count
-                          :removed-messages (- total-new-messages filtered-count)})
+              (when (seq filtered-messages)
+                (let [old-count (:message-count old-metadata 0)
+                      new-count (+ old-count (count filtered-messages))
+                      ios-notified? (:ios-notified old-metadata false)]
 
-              (if (seq filtered-messages)
-                (do
-                  ;; Update index metadata with filtered count
-                  (when old-metadata
-                    (let [old-count (:message-count old-metadata)
-                          new-count (+ old-count filtered-count)
-                          new-metadata (assoc old-metadata
-                                              :last-modified (.lastModified file)
-                                              :message-count new-count)]
-                      (log/info "Updating session index"
+                  ;; ALWAYS update index
+                  (let [new-metadata (assoc old-metadata
+                                            :last-modified (.lastModified file)
+                                            :message-count new-count)]
+                    (swap! session-index assoc session-id new-metadata)
+                    (save-index! @session-index)
+
+                    (log/info "Updated session index"
+                              {:session-id session-id
+                               :old-count old-count
+                               :new-count new-count
+                               :ios-notified ios-notified?}))
+
+                  ;; Check if this is the 0→N transition (time to notify iOS!)
+                  (if (and (zero? old-count)
+                           (pos? new-count)
+                           (not ios-notified?))
+                    ;; DELAYED NOTIFICATION TRIGGER
+                    (do
+                      (log/info "Session now has messages - notifying iOS (delayed notification)"
                                 {:session-id session-id
-                                 :old-message-count old-count
-                                 :new-message-count new-count
-                                 :added-messages filtered-count})
-                      (swap! session-index assoc session-id new-metadata)
-                      (save-index! @session-index)))
+                                 :message-count new-count
+                                 :name (:name old-metadata)})
 
-                  ;; Notify callback with filtered messages
-                  (when-let [callback (:on-session-updated @watcher-state)]
-                    (log/debug "Notifying iOS of session update"
-                               {:session-id session-id
-                                :new-messages filtered-count})
-                    (callback session-id filtered-messages)))
+                      ;; Send session_created NOW
+                      (when-let [callback (:on-session-created @watcher-state)]
+                        (callback (get @session-index session-id)))
 
-                (log/debug "No user/assistant messages to process after filtering"
-                           {:session-id session-id
-                            :total-new-messages total-new-messages})))
+                      ;; Mark as notified
+                      (swap! session-index assoc-in [session-id :ios-notified] true)
+                      (swap! session-index assoc-in [session-id :first-notification] (System/currentTimeMillis))
+                      (save-index! @session-index))
+
+                    ;; Normal update for already-notified sessions
+                    (when (and ios-notified? (is-subscribed? session-id))
+                      (log/debug "Sending update to subscribed iOS client"
+                                 {:session-id session-id
+                                  :new-messages (count filtered-messages)})
+                      (when-let [callback (:on-session-updated @watcher-state)]
+                        (callback session-id filtered-messages)))))))
             (catch Exception e
               (log/error e "Failed to handle file modification"
                          {:file (.getPath file)
