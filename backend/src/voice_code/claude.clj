@@ -180,67 +180,82 @@
     (when-not cli-path
       (throw (ex-info "Claude CLI not found" {})))
 
-    ;; Find session file
-    (let [session-file (get-session-file-path session-id)]
-      (if-not session-file
-        {:success false
-         :error (str "Session not found: " session-id)}
+    ;; Get session metadata to retrieve working directory
+    (let [session-metadata ((requiring-resolve 'voice-code.replication/get-session-metadata) session-id)
+          working-dir (:working-directory session-metadata)
+          expanded-dir (expand-tilde working-dir)]
 
-        (do
-          ;; Count messages before compaction
-          (let [old-count (count-jsonl-lines session-file)
-                _ (log/info "Compacting session" {:session-id session-id
-                                                   :file session-file
-                                                   :old-message-count old-count})
+      (when-not session-metadata
+        (log/warn "Session metadata not found in index" {:session-id session-id}))
 
-                ;; Invoke compact command
-                result (shell/sh cli-path
-                                 "-p"
-                                 "--output-format" "json"
-                                 "--resume" session-id
-                                 "/compact")
+      ;; Find session file
+      (let [session-file (get-session-file-path session-id)]
+        (if-not session-file
+          {:success false
+           :error (str "Session not found: " session-id)}
 
-                _ (log/debug "Compact CLI result" {:exit (:exit result)
-                                                    :stdout-length (count (:out result))
-                                                    :stderr (:err result)})]
+          (do
+            ;; Count messages before compaction
+            (let [old-count (count-jsonl-lines session-file)
+                  _ (log/info "Compacting session" {:session-id session-id
+                                                    :file session-file
+                                                    :old-message-count old-count
+                                                    :working-directory expanded-dir})
 
-            (if (zero? (:exit result))
-              (try
-                ;; Parse JSON output
-                (let [response-array (json/parse-string (:out result) true)
-                      ;; Find compact_boundary in response
-                      compact-boundary (first (filter #(= "compact_boundary" (:subtype %)) response-array))
-                      pre-tokens (get-in compact-boundary [:compact_metadata :preTokens])
+                  ;; Build command arguments
+                  cmd-args ["-p"
+                            "--output-format" "json"
+                            "--resume" session-id
+                            "/compact"]
 
-                      ;; Count messages after compaction
-                      new-count (count-jsonl-lines session-file)
-                      messages-removed (- (or old-count 0) (or new-count 0))]
+                  ;; Build shell options with working directory if available
+                  shell-opts (cond-> {}
+                               expanded-dir (assoc :dir expanded-dir))
 
-                  (log/info "Session compacted successfully"
-                            {:session-id session-id
-                             :old-count old-count
-                             :new-count new-count
-                             :messages-removed messages-removed
-                             :pre-tokens pre-tokens})
+                  ;; Invoke compact command
+                  result (apply shell/sh cli-path (concat cmd-args (apply concat shell-opts)))
 
-                  {:success true
-                   :old-message-count old-count
-                   :new-message-count new-count
-                   :messages-removed messages-removed
-                   :pre-tokens pre-tokens})
+                  _ (log/debug "Compact CLI result" {:exit (:exit result)
+                                                     :stdout-length (count (:out result))
+                                                     :stderr (:err result)})]
 
-                (catch Exception e
-                  (log/error e "Failed to parse compact response" {:session-id session-id})
+              (if (zero? (:exit result))
+                (try
+                  ;; Parse JSON output
+                  (let [response-array (json/parse-string (:out result) true)
+                        ;; Find compact_boundary in response
+                        compact-boundary (first (filter #(= "compact_boundary" (:subtype %)) response-array))
+                        pre-tokens (get-in compact-boundary [:compact_metadata :preTokens])
+
+                        ;; Count messages after compaction
+                        new-count (count-jsonl-lines session-file)
+                        messages-removed (- (or old-count 0) (or new-count 0))]
+
+                    (log/info "Session compacted successfully"
+                              {:session-id session-id
+                               :old-count old-count
+                               :new-count new-count
+                               :messages-removed messages-removed
+                               :pre-tokens pre-tokens})
+
+                    {:success true
+                     :old-message-count old-count
+                     :new-message-count new-count
+                     :messages-removed messages-removed
+                     :pre-tokens pre-tokens})
+
+                  (catch Exception e
+                    (log/error e "Failed to parse compact response" {:session-id session-id})
+                    {:success false
+                     :error (str "Failed to parse compact response: " (ex-message e))}))
+
+                ;; CLI command failed
+                (do
+                  (log/error "Compact CLI command failed"
+                             {:session-id session-id
+                              :exit (:exit result)
+                              :stderr (:err result)})
                   {:success false
-                   :error (str "Failed to parse compact response: " (ex-message e))}))
-
-              ;; CLI command failed
-              (do
-                (log/error "Compact CLI command failed"
-                           {:session-id session-id
-                            :exit (:exit result)
-                            :stderr (:err result)})
-                {:success false
-                 :error (or (not-empty (:err result))
-                            (str "Compact command exited with code " (:exit result)))}))))))))
+                   :error (or (not-empty (:err result))
+                              (str "Compact command exited with code " (:exit result)))})))))))))
 
