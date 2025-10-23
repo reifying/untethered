@@ -28,6 +28,12 @@ class AppSettings: ObservableObject {
         }
     }
 
+    @Published var continuePlaybackWhenLocked: Bool {
+        didSet {
+            UserDefaults.standard.set(continuePlaybackWhenLocked, forKey: "continuePlaybackWhenLocked")
+        }
+    }
+
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
         let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
@@ -88,6 +94,7 @@ class AppSettings: ObservableObject {
         self.serverURL = UserDefaults.standard.string(forKey: "serverURL") ?? ""
         self.serverPort = UserDefaults.standard.string(forKey: "serverPort") ?? "8080"
         self.selectedVoiceIdentifier = UserDefaults.standard.string(forKey: "selectedVoiceIdentifier")
+        self.continuePlaybackWhenLocked = UserDefaults.standard.object(forKey: "continuePlaybackWhenLocked") as? Bool ?? true
     }
 
     func testConnection(completion: @escaping (Bool, String) -> Void) {
