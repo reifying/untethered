@@ -351,6 +351,75 @@ class CopyFeaturesTests: XCTestCase {
         XCTAssertTrue(UIPasteboard.general.string!.contains("# Test Session"))
     }
 
+    // MARK: - Session ID Copy Tests
+
+    func testCopySessionIDToClipboard() throws {
+        // Copy session ID to clipboard
+        let sessionId = testSession.id.uuidString.lowercased()
+        UIPasteboard.general.string = sessionId
+        
+        // Verify clipboard contains lowercase session ID
+        XCTAssertEqual(UIPasteboard.general.string, sessionId)
+    }
+
+    func testCopySessionIDIsLowercase() throws {
+        // Ensure session ID is always copied in lowercase
+        let sessionId = testSession.id.uuidString.lowercased()
+        UIPasteboard.general.string = sessionId
+        
+        // Verify clipboard contains lowercase UUID
+        XCTAssertEqual(UIPasteboard.general.string, sessionId)
+        XCTAssertEqual(UIPasteboard.general.string, UIPasteboard.general.string?.lowercased())
+    }
+
+    func testCopySessionIDFormat() throws {
+        // Copy session ID
+        let sessionId = testSession.id.uuidString.lowercased()
+        UIPasteboard.general.string = sessionId
+        
+        // Verify UUID format (8-4-4-4-12 pattern)
+        let pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        let regex = try! NSRegularExpression(pattern: pattern)
+        let range = NSRange(location: 0, length: sessionId.count)
+        
+        XCTAssertNotNil(regex.firstMatch(in: sessionId, range: range))
+    }
+
+    func testCopyDifferentSessionIDs() throws {
+        // Create second session
+        let session2 = CDSession(context: context)
+        session2.id = UUID()
+        session2.backendName = "Test Session 2"
+        session2.workingDirectory = "/Users/test/project2"
+        session2.lastModified = Date()
+        
+        try context.save()
+        
+        // Copy first session ID
+        let sessionId1 = testSession.id.uuidString.lowercased()
+        UIPasteboard.general.string = sessionId1
+        XCTAssertEqual(UIPasteboard.general.string, sessionId1)
+        
+        // Copy second session ID (should overwrite)
+        let sessionId2 = session2.id.uuidString.lowercased()
+        UIPasteboard.general.string = sessionId2
+        XCTAssertEqual(UIPasteboard.general.string, sessionId2)
+        XCTAssertNotEqual(UIPasteboard.general.string, sessionId1)
+    }
+
+    func testCopySessionIDPreservesFullUUID() throws {
+        // Copy session ID
+        let sessionId = testSession.id.uuidString.lowercased()
+        UIPasteboard.general.string = sessionId
+        
+        // Verify full UUID is preserved (36 characters including hyphens)
+        XCTAssertEqual(UIPasteboard.general.string?.count, 36)
+        
+        // Verify it contains exactly 4 hyphens
+        let hyphenCount = UIPasteboard.general.string?.filter { $0 == "-" }.count
+        XCTAssertEqual(hyphenCount, 4)
+    }
+
     // MARK: - Edge Cases
 
     func testCopyAfterPreviousCopy() throws {
