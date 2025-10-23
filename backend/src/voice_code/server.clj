@@ -127,21 +127,23 @@
 (defn send-recent-sessions!
   "Send the recent sessions list to a connected client.
   Uses the new recent_sessions message type (distinct from session-list).
-  Converts :last-modified from milliseconds to ISO-8601 string for JSON."
+  Converts :last-modified from milliseconds to ISO-8601 string for JSON.
+  Only sends fields required by iOS: session-id, name, working-directory, last-modified."
   [channel limit]
   (let [sessions (repl/get-recent-sessions limit)
-        ;; Convert last-modified to ISO-8601 string
-        sessions-with-iso (mapv
-                           (fn [session]
-                             (assoc session
-                                    :last-modified
-                                    (.format (java.time.format.DateTimeFormatter/ISO_INSTANT)
-                                             (java.time.Instant/ofEpochMilli (:last-modified session)))))
-                           sessions)]
+        ;; Convert to minimal format with ISO-8601 timestamp
+        sessions-minimal (mapv
+                          (fn [session]
+                            {:session-id (:session-id session)
+                             :name (:name session)
+                             :working-directory (:working-directory session)
+                             :last-modified (.format (java.time.format.DateTimeFormatter/ISO_INSTANT)
+                                                     (java.time.Instant/ofEpochMilli (:last-modified session)))})
+                          sessions)]
     (log/info "Sending recent sessions" {:count (count sessions) :limit limit})
     (send-to-client! channel
                      {:type :recent-sessions
-                      :sessions sessions-with-iso
+                      :sessions sessions-minimal
                       :limit limit})))
 
 (defn is-session-deleted-for-client?
