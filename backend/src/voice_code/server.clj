@@ -124,6 +124,26 @@
             (log/warn e "Failed to send to client")))))
     (log/warn "Channel not in connected-clients, skipping send" {:type (:type message-data)})))
 
+(defn send-recent-sessions!
+  "Send the recent sessions list to a connected client.
+  Uses the new recent_sessions message type (distinct from session-list).
+  Converts :last-modified from milliseconds to ISO-8601 string for JSON."
+  [channel limit]
+  (let [sessions (repl/get-recent-sessions limit)
+        ;; Convert last-modified to ISO-8601 string
+        sessions-with-iso (mapv
+                           (fn [session]
+                             (assoc session
+                                    :last-modified
+                                    (.format (java.time.format.DateTimeFormatter/ISO_INSTANT)
+                                             (java.time.Instant/ofEpochMilli (:last-modified session)))))
+                           sessions)]
+    (log/info "Sending recent sessions" {:count (count sessions) :limit limit})
+    (send-to-client! channel
+                     {:type :recent-sessions
+                      :sessions sessions-with-iso
+                      :limit limit})))
+
 (defn is-session-deleted-for-client?
   "Check if a client has deleted a session locally"
   [channel session-id]
@@ -269,7 +289,9 @@
                         (generate-json
                          {:type :session-list
                           :sessions recent-sessions
-                          :total-count total-non-empty}))))
+                          :total-count total-non-empty}))
+            ;; Send recent sessions list (separate message type for Recent section)
+            (send-recent-sessions! channel 10)))
 
         "subscribe"
         ;; Client requests full history for a session
