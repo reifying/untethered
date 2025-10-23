@@ -93,7 +93,7 @@ struct DirectoryListView: View {
                                 }
                             }
                         } header: {
-                            Text("Recent")
+                            Text("Recent Sessions")
                         }
                     }
                     
