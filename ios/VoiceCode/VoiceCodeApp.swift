@@ -2,6 +2,9 @@
 // Main app entry point for voice-code iOS app
 
 import SwiftUI
+import OSLog
+
+private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "RootView")
 
 @main
 struct VoiceCodeApp: App {
@@ -70,10 +73,16 @@ struct RootView: View {
             )
         }
         .onAppear {
+            logger.info("🔵 RootView appeared, setting up recent sessions callback")
             // Set up callback for recent_sessions before connecting
             client.onRecentSessionsReceived = { sessions in
-                self.recentSessions = sessions.compactMap { RecentSession(json: $0) }
+                logger.info("📥 Received \(sessions.count) recent sessions from backend")
+                let parsed = sessions.compactMap { RecentSession(json: $0) }
+                logger.info("✅ Successfully parsed \(parsed.count) of \(sessions.count) sessions")
+                self.recentSessions = parsed
+                logger.info("🔄 Updated recentSessions state array, count: \(self.recentSessions.count)")
             }
+            logger.info("🔌 Connecting to backend...")
             client.connect()
         }
     }
