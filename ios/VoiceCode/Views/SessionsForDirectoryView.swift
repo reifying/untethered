@@ -22,6 +22,7 @@ struct SessionsForDirectoryView: View {
 
     @State private var showingNewSession = false
     @State private var newSessionName = ""
+    @State private var showingCopyConfirmation = false
 
     init(workingDirectory: String, client: VoiceCodeClient, settings: AppSettings, voiceOutput: VoiceOutputManager, showingSettings: Binding<Bool>) {
         self.workingDirectory = workingDirectory
@@ -66,6 +67,13 @@ struct SessionsForDirectoryView: View {
                         NavigationLink(value: session.id) {
                             CDSessionRowContent(session: session)
                         }
+                        .contextMenu {
+                            Button(action: {
+                                copySessionID(session)
+                            }) {
+                                Label("Copy Session ID", systemImage: "doc.on.clipboard")
+                            }
+                        }
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
                                 deleteSession(session)
@@ -83,6 +91,19 @@ struct SessionsForDirectoryView: View {
         }
         .navigationTitle(directoryName)
         .navigationBarTitleDisplayMode(.large)
+        .overlay(alignment: .top) {
+            if showingCopyConfirmation {
+                Text("Session ID copied to clipboard")
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.green.opacity(0.9))
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
@@ -149,6 +170,27 @@ struct SessionsForDirectoryView: View {
 
         } catch {
             logger.error("❌ Failed to create session: \(error)")
+        }
+    }
+
+    private func copySessionID(_ session: CDSession) {
+        // Copy session ID to clipboard
+        UIPasteboard.general.string = session.id.uuidString.lowercased()
+        
+        // Trigger haptic feedback
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.success)
+        
+        // Show confirmation banner
+        withAnimation {
+            showingCopyConfirmation = true
+        }
+        
+        // Hide confirmation after 2 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation {
+                showingCopyConfirmation = false
+            }
         }
     }
 

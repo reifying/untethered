@@ -20,6 +20,7 @@ struct ConversationView: View {
     @State private var showingRenameSheet = false
     @State private var newSessionName = ""
     @State private var showingCopyConfirmation = false
+    @State private var copyConfirmationMessage = "Conversation copied to clipboard"
     @State private var showingCompactConfirmation = false
     @State private var showingAlreadyCompactedAlert = false
     @State private var isCompacting = false
@@ -185,7 +186,6 @@ struct ConversationView: View {
             .padding(.vertical, 12)
             .background(Color(UIColor.systemBackground))
         }
-        .navigationTitle(session.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -231,12 +231,18 @@ struct ConversationView: View {
                     }) {
                         Image(systemName: "pencil")
                     }
+                    
+                    Button(action: {
+                        copySessionID()
+                    }) {
+                        Image(systemName: "number")
+                    }
                 }
             }
         }
         .overlay(alignment: .top) {
             if showingCopyConfirmation {
-                Text(compactSuccessMessage ?? "Conversation copied to clipboard")
+                Text(compactSuccessMessage ?? copyConfirmationMessage)
                     .font(.caption)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
@@ -405,6 +411,28 @@ struct ConversationView: View {
         }
 
         client.sendMessage(message)
+    }
+    
+    private func copySessionID() {
+        // Copy session ID to clipboard
+        UIPasteboard.general.string = session.id.uuidString.lowercased()
+        
+        // Trigger haptic feedback
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.success)
+        
+        // Show confirmation banner with specific message
+        copyConfirmationMessage = "Session ID copied to clipboard"
+        withAnimation {
+            showingCopyConfirmation = true
+        }
+        
+        // Hide confirmation after 2 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation {
+                showingCopyConfirmation = false
+            }
+        }
     }
     
     private func exportSessionToPlainText() {
