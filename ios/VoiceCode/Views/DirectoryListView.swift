@@ -24,6 +24,8 @@ struct DirectoryListView: View {
     @State private var showingNewSession = false
     @State private var newSessionName = ""
     @State private var newWorkingDirectory = ""
+    @State private var recentSessions: [RecentSession] = []
+    @State private var isRecentExpanded = true
 
     // Directory metadata computed from sessions
     struct DirectoryInfo: Identifiable {
@@ -82,10 +84,28 @@ struct DirectoryListView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
-                    ForEach(directories) { directory in
-                        NavigationLink(value: directory.workingDirectory) {
-                            DirectoryRowContent(directory: directory)
+                    // Recent Sessions section
+                    if !recentSessions.isEmpty {
+                        Section(isExpanded: $isRecentExpanded) {
+                            ForEach(recentSessions) { session in
+                                NavigationLink(value: UUID(uuidString: session.sessionId) ?? UUID()) {
+                                    RecentSessionRowContent(session: session)
+                                }
+                            }
+                        } header: {
+                            Text("Recent")
                         }
+                    }
+                    
+                    // Projects (Directories) section
+                    Section {
+                        ForEach(directories) { directory in
+                            NavigationLink(value: directory.workingDirectory) {
+                                DirectoryRowContent(directory: directory)
+                            }
+                        }
+                    } header: {
+                        Text("Projects")
                     }
                 }
                 .refreshable {
@@ -138,6 +158,13 @@ struct DirectoryListView: View {
                     showingNewSession = false
                 }
             )
+        }
+        .onAppear {
+            // Set up callback for recent_sessions message
+            client.onRecentSessionsReceived = { sessions in
+                logger.info("📥 Received \(sessions.count) recent sessions")
+                self.recentSessions = sessions.compactMap { RecentSession(json: $0) }
+            }
         }
     }
 
@@ -223,6 +250,41 @@ struct DirectoryRowContent: View {
                         .foregroundColor(.secondary)
                 }
             }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Recent Session Row Content
+
+struct RecentSessionRowContent: View {
+    let session: RecentSession
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            // Line 1: Session name
+            Text(session.name)
+                .font(.headline)
+            
+            // Line 2: Session ID (first 8 chars) + working directory
+            HStack(spacing: 8) {
+                Text("[\(session.sessionId.prefix(8))]")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .fontDesign(.monospaced)
+                Text("•")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text(session.workingDirectory)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            
+            // Line 3: Last modified timestamp
+            Text(session.lastModified.relativeFormatted())
+                .font(.caption2)
+                .foregroundColor(.secondary)
         }
         .padding(.vertical, 4)
     }

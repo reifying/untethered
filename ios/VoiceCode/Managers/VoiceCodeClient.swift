@@ -20,6 +20,7 @@ class VoiceCodeClient: ObservableObject {
     var onSessionIdReceived: ((String) -> Void)?
     var onReplayReceived: ((Message) -> Void)?
     var onCompactionResponse: (([String: Any]) -> Void)?  // Callback for compaction_complete/compaction_error
+    var onRecentSessionsReceived: (([[String: Any]]) -> Void)?  // Callback for recent_sessions message
 
     private var sessionId: String?
     let sessionSyncManager: SessionSyncManager
@@ -274,6 +275,13 @@ class VoiceCodeClient: ObservableObject {
                 if let sessions = json["sessions"] as? [[String: Any]] {
                     print("📋 [VoiceCodeClient] Received session_list with \(sessions.count) sessions")
                     self.sessionSyncManager.handleSessionList(sessions)
+                }
+
+            case "recent_sessions":
+                // Recent sessions list for display in Recent section
+                if let sessions = json["sessions"] as? [[String: Any]] {
+                    print("📋 [VoiceCodeClient] Received recent_sessions with \(sessions.count) sessions")
+                    self.onRecentSessionsReceived?(sessions)
                 }
 
             case "session_created":
