@@ -12,6 +12,7 @@ struct DirectoryListView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var voiceOutput: VoiceOutputManager
     @Binding var showingSettings: Bool
+    @Binding var recentSessions: [RecentSession]
     @Environment(\.managedObjectContext) private var viewContext
     @EnvironmentObject var draftManager: DraftManager
 
@@ -24,7 +25,6 @@ struct DirectoryListView: View {
     @State private var showingNewSession = false
     @State private var newSessionName = ""
     @State private var newWorkingDirectory = ""
-    @State private var recentSessions: [RecentSession] = []
     @State private var isRecentExpanded = true
 
     // Directory metadata computed from sessions
@@ -159,13 +159,7 @@ struct DirectoryListView: View {
                 }
             )
         }
-        .onAppear {
-            // Set up callback for recent_sessions message
-            client.onRecentSessionsReceived = { sessions in
-                logger.info("📥 Received \(sessions.count) recent sessions")
-                self.recentSessions = sessions.compactMap { RecentSession(json: $0) }
-            }
-        }
+
     }
 
     private func createNewSession(name: String, workingDirectory: String?) {
@@ -336,7 +330,8 @@ struct DirectoryListView_Previews: PreviewProvider {
                 client: client,
                 settings: settings,
                 voiceOutput: voiceOutput,
-                showingSettings: .constant(false)
+                showingSettings: .constant(false),
+                recentSessions: .constant([])
             )
         }
         .environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)

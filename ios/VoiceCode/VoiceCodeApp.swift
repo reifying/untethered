@@ -26,6 +26,7 @@ struct RootView: View {
     @StateObject private var client: VoiceCodeClient
     @State private var showingSettings = false
     @State private var navigationPath = NavigationPath()
+    @State private var recentSessions: [RecentSession] = []
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -40,7 +41,7 @@ struct RootView: View {
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
-            DirectoryListView(client: client, settings: settings, voiceOutput: voiceOutput, showingSettings: $showingSettings)
+            DirectoryListView(client: client, settings: settings, voiceOutput: voiceOutput, showingSettings: $showingSettings, recentSessions: $recentSessions)
                 .navigationDestination(for: String.self) { workingDirectory in
                     SessionsForDirectoryView(
                         workingDirectory: workingDirectory,
@@ -69,6 +70,10 @@ struct RootView: View {
             )
         }
         .onAppear {
+            // Set up callback for recent_sessions before connecting
+            client.onRecentSessionsReceived = { sessions in
+                self.recentSessions = sessions.compactMap { RecentSession(json: $0) }
+            }
             client.connect()
         }
     }
