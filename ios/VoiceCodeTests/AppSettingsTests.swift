@@ -239,4 +239,37 @@ final class AppSettingsTests: XCTestCase {
             )
         }
     }
+
+    // MARK: - Background Playback Tests
+
+    func testDefaultContinuePlaybackWhenLocked() {
+        // Default should be true (enabled)
+        XCTAssertTrue(settings.continuePlaybackWhenLocked)
+    }
+
+    func testContinuePlaybackWhenLockedPersistence() {
+        // Set to false
+        settings.continuePlaybackWhenLocked = false
+
+        // Value should be saved to UserDefaults
+        let saved = UserDefaults.standard.bool(forKey: "continuePlaybackWhenLocked")
+        XCTAssertFalse(saved)
+
+        // Create new instance and verify it loads the saved value
+        let newSettings = AppSettings()
+        XCTAssertFalse(newSettings.continuePlaybackWhenLocked)
+    }
+
+    func testContinuePlaybackWhenLockedToggle() {
+        // Start with default (true)
+        XCTAssertTrue(settings.continuePlaybackWhenLocked)
+
+        // Toggle to false
+        settings.continuePlaybackWhenLocked = false
+        XCTAssertFalse(settings.continuePlaybackWhenLocked)
+
+        // Toggle back to true
+        settings.continuePlaybackWhenLocked = true
+        XCTAssertTrue(settings.continuePlaybackWhenLocked)
+    }
 }
