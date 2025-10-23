@@ -71,6 +71,14 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
 
+                Section(header: Text("Audio Playback")) {
+                    Toggle("Continue playback when locked", isOn: $settings.continuePlaybackWhenLocked)
+
+                    Text("When enabled, audio will continue playing even when you lock your screen")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
                 Section(header: Text("Connection Test")) {
                     Button(action: testConnection) {
                         HStack {

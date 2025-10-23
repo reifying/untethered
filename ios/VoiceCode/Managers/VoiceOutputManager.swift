@@ -12,10 +12,71 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     private weak var appSettings: AppSettings?
     var onSpeechComplete: (() -> Void)?
 
+    // Background playback support
+    private var silencePlayer: AVAudioPlayer?
+    private var keepAliveTimer: Timer?
+
     init(appSettings: AppSettings? = nil) {
         self.appSettings = appSettings
         super.init()
         synthesizer.delegate = self
+        setupSilencePlayer()
+    }
+
+    private func setupSilencePlayer() {
+        // Create a 100ms silent audio buffer
+        let silenceDuration: TimeInterval = 0.1
+        let sampleRate: Double = 44100.0
+        let channelCount = 1
+        let frameCount = UInt32(silenceDuration * sampleRate)
+
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: AVAudioChannelCount(channelCount)),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+            print("Failed to create silent audio buffer")
+            return
+        }
+
+        buffer.frameLength = frameCount
+        // Buffer is already silent (zeros) by default
+
+        // Create a temporary file for the silent audio
+        let tempDir = FileManager.default.temporaryDirectory
+        let silenceURL = tempDir.appendingPathComponent("silence.caf")
+
+        do {
+            // Write the silent buffer to a file
+            let audioFile = try AVAudioFile(forWriting: silenceURL, settings: format.settings)
+            try audioFile.write(from: buffer)
+
+            // Create player with the silent audio file
+            silencePlayer = try AVAudioPlayer(contentsOf: silenceURL)
+            silencePlayer?.prepareToPlay()
+        } catch {
+            print("Failed to setup silence player: \(error)")
+        }
+    }
+
+    // MARK: - Background Playback Support
+
+    private func startKeepAliveTimer() {
+        // Only start timer if user wants background playback
+        guard appSettings?.continuePlaybackWhenLocked ?? true else { return }
+
+        stopKeepAliveTimer()
+
+        // Play silent audio every 25 seconds to keep the audio session alive
+        keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 25.0, repeats: true) { [weak self] _ in
+            self?.playSilence()
+        }
+    }
+
+    private func stopKeepAliveTimer() {
+        keepAliveTimer?.invalidate()
+        keepAliveTimer = nil
+    }
+
+    private func playSilence() {
+        silencePlayer?.play()
     }
 
     // MARK: - Speech Control
@@ -43,7 +104,10 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         // Configure audio session for playback
         let audioSession = AVAudioSession.sharedInstance()
         do {
-            try audioSession.setCategory(.playback, mode: .default, options: [])
+            // Use .playback category if user wants audio to continue when locked
+            // Otherwise use .ambient which stops when screen locks
+            let category: AVAudioSession.Category = (appSettings?.continuePlaybackWhenLocked ?? true) ? .playback : .ambient
+            try audioSession.setCategory(category, mode: .spokenAudio, options: [])
             try audioSession.setActive(true)
         } catch {
             print("Failed to setup audio session: \(error)")
@@ -77,6 +141,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
 
     func stop() {
+        stopKeepAliveTimer()
         synthesizer.stopSpeaking(at: .immediate)
         DispatchQueue.main.async {
             self.isSpeaking = false
@@ -97,15 +162,23 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         DispatchQueue.main.async {
             self.isSpeaking = true
         }
+        // Start keep-alive timer for long TTS playback
+        startKeepAliveTimer()
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        // Reset audio session
-        let audioSession = AVAudioSession.sharedInstance()
-        do {
-            try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
-        } catch {
-            print("Failed to deactivate audio session: \(error)")
+        // Stop keep-alive timer
+        stopKeepAliveTimer()
+
+        // Only deactivate audio session if background playback is disabled
+        // Keeping it active when locked allows subsequent TTS to play without app suspension
+        if !(appSettings?.continuePlaybackWhenLocked ?? true) {
+            let audioSession = AVAudioSession.sharedInstance()
+            do {
+                try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+            } catch {
+                print("Failed to deactivate audio session: \(error)")
+            }
         }
 
         DispatchQueue.main.async {
@@ -115,12 +188,16 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        // Stop keep-alive timer
+        stopKeepAliveTimer()
+
         DispatchQueue.main.async {
             self.isSpeaking = false
         }
     }
 
     deinit {
+        stopKeepAliveTimer()
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
         }
