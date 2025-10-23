@@ -440,6 +440,23 @@
                                          invalid-sessions)}))
     (vec valid-sessions)))
 
+(defn get-recent-sessions
+  "Get the N most recently modified sessions, sorted by last-modified descending.
+  Returns vector of session metadata maps with keys:
+  - :session-id (string, lowercase UUID)
+  - :name (string)
+  - :working-directory (string)
+  - :last-modified (long, milliseconds since epoch)
+  
+  Only includes sessions with valid UUIDs."
+  [limit]
+  (let [all-sessions (get-all-sessions)]
+    (->> all-sessions
+         (sort-by :last-modified)
+         reverse
+         (take limit)
+         vec)))
+
 ;; ============================================================================
 ;; .jsonl File Parsing
 ;; ============================================================================

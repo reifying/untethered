@@ -224,26 +224,34 @@
           (is (= 1 (count (:messages msg)))))))))
 
 (deftest test-new-protocol-connect
-  (testing "Connect message returns session list"
+  (testing "Connect message returns session list and recent sessions"
     (with-redefs [voice-code.replication/get-all-sessions
-                  (fn [] [{:session-id "s1" :name "Session 1" :last-modified 1000 :message-count 5 :ios-notified true}
-                          {:session-id "s2" :name "Session 2" :last-modified 2000 :message-count 10 :ios-notified true}])]
+                  (fn [] [{:session-id "s1" :name "Session 1" :last-modified 1000 :message-count 5 :ios-notified true :working-directory "/path1"}
+                          {:session-id "s2" :name "Session 2" :last-modified 2000 :message-count 10 :ios-notified true :working-directory "/path2"}])]
       (reset! server/connected-clients {})
-      (let [sent-message (atom nil)]
+      (let [sent-messages (atom [])]
         (with-redefs [org.httpkit.server/send! (fn [channel msg]
-                                                 (reset! sent-message msg))]
+                                                 (swap! sent-messages conj msg))]
           (server/handle-message :test-ch "{\"type\":\"connect\"}")
 
           ;; Verify client registered
           (is (contains? @server/connected-clients :test-ch))
 
-          ;; Verify session list sent
-          (is (some? @sent-message))
-          (let [msg (json/parse-string @sent-message true)]
-            (is (= "session_list" (:type msg)))
-            (is (= 2 (count (:sessions msg))))
+          ;; Verify two messages sent
+          (is (= 2 (count @sent-messages)))
+
+          ;; First message should be session_list
+          (let [msg1 (json/parse-string (first @sent-messages) true)]
+            (is (= "session_list" (:type msg1)))
+            (is (= 2 (count (:sessions msg1))))
             ;; Sessions are sorted by last-modified descending, so s2 comes first
-            (is (= "s2" (:session_id (first (:sessions msg)))))))))))
+            (is (= "s2" (:session_id (first (:sessions msg1))))))
+
+          ;; Second message should be recent_sessions
+          (let [msg2 (json/parse-string (second @sent-messages) true)]
+            (is (= "recent_sessions" (:type msg2)))
+            (is (= 10 (:limit msg2)))
+            (is (vector? (:sessions msg2)))))))))
 
 (deftest test-prompt-session-id-distinction
   (testing "Prompt with new_session_id uses --session-id flag"
@@ -473,4 +481,41 @@
 
         (is (= "/Users/test/fallback" @working-dir-used)
             "Should fall back to iOS working directory if session metadata not found")))))
+
+(deftest test-recent-sessions-message-format
+  (testing "recent_sessions message uses snake_case and ISO-8601 timestamps"
+    (with-redefs [server/send-to-client! (fn [channel message]
+                                           (is (= :recent-sessions (:type message)))
+                                           (is (number? (:limit message)))
+                                           (is (vector? (:sessions message)))
+                                           (when (seq (:sessions message))
+                                             (let [first-session (first (:sessions message))]
+                                               ;; Verify kebab-case keys from Clojure
+                                               (is (contains? first-session :session-id))
+                                               (is (contains? first-session :name))
+                                               (is (contains? first-session :working-directory))
+                                               (is (contains? first-session :last-modified))
+                                               ;; Verify timestamp is ISO-8601 string
+                                               (is (string? (:last-modified first-session)))
+                                               (is (re-matches #"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z"
+                                                               (:last-modified first-session))))))]
+      (server/send-recent-sessions! :test-channel 10))))
+
+(deftest test-recent-sessions-json-conversion
+  (testing "recent_sessions converts to snake_case JSON"
+    (let [test-data {:type :recent-sessions
+                     :sessions [{:session-id "abc-123"
+                                 :name "Test Session"
+                                 :working-directory "/path/to/dir"
+                                 :last-modified "2025-10-22T12:00:00Z"}]
+                     :limit 10}
+          json-str (server/generate-json test-data)
+          parsed (json/parse-string json-str true)]
+      ;; Verify JSON uses snake_case
+      (is (= "recent_sessions" (:type parsed)))
+      (is (= 10 (:limit parsed)))
+      (is (= "abc-123" (:session_id (first (:sessions parsed)))))
+      (is (= "Test Session" (:name (first (:sessions parsed)))))
+      (is (= "/path/to/dir" (:working_directory (first (:sessions parsed)))))
+      (is (= "2025-10-22T12:00:00Z" (:last_modified (first (:sessions parsed))))))))
 

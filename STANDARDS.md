@@ -265,6 +265,24 @@ Sent when session compaction fails. Common errors:
 - "session_id required in compact_session message"
 - Claude CLI errors
 
+**Recent Sessions**
+```json
+{
+  "type": "recent_sessions",
+  "sessions": [
+    {
+      "session_id": "<lowercase-uuid>",
+      "name": "<session-name>",
+      "working_directory": "<absolute-path>",
+      "last_modified": "<ISO-8601-timestamp>"
+    }
+  ],
+  "limit": 10
+}
+```
+
+Sent automatically after `connected` response. Provides the N most recently modified sessions for display in the Recent section of the iOS Projects view. Sessions are sorted by `last_modified` descending (most recent first). Only includes sessions with valid UUID session IDs.
+
 ### Session Compaction
 
 **Overview:**

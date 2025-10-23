@@ -27,6 +27,8 @@
 (use-fixtures :each
   (fn [f]
     (cleanup-test-dir)
+    ;; Create test directory
+    (.mkdirs (io/file test-dir))
     ;; Reset watcher-state to ensure subscribed-sessions is always a set
     (reset! repl/watcher-state
             {:watch-service nil
@@ -1218,3 +1220,88 @@
       (let [metadata (get @repl/session-index session-id)]
         (is (= 2 (:message-count metadata)))
         (is (true? (:ios-notified metadata)))))))
+
+(deftest test-get-recent-sessions-sorting
+  (testing "get-recent-sessions returns sessions sorted by last-modified descending"
+    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))]
+      ;; Create test files with different timestamps
+      (let [session-id-1 "abc123de-4567-89ab-cdef-000000000001"
+            session-id-2 "abc123de-4567-89ab-cdef-000000000002"
+            session-id-3 "abc123de-4567-89ab-cdef-000000000003"
+            file-1 (io/file test-dir (str session-id-1 ".jsonl"))
+            file-2 (io/file test-dir (str session-id-2 ".jsonl"))
+            file-3 (io/file test-dir (str session-id-3 ".jsonl"))]
+
+        ;; Create files with messages
+        (create-test-jsonl-file (.getName file-1)
+                                [{:role "user" :text "First" :timestamp "2025-10-22T10:00:00Z"}])
+        (create-test-jsonl-file (.getName file-2)
+                                [{:role "user" :text "Second" :timestamp "2025-10-22T12:00:00Z"}])
+        (create-test-jsonl-file (.getName file-3)
+                                [{:role "user" :text "Third" :timestamp "2025-10-22T11:00:00Z"}])
+
+        ;; Set file timestamps (file-2 most recent, file-3 middle, file-1 oldest)
+        (.setLastModified file-1 1000)
+        (.setLastModified file-2 3000)
+        (.setLastModified file-3 2000)
+
+        ;; Build index
+        (repl/initialize-index!)
+
+        ;; Get recent sessions
+        (let [recent (repl/get-recent-sessions 10)]
+          (is (= 3 (count recent)))
+          ;; Should be ordered: file-2, file-3, file-1
+          (is (= session-id-2 (:session-id (nth recent 0))))
+          (is (= session-id-3 (:session-id (nth recent 1))))
+          (is (= session-id-1 (:session-id (nth recent 2)))))))))
+
+(deftest test-get-recent-sessions-limit
+  (testing "get-recent-sessions respects limit parameter"
+    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))]
+      ;; Create 5 test sessions
+      (doseq [i (range 5)]
+        (let [session-id (format "abc123de-4567-89ab-cdef-%012d" i)
+              file (io/file test-dir (str session-id ".jsonl"))]
+          (create-test-jsonl-file (.getName file)
+                                  [{:role "user" :text (str "Message " i)}])
+          (.setLastModified file (* (inc i) 1000))))
+
+      ;; Build index
+      (repl/initialize-index!)
+
+      ;; Request only 3 most recent
+      (let [recent (repl/get-recent-sessions 3)]
+        (is (= 3 (count recent)))
+        ;; Should get the 3 with highest timestamps (4, 3, 2)
+        (is (= "abc123de-4567-89ab-cdef-000000000004" (:session-id (nth recent 0))))
+        (is (= "abc123de-4567-89ab-cdef-000000000003" (:session-id (nth recent 1))))
+        (is (= "abc123de-4567-89ab-cdef-000000000002" (:session-id (nth recent 2))))))))
+
+(deftest test-get-recent-sessions-empty-index
+  (testing "get-recent-sessions handles empty index gracefully"
+    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))]
+      (repl/initialize-index!)
+      (let [recent (repl/get-recent-sessions 10)]
+        (is (empty? recent))
+        (is (vector? recent))))))
+
+(deftest test-get-recent-sessions-filters-invalid-uuids
+  (testing "get-recent-sessions only includes sessions with valid UUIDs"
+    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))]
+      ;; Create one valid UUID session and one invalid
+      (let [valid-id "abc123de-4567-89ab-cdef-000000000001"
+            invalid-file (io/file test-dir "not-a-uuid.jsonl")]
+
+        (create-test-jsonl-file (str valid-id ".jsonl")
+                                [{:role "user" :text "Valid"}])
+        (create-test-jsonl-file "not-a-uuid.jsonl"
+                                [{:role "user" :text "Invalid"}])
+
+        ;; Build index
+        (repl/initialize-index!)
+
+        ;; Should only get the valid UUID session
+        (let [recent (repl/get-recent-sessions 10)]
+          (is (= 1 (count recent)))
+          (is (= valid-id (:session-id (first recent)))))))))
