@@ -105,7 +105,7 @@ struct DirectoryListView: View {
                             }
                         }
                     } header: {
-                        Text("Projects")
+                        Text("Untethered")
                     }
                 }
                 .refreshable {
