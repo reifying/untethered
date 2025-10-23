@@ -30,6 +30,11 @@ struct ConversationView: View {
     @State private var lastCompactionStats: VoiceCodeClient.CompactionResult?
     @State private var compactionTimestamps: [UUID: Date] = [:]
     @State private var recentCompactionsBySession: [UUID: VoiceCodeClient.CompactionResult] = [:]
+    
+    // Auto-scroll state
+    @State private var hasPerformedInitialScroll = false
+    @State private var autoScrollEnabled = true  // Auto-scroll on by default
+    @State private var scrollProxy: ScrollViewProxy?
 
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
@@ -51,47 +56,69 @@ struct ConversationView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Messages area
-            ScrollViewReader { proxy in
-                ScrollView {
-                    if isLoading {
-                        VStack(spacing: 16) {
-                            ProgressView()
-                            Text("Loading conversation...")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+            ZStack(alignment: .bottomTrailing) {
+                ScrollViewReader { proxy in
+                    Color.clear
+                        .frame(height: 0)
+                        .onAppear {
+                            scrollProxy = proxy
                         }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(.top, 100)
-                    } else if messages.isEmpty && hasLoadedMessages {
-                        VStack(spacing: 16) {
-                            Image(systemName: "message")
-                                .font(.system(size: 64))
-                                .foregroundColor(.secondary)
-                            Text("No messages yet")
-                                .font(.title2)
-                                .foregroundColor(.secondary)
-                            Text("Start a conversation to see messages here.")
-                                .font(.body)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
+                    
+                    ScrollView {
+                        if isLoading {
+                            VStack(spacing: 16) {
+                                ProgressView()
+                                Text("Loading conversation...")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding(.top, 100)
+                        } else if messages.isEmpty && hasLoadedMessages {
+                            VStack(spacing: 16) {
+                                Image(systemName: "message")
+                                    .font(.system(size: 64))
+                                    .foregroundColor(.secondary)
+                                Text("No messages yet")
+                                    .font(.title2)
+                                    .foregroundColor(.secondary)
+                                Text("Start a conversation to see messages here.")
+                                    .font(.body)
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 100)
+                        } else {
+                            LazyVStack(spacing: 12) {
+                                ForEach(messages) { message in
+                                    CDMessageView(message: message, voiceOutput: voiceOutput, settings: settings)
+                                        .id(message.id)
+                                }
+                            }
+                            .padding()
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 100)
-                    } else {
-                        LazyVStack(spacing: 12) {
-                            ForEach(messages) { message in
-                                CDMessageView(message: message, voiceOutput: voiceOutput, settings: settings)
-                                    .id(message.id)
+                    }
+                    .onChange(of: messages.count) { oldCount, newCount in
+                        // Auto-scroll to new messages if enabled
+                        guard newCount > oldCount else { return }
+                        
+                        if autoScrollEnabled {
+                            if let lastMessage = messages.last {
+                                withAnimation {
+                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                }
                             }
                         }
-                        .padding()
                     }
-                }
-                .onChange(of: messages.count) { _ in
-                    // Auto-scroll to bottom on new message
-                    if let lastMessage = messages.last {
-                        withAnimation {
-                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                    .onChange(of: isLoading) { wasLoading, nowLoading in
+                        // When loading finishes, perform initial scroll to bottom
+                        if wasLoading && !nowLoading && !hasPerformedInitialScroll {
+                            hasPerformedInitialScroll = true
+                            if let lastMessage = messages.last {
+                                // Non-animated for immediate positioning
+                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                            }
                         }
                     }
                 }
@@ -163,6 +190,14 @@ struct ConversationView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
+                    // Auto-scroll toggle button (always visible)
+                    Button(action: {
+                        toggleAutoScroll()
+                    }) {
+                        Image(systemName: autoScrollEnabled ? "arrow.down.circle.fill" : "arrow.down.circle")
+                            .foregroundColor(autoScrollEnabled ? .blue : .gray)
+                    }
+                    
                     // Compact button
                     Button(action: {
                         if wasRecentlyCompacted {
@@ -212,6 +247,7 @@ struct ConversationView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+
         .alert("Compact Session?", isPresented: $showingCompactConfirmation) {
             Button("Cancel", role: .cancel) { }
             Button("Compact", role: .destructive) {
@@ -250,6 +286,10 @@ struct ConversationView: View {
             )
         }
         .onAppear {
+            // Reset scroll flags when view appears (handles navigation back to session)
+            hasPerformedInitialScroll = false
+            autoScrollEnabled = true  // Re-enable auto-scroll on view appear
+            
             loadSessionIfNeeded()
             setupVoiceInput()
 
@@ -457,6 +497,31 @@ struct ConversationView: View {
             return String(format: "%.1fK", k)
         }
         return "\(count)"
+    }
+    
+    private func toggleAutoScroll() {
+        if autoScrollEnabled {
+            // Disable auto-scroll
+            autoScrollEnabled = false
+        } else {
+            // Re-enable auto-scroll and jump to bottom
+            autoScrollEnabled = true
+            
+            if let proxy = scrollProxy, let lastMessage = messages.last {
+                withAnimation(.spring()) {
+                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Scroll Position Tracking
+
+struct ScrollOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
