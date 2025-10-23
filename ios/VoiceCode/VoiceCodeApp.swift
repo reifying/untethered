@@ -77,6 +77,13 @@ struct RootView: View {
             // Set up callback for recent_sessions before connecting
             client.onRecentSessionsReceived = { sessions in
                 logger.info("📥 Received \(sessions.count) recent sessions from backend")
+
+                // Debug: log first session JSON keys
+                if let firstSession = sessions.first {
+                    logger.info("🔍 First session keys: \(firstSession.keys.sorted())")
+                    logger.info("🔍 First session JSON: \(firstSession)")
+                }
+
                 let parsed = sessions.compactMap { RecentSession(json: $0) }
                 logger.info("✅ Successfully parsed \(parsed.count) of \(sessions.count) sessions")
                 self.recentSessions = parsed
