@@ -34,6 +34,12 @@ class AppSettings: ObservableObject {
         }
     }
 
+    @Published var recentSessionsLimit: Int {
+        didSet {
+            UserDefaults.standard.set(recentSessionsLimit, forKey: "recentSessionsLimit")
+        }
+    }
+
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
         let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
@@ -95,6 +101,7 @@ class AppSettings: ObservableObject {
         self.serverPort = UserDefaults.standard.string(forKey: "serverPort") ?? "8080"
         self.selectedVoiceIdentifier = UserDefaults.standard.string(forKey: "selectedVoiceIdentifier")
         self.continuePlaybackWhenLocked = UserDefaults.standard.object(forKey: "continuePlaybackWhenLocked") as? Bool ?? true
+        self.recentSessionsLimit = UserDefaults.standard.object(forKey: "recentSessionsLimit") as? Int ?? 5
     }
 
     func testConnection(completion: @escaping (Bool, String) -> Void) {

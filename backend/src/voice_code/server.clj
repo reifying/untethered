@@ -293,7 +293,9 @@
                           :sessions recent-sessions
                           :total-count total-non-empty}))
             ;; Send recent sessions list (separate message type for Recent section)
-            (send-recent-sessions! channel 10)))
+            ;; Use limit from client if provided, otherwise default to 5
+            (let [limit (or (:recent-sessions-limit data) 5)]
+              (send-recent-sessions! channel limit))))
 
         "subscribe"
         ;; Client requests full history for a session

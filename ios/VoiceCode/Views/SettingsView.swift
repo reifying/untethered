@@ -79,6 +79,14 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
 
+                Section(header: Text("Recent Sessions")) {
+                    Stepper("Show \(settings.recentSessionsLimit) sessions", value: $settings.recentSessionsLimit, in: 1...20)
+
+                    Text("Number of recent sessions to display in the Projects view")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
                 Section(header: Text("Connection Test")) {
                     Button(action: testConnection) {
                         HStack {

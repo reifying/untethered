@@ -24,12 +24,14 @@ class VoiceCodeClient: ObservableObject {
 
     private var sessionId: String?
     let sessionSyncManager: SessionSyncManager
+    private var appSettings: AppSettings?
 
     // Track active subscriptions for auto-restore on reconnection
     private var activeSubscriptions = Set<String>()
 
-    init(serverURL: String, voiceOutputManager: VoiceOutputManager? = nil, sessionSyncManager: SessionSyncManager? = nil) {
+    init(serverURL: String, voiceOutputManager: VoiceOutputManager? = nil, sessionSyncManager: SessionSyncManager? = nil, appSettings: AppSettings? = nil) {
         self.serverURL = serverURL
+        self.appSettings = appSettings
 
         // Create SessionSyncManager with VoiceOutputManager for auto-speak
         // Voice selection is handled by VoiceOutputManager which has AppSettings
@@ -417,6 +419,12 @@ class VoiceCodeClient: ObservableObject {
             print("📤 [VoiceCodeClient] Sending connect with session_id: \(sessionId)")
         } else {
             print("📤 [VoiceCodeClient] Sending connect without session_id")
+        }
+
+        // Include recent sessions limit from settings
+        if let limit = appSettings?.recentSessionsLimit {
+            message["recent_sessions_limit"] = limit
+            print("📤 [VoiceCodeClient] Requesting \(limit) recent sessions")
         }
 
         sendMessage(message)

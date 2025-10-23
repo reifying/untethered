@@ -38,7 +38,8 @@ struct RootView: View {
         _voiceOutput = StateObject(wrappedValue: voiceManager)
         _client = StateObject(wrappedValue: VoiceCodeClient(
             serverURL: settings.fullServerURL,
-            voiceOutputManager: voiceManager
+            voiceOutputManager: voiceManager,
+            appSettings: settings
         ))
     }
 
