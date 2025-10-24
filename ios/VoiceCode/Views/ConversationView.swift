@@ -209,7 +209,7 @@ struct ConversationView: View {
                         if isCompacting {
                             ProgressView()
                         } else {
-                            Image(systemName: "bolt.fill")
+                            Image(systemName: "rectangle.compress.vertical")
                                 .foregroundColor(wasRecentlyCompacted ? .green : .primary)
                         }
                     }
