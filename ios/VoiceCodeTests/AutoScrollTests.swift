@@ -66,10 +66,10 @@ final class AutoScrollTests: XCTestCase {
             message.role = i % 2 == 0 ? "user" : role
             message.text = "Test message \(i)"
             message.timestamp = Date().addingTimeInterval(Double(i))
-            message.messageStatus = .delivered
+            message.messageStatus = .confirmed
         }
 
-        testSession.messageCount = Int16(testSession.messages.count)
+        testSession.messageCount = Int32(testSession.messages?.count ?? 0)
         try? testContext.save()
     }
 
@@ -237,11 +237,11 @@ final class AutoScrollTests: XCTestCase {
 
     func testMessageInsertion_IncrementsCount() {
         // Test that adding messages increments the count properly
-        let initialCount = testSession.messages.count
+        let initialCount = testSession.messages?.count ?? 0
 
         addMessagesToSession(count: 3)
 
-        let newCount = testSession.messages.count
+        let newCount = testSession.messages?.count ?? 0
         XCTAssertEqual(newCount, initialCount + 3, "Should have 3 more messages")
     }
 
@@ -249,7 +249,7 @@ final class AutoScrollTests: XCTestCase {
         // Test handling of empty session
         let messages = testSession.messages
 
-        XCTAssertEqual(messages.count, 0, "New session should have no messages")
+        XCTAssertEqual(messages?.count ?? 0, 0, "New session should have no messages")
     }
 
     func testSingleMessage_CanScroll() {
@@ -257,8 +257,8 @@ final class AutoScrollTests: XCTestCase {
         addMessagesToSession(count: 1)
 
         let messages = testSession.messages
-        XCTAssertEqual(messages.count, 1, "Should have exactly 1 message")
-        XCTAssertNotNil(messages.first, "Should be able to get first message for scrolling")
+        XCTAssertEqual(messages?.count ?? 0, 1, "Should have exactly 1 message")
+        XCTAssertNotNil(messages?.allObjects.first, "Should be able to get first message for scrolling")
     }
 
     // MARK: - Edge Cases
