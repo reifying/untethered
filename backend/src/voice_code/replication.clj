@@ -241,17 +241,14 @@
 
 (defn generate-session-name
   "Generate a default name for a session.
-  Terminal sessions: 'Terminal: <dir-name> - <timestamp>'
-  iOS sessions: 'Voice: <dir-name> - <timestamp>'
-  
-  For now, we'll default to Terminal (detecting iOS sessions requires tracking)"
+  Format: '<dir-name> - <timestamp>'"
   [session-id working-dir created-at]
   (let [dir-name (last (str/split working-dir #"/"))
         timestamp (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm")
         instant (java.time.Instant/ofEpochMilli created-at)
         zoned (.atZone instant (java.time.ZoneId/systemDefault))
         formatted-time (.format timestamp zoned)]
-    (str "Terminal: " dir-name " - " formatted-time)))
+    (str dir-name " - " formatted-time)))
 
 (defn build-session-metadata
   "Build metadata map for a single .jsonl file"

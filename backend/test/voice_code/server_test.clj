@@ -247,10 +247,10 @@
             ;; Sessions are sorted by last-modified descending, so s2 comes first
             (is (= "s2" (:session_id (first (:sessions msg1))))))
 
-          ;; Second message should be recent_sessions
+          ;; Second message should be recent_sessions with default limit of 5
           (let [msg2 (json/parse-string (second @sent-messages) true)]
             (is (= "recent_sessions" (:type msg2)))
-            (is (= 10 (:limit msg2)))
+            (is (= 5 (:limit msg2))) ;; Default limit is 5
             (is (vector? (:sessions msg2)))))))))
 
 (deftest test-prompt-session-id-distinction
