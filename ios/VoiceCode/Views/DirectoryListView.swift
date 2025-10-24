@@ -105,7 +105,7 @@ struct DirectoryListView: View {
                             }
                         }
                     } header: {
-                        Text("Untethered")
+                        Text("Projects")
                     }
                 }
                 .refreshable {
@@ -114,7 +114,7 @@ struct DirectoryListView: View {
                 }
             }
         }
-        .navigationTitle("Projects")
+        .navigationTitle("Untethered")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
