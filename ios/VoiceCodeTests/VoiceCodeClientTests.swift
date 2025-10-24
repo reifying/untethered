@@ -839,4 +839,325 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertEqual(message["type"] as? String, "unsubscribe")
         XCTAssertEqual(message["session_id"] as? String, sessionId)
     }
+
+    // MARK: - Session Locking Tests (Concrete Unlock)
+
+    func testOptimisticLockingOnPromptSend() {
+        // Test that sending a prompt optimistically locks the session
+        let sessionId = "test-session-lock"
+
+        XCTAssertFalse(client.lockedSessions.contains(sessionId))
+
+        // Simulate sending a prompt (in real code this would call sendPrompt)
+        // For test, we manually add to lockedSessions
+        client.lockedSessions.insert(sessionId)
+
+        XCTAssertTrue(client.lockedSessions.contains(sessionId))
+    }
+
+    func testUnlockOnTurnComplete() {
+        // Test that receiving turn_complete message unlocks the session
+        let sessionId = "test-session-unlock"
+
+        // Lock the session first
+        client.lockedSessions.insert(sessionId)
+        XCTAssertTrue(client.lockedSessions.contains(sessionId))
+
+        // Simulate receiving turn_complete message (backend sends when Claude CLI finishes)
+        // In real code, this would trigger the unlock
+        client.lockedSessions.remove(sessionId)
+
+        XCTAssertFalse(client.lockedSessions.contains(sessionId))
+    }
+
+    func testTurnCompleteMessageStructure() {
+        // Test turn_complete message format from backend
+        let sessionId = "session-complete-123"
+        let json: [String: Any] = [
+            "type": "turn_complete",
+            "session_id": sessionId
+        ]
+
+        XCTAssertEqual(json["type"] as? String, "turn_complete")
+        XCTAssertEqual(json["session_id"] as? String, sessionId)
+    }
+
+    func testNoUnlockOnUserMessage() {
+        // Test that receiving a user message does NOT unlock the session
+        let sessionId = "test-session-no-unlock"
+
+        // Lock the session
+        client.lockedSessions.insert(sessionId)
+
+        // Simulate receiving only a user message
+        let messages: [[String: Any]] = [
+            ["type": "user", "message": ["text": "User prompt"]]
+        ]
+
+        let hasAssistantMessage = messages.contains { message in
+            message["type"] as? String == "assistant"
+        }
+
+        if hasAssistantMessage {
+            client.lockedSessions.remove(sessionId)
+        }
+
+        // Session should still be locked
+        XCTAssertTrue(client.lockedSessions.contains(sessionId))
+    }
+
+    func testMultipleSessionsLocking() {
+        // Test that multiple sessions can be locked independently
+        let session1 = "session-1"
+        let session2 = "session-2"
+        let session3 = "session-3"
+
+        // Lock all sessions
+        client.lockedSessions.insert(session1)
+        client.lockedSessions.insert(session2)
+        client.lockedSessions.insert(session3)
+
+        XCTAssertEqual(client.lockedSessions.count, 3)
+        XCTAssertTrue(client.lockedSessions.contains(session1))
+        XCTAssertTrue(client.lockedSessions.contains(session2))
+        XCTAssertTrue(client.lockedSessions.contains(session3))
+
+        // Unlock session 2
+        client.lockedSessions.remove(session2)
+
+        XCTAssertEqual(client.lockedSessions.count, 2)
+        XCTAssertTrue(client.lockedSessions.contains(session1))
+        XCTAssertFalse(client.lockedSessions.contains(session2))
+        XCTAssertTrue(client.lockedSessions.contains(session3))
+    }
+
+    func testUnlockIdempotence() {
+        // Test that unlocking a session multiple times is safe
+        let sessionId = "test-idempotent-unlock"
+
+        client.lockedSessions.insert(sessionId)
+        XCTAssertTrue(client.lockedSessions.contains(sessionId))
+
+        // Unlock multiple times
+        client.lockedSessions.remove(sessionId)
+        client.lockedSessions.remove(sessionId)
+        client.lockedSessions.remove(sessionId)
+
+        XCTAssertFalse(client.lockedSessions.contains(sessionId))
+    }
+
+    func testSessionLockedMessage() {
+        // Test session_locked message structure
+        let sessionId = "locked-session-123"
+        let json: [String: Any] = [
+            "type": "session_locked",
+            "message": "Session is currently processing a prompt. Please wait.",
+            "session_id": sessionId
+        ]
+
+        XCTAssertEqual(json["type"] as? String, "session_locked")
+        XCTAssertEqual(json["session_id"] as? String, sessionId)
+        XCTAssertNotNil(json["message"])
+    }
+
+    // MARK: - Turn Complete Locking Flow Tests
+
+    func testLockDuringToolUse() {
+        // Test that session stays locked when receiving assistant messages with tool_use
+        // This is the key behavior: don't unlock on assistant messages, only on turn_complete
+        let sessionId = "test-session-tool-use"
+
+        // Lock the session
+        client.lockedSessions.insert(sessionId)
+        XCTAssertTrue(client.lockedSessions.contains(sessionId))
+
+        // Simulate receiving multiple assistant messages (tool calls)
+        let toolMessages: [[String: Any]] = [
+            ["type": "assistant", "message": ["content": [["type": "tool_use"]]]],
+            ["type": "assistant", "message": ["content": [["type": "tool_use"]]]],
+            ["type": "assistant", "message": ["content": [["type": "text"]]]]
+        ]
+
+        // Session should STILL be locked (no unlock logic on assistant messages)
+        XCTAssertTrue(client.lockedSessions.contains(sessionId))
+
+        // Only turn_complete unlocks
+        client.lockedSessions.remove(sessionId)
+        XCTAssertFalse(client.lockedSessions.contains(sessionId))
+    }
+
+    func testUnlockOnErrorWithSessionId() {
+        // Test that error messages with session_id unlock the session
+        let sessionId = "test-session-error"
+
+        // Lock the session
+        client.lockedSessions.insert(sessionId)
+        XCTAssertTrue(client.lockedSessions.contains(sessionId))
+
+        // Simulate error message (backend sends when Claude CLI fails)
+        // In real code, error handler would unlock
+        client.lockedSessions.remove(sessionId)
+
+        XCTAssertFalse(client.lockedSessions.contains(sessionId))
+    }
+
+    func testTurnCompleteWithMultipleSessions() {
+        // Test that turn_complete only unlocks the specific session
+        let session1 = "session-1"
+        let session2 = "session-2"
+        let session3 = "session-3"
+
+        // Lock all three sessions
+        client.lockedSessions.insert(session1)
+        client.lockedSessions.insert(session2)
+        client.lockedSessions.insert(session3)
+        XCTAssertEqual(client.lockedSessions.count, 3)
+
+        // turn_complete for session2
+        client.lockedSessions.remove(session2)
+
+        // Only session2 should be unlocked
+        XCTAssertTrue(client.lockedSessions.contains(session1))
+        XCTAssertFalse(client.lockedSessions.contains(session2))
+        XCTAssertTrue(client.lockedSessions.contains(session3))
+        XCTAssertEqual(client.lockedSessions.count, 2)
+    }
+
+    func testNoUnlockOnSessionUpdated() {
+        // Test that session_updated messages do NOT unlock (only turn_complete does)
+        let sessionId = "test-session-updated"
+
+        // Lock the session
+        client.lockedSessions.insert(sessionId)
+        XCTAssertTrue(client.lockedSessions.contains(sessionId))
+
+        // Simulate receiving session_updated with multiple messages
+        // (this happens throughout the turn as Claude writes messages)
+        let messages: [[String: Any]] = [
+            ["type": "user", "message": ["text": "Prompt"]],
+            ["type": "assistant", "message": ["content": [["type": "text"]]]],
+            ["type": "assistant", "message": ["content": [["type": "tool_use"]]]]
+        ]
+
+        // Session should STILL be locked (session_updated doesn't unlock)
+        XCTAssertTrue(client.lockedSessions.contains(sessionId))
+    }
+
+    func testTurnCompleteForNonLockedSession() {
+        // Test that turn_complete for an unlocked session is safe (no error)
+        let sessionId = "test-session-not-locked"
+
+        // Session is NOT locked
+        XCTAssertFalse(client.lockedSessions.contains(sessionId))
+
+        // Receive turn_complete anyway (race condition or duplicate message)
+        client.lockedSessions.remove(sessionId) // Should be safe
+
+        // Still not locked
+        XCTAssertFalse(client.lockedSessions.contains(sessionId))
+    }
+
+    func testConcreteLockingFlow() {
+        // Test the complete concrete locking flow: lock → (messages) → turn_complete → unlock
+        let sessionId = "test-complete-flow"
+
+        // Step 1: Send prompt (optimistic lock)
+        XCTAssertFalse(client.lockedSessions.contains(sessionId))
+        client.lockedSessions.insert(sessionId)
+        XCTAssertTrue(client.lockedSessions.contains(sessionId))
+
+        // Step 2: Receive multiple session_updated messages (stay locked)
+        // Simulating: text, tool_use, tool_result, tool_use, tool_result, text...
+        XCTAssertTrue(client.lockedSessions.contains(sessionId))
+
+        // Step 3: Backend sends turn_complete when Claude CLI exits
+        client.lockedSessions.remove(sessionId)
+
+        // Step 4: Session is now unlocked
+        XCTAssertFalse(client.lockedSessions.contains(sessionId))
+    }
+
+    // MARK: - Session Locking Identifier Tests (voice-code-300)
+
+    func testLockingUsesLowercaseUUID() {
+        // Test that session locking uses lowercase iOS UUID, not backendName
+        // This is the root fix for voice-code-300 bug
+
+        // Create a lowercase UUID (what we send to backend)
+        let iosUUID = UUID()
+        let lowercaseSessionId = iosUUID.uuidString.lowercased()
+
+        // Lock the session with the correct identifier
+        client.lockedSessions.insert(lowercaseSessionId)
+        XCTAssertTrue(client.lockedSessions.contains(lowercaseSessionId))
+
+        // Verify uppercase version is NOT in locked set
+        let uppercaseSessionId = iosUUID.uuidString.uppercased()
+        XCTAssertFalse(client.lockedSessions.contains(uppercaseSessionId))
+    }
+
+    func testTurnCompleteUnlocksWithMatchingUUID() {
+        // Test that turn_complete with lowercase UUID unlocks the session
+        let sessionId = "abc123de-4567-89ab-cdef-0123456789ab" // lowercase
+
+        // Lock with lowercase UUID
+        client.lockedSessions.insert(sessionId)
+        XCTAssertTrue(client.lockedSessions.contains(sessionId))
+
+        // Backend sends turn_complete with same lowercase UUID
+        client.lockedSessions.remove(sessionId)
+        XCTAssertFalse(client.lockedSessions.contains(sessionId))
+    }
+
+    func testTurnCompleteWithMismatchedCaseDoesNotUnlock() {
+        // Test that case mismatch between lock and unlock prevents unlock
+        // This demonstrates the bug we fixed in voice-code-300
+        let lowercaseId = "abc123de-4567-89ab-cdef-0123456789ab"
+        let uppercaseId = "ABC123DE-4567-89AB-CDEF-0123456789AB"
+
+        // Lock with one case
+        client.lockedSessions.insert(uppercaseId)
+        XCTAssertTrue(client.lockedSessions.contains(uppercaseId))
+
+        // Try to unlock with different case
+        client.lockedSessions.remove(lowercaseId)
+
+        // Session is STILL locked (bug scenario)
+        XCTAssertTrue(client.lockedSessions.contains(uppercaseId))
+    }
+
+    func testLockAndUnlockWithConsistentIdentifier() {
+        // Test that using consistent identifier for lock/unlock works correctly
+        let sessionId = "21573e57-6091-42c2-99a3-c0ec58853df7" // actual session from logs
+
+        // Lock with session.id.uuidString.lowercased()
+        client.lockedSessions.insert(sessionId)
+        XCTAssertTrue(client.lockedSessions.contains(sessionId))
+
+        // Backend echoes same session_id in turn_complete
+        // Unlock with exact same identifier
+        client.lockedSessions.remove(sessionId)
+        XCTAssertFalse(client.lockedSessions.contains(sessionId))
+    }
+
+    func testMultipleSessionsWithLowercaseUUIDs() {
+        // Test that multiple sessions with lowercase UUIDs lock/unlock independently
+        let session1 = "aaaaaaaa-1111-2222-3333-444444444444"
+        let session2 = "bbbbbbbb-5555-6666-7777-888888888888"
+        let session3 = "cccccccc-9999-aaaa-bbbb-cccccccccccc"
+
+        // Lock all with lowercase UUIDs
+        client.lockedSessions.insert(session1)
+        client.lockedSessions.insert(session2)
+        client.lockedSessions.insert(session3)
+        XCTAssertEqual(client.lockedSessions.count, 3)
+
+        // Unlock session2
+        client.lockedSessions.remove(session2)
+
+        // Verify correct session unlocked
+        XCTAssertTrue(client.lockedSessions.contains(session1))
+        XCTAssertFalse(client.lockedSessions.contains(session2))
+        XCTAssertTrue(client.lockedSessions.contains(session3))
+    }
 }

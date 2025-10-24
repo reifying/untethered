@@ -54,10 +54,17 @@ struct ConversationView: View {
         )
     }
 
-    // Check if current session is locked (per-session locking)
+    // Check if current session is locked
     private var isSessionLocked: Bool {
-        let sessionId = session.id.uuidString.lowercased()
-        return client.lockedSessions.contains(sessionId)
+        let claudeSessionId = session.id.uuidString.lowercased()
+        return client.lockedSessions.contains(claudeSessionId)
+    }
+
+    // Manual unlock function
+    private func manualUnlock() {
+        let claudeSessionId = session.id.uuidString.lowercased()
+        client.lockedSessions.remove(claudeSessionId)
+        print("🔓 [Manual] User manually unlocked session: \(claudeSessionId)")
     }
 
     var body: some View {
@@ -169,7 +176,8 @@ struct ConversationView: View {
                         isDisabled: isSessionLocked,
                         onTranscriptionComplete: { text in
                             sendPromptText(text)
-                        }
+                        },
+                        onManualUnlock: manualUnlock
                     )
                 } else {
                     // Text mode
@@ -179,7 +187,8 @@ struct ConversationView: View {
                         onSend: {
                             sendPromptText(promptText)
                             promptText = ""
-                        }
+                        },
+                        onManualUnlock: manualUnlock
                     )
                 }
                 
@@ -394,6 +403,7 @@ struct ConversationView: View {
         draftManager.clearDraft(sessionID: sessionID)
 
         // Optimistically lock the session before sending
+        // Use session.id (iOS UUID) for locking since that's what backend echoes in turn_complete
         let sessionId = session.id.uuidString.lowercased()
         client.lockedSessions.insert(sessionId)
         print("🔒 [ConversationView] Optimistically locked session: \(sessionId)")
@@ -704,6 +714,7 @@ struct ConversationVoiceInputView: View {
     @ObservedObject var voiceInput: VoiceInputManager
     let isDisabled: Bool
     let onTranscriptionComplete: (String) -> Void
+    let onManualUnlock: () -> Void
 
     var body: some View {
         VStack {
@@ -727,13 +738,17 @@ struct ConversationVoiceInputView: View {
                 }
             } else {
                 Button(action: {
-                    voiceInput.startRecording()
+                    if isDisabled {
+                        onManualUnlock()
+                    } else {
+                        voiceInput.startRecording()
+                    }
                 }) {
                     VStack {
                         Image(systemName: "mic")
                             .font(.system(size: 40))
                             .foregroundColor(isDisabled ? .gray : .blue)
-                        Text(isDisabled ? "Session Locked" : "Tap to Speak")
+                        Text(isDisabled ? "Tap to Unlock" : "Tap to Speak")
                             .font(.caption)
                             .foregroundColor(isDisabled ? .gray : .primary)
                     }
@@ -741,7 +756,6 @@ struct ConversationVoiceInputView: View {
                     .background((isDisabled ? Color.gray : Color.blue).opacity(0.1))
                     .cornerRadius(50)
                 }
-                .disabled(isDisabled)
             }
 
             if !voiceInput.transcribedText.isEmpty {
@@ -760,21 +774,33 @@ struct ConversationTextInputView: View {
     @Binding var text: String
     let isDisabled: Bool
     let onSend: () -> Void
+    let onManualUnlock: () -> Void
 
     var body: some View {
         HStack {
-            TextField("Type your message...", text: $text, axis: .vertical)
+            TextField(isDisabled ? "Session locked - tap to unlock" : "Type your message...", text: $text, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...5)
                 .disabled(isDisabled)
                 .opacity(isDisabled ? 0.5 : 1.0)
+                .onTapGesture {
+                    if isDisabled {
+                        onManualUnlock()
+                    }
+                }
 
-            Button(action: onSend) {
-                Image(systemName: "arrow.up.circle.fill")
+            Button(action: {
+                if isDisabled {
+                    onManualUnlock()
+                } else {
+                    onSend()
+                }
+            }) {
+                Image(systemName: isDisabled ? "lock.fill" : "arrow.up.circle.fill")
                     .font(.system(size: 32))
-                    .foregroundColor(text.isEmpty || isDisabled ? .gray : .blue)
+                    .foregroundColor(isDisabled ? .orange : (text.isEmpty ? .gray : .blue))
             }
-            .disabled(text.isEmpty || isDisabled)
+            .disabled(text.isEmpty && !isDisabled)
         }
         .padding(.horizontal)
     }
