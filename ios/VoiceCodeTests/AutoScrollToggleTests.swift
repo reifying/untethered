@@ -62,10 +62,10 @@ final class AutoScrollToggleTests: XCTestCase {
             message.role = i % 2 == 0 ? "user" : role
             message.text = "Test message \(i)"
             message.timestamp = Date().addingTimeInterval(Double(i))
-            message.messageStatus = .delivered
+            message.messageStatus = .confirmed
         }
 
-        testSession.messageCount = Int16(testSession.messages.count)
+        testSession.messageCount = Int32(testSession.messages?.count ?? 0)
         try? testContext.save()
     }
 
@@ -185,11 +185,11 @@ final class AutoScrollToggleTests: XCTestCase {
 
     func testMessageInsertion() {
         // Test that adding messages updates count
-        let initialCount = testSession.messages.count
+        let initialCount = testSession.messages?.count ?? 0
 
         addMessagesToSession(count: 3)
 
-        let newCount = testSession.messages.count
+        let newCount = testSession.messages?.count ?? 0
         XCTAssertEqual(newCount, initialCount + 3, "Should have 3 more messages")
     }
 
@@ -197,7 +197,7 @@ final class AutoScrollToggleTests: XCTestCase {
         // Test handling of empty session
         let messages = testSession.messages
 
-        XCTAssertEqual(messages.count, 0, "New session should have no messages")
+        XCTAssertEqual(messages?.count ?? 0, 0, "New session should have no messages")
     }
 
     // MARK: - Toggle Flow Tests
@@ -249,7 +249,7 @@ final class AutoScrollToggleTests: XCTestCase {
         var autoScrollEnabled = true
         let messages = testSession.messages
 
-        XCTAssertEqual(messages.count, 0, "Session should be empty")
+        XCTAssertEqual(messages?.count ?? 0, 0, "Session should be empty")
 
         // Toggle should still work
         autoScrollEnabled = false

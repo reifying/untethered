@@ -25,7 +25,7 @@ class CompactionIconStateTests: XCTestCase {
         }
         
         context = container.viewContext
-        client = VoiceCodeClient()
+        client = VoiceCodeClient(serverURL: "ws://localhost:8080")
         settings = AppSettings()
     }
     
@@ -41,9 +41,14 @@ class CompactionIconStateTests: XCTestCase {
     func createTestSession() -> CDSession {
         let session = CDSession(context: context)
         session.id = UUID()
+        session.backendName = UUID().uuidString.lowercased()
         session.workingDirectory = "/test/path"
         session.messageCount = 10
-        session.createdAt = Date()
+        session.lastModified = Date()
+        session.preview = ""
+        session.unreadCount = 0
+        session.markedDeleted = false
+        session.isLocallyCreated = false
         return session
     }
     
@@ -63,7 +68,7 @@ class CompactionIconStateTests: XCTestCase {
     func testIconTurnsGreenAfterCompaction() {
         // Given: A session with a compaction result
         let session = createTestSession()
-        let result = CompactionResult(
+        let result = VoiceCodeClient.CompactionResult(
             sessionId: session.id.uuidString.lowercased(),
             oldMessageCount: 100,
             newMessageCount: 20,
@@ -98,7 +103,7 @@ class CompactionIconStateTests: XCTestCase {
         let session1 = createTestSession()
         let session2 = createTestSession()
         
-        let result1 = CompactionResult(
+        let result1 = VoiceCodeClient.CompactionResult(
             sessionId: session1.id.uuidString.lowercased(),
             oldMessageCount: 100,
             newMessageCount: 20,
@@ -123,7 +128,7 @@ class CompactionIconStateTests: XCTestCase {
     func testTappingGreenIconShowsStatsAlert() {
         // Given: A session with recent compaction (green icon)
         let session = createTestSession()
-        let result = CompactionResult(
+        let result = VoiceCodeClient.CompactionResult(
             sessionId: session.id.uuidString.lowercased(),
             oldMessageCount: 100,
             newMessageCount: 20,
@@ -169,7 +174,7 @@ class CompactionIconStateTests: XCTestCase {
     
     func testCompactionStatsDisplayCorrectly() {
         // Given: A compaction result with stats
-        let result = CompactionResult(
+        let result = VoiceCodeClient.CompactionResult(
             sessionId: UUID().uuidString.lowercased(),
             oldMessageCount: 150,
             newMessageCount: 30,
@@ -217,7 +222,7 @@ class CompactionIconStateTests: XCTestCase {
     func testOnAppearRestoresSessionSpecificState() {
         // Given: A session that was previously compacted
         let session = createTestSession()
-        let result = CompactionResult(
+        let result = VoiceCodeClient.CompactionResult(
             sessionId: session.id.uuidString.lowercased(),
             oldMessageCount: 100,
             newMessageCount: 20,
