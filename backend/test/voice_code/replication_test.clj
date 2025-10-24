@@ -151,10 +151,14 @@
 
 (deftest test-generate-session-name
   (testing "Generate session name with timestamp"
-    (let [name (repl/generate-session-name "abc-123" "/Users/test/myproject" 1697481234000)]
-      (is (str/includes? name "Terminal:"))
+    (let [session-id "test-session-123"
+          working-dir "/Users/foo/projects/myproject"
+          created-at 1697460800000 ; 2023-10-16 13:33:20 UTC
+          name (repl/generate-session-name session-id working-dir created-at)]
       (is (str/includes? name "myproject"))
-      (is (str/includes? name "2023"))))) ; Year from timestamp
+      (is (str/includes? name "2023-10-16"))
+      ;; No longer includes "Terminal:" prefix
+      (is (not (str/includes? name "Terminal:")))))) ; Year from timestamp
 
 (deftest test-build-session-metadata
   (testing "Build complete session metadata for valid UUID filename"

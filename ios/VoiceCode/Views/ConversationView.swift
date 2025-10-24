@@ -651,8 +651,20 @@ struct RenameSessionView: View {
         NavigationView {
             Form {
                 Section(header: Text("Session Name")) {
-                    TextField("Enter session name", text: $sessionName)
-                        .textInputAutocapitalization(.words)
+                    HStack {
+                        TextField("Enter session name", text: $sessionName)
+                            .textInputAutocapitalization(.words)
+                        
+                        if !sessionName.isEmpty {
+                            Button(action: {
+                                sessionName = ""
+                            }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
             }
             .navigationTitle("Rename Session")
