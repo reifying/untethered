@@ -9,6 +9,7 @@ class VoiceCodeClient: ObservableObject {
     @Published var isConnected = false
     @Published var currentError: String?
     @Published var isProcessing = false
+    @Published var lockedSessions = Set<String>()  // Claude session IDs currently locked
 
     private var webSocket: URLSessionWebSocketTask?
     private var reconnectionTimer: DispatchSourceTimer?
@@ -237,6 +238,13 @@ class VoiceCodeClient: ObservableObject {
 
             case "response":
                 self.isProcessing = false
+
+                // Unlock session when response is received
+                if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
+                    self.lockedSessions.remove(sessionId)
+                    print("🔓 [VoiceCodeClient] Session unlocked: \(sessionId)")
+                }
+
                 if let success = json["success"] as? Bool, success {
                     // Extract iOS session UUID for routing
                     let iosSessionId = (json["ios_session_id"] as? String) ?? (json["ios-session-id"] as? String) ?? ""
@@ -317,6 +325,13 @@ class VoiceCodeClient: ObservableObject {
                 print("❌ [VoiceCodeClient] Received compaction_error")
                 self.onCompactionResponse?(json)
 
+            case "session_locked":
+                // Session is currently locked (processing a prompt)
+                if let sessionId = json["session_id"] as? String {
+                    print("🔒 [VoiceCodeClient] Session locked: \(sessionId)")
+                    self.lockedSessions.insert(sessionId)
+                }
+
             default:
                 print("Unknown message type: \(type)")
             }
@@ -326,6 +341,13 @@ class VoiceCodeClient: ObservableObject {
     // MARK: - Send Messages
 
     func sendPrompt(_ text: String, iosSessionId: String, sessionId: String? = nil, workingDirectory: String? = nil) {
+        // Optimistically lock the session before sending
+        // This prevents UI from accepting new input while prompt is in flight
+        if let sessionId = sessionId {
+            lockedSessions.insert(sessionId)
+            print("🔒 [VoiceCodeClient] Optimistically locked session: \(sessionId)")
+        }
+
         var message: [String: Any] = [
             "type": "prompt",
             "text": text,

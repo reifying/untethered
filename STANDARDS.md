@@ -216,6 +216,17 @@ Triggers compaction of the specified session. The `session_id` must be the iOS s
 }
 ```
 
+**Session Locked**
+```json
+{
+  "type": "session_locked",
+  "message": "Session is currently processing a prompt. Please wait.",
+  "session_id": "<claude-session-id>"
+}
+```
+
+Sent when a client attempts to send a prompt to a session that is already processing a prompt. The backend maintains per-session locks to prevent concurrent Claude CLI executions that could fork the session. The client should disable input controls for the locked session until it receives a response or error.
+
 **Pong**
 ```json
 {
@@ -335,6 +346,35 @@ Session compaction reduces conversation history by summarizing older messages. T
 **Connection Errors:**
 - WebSocket disconnect → iOS reconnects with same session UUID
 - Backend restart → Sessions restored from `resources/sessions.edn`
+
+### Session Locking
+
+**Overview:**
+Session locking prevents concurrent prompts from forking the same Claude session. When a session is actively processing a prompt, the backend locks it and rejects additional prompts until the Claude CLI execution completes.
+
+**Behavior:**
+- Backend maintains a set of locked Claude session IDs
+- Lock acquired before invoking Claude CLI
+- Lock released when CLI completes (success or error)
+- Locked sessions reject new prompts with `session_locked` message
+- Per-session locking: users can work with multiple sessions simultaneously
+
+**Frontend Implementation:**
+- iOS tracks `lockedSessions` as a `Set<String>` of Claude session IDs
+- Optimistic locking: session locked when sending prompt (before backend confirms)
+- Input controls disabled for locked sessions (voice and text)
+- Lock status checked per-session (not global)
+- Lock released when `response` or `error` received
+
+**Multi-Session Workflow:**
+Users can switch between sessions while keeping multiple agents busy. Each session has independent lock state, so locking session A doesn't prevent sending prompts to session B.
+
+**Lock Lifecycle:**
+1. User sends prompt → iOS optimistically locks session
+2. Backend attempts lock acquisition
+3. If locked: sends `session_locked` message
+4. If unlocked: acquires lock, invokes Claude CLI
+5. When CLI completes: releases lock, sends response
 
 ### Message ID Format
 

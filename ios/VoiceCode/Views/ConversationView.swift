@@ -53,7 +53,13 @@ struct ConversationView: View {
             animation: .default
         )
     }
-    
+
+    // Check if current session is locked (per-session locking)
+    private var isSessionLocked: Bool {
+        let sessionId = session.id.uuidString.lowercased()
+        return client.lockedSessions.contains(sessionId)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Messages area
@@ -160,6 +166,7 @@ struct ConversationView: View {
                 if isVoiceMode {
                     ConversationVoiceInputView(
                         voiceInput: voiceInput,
+                        isDisabled: isSessionLocked,
                         onTranscriptionComplete: { text in
                             sendPromptText(text)
                         }
@@ -168,6 +175,7 @@ struct ConversationView: View {
                     // Text mode
                     ConversationTextInputView(
                         text: $promptText,
+                        isDisabled: isSessionLocked,
                         onSend: {
                             sendPromptText(promptText)
                             promptText = ""
@@ -385,6 +393,11 @@ struct ConversationView: View {
         let sessionID = session.id.uuidString.lowercased()
         draftManager.clearDraft(sessionID: sessionID)
 
+        // Optimistically lock the session before sending
+        let sessionId = session.id.uuidString.lowercased()
+        client.lockedSessions.insert(sessionId)
+        print("🔒 [ConversationView] Optimistically locked session: \(sessionId)")
+
         // Create optimistic message
         client.sessionSyncManager.createOptimisticMessage(sessionId: session.id, text: trimmedText) { messageId in
             print("Created optimistic message: \(messageId)")
@@ -403,11 +416,11 @@ struct ConversationView: View {
         ]
 
         if isNewSession {
-            message["new_session_id"] = session.id.uuidString.lowercased()
-            print("📤 [ConversationView] Sending prompt with new_session_id: \(session.id.uuidString.lowercased())")
+            message["new_session_id"] = sessionId
+            print("📤 [ConversationView] Sending prompt with new_session_id: \(sessionId)")
         } else {
-            message["resume_session_id"] = session.id.uuidString.lowercased()
-            print("📤 [ConversationView] Sending prompt with resume_session_id: \(session.id.uuidString.lowercased())")
+            message["resume_session_id"] = sessionId
+            print("📤 [ConversationView] Sending prompt with resume_session_id: \(sessionId)")
         }
 
         client.sendMessage(message)
@@ -689,6 +702,7 @@ struct RenameSessionView: View {
 
 struct ConversationVoiceInputView: View {
     @ObservedObject var voiceInput: VoiceInputManager
+    let isDisabled: Bool
     let onTranscriptionComplete: (String) -> Void
 
     var body: some View {
@@ -718,13 +732,16 @@ struct ConversationVoiceInputView: View {
                     VStack {
                         Image(systemName: "mic")
                             .font(.system(size: 40))
-                        Text("Tap to Speak")
+                            .foregroundColor(isDisabled ? .gray : .blue)
+                        Text(isDisabled ? "Session Locked" : "Tap to Speak")
                             .font(.caption)
+                            .foregroundColor(isDisabled ? .gray : .primary)
                     }
                     .frame(width: 100, height: 100)
-                    .background(Color.blue.opacity(0.1))
+                    .background((isDisabled ? Color.gray : Color.blue).opacity(0.1))
                     .cornerRadius(50)
                 }
+                .disabled(isDisabled)
             }
 
             if !voiceInput.transcribedText.isEmpty {
@@ -741,6 +758,7 @@ struct ConversationVoiceInputView: View {
 
 struct ConversationTextInputView: View {
     @Binding var text: String
+    let isDisabled: Bool
     let onSend: () -> Void
 
     var body: some View {
@@ -748,13 +766,15 @@ struct ConversationTextInputView: View {
             TextField("Type your message...", text: $text, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...5)
+                .disabled(isDisabled)
+                .opacity(isDisabled ? 0.5 : 1.0)
 
             Button(action: onSend) {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 32))
-                    .foregroundColor(text.isEmpty ? .gray : .blue)
+                    .foregroundColor(text.isEmpty || isDisabled ? .gray : .blue)
             }
-            .disabled(text.isEmpty)
+            .disabled(text.isEmpty || isDisabled)
         }
         .padding(.horizontal)
     }

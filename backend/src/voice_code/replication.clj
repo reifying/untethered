@@ -21,8 +21,8 @@
 ;; ============================================================================
 
 (defonce session-locks
-  "Set of Claude session IDs currently executing Claude CLI commands.
-   Used to prevent concurrent prompts from forking the same session."
+  ;; Set of Claude session IDs currently executing Claude CLI commands.
+  ;; Used to prevent concurrent prompts from forking the same session.
   (atom #{}))
 
 (defn acquire-session-lock!
