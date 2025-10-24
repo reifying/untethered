@@ -43,6 +43,9 @@ class VoiceCodeClient: ObservableObject {
         }
 
         setupLifecycleObservers()
+
+        // Migrate existing sessions to have correct backendName (UUID instead of display name)
+        migrateExistingSessionsBackendName()
     }
 
     private func setupLifecycleObservers() {
@@ -103,6 +106,9 @@ class VoiceCodeClient: ObservableObject {
 
         DispatchQueue.main.async {
             self.isConnected = false
+            // Clear all locked sessions on disconnect to prevent stuck locks
+            self.lockedSessions.removeAll()
+            print("🔓 [VoiceCodeClient] Cleared all locked sessions on disconnect")
         }
     }
 
@@ -172,6 +178,9 @@ class VoiceCodeClient: ObservableObject {
                 DispatchQueue.main.async {
                     self.isConnected = false
                     self.currentError = error.localizedDescription
+                    // Clear all locked sessions on connection failure
+                    self.lockedSessions.removeAll()
+                    print("🔓 [VoiceCodeClient] Cleared all locked sessions on connection failure")
                 }
             }
         }
@@ -276,6 +285,12 @@ class VoiceCodeClient: ObservableObject {
                 let error = json["message"] as? String ?? "Unknown error"
                 self.currentError = error
 
+                // Unlock session when error is received
+                if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
+                    self.lockedSessions.remove(sessionId)
+                    print("🔓 [VoiceCodeClient] Session unlocked after error: \(sessionId)")
+                }
+
             case "pong":
                 // Pong response to ping
                 break
@@ -315,6 +330,19 @@ class VoiceCodeClient: ObservableObject {
                     self.sessionSyncManager.handleSessionUpdated(sessionId: sessionId, messages: messages)
                 }
 
+            case "turn_complete":
+                // Backend signals that Claude CLI has finished (turn is complete)
+                if let sessionId = json["session_id"] as? String {
+                    print("✅ [VoiceCodeClient] Received turn_complete for \(sessionId)")
+                    if self.lockedSessions.contains(sessionId) {
+                        self.lockedSessions.remove(sessionId)
+                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (turn complete, remaining locks: \(self.lockedSessions.count))")
+                        if !self.lockedSessions.isEmpty {
+                            print("   Still locked: \(Array(self.lockedSessions))")
+                        }
+                    }
+                }
+
             case "compaction_complete":
                 // Session compaction completed successfully
                 print("⚡️ [VoiceCodeClient] Received compaction_complete")
@@ -342,10 +370,10 @@ class VoiceCodeClient: ObservableObject {
 
     func sendPrompt(_ text: String, iosSessionId: String, sessionId: String? = nil, workingDirectory: String? = nil) {
         // Optimistically lock the session before sending
-        // This prevents UI from accepting new input while prompt is in flight
+        // Unlock will happen when we receive ANY assistant message for this session
         if let sessionId = sessionId {
             lockedSessions.insert(sessionId)
-            print("🔒 [VoiceCodeClient] Optimistically locked session: \(sessionId)")
+            print("🔒 [VoiceCodeClient] Optimistically locked: \(sessionId) (total locks: \(lockedSessions.count))")
         }
 
         var message: [String: Any] = [
@@ -583,6 +611,40 @@ class VoiceCodeClient: ObservableObject {
                     self.currentError = error.localizedDescription
                 }
             }
+        }
+    }
+
+    /// Migrate existing sessions to have correct backendName (UUID instead of display name)
+    /// This fixes sessions created before the backendName fix
+    private func migrateExistingSessionsBackendName() {
+        let context = PersistenceController.shared.container.viewContext
+        let fetchRequest = CDSession.fetchRequest()
+
+        do {
+            let sessions = try context.fetch(fetchRequest)
+            var migrationCount = 0
+
+            for session in sessions {
+                // Check if backendName is already a valid UUID
+                let backendName = session.backendName
+                let sessionId = session.id.uuidString.lowercased()
+
+                // If backendName doesn't match the session ID (UUID), fix it
+                if backendName != sessionId {
+                    print("🔧 [Migration] Fixing session \(sessionId): backendName was '\(backendName)', setting to '\(sessionId)'")
+                    session.backendName = sessionId
+                    migrationCount += 1
+                }
+            }
+
+            if migrationCount > 0 {
+                try context.save()
+                print("✅ [Migration] Fixed backendName for \(migrationCount) existing session(s)")
+            } else {
+                print("✅ [Migration] All sessions already have correct backendName")
+            }
+        } catch {
+            print("❌ [Migration] Failed to migrate sessions: \(error)")
         }
     }
 

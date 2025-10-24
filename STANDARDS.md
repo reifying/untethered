@@ -28,6 +28,7 @@
   - Incorrect: `session.id.uuidString` (produces uppercase)
 - **Backend**: Store and compare UUIDs as lowercase strings without normalization
 - **Rationale**: Eliminates case-sensitivity bugs, ensures consistent logging/debugging, prevents issues on case-sensitive filesystems
+- **Session Migration**: VoiceCodeClient automatically migrates existing sessions on init to ensure `backendName` contains the UUID (not a display name)
 
 #### Examples
 
@@ -225,7 +226,17 @@ Triggers compaction of the specified session. The `session_id` must be the iOS s
 }
 ```
 
-Sent when a client attempts to send a prompt to a session that is already processing a prompt. The backend maintains per-session locks to prevent concurrent Claude CLI executions that could fork the session. The client should disable input controls for the locked session until it receives a response or error.
+Sent when a client attempts to send a prompt to a session that is already processing a prompt. The backend maintains per-session locks to prevent concurrent Claude CLI executions that could fork the session. The client should disable input controls for the locked session until it receives a turn_complete or error message.
+
+**Turn Complete**
+```json
+{
+  "type": "turn_complete",
+  "session_id": "<claude-session-id>"
+}
+```
+
+Sent when Claude CLI finishes processing a prompt successfully (turn is complete). This is the concrete signal for iOS to unlock the session and re-enable input controls. On failure, only `error` (with `session_id`) is sent, which also triggers unlock.
 
 **Pong**
 ```json
@@ -364,7 +375,8 @@ Session locking prevents concurrent prompts from forking the same Claude session
 - Optimistic locking: session locked when sending prompt (before backend confirms)
 - Input controls disabled for locked sessions (voice and text)
 - Lock status checked per-session (not global)
-- Lock released when `response` or `error` received
+- Lock released when `turn_complete` or `error` received
+- Manual unlock available (UI shows "Tap to Unlock" for stuck locks)
 
 **Multi-Session Workflow:**
 Users can switch between sessions while keeping multiple agents busy. Each session has independent lock state, so locking session A doesn't prevent sending prompts to session B.
@@ -374,7 +386,8 @@ Users can switch between sessions while keeping multiple agents busy. Each sessi
 2. Backend attempts lock acquisition
 3. If locked: sends `session_locked` message
 4. If unlocked: acquires lock, invokes Claude CLI
-5. When CLI completes: releases lock, sends response
+5. When CLI completes: releases lock, sends `turn_complete`
+6. iOS receives `turn_complete` → unlocks session
 
 ### Message ID Format
 

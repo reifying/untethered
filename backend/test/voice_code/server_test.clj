@@ -519,3 +519,37 @@
       (is (= "/path/to/dir" (:working_directory (first (:sessions parsed)))))
       (is (= "2025-10-22T12:00:00Z" (:last_modified (first (:sessions parsed))))))))
 
+(deftest test-turn-complete-message-format
+  (testing "Turn complete message uses correct snake_case format"
+    (let [test-data {:type :turn-complete
+                     :session-id "test-session-123"}
+          json-str (server/generate-json test-data)
+          parsed (json/parse-string json-str true)]
+      ;; Verify JSON uses snake_case
+      (is (= "turn_complete" (:type parsed)))
+      (is (= "test-session-123" (:session_id parsed))))))
+
+(deftest test-turn-complete-with-error-handling
+  (testing "Error messages include session_id for unlock"
+    (let [error-data {:type :error
+                      :message "Claude CLI failed"
+                      :session-id "test-session-456"}
+          json-str (server/generate-json error-data)
+          parsed (json/parse-string json-str true)]
+      ;; Verify error includes session_id
+      (is (= "error" (:type parsed)))
+      (is (= "Claude CLI failed" (:message parsed)))
+      (is (= "test-session-456" (:session_id parsed))))))
+
+(deftest test-session-locked-message-format
+  (testing "Session locked message uses correct snake_case format"
+    (let [test-data {:type :session-locked
+                     :message "Session is currently processing a prompt. Please wait."
+                     :session-id "locked-session-789"}
+          json-str (server/generate-json test-data)
+          parsed (json/parse-string json-str true)]
+      ;; Verify JSON uses snake_case
+      (is (= "session_locked" (:type parsed)))
+      (is (= "Session is currently processing a prompt. Please wait." (:message parsed)))
+      (is (= "locked-session-789" (:session_id parsed))))))
+

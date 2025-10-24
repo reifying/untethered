@@ -445,15 +445,21 @@
                      (try
                        ;; Just log completion - let filesystem watcher handle updates
                        (if (:success response)
-                         (log/info "Prompt completed successfully"
-                                   {:session-id (:session-id response)
-                                    :message "Filesystem watcher will send session_updated"})
                          (do
-                           (log/error "Prompt failed" {:error (:error response)})
-                           ;; Still send error responses directly
+                           (log/info "Prompt completed successfully"
+                                     {:session-id (:session-id response)
+                                      :message "Filesystem watcher will send session_updated"})
+                           ;; Send turn_complete message so iOS can unlock
+                           (send-to-client! channel
+                                            {:type :turn-complete
+                                             :session-id claude-session-id}))
+                         (do
+                           (log/error "Prompt failed" {:error (:error response) :session-id claude-session-id})
+                           ;; Still send error responses directly - include session-id so iOS can unlock
                            (send-to-client! channel
                                             {:type :error
-                                             :message (:error response)})))
+                                             :message (:error response)
+                                             :session-id claude-session-id})))
                        (finally
                          (repl/release-session-lock! claude-session-id))))
                    :new-session-id new-session-id

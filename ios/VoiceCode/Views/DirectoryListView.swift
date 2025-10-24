@@ -169,8 +169,8 @@ struct DirectoryListView: View {
         // Create CDSession in CoreData
         let session = CDSession(context: viewContext)
         session.id = sessionId
-        session.backendName = name
-        session.localName = name
+        session.backendName = sessionId.uuidString.lowercased()  // Backend ID = iOS UUID for new sessions
+        session.localName = name  // User-friendly display name
         session.workingDirectory = workingDirectory ?? FileManager.default.currentDirectoryPath
         session.lastModified = Date()
         session.messageCount = 0
