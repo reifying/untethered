@@ -146,6 +146,15 @@
                       :sessions sessions-minimal
                       :limit limit})))
 
+(defn send-session-locked!
+  "Send session_locked message to client indicating session is processing a prompt."
+  [channel session-id]
+  (log/info "Sending session_locked message" {:session-id session-id})
+  (send-to-client! channel
+                   {:type :session-locked
+                    :message "Session is currently processing a prompt. Please wait."
+                    :session-id session-id}))
+
 (defn is-session-deleted-for-client?
   "Check if a client has deleted a session locally"
   [channel session-id]
@@ -409,40 +418,54 @@
                           :message "Cannot specify both new_session_id and resume_session_id"}))
 
             :else
-            (do
-              (log/info "Received prompt"
-                        {:text (subs prompt-text 0 (min 50 (count prompt-text)))
-                         :new-session-id new-session-id
-                         :resume-session-id resume-session-id
-                         :working-directory working-dir})
+            (let [claude-session-id (or resume-session-id new-session-id)]
+              ;; Try to acquire lock for this session
+              (if (repl/acquire-session-lock! claude-session-id)
+                (do
+                  (log/info "Received prompt"
+                            {:text (subs prompt-text 0 (min 50 (count prompt-text)))
+                             :new-session-id new-session-id
+                             :resume-session-id resume-session-id
+                             :working-directory working-dir
+                             :session-locked false})
 
-              ;; Send immediate acknowledgment
-              (http/send! channel
-                          (generate-json
-                           {:type :ack
-                            :message "Processing prompt..."}))
+                  ;; Send immediate acknowledgment
+                  (http/send! channel
+                              (generate-json
+                               {:type :ack
+                                :message "Processing prompt..."}))
 
-              ;; Invoke Claude asynchronously
-              ;; NEW ARCHITECTURE: Don't send response directly
-              ;; Filesystem watcher will detect changes and send session_updated
-              (claude/invoke-claude-async
-               prompt-text
-               (fn [response]
-                 ;; Just log completion - let filesystem watcher handle updates
-                 (if (:success response)
-                   (log/info "Prompt completed successfully"
-                             {:session-id (:session-id response)
-                              :message "Filesystem watcher will send session_updated"})
-                   (do
-                     (log/error "Prompt failed" {:error (:error response)})
-                     ;; Still send error responses directly
-                     (send-to-client! channel
-                                      {:type :error
-                                       :message (:error response)}))))
-               :new-session-id new-session-id
-               :resume-session-id resume-session-id
-               :working-directory working-dir
-               :timeout-ms 86400000))))
+                  ;; Invoke Claude asynchronously
+                  ;; NEW ARCHITECTURE: Don't send response directly
+                  ;; Filesystem watcher will detect changes and send session_updated
+                  (claude/invoke-claude-async
+                   prompt-text
+                   (fn [response]
+                     ;; Always release lock when done (success or failure)
+                     (try
+                       ;; Just log completion - let filesystem watcher handle updates
+                       (if (:success response)
+                         (log/info "Prompt completed successfully"
+                                   {:session-id (:session-id response)
+                                    :message "Filesystem watcher will send session_updated"})
+                         (do
+                           (log/error "Prompt failed" {:error (:error response)})
+                           ;; Still send error responses directly
+                           (send-to-client! channel
+                                            {:type :error
+                                             :message (:error response)})))
+                       (finally
+                         (repl/release-session-lock! claude-session-id))))
+                   :new-session-id new-session-id
+                   :resume-session-id resume-session-id
+                   :working-directory working-dir
+                   :timeout-ms 86400000))
+                (do
+                  ;; Session is locked, send session_locked message
+                  (log/info "Session locked, rejecting prompt"
+                            {:session-id claude-session-id
+                             :text (subs prompt-text 0 (min 50 (count prompt-text)))})
+                  (send-session-locked! channel claude-session-id))))))
 
         "set-directory"
         (let [path (:path data)]

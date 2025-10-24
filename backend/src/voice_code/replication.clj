@@ -16,6 +16,42 @@
   ;; In-memory session metadata index: session-id -> metadata map
   (atom {}))
 
+;; ============================================================================
+;; Session Locking
+;; ============================================================================
+
+(defonce session-locks
+  "Set of Claude session IDs currently executing Claude CLI commands.
+   Used to prevent concurrent prompts from forking the same session."
+  (atom #{}))
+
+(defn acquire-session-lock!
+  "Attempt to acquire a lock for the given session ID.
+   Returns true if lock was acquired, false if session is already locked."
+  [session-id]
+  (let [acquired? (atom false)]
+    (swap! session-locks
+           (fn [locks]
+             (if (contains? locks session-id)
+               locks ; Already locked, don't modify
+               (do
+                 (reset! acquired? true)
+                 (conj locks session-id)))))
+    (when @acquired?
+      (log/info "Acquired session lock" {:session-id session-id}))
+    @acquired?))
+
+(defn release-session-lock!
+  "Release the lock for the given session ID."
+  [session-id]
+  (swap! session-locks disj session-id)
+  (log/info "Released session lock" {:session-id session-id}))
+
+(defn is-session-locked?
+  "Check if a session is currently locked."
+  [session-id]
+  (contains? @session-locks session-id))
+
 (defn get-claude-projects-dir
   "Get the Claude projects directory path"
   []
