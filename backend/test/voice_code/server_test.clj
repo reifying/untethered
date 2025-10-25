@@ -483,7 +483,7 @@
             "Should fall back to iOS working directory if session metadata not found")))))
 
 (deftest test-recent-sessions-message-format
-  (testing "recent_sessions message uses snake_case and ISO-8601 timestamps"
+  (testing "recent_sessions message uses snake_case and ISO-8601 timestamps (no name field)"
     (with-redefs [server/send-to-client! (fn [channel message]
                                            (is (= :recent-sessions (:type message)))
                                            (is (number? (:limit message)))
@@ -492,7 +492,8 @@
                                              (let [first-session (first (:sessions message))]
                                                ;; Verify kebab-case keys from Clojure
                                                (is (contains? first-session :session-id))
-                                               (is (contains? first-session :name))
+                                               ;; Name field removed - iOS provides its own
+                                               (is (not (contains? first-session :name)))
                                                (is (contains? first-session :working-directory))
                                                (is (contains? first-session :last-modified))
                                                ;; Verify timestamp is ISO-8601 string
@@ -502,10 +503,9 @@
       (server/send-recent-sessions! :test-channel 10))))
 
 (deftest test-recent-sessions-json-conversion
-  (testing "recent_sessions converts to snake_case JSON"
+  (testing "recent_sessions converts to snake_case JSON (no name field)"
     (let [test-data {:type :recent-sessions
                      :sessions [{:session-id "abc-123"
-                                 :name "Test Session"
                                  :working-directory "/path/to/dir"
                                  :last-modified "2025-10-22T12:00:00Z"}]
                      :limit 10}
@@ -515,7 +515,8 @@
       (is (= "recent_sessions" (:type parsed)))
       (is (= 10 (:limit parsed)))
       (is (= "abc-123" (:session_id (first (:sessions parsed)))))
-      (is (= "Test Session" (:name (first (:sessions parsed)))))
+      ;; Name field removed - iOS provides its own
+      (is (not (contains? (first (:sessions parsed)) :name)))
       (is (= "/path/to/dir" (:working_directory (first (:sessions parsed)))))
       (is (= "2025-10-22T12:00:00Z" (:last_modified (first (:sessions parsed))))))))
 

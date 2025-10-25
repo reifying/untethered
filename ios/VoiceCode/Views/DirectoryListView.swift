@@ -253,11 +253,12 @@ struct DirectoryRowContent: View {
 
 struct RecentSessionRowContent: View {
     let session: RecentSession
+    @Environment(\.managedObjectContext) private var viewContext
     
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            // Line 1: Session name
-            Text(session.name)
+            // Line 1: Session name (from CoreData or fallback to directory name)
+            Text(session.displayName(using: viewContext))
                 .font(.headline)
             
             // Line 2: Session ID (first 8 chars) + working directory
