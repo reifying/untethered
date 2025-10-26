@@ -98,6 +98,12 @@
                    :path (.getPath file)})
         nil))))
 
+(defn is-inference-session?
+  "Check if session file is in temp inference directory.
+  These sessions are created for name inference and should be filtered out."
+  [file]
+  (str/includes? (.getPath file) "voice-code-name-inference"))
+
 (defn find-valid-path
   "Try to find a valid filesystem path by testing dash/slash combinations.
   Uses greedy approach: build path incrementally, trying progressively longer
@@ -658,7 +664,8 @@
 (defn handle-file-created
   "Handle ENTRY_CREATE event for a .jsonl file."
   [file]
-  (when (str/ends-with? (.getName file) ".jsonl")
+  (when (and (str/ends-with? (.getName file) ".jsonl")
+             (not (is-inference-session? file)))
     (try
       (let [metadata (build-session-metadata file)
             session-id (:session-id metadata)]
@@ -716,7 +723,8 @@
 (defn handle-file-modified
   "Handle ENTRY_MODIFY event for a .jsonl file."
   [file]
-  (when (str/ends-with? (.getName file) ".jsonl")
+  (when (and (str/ends-with? (.getName file) ".jsonl")
+             (not (is-inference-session? file)))
     (let [session-id (extract-session-id-from-path file)
           old-metadata (get @session-index session-id)]
 

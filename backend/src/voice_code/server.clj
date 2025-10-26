@@ -531,6 +531,39 @@
                                       :session-id session-id
                                       :error (str "Compaction failed: " (ex-message e))})))))))
 
+        "infer_session_name"
+        (let [session-id (:session-id data)
+              message-text (:message-text data)]
+
+          (cond
+            (not session-id)
+            (send-to-client! channel
+                             {:type :infer-name-error
+                              :error "session_id required"})
+
+            (not message-text)
+            (send-to-client! channel
+                             {:type :infer-name-error
+                              :error "message_text required"})
+
+            :else
+            ;; Invoke Claude for name inference asynchronously
+            (async/go
+              (let [result (claude/invoke-claude-for-name-inference message-text)]
+                (if (:success result)
+                  (do
+                    (log/info "Inferred session name"
+                              {:session-id session-id
+                               :name (:name result)})
+                    (send-to-client! channel
+                                     {:type :session-name-inferred
+                                      :session-id session-id
+                                      :name (:name result)}))
+                  (send-to-client! channel
+                                   {:type :infer-name-error
+                                    :session-id session-id
+                                    :error (:error result)}))))))
+
         "create_worktree_session"
         (let [session-name (:session-name data)
               parent-directory (:parent-directory data)]

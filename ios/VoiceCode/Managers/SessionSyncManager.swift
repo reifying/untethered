@@ -649,8 +649,38 @@ class SessionSyncManager {
         }
     }
     
+    // MARK: - Name Update Handling
+
+    /// Update a session's localName (user's custom name)
+    /// - Parameters:
+    ///   - sessionId: Session UUID
+    ///   - name: New name to set
+    func updateSessionLocalName(sessionId: UUID, name: String) {
+        logger.info("Updating session localName: \(sessionId.uuidString.lowercased()) -> \(name)")
+
+        persistenceController.performBackgroundTask { backgroundContext in
+            let fetchRequest = CDSession.fetchSession(id: sessionId)
+
+            guard let session = try? backgroundContext.fetch(fetchRequest).first else {
+                logger.warning("Session not found for name update: \(sessionId.uuidString.lowercased())")
+                return
+            }
+
+            session.localName = name
+
+            do {
+                if backgroundContext.hasChanges {
+                    try backgroundContext.save()
+                    logger.info("Updated session localName: \(sessionId.uuidString.lowercased())")
+                }
+            } catch {
+                logger.error("Failed to update session localName: \(error.localizedDescription)")
+            }
+        }
+    }
+
     // MARK: - Server Change Handling
-    
+
     /// Clear all sessions and messages when changing servers
     /// This ensures we don't show sessions from the old server
     func clearAllSessions() {

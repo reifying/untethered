@@ -376,3 +376,75 @@
 
         (finally
           (.delete temp-file))))))
+
+;; Name Inference Tests
+
+(deftest test-invoke-claude-for-name-inference-success
+  (testing "Successful name inference returns cleaned name"
+    (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                  clojure.java.shell/sh
+                  (fn [& args]
+                    {:exit 0
+                     :out "[{\"type\":\"result\",\"result\":\"Fix authentication bug\",\"session_id\":\"test-inference-123\",\"is_error\":false}]"})]
+      (let [result (claude/invoke-claude-for-name-inference "I need to fix the auth system")]
+        (is (:success result))
+        (is (= "Fix authentication bug" (:name result)))))))
+
+(deftest test-invoke-claude-for-name-inference-creates-temp-dir
+  (testing "Name inference uses temp directory and creates it"
+    (let [called-args (atom nil)]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    clojure.java.shell/sh
+                    (fn [& args]
+                      (reset! called-args args)
+                      {:exit 0
+                       :out "[{\"type\":\"result\",\"result\":\"Test name\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
+        (claude/invoke-claude-for-name-inference "test message")
+        ;; Check that :dir argument contains the inference directory path
+        (let [dir-idx (.indexOf @called-args :dir)]
+          (when (>= dir-idx 0)
+            (let [dir-path (nth @called-args (inc dir-idx))]
+              (is (.contains dir-path "voice-code-name-inference")))))))))
+
+(deftest test-invoke-claude-for-name-inference-uses-haiku
+  (testing "Name inference uses Haiku model"
+    (let [called-with-model (atom nil)]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    claude/invoke-claude
+                    (fn [prompt & {:keys [model]}]
+                      (reset! called-with-model model)
+                      {:success true :result "Test name"})]
+        (claude/invoke-claude-for-name-inference "test message")
+        (is (= "haiku" @called-with-model))))))
+
+(deftest test-invoke-claude-for-name-inference-uses-temp-dir
+  (testing "Name inference uses temp directory"
+    (let [called-args (atom nil)]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    claude/invoke-claude
+                    (fn [prompt & {:keys [working-directory]}]
+                      (reset! called-args {:prompt prompt :working-directory working-directory})
+                      {:success true :result "Test name"})]
+        (claude/invoke-claude-for-name-inference "test message")
+        (is (.contains (:working-directory @called-args) "voice-code-name-inference"))))))
+
+(deftest test-invoke-claude-for-name-inference-error
+  (testing "Handles CLI errors"
+    (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                  clojure.java.shell/sh
+                  (fn [& args]
+                    {:exit 1
+                     :err "CLI error"})]
+      (let [result (claude/invoke-claude-for-name-inference "test")]
+        (is (not (:success result)))
+        (is (:error result))))))
+
+(deftest test-invoke-claude-for-name-inference-exception
+  (testing "Handles exceptions"
+    (with-redefs [claude/invoke-claude
+                  (fn [& args]
+                    (throw (Exception. "Test exception")))]
+      (let [result (claude/invoke-claude-for-name-inference "test")]
+        (is (not (:success result)))
+        (is (:error result))
+        (is (.contains (:error result) "Test exception"))))))

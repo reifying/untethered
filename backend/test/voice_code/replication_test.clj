@@ -1352,3 +1352,55 @@
         (let [recent (repl/get-recent-sessions 10)]
           (is (= 1 (count recent)))
           (is (= valid-id (:session-id (first recent)))))))))
+
+(deftest test-is-inference-session
+  (testing "Identifies inference session files"
+    (let [inference-file (io/file "/tmp/voice-code-name-inference/abc123de-4567-89ab-cdef-000000000001.jsonl")
+          normal-file (io/file "/Users/test/.claude/projects/mono/abc123de-4567-89ab-cdef-000000000002.jsonl")]
+      (is (true? (repl/is-inference-session? inference-file)))
+      (is (false? (repl/is-inference-session? normal-file))))))
+
+(deftest test-handle-file-created-filters-inference-sessions
+  (testing "handle-file-created skips files in inference directory"
+    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))]
+      (let [callbacks (atom {:created 0})
+            inference-dir (io/file test-dir "voice-code-name-inference")]
+
+        ;; Create inference directory
+        (.mkdirs inference-dir)
+
+        ;; Create inference session file
+        (let [inference-file (io/file inference-dir "abc123de-4567-89ab-cdef-000000000001.jsonl")]
+          (spit inference-file "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"test\"},\"timestamp\":\"2025-01-26T10:00:00.000Z\"}\n")
+
+          ;; Call handle-file-created
+          (repl/handle-file-created inference-file)
+
+          ;; Should not be added to index
+          (is (nil? (repl/get-session-metadata "abc123de-4567-89ab-cdef-000000000001"))))))))
+
+(deftest test-handle-file-modified-filters-inference-sessions
+  (testing "handle-file-modified skips files in inference directory"
+    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))]
+      (let [inference-dir (io/file test-dir "voice-code-name-inference")]
+
+        ;; Create inference directory
+        (.mkdirs inference-dir)
+
+        ;; Create and initialize inference session
+        (let [inference-file (io/file inference-dir "abc123de-4567-89ab-cdef-000000000002.jsonl")]
+          (spit inference-file "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"test\"},\"timestamp\":\"2025-01-26T10:00:00.000Z\"}\n")
+
+          ;; Manually add to index (simulating it was there before filtering was added)
+          (swap! repl/session-index assoc "abc123de-4567-89ab-cdef-000000000002"
+                 {:session-id "abc123de-4567-89ab-cdef-000000000002" :message-count 1})
+
+          ;; Append new message
+          (spit inference-file "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[[{\"type\":\"text\",\"text\":\"response\"}]]},\"timestamp\":\"2025-01-26T10:01:00.000Z\"}\n" :append true)
+
+          ;; Call handle-file-modified - should be filtered
+          (repl/handle-file-modified inference-file)
+
+          ;; Message count should still be 1 (not updated)
+          (let [metadata (repl/get-session-metadata "abc123de-4567-89ab-cdef-000000000002")]
+            (is (= 1 (:message-count metadata)))))))))

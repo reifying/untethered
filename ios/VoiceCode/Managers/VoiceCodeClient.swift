@@ -21,6 +21,7 @@ class VoiceCodeClient: ObservableObject {
     var onSessionIdReceived: ((String) -> Void)?
     var onReplayReceived: ((Message) -> Void)?
     var onCompactionResponse: (([String: Any]) -> Void)?  // Callback for compaction_complete/compaction_error
+    var onInferNameResponse: (([String: Any]) -> Void)?  // Callback for session_name_inferred/infer_name_error
     var onRecentSessionsReceived: (([[String: Any]]) -> Void)?  // Callback for recent_sessions message
 
     private var sessionId: String?
@@ -350,6 +351,16 @@ class VoiceCodeClient: ObservableObject {
                 print("❌ [VoiceCodeClient] Received compaction_error")
                 self.onCompactionResponse?(json)
 
+            case "session_name_inferred":
+                // Session name inference completed successfully
+                print("✨ [VoiceCodeClient] Received session_name_inferred")
+                self.onInferNameResponse?(json)
+
+            case "infer_name_error":
+                // Session name inference failed
+                print("❌ [VoiceCodeClient] Received infer_name_error")
+                self.onInferNameResponse?(json)
+
             case "worktree_session_created":
                 // Worktree session created successfully
                 print("✨ [VoiceCodeClient] Received worktree_session_created")
@@ -613,6 +624,48 @@ class VoiceCodeClient: ObservableObject {
             timeoutWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: workItem)
         }
+    }
+
+    func requestInferredName(sessionId: String, messageText: String) {
+        print("✨ [VoiceCodeClient] Requesting inferred name for session: \(sessionId)")
+
+        // Set up callback for name inference response
+        let originalCallback = onInferNameResponse
+        onInferNameResponse = { [weak self] json in
+            guard let self = self else { return }
+
+            // Pass through to original callback if it exists
+            originalCallback?(json)
+
+            let messageType = json["type"] as? String
+
+            if messageType == "session_name_inferred" {
+                if let inferredName = json["name"] as? String,
+                   let returnedSessionId = json["session_id"] as? String {
+                    print("✨ [VoiceCodeClient] Received inferred name: \(inferredName) for session: \(returnedSessionId)")
+
+                    // Update the session's localName in CoreData
+                    self.sessionSyncManager.updateSessionLocalName(sessionId: UUID(uuidString: returnedSessionId)!, name: inferredName)
+
+                    // Restore original callback
+                    self.onInferNameResponse = originalCallback
+                }
+            } else if messageType == "infer_name_error" {
+                let error = json["error"] as? String ?? "Unknown name inference error"
+                print("❌ [VoiceCodeClient] Name inference error: \(error)")
+
+                // Restore original callback
+                self.onInferNameResponse = originalCallback
+            }
+        }
+
+        // Send infer name request
+        let message: [String: Any] = [
+            "type": "infer_session_name",
+            "session_id": sessionId,
+            "message_text": messageText
+        ]
+        sendMessage(message)
     }
 
     func sendMessage(_ message: [String: Any]) {

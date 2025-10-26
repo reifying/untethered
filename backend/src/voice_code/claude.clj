@@ -162,6 +162,69 @@
         (when (seq matching-files)
           (.getAbsolutePath (first matching-files)))))))
 
+(defn get-inference-directory
+  "Get path to temp directory for name inference sessions.
+  Sessions created here are filtered out from the main session list."
+  []
+  (let [temp-dir (System/getProperty "java.io.tmpdir")
+        inference-dir (io/file temp-dir "voice-code-name-inference")]
+    (when-not (.exists inference-dir)
+      (.mkdirs inference-dir))
+    (.getPath inference-dir)))
+
+(defn format-infer-name-prompt
+  "Create prompt for Claude to infer session name from message."
+  [message-text]
+  (str "Based on this message from a coding session, generate a concise, "
+       "descriptive session name (max 50 characters) that captures the main intent.\n\n"
+       "Message:\n"
+       message-text
+       "\n\n"
+       "Respond with ONLY the session name, nothing else. "
+       "Examples: 'Fix session locking bug', 'Add user authentication', 'Refactor API endpoints'."))
+
+(defn parse-inferred-name
+  "Extract and clean session name from Claude's response."
+  [claude-result]
+  (-> claude-result
+      clojure.string/trim
+      (clojure.string/replace #"^[\"']|[\"']$" "")  ; Remove surrounding quotes
+      (clojure.string/replace #"\n.*" "")           ; Take first line only
+      (subs 0 (min 60 (count claude-result)))))
+
+(defn invoke-claude-for-name-inference
+  "Invoke Claude (Haiku) for name inference in temp directory.
+
+  Parameters:
+  - message-text: The message text to base the name inference on
+
+  Returns a map with:
+  - :success true/false
+  - :name - the inferred session name (if successful)
+  - :error - error message (if failed)"
+  [message-text]
+  (let [prompt (format-infer-name-prompt message-text)
+        inference-dir (get-inference-directory)
+        session-id (str (java.util.UUID/randomUUID))]
+    (try
+      (log/info "Invoking Claude for name inference" {:session-id session-id})
+      (let [result (invoke-claude prompt
+                                  :new-session-id session-id
+                                  :model "haiku"
+                                  :working-directory inference-dir
+                                  :timeout 10000)]
+        (if (:success result)
+          (let [inferred-name (parse-inferred-name (:result result))]
+            (log/info "Successfully inferred session name" {:name inferred-name})
+            {:success true
+             :name inferred-name})
+          {:success false
+           :error (:error result)}))
+      (catch Exception e
+        (log/error e "Failed to invoke Claude for name inference")
+        {:success false
+         :error (str "Invocation failed: " (ex-message e))}))))
+
 (defn compact-session
   "Compact a Claude session using the CLI.
 
