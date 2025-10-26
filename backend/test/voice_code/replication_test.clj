@@ -147,7 +147,31 @@
       (is (= 3 (:message-count metadata)))
       (is (= "first message" (:first-message metadata)))
       (is (= "third message" (:last-message metadata)))
-      (is (str/includes? (:preview metadata) "third message")))))
+      (is (str/includes? (:preview metadata) "third message"))))
+
+  (testing "Extract timestamp from last message"
+    (let [messages ["{\"role\":\"user\",\"text\":\"message 1\",\"timestamp\":\"2025-10-22T10:00:00Z\"}"
+                    "{\"role\":\"assistant\",\"text\":\"message 2\",\"timestamp\":\"2025-10-22T11:30:00Z\"}"]
+          file (create-test-jsonl-file "test-with-timestamp.jsonl" messages)
+          metadata (repl/extract-metadata-from-file file)]
+      (is (= 2 (:message-count metadata)))
+      (is (number? (:last-message-timestamp metadata)))
+      ;; Verify timestamp is 2025-10-22 11:30:00 UTC in milliseconds
+      (is (= 1761132600000 (:last-message-timestamp metadata)))))
+
+  (testing "Handle missing timestamp gracefully"
+    (let [messages ["{\"role\":\"user\",\"text\":\"no timestamp message\"}"]
+          file (create-test-jsonl-file "test-no-timestamp.jsonl" messages)
+          metadata (repl/extract-metadata-from-file file)]
+      (is (= 1 (:message-count metadata)))
+      (is (nil? (:last-message-timestamp metadata)))))
+
+  (testing "Handle invalid timestamp format gracefully"
+    (let [messages ["{\"role\":\"user\",\"text\":\"bad timestamp\",\"timestamp\":\"not-a-date\"}"]
+          file (create-test-jsonl-file "test-bad-timestamp.jsonl" messages)
+          metadata (repl/extract-metadata-from-file file)]
+      (is (= 1 (:message-count metadata)))
+      (is (nil? (:last-message-timestamp metadata))))))
 
 (deftest test-generate-session-name
   (testing "Generate session name with timestamp"
@@ -178,7 +202,26 @@
           metadata (repl/build-session-metadata file)]
       (is (nil? (:session-id metadata)))
       (is (string? (:name metadata)))
-      (is (number? (:created-at metadata))))))
+      (is (number? (:created-at metadata)))))
+
+  (testing "Build session metadata uses message timestamp when available"
+    (let [messages ["{\"role\":\"user\",\"text\":\"test\",\"timestamp\":\"2025-10-22T10:00:00Z\"}"]
+          file (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)
+          metadata (repl/build-session-metadata file)]
+      (is (= "550e8400-e29b-41d4-a716-446655440000" (:session-id metadata)))
+      (is (number? (:last-modified metadata)))
+      ;; Verify it's using the message timestamp (2025-10-22 10:00:00 UTC = 1761127200000)
+      (is (= 1761127200000 (:last-modified metadata)))))
+
+  (testing "Build session metadata falls back to file modification time when no timestamp"
+    (let [messages ["{\"role\":\"user\",\"text\":\"no timestamp\"}"]
+          file (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440001.jsonl" messages)
+          metadata (repl/build-session-metadata file)
+          file-mod-time (.lastModified file)]
+      (is (= "550e8400-e29b-41d4-a716-446655440001" (:session-id metadata)))
+      (is (number? (:last-modified metadata)))
+      ;; Should use file modification time as fallback
+      (is (= file-mod-time (:last-modified metadata))))))
 
 (deftest test-build-index-filters-non-uuid-files
   (testing "build-index! filters out non-UUID session files but includes uppercase UUIDs (normalized to lowercase)"
