@@ -106,8 +106,15 @@ struct ConversationView: View {
                         } else {
                             LazyVStack(spacing: 12) {
                                 ForEach(messages) { message in
-                                    CDMessageView(message: message, voiceOutput: voiceOutput, settings: settings, session: session, client: client)
-                                        .id(message.id)
+                                    CDMessageView(
+                                        message: message,
+                                        voiceOutput: voiceOutput,
+                                        settings: settings,
+                                        onInferName: { messageText in
+                                            client.requestInferredName(sessionId: session.id.uuidString.lowercased(), messageText: messageText)
+                                        }
+                                    )
+                                    .id(message.id)
                                 }
                             }
                             .padding()
@@ -596,8 +603,7 @@ struct CDMessageView: View {
     @ObservedObject var message: CDMessage
     @ObservedObject var voiceOutput: VoiceOutputManager
     @ObservedObject var settings: AppSettings
-    @ObservedObject var session: CDSession
-    @ObservedObject var client: VoiceCodeClient
+    let onInferName: (String) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -632,7 +638,7 @@ struct CDMessageView: View {
                         }
 
                         Button(action: {
-                            client.requestInferredName(sessionId: session.id.uuidString.lowercased(), messageText: message.text)
+                            onInferName(message.text)
                         }) {
                             Label("Infer Name", systemImage: "sparkles.rectangle.stack")
                         }

@@ -788,11 +788,11 @@
                       (swap! session-index assoc-in [session-id :first-notification] (System/currentTimeMillis))
                       (save-index! @session-index))
 
-                    ;; Normal update for already-notified sessions
-                    (when (and ios-notified? (is-subscribed? session-id))
-                      (log/debug "Sending update to subscribed iOS client"
-                                 {:session-id session-id
-                                  :new-messages (count filtered-messages)})
+                    ;; Send updates to subscribed clients (regardless of ios-notified flag)
+                    (when (is-subscribed? session-id)
+                      (log/info "Sending update to subscribed iOS client"
+                                {:session-id session-id
+                                 :new-messages (count filtered-messages)})
                       (when-let [callback (:on-session-updated @watcher-state)]
                         (callback session-id filtered-messages)))))))
             (catch Exception e

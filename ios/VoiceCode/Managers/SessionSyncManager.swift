@@ -198,6 +198,8 @@ class SessionSyncManager {
             message.messageStatus = .sending
             message.session = session
             
+            logger.info("📝 Optimistic message prepared: id=\(messageId) sessionId=\(sessionId.uuidString.lowercased()) role=user text_length=\(text.count) status=sending")
+            
             // Update session metadata optimistically
             session.lastModified = Date()
             session.messageCount += 1
@@ -206,7 +208,7 @@ class SessionSyncManager {
             do {
                 if backgroundContext.hasChanges {
                     try backgroundContext.save()
-                    logger.info("Created optimistic message: \(messageId)")
+                    logger.info("📝 Saved optimistic message: \(messageId)")
                     
                     DispatchQueue.main.async {
                         completion(messageId)
@@ -302,8 +304,11 @@ class SessionSyncManager {
                 // Try to reconcile optimistic message first
                 let fetchRequest = CDMessage.fetchMessage(sessionId: UUID(uuidString: sessionId)!, role: role, text: text)
 
+                logger.info("🔍 Looking for optimistic message to reconcile: role=\(role) text_length=\(text.count) session=\(sessionId)")
+                
                 if let existingMessage = try? backgroundContext.fetch(fetchRequest).first {
                     // Reconcile optimistic message
+                    logger.info("✅ Found optimistic message to reconcile: id=\(existingMessage.id) current_status=\(existingMessage.messageStatus.rawValue)")
                     existingMessage.messageStatus = .confirmed
                     if let serverTimestamp = serverTimestamp {
                         existingMessage.serverTimestamp = serverTimestamp
@@ -312,9 +317,10 @@ class SessionSyncManager {
                     if let backendId = self.extractMessageId(from: messageData) {
                         existingMessage.id = backendId
                     }
-                    logger.info("Reconciled optimistic message")
+                    logger.info("✅ Reconciled optimistic message to confirmed")
                 } else {
                     // Create new message (backend-originated or not found)
+                    logger.info("❌ No optimistic message found - creating new message: role=\(role) text_length=\(text.count)")
                     self.createMessage(messageData, sessionId: sessionId, in: backgroundContext, session: session)
                     newMessageCount += 1
 
