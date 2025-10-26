@@ -244,7 +244,7 @@
 
 (defn extract-metadata-from-file
   "Extract metadata from a .jsonl file without loading all messages.
-  Returns map with :message-count, :preview, :first-message, :last-message
+  Returns map with :message-count, :preview, :first-message, :last-message, :last-message-timestamp
   Note: message-count reflects only user/assistant messages (after filtering internal messages)"
   [file]
   (try
@@ -267,13 +267,22 @@
                         (str truncated "...")
                         truncated)))
          :first-message (when first-msg (:text first-msg))
-         :last-message (when last-msg (:text last-msg))}))
+         :last-message (when last-msg (:text last-msg))
+         :last-message-timestamp (when last-msg
+                                   (when-let [ts (:timestamp last-msg)]
+                                     (try
+                                        ;; Parse ISO-8601 timestamp to milliseconds
+                                       (.toEpochMilli (java.time.Instant/parse ts))
+                                       (catch Exception e
+                                         (log/debug "Failed to parse timestamp" {:timestamp ts :error (ex-message e)})
+                                         nil))))}))
     (catch Exception e
       (log/warn e "Failed to extract metadata from file" {:file (.getPath file)})
       {:message-count 0
        :preview ""
        :first-message nil
-       :last-message nil})))
+       :last-message nil
+       :last-message-timestamp nil})))
 
 (defn generate-session-name
   "Generate a default name for a session.
@@ -291,9 +300,11 @@
   [file]
   (let [session-id (extract-session-id-from-path file)
         working-dir (extract-working-dir file)
-        created-at (.lastModified file)
-        last-modified (.lastModified file)
         file-metadata (extract-metadata-from-file file)
+        ;; Use last message timestamp if available, otherwise fall back to file modification time
+        last-modified (or (:last-message-timestamp file-metadata)
+                          (.lastModified file))
+        created-at (.lastModified file)
         name (generate-session-name session-id working-dir created-at)
         metadata {:session-id session-id
                   :file (.getAbsolutePath file)
@@ -311,7 +322,9 @@
               {:session-id session-id
                :working-directory working-dir
                :name name
-               :message-count (:message-count file-metadata)})
+               :message-count (:message-count file-metadata)
+               :last-modified last-modified
+               :used-message-timestamp (boolean (:last-message-timestamp file-metadata))})
     metadata)) ; Timestamp when iOS first notified
 
 (defn build-index!
@@ -720,11 +733,21 @@
               (when (seq filtered-messages)
                 (let [old-count (:message-count old-metadata 0)
                       new-count (+ old-count (count filtered-messages))
-                      ios-notified? (:ios-notified old-metadata false)]
+                      ios-notified? (:ios-notified old-metadata false)
+                      ;; Extract timestamp from last message, fall back to file modification time
+                      last-message-timestamp (when-let [last-msg (last filtered-messages)]
+                                               (when-let [ts (:timestamp last-msg)]
+                                                 (try
+                                                   (.toEpochMilli (java.time.Instant/parse ts))
+                                                   (catch Exception e
+                                                     (log/debug "Failed to parse message timestamp"
+                                                                {:timestamp ts :error (ex-message e)})
+                                                     nil))))
+                      last-modified (or last-message-timestamp (.lastModified file))]
 
-                  ;; ALWAYS update index
+                  ;; ALWAYS update index with correct timestamp
                   (let [new-metadata (assoc old-metadata
-                                            :last-modified (.lastModified file)
+                                            :last-modified last-modified
                                             :message-count new-count)]
                     (swap! session-index assoc session-id new-metadata)
                     (save-index! @session-index)
@@ -733,6 +756,8 @@
                               {:session-id session-id
                                :old-count old-count
                                :new-count new-count
+                               :last-modified last-modified
+                               :used-message-timestamp (boolean last-message-timestamp)
                                :ios-notified ios-notified?}))
 
                   ;; Check if this is the 0→N transition (time to notify iOS!)
