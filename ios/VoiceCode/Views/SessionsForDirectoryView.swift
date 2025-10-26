@@ -150,6 +150,7 @@ struct SessionsForDirectoryView: View {
             NewSessionView(
                 name: $newSessionName,
                 workingDirectory: .constant(workingDirectory),
+                createWorktree: .constant(false),
                 onCreate: {
                     createNewSession(name: newSessionName)
                     newSessionName = ""
