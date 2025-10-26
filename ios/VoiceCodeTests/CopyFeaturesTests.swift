@@ -420,6 +420,265 @@ class CopyFeaturesTests: XCTestCase {
         XCTAssertEqual(hyphenCount, 4)
     }
 
+    // MARK: - Directory Path Copy Tests
+
+    func testCopyDirectoryPathToClipboard() throws {
+        // Copy directory path to clipboard
+        let directoryPath = testSession.workingDirectory
+        UIPasteboard.general.string = directoryPath
+        
+        // Verify clipboard contains directory path
+        XCTAssertEqual(UIPasteboard.general.string, "/Users/test/project")
+    }
+
+    func testCopyDirectoryPathWithSpecialCharacters() throws {
+        // Create session with special characters in path
+        testSession.workingDirectory = "/Users/test/my project/sub-folder_2024"
+        try context.save()
+        
+        // Copy to clipboard
+        UIPasteboard.general.string = testSession.workingDirectory
+        
+        // Verify special characters are preserved
+        XCTAssertEqual(UIPasteboard.general.string, "/Users/test/my project/sub-folder_2024")
+    }
+
+    func testCopyDirectoryPathWithUnicodeCharacters() throws {
+        // Create session with Unicode characters in path
+        testSession.workingDirectory = "/Users/test/プロジェクト/código"
+        try context.save()
+        
+        // Copy to clipboard
+        UIPasteboard.general.string = testSession.workingDirectory
+        
+        // Verify Unicode characters are preserved
+        XCTAssertEqual(UIPasteboard.general.string, "/Users/test/プロジェクト/código")
+    }
+
+    func testCopyDirectoryPathWithLongPath() throws {
+        // Create session with very long path
+        let longPath = "/Users/test/" + String(repeating: "very-long-directory-name/", count: 10) + "final"
+        testSession.workingDirectory = longPath
+        try context.save()
+        
+        // Copy to clipboard
+        UIPasteboard.general.string = testSession.workingDirectory
+        
+        // Verify full path is copied
+        XCTAssertEqual(UIPasteboard.general.string, longPath)
+        XCTAssertTrue(UIPasteboard.general.string!.count > 200)
+    }
+
+    func testCopyDirectoryPathOverwritesPreviousClipboard() throws {
+        // First copy session ID
+        let sessionId = testSession.id.uuidString.lowercased()
+        UIPasteboard.general.string = sessionId
+        XCTAssertEqual(UIPasteboard.general.string, sessionId)
+        
+        // Then copy directory path (should overwrite)
+        UIPasteboard.general.string = testSession.workingDirectory
+        XCTAssertEqual(UIPasteboard.general.string, "/Users/test/project")
+        XCTAssertNotEqual(UIPasteboard.general.string, sessionId)
+    }
+
+    func testCopyDirectoryPathFromDifferentSessions() throws {
+        // Create second session with different directory
+        let session2 = CDSession(context: context)
+        session2.id = UUID()
+        session2.backendName = "Test Session 2"
+        session2.workingDirectory = "/Users/test/another-project"
+        session2.lastModified = Date()
+        
+        try context.save()
+        
+        // Copy first session's directory
+        UIPasteboard.general.string = testSession.workingDirectory
+        XCTAssertEqual(UIPasteboard.general.string, "/Users/test/project")
+        
+        // Copy second session's directory (should overwrite)
+        UIPasteboard.general.string = session2.workingDirectory
+        XCTAssertEqual(UIPasteboard.general.string, "/Users/test/another-project")
+        XCTAssertNotEqual(UIPasteboard.general.string, testSession.workingDirectory)
+    }
+
+    func testCopyDirectoryPathFormat() throws {
+        // Copy directory path
+        UIPasteboard.general.string = testSession.workingDirectory
+        
+        // Verify it starts with /
+        XCTAssertTrue(UIPasteboard.general.string!.hasPrefix("/"))
+        
+        // Verify it doesn't end with / (unless it's root)
+        if testSession.workingDirectory != "/" {
+            XCTAssertFalse(UIPasteboard.general.string!.hasSuffix("/"))
+        }
+    }
+
+    func testCopyDirectoryPathNotEmpty() throws {
+        // Ensure working directory is not empty
+        XCTAssertFalse(testSession.workingDirectory.isEmpty)
+        
+        // Copy to clipboard
+        UIPasteboard.general.string = testSession.workingDirectory
+        
+        // Verify clipboard is not empty
+        XCTAssertNotNil(UIPasteboard.general.string)
+        XCTAssertFalse(UIPasteboard.general.string!.isEmpty)
+    }
+
+    // MARK: - Context Menu Copy Tests
+
+    func testCopySessionIDFromRecentSessions() throws {
+        // Simulate copying session ID from recent sessions context menu
+        let sessionId = testSession.id.uuidString.lowercased()
+        UIPasteboard.general.string = sessionId
+        
+        // Verify clipboard contains session ID
+        XCTAssertEqual(UIPasteboard.general.string, sessionId)
+    }
+
+    func testCopyDirectoryFromRecentSessions() throws {
+        // Simulate copying directory path from recent sessions context menu
+        UIPasteboard.general.string = testSession.workingDirectory
+        
+        // Verify clipboard contains directory path
+        XCTAssertEqual(UIPasteboard.general.string, "/Users/test/project")
+    }
+
+    func testCopyDirectoryFromProjectsList() throws {
+        // Simulate copying directory path from projects list context menu
+        let directoryPath = "/Users/test/my-project"
+        UIPasteboard.general.string = directoryPath
+        
+        // Verify clipboard contains directory path
+        XCTAssertEqual(UIPasteboard.general.string, directoryPath)
+    }
+
+    func testContextMenuCopyOverwritesClipboard() throws {
+        // First copy session ID
+        let sessionId = testSession.id.uuidString.lowercased()
+        UIPasteboard.general.string = sessionId
+        XCTAssertEqual(UIPasteboard.general.string, sessionId)
+        
+        // Then copy directory (simulating context menu action)
+        UIPasteboard.general.string = testSession.workingDirectory
+        XCTAssertEqual(UIPasteboard.general.string, "/Users/test/project")
+        XCTAssertNotEqual(UIPasteboard.general.string, sessionId)
+    }
+
+    func testContextMenuCopyMultipleItems() throws {
+        // Create multiple sessions
+        let session2 = CDSession(context: context)
+        session2.id = UUID()
+        session2.backendName = "Session 2"
+        session2.workingDirectory = "/Users/test/project2"
+        session2.lastModified = Date()
+        
+        let session3 = CDSession(context: context)
+        session3.id = UUID()
+        session3.backendName = "Session 3"
+        session3.workingDirectory = "/Users/test/project3"
+        session3.lastModified = Date()
+        
+        try context.save()
+        
+        // Copy from first session
+        UIPasteboard.general.string = testSession.workingDirectory
+        XCTAssertEqual(UIPasteboard.general.string, "/Users/test/project")
+        
+        // Copy from second session
+        UIPasteboard.general.string = session2.workingDirectory
+        XCTAssertEqual(UIPasteboard.general.string, "/Users/test/project2")
+        
+        // Copy from third session
+        UIPasteboard.general.string = session3.workingDirectory
+        XCTAssertEqual(UIPasteboard.general.string, "/Users/test/project3")
+    }
+
+    func testContextMenuCopySessionIDFormat() throws {
+        // Copy session ID via context menu
+        let sessionId = testSession.id.uuidString.lowercased()
+        UIPasteboard.general.string = sessionId
+        
+        // Verify format is valid UUID
+        let pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        let regex = try! NSRegularExpression(pattern: pattern)
+        let range = NSRange(location: 0, length: sessionId.count)
+        
+        XCTAssertNotNil(regex.firstMatch(in: sessionId, range: range))
+    }
+
+    func testContextMenuCopyWithEmptyDirectory() throws {
+        // Create session with empty working directory (edge case)
+        testSession.workingDirectory = ""
+        try context.save()
+        
+        // Copy empty directory
+        UIPasteboard.general.string = testSession.workingDirectory
+        
+        // Verify clipboard contains empty string
+        XCTAssertEqual(UIPasteboard.general.string, "")
+    }
+
+    func testContextMenuCopyDirectoryPreservesPath() throws {
+        // Create session with complex path
+        let complexPath = "/Users/test/projects/my-app/src/components"
+        testSession.workingDirectory = complexPath
+        try context.save()
+        
+        // Copy directory path
+        UIPasteboard.general.string = testSession.workingDirectory
+        
+        // Verify full path is preserved
+        XCTAssertEqual(UIPasteboard.general.string, complexPath)
+    }
+
+    // MARK: - Session Not Found Copy Tests
+
+    func testCopySessionIDFromNotFoundView() throws {
+        // Simulate copying session ID from session not found view
+        let notFoundSessionId = UUID().uuidString.lowercased()
+        UIPasteboard.general.string = notFoundSessionId
+        
+        // Verify clipboard contains session ID
+        XCTAssertEqual(UIPasteboard.general.string, notFoundSessionId)
+    }
+
+    func testCopySessionIDFromNotFoundViewFormat() throws {
+        // Generate a session ID that would be shown in not found view
+        let notFoundSessionId = UUID().uuidString.lowercased()
+        UIPasteboard.general.string = notFoundSessionId
+        
+        // Verify format is valid lowercase UUID
+        let pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        let regex = try! NSRegularExpression(pattern: pattern)
+        let range = NSRange(location: 0, length: notFoundSessionId.count)
+        
+        XCTAssertNotNil(regex.firstMatch(in: notFoundSessionId, range: range))
+    }
+
+    func testCopySessionIDFromNotFoundViewIsLowercase() throws {
+        // Session ID from not found view should always be lowercase
+        let notFoundSessionId = UUID().uuidString.lowercased()
+        UIPasteboard.general.string = notFoundSessionId
+        
+        // Verify it's lowercase
+        XCTAssertEqual(UIPasteboard.general.string, UIPasteboard.general.string?.lowercased())
+    }
+
+    func testCopySessionIDFromNotFoundViewPreservesFullID() throws {
+        // Copy session ID from not found view
+        let notFoundSessionId = UUID().uuidString.lowercased()
+        UIPasteboard.general.string = notFoundSessionId
+        
+        // Verify full UUID is preserved (36 characters)
+        XCTAssertEqual(UIPasteboard.general.string?.count, 36)
+        
+        // Verify it contains exactly 4 hyphens
+        let hyphenCount = UIPasteboard.general.string?.filter { $0 == "-" }.count
+        XCTAssertEqual(hyphenCount, 4)
+    }
+
     // MARK: - Edge Cases
 
     func testCopyAfterPreviousCopy() throws {

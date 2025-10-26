@@ -23,6 +23,7 @@ struct SessionsForDirectoryView: View {
     @State private var showingNewSession = false
     @State private var newSessionName = ""
     @State private var showingCopyConfirmation = false
+    @State private var showingDirectoryCopyConfirmation = false
 
     init(workingDirectory: String, client: VoiceCodeClient, settings: AppSettings, voiceOutput: VoiceOutputManager, showingSettings: Binding<Bool>) {
         self.workingDirectory = workingDirectory
@@ -102,9 +103,27 @@ struct SessionsForDirectoryView: View {
                     .cornerRadius(8)
                     .padding(.top, 8)
                     .transition(.move(edge: .top).combined(with: .opacity))
+            } else if showingDirectoryCopyConfirmation {
+                Text("Directory path copied to clipboard")
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.green.opacity(0.9))
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
         .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button(action: {
+                    copyDirectoryPath()
+                }) {
+                    Image(systemName: "doc.on.clipboard")
+                }
+            }
+            
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
                     Button(action: {
@@ -173,6 +192,29 @@ struct SessionsForDirectoryView: View {
         }
     }
 
+    private func copyDirectoryPath() {
+        // Copy directory path to clipboard
+        UIPasteboard.general.string = workingDirectory
+        
+        // Trigger haptic feedback
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.success)
+        
+        // Show confirmation banner
+        withAnimation {
+            showingDirectoryCopyConfirmation = true
+        }
+        
+        // Hide confirmation after 2 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation {
+                showingDirectoryCopyConfirmation = false
+            }
+        }
+        
+        logger.info("📋 Copied directory path to clipboard: \(self.workingDirectory)")
+    }
+    
     private func copySessionID(_ session: CDSession) {
         // Copy session ID to clipboard
         UIPasteboard.general.string = session.id.uuidString.lowercased()
