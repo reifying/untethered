@@ -43,9 +43,6 @@ class VoiceCodeClient: ObservableObject {
         }
 
         setupLifecycleObservers()
-
-        // Migrate existing sessions to have correct backendName (UUID instead of display name)
-        migrateExistingSessionsBackendName()
     }
 
     private func setupLifecycleObservers() {
@@ -631,40 +628,6 @@ class VoiceCodeClient: ObservableObject {
                     self.currentError = error.localizedDescription
                 }
             }
-        }
-    }
-
-    /// Migrate existing sessions to have correct backendName (UUID instead of display name)
-    /// This fixes sessions created before the backendName fix
-    private func migrateExistingSessionsBackendName() {
-        let context = PersistenceController.shared.container.viewContext
-        let fetchRequest = CDSession.fetchRequest()
-
-        do {
-            let sessions = try context.fetch(fetchRequest)
-            var migrationCount = 0
-
-            for session in sessions {
-                // Check if backendName is already a valid UUID
-                let backendName = session.backendName
-                let sessionId = session.id.uuidString.lowercased()
-
-                // If backendName doesn't match the session ID (UUID), fix it
-                if backendName != sessionId {
-                    print("🔧 [Migration] Fixing session \(sessionId): backendName was '\(backendName)', setting to '\(sessionId)'")
-                    session.backendName = sessionId
-                    migrationCount += 1
-                }
-            }
-
-            if migrationCount > 0 {
-                try context.save()
-                print("✅ [Migration] Fixed backendName for \(migrationCount) existing session(s)")
-            } else {
-                print("✅ [Migration] All sessions already have correct backendName")
-            }
-        } catch {
-            print("❌ [Migration] Failed to migrate sessions: \(error)")
         }
     }
 
