@@ -26,6 +26,8 @@ struct DirectoryListView: View {
     @State private var newSessionName = ""
     @State private var newWorkingDirectory = ""
     @State private var isRecentExpanded = true
+    @State private var showingCopyConfirmation = false
+    @State private var copyConfirmationMessage = ""
 
     // Directory metadata computed from sessions
     struct DirectoryInfo: Identifiable {
@@ -91,6 +93,19 @@ struct DirectoryListView: View {
                                 NavigationLink(value: UUID(uuidString: session.sessionId) ?? UUID()) {
                                     RecentSessionRowContent(session: session)
                                 }
+                                .contextMenu {
+                                    Button(action: {
+                                        copyToClipboard(session.sessionId, message: "Session ID copied to clipboard")
+                                    }) {
+                                        Label("Copy Session ID", systemImage: "doc.on.clipboard")
+                                    }
+                                    
+                                    Button(action: {
+                                        copyToClipboard(session.workingDirectory, message: "Directory path copied to clipboard")
+                                    }) {
+                                        Label("Copy Directory Path", systemImage: "folder")
+                                    }
+                                }
                             }
                         } header: {
                             Text("Recent Sessions")
@@ -102,6 +117,13 @@ struct DirectoryListView: View {
                         ForEach(directories) { directory in
                             NavigationLink(value: directory.workingDirectory) {
                                 DirectoryRowContent(directory: directory)
+                            }
+                            .contextMenu {
+                                Button(action: {
+                                    copyToClipboard(directory.workingDirectory, message: "Directory path copied to clipboard")
+                                }) {
+                                    Label("Copy Directory Path", systemImage: "folder")
+                                }
                             }
                         }
                     } header: {
@@ -115,6 +137,19 @@ struct DirectoryListView: View {
             }
         }
         .navigationTitle("Untethered")
+        .overlay(alignment: .top) {
+            if showingCopyConfirmation {
+                Text(copyConfirmationMessage)
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.green.opacity(0.9))
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
@@ -162,6 +197,30 @@ struct DirectoryListView: View {
 
     }
 
+    private func copyToClipboard(_ text: String, message: String) {
+        // Copy to clipboard
+        UIPasteboard.general.string = text
+        
+        // Trigger haptic feedback
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.success)
+        
+        // Show confirmation banner
+        copyConfirmationMessage = message
+        withAnimation {
+            showingCopyConfirmation = true
+        }
+        
+        // Hide confirmation after 2 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation {
+                showingCopyConfirmation = false
+            }
+        }
+        
+        logger.info("📋 Copied to clipboard: \(text)")
+    }
+    
     private func createNewSession(name: String, workingDirectory: String?) {
         // Generate new UUID for session
         let sessionId = UUID()

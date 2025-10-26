@@ -12,6 +12,8 @@ struct SessionLookupView: View {
     @ObservedObject var settings: AppSettings
 
     @FetchRequest private var sessions: FetchedResults<CDSession>
+    
+    @State private var showingCopyConfirmation = false
 
     init(sessionId: UUID, client: VoiceCodeClient, voiceOutput: VoiceOutputManager, settings: AppSettings) {
         self.sessionId = sessionId
@@ -49,6 +51,48 @@ struct SessionLookupView: View {
                     .padding(.top, 8)
             }
             .padding()
+            .contentShape(Rectangle())
+            .contextMenu {
+                Button(action: {
+                    copySessionID()
+                }) {
+                    Label("Copy Session ID", systemImage: "doc.on.clipboard")
+                }
+            }
+            .overlay(alignment: .top) {
+                if showingCopyConfirmation {
+                    Text("Session ID copied to clipboard")
+                        .font(.caption)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.green.opacity(0.9))
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                        .padding(.top, 8)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+        }
+    }
+    
+    private func copySessionID() {
+        // Copy session ID to clipboard
+        UIPasteboard.general.string = sessionId.uuidString.lowercased()
+        
+        // Trigger haptic feedback
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.success)
+        
+        // Show confirmation banner
+        withAnimation {
+            showingCopyConfirmation = true
+        }
+        
+        // Hide confirmation after 2 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation {
+                showingCopyConfirmation = false
+            }
         }
     }
 }
