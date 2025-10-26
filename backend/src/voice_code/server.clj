@@ -8,8 +8,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [voice-code.claude :as claude]
-            [voice-code.replication :as repl]
-            [voice-code.storage :as storage])
+            [voice-code.replication :as repl])
   (:gen-class))
 
 ;; JSON key conversion utilities
@@ -251,9 +250,8 @@
 (defn on-session-deleted
   "Called when a session file is deleted from filesystem"
   [session-id]
-  (log/info "Session deleted from filesystem" {:session-id session-id})
+  (log/info "Session deleted from filesystem" {:session-id session-id}))
   ;; This is informational - we don't broadcast deletes since it's just local cleanup
-  )
 
 ;; Message handling
 (defn handle-message
@@ -498,15 +496,12 @@
                         (generate-json
                          {:type :error
                           :message "session_id required in compact_session message"}))
-            ;; Try to find session in storage first (old architecture)
-            ;; If not found, try the session ID directly (new replication-based architecture)
-            (let [session (storage/get-session session-id)
-                  claude-session-id (or (:claude-session-id session) session-id)]
-              (log/info "Compacting session" {:session-id session-id :claude-session-id claude-session-id :found-in-storage (boolean session)})
+            (do
+              (log/info "Compacting session" {:session-id session-id})
               ;; Compact asynchronously
               (async/go
                 (try
-                  (let [result (claude/compact-session claude-session-id)]
+                  (let [result (claude/compact-session session-id)]
                     (if (:success result)
                       (do
                         (log/info "Session compaction successful" {:session-id session-id :result result})
