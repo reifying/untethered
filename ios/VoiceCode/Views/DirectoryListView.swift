@@ -25,6 +25,7 @@ struct DirectoryListView: View {
     @State private var showingNewSession = false
     @State private var newSessionName = ""
     @State private var newWorkingDirectory = ""
+    @State private var createWorktree = false
     @State private var isRecentExpanded = true
 
     // Directory metadata computed from sessions
@@ -143,18 +144,28 @@ struct DirectoryListView: View {
             NewSessionView(
                 name: $newSessionName,
                 workingDirectory: $newWorkingDirectory,
+                createWorktree: $createWorktree,
                 onCreate: {
-                    createNewSession(
-                        name: newSessionName,
-                        workingDirectory: newWorkingDirectory.isEmpty ? nil : newWorkingDirectory
-                    )
+                    if createWorktree {
+                        createWorktreeSession(
+                            name: newSessionName,
+                            parentDirectory: newWorkingDirectory
+                        )
+                    } else {
+                        createNewSession(
+                            name: newSessionName,
+                            workingDirectory: newWorkingDirectory.isEmpty ? nil : newWorkingDirectory
+                        )
+                    }
                     newSessionName = ""
                     newWorkingDirectory = ""
+                    createWorktree = false
                     showingNewSession = false
                 },
                 onCancel: {
                     newSessionName = ""
                     newWorkingDirectory = ""
+                    createWorktree = false
                     showingNewSession = false
                 }
             )
@@ -189,6 +200,27 @@ struct DirectoryListView: View {
         } catch {
             logger.error("❌ Failed to create session: \(error)")
         }
+    }
+
+    private func createWorktreeSession(name: String, parentDirectory: String) {
+        // Validate inputs
+        guard !name.isEmpty, !parentDirectory.isEmpty else {
+            logger.error("❌ Invalid worktree session parameters: name or parent directory empty")
+            return
+        }
+
+        logger.info("📝 Creating worktree session: \(name) in \(parentDirectory)")
+
+        // Send WebSocket message to backend
+        let message: [String: Any] = [
+            "type": "create_worktree_session",
+            "session_name": name,
+            "parent_directory": parentDirectory
+        ]
+        client.sendMessage(message)
+
+        // Note: Do NOT create CoreData session here
+        // Session will arrive via session_created message when backend completes
     }
 }
 

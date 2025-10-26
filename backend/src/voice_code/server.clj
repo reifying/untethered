@@ -9,7 +9,8 @@
             [clojure.string :as str]
             [voice-code.claude :as claude]
             [voice-code.replication :as repl]
-            [voice-code.storage :as storage])
+            [voice-code.storage :as storage]
+            [voice-code.worktree :as worktree])
   (:gen-class))
 
 ;; JSON key conversion utilities
@@ -530,13 +531,94 @@
                                       :session-id session-id
                                       :error (str "Compaction failed: " (ex-message e))})))))))
 
+        "create_worktree_session"
+        (let [session-name (:session-name data)
+              parent-directory (:parent-directory data)]
+
+          ;; 1. Validate inputs
+          (let [validation (worktree/validate-worktree-creation session-name parent-directory)]
+            (if-not (:valid validation)
+              (send-to-client! channel
+                               {:type :worktree-session-error
+                                :success false
+                                :error (:error validation)
+                                :error-type (:error-type validation)})
+
+              ;; 2. Compute paths
+              (let [paths (worktree/compute-worktree-paths session-name parent-directory)
+                    {:keys [sanitized-name branch-name worktree-path]} paths
+
+                    ;; 3. Validate paths
+                    path-validation (worktree/validate-worktree-paths paths parent-directory)]
+
+                (if-not (:valid path-validation)
+                  (send-to-client! channel
+                                   {:type :worktree-session-error
+                                    :success false
+                                    :error (:error path-validation)
+                                    :error-type (:error-type path-validation)
+                                    :details (:details path-validation)})
+
+                  ;; 4. Execute worktree creation sequence
+                  (let [session-id (str (java.util.UUID/randomUUID))]
+                    (log/info "Creating worktree session"
+                              {:session-name session-name
+                               :parent-directory parent-directory
+                               :branch-name branch-name
+                               :worktree-path worktree-path
+                               :session-id session-id})
+
+                    ;; Step 4a: Create git worktree
+                    (let [git-result (worktree/create-worktree! parent-directory branch-name worktree-path)]
+                      (if-not (:success git-result)
+                        (send-to-client! channel
+                                         {:type :worktree-session-error
+                                          :success false
+                                          :error (:error git-result)
+                                          :error-type :git-failed
+                                          :details {:step "git_worktree_add"
+                                                   :stderr (:stderr git-result)}})
+
+                        ;; Step 4b: Initialize Beads
+                        (let [bd-result (worktree/init-beads! worktree-path)]
+                          (if-not (:success bd-result)
+                            (send-to-client! channel
+                                             {:type :worktree-session-error
+                                              :success false
+                                              :error (:error bd-result)
+                                              :error-type :beads-failed
+                                              :details {:step "bd_init"
+                                                       :stderr (:stderr bd-result)}})
+
+                            ;; Step 4c: Invoke Claude Code
+                            (let [prompt (worktree/format-worktree-prompt session-name worktree-path
+                                                                         parent-directory branch-name)]
+                              (claude/invoke-claude-async
+                               prompt
+                               (fn [response]
+                                 (if (:success response)
+                                   (send-to-client! channel
+                                                    {:type :worktree-session-created
+                                                     :success true
+                                                     :session-id (:session-id response)
+                                                     :worktree-path worktree-path
+                                                     :branch-name branch-name})
+                                   (send-to-client! channel
+                                                    {:type :worktree-session-error
+                                                     :success false
+                                                     :error (:error response)
+                                                     :error-type :claude-failed})))
+                               :new-session-id session-id
+                               :model "haiku"
+                               :working-directory worktree-path)))))))))))
+
         ;; Unknown message type
         (do
           (log/warn "Unknown message type" {:type (:type data)})
           (http/send! channel
                       (generate-json
                        {:type :error
-                        :message (str "Unknown message type: " (:type data))})))))
+                        :message (str "Unknown message type: " (:type data))}))))))
 
     (catch Exception e
       (log/error e "Error handling message")

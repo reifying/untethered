@@ -68,6 +68,7 @@ struct CDSessionRowContent: View {
 struct NewSessionView: View {
     @Binding var name: String
     @Binding var workingDirectory: String
+    @Binding var createWorktree: Bool
     let onCreate: () -> Void
     let onCancel: () -> Void
 
@@ -77,19 +78,29 @@ struct NewSessionView: View {
                 Section(header: Text("Session Details")) {
                     TextField("Session Name", text: $name)
 
-                    TextField("Working Directory (Optional)", text: $workingDirectory)
+                    TextField(createWorktree ? "Parent Repository Path" : "Working Directory (Optional)", text: $workingDirectory)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
                 }
 
                 Section(header: Text("Examples")) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("/Users/yourname/projects/myapp")
-                        Text("/tmp/scratch")
-                        Text("~/code/voice-code")
+                        if createWorktree {
+                            Text("/Users/yourname/projects/myapp")
+                            Text("~/code/voice-code")
+                            Text("~/projects/my-repo")
+                        } else {
+                            Text("/Users/yourname/projects/myapp")
+                            Text("/tmp/scratch")
+                            Text("~/code/voice-code")
+                        }
                     }
                     .font(.caption)
                     .foregroundColor(.secondary)
+                }
+
+                Section(header: Text("Git Worktree"), footer: Text("Creates a new git worktree with an isolated branch for this session. Requires the parent directory to be a git repository.")) {
+                    Toggle("Create Git Worktree", isOn: $createWorktree)
                 }
             }
             .navigationTitle("New Session")
@@ -103,7 +114,7 @@ struct NewSessionView: View {
                     Button("Create") {
                         onCreate()
                     }
-                    .disabled(name.isEmpty)
+                    .disabled(name.isEmpty || (createWorktree && workingDirectory.isEmpty))
                 }
             }
         }

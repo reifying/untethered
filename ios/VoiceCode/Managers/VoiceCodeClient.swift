@@ -353,6 +353,26 @@ class VoiceCodeClient: ObservableObject {
                 print("❌ [VoiceCodeClient] Received compaction_error")
                 self.onCompactionResponse?(json)
 
+            case "worktree_session_created":
+                // Worktree session created successfully
+                print("✨ [VoiceCodeClient] Received worktree_session_created")
+                if let sessionId = json["session_id"] as? String,
+                   let worktreePath = json["worktree_path"] as? String,
+                   let branchName = json["branch_name"] as? String {
+                    print("📁 [VoiceCodeClient] Worktree session created: \(sessionId)")
+                    print("   Worktree path: \(worktreePath)")
+                    print("   Branch: \(branchName)")
+                    // Session will arrive via session_created message when backend filesystem watcher detects it
+                }
+
+            case "worktree_session_error":
+                // Worktree session creation failed
+                print("❌ [VoiceCodeClient] Received worktree_session_error")
+                if let error = json["error"] as? String {
+                    print("   Error: \(error)")
+                    self.currentError = error
+                }
+
             case "session_locked":
                 // Session is currently locked (processing a prompt)
                 if let sessionId = json["session_id"] as? String {
