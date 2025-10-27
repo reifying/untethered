@@ -244,6 +244,25 @@
           (is (not (contains? index "12345")))
           (is (not (contains? index "README"))))))))
 
+(deftest test-build-index-filters-inference-sessions
+  (testing "build-index! filters out inference sessions from temp directory"
+    (let [messages ["{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"test\"},\"timestamp\":\"2025-01-26T10:00:00.000Z\"}"]
+          ;; Create normal session file
+          normal-file (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)
+          ;; Create inference session directory and file
+          inference-dir (io/file test-dir "voice-code-name-inference")]
+      (.mkdirs inference-dir)
+      (let [inference-file (io/file inference-dir "abc123de-4567-89ab-cdef-000000000001.jsonl")]
+        (spit inference-file (first messages))
+
+        ;; Mock find-jsonl-files to return both normal and inference files
+        (with-redefs [repl/find-jsonl-files (fn [] [normal-file inference-file])]
+          (let [index (repl/build-index!)]
+            ;; Should only include the normal session, not the inference session
+            (is (= 1 (count index)))
+            (is (contains? index "550e8400-e29b-41d4-a716-446655440000"))
+            (is (not (contains? index "abc123de-4567-89ab-cdef-000000000001")))))))))
+
 ;; ============================================================================
 ;; .jsonl Parser Tests
 ;; ============================================================================
