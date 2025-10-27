@@ -679,6 +679,155 @@ class CopyFeaturesTests: XCTestCase {
         XCTAssertEqual(hyphenCount, 4)
     }
 
+    // MARK: - Error Copy Tests
+
+    func testCopyErrorToClipboard() throws {
+        // Simulate error message
+        let errorMessage = "Connection failed: Unable to connect to backend server"
+        
+        // Copy error to clipboard
+        UIPasteboard.general.string = errorMessage
+        
+        // Verify clipboard contains error message
+        XCTAssertEqual(UIPasteboard.general.string, errorMessage)
+    }
+
+    func testCopyErrorWithSpecialCharacters() throws {
+        let errorMessage = "Error: Invalid JSON response {\"error\": \"timeout\"} at line 42"
+        
+        // Copy error to clipboard
+        UIPasteboard.general.string = errorMessage
+        
+        // Verify special characters are preserved
+        XCTAssertEqual(UIPasteboard.general.string, errorMessage)
+        XCTAssertTrue(UIPasteboard.general.string!.contains("{"))
+        XCTAssertTrue(UIPasteboard.general.string!.contains("}"))
+        XCTAssertTrue(UIPasteboard.general.string!.contains("\""))
+    }
+
+    func testCopyLongError() throws {
+        let longError = "Error: " + String(repeating: "Something went wrong. ", count: 50)
+        
+        // Copy long error to clipboard
+        UIPasteboard.general.string = longError
+        
+        // Verify entire error message is copied
+        XCTAssertEqual(UIPasteboard.general.string, longError)
+        XCTAssertTrue(UIPasteboard.general.string!.count > 500)
+    }
+
+    func testCopyErrorWithNewlines() throws {
+        let multilineError = """
+        Error: Failed to process request
+        Reason: Network timeout
+        Please try again later
+        """
+        
+        // Copy multiline error to clipboard
+        UIPasteboard.general.string = multilineError
+        
+        // Verify newlines are preserved
+        XCTAssertEqual(UIPasteboard.general.string, multilineError)
+        XCTAssertTrue(UIPasteboard.general.string!.contains("\n"))
+    }
+
+    func testCopyErrorOverwritesPreviousClipboard() throws {
+        // First copy a message
+        UIPasteboard.general.string = "Normal message"
+        XCTAssertEqual(UIPasteboard.general.string, "Normal message")
+        
+        // Then copy an error (should overwrite)
+        let errorMessage = "Error: Something went wrong"
+        UIPasteboard.general.string = errorMessage
+        
+        // Verify clipboard now contains error
+        XCTAssertEqual(UIPasteboard.general.string, errorMessage)
+        XCTAssertNotEqual(UIPasteboard.general.string, "Normal message")
+    }
+
+    func testCopyErrorWithStackTrace() throws {
+        let errorWithStack = """
+        Fatal error: Index out of range
+        Stack trace:
+          at Array.get (line 42)
+          at MessageView.body (line 156)
+          at ConversationView.render (line 89)
+        """
+        
+        // Copy error with stack trace
+        UIPasteboard.general.string = errorWithStack
+        
+        // Verify entire stack trace is copied
+        XCTAssertEqual(UIPasteboard.general.string, errorWithStack)
+        XCTAssertTrue(UIPasteboard.general.string!.contains("Stack trace:"))
+        XCTAssertTrue(UIPasteboard.general.string!.contains("at Array.get"))
+    }
+
+    func testCopyErrorWithUnicodeCharacters() throws {
+        let unicodeError = "Error: Échec de la connexion - ネットワークエラー"
+        
+        // Copy error with Unicode
+        UIPasteboard.general.string = unicodeError
+        
+        // Verify Unicode characters are preserved
+        XCTAssertEqual(UIPasteboard.general.string, unicodeError)
+    }
+
+    func testCopyDifferentErrors() throws {
+        // Copy first error
+        let error1 = "Error: Connection timeout"
+        UIPasteboard.general.string = error1
+        XCTAssertEqual(UIPasteboard.general.string, error1)
+        
+        // Copy second error (should overwrite)
+        let error2 = "Error: Invalid session ID"
+        UIPasteboard.general.string = error2
+        XCTAssertEqual(UIPasteboard.general.string, error2)
+        XCTAssertNotEqual(UIPasteboard.general.string, error1)
+    }
+
+    func testCopyErrorFormat() throws {
+        // Various error formats that might appear
+        let errors = [
+            "Connection failed",
+            "Error: Invalid input",
+            "Fatal: System crash",
+            "[ERROR] Network unreachable",
+            "⚠️ Warning: Session expired"
+        ]
+        
+        for error in errors {
+            // Copy each error
+            UIPasteboard.general.string = error
+            
+            // Verify it's copied correctly
+            XCTAssertEqual(UIPasteboard.general.string, error)
+        }
+    }
+
+    func testCopyErrorNotEmpty() throws {
+        let errorMessage = "Error: Something went wrong"
+        
+        // Copy error
+        UIPasteboard.general.string = errorMessage
+        
+        // Verify clipboard is not empty
+        XCTAssertNotNil(UIPasteboard.general.string)
+        XCTAssertFalse(UIPasteboard.general.string!.isEmpty)
+    }
+
+    func testCopyErrorPreservesExactText() throws {
+        // Error with precise formatting that should be preserved
+        let errorMessage = "WebSocket Error: Connection closed unexpectedly (Code: 1006)"
+        
+        // Copy error
+        UIPasteboard.general.string = errorMessage
+        
+        // Verify exact text is preserved
+        XCTAssertEqual(UIPasteboard.general.string, errorMessage)
+        XCTAssertTrue(UIPasteboard.general.string!.contains("1006"))
+    }
+
     // MARK: - Edge Cases
 
     func testCopyAfterPreviousCopy() throws {

@@ -205,6 +205,12 @@ struct ConversationView: View {
                         .font(.caption)
                         .foregroundColor(.red)
                         .padding(.horizontal)
+                        .padding(.vertical, 8)
+                        .background(Color.red.opacity(0.1))
+                        .cornerRadius(8)
+                        .onTapGesture {
+                            copyErrorToClipboard(error)
+                        }
                 }
             }
             .padding(.vertical, 12)
@@ -488,6 +494,28 @@ struct ConversationView: View {
         UIPasteboard.general.string = exportText
         
         // Show confirmation banner
+        withAnimation {
+            showingCopyConfirmation = true
+        }
+        
+        // Hide confirmation after 2 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation {
+                showingCopyConfirmation = false
+            }
+        }
+    }
+    
+    private func copyErrorToClipboard(_ error: String) {
+        // Copy error to clipboard
+        UIPasteboard.general.string = error
+        
+        // Trigger haptic feedback
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.success)
+        
+        // Show confirmation banner
+        copyConfirmationMessage = "Error copied to clipboard"
         withAnimation {
             showingCopyConfirmation = true
         }
