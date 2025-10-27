@@ -115,3 +115,7 @@ backend/node_modules/
 backend/package-lock.json
 backend/package.json
 voice-code-dev2/
+
+# VC
+.sandboxes
+
