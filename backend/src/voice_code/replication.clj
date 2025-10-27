@@ -336,7 +336,7 @@
 (defn build-index!
   "Scan all .jsonl files and build the session index.
   Returns map of session-id -> metadata.
-  Filters out files with non-UUID session IDs."
+  Filters out files with non-UUID session IDs and inference sessions."
   []
   (log/info "Building session index from filesystem...")
   (let [start-time (System/currentTimeMillis)
@@ -345,12 +345,17 @@
         _ (log/info "Found .jsonl files" {:count file-count})
         index (reduce (fn [acc file]
                         (try
-                          (let [metadata (build-session-metadata file)
-                                session-id (:session-id metadata)]
-                            ;; Only add to index if session-id is not nil (i.e., is a valid UUID)
-                            (if session-id
-                              (assoc acc session-id metadata)
-                              acc))
+                          ;; Filter out inference sessions
+                          (if (is-inference-session? file)
+                            (do
+                              (log/debug "Skipping inference session" {:file (.getPath file)})
+                              acc)
+                            (let [metadata (build-session-metadata file)
+                                  session-id (:session-id metadata)]
+                              ;; Only add to index if session-id is not nil (i.e., is a valid UUID)
+                              (if session-id
+                                (assoc acc session-id metadata)
+                                acc)))
                           (catch Exception e
                             (log/error e "Failed to process file" {:file (.getPath file)})
                             acc)))
