@@ -341,10 +341,28 @@ class SessionSyncManager {
                 // Active session: speak assistant messages, don't increment unread count
                 logger.info("Active session: will speak \(assistantMessagesToSpeak.count) assistant messages")
             } else {
-                // Background session: increment unread count, don't speak
+                // Background session: increment unread count, don't speak, post notification
                 if newMessageCount > 0 {
                     session.unreadCount += Int32(newMessageCount)
                     logger.info("Background session: incremented unread count to \(session.unreadCount)")
+                    
+                    // Post notification for assistant messages when app is backgrounded
+                    if !assistantMessagesToSpeak.isEmpty {
+                        let sessionName = session.localName ?? session.backendName
+                        logger.info("📬 Posting notification for \(assistantMessagesToSpeak.count) assistant messages")
+                        
+                        // Post notification on main thread
+                        // Combine multiple messages into one notification
+                        let combinedText = assistantMessagesToSpeak.joined(separator: "\n\n")
+                        DispatchQueue.main.async {
+                            Task {
+                                await NotificationManager.shared.postResponseNotification(
+                                    text: combinedText,
+                                    sessionName: sessionName
+                                )
+                            }
+                        }
+                    }
                 }
             }
 

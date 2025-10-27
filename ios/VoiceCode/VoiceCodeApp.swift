@@ -3,6 +3,7 @@
 
 import SwiftUI
 import OSLog
+import UserNotifications
 
 private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "RootView")
 
@@ -75,6 +76,18 @@ struct RootView: View {
         }
         .onAppear {
             logger.info("🔵 RootView appeared, setting up recent sessions callback")
+            
+            // Set up NotificationManager with VoiceOutputManager
+            NotificationManager.shared.setVoiceOutputManager(voiceOutput)
+            
+            // Request notification permissions
+            Task {
+                let authorized = await NotificationManager.shared.requestAuthorization()
+                if authorized {
+                    logger.info("✅ Notifications enabled for 'Read Aloud' feature")
+                }
+            }
+            
             // Set up callback for recent_sessions before connecting
             client.onRecentSessionsReceived = { sessions in
                 logger.info("📥 Received \(sessions.count) recent sessions from backend")

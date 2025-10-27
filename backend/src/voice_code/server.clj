@@ -9,7 +9,6 @@
             [clojure.string :as str]
             [voice-code.claude :as claude]
             [voice-code.replication :as repl]
-            [voice-code.storage :as storage]
             [voice-code.worktree :as worktree])
   (:gen-class))
 
@@ -83,12 +82,12 @@
                 :default-timeout 86400000}
        :logging {:level :info}})))
 
-;; Ephemeral mapping: WebSocket channel -> iOS session UUID
+;; Ephemeral mapping: WebSocket channel -> client state
 ;; This is just for routing messages during an active connection
-;; Persistent session data is stored via voice-code.storage
+;; Persistent session data comes from the replication system (filesystem-based)
 
 (defonce connected-clients
-  ;; Track all connected WebSocket clients: channel -> {:session-id, :deleted-sessions #{}}
+  ;; Track all connected WebSocket clients: channel -> {:deleted-sessions #{}}
   (atom {}))
 
 (defn unregister-channel!
@@ -507,15 +506,13 @@
                         (generate-json
                          {:type :error
                           :message "session_id required in compact_session message"}))
-            ;; Try to find session in storage first (old architecture)
-            ;; If not found, try the session ID directly (new replication-based architecture)
-            (let [session (storage/get-session session-id)
-                  claude-session-id (or (:claude-session-id session) session-id)]
-              (log/info "Compacting session" {:session-id session-id :claude-session-id claude-session-id :found-in-storage (boolean session)})
+            ;; New replication-based architecture: session-id IS the claude-session-id
+            (do
+              (log/info "Compacting session" {:session-id session-id})
               ;; Compact asynchronously
               (async/go
                 (try
-                  (let [result (claude/compact-session claude-session-id)]
+                  (let [result (claude/compact-session session-id)]
                     (if (:success result)
                       (do
                         (log/info "Session compaction successful" {:session-id session-id :result result})

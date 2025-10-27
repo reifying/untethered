@@ -40,6 +40,12 @@ class AppSettings: ObservableObject {
         }
     }
 
+    @Published var notifyOnResponse: Bool {
+        didSet {
+            UserDefaults.standard.set(notifyOnResponse, forKey: "notifyOnResponse")
+        }
+    }
+
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
         let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
@@ -102,6 +108,7 @@ class AppSettings: ObservableObject {
         self.selectedVoiceIdentifier = UserDefaults.standard.string(forKey: "selectedVoiceIdentifier")
         self.continuePlaybackWhenLocked = UserDefaults.standard.object(forKey: "continuePlaybackWhenLocked") as? Bool ?? true
         self.recentSessionsLimit = UserDefaults.standard.object(forKey: "recentSessionsLimit") as? Int ?? 5
+        self.notifyOnResponse = UserDefaults.standard.object(forKey: "notifyOnResponse") as? Bool ?? true
     }
 
     func testConnection(completion: @escaping (Bool, String) -> Void) {
