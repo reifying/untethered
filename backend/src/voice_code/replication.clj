@@ -514,7 +514,6 @@
          (take limit)
          vec)))
 
-;; ============================================================================
 ;; .jsonl File Parsing
 ;; ============================================================================
 
@@ -587,6 +586,75 @@
   "Reset tracked file position (for testing or when file is replaced)"
   [file-path]
   (swap! file-positions dissoc file-path))
+
+(defn ensure-session-in-index!
+  "Ensure a session is in the index by building metadata if not present.
+  Called synchronously after Claude CLI completes to eliminate subscribe race condition.
+  Idempotent: safely handles concurrent calls from prompt handler and watcher.
+  Returns metadata map if session was added or already exists, nil if file doesn't exist."
+  [session-id]
+  (when session-id
+    ;; Fast path: check if already in index
+    (if-let [existing (get @session-index session-id)]
+      (do
+        (log/debug "Session already in index" {:session-id session-id})
+        existing)
+      ;; Slow path: need to build metadata
+      (try
+        (log/info "Adding session to index synchronously" {:session-id session-id})
+        ;; Find the .jsonl file for this session
+        (let [files (find-jsonl-files)
+              matching-file (first (filter #(= session-id (extract-session-id-from-path %)) files))]
+          (if matching-file
+            (let [file-path (.getAbsolutePath matching-file)
+                  ;; Wait briefly for file to be fully written (Claude CLI may still be flushing)
+                  _ (Thread/sleep 50)
+                  ;; Verify file exists and has content
+                  file (io/file file-path)
+                  file-size (.length file)]
+              (if (> file-size 0)
+                (let [metadata (build-session-metadata matching-file)]
+                  ;; Use swap! with conditional to prevent overwriting if watcher beat us
+                  (swap! session-index
+                         (fn [idx]
+                           (if (contains? idx session-id)
+                             (do
+                               (log/debug "Session added by watcher while we were building metadata"
+                                          {:session-id session-id})
+                               idx)
+                             (do
+                               (log/info "Session added to index"
+                                         {:session-id session-id
+                                          :message-count (:message-count metadata)
+                                          :source :prompt-handler})
+                               (assoc idx session-id metadata)))))
+
+                  ;; Initialize file position using max to handle concurrent updates
+                  (swap! file-positions
+                         (fn [positions]
+                           (update positions file-path
+                                   (fn [old-pos]
+                                     (let [new-pos (max (or old-pos 0) file-size)]
+                                       (when (and old-pos (not= old-pos new-pos))
+                                         (log/debug "File position updated"
+                                                    {:file-path file-path
+                                                     :old old-pos
+                                                     :new new-pos}))
+                                       new-pos)))))
+
+                  ;; Return the metadata (from index in case watcher updated it)
+                  (get @session-index session-id))
+                (do
+                  (log/warn "Session file exists but is empty, waiting for content"
+                            {:session-id session-id :file-path file-path})
+                  nil)))
+            (do
+              (log/warn "No file found for session during ensure-session-in-index"
+                        {:session-id session-id})
+              nil)))
+        (catch Exception e
+          (log/error e "Failed to ensure session in index" {:session-id session-id})
+          nil)))))
 
 ;; ============================================================================
 ;; Filesystem Watching with Debouncing

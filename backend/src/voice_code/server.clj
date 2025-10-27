@@ -452,7 +452,12 @@
                          (do
                            (log/info "Prompt completed successfully"
                                      {:session-id (:session-id response)
-                                      :message "Filesystem watcher will send session_updated"})
+                                      :message "Ensuring session in index before turn_complete"})
+                           ;; SOLUTION 1: Synchronously ensure session is in index
+                           ;; This eliminates the race condition where iOS subscribes before watcher updates index
+                           (when new-session-id
+                             (log/info "Ensuring new session in index" {:session-id new-session-id})
+                             (repl/ensure-session-in-index! new-session-id))
                            ;; Send turn_complete message so iOS can unlock
                            (send-to-client! channel
                                             {:type :turn-complete
@@ -613,7 +618,7 @@
                                           :error (:error git-result)
                                           :error-type :git-failed
                                           :details {:step "git_worktree_add"
-                                                   :stderr (:stderr git-result)}})
+                                                    :stderr (:stderr git-result)}})
 
                         ;; Step 4b: Initialize Beads
                         (let [bd-result (worktree/init-beads! worktree-path)]
@@ -624,11 +629,11 @@
                                               :error (:error bd-result)
                                               :error-type :beads-failed
                                               :details {:step "bd_init"
-                                                       :stderr (:stderr bd-result)}})
+                                                        :stderr (:stderr bd-result)}})
 
                             ;; Step 4c: Invoke Claude Code
                             (let [prompt (worktree/format-worktree-prompt session-name worktree-path
-                                                                         parent-directory branch-name)]
+                                                                          parent-directory branch-name)]
                               (claude/invoke-claude-async
                                prompt
                                (fn [response]
@@ -649,12 +654,12 @@
                                :working-directory worktree-path)))))))))))
 
         ;; Unknown message type
-        (do
-          (log/warn "Unknown message type" {:type (:type data)})
-          (http/send! channel
-                      (generate-json
-                       {:type :error
-                        :message (str "Unknown message type: " (:type data))}))))))
+          (do
+            (log/warn "Unknown message type" {:type (:type data)})
+            (http/send! channel
+                        (generate-json
+                         {:type :error
+                          :message (str "Unknown message type: " (:type data))}))))))
 
     (catch Exception e
       (log/error e "Error handling message")
