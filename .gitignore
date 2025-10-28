@@ -106,7 +106,7 @@ iOSInjectionProject/
 
 # Backend runtime data
 backend/resources/sessions.edn
-backend/server.log
+server.log
 console.out
 console_frequency.txt
 
