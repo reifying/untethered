@@ -26,7 +26,7 @@
 (deftest test-invoke-claude-success
   (testing "Successful Claude invocation"
     (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                  clojure.java.shell/sh
+                  voice-code.claude/run-process-with-file-redirection
                   (fn [& args]
                     {:exit 0
                      :out "[{\"type\":\"result\",\"result\":\"Hello from Claude\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
@@ -39,53 +39,53 @@
   (testing "Claude CLI is invoked with correct flags"
     (let [called-args (atom nil)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                    clojure.java.shell/sh
-                    (fn [& args]
-                      (reset! called-args args)
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms]
+                      (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms})
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
         (claude/invoke-claude "test")
-        (is (some #(= "--print" %) @called-args) "Missing --print flag")
-        (is (some #(= "--output-format" %) @called-args) "Missing --output-format flag")
-        (is (some #(= "json" %) @called-args) "Missing json output format")
-        (is (some #(= "--dangerously-skip-permissions" %) @called-args))))))
+        (let [{:keys [args]} @called-args]
+          (is (some #(= "--print" %) args) "Missing --print flag")
+          (is (some #(= "--output-format" %) args) "Missing --output-format flag")
+          (is (some #(= "json" %) args) "Missing json output format")
+          (is (some #(= "--dangerously-skip-permissions" %) args)))))))
 
 (deftest test-invoke-claude-with-session
   (testing "Claude invocation with session resumption"
     (let [called-args (atom nil)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                    clojure.java.shell/sh
-                    (fn [& args]
-                      (reset! called-args args)
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms]
+                      (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms})
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"Resumed\",\"session_id\":\"test-456\",\"is_error\":false}]"})]
         (claude/invoke-claude "continue" :resume-session-id "test-456")
-        (is (some #(= "--resume" %) @called-args))
-        (is (some #(= "test-456" %) @called-args)))))
+        (let [{:keys [args]} @called-args]
+          (is (some #(= "--resume" %) args))
+          (is (some #(= "test-456" %) args))))))
 
   (testing "Claude invocation with new session ID"
     (let [called-args (atom nil)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                    clojure.java.shell/sh
-                    (fn [& args]
-                      (reset! called-args args)
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms]
+                      (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms})
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"New session\",\"session_id\":\"new-789\",\"is_error\":false}]"})]
         (claude/invoke-claude "hello" :new-session-id "new-789")
-        (is (some #(= "--session-id" %) @called-args))
-        (is (some #(= "new-789" %) @called-args))))))
+        (let [{:keys [args]} @called-args]
+          (is (some #(= "--session-id" %) args))
+          (is (some #(= "new-789" %) args)))))))
 
 (deftest test-invoke-claude-with-tilde-working-directory
   (testing "Working directory with tilde gets expanded"
     (let [called-with-dir (atom nil)
           home (System/getProperty "user.home")]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                    clojure.java.shell/sh
-                    (fn [cli-path & args]
-                      ;; Extract :dir from args
-                      (let [dir-idx (.indexOf args :dir)]
-                        (when (>= dir-idx 0)
-                          (reset! called-with-dir (nth args (inc dir-idx)))))
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms]
+                      (reset! called-with-dir working-dir)
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
 
@@ -96,8 +96,8 @@
 (deftest test-invoke-claude-cli-failure
   (testing "Handle CLI execution failure"
     (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                  clojure.java.shell/sh
-                  (fn [& args]
+                  voice-code.claude/run-process-with-file-redirection
+                  (fn [cli-path args working-dir timeout-ms]
                     {:exit 1
                      :err "Command failed"
                      :out ""})]
@@ -109,8 +109,8 @@
 (deftest test-invoke-claude-parse-error
   (testing "Handle JSON parsing errors"
     (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                  clojure.java.shell/sh
-                  (fn [& args]
+                  voice-code.claude/run-process-with-file-redirection
+                  (fn [cli-path args working-dir timeout-ms]
                     {:exit 0
                      :out "invalid json"})]
       (let [result (claude/invoke-claude "test")]
@@ -121,8 +121,8 @@
   (testing "Async invocation with successful response"
     (let [result-promise (promise)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                    clojure.java.shell/sh
-                    (fn [& args]
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms]
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"Async success\",\"session_id\":\"async-123\",\"is_error\":false}]"})]
 
@@ -162,8 +162,8 @@
   (testing "Async invocation with CLI error"
     (let [result-promise (promise)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                    clojure.java.shell/sh
-                    (fn [& args]
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms]
                       {:exit 1
                        :err "CLI error"
                        :out ""})]
@@ -246,8 +246,8 @@
 
         (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                       claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
-                      clojure.java.shell/sh
-                      (fn [& args]
+                      voice-code.claude/run-process-with-file-redirection
+                      (fn [cli-path args working-dir timeout-ms]
                         ;; Simulate compaction - reduce file to 3 lines
                         (spit temp-file (apply str (repeat 3 "{\"message\":\"test\"}\n")))
                         {:exit 0
@@ -272,8 +272,8 @@
 
         (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                       claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
-                      clojure.java.shell/sh
-                      (fn [& args]
+                      voice-code.claude/run-process-with-file-redirection
+                      (fn [cli-path args working-dir timeout-ms]
                         {:exit 1
                          :err "Session not found"})]
 
@@ -293,27 +293,28 @@
 
         (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                       claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
-                      clojure.java.shell/sh
-                      (fn [& args]
-                        (reset! called-args args)
+                      voice-code.claude/run-process-with-file-redirection
+                      (fn [cli-path args working-dir timeout-ms]
+                        (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms})
                         {:exit 0
                          :out "[{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"preTokens\":0}}]"})]
 
           (claude/compact-session "test-session-id")
 
-          (is (= "/mock/claude" (first @called-args)))
-          (is (some #(= "-p" %) @called-args))
-          (is (some #(= "--output-format" %) @called-args))
-          (is (some #(= "json" %) @called-args))
-          (is (some #(= "--resume" %) @called-args))
-          (is (some #(= "test-session-id" %) @called-args))
-          (is (some #(= "/compact" %) @called-args)))
+          (let [{:keys [cli-path args]} @called-args]
+            (is (= "/mock/claude" cli-path))
+            (is (some #(= "-p" %) args))
+            (is (some #(= "--output-format" %) args))
+            (is (some #(= "json" %) args))
+            (is (some #(= "--resume" %) args))
+            (is (some #(= "test-session-id" %) args))
+            (is (some #(= "/compact" %) args))))
 
         (finally
           (.delete temp-file))))))
 
 (deftest test-compact-session-with-working-directory
-  (testing "Compact session passes working directory to shell/sh via :dir option"
+  (testing "Compact session passes working directory to process"
     (let [temp-file (java.io.File/createTempFile "test-session" ".jsonl")
           called-args (atom nil)]
       (try
@@ -321,26 +322,23 @@
 
         (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                       claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
-                      ;; Mock replication/get-session-metadata to return metadata with working directory
                       voice-code.replication/get-session-metadata
                       (fn [_] {:working-directory "/Users/test/project"})
-                      clojure.java.shell/sh
-                      (fn [& args]
-                        (reset! called-args args)
+                      voice-code.claude/run-process-with-file-redirection
+                      (fn [cli-path args working-dir timeout-ms]
+                        (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms})
                         {:exit 0
                          :out "[{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"preTokens\":0}}]"})]
 
           (claude/compact-session "test-session-id")
 
-          ;; Verify :dir option is passed in shell/sh args
-          (is (= "/mock/claude" (first @called-args)))
-          (is (some #(= "-p" %) @called-args))
-          (is (some #(= "--resume" %) @called-args))
-          (is (some #(= "test-session-id" %) @called-args))
-          (is (some #(= "/compact" %) @called-args))
-          ;; Verify :dir option with working directory
-          (is (some #(= :dir %) @called-args))
-          (is (some #(= "/Users/test/project" %) @called-args)))
+          (let [{:keys [cli-path args working-dir]} @called-args]
+            (is (= "/mock/claude" cli-path))
+            (is (some #(= "-p" %) args))
+            (is (some #(= "--resume" %) args))
+            (is (some #(= "test-session-id" %) args))
+            (is (some #(= "/compact" %) args))
+            (is (= "/Users/test/project" working-dir))))
 
         (finally
           (.delete temp-file))))))
@@ -354,25 +352,23 @@
 
         (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                       claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
-                      ;; Mock replication/get-session-metadata to return metadata without working directory
                       voice-code.replication/get-session-metadata
                       (fn [_] {})
-                      clojure.java.shell/sh
-                      (fn [& args]
-                        (reset! called-args args)
+                      voice-code.claude/run-process-with-file-redirection
+                      (fn [cli-path args working-dir timeout-ms]
+                        (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms})
                         {:exit 0
                          :out "[{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"preTokens\":0}}]"})]
 
           (claude/compact-session "test-session-id")
 
-          ;; Verify :dir option is NOT included when no working directory
-          (is (= "/mock/claude" (first @called-args)))
-          (is (some #(= "-p" %) @called-args))
-          (is (some #(= "--resume" %) @called-args))
-          (is (some #(= "test-session-id" %) @called-args))
-          (is (some #(= "/compact" %) @called-args))
-          ;; Verify :dir is NOT in args
-          (is (not (some #(= :dir %) @called-args))))
+          (let [{:keys [cli-path args working-dir]} @called-args]
+            (is (= "/mock/claude" cli-path))
+            (is (some #(= "-p" %) args))
+            (is (some #(= "--resume" %) args))
+            (is (some #(= "test-session-id" %) args))
+            (is (some #(= "/compact" %) args))
+            (is (nil? working-dir))))
 
         (finally
           (.delete temp-file))))))
@@ -382,7 +378,7 @@
 (deftest test-invoke-claude-for-name-inference-success
   (testing "Successful name inference returns cleaned name"
     (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                  clojure.java.shell/sh
+                  voice-code.claude/run-process-with-file-redirection
                   (fn [& args]
                     {:exit 0
                      :out "[{\"type\":\"result\",\"result\":\"Fix authentication bug\",\"session_id\":\"test-inference-123\",\"is_error\":false}]"})]
@@ -394,7 +390,7 @@
   (testing "Name inference uses temp directory and creates it"
     (let [called-args (atom nil)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                    clojure.java.shell/sh
+                    voice-code.claude/run-process-with-file-redirection
                     (fn [& args]
                       (reset! called-args args)
                       {:exit 0
@@ -431,7 +427,7 @@
 (deftest test-invoke-claude-for-name-inference-error
   (testing "Handles CLI errors"
     (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                  clojure.java.shell/sh
+                  voice-code.claude/run-process-with-file-redirection
                   (fn [& args]
                     {:exit 1
                      :err "CLI error"})]
