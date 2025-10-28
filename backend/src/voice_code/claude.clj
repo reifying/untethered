@@ -30,35 +30,46 @@
 (defn- run-process-with-file-redirection
   "Run a process with stdout/stderr redirected to temp files.
   Returns a map with :exit, :out, and :err.
-  This function can be mocked in tests."
-  [cli-path args working-dir]
-  (let [stdout-file (File/createTempFile "claude-stdout-" ".json")
-        stderr-file (File/createTempFile "claude-stderr-" ".txt")]
-    (.setReadable stdout-file false false)
-    (.setReadable stdout-file true true)
-    (.setWritable stdout-file false false)
-    (.setWritable stdout-file true true)
-    (.setReadable stderr-file false false)
-    (.setReadable stderr-file true true)
-    (.setWritable stderr-file false false)
-    (.setWritable stderr-file true true)
-    (try
-      (let [process-opts (cond-> {:out (ProcessBuilder$Redirect/to stdout-file)
-                                  :err (ProcessBuilder$Redirect/to stderr-file)
-                                  :in :pipe}
-                           working-dir (assoc :dir working-dir))
-            all-args (into [cli-path] args)
-            process (apply proc/start process-opts all-args)]
-        (.close (.getOutputStream process))
-        (let [exit-code @(proc/exit-ref process)
-              stdout (slurp stdout-file)
-              stderr (slurp stderr-file)]
-          {:exit exit-code
-           :out stdout
-           :err stderr}))
-      (finally
-        (.delete stdout-file)
-        (.delete stderr-file)))))
+  This function can be mocked in tests.
+  Supports optional timeout in milliseconds."
+  ([cli-path args working-dir]
+   (run-process-with-file-redirection cli-path args working-dir nil))
+  ([cli-path args working-dir timeout-ms]
+   (let [stdout-path (java.nio.file.Files/createTempFile
+                      "claude-stdout-" ".json"
+                      (into-array java.nio.file.attribute.FileAttribute
+                                  [(java.nio.file.attribute.PosixFilePermissions/asFileAttribute
+                                    (java.nio.file.attribute.PosixFilePermissions/fromString "rw-------"))]))
+         stderr-path (java.nio.file.Files/createTempFile
+                      "claude-stderr-" ".txt"
+                      (into-array java.nio.file.attribute.FileAttribute
+                                  [(java.nio.file.attribute.PosixFilePermissions/asFileAttribute
+                                    (java.nio.file.attribute.PosixFilePermissions/fromString "rw-------"))]))
+         stdout-file (.toFile stdout-path)
+         stderr-file (.toFile stderr-path)]
+     (try
+       (let [process-opts (cond-> {:out (ProcessBuilder$Redirect/to stdout-file)
+                                   :err (ProcessBuilder$Redirect/to stderr-file)
+                                   :in :pipe}
+                            working-dir (assoc :dir working-dir))
+             all-args (into [cli-path] args)
+             process (apply proc/start process-opts all-args)
+             exit-ref (proc/exit-ref process)]
+         (.close (.getOutputStream process))
+         (let [exit-code (if timeout-ms
+                           (deref exit-ref timeout-ms :timeout)
+                           @exit-ref)]
+           (when (= exit-code :timeout)
+             (.destroyForcibly process)
+             (throw (ex-info "Process timeout" {:timeout-ms timeout-ms})))
+           (let [stdout (slurp stdout-file)
+                 stderr (slurp stderr-file)]
+             {:exit exit-code
+              :out stdout
+              :err stderr})))
+       (finally
+         (try (.delete stdout-file) (catch Exception e (log/warn e "Failed to delete stdout file")))
+         (try (.delete stderr-file) (catch Exception e (log/warn e "Failed to delete stderr file"))))))))
 
 (defn invoke-claude
   [prompt & {:keys [new-session-id resume-session-id model working-directory timeout]
@@ -83,7 +94,7 @@
                        :working-directory expanded-dir
                        :model model})
 
-          result (run-process-with-file-redirection cli-path args expanded-dir)]
+          result (run-process-with-file-redirection cli-path args expanded-dir timeout)]
 
       (log/debug "Claude CLI completed"
                  {:exit (:exit result)
@@ -313,7 +324,7 @@
                               :args cmd-args
                               :working-directory expanded-dir})
 
-                result (run-process-with-file-redirection cli-path cmd-args expanded-dir)]
+                result (run-process-with-file-redirection cli-path cmd-args expanded-dir 3600000)]
 
             (log/debug "Compact CLI completed"
                        {:exit (:exit result)
