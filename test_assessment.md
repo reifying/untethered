@@ -31,14 +31,14 @@ Successfully implemented comprehensive end-to-end testing suite for the voice-co
    - TEST_IMPLEMENTATION_SUMMARY.md (~400 lines) - Complete summary
 
 4. **Backend Updates**
-   - Updated Makefile with test-manual-real-data target
-   - Updated test-manual-free regex to include test-10
+   - Updated top-level Makefile with backend-test-manual-real-data target
+   - Updated backend-test-manual-free regex to include test-10
 
 ---
 
 ## Backend Test Results
 
-**Execution Command**: `cd backend && make test-manual-real-data`
+**Execution Command**: `make backend-test-manual-real-data`
 
 **Results** (as of 2025-10-17 20:43):
 ```
@@ -269,17 +269,21 @@ xcodebuild test \
 
 ### Immediate (When User Returns)
 
-1. **Run Swift E2E Tests**
+1. **Run Backend Tests**
+   - Command: `make backend-test`
+   - All tests accessible from top-level Makefile
+
+2. **Run Swift E2E Tests**
    - Execute iOS test suite
    - Document results
    - Measure performance metrics
 
-2. **Fix Subscription Test Timing** (Optional)
+3. **Fix Subscription Test Timing** (Optional)
    - Investigate fixture response queue processing
    - Add explicit waits or polling
    - Validate with longer timeouts
 
-3. **Update Beads**
+4. **Update Beads**
    - Close voice-code-97 through voice-code-101
    - Document test results in task completion notes
 
@@ -315,7 +319,7 @@ The manual testing implementation is **complete and ready for final validation**
 **Files Modified**:
 - ✅ `ios/VoiceCodeTests/E2E*.swift` (5 files, 2,555 lines)
 - ✅ `backend/manual_test/voice_code/test_10_real_data_validation.clj` (345 lines)
-- ✅ `backend/Makefile` (updated)
+- ✅ `Makefile` (consolidated - includes all backend targets)
 - ✅ `E2E_TESTING_GUIDE.md` (~600 lines)
 - ✅ `TEST_IMPLEMENTATION_SUMMARY.md` (~400 lines)
 - ✅ `test_assessment.md` (this file)
