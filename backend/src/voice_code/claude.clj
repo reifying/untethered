@@ -4,7 +4,10 @@
             [clojure.core.async :as async]
             [cheshire.core :as json]
             [clojure.tools.logging :as log]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [clojure.java.process :as proc])
+  (:import [java.io File]
+           [java.lang ProcessBuilder$Redirect]))
 
 (defn get-claude-cli-path
   []
@@ -24,6 +27,39 @@
       (clojure.string/replace-first path "~" (System/getProperty "user.home"))
       path)))
 
+(defn- run-process-with-file-redirection
+  "Run a process with stdout/stderr redirected to temp files.
+  Returns a map with :exit, :out, and :err.
+  This function can be mocked in tests."
+  [cli-path args working-dir]
+  (let [stdout-file (File/createTempFile "claude-stdout-" ".json")
+        stderr-file (File/createTempFile "claude-stderr-" ".txt")]
+    (.setReadable stdout-file false false)
+    (.setReadable stdout-file true true)
+    (.setWritable stdout-file false false)
+    (.setWritable stdout-file true true)
+    (.setReadable stderr-file false false)
+    (.setReadable stderr-file true true)
+    (.setWritable stderr-file false false)
+    (.setWritable stderr-file true true)
+    (try
+      (let [process-opts (cond-> {:out (ProcessBuilder$Redirect/to stdout-file)
+                                  :err (ProcessBuilder$Redirect/to stderr-file)
+                                  :in :pipe}
+                           working-dir (assoc :dir working-dir))
+            all-args (into [cli-path] args)
+            process (apply proc/start process-opts all-args)]
+        (.close (.getOutputStream process))
+        (let [exit-code @(proc/exit-ref process)
+              stdout (slurp stdout-file)
+              stderr (slurp stderr-file)]
+          {:exit exit-code
+           :out stdout
+           :err stderr}))
+      (finally
+        (.delete stdout-file)
+        (.delete stderr-file)))))
+
 (defn invoke-claude
   [prompt & {:keys [new-session-id resume-session-id model working-directory timeout]
              :or {model "sonnet"
@@ -41,16 +77,18 @@
                  resume-session-id (concat ["--resume" resume-session-id])
                  true (concat [prompt]))
 
-          shell-opts (cond-> {}
-                       expanded-dir (assoc :dir expanded-dir))
-
           _ (log/info "Invoking Claude CLI"
                       {:new-session-id new-session-id
                        :resume-session-id resume-session-id
                        :working-directory expanded-dir
                        :model model})
 
-          result (apply shell/sh cli-path (concat args (apply concat shell-opts)))]
+          result (run-process-with-file-redirection cli-path args expanded-dir)]
+
+      (log/debug "Claude CLI completed"
+                 {:exit (:exit result)
+                  :stdout-length (count (:out result))
+                  :stderr-length (count (:err result))})
 
       (if (zero? (:exit result))
         (try
@@ -188,8 +226,8 @@
   [claude-result]
   (-> claude-result
       clojure.string/trim
-      (clojure.string/replace #"^[\"']|[\"']$" "")  ; Remove surrounding quotes
-      (clojure.string/replace #"\n.*" "")           ; Take first line only
+      (clojure.string/replace #"^[\"']|[\"']$" "") ; Remove surrounding quotes
+      (clojure.string/replace #"\n.*" "") ; Take first line only
       (subs 0 (min 60 (count claude-result)))))
 
 (defn invoke-claude-for-name-inference
@@ -257,68 +295,67 @@
           {:success false
            :error (str "Session not found: " session-id)}
 
-          (do
-            ;; Count messages before compaction
-            (let [old-count (count-jsonl-lines session-file)
-                  _ (log/info "Compacting session" {:session-id session-id
-                                                    :file session-file
-                                                    :old-message-count old-count
-                                                    :working-directory expanded-dir})
+          ;; Count messages before compaction
+          (let [old-count (count-jsonl-lines session-file)
+                _ (log/info "Compacting session" {:session-id session-id
+                                                  :file session-file
+                                                  :old-message-count old-count
+                                                  :working-directory expanded-dir})
 
-                  ;; Build command arguments
-                  cmd-args ["-p"
-                            "--output-format" "json"
-                            "--resume" session-id
-                            "/compact"]
+                ;; Build command arguments
+                cmd-args ["-p"
+                          "--output-format" "json"
+                          "--resume" session-id
+                          "/compact"]
 
-                  ;; Build shell options with working directory if available
-                  shell-opts (cond-> {}
-                               expanded-dir (assoc :dir expanded-dir))
+                _ (log/debug "Compact CLI command"
+                             {:cli-path cli-path
+                              :args cmd-args
+                              :working-directory expanded-dir})
 
-                  ;; Invoke compact command
-                  result (apply shell/sh cli-path (concat cmd-args (apply concat shell-opts)))
+                result (run-process-with-file-redirection cli-path cmd-args expanded-dir)]
 
-                  _ (log/debug "Compact CLI result" {:exit (:exit result)
-                                                     :stdout-length (count (:out result))
-                                                     :stderr (:err result)})]
+            (log/debug "Compact CLI completed"
+                       {:exit (:exit result)
+                        :stdout-length (count (:out result))
+                        :stderr-length (count (:err result))})
 
-              (if (zero? (:exit result))
-                (try
-                  ;; Parse JSON output
-                  (let [response-array (json/parse-string (:out result) true)
-                        ;; Find compact_boundary in response
-                        compact-boundary (first (filter #(= "compact_boundary" (:subtype %)) response-array))
-                        pre-tokens (get-in compact-boundary [:compact_metadata :preTokens])
+            (if (zero? (:exit result))
+              (try
+                ;; Parse JSON output
+                (let [response-array (json/parse-string (:out result) true)
+                      ;; Find compact_boundary in response
+                      compact-boundary (first (filter #(= "compact_boundary" (:subtype %)) response-array))
+                      pre-tokens (get-in compact-boundary [:compact_metadata :preTokens])
 
-                        ;; Count messages after compaction
-                        new-count (count-jsonl-lines session-file)
-                        messages-removed (- (or old-count 0) (or new-count 0))]
+                      ;; Count messages after compaction
+                      new-count (count-jsonl-lines session-file)
+                      messages-removed (- (or old-count 0) (or new-count 0))]
 
-                    (log/info "Session compacted successfully"
-                              {:session-id session-id
-                               :old-count old-count
-                               :new-count new-count
-                               :messages-removed messages-removed
-                               :pre-tokens pre-tokens})
+                  (log/info "Session compacted successfully"
+                            {:session-id session-id
+                             :old-count old-count
+                             :new-count new-count
+                             :messages-removed messages-removed
+                             :pre-tokens pre-tokens})
 
-                    {:success true
-                     :old-message-count old-count
-                     :new-message-count new-count
-                     :messages-removed messages-removed
-                     :pre-tokens pre-tokens})
+                  {:success true
+                   :old-message-count old-count
+                   :new-message-count new-count
+                   :messages-removed messages-removed
+                   :pre-tokens pre-tokens})
 
-                  (catch Exception e
-                    (log/error e "Failed to parse compact response" {:session-id session-id})
-                    {:success false
-                     :error (str "Failed to parse compact response: " (ex-message e))}))
-
-                ;; CLI command failed
-                (do
-                  (log/error "Compact CLI command failed"
-                             {:session-id session-id
-                              :exit (:exit result)
-                              :stderr (:err result)})
+                (catch Exception e
+                  (log/error e "Failed to parse compact response" {:session-id session-id})
                   {:success false
-                   :error (or (not-empty (:err result))
-                              (str "Compact command exited with code " (:exit result)))})))))))))
+                   :error (str "Failed to parse compact response: " (ex-message e))}))
 
+              ;; CLI command failed
+              (do
+                (log/error "Compact CLI command failed"
+                           {:session-id session-id
+                            :exit (:exit result)
+                            :stderr (:err result)})
+                {:success false
+                 :error (or (not-empty (:err result))
+                            (str "Compact command exited with code " (:exit result)))}))))))))
