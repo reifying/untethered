@@ -10,6 +10,7 @@ BACKEND_DIR := backend
 
 .PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-restart
+.PHONY: bump-build archive export-ipa upload-testflight publish-testflight deploy-testflight
 
 # Default target
 help:
@@ -50,6 +51,13 @@ help:
 	@echo "Utility:"
 	@echo "  backend-clean     - Remove backend test artifacts"
 	@echo "  help              - Show this help message"
+	@echo ""
+	@echo "TestFlight publishing:"
+	@echo "  bump-build        - Increment iOS build number"
+	@echo "  archive           - Create iOS archive for distribution"
+	@echo "  export-ipa        - Export IPA from archive"
+	@echo "  upload-testflight - Upload IPA to TestFlight"
+	@echo "  publish-testflight - Complete workflow: archive + export + upload"
 
 # Ensure simulator exists and is booted
 setup-simulator:
@@ -176,3 +184,41 @@ backend-restart: backend-stop
 	@sleep 2
 	@echo "Starting voice-code backend server..."
 	@$(MAKE) backend-run
+
+# TestFlight Publishing
+# Requires: App Store Connect API keys set in environment (.envrc)
+# See: docs/testflight-deployment-setup.md
+
+# Increment build number
+bump-build:
+	@echo "Incrementing build number..."
+	@cd $(IOS_DIR) && xcrun agvtool next-version -all
+	@echo "\nNew build number:"
+	@cd $(IOS_DIR) && xcrun agvtool what-version
+
+# Create archive
+archive:
+	@echo "Creating archive build..."
+	@./scripts/publish-testflight.sh archive
+
+# Export IPA from archive
+export-ipa:
+	@echo "Exporting IPA..."
+	@./scripts/publish-testflight.sh export
+
+# Upload to TestFlight
+upload-testflight:
+	@echo "Uploading to TestFlight..."
+	@bash -c 'source .envrc && ./scripts/publish-testflight.sh upload'
+
+# Complete publish workflow: archive -> export -> upload
+publish-testflight:
+	@echo "Starting complete TestFlight publish workflow..."
+	@bash -c 'source .envrc && ./scripts/publish-testflight.sh publish'
+
+# Deploy new build: bump version -> archive -> export -> upload (most common workflow)
+deploy-testflight:
+	@echo "Deploying new build to TestFlight..."
+	@$(MAKE) bump-build
+	@bash -c 'source .envrc && $(MAKE) publish-testflight'
+	@echo "✅ Deployment complete! Check App Store Connect in ~15 minutes."
