@@ -2,8 +2,8 @@
 
 **Status**: ✅ Setup complete (2025-11-01)
 
-**First successful build**: Version 0.1.0, Build 1
-**Delivery UUID**: f2e68c3d-c2d3-4b1c-b727-1c3886ba3538
+**Latest build**: Version 0.1.0, Build 2
+**Latest delivery UUID**: 27799f62-b78b-4626-b01c-add2e733b1bc
 
 ---
 
@@ -204,9 +204,10 @@ make upload-testflight
 
 ## Build History
 
-| Version | Build | Date | Notes |
-|---------|-------|------|-------|
-| 0.1.0 | 1 | 2025-11-01 | First TestFlight build - Automated deployment setup complete |
+| Version | Build | Date | Notes | Delivery UUID |
+|---------|-------|------|-------|---------------|
+| 0.1.0 | 2 | 2025-11-01 | Updated app icon (wings variant) - First deploy-testflight test | 27799f62-b78b-4626-b01c-add2e733b1bc |
+| 0.1.0 | 1 | 2025-11-01 | First TestFlight build - Automated deployment setup complete | f2e68c3d-c2d3-4b1c-b727-1c3886ba3538 |
 
 ---
 

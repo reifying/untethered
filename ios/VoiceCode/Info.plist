@@ -4,6 +4,8 @@
 <dict>
 	<key>CFBundleDisplayName</key>
 	<string>Untethered</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Untethered needs microphone access for voice input to control Claude.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
