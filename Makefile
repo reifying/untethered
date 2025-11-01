@@ -53,11 +53,12 @@ help:
 	@echo "  help              - Show this help message"
 	@echo ""
 	@echo "TestFlight publishing:"
-	@echo "  bump-build        - Increment iOS build number"
-	@echo "  archive           - Create iOS archive for distribution"
-	@echo "  export-ipa        - Export IPA from archive"
-	@echo "  upload-testflight - Upload IPA to TestFlight"
-	@echo "  publish-testflight - Complete workflow: archive + export + upload"
+	@echo "  deploy-testflight  - ⭐ Deploy new build: bump + archive + export + upload"
+	@echo "  bump-build         - Increment iOS build number"
+	@echo "  publish-testflight - Archive + export + upload (no bump)"
+	@echo "  archive            - Create iOS archive for distribution"
+	@echo "  export-ipa         - Export IPA from archive"
+	@echo "  upload-testflight  - Upload IPA to TestFlight"
 
 # Ensure simulator exists and is booted
 setup-simulator:
