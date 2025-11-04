@@ -332,6 +332,14 @@ class VoiceCodeClient: ObservableObject {
                 // Backend signals that Claude CLI has finished (turn is complete)
                 if let sessionId = json["session_id"] as? String {
                     print("✅ [VoiceCodeClient] Received turn_complete for \(sessionId)")
+
+                    // Subscribe if not already subscribed (for new sessions)
+                    // Backend has now created the session and added it to the index
+                    if !self.activeSubscriptions.contains(sessionId) {
+                        print("📥 [VoiceCodeClient] Auto-subscribing to new session after turn_complete: \(sessionId)")
+                        self.subscribe(sessionId: sessionId)
+                    }
+
                     if self.lockedSessions.contains(sessionId) {
                         self.lockedSessions.remove(sessionId)
                         print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (turn complete, remaining locks: \(self.lockedSessions.count))")
