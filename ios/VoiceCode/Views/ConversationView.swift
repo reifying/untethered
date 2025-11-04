@@ -123,14 +123,22 @@ struct ConversationView: View {
                                     .id("bottom")
                                     .onAppear {
                                         // User has scrolled to bottom, re-enable auto-scroll
+                                        print("🔵 [AutoScroll] Bottom anchor appeared (user at bottom)")
                                         if !autoScrollEnabled {
+                                            print("🔵 [AutoScroll] Re-enabling auto-scroll")
                                             autoScrollEnabled = true
+                                        } else {
+                                            print("🔵 [AutoScroll] Already enabled, no change")
                                         }
                                     }
                                     .onDisappear {
                                         // User has scrolled away from bottom, disable auto-scroll
+                                        print("⚪️ [AutoScroll] Bottom anchor disappeared (user scrolled up)")
                                         if autoScrollEnabled {
+                                            print("⚪️ [AutoScroll] Disabling auto-scroll")
                                             autoScrollEnabled = false
+                                        } else {
+                                            print("⚪️ [AutoScroll] Already disabled, no change")
                                         }
                                     }
                             }
@@ -140,13 +148,20 @@ struct ConversationView: View {
                     .onChange(of: messages.count) { oldCount, newCount in
                         // Auto-scroll to new messages if enabled
                         guard newCount > oldCount else { return }
-                        
+
+                        print("📨 [AutoScroll] New messages: \(oldCount) -> \(newCount), auto-scroll: \(autoScrollEnabled ? "enabled" : "disabled")")
+
                         if autoScrollEnabled {
                             if let lastMessage = messages.last {
+                                print("📨 [AutoScroll] Scrolling to last message: \(lastMessage.id)")
                                 withAnimation {
                                     proxy.scrollTo(lastMessage.id, anchor: .bottom)
                                 }
+                            } else {
+                                print("📨 [AutoScroll] No last message to scroll to")
                             }
+                        } else {
+                            print("📨 [AutoScroll] Skipping auto-scroll (disabled)")
                         }
                     }
                     .onChange(of: isLoading) { wasLoading, nowLoading in
@@ -340,9 +355,11 @@ struct ConversationView: View {
         }
         .onAppear {
             // Reset scroll flags when view appears (handles navigation back to session)
+            print("👁️ [AutoScroll] View appeared, resetting state")
             hasPerformedInitialScroll = false
             autoScrollEnabled = true  // Re-enable auto-scroll on view appear
-            
+            print("👁️ [AutoScroll] Auto-scroll enabled on view appear")
+
             loadSessionIfNeeded()
             setupVoiceInput()
 
@@ -610,17 +627,23 @@ struct ConversationView: View {
     }
     
     private func toggleAutoScroll() {
+        print("🔘 [AutoScroll] Toggle button tapped, current state: \(autoScrollEnabled ? "enabled" : "disabled")")
         if autoScrollEnabled {
             // Disable auto-scroll
+            print("🔘 [AutoScroll] Disabling via manual toggle")
             autoScrollEnabled = false
         } else {
             // Re-enable auto-scroll and jump to bottom
+            print("🔘 [AutoScroll] Re-enabling via manual toggle and jumping to bottom")
             autoScrollEnabled = true
-            
+
             if let proxy = scrollProxy, let lastMessage = messages.last {
+                print("🔘 [AutoScroll] Scrolling to last message: \(lastMessage.id)")
                 withAnimation(.spring()) {
                     proxy.scrollTo(lastMessage.id, anchor: .bottom)
                 }
+            } else {
+                print("🔘 [AutoScroll] No proxy or last message to scroll to")
             }
         }
     }
