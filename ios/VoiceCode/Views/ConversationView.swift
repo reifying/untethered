@@ -104,20 +104,24 @@ struct ConversationView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.top, 100)
                         } else {
-                            LazyVStack(spacing: 12) {
-                                ForEach(messages) { message in
-                                    CDMessageView(
-                                        message: message,
-                                        voiceOutput: voiceOutput,
-                                        settings: settings,
-                                        onInferName: { messageText in
-                                            client.requestInferredName(sessionId: session.id.uuidString.lowercased(), messageText: messageText)
-                                        }
-                                    )
-                                    .id(message.id)
+                            VStack(spacing: 0) {
+                                LazyVStack(spacing: 12) {
+                                    ForEach(messages) { message in
+                                        CDMessageView(
+                                            message: message,
+                                            voiceOutput: voiceOutput,
+                                            settings: settings,
+                                            onInferName: { messageText in
+                                                client.requestInferredName(sessionId: session.id.uuidString.lowercased(), messageText: messageText)
+                                            }
+                                        )
+                                        .id(message.id)
+                                    }
                                 }
+                                .padding()
 
                                 // Invisible anchor at the bottom for scroll detection
+                                // Outside LazyVStack to ensure it's always in view hierarchy
                                 Color.clear
                                     .frame(height: 1)
                                     .id("bottom")
@@ -142,7 +146,6 @@ struct ConversationView: View {
                                         }
                                     }
                             }
-                            .padding()
                         }
                     }
                     .onChange(of: messages.count) { oldCount, newCount in
