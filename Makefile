@@ -117,7 +117,7 @@ deploy-device:
 		-allowProvisioningUpdates \
 		-derivedDataPath build
 	@echo "Installing to device..."
-	cd $(IOS_DIR) && xcrun devicectl device install app --device $$(xcrun devicectl list devices | grep "available" | grep -m1 "iPhone" | awk '{print $$3}') build/Build/Products/Debug-iphoneos/VoiceCode.app
+	cd $(IOS_DIR) && xcrun devicectl device install app --device $$(xcrun devicectl list devices | grep "connected" | grep -m1 "iPhone" | awk '{print $$4}') build/Build/Products/Debug-iphoneos/VoiceCode.app
 	@echo "✅ Deployed to iPhone! Launch the app manually."
 
 # Backend targets
