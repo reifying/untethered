@@ -351,12 +351,24 @@ class VoiceCodeClient: ObservableObject {
 
             case "compaction_complete":
                 // Session compaction completed successfully
-                print("⚡️ [VoiceCodeClient] Received compaction_complete")
+                if let sessionId = json["session_id"] as? String {
+                    print("⚡️ [VoiceCodeClient] Received compaction_complete for \(sessionId)")
+                    if self.lockedSessions.contains(sessionId) {
+                        self.lockedSessions.remove(sessionId)
+                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (compaction complete, remaining locks: \(self.lockedSessions.count))")
+                    }
+                }
                 self.onCompactionResponse?(json)
 
             case "compaction_error":
                 // Session compaction failed
-                print("❌ [VoiceCodeClient] Received compaction_error")
+                if let sessionId = json["session_id"] as? String {
+                    print("❌ [VoiceCodeClient] Received compaction_error for \(sessionId)")
+                    if self.lockedSessions.contains(sessionId) {
+                        self.lockedSessions.remove(sessionId)
+                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (compaction error, remaining locks: \(self.lockedSessions.count))")
+                    }
+                }
                 self.onCompactionResponse?(json)
 
             case "session_name_inferred":
@@ -542,6 +554,10 @@ class VoiceCodeClient: ObservableObject {
                           code: -3,
                           userInfo: [NSLocalizedDescriptionKey: "Compaction already in progress"])
         }
+
+        // Optimistically lock the session before sending
+        lockedSessions.insert(sessionId)
+        print("🔒 [VoiceCodeClient] Optimistically locked for compaction: \(sessionId) (total locks: \(lockedSessions.count))")
 
         return try await withCheckedThrowingContinuation { continuation in
             var resumed = false

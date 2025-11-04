@@ -243,7 +243,7 @@ struct ConversationView: View {
                                 .foregroundColor(wasRecentlyCompacted ? .green : .primary)
                         }
                     }
-                    .disabled(isCompacting)
+                    .disabled(isCompacting || client.lockedSessions.contains(session.id.uuidString.lowercased()))
 
                     Button(action: {
                         client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
