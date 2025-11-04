@@ -46,14 +46,15 @@ struct RootView: View {
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
-            DirectoryListView(client: client, settings: settings, voiceOutput: voiceOutput, showingSettings: $showingSettings, recentSessions: $recentSessions)
+            DirectoryListView(client: client, settings: settings, voiceOutput: voiceOutput, showingSettings: $showingSettings, recentSessions: $recentSessions, navigationPath: $navigationPath)
                 .navigationDestination(for: String.self) { workingDirectory in
                     SessionsForDirectoryView(
                         workingDirectory: workingDirectory,
                         client: client,
                         settings: settings,
                         voiceOutput: voiceOutput,
-                        showingSettings: $showingSettings
+                        showingSettings: $showingSettings,
+                        navigationPath: $navigationPath
                     )
                 }
                 .navigationDestination(for: UUID.self) { sessionId in

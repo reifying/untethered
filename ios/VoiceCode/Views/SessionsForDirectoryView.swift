@@ -14,6 +14,7 @@ struct SessionsForDirectoryView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var voiceOutput: VoiceOutputManager
     @Binding var showingSettings: Bool
+    @Binding var navigationPath: NavigationPath
     @Environment(\.managedObjectContext) private var viewContext
     @EnvironmentObject var draftManager: DraftManager
 
@@ -25,12 +26,13 @@ struct SessionsForDirectoryView: View {
     @State private var showingCopyConfirmation = false
     @State private var showingDirectoryCopyConfirmation = false
 
-    init(workingDirectory: String, client: VoiceCodeClient, settings: AppSettings, voiceOutput: VoiceOutputManager, showingSettings: Binding<Bool>) {
+    init(workingDirectory: String, client: VoiceCodeClient, settings: AppSettings, voiceOutput: VoiceOutputManager, showingSettings: Binding<Bool>, navigationPath: Binding<NavigationPath>) {
         self.workingDirectory = workingDirectory
         self.client = client
         self.settings = settings
         self.voiceOutput = voiceOutput
         self._showingSettings = showingSettings
+        self._navigationPath = navigationPath
 
         // Initialize FetchRequest with predicate filtering by directory
         _sessions = FetchRequest<CDSession>(
@@ -186,6 +188,10 @@ struct SessionsForDirectoryView: View {
             try viewContext.save()
             logger.info("📝 Created new session: \(sessionId.uuidString.lowercased()) in \(workingDirectory)")
 
+            // Navigate to the new session
+            navigationPath.append(sessionId)
+            logger.info("🔄 Navigating to new session: \(sessionId.uuidString.lowercased())")
+
             // Note: ConversationView will handle subscription when it appears (lazy loading)
 
         } catch {
@@ -279,7 +285,8 @@ struct SessionsForDirectoryView_Previews: PreviewProvider {
                 client: client,
                 settings: settings,
                 voiceOutput: voiceOutput,
-                showingSettings: .constant(false)
+                showingSettings: .constant(false),
+                navigationPath: .constant(NavigationPath())
             )
         }
         .environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
