@@ -136,6 +136,11 @@ struct ConversationView: View {
                                         }
                                     }
                                 }
+
+                                // Invisible anchor for scroll target (ensures we scroll past last message)
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id("bottom")
                             }
                             .padding()
                         }
@@ -147,13 +152,9 @@ struct ConversationView: View {
                         print("📨 [AutoScroll] New messages: \(oldCount) -> \(newCount), auto-scroll: \(autoScrollEnabled ? "enabled" : "disabled")")
 
                         if autoScrollEnabled {
-                            if let lastMessage = messages.last {
-                                print("📨 [AutoScroll] Scrolling to last message: \(lastMessage.id)")
-                                withAnimation {
-                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                                }
-                            } else {
-                                print("📨 [AutoScroll] No last message to scroll to")
+                            print("📨 [AutoScroll] Scrolling to bottom anchor")
+                            withAnimation {
+                                proxy.scrollTo("bottom", anchor: .bottom)
                             }
                         } else {
                             print("📨 [AutoScroll] Skipping auto-scroll (disabled)")
@@ -163,10 +164,8 @@ struct ConversationView: View {
                         // When loading finishes, perform initial scroll to bottom
                         if wasLoading && !nowLoading && !hasPerformedInitialScroll {
                             hasPerformedInitialScroll = true
-                            if let lastMessage = messages.last {
-                                // Non-animated for immediate positioning
-                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                            }
+                            // Non-animated for immediate positioning
+                            proxy.scrollTo("bottom", anchor: .bottom)
                         }
                     }
                 }
@@ -632,13 +631,13 @@ struct ConversationView: View {
             print("🔘 [AutoScroll] Re-enabling via manual toggle and jumping to bottom")
             autoScrollEnabled = true
 
-            if let proxy = scrollProxy, let lastMessage = messages.last {
-                print("🔘 [AutoScroll] Scrolling to last message: \(lastMessage.id)")
+            if let proxy = scrollProxy {
+                print("🔘 [AutoScroll] Scrolling to bottom anchor")
                 withAnimation(.spring()) {
-                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                    proxy.scrollTo("bottom", anchor: .bottom)
                 }
             } else {
-                print("🔘 [AutoScroll] No proxy or last message to scroll to")
+                print("🔘 [AutoScroll] No scroll proxy available")
             }
         }
     }
