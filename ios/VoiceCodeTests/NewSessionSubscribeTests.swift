@@ -47,7 +47,8 @@ final class NewSessionSubscribeTests: XCTestCase {
         // We simulate this by checking if subscribe should be called
         let shouldSubscribe = newSession.messageCount > 0
 
-        // Then: Subscribe should NOT be called for new sessions
+        // Then: Subscribe should NOT be called on load for new sessions
+        // Instead, subscribe happens when the first prompt is sent (in sendPromptText)
         XCTAssertFalse(shouldSubscribe, "New sessions should not subscribe on load to avoid 'session not found' error")
     }
 
