@@ -104,48 +104,40 @@ struct ConversationView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.top, 100)
                         } else {
-                            VStack(spacing: 0) {
-                                LazyVStack(spacing: 12) {
-                                    ForEach(messages) { message in
-                                        CDMessageView(
-                                            message: message,
-                                            voiceOutput: voiceOutput,
-                                            settings: settings,
-                                            onInferName: { messageText in
-                                                client.requestInferredName(sessionId: session.id.uuidString.lowercased(), messageText: messageText)
-                                            }
-                                        )
-                                        .id(message.id)
-                                    }
-                                }
-                                .padding()
-
-                                // Invisible anchor at the bottom for scroll detection
-                                // Outside LazyVStack to ensure it's always in view hierarchy
-                                Color.clear
-                                    .frame(height: 1)
-                                    .id("bottom")
+                            LazyVStack(spacing: 12) {
+                                ForEach(messages) { message in
+                                    CDMessageView(
+                                        message: message,
+                                        voiceOutput: voiceOutput,
+                                        settings: settings,
+                                        onInferName: { messageText in
+                                            client.requestInferredName(sessionId: session.id.uuidString.lowercased(), messageText: messageText)
+                                        }
+                                    )
+                                    .id(message.id)
                                     .onAppear {
-                                        // User has scrolled to bottom, re-enable auto-scroll
-                                        print("🔵 [AutoScroll] Bottom anchor appeared (user at bottom)")
-                                        if !autoScrollEnabled {
-                                            print("🔵 [AutoScroll] Re-enabling auto-scroll")
-                                            autoScrollEnabled = true
-                                        } else {
-                                            print("🔵 [AutoScroll] Already enabled, no change")
+                                        // Track last visible message for scroll detection
+                                        if message.id == messages.last?.id {
+                                            print("🔵 [AutoScroll] Last message is visible (at bottom)")
+                                            if !autoScrollEnabled {
+                                                print("🔵 [AutoScroll] Re-enabling auto-scroll")
+                                                autoScrollEnabled = true
+                                            }
                                         }
                                     }
                                     .onDisappear {
-                                        // User has scrolled away from bottom, disable auto-scroll
-                                        print("⚪️ [AutoScroll] Bottom anchor disappeared (user scrolled up)")
-                                        if autoScrollEnabled {
-                                            print("⚪️ [AutoScroll] Disabling auto-scroll")
-                                            autoScrollEnabled = false
-                                        } else {
-                                            print("⚪️ [AutoScroll] Already disabled, no change")
+                                        // Last message disappeared - user scrolled up
+                                        if message.id == messages.last?.id {
+                                            print("⚪️ [AutoScroll] Last message disappeared (scrolled up)")
+                                            if autoScrollEnabled {
+                                                print("⚪️ [AutoScroll] Disabling auto-scroll")
+                                                autoScrollEnabled = false
+                                            }
                                         }
                                     }
+                                }
                             }
+                            .padding()
                         }
                     }
                     .onChange(of: messages.count) { oldCount, newCount in
