@@ -116,6 +116,23 @@ struct ConversationView: View {
                                     )
                                     .id(message.id)
                                 }
+
+                                // Invisible anchor at the bottom for scroll detection
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id("bottom")
+                                    .onAppear {
+                                        // User has scrolled to bottom, re-enable auto-scroll
+                                        if !autoScrollEnabled {
+                                            autoScrollEnabled = true
+                                        }
+                                    }
+                                    .onDisappear {
+                                        // User has scrolled away from bottom, disable auto-scroll
+                                        if autoScrollEnabled {
+                                            autoScrollEnabled = false
+                                        }
+                                    }
                             }
                             .padding()
                         }
