@@ -8,7 +8,7 @@ DESTINATION := 'platform=iOS Simulator,name=$(SIMULATOR_NAME)'
 IOS_DIR := ios
 BACKEND_DIR := backend
 
-.PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator
+.PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-restart
 .PHONY: bump-build archive export-ipa upload-testflight publish-testflight deploy-testflight
 
@@ -25,6 +25,7 @@ help:
 	@echo "  build             - Build the iOS project"
 	@echo "  clean             - Clean iOS build artifacts"
 	@echo "  setup-simulator   - Create and boot simulator: $(SIMULATOR_NAME)"
+	@echo "  deploy-device     - Build and install to connected iPhone (fast deployment)"
 	@echo ""
 	@echo "Backend server management:"
 	@echo "  backend-run       - Start the backend server"
@@ -106,6 +107,18 @@ ifndef METHOD
 	$(error METHOD is required. Usage: make test-method CLASS=OptimisticUITests METHOD=test_method_name)
 endif
 	cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeTests/$(CLASS)/$(METHOD)
+
+# Build and install to connected iPhone (mimics Xcode's Run button)
+deploy-device:
+	@echo "Building and deploying to connected iPhone..."
+	@echo "Make sure your iPhone is connected via USB and unlocked"
+	cd $(IOS_DIR) && xcodebuild build -scheme $(SCHEME) \
+		-destination 'generic/platform=iOS' \
+		-allowProvisioningUpdates \
+		-derivedDataPath build
+	@echo "Installing to device..."
+	cd $(IOS_DIR) && xcrun devicectl device install app --device $$(xcrun devicectl list devices | grep "available" | grep -m1 "iPhone" | awk '{print $$3}') build/Build/Products/Debug-iphoneos/VoiceCode.app
+	@echo "✅ Deployed to iPhone! Launch the app manually."
 
 # Backend targets
 
