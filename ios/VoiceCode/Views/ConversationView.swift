@@ -447,11 +447,7 @@ struct ConversationView: View {
         if isNewSession {
             message["new_session_id"] = sessionId
             print("📤 [ConversationView] Sending prompt with new_session_id: \(sessionId)")
-
-            // Subscribe immediately after sending first prompt for new sessions
-            // This ensures we receive the response once the backend creates the session
-            print("📥 [ConversationView] Subscribing to new session after first prompt: \(sessionId)")
-            client.subscribe(sessionId: sessionId)
+            // Note: Subscribe will happen when we receive turn_complete (after backend creates session)
         } else {
             message["resume_session_id"] = sessionId
             print("📤 [ConversationView] Sending prompt with resume_session_id: \(sessionId)")
