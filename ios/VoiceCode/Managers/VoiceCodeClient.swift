@@ -328,15 +328,27 @@ class VoiceCodeClient: ObservableObject {
                     self.sessionSyncManager.handleSessionUpdated(sessionId: sessionId, messages: messages)
                 }
 
+            case "session_ready":
+                // Backend signals that new session is in index and ready for subscription
+                if let sessionId = json["session_id"] as? String {
+                    print("✅ [VoiceCodeClient] Received session_ready for \(sessionId)")
+
+                    // Subscribe immediately now that backend has confirmed session exists in index
+                    if !self.activeSubscriptions.contains(sessionId) {
+                        print("📥 [VoiceCodeClient] Auto-subscribing to new session after session_ready: \(sessionId)")
+                        self.subscribe(sessionId: sessionId)
+                    }
+                }
+
             case "turn_complete":
                 // Backend signals that Claude CLI has finished (turn is complete)
                 if let sessionId = json["session_id"] as? String {
                     print("✅ [VoiceCodeClient] Received turn_complete for \(sessionId)")
 
-                    // Subscribe if not already subscribed (for new sessions)
-                    // Backend has now created the session and added it to the index
+                    // Note: Subscription now happens earlier via session_ready message
+                    // This is kept as fallback for compatibility
                     if !self.activeSubscriptions.contains(sessionId) {
-                        print("📥 [VoiceCodeClient] Auto-subscribing to new session after turn_complete: \(sessionId)")
+                        print("📥 [VoiceCodeClient] Auto-subscribing to new session after turn_complete (fallback): \(sessionId)")
                         self.subscribe(sessionId: sessionId)
                     }
 
