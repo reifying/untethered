@@ -507,34 +507,43 @@
                          {:type :error
                           :message "session_id required in compact_session message"}))
             ;; New replication-based architecture: session-id IS the claude-session-id
-            (do
-              (log/info "Compacting session" {:session-id session-id})
-              ;; Compact asynchronously
-              (async/go
-                (try
-                  (let [result (claude/compact-session session-id)]
-                    (if (:success result)
-                      (do
-                        (log/info "Session compaction successful" {:session-id session-id :result result})
-                        (send-to-client! channel
-                                         {:type :compaction-complete
-                                          :session-id session-id
-                                          :old-message-count (:old-message-count result)
-                                          :new-message-count (:new-message-count result)
-                                          :messages-removed (:messages-removed result)
-                                          :pre-tokens (:pre-tokens result)}))
-                      (do
-                        (log/error "Session compaction failed" {:session-id session-id :error (:error result)})
-                        (send-to-client! channel
-                                         {:type :compaction-error
-                                          :session-id session-id
-                                          :error (:error result)}))))
-                  (catch Exception e
-                    (log/error e "Unexpected error during compaction" {:session-id session-id})
-                    (send-to-client! channel
-                                     {:type :compaction-error
-                                      :session-id session-id
-                                      :error (str "Compaction failed: " (ex-message e))})))))))
+            ;; Try to acquire lock for this session (from bd2e367)
+            (if (repl/acquire-session-lock! session-id)
+              (do
+                (log/info "Compacting session" {:session-id session-id})
+                ;; Compact asynchronously
+                (async/go
+                  (try
+                    (let [result (claude/compact-session session-id)]
+                      (if (:success result)
+                        (do
+                          (log/info "Session compaction successful" {:session-id session-id :result result})
+                          (send-to-client! channel
+                                           {:type :compaction-complete
+                                            :session-id session-id
+                                            :old-message-count (:old-message-count result)
+                                            :new-message-count (:new-message-count result)
+                                            :messages-removed (:messages-removed result)
+                                            :pre-tokens (:pre-tokens result)}))
+                        (do
+                          (log/error "Session compaction failed" {:session-id session-id :error (:error result)})
+                          (send-to-client! channel
+                                           {:type :compaction-error
+                                            :session-id session-id
+                                            :error (:error result)}))))
+                    (catch Exception e
+                      (log/error e "Unexpected error during compaction" {:session-id session-id})
+                      (send-to-client! channel
+                                       {:type :compaction-error
+                                        :session-id session-id
+                                        :error (str "Compaction failed: " (ex-message e))}))
+                    (finally
+                      (repl/release-session-lock! session-id)))))
+              (do
+                ;; Session is locked, send session_locked message
+                (log/info "Session locked, rejecting compaction"
+                          {:session-id session-id})
+                (send-session-locked! channel session-id)))))
 
         "infer_session_name"
         (let [session-id (:session-id data)
