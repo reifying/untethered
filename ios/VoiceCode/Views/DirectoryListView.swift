@@ -13,6 +13,7 @@ struct DirectoryListView: View {
     @ObservedObject var voiceOutput: VoiceOutputManager
     @Binding var showingSettings: Bool
     @Binding var recentSessions: [RecentSession]
+    @Binding var navigationPath: NavigationPath
     @Environment(\.managedObjectContext) private var viewContext
     @EnvironmentObject var draftManager: DraftManager
 
@@ -254,6 +255,10 @@ struct DirectoryListView: View {
             try viewContext.save()
             logger.info("📝 Created new session: \(sessionId.uuidString.lowercased())")
 
+            // Navigate to the new session
+            navigationPath.append(sessionId)
+            logger.info("🔄 Navigating to new session: \(sessionId.uuidString.lowercased())")
+
             // Note: ConversationView will handle subscription when it appears (lazy loading)
 
         } catch {
@@ -423,7 +428,8 @@ struct DirectoryListView_Previews: PreviewProvider {
                 settings: settings,
                 voiceOutput: voiceOutput,
                 showingSettings: .constant(false),
-                recentSessions: .constant([])
+                recentSessions: .constant([]),
+                navigationPath: .constant(NavigationPath())
             )
         }
         .environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
