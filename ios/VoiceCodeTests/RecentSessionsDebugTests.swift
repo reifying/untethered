@@ -1,5 +1,5 @@
 // RecentSessionsDebugTests.swift
-// Debug tests to verify Recent Sessions parsing
+// Debug tests to verify Recent section parsing
 
 import XCTest
 import CoreData

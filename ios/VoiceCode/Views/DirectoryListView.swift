@@ -88,7 +88,7 @@ struct DirectoryListView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
-                    // Recent Sessions section
+                    // Recent section
                     if !recentSessions.isEmpty {
                         Section(isExpanded: $isRecentExpanded) {
                             ForEach(recentSessions) { session in
@@ -110,7 +110,7 @@ struct DirectoryListView: View {
                                 }
                             }
                         } header: {
-                            Text("Recent Sessions")
+                            Text("Recent")
                         }
                     }
                     
@@ -138,7 +138,7 @@ struct DirectoryListView: View {
                 }
             }
         }
-        .navigationTitle("Untethered")
+        .navigationTitle("Projects")
         .overlay(alignment: .top) {
             if showingCopyConfirmation {
                 Text(copyConfirmationMessage)
