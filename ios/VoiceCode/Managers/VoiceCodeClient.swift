@@ -555,9 +555,11 @@ class VoiceCodeClient: ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: "Compaction already in progress"])
         }
 
-        // Optimistically lock the session before sending
-        lockedSessions.insert(sessionId)
-        print("🔒 [VoiceCodeClient] Optimistically locked for compaction: \(sessionId) (total locks: \(lockedSessions.count))")
+        // Optimistically lock the session before sending (must be on main thread)
+        await MainActor.run {
+            lockedSessions.insert(sessionId)
+            print("🔒 [VoiceCodeClient] Optimistically locked for compaction: \(sessionId) (total locks: \(lockedSessions.count))")
+        }
 
         return try await withCheckedThrowingContinuation { continuation in
             var resumed = false
