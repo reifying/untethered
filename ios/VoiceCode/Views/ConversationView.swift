@@ -379,7 +379,13 @@ struct ConversationView: View {
         try? viewContext.save()
 
         // Subscribe to the session to load full history
-        client.subscribe(sessionId: session.id.uuidString.lowercased())
+        // Skip subscribe for new sessions (messageCount == 0) to avoid "session not found" error
+        // The session will be created when the first prompt is sent
+        if session.messageCount > 0 {
+            client.subscribe(sessionId: session.id.uuidString.lowercased())
+        } else {
+            print("📝 [ConversationView] Skipping subscribe for new session (no messages yet)")
+        }
 
         // Stop loading indicator after a delay (messages will populate via CoreData sync)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
