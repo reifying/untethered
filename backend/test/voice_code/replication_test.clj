@@ -65,9 +65,11 @@
 
 (deftest test-project-name->working-dir
   (testing "Absolute path project name returns real path when directory exists"
-    ;; This directory exists, so should return the real path
-    (is (= "/Users/travisbrown/code/mono/hunt910-hunt-areas"
-           (repl/project-name->working-dir "-Users-travisbrown-code-mono-hunt910-hunt-areas"))))
+    ;; Use test-dir which we know exists from fixtures
+    (let [test-dir-path (.getAbsolutePath (io/file test-dir))
+          project-name (str "-" (str/replace test-dir-path "/" "-"))]
+      (is (= test-dir-path (repl/project-name->working-dir project-name))
+          "Should return real path for existing directory")))
 
   (testing "Absolute path project name returns placeholder when directory doesn't exist"
     ;; This directory doesn't exist, so should return placeholder
