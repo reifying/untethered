@@ -90,6 +90,11 @@
   ;; Track all connected WebSocket clients: channel -> {:deleted-sessions #{}}
   (atom {}))
 
+(defonce pending-new-sessions
+  ;; Track new sessions awaiting creation: session-id -> channel
+  ;; Used to send session_ready to the correct client when file is detected
+  (atom {}))
+
 (defn unregister-channel!
   "Remove WebSocket channel from connected clients"
   [channel]
@@ -189,6 +194,17 @@
                :total-clients client-count
                :eligible-clients eligible-count
                :has-preview (boolean (seq (:preview session-metadata)))})
+
+    ;; Check if this is a pending new session and send session_ready first
+    (when-let [pending-channel (get @pending-new-sessions session-id)]
+      (log/info "Sending session_ready for pending new session"
+                {:session-id session-id})
+      (send-to-client! pending-channel
+                       {:type :session-ready
+                        :session-id session-id
+                        :message "Session is ready for subscription"})
+      ;; Remove from pending map
+      (swap! pending-new-sessions dissoc session-id))
 
     ;; Broadcast to clients who haven't deleted this session
     (doseq [[channel client-info] eligible-clients]
@@ -438,6 +454,12 @@
                                {:type :ack
                                 :message "Processing prompt..."}))
 
+;; For new sessions: register channel so we can send session_ready when file is created
+                  ;; Filesystem watcher will send session_ready once Claude CLI creates the file
+                  (when new-session-id
+                    (log/info "New session detected, registering for session_ready" {:session-id new-session-id})
+                    (swap! pending-new-sessions assoc new-session-id channel))
+
                   ;; Invoke Claude asynchronously
                   ;; NEW ARCHITECTURE: Don't send response directly
                   ;; Filesystem watcher will detect changes and send session_updated
@@ -450,13 +472,7 @@
                        (if (:success response)
                          (do
                            (log/info "Prompt completed successfully"
-                                     {:session-id (:session-id response)
-                                      :message "Ensuring session in index before turn_complete"})
-                           ;; SOLUTION 1: Synchronously ensure session is in index
-                           ;; This eliminates the race condition where iOS subscribes before watcher updates index
-                           (when new-session-id
-                             (log/info "Ensuring new session in index" {:session-id new-session-id})
-                             (repl/ensure-session-in-index! new-session-id))
+                                     {:session-id (:session-id response)})
                            ;; Send turn_complete message so iOS can unlock
                            (send-to-client! channel
                                             {:type :turn-complete
