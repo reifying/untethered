@@ -10,6 +10,7 @@ class VoiceCodeClient: ObservableObject {
     @Published var currentError: String?
     @Published var isProcessing = false
     @Published var lockedSessions = Set<String>()  // Claude session IDs currently locked
+    @Published var availableCommands: AvailableCommands?  // Available commands for current directory
 
     private var webSocket: URLSessionWebSocketTask?
     private var reconnectionTimer: DispatchSourceTimer?
@@ -420,6 +421,16 @@ class VoiceCodeClient: ObservableObject {
                     self.lockedSessions.insert(sessionId)
                 }
 
+            case "available_commands":
+                // Available commands for current directory
+                print("📋 [VoiceCodeClient] Received available_commands")
+                if let jsonData = try? JSONSerialization.data(withJSONObject: json),
+                   let commands = try? JSONDecoder().decode(AvailableCommands.self, from: jsonData) {
+                    self.availableCommands = commands
+                    print("   Project commands: \(commands.projectCommands.count)")
+                    print("   General commands: \(commands.generalCommands.count)")
+                }
+
             default:
                 print("Unknown message type: \(type)")
             }
@@ -702,6 +713,19 @@ class VoiceCodeClient: ObservableObject {
             "type": "infer_session_name",
             "session_id": sessionId,
             "message_text": messageText
+        ]
+        sendMessage(message)
+    }
+
+    // MARK: - Command Execution
+
+    func executeCommand(commandId: String, workingDirectory: String) {
+        print("📤 [VoiceCodeClient] Executing command: \(commandId) in \(workingDirectory)")
+
+        let message: [String: Any] = [
+            "type": "execute_command",
+            "command_id": commandId,
+            "working_directory": workingDirectory
         ]
         sendMessage(message)
     }

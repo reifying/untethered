@@ -25,6 +25,7 @@ struct SessionsForDirectoryView: View {
     @State private var newSessionName = ""
     @State private var showingCopyConfirmation = false
     @State private var showingDirectoryCopyConfirmation = false
+    @State private var showingCommandMenu = false
 
     init(workingDirectory: String, client: VoiceCodeClient, settings: AppSettings, voiceOutput: VoiceOutputManager, showingSettings: Binding<Bool>, navigationPath: Binding<NavigationPath>) {
         self.workingDirectory = workingDirectory
@@ -128,6 +129,30 @@ struct SessionsForDirectoryView: View {
             
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
+                    // Commands button (only show if commands available)
+                    if client.availableCommands != nil {
+                        Button(action: {
+                            showingCommandMenu = true
+                        }) {
+                            let totalCount = (client.availableCommands?.projectCommands.count ?? 0) +
+                                           (client.availableCommands?.generalCommands.count ?? 0)
+                            if totalCount > 0 {
+                                ZStack(alignment: .topTrailing) {
+                                    Image(systemName: "terminal")
+                                    Text("\(totalCount)")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(3)
+                                        .background(Color.blue)
+                                        .clipShape(Circle())
+                                        .offset(x: 8, y: -8)
+                                }
+                            } else {
+                                Image(systemName: "terminal")
+                            }
+                        }
+                    }
+
                     Button(action: {
                         logger.info("🔄 Refresh button tapped - requesting session list from backend")
                         client.requestSessionList()
@@ -147,6 +172,12 @@ struct SessionsForDirectoryView: View {
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showingCommandMenu) {
+            CommandMenuView(
+                client: client,
+                workingDirectory: workingDirectory
+            )
         }
         .sheet(isPresented: $showingNewSession) {
             NewSessionView(
