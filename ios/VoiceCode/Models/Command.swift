@@ -39,7 +39,7 @@ struct Command: Identifiable, Codable, Equatable {
 }
 
 struct AvailableCommands: Codable {
-    let workingDirectory: String
+    let workingDirectory: String?
     let projectCommands: [Command]
     let generalCommands: [Command]
 
@@ -47,5 +47,55 @@ struct AvailableCommands: Codable {
         case workingDirectory = "working_directory"
         case projectCommands = "project_commands"
         case generalCommands = "general_commands"
+    }
+}
+
+// CommandExecution tracks a running or completed command execution
+struct CommandExecution: Identifiable, Equatable {
+    let id: String  // command_session_id
+    let commandId: String
+    let shellCommand: String
+    var status: ExecutionStatus
+    var output: [OutputLine]
+    var exitCode: Int?
+    var startTime: Date
+    var duration: TimeInterval?
+
+    enum ExecutionStatus: Equatable {
+        case running
+        case completed
+        case error
+    }
+
+    struct OutputLine: Identifiable, Equatable {
+        let id = UUID()
+        let stream: StreamType
+        let text: String
+
+        enum StreamType: String {
+            case stdout
+            case stderr
+        }
+    }
+
+    init(id: String, commandId: String, shellCommand: String) {
+        self.id = id
+        self.commandId = commandId
+        self.shellCommand = shellCommand
+        self.status = .running
+        self.output = []
+        self.exitCode = nil
+        self.startTime = Date()
+        self.duration = nil
+    }
+
+    mutating func appendOutput(stream: OutputLine.StreamType, text: String) {
+        output.append(OutputLine(stream: stream, text: text))
+    }
+
+    mutating func complete(exitCode: Int, duration: TimeInterval) {
+        self.exitCode = exitCode
+        self.duration = duration
+        self.status = exitCode == 0 ? .completed : .error
     }
 }

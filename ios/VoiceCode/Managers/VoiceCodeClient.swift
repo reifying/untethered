@@ -11,6 +11,7 @@ class VoiceCodeClient: ObservableObject {
     @Published var isProcessing = false
     @Published var lockedSessions = Set<String>()  // Claude session IDs currently locked
     @Published var availableCommands: AvailableCommands?  // Available commands for current directory
+    @Published var runningCommands: [String: CommandExecution] = [:]  // command_session_id -> execution
 
     private var webSocket: URLSessionWebSocketTask?
     private var reconnectionTimer: DispatchSourceTimer?
@@ -185,7 +186,7 @@ class VoiceCodeClient: ObservableObject {
         }
     }
 
-    private func handleMessage(_ text: String) {
+    func handleMessage(_ text: String) {  // internal for testing
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = json["type"] as? String else {
@@ -431,6 +432,41 @@ class VoiceCodeClient: ObservableObject {
                     print("   General commands: \(commands.generalCommands.count)")
                 }
 
+            case "command_started":
+                if let commandSessionId = json["command_session_id"] as? String,
+                   let commandId = json["command_id"] as? String,
+                   let shellCommand = json["shell_command"] as? String {
+                    print("🚀 [VoiceCodeClient] Command started: \(commandId) (\(commandSessionId))")
+                    let execution = CommandExecution(id: commandSessionId, commandId: commandId, shellCommand: shellCommand)
+                    self.runningCommands[commandSessionId] = execution
+                }
+
+            case "command_output":
+                if let commandSessionId = json["command_session_id"] as? String,
+                   let streamString = json["stream"] as? String,
+                   let text = json["text"] as? String,
+                   let stream = CommandExecution.OutputLine.StreamType(rawValue: streamString) {
+                    print("📝 [VoiceCodeClient] Command output [\(streamString)]: \(text.prefix(50))...")
+                    self.runningCommands[commandSessionId]?.appendOutput(stream: stream, text: text)
+                }
+
+            case "command_complete":
+                if let commandSessionId = json["command_session_id"] as? String,
+                   let exitCode = json["exit_code"] as? Int,
+                   let durationMs = json["duration_ms"] as? Int {
+                    let duration = TimeInterval(durationMs) / 1000.0
+                    print("✅ [VoiceCodeClient] Command complete: \(commandSessionId) (exit: \(exitCode), duration: \(duration)s)")
+                    self.runningCommands[commandSessionId]?.complete(exitCode: exitCode, duration: duration)
+                }
+
+            case "command_error":
+                if let commandId = json["command_id"] as? String,
+                   let error = json["error"] as? String {
+                    print("❌ [VoiceCodeClient] Command error: \(commandId) - \(error)")
+                    // Command error means it failed to start, not tracked in runningCommands
+                    self.currentError = "Command failed: \(error)"
+                }
+
             default:
                 print("Unknown message type: \(type)")
             }
@@ -471,7 +507,7 @@ class VoiceCodeClient: ObservableObject {
 
     func setWorkingDirectory(_ path: String) {
         let message: [String: Any] = [
-            "type": "set-directory",
+            "type": "set_directory",
             "path": path
         ]
         sendMessage(message)
