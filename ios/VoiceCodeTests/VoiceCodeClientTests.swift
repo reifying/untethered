@@ -134,11 +134,11 @@ final class VoiceCodeClientTests: XCTestCase {
         let path = "/Users/test/project"
 
         let message: [String: Any] = [
-            "type": "set-directory",
+            "type": "set_directory",
             "path": path
         ]
 
-        XCTAssertEqual(message["type"] as? String, "set-directory")
+        XCTAssertEqual(message["type"] as? String, "set_directory")
         XCTAssertEqual(message["path"] as? String, path)
     }
 

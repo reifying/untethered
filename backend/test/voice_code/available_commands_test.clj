@@ -61,7 +61,7 @@
                                    {:id "docker.down" :label "Down" :type :command}]}])]
         (server/handle-message :test-ch
                                (json/generate-string
-                                {:type "set-directory"
+                                {:type "set_directory"
                                  :path test-dir}))
 
         ;; Parse all messages
@@ -125,7 +125,7 @@
                     (fn [path] [])]
         (server/handle-message :test-ch
                                (json/generate-string
-                                {:type "set-directory"
+                                {:type "set_directory"
                                  :path test-dir}))
 
         (let [messages (parse-messages @sent-messages)
@@ -172,7 +172,7 @@
                       (fn [path] [])]
           (server/handle-message :test-ch
                                  (json/generate-string
-                                  {:type "set-directory"
+                                  {:type "set_directory"
                                    :path test-dir}))
 
           (let [messages (parse-messages @sent-messages)
@@ -201,7 +201,7 @@
                                    {:id "test.integration" :label "Integration" :type :command}]}])]
         (server/handle-message :test-ch
                                (json/generate-string
-                                {:type "set-directory"
+                                {:type "set_directory"
                                  :path test-dir}))
 
         (let [messages (parse-messages @sent-messages)
@@ -232,7 +232,7 @@
                       (fn [path] mock-commands)]
           (server/handle-message :test-ch
                                  (json/generate-string
-                                  {:type "set-directory"
+                                  {:type "set_directory"
                                    :path test-dir})))
 
         (with-redefs [org.httpkit.server/send!
@@ -242,7 +242,7 @@
                       (fn [path] mock-commands)]
           (server/handle-message :test-ch
                                  (json/generate-string
-                                  {:type "set-directory"
+                                  {:type "set_directory"
                                    :path test-dir})))
 
         (is (= (second @messages1) (second @messages2)))))))
