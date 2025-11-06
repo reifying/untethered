@@ -9,7 +9,9 @@
             [clojure.string :as str]
             [voice-code.claude :as claude]
             [voice-code.replication :as repl]
-            [voice-code.worktree :as worktree])
+            [voice-code.worktree :as worktree]
+            [voice-code.commands :as commands]
+            [voice-code.commands-history :as cmd-history])
   (:gen-class))
 
 ;; JSON key conversion utilities
@@ -323,7 +325,16 @@
             ;; Send recent sessions list (separate message type for Recent section)
             ;; Use limit from client if provided, otherwise default to 5
             (let [limit (or (:recent-sessions-limit data) 5)]
-              (send-recent-sessions! channel limit))))
+              (send-recent-sessions! channel limit))
+            ;; Send available commands (no working directory yet, so no project commands)
+            (send-to-client! channel
+                             {:type :available-commands
+                              :working-directory nil
+                              :project-commands []
+                              :general-commands [{:id "git.status"
+                                                  :label "Git Status"
+                                                  :description "Show git working tree status"
+                                                  :type :command}]})))
 
         "subscribe"
         ;; Client requests full history for a session
@@ -506,10 +517,19 @@
                           :message "path required in set-directory message"}))
             (do
               (log/info "Working directory set" {:path path})
-              (http/send! channel
-                          (generate-json
-                           {:type :ack
-                            :message (str "Working directory set to: " path)})))))
+              ;; Send acknowledgment
+              (send-to-client! channel {:type :ack :message "Directory set"})
+              ;; Parse Makefile and send available commands
+              (let [project-commands (commands/parse-makefile path)
+                    general-commands [{:id "git.status"
+                                      :label "Git Status"
+                                      :description "Show git working tree status"
+                                      :type :command}]]
+                (send-to-client! channel
+                                 {:type :available-commands
+                                  :working-directory path
+                                  :project-commands project-commands
+                                  :general-commands general-commands})))))
 
         "message-ack"
         (let [message-id (:message-id data)]
@@ -674,6 +694,103 @@
                                :new-session-id session-id
                                :model "haiku"
                                :working-directory worktree-path)))))))))))
+
+        "execute_command"
+        (let [command-id (:command-id data)
+              working-directory (:working-directory data)]
+          (cond
+            (not command-id)
+            (send-to-client! channel
+                             {:type :error
+                              :message "command_id required in execute_command message"})
+
+            (not working-directory)
+            (send-to-client! channel
+                             {:type :error
+                              :message "working_directory required in execute_command message"})
+
+            :else
+            (let [shell-command (commands/resolve-command-id command-id)
+                  command-session-id (commands/generate-command-session-id)]
+              ;; Create history entry
+              (cmd-history/create-session-entry! command-session-id
+                                                 command-id
+                                                 shell-command
+                                                 working-directory)
+              ;; Spawn process with callbacks
+              (let [result (commands/spawn-process
+                           shell-command
+                           working-directory
+                           command-session-id
+                           ;; Output callback - send each line to client
+                           (fn [{:keys [stream text]}]
+                             (send-to-client! channel
+                                              {:type :command-output
+                                               :command-session-id command-session-id
+                                               :stream stream
+                                               :text text}))
+                           ;; Complete callback - send completion message and update history
+                           (fn [{:keys [exit-code duration-ms]}]
+                             (cmd-history/complete-session! command-session-id exit-code duration-ms)
+                             (send-to-client! channel
+                                              {:type :command-complete
+                                               :command-session-id command-session-id
+                                               :exit-code exit-code
+                                               :duration-ms duration-ms})))]
+                (if (:success result)
+                  (send-to-client! channel
+                                   {:type :command-started
+                                    :command-session-id command-session-id
+                                    :command-id command-id
+                                    :shell-command shell-command})
+                  (send-to-client! channel
+                                   {:type :command-error
+                                    :command-id command-id
+                                    :error (:error result)}))))))
+
+        "get_command_history"
+        (let [working-dir (:working-directory data)
+              limit (or (:limit data) 50)
+              sessions (if working-dir
+                        (cmd-history/get-command-history :working-directory working-dir :limit limit)
+                        (cmd-history/get-command-history :limit limit))]
+          (send-to-client! channel
+                           {:type :command-history
+                            :sessions sessions
+                            :limit limit}))
+
+        "get_command_output"
+        (let [command-session-id (:command-session-id data)]
+          (if-not command-session-id
+            (send-to-client! channel
+                             {:type :error
+                              :message "command_session_id required in get_command_output message"})
+            (if-let [metadata (cmd-history/get-session-metadata command-session-id)]
+              (let [output (or (cmd-history/read-output-file command-session-id) "")
+                    output-size (count output)
+                    max-size (* 10 1024 1024) ; 10MB limit
+                    truncated? (> output-size max-size)
+                    final-output (if truncated?
+                                   (do
+                                     (log/warn "Output exceeds 10MB limit, truncating"
+                                               {:command-session-id command-session-id
+                                                :actual-size output-size
+                                                :max-size max-size})
+                                     (subs output 0 max-size))
+                                   output)]
+                (send-to-client! channel
+                                 {:type :command-output-full
+                                  :command-session-id command-session-id
+                                  :output final-output
+                                  :exit-code (:exit-code metadata)
+                                  :timestamp (:timestamp metadata)
+                                  :duration-ms (:duration-ms metadata)
+                                  :command-id (:command-id metadata)
+                                  :shell-command (:shell-command metadata)
+                                  :working-directory (:working-directory metadata)}))
+              (send-to-client! channel
+                               {:type :error
+                                :message (str "Command output not found: " command-session-id)}))))
 
         ;; Unknown message type
           (do
