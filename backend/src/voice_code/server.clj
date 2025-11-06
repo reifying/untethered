@@ -272,9 +272,8 @@
 (defn on-session-deleted
   "Called when a session file is deleted from filesystem"
   [session-id]
-  (log/info "Session deleted from filesystem" {:session-id session-id})
+  (log/info "Session deleted from filesystem" {:session-id session-id}))
   ;; This is informational - we don't broadcast deletes since it's just local cleanup
-  )
 
 ;; Message handling
 (defn handle-message
@@ -282,523 +281,524 @@
   [channel msg]
   (try
     (let [data (parse-json msg)]
-      (log/debug "Received message" {:type (:type data)})
+      (let [msg-type (:type data)]
+        (log/info "=== Received message ===" {:type msg-type :type-class (class msg-type) :type-bytes (mapv int msg-type)})
 
-      (case (:type data)
-        "ping"
-        (do
-          (log/debug "Handling ping")
-          (http/send! channel (generate-json {:type :pong})))
+        (case msg-type
+          "ping"
+          (do
+            (log/debug "Handling ping")
+            (http/send! channel (generate-json {:type :pong})))
 
-        "connect"
+          "connect"
         ;; New protocol: no session-id needed, just send session list
-        (do
-          (log/info "Client connected")
+          (do
+            (log/info "Client connected")
 
           ;; Register client (no session-id needed in new architecture)
-          (swap! connected-clients assoc channel {:deleted-sessions #{}})
+            (swap! connected-clients assoc channel {:deleted-sessions #{}})
 
           ;; Send session list (limit to 50 most recent, lightweight fields only)
-          (let [all-sessions (repl/get-all-sessions)
+            (let [all-sessions (repl/get-all-sessions)
                 ;; Filter out sessions with 0 messages (after internal message filtering)
                 ;; Sort by last-modified descending, take 50
-                recent-sessions (->> all-sessions
-                                     (filter #(pos? (or (:message-count %) 0)))
-                                     (sort-by :last-modified >)
-                                     (take 50)
+                  recent-sessions (->> all-sessions
+                                       (filter #(pos? (or (:message-count %) 0)))
+                                       (sort-by :last-modified >)
+                                       (take 50)
                                      ;; Remove heavy fields to reduce payload size
-                                     (mapv #(select-keys % [:session-id :name :working-directory
-                                                            :last-modified :message-count])))
-                total-non-empty (count (filter #(pos? (or (:message-count %) 0)) all-sessions))
+                                       (mapv #(select-keys % [:session-id :name :working-directory
+                                                              :last-modified :message-count])))
+                  total-non-empty (count (filter #(pos? (or (:message-count %) 0)) all-sessions))
                 ;; Log any sessions with placeholder working directories
-                placeholder-sessions (filter #(str/starts-with? (or (:working-directory %) "") "[from project:") recent-sessions)]
-            (when (seq placeholder-sessions)
-              (log/warn "Sessions with placeholder working directories being sent to iOS"
-                        {:count (count placeholder-sessions)
-                         :sessions (mapv #(select-keys % [:session-id :name :working-directory]) placeholder-sessions)}))
-            (log/info "Sending session list" {:count (count recent-sessions) :total total-non-empty :total-all (count all-sessions)})
-            (http/send! channel
-                        (generate-json
-                         {:type :session-list
-                          :sessions recent-sessions
-                          :total-count total-non-empty}))
+                  placeholder-sessions (filter #(str/starts-with? (or (:working-directory %) "") "[from project:") recent-sessions)]
+              (when (seq placeholder-sessions)
+                (log/warn "Sessions with placeholder working directories being sent to iOS"
+                          {:count (count placeholder-sessions)
+                           :sessions (mapv #(select-keys % [:session-id :name :working-directory]) placeholder-sessions)}))
+              (log/info "Sending session list" {:count (count recent-sessions) :total total-non-empty :total-all (count all-sessions)})
+              (http/send! channel
+                          (generate-json
+                           {:type :session-list
+                            :sessions recent-sessions
+                            :total-count total-non-empty}))
             ;; Send recent sessions list (separate message type for Recent section)
             ;; Use limit from client if provided, otherwise default to 5
-            (let [limit (or (:recent-sessions-limit data) 5)]
-              (send-recent-sessions! channel limit))
+              (let [limit (or (:recent-sessions-limit data) 5)]
+                (send-recent-sessions! channel limit))
             ;; Send available commands (no working directory yet, so no project commands)
-            (send-to-client! channel
-                             {:type :available-commands
-                              :working-directory nil
-                              :project-commands []
-                              :general-commands [{:id "git.status"
-                                                  :label "Git Status"
-                                                  :description "Show git working tree status"
-                                                  :type :command}]})))
+              (send-to-client! channel
+                               {:type :available-commands
+                                :working-directory nil
+                                :project-commands []
+                                :general-commands [{:id "git.status"
+                                                    :label "Git Status"
+                                                    :description "Show git working tree status"
+                                                    :type :command}]})))
 
-        "subscribe"
+          "subscribe"
         ;; Client requests full history for a session
-        (let [session-id (:session-id data)]
-          (if-not session-id
-            (http/send! channel
-                        (generate-json
-                         {:type :error
-                          :message "session_id required in subscribe message"}))
-            (do
-              (log/info "Client subscribing to session" {:session-id session-id})
+          (let [session-id (:session-id data)]
+            (if-not session-id
+              (http/send! channel
+                          (generate-json
+                           {:type :error
+                            :message "session_id required in subscribe message"}))
+              (do
+                (log/info "Client subscribing to session" {:session-id session-id})
 
               ;; Subscribe in replication system
-              (repl/subscribe-to-session! session-id)
+                (repl/subscribe-to-session! session-id)
 
               ;; Get session metadata
-              (if-let [metadata (repl/get-session-metadata session-id)]
-                (let [file-path (:file metadata)
+                (if-let [metadata (repl/get-session-metadata session-id)]
+                  (let [file-path (:file metadata)
                       ;; Get current file size to update position BEFORE reading
-                      file (io/file file-path)
-                      current-size (.length file)
-                      all-messages (repl/parse-jsonl-file file-path)
+                        file (io/file file-path)
+                        current-size (.length file)
+                        all-messages (repl/parse-jsonl-file file-path)
                       ;; Filter internal messages (sidechain, summary, system), then limit to most recent 20
-                      messages (vec (take-last 20 (repl/filter-internal-messages all-messages)))]
+                        messages (vec (take-last 20 (repl/filter-internal-messages all-messages)))]
                   ;; Update file position to current size so incremental parsing starts fresh
                   ;; This ensures we only get NEW messages after this subscription
-                  (repl/reset-file-position! file-path)
-                  (swap! repl/file-positions assoc file-path current-size)
-                  (log/info "Sending session history" {:session-id session-id
-                                                       :message-count (count messages)
-                                                       :total (count all-messages)
-                                                       :file-position current-size})
-                  (http/send! channel
-                              (generate-json
-                               {:type :session-history
-                                :session-id session-id
-                                :messages messages
-                                :total-count (count all-messages)})))
-                (do
-                  (log/warn "Session not found" {:session-id session-id})
-                  (http/send! channel
-                              (generate-json
-                               {:type :error
-                                :message (str "Session not found: " session-id)})))))))
+                    (repl/reset-file-position! file-path)
+                    (swap! repl/file-positions assoc file-path current-size)
+                    (log/info "Sending session history" {:session-id session-id
+                                                         :message-count (count messages)
+                                                         :total (count all-messages)
+                                                         :file-position current-size})
+                    (http/send! channel
+                                (generate-json
+                                 {:type :session-history
+                                  :session-id session-id
+                                  :messages messages
+                                  :total-count (count all-messages)})))
+                  (do
+                    (log/warn "Session not found" {:session-id session-id})
+                    (http/send! channel
+                                (generate-json
+                                 {:type :error
+                                  :message (str "Session not found: " session-id)})))))))
 
-        "unsubscribe"
+          "unsubscribe"
         ;; Client stops watching a session
-        (let [session-id (:session-id data)]
-          (when session-id
-            (log/info "Client unsubscribing from session" {:session-id session-id})
-            (repl/unsubscribe-from-session! session-id)))
+          (let [session-id (:session-id data)]
+            (when session-id
+              (log/info "Client unsubscribing from session" {:session-id session-id})
+              (repl/unsubscribe-from-session! session-id)))
 
-        "session-deleted"
+          "session-deleted"
         ;; Client marks session as deleted locally
-        (let [session-id (:session-id data)]
-          (when session-id
-            (log/info "Client deleted session locally" {:session-id session-id})
-            (mark-session-deleted-for-client! channel session-id)
-            (repl/unsubscribe-from-session! session-id)))
+          (let [session-id (:session-id data)]
+            (when session-id
+              (log/info "Client deleted session locally" {:session-id session-id})
+              (mark-session-deleted-for-client! channel session-id)
+              (repl/unsubscribe-from-session! session-id)))
 
-        "prompt"
+          "prompt"
         ;; Updated to use new_session_id vs resume_session_id
         ;; In new architecture: NO direct response - rely on filesystem watcher + subscription
-        (let [new-session-id (:new-session-id data)
-              resume-session-id (:resume-session-id data)
-              prompt-text (:text data)
-              ios-working-dir (:working-directory data)
+          (let [new-session-id (:new-session-id data)
+                resume-session-id (:resume-session-id data)
+                prompt-text (:text data)
+                ios-working-dir (:working-directory data)
               ;; Determine actual working directory to use:
               ;; - For resumed sessions: Use stored working dir from session metadata (extracted from .jsonl cwd)
               ;; - For new sessions: Use iOS-provided dir, with fallback if placeholder
-              working-dir (if resume-session-id
-                            (let [session-metadata (repl/get-session-metadata resume-session-id)]
-                              (if session-metadata
-                                (do
-                                  (log/info "Using stored working directory for resumed session"
-                                            {:session-id resume-session-id
-                                             :stored-dir (:working-directory session-metadata)
-                                             :ios-sent-dir ios-working-dir})
-                                  (:working-directory session-metadata))
-                                (do
-                                  (log/warn "Session not found in metadata, using iOS working dir"
-                                            {:session-id resume-session-id})
-                                  ios-working-dir)))
+                working-dir (if resume-session-id
+                              (let [session-metadata (repl/get-session-metadata resume-session-id)]
+                                (if session-metadata
+                                  (do
+                                    (log/info "Using stored working directory for resumed session"
+                                              {:session-id resume-session-id
+                                               :stored-dir (:working-directory session-metadata)
+                                               :ios-sent-dir ios-working-dir})
+                                    (:working-directory session-metadata))
+                                  (do
+                                    (log/warn "Session not found in metadata, using iOS working dir"
+                                              {:session-id resume-session-id})
+                                    ios-working-dir)))
                             ;; New session: use iOS dir, apply fallback if placeholder
-                            (if (and ios-working-dir (str/starts-with? ios-working-dir "[from project:"))
-                              (let [project-name (second (re-find #"\[from project: ([^\]]+)\]" ios-working-dir))]
-                                (log/info "Converting placeholder to real path for new session"
-                                          {:placeholder ios-working-dir
-                                           :project-name project-name})
-                                (repl/project-name->working-dir project-name))
-                              ios-working-dir))]
+                              (if (and ios-working-dir (str/starts-with? ios-working-dir "[from project:"))
+                                (let [project-name (second (re-find #"\[from project: ([^\]]+)\]" ios-working-dir))]
+                                  (log/info "Converting placeholder to real path for new session"
+                                            {:placeholder ios-working-dir
+                                             :project-name project-name})
+                                  (repl/project-name->working-dir project-name))
+                                ios-working-dir))]
 
-          (cond
+            (cond
             ;; Check if client has connected first
-            (not (contains? @connected-clients channel))
-            (http/send! channel
-                        (generate-json
-                         {:type :error
-                          :message "Must send connect message first"}))
+              (not (contains? @connected-clients channel))
+              (http/send! channel
+                          (generate-json
+                           {:type :error
+                            :message "Must send connect message first"}))
 
-            (not prompt-text)
-            (http/send! channel
-                        (generate-json
-                         {:type :error
-                          :message "text required in prompt message"}))
+              (not prompt-text)
+              (http/send! channel
+                          (generate-json
+                           {:type :error
+                            :message "text required in prompt message"}))
 
-            (and new-session-id resume-session-id)
-            (http/send! channel
-                        (generate-json
-                         {:type :error
-                          :message "Cannot specify both new_session_id and resume_session_id"}))
+              (and new-session-id resume-session-id)
+              (http/send! channel
+                          (generate-json
+                           {:type :error
+                            :message "Cannot specify both new_session_id and resume_session_id"}))
 
-            :else
-            (let [claude-session-id (or resume-session-id new-session-id)]
+              :else
+              (let [claude-session-id (or resume-session-id new-session-id)]
               ;; Try to acquire lock for this session
-              (if (repl/acquire-session-lock! claude-session-id)
-                (do
-                  (log/info "Received prompt"
-                            {:text (subs prompt-text 0 (min 50 (count prompt-text)))
-                             :new-session-id new-session-id
-                             :resume-session-id resume-session-id
-                             :working-directory working-dir
-                             :session-locked false})
+                (if (repl/acquire-session-lock! claude-session-id)
+                  (do
+                    (log/info "Received prompt"
+                              {:text (subs prompt-text 0 (min 50 (count prompt-text)))
+                               :new-session-id new-session-id
+                               :resume-session-id resume-session-id
+                               :working-directory working-dir
+                               :session-locked false})
 
                   ;; Send immediate acknowledgment
-                  (http/send! channel
-                              (generate-json
-                               {:type :ack
-                                :message "Processing prompt..."}))
+                    (http/send! channel
+                                (generate-json
+                                 {:type :ack
+                                  :message "Processing prompt..."}))
 
 ;; For new sessions: register channel so we can send session_ready when file is created
                   ;; Filesystem watcher will send session_ready once Claude CLI creates the file
-                  (when new-session-id
-                    (log/info "New session detected, registering for session_ready" {:session-id new-session-id})
-                    (swap! pending-new-sessions assoc new-session-id channel))
+                    (when new-session-id
+                      (log/info "New session detected, registering for session_ready" {:session-id new-session-id})
+                      (swap! pending-new-sessions assoc new-session-id channel))
 
                   ;; Invoke Claude asynchronously
                   ;; NEW ARCHITECTURE: Don't send response directly
                   ;; Filesystem watcher will detect changes and send session_updated
-                  (claude/invoke-claude-async
-                   prompt-text
-                   (fn [response]
+                    (claude/invoke-claude-async
+                     prompt-text
+                     (fn [response]
                      ;; Always release lock when done (success or failure)
-                     (try
+                       (try
                        ;; Just log completion - let filesystem watcher handle updates
-                       (if (:success response)
-                         (do
-                           (log/info "Prompt completed successfully"
-                                     {:session-id (:session-id response)})
+                         (if (:success response)
+                           (do
+                             (log/info "Prompt completed successfully"
+                                       {:session-id (:session-id response)})
                            ;; Send turn_complete message so iOS can unlock
-                           (send-to-client! channel
-                                            {:type :turn-complete
-                                             :session-id claude-session-id}))
-                         (do
-                           (log/error "Prompt failed" {:error (:error response) :session-id claude-session-id})
+                             (send-to-client! channel
+                                              {:type :turn-complete
+                                               :session-id claude-session-id}))
+                           (do
+                             (log/error "Prompt failed" {:error (:error response) :session-id claude-session-id})
                            ;; Still send error responses directly - include session-id so iOS can unlock
-                           (send-to-client! channel
-                                            {:type :error
-                                             :message (:error response)
-                                             :session-id claude-session-id})))
-                       (finally
-                         (repl/release-session-lock! claude-session-id))))
-                   :new-session-id new-session-id
-                   :resume-session-id resume-session-id
-                   :working-directory working-dir
-                   :timeout-ms 86400000))
-                (do
+                             (send-to-client! channel
+                                              {:type :error
+                                               :message (:error response)
+                                               :session-id claude-session-id})))
+                         (finally
+                           (repl/release-session-lock! claude-session-id))))
+                     :new-session-id new-session-id
+                     :resume-session-id resume-session-id
+                     :working-directory working-dir
+                     :timeout-ms 86400000))
+                  (do
                   ;; Session is locked, send session_locked message
-                  (log/info "Session locked, rejecting prompt"
-                            {:session-id claude-session-id
-                             :text (subs prompt-text 0 (min 50 (count prompt-text)))})
-                  (send-session-locked! channel claude-session-id))))))
+                    (log/info "Session locked, rejecting prompt"
+                              {:session-id claude-session-id
+                               :text (subs prompt-text 0 (min 50 (count prompt-text)))})
+                    (send-session-locked! channel claude-session-id))))))
 
-        "set-directory"
-        (let [path (:path data)]
-          (if-not path
-            (http/send! channel
-                        (generate-json
-                         {:type :error
-                          :message "path required in set-directory message"}))
-            (do
-              (log/info "Working directory set" {:path path})
+          "set_directory"
+          (let [path (:path data)]
+            (if-not path
+              (http/send! channel
+                          (generate-json
+                           {:type :error
+                            :message "path required in set-directory message"}))
+              (do
+                (log/info "Working directory set" {:path path})
               ;; Send acknowledgment
-              (send-to-client! channel {:type :ack :message "Directory set"})
+                (send-to-client! channel {:type :ack :message "Directory set"})
               ;; Parse Makefile and send available commands
-              (let [project-commands (commands/parse-makefile path)
-                    general-commands [{:id "git.status"
-                                      :label "Git Status"
-                                      :description "Show git working tree status"
-                                      :type :command}]]
-                (send-to-client! channel
-                                 {:type :available-commands
-                                  :working-directory path
-                                  :project-commands project-commands
-                                  :general-commands general-commands})))))
+                (let [project-commands (commands/parse-makefile path)
+                      general-commands [{:id "git.status"
+                                         :label "Git Status"
+                                         :description "Show git working tree status"
+                                         :type :command}]]
+                  (send-to-client! channel
+                                   {:type :available-commands
+                                    :working-directory path
+                                    :project-commands project-commands
+                                    :general-commands general-commands})))))
 
-        "message-ack"
-        (let [message-id (:message-id data)]
-          (log/debug "Message acknowledged" {:message-id message-id}))
+          "message-ack"
+          (let [message-id (:message-id data)]
+            (log/debug "Message acknowledged" {:message-id message-id}))
 
-        "compact_session"
-        (let [session-id (:session-id data)]
-          (if-not session-id
-            (http/send! channel
-                        (generate-json
-                         {:type :error
-                          :message "session_id required in compact_session message"}))
+          "compact_session"
+          (let [session-id (:session-id data)]
+            (if-not session-id
+              (http/send! channel
+                          (generate-json
+                           {:type :error
+                            :message "session_id required in compact_session message"}))
             ;; New replication-based architecture: session-id IS the claude-session-id
             ;; Try to acquire lock for this session (from bd2e367)
-            (if (repl/acquire-session-lock! session-id)
-              (do
-                (log/info "Compacting session" {:session-id session-id})
+              (if (repl/acquire-session-lock! session-id)
+                (do
+                  (log/info "Compacting session" {:session-id session-id})
                 ;; Compact asynchronously
-                (async/go
-                  (try
-                    (let [result (claude/compact-session session-id)]
-                      (if (:success result)
-                        (do
-                          (log/info "Session compaction successful" {:session-id session-id :result result})
-                          (send-to-client! channel
-                                           {:type :compaction-complete
-                                            :session-id session-id
-                                            :old-message-count (:old-message-count result)
-                                            :new-message-count (:new-message-count result)
-                                            :messages-removed (:messages-removed result)
-                                            :pre-tokens (:pre-tokens result)}))
-                        (do
-                          (log/error "Session compaction failed" {:session-id session-id :error (:error result)})
-                          (send-to-client! channel
-                                           {:type :compaction-error
-                                            :session-id session-id
-                                            :error (:error result)}))))
-                    (catch Exception e
-                      (log/error e "Unexpected error during compaction" {:session-id session-id})
-                      (send-to-client! channel
-                                       {:type :compaction-error
-                                        :session-id session-id
-                                        :error (str "Compaction failed: " (ex-message e))}))
-                    (finally
-                      (repl/release-session-lock! session-id)))))
-              (do
+                  (async/go
+                    (try
+                      (let [result (claude/compact-session session-id)]
+                        (if (:success result)
+                          (do
+                            (log/info "Session compaction successful" {:session-id session-id :result result})
+                            (send-to-client! channel
+                                             {:type :compaction-complete
+                                              :session-id session-id
+                                              :old-message-count (:old-message-count result)
+                                              :new-message-count (:new-message-count result)
+                                              :messages-removed (:messages-removed result)
+                                              :pre-tokens (:pre-tokens result)}))
+                          (do
+                            (log/error "Session compaction failed" {:session-id session-id :error (:error result)})
+                            (send-to-client! channel
+                                             {:type :compaction-error
+                                              :session-id session-id
+                                              :error (:error result)}))))
+                      (catch Exception e
+                        (log/error e "Unexpected error during compaction" {:session-id session-id})
+                        (send-to-client! channel
+                                         {:type :compaction-error
+                                          :session-id session-id
+                                          :error (str "Compaction failed: " (ex-message e))}))
+                      (finally
+                        (repl/release-session-lock! session-id)))))
+                (do
                 ;; Session is locked, send session_locked message
-                (log/info "Session locked, rejecting compaction"
-                          {:session-id session-id})
-                (send-session-locked! channel session-id)))))
+                  (log/info "Session locked, rejecting compaction"
+                            {:session-id session-id})
+                  (send-session-locked! channel session-id)))))
 
-        "infer_session_name"
-        (let [session-id (:session-id data)
-              message-text (:message-text data)]
+          "infer_session_name"
+          (let [session-id (:session-id data)
+                message-text (:message-text data)]
 
-          (cond
-            (not session-id)
-            (send-to-client! channel
-                             {:type :infer-name-error
-                              :error "session_id required"})
+            (cond
+              (not session-id)
+              (send-to-client! channel
+                               {:type :infer-name-error
+                                :error "session_id required"})
 
-            (not message-text)
-            (send-to-client! channel
-                             {:type :infer-name-error
-                              :error "message_text required"})
+              (not message-text)
+              (send-to-client! channel
+                               {:type :infer-name-error
+                                :error "message_text required"})
 
-            :else
+              :else
             ;; Invoke Claude for name inference asynchronously
-            (async/go
-              (let [result (claude/invoke-claude-for-name-inference message-text)]
-                (if (:success result)
-                  (do
-                    (log/info "Inferred session name"
-                              {:session-id session-id
-                               :name (:name result)})
+              (async/go
+                (let [result (claude/invoke-claude-for-name-inference message-text)]
+                  (if (:success result)
+                    (do
+                      (log/info "Inferred session name"
+                                {:session-id session-id
+                                 :name (:name result)})
+                      (send-to-client! channel
+                                       {:type :session-name-inferred
+                                        :session-id session-id
+                                        :name (:name result)}))
                     (send-to-client! channel
-                                     {:type :session-name-inferred
+                                     {:type :infer-name-error
                                       :session-id session-id
-                                      :name (:name result)}))
-                  (send-to-client! channel
-                                   {:type :infer-name-error
-                                    :session-id session-id
-                                    :error (:error result)}))))))
+                                      :error (:error result)}))))))
 
-        "create_worktree_session"
-        (let [session-name (:session-name data)
-              parent-directory (:parent-directory data)]
+          "create_worktree_session"
+          (let [session-name (:session-name data)
+                parent-directory (:parent-directory data)]
 
           ;; 1. Validate inputs
-          (let [validation (worktree/validate-worktree-creation session-name parent-directory)]
-            (if-not (:valid validation)
-              (send-to-client! channel
-                               {:type :worktree-session-error
-                                :success false
-                                :error (:error validation)
-                                :error-type (:error-type validation)})
+            (let [validation (worktree/validate-worktree-creation session-name parent-directory)]
+              (if-not (:valid validation)
+                (send-to-client! channel
+                                 {:type :worktree-session-error
+                                  :success false
+                                  :error (:error validation)
+                                  :error-type (:error-type validation)})
 
               ;; 2. Compute paths
-              (let [paths (worktree/compute-worktree-paths session-name parent-directory)
-                    {:keys [sanitized-name branch-name worktree-path]} paths
+                (let [paths (worktree/compute-worktree-paths session-name parent-directory)
+                      {:keys [sanitized-name branch-name worktree-path]} paths
 
                     ;; 3. Validate paths
-                    path-validation (worktree/validate-worktree-paths paths parent-directory)]
+                      path-validation (worktree/validate-worktree-paths paths parent-directory)]
 
-                (if-not (:valid path-validation)
-                  (send-to-client! channel
-                                   {:type :worktree-session-error
-                                    :success false
-                                    :error (:error path-validation)
-                                    :error-type (:error-type path-validation)
-                                    :details (:details path-validation)})
+                  (if-not (:valid path-validation)
+                    (send-to-client! channel
+                                     {:type :worktree-session-error
+                                      :success false
+                                      :error (:error path-validation)
+                                      :error-type (:error-type path-validation)
+                                      :details (:details path-validation)})
 
                   ;; 4. Execute worktree creation sequence
-                  (let [session-id (str (java.util.UUID/randomUUID))]
-                    (log/info "Creating worktree session"
-                              {:session-name session-name
-                               :parent-directory parent-directory
-                               :branch-name branch-name
-                               :worktree-path worktree-path
-                               :session-id session-id})
+                    (let [session-id (str (java.util.UUID/randomUUID))]
+                      (log/info "Creating worktree session"
+                                {:session-name session-name
+                                 :parent-directory parent-directory
+                                 :branch-name branch-name
+                                 :worktree-path worktree-path
+                                 :session-id session-id})
 
                     ;; Step 4a: Create git worktree
-                    (let [git-result (worktree/create-worktree! parent-directory branch-name worktree-path)]
-                      (if-not (:success git-result)
-                        (send-to-client! channel
-                                         {:type :worktree-session-error
-                                          :success false
-                                          :error (:error git-result)
-                                          :error-type :git-failed
-                                          :details {:step "git_worktree_add"
-                                                    :stderr (:stderr git-result)}})
+                      (let [git-result (worktree/create-worktree! parent-directory branch-name worktree-path)]
+                        (if-not (:success git-result)
+                          (send-to-client! channel
+                                           {:type :worktree-session-error
+                                            :success false
+                                            :error (:error git-result)
+                                            :error-type :git-failed
+                                            :details {:step "git_worktree_add"
+                                                      :stderr (:stderr git-result)}})
 
                         ;; Step 4b: Initialize Beads
-                        (let [bd-result (worktree/init-beads! worktree-path)]
-                          (if-not (:success bd-result)
-                            (send-to-client! channel
-                                             {:type :worktree-session-error
-                                              :success false
-                                              :error (:error bd-result)
-                                              :error-type :beads-failed
-                                              :details {:step "bd_init"
-                                                        :stderr (:stderr bd-result)}})
+                          (let [bd-result (worktree/init-beads! worktree-path)]
+                            (if-not (:success bd-result)
+                              (send-to-client! channel
+                                               {:type :worktree-session-error
+                                                :success false
+                                                :error (:error bd-result)
+                                                :error-type :beads-failed
+                                                :details {:step "bd_init"
+                                                          :stderr (:stderr bd-result)}})
 
                             ;; Step 4c: Invoke Claude Code
-                            (let [prompt (worktree/format-worktree-prompt session-name worktree-path
-                                                                          parent-directory branch-name)]
-                              (claude/invoke-claude-async
-                               prompt
-                               (fn [response]
-                                 (if (:success response)
-                                   (send-to-client! channel
-                                                    {:type :worktree-session-created
-                                                     :success true
-                                                     :session-id (:session-id response)
-                                                     :worktree-path worktree-path
-                                                     :branch-name branch-name})
-                                   (send-to-client! channel
-                                                    {:type :worktree-session-error
-                                                     :success false
-                                                     :error (:error response)
-                                                     :error-type :claude-failed})))
-                               :new-session-id session-id
-                               :model "haiku"
-                               :working-directory worktree-path)))))))))))
+                              (let [prompt (worktree/format-worktree-prompt session-name worktree-path
+                                                                            parent-directory branch-name)]
+                                (claude/invoke-claude-async
+                                 prompt
+                                 (fn [response]
+                                   (if (:success response)
+                                     (send-to-client! channel
+                                                      {:type :worktree-session-created
+                                                       :success true
+                                                       :session-id (:session-id response)
+                                                       :worktree-path worktree-path
+                                                       :branch-name branch-name})
+                                     (send-to-client! channel
+                                                      {:type :worktree-session-error
+                                                       :success false
+                                                       :error (:error response)
+                                                       :error-type :claude-failed})))
+                                 :new-session-id session-id
+                                 :model "haiku"
+                                 :working-directory worktree-path))))))))))))
 
-        "execute_command"
-        (let [command-id (:command-id data)
-              working-directory (:working-directory data)]
-          (cond
-            (not command-id)
-            (send-to-client! channel
-                             {:type :error
-                              :message "command_id required in execute_command message"})
-
-            (not working-directory)
-            (send-to-client! channel
-                             {:type :error
-                              :message "working_directory required in execute_command message"})
-
-            :else
-            (let [shell-command (commands/resolve-command-id command-id)
-                  command-session-id (commands/generate-command-session-id)]
-              ;; Create history entry
-              (cmd-history/create-session-entry! command-session-id
-                                                 command-id
-                                                 shell-command
-                                                 working-directory)
-              ;; Spawn process with callbacks
-              (let [result (commands/spawn-process
-                           shell-command
-                           working-directory
-                           command-session-id
-                           ;; Output callback - send each line to client
-                           (fn [{:keys [stream text]}]
-                             (send-to-client! channel
-                                              {:type :command-output
-                                               :command-session-id command-session-id
-                                               :stream stream
-                                               :text text}))
-                           ;; Complete callback - send completion message and update history
-                           (fn [{:keys [exit-code duration-ms]}]
-                             (cmd-history/complete-session! command-session-id exit-code duration-ms)
-                             (send-to-client! channel
-                                              {:type :command-complete
-                                               :command-session-id command-session-id
-                                               :exit-code exit-code
-                                               :duration-ms duration-ms})))]
-                (if (:success result)
-                  (send-to-client! channel
-                                   {:type :command-started
-                                    :command-session-id command-session-id
-                                    :command-id command-id
-                                    :shell-command shell-command})
-                  (send-to-client! channel
-                                   {:type :command-error
-                                    :command-id command-id
-                                    :error (:error result)}))))))
-
-        "get_command_history"
-        (let [working-dir (:working-directory data)
-              limit (or (:limit data) 50)
-              sessions (if working-dir
-                        (cmd-history/get-command-history :working-directory working-dir :limit limit)
-                        (cmd-history/get-command-history :limit limit))]
-          (send-to-client! channel
-                           {:type :command-history
-                            :sessions sessions
-                            :limit limit}))
-
-        "get_command_output"
-        (let [command-session-id (:command-session-id data)]
-          (if-not command-session-id
-            (send-to-client! channel
-                             {:type :error
-                              :message "command_session_id required in get_command_output message"})
-            (if-let [metadata (cmd-history/get-session-metadata command-session-id)]
-              (let [output (or (cmd-history/read-output-file command-session-id) "")
-                    output-size (count output)
-                    max-size (* 10 1024 1024) ; 10MB limit
-                    truncated? (> output-size max-size)
-                    final-output (if truncated?
-                                   (do
-                                     (log/warn "Output exceeds 10MB limit, truncating"
-                                               {:command-session-id command-session-id
-                                                :actual-size output-size
-                                                :max-size max-size})
-                                     (subs output 0 max-size))
-                                   output)]
-                (send-to-client! channel
-                                 {:type :command-output-full
-                                  :command-session-id command-session-id
-                                  :output final-output
-                                  :exit-code (:exit-code metadata)
-                                  :timestamp (:timestamp metadata)
-                                  :duration-ms (:duration-ms metadata)
-                                  :command-id (:command-id metadata)
-                                  :shell-command (:shell-command metadata)
-                                  :working-directory (:working-directory metadata)}))
+          "execute_command"
+          (let [command-id (:command-id data)
+                working-directory (:working-directory data)]
+            (cond
+              (not command-id)
               (send-to-client! channel
                                {:type :error
-                                :message (str "Command output not found: " command-session-id)}))))
+                                :message "command_id required in execute_command message"})
+
+              (not working-directory)
+              (send-to-client! channel
+                               {:type :error
+                                :message "working_directory required in execute_command message"})
+
+              :else
+              (let [shell-command (commands/resolve-command-id command-id)
+                    command-session-id (commands/generate-command-session-id)]
+              ;; Create history entry
+                (cmd-history/create-session-entry! command-session-id
+                                                   command-id
+                                                   shell-command
+                                                   working-directory)
+              ;; Spawn process with callbacks
+                (let [result (commands/spawn-process
+                              shell-command
+                              working-directory
+                              command-session-id
+                           ;; Output callback - send each line to client
+                              (fn [{:keys [stream text]}]
+                                (send-to-client! channel
+                                                 {:type :command-output
+                                                  :command-session-id command-session-id
+                                                  :stream stream
+                                                  :text text}))
+                           ;; Complete callback - send completion message and update history
+                              (fn [{:keys [exit-code duration-ms]}]
+                                (cmd-history/complete-session! command-session-id exit-code duration-ms)
+                                (send-to-client! channel
+                                                 {:type :command-complete
+                                                  :command-session-id command-session-id
+                                                  :exit-code exit-code
+                                                  :duration-ms duration-ms})))]
+                  (if (:success result)
+                    (send-to-client! channel
+                                     {:type :command-started
+                                      :command-session-id command-session-id
+                                      :command-id command-id
+                                      :shell-command shell-command})
+                    (send-to-client! channel
+                                     {:type :command-error
+                                      :command-id command-id
+                                      :error (:error result)}))))))
+
+          "get_command_history"
+          (let [working-dir (:working-directory data)
+                limit (or (:limit data) 50)
+                sessions (if working-dir
+                           (cmd-history/get-command-history :working-directory working-dir :limit limit)
+                           (cmd-history/get-command-history :limit limit))]
+            (send-to-client! channel
+                             {:type :command-history
+                              :sessions sessions
+                              :limit limit}))
+
+          "get_command_output"
+          (let [command-session-id (:command-session-id data)]
+            (if-not command-session-id
+              (send-to-client! channel
+                               {:type :error
+                                :message "command_session_id required in get_command_output message"})
+              (if-let [metadata (cmd-history/get-session-metadata command-session-id)]
+                (let [output (or (cmd-history/read-output-file command-session-id) "")
+                      output-size (count output)
+                      max-size (* 10 1024 1024) ; 10MB limit
+                      truncated? (> output-size max-size)
+                      final-output (if truncated?
+                                     (do
+                                       (log/warn "Output exceeds 10MB limit, truncating"
+                                                 {:command-session-id command-session-id
+                                                  :actual-size output-size
+                                                  :max-size max-size})
+                                       (subs output 0 max-size))
+                                     output)]
+                  (send-to-client! channel
+                                   {:type :command-output-full
+                                    :command-session-id command-session-id
+                                    :output final-output
+                                    :exit-code (:exit-code metadata)
+                                    :timestamp (:timestamp metadata)
+                                    :duration-ms (:duration-ms metadata)
+                                    :command-id (:command-id metadata)
+                                    :shell-command (:shell-command metadata)
+                                    :working-directory (:working-directory metadata)}))
+                (send-to-client! channel
+                                 {:type :error
+                                  :message (str "Command output not found: " command-session-id)}))))
 
         ;; Unknown message type
-          (do
-            (log/warn "Unknown message type" {:type (:type data)})
-            (http/send! channel
-                        (generate-json
-                         {:type :error
-                          :message (str "Unknown message type: " (:type data))}))))))
+            (do
+              (log/warn "Unknown message type" {:type (:type data)})
+              (http/send! channel
+                          (generate-json
+                           {:type :error
+                            :message (str "Unknown message type: " (:type data))}))))))
 
     (catch Exception e
       (log/error e "Error handling message")
