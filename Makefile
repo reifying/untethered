@@ -7,7 +7,7 @@ SIMULATOR_NAME := iPhone 16 Pro
 DESTINATION := 'platform=iOS Simulator,name=$(SIMULATOR_NAME)'
 IOS_DIR := ios
 BACKEND_DIR := backend
-WRAP := ../../scripts/wrap-command
+WRAP := ./scripts/wrap-command
 
 .PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-restart backend-nrepl backend-nrepl-stop
