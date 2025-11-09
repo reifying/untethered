@@ -565,10 +565,18 @@ class VoiceCodeClient: ObservableObject {
     func requestSessionList() {
         // Request fresh session list from backend
         // Backend will respond with session_list message
-        let message: [String: Any] = [
+        var message: [String: Any] = [
             "type": "connect"
         ]
-        print("🔄 [VoiceCodeClient] Requesting session list refresh")
+
+        // Include recent sessions limit from settings
+        if let limit = appSettings?.recentSessionsLimit {
+            message["recent_sessions_limit"] = limit
+            print("🔄 [VoiceCodeClient] Requesting session list refresh (recent sessions limit: \(limit))")
+        } else {
+            print("🔄 [VoiceCodeClient] Requesting session list refresh")
+        }
+
         sendMessage(message)
     }
 

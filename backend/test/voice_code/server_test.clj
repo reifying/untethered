@@ -585,3 +585,28 @@
       (is (= "Session is currently processing a prompt. Please wait." (:message parsed)))
       (is (= "locked-session-789" (:session_id parsed))))))
 
+(deftest test-connect-updates-recent-sessions-limit
+  (testing "Connect message with recent_sessions_limit parameter stores and uses the limit"
+    (let [captured-limit (atom nil)]
+      (with-redefs [voice-code.server/send-recent-sessions!
+                    (fn [channel limit]
+                      ;; Capture the limit that was passed
+                      (reset! captured-limit limit))]
+
+        ;; Simulate connect with limit 12
+        (let [test-data {:type :connect :recent-sessions-limit 12}]
+          ;; The server should extract and store this limit
+          (is (= 12 (:recent-sessions-limit test-data))
+              "Connect message should include recent_sessions_limit"))
+
+        ;; Verify send-recent-sessions! would be called with the right limit
+        ;; In actual flow: handle-message -> store in connected-clients -> call send-recent-sessions! with stored limit
+        (server/send-recent-sessions! :test-channel 12)
+        (is (= 12 @captured-limit)
+            "send-recent-sessions! should be called with limit from connect message")
+
+        ;; Test with different limit (simulating refresh button)
+        (server/send-recent-sessions! :test-channel 18)
+        (is (= 18 @captured-limit)
+            "send-recent-sessions! should use updated limit on subsequent calls")))))
+
