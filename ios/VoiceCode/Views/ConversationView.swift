@@ -25,7 +25,6 @@ struct ConversationView: View {
     @State private var showingAlreadyCompactedAlert = false
     @State private var isCompacting = false
     @State private var compactSuccessMessage: String?
-    @State private var showingCommandHistory = false
     
     // Compaction feedback state
     @State private var wasRecentlyCompacted: Bool = false
@@ -294,21 +293,6 @@ struct ConversationView: View {
                     }) {
                         Image(systemName: "number")
                     }
-
-                    // Command history button with badge for active commands
-                    Button(action: {
-                        showingCommandHistory = true
-                    }) {
-                        ZStack(alignment: .topTrailing) {
-                            Image(systemName: "terminal")
-                            if !client.runningCommands.isEmpty {
-                                Circle()
-                                    .fill(Color.blue)
-                                    .frame(width: 8, height: 8)
-                                    .offset(x: 4, y: -4)
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -362,18 +346,6 @@ struct ConversationView: View {
                     showingRenameSheet = false
                 }
             )
-        }
-        .sheet(isPresented: $showingCommandHistory) {
-            NavigationView {
-                ActiveCommandsListView(client: client)
-                    .toolbar {
-                        ToolbarItem(placement: .navigationBarTrailing) {
-                            Button("Done") {
-                                showingCommandHistory = false
-                            }
-                        }
-                    }
-            }
         }
         .onAppear {
             // Reset scroll flags when view appears (handles navigation back to session)

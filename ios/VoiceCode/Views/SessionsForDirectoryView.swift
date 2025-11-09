@@ -26,6 +26,7 @@ struct SessionsForDirectoryView: View {
     @State private var showingCopyConfirmation = false
     @State private var showingDirectoryCopyConfirmation = false
     @State private var showingCommandMenu = false
+    @State private var showingCommandHistory = false
 
     init(workingDirectory: String, client: VoiceCodeClient, settings: AppSettings, voiceOutput: VoiceOutputManager, showingSettings: Binding<Bool>, navigationPath: Binding<NavigationPath>) {
         self.workingDirectory = workingDirectory
@@ -129,7 +130,7 @@ struct SessionsForDirectoryView: View {
             
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
-                    // Commands button (only show if commands available)
+                    // Command menu button - execute commands
                     if client.availableCommands != nil {
                         Button(action: {
                             showingCommandMenu = true
@@ -138,7 +139,7 @@ struct SessionsForDirectoryView: View {
                                            (client.availableCommands?.generalCommands.count ?? 0)
                             if totalCount > 0 {
                                 ZStack(alignment: .topTrailing) {
-                                    Image(systemName: "terminal")
+                                    Image(systemName: "play.rectangle")
                                     Text("\(totalCount)")
                                         .font(.system(size: 10, weight: .bold))
                                         .foregroundColor(.white)
@@ -148,7 +149,22 @@ struct SessionsForDirectoryView: View {
                                         .offset(x: 8, y: -8)
                                 }
                             } else {
-                                Image(systemName: "terminal")
+                                Image(systemName: "play.rectangle")
+                            }
+                        }
+                    }
+
+                    // Command history button - view past executions
+                    Button(action: {
+                        showingCommandHistory = true
+                    }) {
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "clock.arrow.circlepath")
+                            if !client.runningCommands.isEmpty {
+                                Circle()
+                                    .fill(Color.green)
+                                    .frame(width: 8, height: 8)
+                                    .offset(x: 4, y: -4)
                             }
                         }
                     }
@@ -194,6 +210,18 @@ struct SessionsForDirectoryView: View {
                     showingNewSession = false
                 }
             )
+        }
+        .sheet(isPresented: $showingCommandHistory) {
+            NavigationView {
+                ActiveCommandsListView(client: client)
+                    .toolbar {
+                        ToolbarItem(placement: .navigationBarTrailing) {
+                            Button("Done") {
+                                showingCommandHistory = false
+                            }
+                        }
+                    }
+            }
         }
         .onAppear {
             // Notify backend of working directory so it can parse Makefile
