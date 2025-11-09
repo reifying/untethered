@@ -10,6 +10,10 @@
 	<string>Untethered needs microphone access for voice input to control Claude.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Untethered needs speech recognition to transcribe your voice commands.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Untethered needs to connect to your backend server on your local network to send voice commands and receive Claude Code responses.</string>
+	<key>NSPrivacyPolicyURL</key>
+	<string>https://raw.githubusercontent.com/travisbrown/voice-code/main/docs/privacy-policy.md</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
