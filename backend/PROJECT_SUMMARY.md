@@ -6,7 +6,7 @@
 
 The Voice-Code backend is a Clojure WebSocket server that bridges voice input from an iPhone app to the Claude Code CLI. It enables voice-controlled software development by:
 
-1. Accepting WebSocket connections from iPhone clients (via Tailscale VPN)
+1. Accepting WebSocket connections from iPhone clients
 2. Receiving voice-transcribed prompts from the iPhone
 3. Invoking Claude Code CLI as a subprocess with session management
 4. Returning responses asynchronously back to the iPhone for text-to-speech playback
@@ -37,7 +37,7 @@ This is part of a larger system that mirrors Claude Code's functionality but mak
 
 ```
 iPhone App (Swift)
-       ↓ WebSocket over Tailscale VPN
+       ↓ WebSocket
        ↓
 ┌──────────────────────────────┐
 │  voice-code Backend (Clojure)│
@@ -774,8 +774,8 @@ Extend `invoke-claude` with additional CLI flags:
 ### Current Limitations (v0.1.0)
 
 1. **In-Memory Sessions** - Lost on server restart (consider adding persistence)
-2. **No Rate Limiting** - Relies on Tailscale network security
-3. **No Authentication** - Assumes trusted Tailscale network
+2. **No Rate Limiting** - Consider adding rate limiting for production use
+3. **No Authentication** - Assumes trusted network connection
 4. **Single-Threaded** - One blocking Claude invocation per client (mitigated by async)
 5. **No Streaming** - Waits for complete Claude response (Claude CLI limitation)
 6. **No Session Cleanup** - Stale sessions accumulate (consider background cleanup task)
@@ -817,7 +817,7 @@ This project draws from the `claude-slack` project at `<home-dir>/code/mono/acti
 Key differences from claude-slack:
 - Uses http-kit WebSocket server directly (not Slack Socket Mode)
 - Simpler protocol (no Slack envelope/ack complexity)
-- Designed for single-user via Tailscale (not multi-tenant)
+- Designed for single-user (not multi-tenant)
 - Async invocation with core.async (not blocking)
 - Comprehensive test coverage (claude-slack has minimal tests)
 
@@ -921,12 +921,10 @@ MVP is successful when:
 - ✅ All tests written and passing
 - ✅ Backend compiles cleanly
 - ✅ Documentation complete
-- ⏸️ Tailscale VPN configured
 - ⏸️ Server provisioned
 
 ### Deployment Steps
-1. Install Tailscale on server
-2. Clone repository
+1. Clone repository
 3. Install Clojure CLI tools
 4. Configure `resources/config.edn` (or use env vars)
 5. Run tests: `clojure -M:test`

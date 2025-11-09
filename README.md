@@ -28,7 +28,6 @@ Claude Code CLI (~/.claude/projects/)
 - **Auto-Read**: Toggle auto-play responses or replay any message
 - **Session Sync**: Terminal ↔ iOS sessions replicated via filesystem
 - **Smart UI**: Filters internal messages, groups by directory
-- **Remote Access**: Works anywhere via Tailscale VPN
 
 ## Protocol
 
