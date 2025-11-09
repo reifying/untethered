@@ -526,37 +526,30 @@
       (is (= "2025-10-22T12:00:00Z" (:last_modified (first (:sessions parsed))))))))
 
 (deftest test-recent-sessions-filters-zero-message-sessions
-  (testing "recent_sessions filters out sessions with 0 messages (e.g., sidechain-only sessions)"
+  (testing "get-recent-sessions filters out sessions with 0 messages (e.g., sidechain-only sessions)"
     (let [sent-sessions (atom nil)]
       (with-redefs [voice-code.replication/get-recent-sessions
+                    ;; Now get-recent-sessions does the filtering internally
                     (fn [limit]
                       [{:session-id "session-with-messages"
                         :message-count 5
                         :working-directory "/path/one"
                         :last-modified 1000000}
-                       {:session-id "session-sidechain-only"
-                        :message-count 0 ; All messages filtered out
-                        :working-directory "/path/two"
-                        :last-modified 2000000}
                        {:session-id "another-with-messages"
                         :message-count 3
                         :working-directory "/path/three"
-                        :last-modified 3000000}
-                       {:session-id "session-nil-count"
-                        :message-count nil ; Edge case: nil count
-                        :working-directory "/path/four"
-                        :last-modified 4000000}])
+                        :last-modified 3000000}])
                     server/send-to-client!
                     (fn [channel message]
                       (reset! sent-sessions (:sessions message)))]
         (server/send-recent-sessions! :test-channel 10)
 
-        ;; Verify only sessions with positive message counts were sent
+        ;; Verify all sessions returned have positive message counts
         (is (= 2 (count @sent-sessions))
-            "Should only send sessions with positive message counts")
+            "Should send exactly the sessions returned by get-recent-sessions")
         (is (= #{"session-with-messages" "another-with-messages"}
                (set (map :session-id @sent-sessions)))
-            "Should exclude sessions with 0 or nil message counts")))))
+            "Should include all sessions from get-recent-sessions")))))
 
 (deftest test-turn-complete-message-format
   (testing "Turn complete message uses correct snake_case format"
