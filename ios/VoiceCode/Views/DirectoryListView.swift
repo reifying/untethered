@@ -138,6 +138,7 @@ struct DirectoryListView: View {
                 }
             }
         }
+        .navigationTitle("Projects")
         .overlay(alignment: .top) {
             if showingCopyConfirmation {
                 Text(copyConfirmationMessage)

@@ -135,7 +135,22 @@ struct SessionsForDirectoryView: View {
                         Button(action: {
                             showingCommandMenu = true
                         }) {
-                            Image(systemName: "play.rectangle")
+                            let totalCount = (client.availableCommands?.projectCommands.count ?? 0) +
+                                           (client.availableCommands?.generalCommands.count ?? 0)
+                            if totalCount > 0 {
+                                ZStack(alignment: .topTrailing) {
+                                    Image(systemName: "play.rectangle")
+                                    Text("\(totalCount)")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(3)
+                                        .background(Color.blue)
+                                        .clipShape(Circle())
+                                        .offset(x: 8, y: -8)
+                                }
+                            } else {
+                                Image(systemName: "play.rectangle")
+                            }
                         }
                     }
 
@@ -143,7 +158,15 @@ struct SessionsForDirectoryView: View {
                     Button(action: {
                         showingCommandHistory = true
                     }) {
-                        Image(systemName: "clock.arrow.circlepath")
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "clock.arrow.circlepath")
+                            if !client.runningCommands.isEmpty {
+                                Circle()
+                                    .fill(Color.green)
+                                    .frame(width: 8, height: 8)
+                                    .offset(x: 4, y: -4)
+                            }
+                        }
                     }
 
                     Button(action: {

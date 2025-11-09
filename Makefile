@@ -4,7 +4,7 @@
 # iOS Configuration
 SCHEME := VoiceCode
 SIMULATOR_NAME := iPhone 16 Pro
-DESTINATION := 'platform=iOS Simulator,name=$(SIMULATOR_NAME),OS=18.6'
+DESTINATION := 'platform=iOS Simulator,name=$(SIMULATOR_NAME)'
 IOS_DIR := ios
 BACKEND_DIR := backend
 
