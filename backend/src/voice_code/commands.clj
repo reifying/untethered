@@ -64,7 +64,7 @@
       ;; Stream stdout asynchronously
       (future
         (with-open [reader (java.io.BufferedReader.
-                           (java.io.InputStreamReader. (.getInputStream process)))]
+                            (java.io.InputStreamReader. (.getInputStream process)))]
           (loop []
             (when-let [line (.readLine reader)]
               (try
@@ -79,7 +79,7 @@
       ;; Stream stderr asynchronously
       (future
         (with-open [reader (java.io.BufferedReader.
-                           (java.io.InputStreamReader. (.getErrorStream process)))]
+                            (java.io.InputStreamReader. (.getErrorStream process)))]
           (loop []
             (when-let [line (.readLine reader)]
               (try
@@ -240,23 +240,39 @@
   "Group commands by their :group key.
    Commands without :group remain at top level.
    Commands with :group are nested under group nodes.
-   Supports nested groups (e.g., 'docker.compose' creates docker > compose hierarchy)."
+   Supports nested groups (e.g., 'docker.compose' creates docker > compose hierarchy).
+   
+   Special handling: If a standalone command has the same ID as a group,
+   it becomes the first child of that group (e.g., 'test' command + 'test-verbose'
+   creates a 'test' group with 'test' and 'verbose' as children)."
   [commands]
   (let [grouped (group-by :group commands)
         ungrouped (get grouped nil [])
-        with-groups (dissoc grouped nil)]
+        with-groups (dissoc grouped nil)
+        ;; Find group IDs that conflict with standalone command IDs
+        group-ids (set (keys with-groups))
+        conflicting-commands (filter #(contains? group-ids (:id %)) ungrouped)
+        conflicting-ids (set (map :id conflicting-commands))
+        ;; Remove conflicting commands from ungrouped (they'll be added to groups)
+        truly-ungrouped (remove #(contains? conflicting-ids (:id %)) ungrouped)]
     (if (empty? with-groups)
       ungrouped
       (let [group-tree (reduce
                         (fn [tree [group-id commands]]
-                          (let [group-path (str/split group-id #"\.")]
+                          (let [group-path (str/split group-id #"\.")
+                                ;; Find matching standalone command if it exists
+                                matching-cmd (first (filter #(= group-id (:id %)) conflicting-commands))
+                                ;; Add matching command as first child
+                                commands-with-main (if matching-cmd
+                                                     (cons matching-cmd commands)
+                                                     commands)]
                             (reduce (fn [t cmd]
                                       (add-command-to-group-tree t group-path cmd))
                                     tree
-                                    commands)))
+                                    commands-with-main)))
                         []
                         with-groups)]
-        (vec (concat ungrouped group-tree))))))
+        (vec (concat truly-ungrouped group-tree))))))
 
 (defn parse-makefile
   "Parse Makefile in the given directory and return a list of commands.
