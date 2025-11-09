@@ -89,7 +89,7 @@
 ;; Persistent session data comes from the replication system (filesystem-based)
 
 (defonce connected-clients
-  ;; Track all connected WebSocket clients: channel -> {:deleted-sessions #{}}
+  ;; Track all connected WebSocket clients: channel -> {:deleted-sessions #{} :recent-sessions-limit 5}
   (atom {}))
 
 (defonce pending-new-sessions
@@ -221,7 +221,11 @@
                         :working-directory (:working-directory session-metadata)
                         :last-modified (:last-modified session-metadata)
                         :message-count (:message-count session-metadata)
-                        :preview (:preview session-metadata)}))
+                        :preview (:preview session-metadata)})
+
+      ;; Send updated recent sessions list to each client
+      (let [limit (get client-info :recent-sessions-limit 5)]
+        (send-recent-sessions! channel limit)))
 
     ;; Also send messages if client is subscribed (handles new session race condition)
     (when (repl/is-subscribed? session-id)
@@ -267,7 +271,11 @@
       (send-to-client! channel
                        {:type :session-updated
                         :session-id session-id
-                        :messages new-messages}))))
+                        :messages new-messages})
+
+      ;; Send updated recent sessions list to each client
+      (let [limit (get client-info :recent-sessions-limit 5)]
+        (send-recent-sessions! channel limit)))))
 
 (defn on-session-deleted
   "Called when a session file is deleted from filesystem"
@@ -296,7 +304,9 @@
             (log/info "Client connected")
 
           ;; Register client (no session-id needed in new architecture)
-            (swap! connected-clients assoc channel {:deleted-sessions #{}})
+            (let [limit (or (:recent-sessions-limit data) 5)]
+              (swap! connected-clients assoc channel {:deleted-sessions #{}
+                                                      :recent-sessions-limit limit}))
 
           ;; Send session list (limit to 50 most recent, lightweight fields only)
             (let [all-sessions (repl/get-all-sessions)
