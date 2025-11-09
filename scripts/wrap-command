@@ -1,0 +1,115 @@
+#!/bin/bash
+#
+# wrap-command - Generic wrapper for long-running commands
+#
+# SECURITY WARNING: Only use with trusted commands. This script does not
+# prevent command injection if called with malicious arguments.
+#
+# Runs a command in the background, captures output to a temp file,
+# waits for completion, then shows last N lines with exit code.
+#
+# Usage: wrap-command <command> [args...]
+# Example: wrap-command make test
+
+set -o pipefail
+
+# Configuration
+OUTPUT_DIR="${TMPDIR:-/tmp}/mono-cmd-$(id -u)"
+TAIL_LINES=100
+CLEANUP_DAYS=7
+
+# Ensure output directory exists with secure permissions
+if [ ! -d "$OUTPUT_DIR" ]; then
+    mkdir -m 700 "$OUTPUT_DIR" || {
+        echo "ERROR: Failed to create output directory"
+        exit 1
+    }
+fi
+
+# Verify directory ownership
+if ! [ -O "$OUTPUT_DIR" ]; then
+    echo "ERROR: Output directory has wrong ownership"
+    exit 1
+fi
+
+# Cleanup old files (older than CLEANUP_DAYS)
+find "$OUTPUT_DIR" -name "cmd.*.log" -type f -mtime +${CLEANUP_DAYS} -delete 2>/dev/null || true
+
+# Check if command was provided
+if [ $# -eq 0 ]; then
+    echo "ERROR: No command provided"
+    echo "Usage: wrap-command <command> [args...]"
+    exit 1
+fi
+
+# Verify command exists
+if ! command -v "$1" >/dev/null 2>&1; then
+    echo "ERROR: Command not found: $1"
+    exit 127
+fi
+
+# Generate secure temp file (macOS and Linux compatible)
+OUTPUT_FILE=$(mktemp "${OUTPUT_DIR}/cmd.XXXXXXXXXX") || {
+    echo "ERROR: Failed to create temp file"
+    exit 1
+}
+# Add .log extension
+mv "$OUTPUT_FILE" "${OUTPUT_FILE}.log"
+OUTPUT_FILE="${OUTPUT_FILE}.log"
+
+# Print output file path immediately (so agent can monitor it)
+echo "OUTPUT_FILE=${OUTPUT_FILE}"
+echo "COMMAND_RUNNING"
+
+# Signal handling for cleanup
+cleanup() {
+    if [ -n "$COMMAND_PID" ] && kill -0 "$COMMAND_PID" 2>/dev/null; then
+        kill -TERM "$COMMAND_PID" 2>/dev/null || true
+        wait "$COMMAND_PID" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT INT TERM
+
+# Record start time
+START_TIME=$(date +%s)
+
+# Run command in background, capture output, and get PID
+"$@" > "$OUTPUT_FILE" 2>&1 &
+COMMAND_PID=$!
+
+# Wait for command to complete
+wait $COMMAND_PID
+EXIT_CODE=$?
+
+# Calculate duration
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+
+# Count total lines (accurate for files without trailing newline)
+TOTAL_LINES=$(grep -c '' "$OUTPUT_FILE" 2>/dev/null || echo "0")
+
+# Print metadata
+echo "EXIT_CODE=${EXIT_CODE}"
+echo "DURATION=${DURATION}"
+echo "TOTAL_LINES=${TOTAL_LINES}"
+echo "SHOWING_LAST_LINES=${TAIL_LINES}"
+
+# Warn if output was truncated
+if [ "$TOTAL_LINES" -gt "$TAIL_LINES" ]; then
+    SKIPPED_LINES=$((TOTAL_LINES - TAIL_LINES))
+    echo "────────────────────────────────────────────────────"
+    echo "WARNING: Output truncated. Skipped ${SKIPPED_LINES} lines."
+fi
+
+echo "────────────────────────────────────────────────────"
+
+# Show last N lines of output
+tail -n "$TAIL_LINES" "$OUTPUT_FILE"
+
+# Print footer
+echo "────────────────────────────────────────────────────"
+echo "END_TRUNCATED_OUTPUT"
+echo "FULL_OUTPUT=${OUTPUT_FILE}"
+
+# Exit with the command's exit code
+exit $EXIT_CODE
