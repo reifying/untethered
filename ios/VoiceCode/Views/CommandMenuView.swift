@@ -10,6 +10,8 @@ struct CommandMenuView: View {
 
     private let sorter = CommandSorter()
     @State private var isLoading = false
+    @State private var activeCommandSessionId: String?
+    @State private var navigateToExecution = false
 
     // Sorted commands from client
     private var sortedProjectCommands: [Command] {
@@ -28,6 +30,18 @@ struct CommandMenuView: View {
 
     var body: some View {
         NavigationView {
+            ZStack {
+                // NavigationLink hidden in background for programmatic navigation
+                if let commandSessionId = activeCommandSessionId {
+                    NavigationLink(
+                        destination: CommandExecutionView(client: client, commandSessionId: commandSessionId),
+                        isActive: $navigateToExecution
+                    ) {
+                        EmptyView()
+                    }
+                    .hidden()
+                }
+
             Group {
                 if isLoading {
                     // Loading state
@@ -91,6 +105,7 @@ struct CommandMenuView: View {
                     }
                 }
             }
+            }
             .navigationTitle("Commands")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -118,7 +133,15 @@ struct CommandMenuView: View {
         print("📤 [CommandMenuView] Executing command: \(commandId)")
         sorter.markCommandUsed(commandId: commandId)
         client.executeCommand(commandId: commandId, workingDirectory: workingDirectory)
-        dismiss()
+
+        // Wait briefly for backend to send command_started message with session ID
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            // Find the most recent command (the one we just started)
+            if let mostRecentCommand = client.runningCommands.values.max(by: { $0.startTime < $1.startTime }) {
+                activeCommandSessionId = mostRecentCommand.id
+                navigateToExecution = true
+            }
+        }
     }
 }
 
