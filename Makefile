@@ -9,7 +9,7 @@ IOS_DIR := ios
 BACKEND_DIR := backend
 
 .PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device
-.PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-restart
+.PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-restart backend-nrepl backend-nrepl-stop
 .PHONY: bump-build archive export-ipa upload-testflight publish-testflight deploy-testflight
 
 # Default target
@@ -31,6 +31,8 @@ help:
 	@echo "  backend-run       - Start the backend server"
 	@echo "  backend-stop      - Stop the backend server"
 	@echo "  backend-restart   - Restart the backend server"
+	@echo "  backend-nrepl     - Start nREPL server (usage: make backend-nrepl [PORT=7888])"
+	@echo "  backend-nrepl-stop - Stop nREPL server"
 	@echo ""
 	@echo "Backend testing:"
 	@echo "  backend-test                      - Run automated backend tests (FREE)"
@@ -198,6 +200,28 @@ backend-restart: backend-stop
 	@sleep 2
 	@echo "Starting voice-code backend server..."
 	@$(MAKE) backend-run
+
+# nREPL server management
+# Default port is 7888, can be overridden with PORT=<number>
+PORT ?= 7888
+
+backend-nrepl:
+	@echo "Starting nREPL server on port $(PORT)..."
+	@cd $(BACKEND_DIR) && clojure -M:nrepl -p $(PORT) &
+	@echo "$$!" > $(BACKEND_DIR)/.nrepl-pid
+	@echo "nREPL server started on port $(PORT) (PID: $$(cat $(BACKEND_DIR)/.nrepl-pid))"
+	@echo "Port file: $(BACKEND_DIR)/.nrepl-port"
+
+backend-nrepl-stop:
+	@if [ -f $(BACKEND_DIR)/.nrepl-pid ]; then \
+		echo "Stopping nREPL server (PID: $$(cat $(BACKEND_DIR)/.nrepl-pid))..."; \
+		kill $$(cat $(BACKEND_DIR)/.nrepl-pid) 2>/dev/null || echo "Process already stopped"; \
+		rm -f $(BACKEND_DIR)/.nrepl-pid; \
+		rm -f $(BACKEND_DIR)/.nrepl-port; \
+		echo "nREPL server stopped"; \
+	else \
+		echo "No nREPL server running (no PID file found)"; \
+	fi
 
 # TestFlight Publishing
 # Requires: App Store Connect API keys set in environment (.envrc)
