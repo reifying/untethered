@@ -7,6 +7,7 @@ SIMULATOR_NAME := iPhone 16 Pro
 DESTINATION := 'platform=iOS Simulator,name=$(SIMULATOR_NAME)'
 IOS_DIR := ios
 BACKEND_DIR := backend
+WRAP := ../../scripts/wrap-command
 
 .PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-restart backend-nrepl backend-nrepl-stop
@@ -71,11 +72,11 @@ setup-simulator:
 
 # Run tests with standard output
 test: setup-simulator
-	cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION)
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION)"
 
 # Run tests with verbose output (shows all test execution details)
 test-verbose: setup-simulator
-	cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -verbose
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -verbose"
 
 # Run tests with minimal output (just results)
 test-quiet: setup-simulator
@@ -85,8 +86,7 @@ test-quiet: setup-simulator
 
 # Build the project and compile tests
 build: setup-simulator
-	cd $(IOS_DIR) && xcodebuild build -scheme $(SCHEME) -destination $(DESTINATION)
-	cd $(IOS_DIR) && xcodebuild build-for-testing -scheme $(SCHEME) -destination $(DESTINATION)
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild build -scheme $(SCHEME) -destination $(DESTINATION) && xcodebuild build-for-testing -scheme $(SCHEME) -destination $(DESTINATION)"
 
 # Clean build artifacts
 clean:
@@ -98,7 +98,7 @@ test-class: setup-simulator
 ifndef CLASS
 	$(error CLASS is required. Usage: make test-class CLASS=OptimisticUITests)
 endif
-	cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeTests/$(CLASS)
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeTests/$(CLASS)"
 
 # Run specific test method (usage: make test-method CLASS=OptimisticUITests METHOD=testCreateOptimisticMessage)
 test-method: setup-simulator
@@ -108,16 +108,13 @@ endif
 ifndef METHOD
 	$(error METHOD is required. Usage: make test-method CLASS=OptimisticUITests METHOD=test_method_name)
 endif
-	cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeTests/$(CLASS)/$(METHOD)
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeTests/$(CLASS)/$(METHOD)"
 
 # Build and install to connected iPhone (mimics Xcode's Run button)
 deploy-device:
 	@echo "Building and deploying to connected iPhone..."
 	@echo "Make sure your iPhone is connected via USB and unlocked"
-	cd $(IOS_DIR) && xcodebuild build -scheme $(SCHEME) \
-		-destination 'generic/platform=iOS' \
-		-allowProvisioningUpdates \
-		-derivedDataPath build
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild build -scheme $(SCHEME) -destination 'generic/platform=iOS' -allowProvisioningUpdates -derivedDataPath build"
 	@echo "Installing to device..."
 	cd $(IOS_DIR) && xcrun devicectl device install app --device $$(xcrun devicectl list devices | grep -i "iphone" | grep "available" | grep -o '[0-9A-F]\{8\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{12\}' | head -1) build/Build/Products/Debug-iphoneos/VoiceCode.app
 	@echo "✅ Deployed to iPhone! Launch the app manually."
@@ -126,52 +123,52 @@ deploy-device:
 
 # Run regular automated tests (free, no Claude invocations)
 backend-test:
-	cd $(BACKEND_DIR) && clojure -M:test
+	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:test"
 
 # Individual manual tests
 
 backend-test-manual-startup:
 	@echo "Running Test 3: Backend Startup & Session Discovery (FREE)"
-	cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-03-startup
+	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-03-startup"
 
 backend-test-manual-protocol:
 	@echo "Running Test 4: WebSocket Protocol (FREE)"
-	cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-04-protocol
+	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-04-protocol"
 
 backend-test-manual-watcher-new:
 	@echo "Running Test 5: Filesystem Watcher - New Session (COSTS MONEY)"
 	@echo "Press Ctrl+C to cancel or Enter to continue..."
 	@read confirm
-	cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-05-watcher-new
+	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-05-watcher-new"
 
 backend-test-manual-prompt-new:
 	@echo "Running Test 6: Prompt Sending - New Session (COSTS MONEY)"
 	@echo "Press Ctrl+C to cancel or Enter to continue..."
 	@read confirm
-	cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-06-prompt-new
+	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-06-prompt-new"
 
 backend-test-manual-prompt-resume:
 	@echo "Running Test 7: Prompt Sending - Resume Session (COSTS MONEY)"
 	@echo "Press Ctrl+C to cancel or Enter to continue..."
 	@read confirm
-	cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-07-prompt-resume
+	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-07-prompt-resume"
 
 backend-test-manual-broadcast:
 	@echo "Running Test 8: Multi-Client Broadcast (FREE)"
-	cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-08-broadcast
+	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-08-broadcast"
 
 backend-test-manual-errors:
 	@echo "Running Test 9: Error Handling (FREE)"
-	cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-09-errors
+	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-09-errors"
 
 backend-test-manual-real-data:
 	@echo "Running Test 10: Real Data Validation with 700+ sessions (FREE)"
-	cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-10-real-data-validation
+	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-10-real-data-validation"
 
 # Run all free manual tests
 backend-test-manual-free:
 	@echo "Running all FREE manual tests (no Claude invocations)..."
-	cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -r "voice-code\.test-(0[3489]|10)-.*"
+	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -r 'voice-code\.test-(0[3489]|10)-.*'"
 
 # Run ALL manual tests (including paid)
 backend-test-manual-all:
@@ -179,7 +176,7 @@ backend-test-manual-all:
 	@echo "Tests 5, 6, 7 will make Claude API calls."
 	@echo "Press Ctrl+C to cancel or Enter to continue..."
 	@read confirm
-	cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test
+	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test"
 
 # Clean up test artifacts
 backend-clean:
@@ -237,22 +234,22 @@ bump-build:
 # Create archive
 archive:
 	@echo "Creating archive build..."
-	@./scripts/publish-testflight.sh archive
+	$(WRAP) ./scripts/publish-testflight.sh archive
 
 # Export IPA from archive
 export-ipa:
 	@echo "Exporting IPA..."
-	@./scripts/publish-testflight.sh export
+	$(WRAP) ./scripts/publish-testflight.sh export
 
 # Upload to TestFlight
 upload-testflight:
 	@echo "Uploading to TestFlight..."
-	@bash -c 'source .envrc && ./scripts/publish-testflight.sh upload'
+	$(WRAP) bash -c 'source .envrc && ./scripts/publish-testflight.sh upload'
 
 # Complete publish workflow: archive -> export -> upload
 publish-testflight:
 	@echo "Starting complete TestFlight publish workflow..."
-	@bash -c 'source .envrc && ./scripts/publish-testflight.sh publish'
+	$(WRAP) bash -c 'source .envrc && ./scripts/publish-testflight.sh publish'
 
 # Deploy new build: bump version -> archive -> export -> upload (most common workflow)
 deploy-testflight:
