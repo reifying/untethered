@@ -111,11 +111,11 @@ struct SettingsView: View {
 
                 Section(header: Text("Help")) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Tailscale Setup")
+                        Text("Server Setup")
                             .font(.headline)
-                        Text("1. Install Tailscale on your server and iPhone")
-                        Text("2. Check your server's Tailscale IP with: tailscale ip")
-                        Text("3. Enter that IP address above (e.g., 100.64.0.1)")
+                        Text("1. Start the backend server on your computer")
+                        Text("2. Find your server's IP address")
+                        Text("3. Enter that IP address above (e.g., 192.168.1.100)")
                         Text("4. Make sure your server is running on the specified port")
                     }
                     .font(.caption)
@@ -124,7 +124,6 @@ struct SettingsView: View {
 
                 Section(header: Text("Examples")) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Tailscale: 100.64.0.1")
                         Text("Local network: 192.168.1.100")
                         Text("Localhost: 127.0.0.1 (testing only)")
                     }

@@ -50,11 +50,11 @@ final class AppSettingsTests: XCTestCase {
     // MARK: - Property Tests
 
     func testServerURLPersistence() {
-        settings.serverURL = "100.64.0.1"
+        settings.serverURL = "192.168.1.100"
 
         // Value should be saved to UserDefaults
         let saved = UserDefaults.standard.string(forKey: "serverURL")
-        XCTAssertEqual(saved, "100.64.0.1")
+        XCTAssertEqual(saved, "192.168.1.100")
     }
 
     func testServerPortPersistence() {
@@ -150,7 +150,7 @@ final class AppSettingsTests: XCTestCase {
         let testCases: [(String, String, String)] = [
             ("localhost", "8080", "ws://localhost:8080"),
             ("127.0.0.1", "8080", "ws://127.0.0.1:8080"),
-            ("100.64.0.1", "8080", "ws://100.64.0.1:8080"),
+            ("192.168.1.50", "8080", "ws://192.168.1.50:8080"),
             ("192.168.1.100", "3000", "ws://192.168.1.100:3000"),
             ("example.com", "80", "ws://example.com:80")
         ]
