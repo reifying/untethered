@@ -514,7 +514,7 @@
               (http/send! channel
                           (generate-json
                            {:type :error
-                            :message "path required in set_directory message"}))
+                            :message "path required in set-directory message"}))
               (do
                 (log/info "Working directory set" {:path path})
               ;; Send acknowledgment
@@ -693,7 +693,7 @@
                                                        :error-type :claude-failed})))
                                  :new-session-id session-id
                                  :model "haiku"
-                                 :working-directory worktree-path))))))))))))
+                                 :working-directory worktree-path)))))))))))
 
           "execute_command"
           (let [command-id (:command-id data)
@@ -760,45 +760,45 @@
                               :limit limit}))
 
           "get_command_output"
-          (let [command-session-id (:command-session-id data)]
-            (if-not command-session-id
-              (send-to-client! channel
-                               {:type :error
-                                :message "command_session_id required in get_command_output message"})
-              (if-let [metadata (cmd-history/get-session-metadata command-session-id)]
-                (let [output (or (cmd-history/read-output-file command-session-id) "")
-                      output-size (count output)
-                      max-size (* 10 1024 1024) ; 10MB limit
-                      truncated? (> output-size max-size)
-                      final-output (if truncated?
-                                     (do
-                                       (log/warn "Output exceeds 10MB limit, truncating"
-                                                 {:command-session-id command-session-id
-                                                  :actual-size output-size
-                                                  :max-size max-size})
-                                       (subs output 0 max-size))
-                                     output)]
-                  (send-to-client! channel
-                                   {:type :command-output-full
-                                    :command-session-id command-session-id
-                                    :output final-output
-                                    :exit-code (:exit-code metadata)
-                                    :timestamp (:timestamp metadata)
-                                    :duration-ms (:duration-ms metadata)
-                                    :command-id (:command-id metadata)
-                                    :shell-command (:shell-command metadata)
-                                    :working-directory (:working-directory metadata)}))
+            (let [command-session-id (:command-session-id data)]
+              (if-not command-session-id
                 (send-to-client! channel
                                  {:type :error
-                                  :message (str "Command output not found: " command-session-id)}))))
+                                  :message "command_session_id required in get_command_output message"})
+                (if-let [metadata (cmd-history/get-session-metadata command-session-id)]
+                  (let [output (or (cmd-history/read-output-file command-session-id) "")
+                        output-size (count output)
+                        max-size (* 10 1024 1024) ; 10MB limit
+                        truncated? (> output-size max-size)
+                        final-output (if truncated?
+                                       (do
+                                         (log/warn "Output exceeds 10MB limit, truncating"
+                                                   {:command-session-id command-session-id
+                                                    :actual-size output-size
+                                                    :max-size max-size})
+                                         (subs output 0 max-size))
+                                       output)]
+                    (send-to-client! channel
+                                     {:type :command-output-full
+                                      :command-session-id command-session-id
+                                      :output final-output
+                                      :exit-code (:exit-code metadata)
+                                      :timestamp (:timestamp metadata)
+                                      :duration-ms (:duration-ms metadata)
+                                      :command-id (:command-id metadata)
+                                      :shell-command (:shell-command metadata)
+                                      :working-directory (:working-directory metadata)}))
+                  (send-to-client! channel
+                                   {:type :error
+                                    :message (str "Command output not found: " command-session-id)}))))
 
         ;; Unknown message type
-          (do
-            (log/warn "Unknown message type" {:type (:type data)})
-            (http/send! channel
-                        (generate-json
-                         {:type :error
-                          :message (str "Unknown message type: " (:type data))}))))))
+            (do
+              (log/warn "Unknown message type" {:type (:type data)})
+              (http/send! channel
+                          (generate-json
+                           {:type :error
+                            :message (str "Unknown message type: " (:type data))})))))))
 
     (catch Exception e
       (log/error e "Error handling message")
