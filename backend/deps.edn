@@ -17,7 +17,7 @@
            :nrepl {:extra-paths ["test"]
                    :extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}}
                    :jvm-opts ["-Djdk.attach.allowAttachSelf"]
-                   :main-opts ["-m" "nrepl.cmdline" "--port" "7888"]}
+                   :main-opts ["-m" "nrepl.cmdline" "--port" "7889"]}
 
            ;; clojure-mcp for REPL-driven development
            :mcp {:extra-deps {org.slf4j/slf4j-nop {:mvn/version "2.0.16"}
@@ -26,7 +26,7 @@
                                :git/tag "v0.1.11-alpha"
                                :git/sha "7739dba"}}
                  :exec-fn clojure-mcp.main/start-mcp-server
-                 :exec-args {:port 7888}}
+                 :exec-args {:port 7889}}
 
            ;; Test runner
            :test {:extra-paths ["test"]
