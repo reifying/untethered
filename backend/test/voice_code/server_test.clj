@@ -237,8 +237,8 @@
           ;; Verify client registered
           (is (contains? @server/connected-clients :test-ch))
 
-          ;; Verify two messages sent
-          (is (= 2 (count @sent-messages)))
+          ;; Verify three messages sent: session_list, recent_sessions, available_commands
+          (is (= 3 (count @sent-messages)))
 
           ;; First message should be session_list
           (let [msg1 (json/parse-string (first @sent-messages) true)]

@@ -3,8 +3,10 @@
             [voice-code.replication :as repl]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [cheshire.core :as json])
-  (:import [java.io File]))
+            [cheshire.core :as json]
+            [clojure.tools.logging :as log])
+  (:import [java.io File]
+           [java.util.logging Level Logger]))
 
 ;; Test fixtures and helpers
 
@@ -26,25 +28,32 @@
 
 (use-fixtures :each
   (fn [f]
-    (cleanup-test-dir)
-    ;; Create test directory
-    (.mkdirs (io/file test-dir))
-    ;; Reset watcher-state to ensure subscribed-sessions is always a set
-    (reset! repl/watcher-state
-            {:watch-service nil
-             :watch-thread nil
-             :running false
-             :watch-keys {}
-             :subscribed-sessions #{}
-             :event-queue (atom {})
-             :debounce-ms 200
-             :retry-delay-ms 100
-             :max-retries 3
-             :on-session-created nil
-             :on-session-updated nil
-             :on-session-deleted nil})
-    (f)
-    (cleanup-test-dir)))
+    ;; Suppress logging during tests to prevent stdout buffer deadlock
+    (let [root-logger (Logger/getLogger "")
+          original-level (.getLevel root-logger)]
+      (try
+        (.setLevel root-logger Level/OFF)
+        (cleanup-test-dir)
+        ;; Create test directory
+        (.mkdirs (io/file test-dir))
+        ;; Reset watcher-state to ensure subscribed-sessions is always a set
+        (reset! repl/watcher-state
+                {:watch-service nil
+                 :watch-thread nil
+                 :running false
+                 :watch-keys {}
+                 :subscribed-sessions #{}
+                 :event-queue (atom {})
+                 :debounce-ms 200
+                 :retry-delay-ms 100
+                 :max-retries 3
+                 :on-session-created nil
+                 :on-session-updated nil
+                 :on-session-deleted nil})
+        (f)
+        (cleanup-test-dir)
+        (finally
+          (.setLevel root-logger original-level))))))
 
 ;; ============================================================================
 ;; Session Metadata Index Tests

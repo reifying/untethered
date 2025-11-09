@@ -514,7 +514,7 @@
               (http/send! channel
                           (generate-json
                            {:type :error
-                            :message "path required in set_directory message"}))
+                            :message "path required in set-directory message"}))
               (do
                 (log/info "Working directory set" {:path path})
               ;; Send acknowledgment
@@ -793,12 +793,12 @@
                                   :message (str "Command output not found: " command-session-id)}))))
 
         ;; Unknown message type
-          (do
-            (log/warn "Unknown message type" {:type (:type data)})
-            (http/send! channel
-                        (generate-json
-                         {:type :error
-                          :message (str "Unknown message type: " (:type data))}))))))
+            (do
+              (log/warn "Unknown message type" {:type (:type data)})
+              (http/send! channel
+                          (generate-json
+                           {:type :error
+                            :message (str "Unknown message type: " (:type data))})))))))
 
     (catch Exception e
       (log/error e "Error handling message")
