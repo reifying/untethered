@@ -119,13 +119,19 @@ class SessionSyncManager {
     ///   - messages: Array of all message dictionaries for the session
     func handleSessionHistory(sessionId: String, messages: [[String: Any]]) {
         logger.info("Received session_history for: \(sessionId) with \(messages.count) messages")
-        
+
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
-            
+
+            // Validate UUID format
+            guard let sessionUUID = UUID(uuidString: sessionId) else {
+                logger.error("Invalid session ID format in handleSessionHistory: \(sessionId)")
+                return
+            }
+
             // Fetch the session
-            let fetchRequest = CDSession.fetchSession(id: UUID(uuidString: sessionId)!)
-            
+            let fetchRequest = CDSession.fetchSession(id: sessionUUID)
+
             guard let session = try? backgroundContext.fetch(fetchRequest).first else {
                 logger.warning("Session not found for history: \(sessionId)")
                 return
@@ -252,12 +258,18 @@ class SessionSyncManager {
     ///   - messages: Array of new message dictionaries
     func handleSessionUpdated(sessionId: String, messages: [[String: Any]]) {
         logger.info("Received session_updated for: \(sessionId) with \(messages.count) messages")
-        
+
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
-            
+
+            // Validate UUID format
+            guard let sessionUUID = UUID(uuidString: sessionId) else {
+                logger.error("Invalid session ID format in handleSessionUpdated: \(sessionId)")
+                return
+            }
+
             // Fetch or create the session
-            let fetchRequest = CDSession.fetchSession(id: UUID(uuidString: sessionId)!)
+            let fetchRequest = CDSession.fetchSession(id: sessionUUID)
 
             let session: CDSession
             if let existingSession = try? backgroundContext.fetch(fetchRequest).first {
@@ -266,16 +278,15 @@ class SessionSyncManager {
                 // Session not in our list yet - create it from the update
                 logger.info("Creating new session from update: \(sessionId)")
                 session = CDSession(context: backgroundContext)
-                session.id = UUID(uuidString: sessionId)!
+                session.id = sessionUUID
                 session.backendName = "" // Will be updated on next session_list
                 session.workingDirectory = "" // Will be updated on next session_list
                 session.markedDeleted = false
                 session.unreadCount = 0
                 session.isLocallyCreated = false
             }
-            
+
             // Check if this session is currently active
-            let sessionUUID = UUID(uuidString: sessionId)!
             let isActiveSession = ActiveSessionManager.shared.isActive(sessionUUID)
 
             // Process each message - reconcile optimistic ones, create new ones
@@ -302,7 +313,7 @@ class SessionSyncManager {
                 let serverTimestamp = self.extractTimestamp(from: messageData)
 
                 // Try to reconcile optimistic message first
-                let fetchRequest = CDMessage.fetchMessage(sessionId: UUID(uuidString: sessionId)!, role: role, text: text)
+                let fetchRequest = CDMessage.fetchMessage(sessionId: sessionUUID, role: role, text: text)
 
                 logger.info("🔍 Looking for optimistic message to reconcile: role=\(role) text_length=\(text.count) session=\(sessionId)")
                 
@@ -654,11 +665,17 @@ class SessionSyncManager {
             return
         }
 
+        // Validate UUID format
+        guard let sessionUUID = UUID(uuidString: sessionId) else {
+            logger.error("Invalid session ID format in createMessage: \(sessionId)")
+            return
+        }
+
         let message = CDMessage(context: context)
 
         // Use backend's UUID if available, otherwise generate new one
         message.id = extractMessageId(from: messageData) ?? UUID()
-        message.sessionId = UUID(uuidString: sessionId)!
+        message.sessionId = sessionUUID
         message.role = role
         message.text = text
         message.messageStatus = .confirmed

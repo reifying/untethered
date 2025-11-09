@@ -20,6 +20,7 @@ class VoiceCodeClient: ObservableObject {
     private var serverURL: String
     private var reconnectionAttempts = 0
     private var maxReconnectionDelay: TimeInterval = 60.0 // Max 60 seconds
+    private var maxReconnectionAttempts = 20 // ~17 minutes max (1+2+4+8+16+32+60*14)
 
     var onMessageReceived: ((Message, String) -> Void)?  // (message, iosSessionId)
     var onSessionIdReceived: ((String) -> Void)?
@@ -146,9 +147,21 @@ class VoiceCodeClient: ObservableObject {
         timer.schedule(deadline: .now() + delay, repeating: delay)
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
+
             if !self.isConnected {
+                // Check if we've exceeded max attempts
+                if self.reconnectionAttempts >= self.maxReconnectionAttempts {
+                    print("❌ [VoiceCodeClient] Max reconnection attempts (\(self.maxReconnectionAttempts)) reached. Stopping.")
+                    self.reconnectionTimer?.cancel()
+                    self.reconnectionTimer = nil
+                    DispatchQueue.main.async {
+                        self.currentError = "Unable to connect to server after \(self.maxReconnectionAttempts) attempts. Please check your server settings."
+                    }
+                    return
+                }
+
                 self.reconnectionAttempts += 1
-                print("Attempting reconnection (attempt \(self.reconnectionAttempts), next delay: \(min(pow(2.0, Double(self.reconnectionAttempts)), self.maxReconnectionDelay))s)...")
+                print("Attempting reconnection (attempt \(self.reconnectionAttempts)/\(self.maxReconnectionAttempts), next delay: \(min(pow(2.0, Double(self.reconnectionAttempts)), self.maxReconnectionDelay))s)...")
                 self.connect()
             }
         }
@@ -754,11 +767,12 @@ class VoiceCodeClient: ObservableObject {
 
             if messageType == "session_name_inferred" {
                 if let inferredName = json["name"] as? String,
-                   let returnedSessionId = json["session_id"] as? String {
+                   let returnedSessionId = json["session_id"] as? String,
+                   let sessionUUID = UUID(uuidString: returnedSessionId) {
                     print("✨ [VoiceCodeClient] Received inferred name: \(inferredName) for session: \(returnedSessionId)")
 
                     // Update the session's localName in CoreData
-                    self.sessionSyncManager.updateSessionLocalName(sessionId: UUID(uuidString: returnedSessionId)!, name: inferredName)
+                    self.sessionSyncManager.updateSessionLocalName(sessionId: sessionUUID, name: inferredName)
 
                     // Restore original callback
                     self.onInferNameResponse = originalCallback
