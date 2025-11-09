@@ -387,7 +387,7 @@
               (log/info "Client unsubscribing from session" {:session-id session-id})
               (repl/unsubscribe-from-session! session-id)))
 
-          "session-deleted"
+          "session_deleted"
         ;; Client marks session as deleted locally
           (let [session-id (:session-id data)]
             (when session-id
