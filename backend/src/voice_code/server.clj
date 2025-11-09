@@ -89,7 +89,7 @@
 ;; Persistent session data comes from the replication system (filesystem-based)
 
 (defonce connected-clients
-  ;; Track all connected WebSocket clients: channel -> {:deleted-sessions #{}}
+  ;; Track all connected WebSocket clients: channel -> {:deleted-sessions #{} :recent-sessions-limit 5}
   (atom {}))
 
 (defonce pending-new-sessions
@@ -136,11 +136,9 @@
   Uses the new recent_sessions message type (distinct from session-list).
   Converts :last-modified from milliseconds to ISO-8601 string for JSON.
   Sends session-id, working-directory, last-modified (no name - iOS provides its own).
-  Filters out sessions with 0 messages (after internal message filtering)."
+  Note: get-recent-sessions already filters out sessions with 0 messages."
   [channel limit]
   (let [sessions (repl/get-recent-sessions limit)
-        ;; Filter out sessions with 0 messages (e.g., sessions with only sidechain messages)
-        sessions-with-messages (filter #(pos? (or (:message-count %) 0)) sessions)
         ;; Convert to minimal format with ISO-8601 timestamp
         ;; Note: name field removed - iOS decorates with its own names from CoreData
         sessions-minimal (mapv
@@ -149,7 +147,7 @@
                              :working-directory (:working-directory session)
                              :last-modified (.format (java.time.format.DateTimeFormatter/ISO_INSTANT)
                                                      (java.time.Instant/ofEpochMilli (:last-modified session)))})
-                          sessions-with-messages)]
+                          sessions)]
     (log/info "Sending recent sessions" {:count (count sessions-minimal) :limit limit})
     (send-to-client! channel
                      {:type :recent-sessions
@@ -221,7 +219,11 @@
                         :working-directory (:working-directory session-metadata)
                         :last-modified (:last-modified session-metadata)
                         :message-count (:message-count session-metadata)
-                        :preview (:preview session-metadata)}))
+                        :preview (:preview session-metadata)})
+
+      ;; Send updated recent sessions list to each client
+      (let [limit (get client-info :recent-sessions-limit 5)]
+        (send-recent-sessions! channel limit)))
 
     ;; Also send messages if client is subscribed (handles new session race condition)
     (when (repl/is-subscribed? session-id)
@@ -267,7 +269,11 @@
       (send-to-client! channel
                        {:type :session-updated
                         :session-id session-id
-                        :messages new-messages}))))
+                        :messages new-messages})
+
+      ;; Send updated recent sessions list to each client
+      (let [limit (get client-info :recent-sessions-limit 5)]
+        (send-recent-sessions! channel limit)))))
 
 (defn on-session-deleted
   "Called when a session file is deleted from filesystem"
@@ -296,7 +302,9 @@
             (log/info "Client connected")
 
           ;; Register client (no session-id needed in new architecture)
-            (swap! connected-clients assoc channel {:deleted-sessions #{}})
+            (let [limit (or (:recent-sessions-limit data) 5)]
+              (swap! connected-clients assoc channel {:deleted-sessions #{}
+                                                      :recent-sessions-limit limit}))
 
           ;; Send session list (limit to 50 most recent, lightweight fields only)
             (let [all-sessions (repl/get-all-sessions)

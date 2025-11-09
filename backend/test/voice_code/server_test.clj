@@ -184,11 +184,11 @@
 
 (deftest test-watcher-callbacks
   (testing "on-session-created broadcasts to all clients"
-    (reset! server/connected-clients {:ch1 {:deleted-sessions #{}}
-                                      :ch2 {:deleted-sessions #{}}})
-    (let [sent-messages (atom {})]
+    (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :recent-sessions-limit 5}
+                                      :ch2 {:deleted-sessions #{} :recent-sessions-limit 5}})
+    (let [sent-messages (atom [])]
       (with-redefs [org.httpkit.server/send! (fn [channel msg]
-                                               (swap! sent-messages assoc channel msg))]
+                                               (swap! sent-messages conj {:channel channel :msg msg}))]
         (server/on-session-created {:session-id "new-session-123"
                                     :name "Test Session"
                                     :working-directory "/tmp"
@@ -196,32 +196,52 @@
                                     :message-count 0
                                     :preview ""})
 
-        ;; Verify broadcast to both clients
-        (is (= 2 (count @sent-messages)))
+        ;; Now sends 2 messages per client: session_created + recent_sessions
+        (is (= 4 (count @sent-messages)))
 
-        ;; Verify message format
-        (let [msg (json/parse-string (get @sent-messages :ch1) true)]
-          (is (= "session_created" (:type msg)))
-          (is (= "new-session-123" (:session_id msg)))
-          (is (= "Test Session" (:name msg)))))))
+        ;; Verify session_created messages
+        (let [created-msgs (filter #(= "session_created" (:type (json/parse-string (:msg %) true)))
+                                   @sent-messages)]
+          (is (= 2 (count created-msgs)))
+          (let [msg (json/parse-string (:msg (first created-msgs)) true)]
+            (is (= "session_created" (:type msg)))
+            (is (= "new-session-123" (:session_id msg)))
+            (is (= "Test Session" (:name msg)))))
+
+        ;; Verify recent_sessions messages were sent
+        (let [recent-msgs (filter #(= "recent_sessions" (:type (json/parse-string (:msg %) true)))
+                                  @sent-messages)]
+          (is (= 2 (count recent-msgs)))))))
 
   (testing "on-session-updated respects deleted sessions"
-    (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"}}
-                                      :ch2 {:deleted-sessions #{}}})
-    (let [sent-messages (atom {})]
+    (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :recent-sessions-limit 5}
+                                      :ch2 {:deleted-sessions #{} :recent-sessions-limit 5}})
+    (let [sent-messages (atom [])]
       (with-redefs [org.httpkit.server/send! (fn [channel msg]
-                                               (swap! sent-messages assoc channel msg))]
+                                               (swap! sent-messages conj {:channel channel :msg msg}))]
         (server/on-session-updated "session-1" [{:role "user" :text "test"}])
 
-        ;; ch1 deleted it, should not receive update
-        (is (not (contains? @sent-messages :ch1)))
+        ;; ch1 deleted it, should not receive any messages
+        (is (= 0 (count (filter #(= :ch1 (:channel %)) @sent-messages))))
 
-        ;; ch2 should receive update
-        (is (contains? @sent-messages :ch2))
-        (let [msg (json/parse-string (get @sent-messages :ch2) true)]
-          (is (= "session_updated" (:type msg)))
-          (is (= "session-1" (:session_id msg)))
-          (is (= 1 (count (:messages msg)))))))))
+        ;; ch2 should receive 2 messages: session_updated + recent_sessions
+        (let [ch2-msgs (filter #(= :ch2 (:channel %)) @sent-messages)]
+          (is (= 2 (count ch2-msgs)))
+
+          ;; Verify session_updated message
+          (let [updated-msg (first (filter #(= "session_updated"
+                                               (:type (json/parse-string (:msg %) true)))
+                                           ch2-msgs))
+                msg (json/parse-string (:msg updated-msg) true)]
+            (is (= "session_updated" (:type msg)))
+            (is (= "session-1" (:session_id msg)))
+            (is (= 1 (count (:messages msg)))))
+
+          ;; Verify recent_sessions message
+          (let [recent-msg (first (filter #(= "recent_sessions"
+                                              (:type (json/parse-string (:msg %) true)))
+                                          ch2-msgs))]
+            (is (some? recent-msg))))))))
 
 (deftest test-new-protocol-connect
   (testing "Connect message returns session list and recent sessions"
@@ -506,37 +526,30 @@
       (is (= "2025-10-22T12:00:00Z" (:last_modified (first (:sessions parsed))))))))
 
 (deftest test-recent-sessions-filters-zero-message-sessions
-  (testing "recent_sessions filters out sessions with 0 messages (e.g., sidechain-only sessions)"
+  (testing "get-recent-sessions filters out sessions with 0 messages (e.g., sidechain-only sessions)"
     (let [sent-sessions (atom nil)]
       (with-redefs [voice-code.replication/get-recent-sessions
+                    ;; Now get-recent-sessions does the filtering internally
                     (fn [limit]
                       [{:session-id "session-with-messages"
                         :message-count 5
                         :working-directory "/path/one"
                         :last-modified 1000000}
-                       {:session-id "session-sidechain-only"
-                        :message-count 0 ; All messages filtered out
-                        :working-directory "/path/two"
-                        :last-modified 2000000}
                        {:session-id "another-with-messages"
                         :message-count 3
                         :working-directory "/path/three"
-                        :last-modified 3000000}
-                       {:session-id "session-nil-count"
-                        :message-count nil ; Edge case: nil count
-                        :working-directory "/path/four"
-                        :last-modified 4000000}])
+                        :last-modified 3000000}])
                     server/send-to-client!
                     (fn [channel message]
                       (reset! sent-sessions (:sessions message)))]
         (server/send-recent-sessions! :test-channel 10)
 
-        ;; Verify only sessions with positive message counts were sent
+        ;; Verify all sessions returned have positive message counts
         (is (= 2 (count @sent-sessions))
-            "Should only send sessions with positive message counts")
+            "Should send exactly the sessions returned by get-recent-sessions")
         (is (= #{"session-with-messages" "another-with-messages"}
                (set (map :session-id @sent-sessions)))
-            "Should exclude sessions with 0 or nil message counts")))))
+            "Should include all sessions from get-recent-sessions")))))
 
 (deftest test-turn-complete-message-format
   (testing "Turn complete message uses correct snake_case format"

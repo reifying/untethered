@@ -498,17 +498,20 @@
     (vec valid-sessions)))
 
 (defn get-recent-sessions
-  "Get the N most recently modified sessions, sorted by last-modified descending.
+  "Get the N most recently modified sessions with messages, sorted by last-modified descending.
   Returns vector of session metadata maps with keys:
   - :session-id (string, lowercase UUID)
   - :name (string)
   - :working-directory (string)
   - :last-modified (long, milliseconds since epoch)
+  - :message-count (int, number of user/assistant messages)
   
-  Only includes sessions with valid UUIDs."
+  Only includes sessions with valid UUIDs and positive message count.
+  Filters out sessions with 0 messages (e.g., sidechain-only sessions)."
   [limit]
   (let [all-sessions (get-all-sessions)]
     (->> all-sessions
+         (filter #(pos? (or (:message-count %) 0)))
          (sort-by :last-modified)
          reverse
          (take limit)
