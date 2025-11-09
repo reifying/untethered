@@ -1309,13 +1309,13 @@
             file-2 (io/file test-dir (str session-id-2 ".jsonl"))
             file-3 (io/file test-dir (str session-id-3 ".jsonl"))]
 
-        ;; Create files with messages
+        ;; Create files with messages (using JSON strings, not Clojure maps)
         (create-test-jsonl-file (.getName file-1)
-                                [{:role "user" :text "First" :timestamp "2025-10-22T10:00:00Z"}])
+                                ["{\"role\":\"user\",\"text\":\"First\",\"timestamp\":\"2025-10-22T10:00:00Z\"}"])
         (create-test-jsonl-file (.getName file-2)
-                                [{:role "user" :text "Second" :timestamp "2025-10-22T12:00:00Z"}])
+                                ["{\"role\":\"user\",\"text\":\"Second\",\"timestamp\":\"2025-10-22T12:00:00Z\"}"])
         (create-test-jsonl-file (.getName file-3)
-                                [{:role "user" :text "Third" :timestamp "2025-10-22T11:00:00Z"}])
+                                ["{\"role\":\"user\",\"text\":\"Third\",\"timestamp\":\"2025-10-22T11:00:00Z\"}"])
 
         ;; Set file timestamps (file-2 most recent, file-3 middle, file-1 oldest)
         (.setLastModified file-1 1000)
@@ -1341,7 +1341,7 @@
         (let [session-id (format "abc123de-4567-89ab-cdef-%012d" i)
               file (io/file test-dir (str session-id ".jsonl"))]
           (create-test-jsonl-file (.getName file)
-                                  [{:role "user" :text (str "Message " i)}])
+                                  [(json/generate-string {:role "user" :text (str "Message " i)})])
           (.setLastModified file (* (inc i) 1000))))
 
       ;; Build index
@@ -1371,9 +1371,9 @@
             invalid-file (io/file test-dir "not-a-uuid.jsonl")]
 
         (create-test-jsonl-file (str valid-id ".jsonl")
-                                [{:role "user" :text "Valid"}])
+                                [(json/generate-string {:role "user" :text "Valid"})])
         (create-test-jsonl-file "not-a-uuid.jsonl"
-                                [{:role "user" :text "Invalid"}])
+                                [(json/generate-string {:role "user" :text "Invalid"})])
 
         ;; Build index
         (repl/initialize-index!)
