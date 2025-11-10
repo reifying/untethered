@@ -9,7 +9,7 @@ IOS_DIR := ios
 BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
-.PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device
+.PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device xcode-add-files
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-restart backend-nrepl backend-nrepl-stop
 .PHONY: bump-build archive export-ipa upload-testflight publish-testflight deploy-testflight
 
@@ -27,6 +27,7 @@ help:
 	@echo "  clean             - Clean iOS build artifacts"
 	@echo "  setup-simulator   - Create and boot simulator: $(SIMULATOR_NAME)"
 	@echo "  deploy-device     - Build and install to connected iPhone (fast deployment)"
+	@echo "  xcode-add-files   - Automatically add untracked Swift/resource files to Xcode project"
 	@echo ""
 	@echo "Backend server management:"
 	@echo "  backend-run       - Start the backend server"
@@ -71,21 +72,21 @@ setup-simulator:
 	@echo "Simulator ready"
 
 # Run tests with standard output
-test: setup-simulator
+test: xcode-add-files setup-simulator
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION)"
 
 # Run tests with verbose output (shows all test execution details)
-test-verbose: setup-simulator
+test-verbose: xcode-add-files setup-simulator
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -verbose"
 
 # Run tests with minimal output (just results)
-test-quiet: setup-simulator
+test-quiet: xcode-add-files setup-simulator
 	@echo "Running tests..."
 	@cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) 2>&1 | grep -E "(Test Suite|Test Case.*passed|Test Case.*failed|Executed.*tests|Failing tests:)" || true
 	@echo "Test run complete."
 
 # Build the project and compile tests
-build: setup-simulator
+build: xcode-add-files setup-simulator
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild build -scheme $(SCHEME) -destination $(DESTINATION) && xcodebuild build-for-testing -scheme $(SCHEME) -destination $(DESTINATION)"
 
 # Clean build artifacts
@@ -94,14 +95,14 @@ clean:
 	rm -rf ~/Library/Developer/Xcode/DerivedData/VoiceCode-*
 
 # Run specific test class (usage: make test-class CLASS=OptimisticUITests)
-test-class: setup-simulator
+test-class: xcode-add-files setup-simulator
 ifndef CLASS
 	$(error CLASS is required. Usage: make test-class CLASS=OptimisticUITests)
 endif
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeTests/$(CLASS)"
 
 # Run specific test method (usage: make test-method CLASS=OptimisticUITests METHOD=testCreateOptimisticMessage)
-test-method: setup-simulator
+test-method: xcode-add-files setup-simulator
 ifndef CLASS
 	$(error CLASS is required. Usage: make test-method CLASS=OptimisticUITests METHOD=test_method_name)
 endif
@@ -118,6 +119,19 @@ deploy-device:
 	@echo "Installing to device..."
 	cd $(IOS_DIR) && xcrun devicectl device install app --device $$(xcrun devicectl list devices | grep -i "iphone" | grep "available" | grep -o '[0-9A-F]\{8\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{12\}' | head -1) build/Build/Products/Debug-iphoneos/VoiceCode.app
 	@echo "✅ Deployed to iPhone! Launch the app manually."
+
+# Automatically add untracked Swift and resource files to Xcode project
+xcode-add-files:
+	@git ls-files --others --exclude-standard $(IOS_DIR)/ | grep -E '\.(swift|storyboard|xib|xcassets)$$' | while read file; do \
+		if echo "$$file" | grep -q "Tests/"; then \
+			target="VoiceCodeTests"; \
+		elif echo "$$file" | grep -q "ShareExtension/"; then \
+			target="VoiceCodeShareExtension"; \
+		else \
+			target="VoiceCode"; \
+		fi; \
+		pbxproj file --backup -t "$$target" $(IOS_DIR)/VoiceCode.xcodeproj "$$file" 2>&1 | grep -E "(File added|Error)" || true; \
+	done
 
 # Backend targets
 
