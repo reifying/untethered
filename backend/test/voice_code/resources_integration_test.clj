@@ -44,7 +44,7 @@
           (let [message-json (json/generate-string {:type "upload_file"
                                                     :filename "test.txt"
                                                     :content base64-content
-                                                    :working_directory temp-dir})]
+                                                    :storage_location temp-dir})]
 
             ;; Handle message
             (server/handle-message mock-channel message-json)
@@ -80,7 +80,7 @@
           ;; Missing filename
           (let [message-json (json/generate-string {:type "upload_file"
                                                     :content "base64content"
-                                                    :working_directory "/tmp"})]
+                                                    :storage_location "/tmp"})]
             (server/handle-message mock-channel message-json)
             (let [response (json/parse-string (get-in (first @sent-messages) [:msg]) true)]
               (is (= "error" (:type response)))
@@ -110,7 +110,7 @@
 
           ;; Create list message
           (let [message-json (json/generate-string {:type "list_resources"
-                                                    :working_directory temp-dir})]
+                                                    :storage_location temp-dir})]
 
             ;; Handle message
             (server/handle-message mock-channel message-json)
@@ -119,7 +119,7 @@
             (is (= 1 (count @sent-messages)))
             (let [response (json/parse-string (get-in (first @sent-messages) [:msg]) true)]
               (is (= "resources_list" (:type response)))
-              (is (= temp-dir (:working_directory response)))
+              (is (= temp-dir (:storage_location response)))
               (is (= 1 (count (:resources response))))
               (let [resource (first (:resources response))]
                 (is (= "list-test.txt" (:filename resource)))
@@ -143,7 +143,7 @@
                                                  (swap! sent-messages conj {:channel channel :msg msg}))]
 
           (let [message-json (json/generate-string {:type "list_resources"
-                                                    :working_directory temp-dir})]
+                                                    :storage_location temp-dir})]
 
             (server/handle-message mock-channel message-json)
 
@@ -179,7 +179,7 @@
             ;; Create delete message
             (let [message-json (json/generate-string {:type "delete_resource"
                                                       :filename "delete-test.txt"
-                                                      :working_directory temp-dir})]
+                                                      :storage_location temp-dir})]
 
               ;; Handle message
               (server/handle-message mock-channel message-json)
@@ -211,7 +211,7 @@
 
           (let [message-json (json/generate-string {:type "delete_resource"
                                                     :filename "nonexistent.txt"
-                                                    :working_directory temp-dir})]
+                                                    :storage_location temp-dir})]
 
             (server/handle-message mock-channel message-json)
 
@@ -241,7 +241,7 @@
           (let [upload-msg (json/generate-string {:type "upload_file"
                                                   :filename "roundtrip.txt"
                                                   :content base64-content
-                                                  :working_directory temp-dir})]
+                                                  :storage_location temp-dir})]
             (server/handle-message mock-channel upload-msg)
             (let [response (json/parse-string (get-in (first @sent-messages) [:msg]) true)]
               (is (= "file_uploaded" (:type response)))))
@@ -249,7 +249,7 @@
           ;; Step 2: List
           (reset! sent-messages [])
           (let [list-msg (json/generate-string {:type "list_resources"
-                                                :working_directory temp-dir})]
+                                                :storage_location temp-dir})]
             (server/handle-message mock-channel list-msg)
             (let [response (json/parse-string (get-in (first @sent-messages) [:msg]) true)]
               (is (= "resources_list" (:type response)))
@@ -259,7 +259,7 @@
           (reset! sent-messages [])
           (let [delete-msg (json/generate-string {:type "delete_resource"
                                                   :filename "roundtrip.txt"
-                                                  :working_directory temp-dir})]
+                                                  :storage_location temp-dir})]
             (server/handle-message mock-channel delete-msg)
             (let [response (json/parse-string (get-in (first @sent-messages) [:msg]) true)]
               (is (= "resource_deleted" (:type response)))))
@@ -267,7 +267,7 @@
           ;; Step 4: List again (should be empty)
           (reset! sent-messages [])
           (let [list-msg (json/generate-string {:type "list_resources"
-                                                :working_directory temp-dir})]
+                                                :storage_location temp-dir})]
             (server/handle-message mock-channel list-msg)
             (let [response (json/parse-string (get-in (first @sent-messages) [:msg]) true)]
               (is (= "resources_list" (:type response)))

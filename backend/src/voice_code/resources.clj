@@ -39,22 +39,40 @@
         (str name "-" timestamp (when ext (str "." ext))))
       filename)))
 
+(def max-file-size (* 50 1024 1024)) ; 50MB limit
+
 (defn upload-file!
   "Writes base64-encoded file to resources directory.
   Returns map with :filename, :path, :size, and :timestamp.
-  Handles filename conflicts by appending timestamp."
+  Handles filename conflicts by appending timestamp.
+  Enforces 50MB file size limit."
   [working-directory filename base64-content]
   (try
+    ;; Validate filename doesn't contain path traversal
+    (when (or (str/includes? filename "..")
+              (str/includes? filename "/")
+              (str/includes? filename "\\"))
+      (throw (ex-info "Invalid filename: contains path traversal characters"
+                      {:filename filename})))
+
     (let [resources-dir (ensure-resources-directory! working-directory)
           unique-filename (handle-filename-conflict working-directory filename)
           target-file (io/file resources-dir unique-filename)
-          decoded-bytes (.decode (Base64/getDecoder) base64-content)]
+          decoded-bytes (.decode (Base64/getDecoder) base64-content)
+          file-size (count decoded-bytes)]
+
+      ;; Enforce file size limit
+      (when (> file-size max-file-size)
+        (throw (ex-info (format "File too large: %d bytes (max: %d bytes)" file-size max-file-size)
+                        {:filename filename
+                         :size file-size
+                         :max-size max-file-size})))
 
       (log/info "Uploading file"
                 {:working-directory working-directory
                  :original-filename filename
                  :final-filename unique-filename
-                 :size (count decoded-bytes)})
+                 :size file-size})
 
       (with-open [out (io/output-stream target-file)]
         (.write out decoded-bytes))

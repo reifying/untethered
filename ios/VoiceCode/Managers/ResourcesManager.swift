@@ -12,6 +12,7 @@ class ResourcesManager: ObservableObject {
 
     private var processTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
+    private var pendingAcknowledgments: [String: (Bool) -> Void] = [:] // uploadId -> completion handler
 
     init(voiceCodeClient: VoiceCodeClient, appSettings: AppSettings = AppSettings()) {
         self.voiceCodeClient = voiceCodeClient
@@ -23,6 +24,14 @@ class ResourcesManager: ObservableObject {
                 if isConnected {
                     self?.processPendingUploads()
                 }
+            }
+            .store(in: &cancellables)
+
+        // Monitor file upload responses
+        voiceCodeClient.$fileUploadResponse
+            .compactMap { $0 }
+            .sink { [weak self] response in
+                self?.handleUploadResponse(filename: response.filename, success: response.success)
             }
             .store(in: &cancellables)
     }
@@ -197,13 +206,33 @@ class ResourcesManager: ObservableObject {
             ]
 
             print("📨 [ResourcesManager] Sending upload_file message for: \(filename) to: \(appSettings.resourceStorageLocation)")
+
+            // Store continuation to be called when acknowledgment received
+            pendingAcknowledgments[filename] = { success in
+                continuation.resume(returning: success)
+            }
+
             voiceCodeClient.sendMessage(message)
 
-            // For MVP, assume success after sending
-            // TODO: Implement proper acknowledgment tracking in future
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                continuation.resume(returning: true)
+            // Timeout after 30 seconds if no response
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30.0) { [weak self] in
+                guard let self = self else { return }
+                if self.pendingAcknowledgments[filename] != nil {
+                    print("⚠️ [ResourcesManager] Upload timeout for: \(filename)")
+                    self.pendingAcknowledgments.removeValue(forKey: filename)
+                    continuation.resume(returning: false)
+                }
             }
+        }
+    }
+
+    // MARK: - Response Handling
+
+    /// Call this when file-uploaded or error response received from backend
+    func handleUploadResponse(filename: String, success: Bool) {
+        if let completion = pendingAcknowledgments[filename] {
+            pendingAcknowledgments.removeValue(forKey: filename)
+            completion(success)
         }
     }
 
