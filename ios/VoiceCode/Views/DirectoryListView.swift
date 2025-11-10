@@ -14,6 +14,7 @@ struct DirectoryListView: View {
     @Binding var showingSettings: Bool
     @Binding var recentSessions: [RecentSession]
     @Binding var navigationPath: NavigationPath
+    @ObservedObject var resourcesManager: ResourcesManager
     @Environment(\.managedObjectContext) private var viewContext
     @EnvironmentObject var draftManager: DraftManager
 
@@ -154,6 +155,22 @@ struct DirectoryListView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
+                    // Resources button with badge
+                    Button(action: {
+                        navigationPath.append(ResourcesNavigationTarget.list)
+                    }) {
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "doc.on.doc")
+
+                            if resourcesManager.pendingUploadCount > 0 {
+                                Circle()
+                                    .fill(Color.red)
+                                    .frame(width: 8, height: 8)
+                                    .offset(x: 4, y: -4)
+                            }
+                        }
+                    }
+
                     Button(action: {
                         logger.info("🔄 Refresh button tapped - requesting session list from backend")
                         client.requestSessionList()
@@ -428,7 +445,8 @@ struct DirectoryListView_Previews: PreviewProvider {
                 voiceOutput: voiceOutput,
                 showingSettings: .constant(false),
                 recentSessions: .constant([]),
-                navigationPath: .constant(NavigationPath())
+                navigationPath: .constant(NavigationPath()),
+                resourcesManager: ResourcesManager(voiceCodeClient: client)
             )
         }
         .environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)

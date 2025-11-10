@@ -87,6 +87,16 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
 
+                Section(header: Text("Resources")) {
+                    TextField("Storage Location", text: $settings.resourceStorageLocation)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+
+                    Text("Directory where uploaded files will be saved on the backend")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
                 Section(header: Text("Connection Test")) {
                     Button(action: testConnection) {
                         HStack {

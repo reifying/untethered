@@ -7,9 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		47F54CD6B67D45C0C53BBB53 /* ResourcesManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D284D5CB27C8A7ABB51A419 /* ResourcesManager.swift */; };
-		6A9A4190AB145D2B9DC2882E /* PendingUploadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C7446669935254F73926005 /* PendingUploadTests.swift */; };
-		E30444DF8832DA559E5A6390 /* ResourcesManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05414BFD99C93294398E9A88 /* ResourcesManagerTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -30,12 +27,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		05414BFD99C93294398E9A88 /* ResourcesManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ResourcesManagerTests.swift; path = ios/VoiceCodeTests/ResourcesManagerTests.swift; sourceTree = SOURCE_ROOT; };
-		1D284D5CB27C8A7ABB51A419 /* ResourcesManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ResourcesManager.swift; path = ios/VoiceCode/Managers/ResourcesManager.swift; sourceTree = SOURCE_ROOT; };
 		2FD0891E2E9E8AF600868599 /* VoiceCode.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoiceCode.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2FD0892F2E9E8AF700868599 /* VoiceCodeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VoiceCodeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2FD089392E9E8AF700868599 /* VoiceCodeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VoiceCodeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		7C7446669935254F73926005 /* PendingUploadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PendingUploadTests.swift; path = ios/VoiceCodeTests/PendingUploadTests.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -87,9 +81,6 @@
 				2FD089322E9E8AF700868599 /* VoiceCodeTests */,
 				2FD0893C2E9E8AF700868599 /* VoiceCodeUITests */,
 				2FD0891F2E9E8AF600868599 /* Products */,
-				7C7446669935254F73926005 /* PendingUploadTests.swift */,
-				1D284D5CB27C8A7ABB51A419 /* ResourcesManager.swift */,
-				05414BFD99C93294398E9A88 /* ResourcesManagerTests.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -247,7 +238,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				47F54CD6B67D45C0C53BBB53 /* ResourcesManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -255,8 +245,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				6A9A4190AB145D2B9DC2882E /* PendingUploadTests.swift in Sources */,
-				E30444DF8832DA559E5A6390 /* ResourcesManagerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

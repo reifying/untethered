@@ -4,12 +4,12 @@
 # iOS Configuration
 SCHEME := VoiceCode
 SIMULATOR_NAME := iPhone 16 Pro
-DESTINATION := 'platform=iOS Simulator,name=$(SIMULATOR_NAME)'
+DESTINATION := 'platform=iOS Simulator,name=$(SIMULATOR_NAME),OS=18.6'
 IOS_DIR := ios
 BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
-.PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device xcode-add-files
+.PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device xcode-add-files list-simulators
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-restart backend-nrepl backend-nrepl-stop
 .PHONY: bump-build archive export-ipa upload-testflight publish-testflight deploy-testflight
 
@@ -64,6 +64,10 @@ help:
 	@echo "  archive            - Create iOS archive for distribution"
 	@echo "  export-ipa         - Export IPA from archive"
 	@echo "  upload-testflight  - Upload IPA to TestFlight"
+
+# List available simulators
+list-simulators:
+	@xcrun simctl list devices available | grep -E "(iPhone|iOS)"
 
 # Ensure simulator exists and is booted
 setup-simulator:
@@ -121,16 +125,14 @@ deploy-device:
 	@echo "✅ Deployed to iPhone! Launch the app manually."
 
 # Automatically add untracked Swift and resource files to Xcode project
+# Note: VoiceCode target uses filesystem synchronization, so files in VoiceCode/ are auto-included
+# Only add files to targets that don't use filesystem sync (ShareExtension)
 xcode-add-files:
 	@git ls-files --others --exclude-standard $(IOS_DIR)/ | grep -E '\.(swift|storyboard|xib|xcassets)$$' | while read file; do \
-		if echo "$$file" | grep -q "Tests/"; then \
-			target="VoiceCodeTests"; \
-		elif echo "$$file" | grep -q "ShareExtension/"; then \
+		if echo "$$file" | grep -q "ShareExtension/"; then \
 			target="VoiceCodeShareExtension"; \
-		else \
-			target="VoiceCode"; \
+			pbxproj file --backup -t "$$target" $(IOS_DIR)/VoiceCode.xcodeproj "$$file" 2>&1 | grep -E "(File added|Error)" || true; \
 		fi; \
-		pbxproj file --backup -t "$$target" $(IOS_DIR)/VoiceCode.xcodeproj "$$file" 2>&1 | grep -E "(File added|Error)" || true; \
 	done
 
 # Backend targets
