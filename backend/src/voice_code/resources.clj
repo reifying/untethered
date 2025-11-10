@@ -39,13 +39,13 @@
         (str name "-" timestamp (when ext (str "." ext))))
       filename)))
 
-(def max-file-size (* 50 1024 1024)) ; 50MB limit
+(def max-file-size (* 100 1024 1024)) ; 100MB limit
 
 (defn upload-file!
   "Writes base64-encoded file to resources directory.
   Returns map with :filename, :path, :size, and :timestamp.
   Handles filename conflicts by appending timestamp.
-  Enforces 50MB file size limit."
+  Enforces 100MB file size limit."
   [working-directory filename base64-content]
   (try
     ;; Validate filename doesn't contain path traversal
