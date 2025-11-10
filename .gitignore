@@ -106,6 +106,8 @@ iOSInjectionProject/
 
 # Backend runtime data
 backend/resources/sessions.edn
+backend/.nrepl-port
+backend/.nrepl-pid
 server.log
 console.out
 console_frequency.txt
