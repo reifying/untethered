@@ -3,6 +3,31 @@
 ## Overview
 Enable users to share any file from iPhone (Settings, Mail, Files, etc.) to Untethered app, making files accessible to Claude sessions through a minimal-touch interface optimized for voice/driving scenarios.
 
+## Key Design Decisions
+
+### Global Storage (Not Project-Specific)
+Resources are stored in a **single global location**, not per-project:
+- Default location: User's default working directory from AppSettings
+- Path: `<resource-storage-location>/.untethered/resources/`
+- User can configure storage location in Settings
+- All resources are accessible to any Claude session regardless of project
+- Simplifies management and avoids duplicate uploads across projects
+
+### Resource List Loading
+- `list_resources` is called **when user navigates to Resources view**
+- Not automatically sent on connection (unlike `recent_sessions`)
+- Reduces unnecessary network traffic
+- Resources view shows loading state while fetching
+
+### File Path Format in Prompts
+When sharing a resource with a session, use **absolute path** for clarity:
+```
+A file has been shared: /Users/user/project/.untethered/resources/crash.ips
+
+[optional user message]
+```
+This is clearer for AI agents than relative paths.
+
 ## User Flow
 
 ### 1. Share File to Untethered
@@ -10,9 +35,11 @@ Enable users to share any file from iPhone (Settings, Mail, Files, etc.) to Unte
 **Action:**
 - iOS share sheet appears
 - User selects "Untethered"
-- Share Extension uploads file to backend
-- Shows confirmation: "Uploaded [filename] to Untethered"
+- Share Extension saves file to App Group container
+- Shows confirmation: "Saved [filename] - will upload when app opens"
 - User returns to originating app
+- Next time main app launches: processes pending uploads in background
+- Once uploaded: notification or badge update (optional)
 
 ### 2. Access Resources in Untethered
 **Location:** Home page (DirectoryListView)
@@ -36,9 +63,10 @@ Enable users to share any file from iPhone (Settings, Mail, Files, etc.) to Unte
 {
   "type": "prompt",
   "session_id": "abc-123",
-  "text": "A file has been shared: .untethered/resources/[filename]\n\n[optional user message if provided]"
+  "text": "A file has been shared: /Users/user/project/.untethered/resources/crash.ips\n\n[optional user message if provided]"
 }
 ```
+Note: Uses absolute path for clarity to AI agent.
 
 ### 4. Delete Resource
 **Trigger:** Swipe left on resource → Delete button
@@ -51,12 +79,39 @@ Enable users to share any file from iPhone (Settings, Mail, Files, etc.) to Unte
 ## Backend Implementation
 
 ### Storage Location
-**Path:** `<working-directory>/.untethered/resources/`
+**Path:** `<resource-storage-location>/.untethered/resources/`
 
 **Configuration:**
-- Default working directory: User's configured default (from AppSettings)
+- **Global storage** (not per-project)
+- Default: User's default working directory from AppSettings
 - User can change in Settings → Resource Storage Location
-- Path stored in AppSettings and persisted
+- Path stored in AppSettings as `resourceStorageLocation`
+- All Claude sessions can access all resources regardless of their working directory
+
+### Share Extension Architecture
+
+**Key Constraint:** Share Extensions have limited lifecycle and cannot perform long-running network operations directly.
+
+**Solution:** Two-stage upload process:
+1. **Share Extension (immediate):** Save file to App Group shared container
+2. **Main App (deferred):** Process pending uploads when app launches/resumes
+
+**Why this approach:**
+- Share Extensions must complete quickly (system enforces time limits)
+- Network requests in extensions are unreliable (may be terminated mid-upload)
+- App Group provides persistent storage accessible to both extension and main app
+- Main app can use background URLSession for reliable uploads
+- User gets immediate feedback without waiting for network
+
+**Implementation Details:**
+- Share Extension writes to: `group.com.travisbrown.untethered/pending-uploads/`
+- Each pending upload: `<uuid>.json` (metadata) + `<uuid>.data` (file contents)
+- Main app checks pending uploads on:
+  - App launch
+  - App enters foreground (user returns from share sheet)
+  - WebSocket connection established
+- Failed uploads remain in queue for retry
+- Successful uploads removed from App Group storage
 
 ### WebSocket Protocol
 
@@ -90,12 +145,16 @@ Enable users to share any file from iPhone (Settings, Mail, Files, etc.) to Unte
 ```
 
 #### List Resources (Client → Backend)
+**When called:** User navigates to Resources view (on-demand, not automatic on connection)
+
 ```json
 {
   "type": "list_resources",
   "working_directory": "/Users/user/project"
 }
 ```
+
+Note: `working_directory` parameter will be removed once global storage is implemented. For now, pass the user's configured resource storage location.
 
 **Backend Response:**
 ```json
@@ -676,15 +735,19 @@ Add to `voice-code.websocket/handle-message` multimethod:
 2. Update README with resources feature
 3. Add user-facing documentation
 
+## Resolved Design Decisions
+
+1. **Storage scope:** ✅ Global storage (single location for all resources, not per-project)
+2. **Resource list loading:** ✅ On-demand when user opens Resources view (not automatic)
+3. **File path format:** ✅ Absolute paths in prompts (clearer for AI agents)
+4. **Share Extension upload:** ✅ Two-stage process (App Group → Main App → Backend)
+5. **Offline support:** ✅ Yes, cached in CoreData
+6. **Testing approach:** ✅ Test-driven development (write tests alongside implementation)
+
 ## Open Questions / Deferred Decisions
 
-1. **File size limits:** Deferred - implement when needed
-2. **File retention policy:** Keep permanently for MVP
-3. **Upload progress UI:** Depends on iOS share extension capabilities
-4. **Multiple working directories:** How to handle resources across different projects?
-   - **Decision needed:** Global resources vs per-working-directory?
-   - **Current approach:** Per-working-directory (stored in each project's `.untethered/resources/`)
-5. **Offline support:** Can users view resources list offline?
-   - **Current approach:** Yes, cached in CoreData
-6. **Resource preview:** Show file preview before sharing?
-   - **Deferred:** MVP just shows metadata
+1. **File size limits:** Deferred - implement when needed (no hard limit for MVP)
+2. **File retention policy:** Keep permanently for MVP (no auto-cleanup)
+3. **Upload progress UI:** Basic feedback only ("Saved, will upload when app opens")
+4. **Resource preview:** Deferred - MVP just shows metadata (filename, size, timestamp)
+5. **Upload retry strategy:** Simple - keep in queue until successful, retry on app launch/foreground

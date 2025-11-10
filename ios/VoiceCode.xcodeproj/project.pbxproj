@@ -6,6 +6,9 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		2FD089302E9E8AF700868599 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -30,7 +33,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		2FD089412E9E8AF700868599 /* Exceptions for "VoiceCode" folder in "VoiceCode" target */ = {
+		2FD089412E9E8AF700868599 = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
@@ -41,24 +44,9 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		2FD089202E9E8AF600868599 /* VoiceCode */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				2FD089412E9E8AF700868599 /* Exceptions for "VoiceCode" folder in "VoiceCode" target */,
-			);
-			path = VoiceCode;
-			sourceTree = "<group>";
-		};
-		2FD089322E9E8AF700868599 /* VoiceCodeTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = VoiceCodeTests;
-			sourceTree = "<group>";
-		};
-		2FD0893C2E9E8AF700868599 /* VoiceCodeUITests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = VoiceCodeUITests;
-			sourceTree = "<group>";
-		};
+		2FD089202E9E8AF600868599 /* VoiceCode */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (2FD089412E9E8AF700868599, ); path = VoiceCode; sourceTree = "<group>"; };
+		2FD089322E9E8AF700868599 /* VoiceCodeTests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = VoiceCodeTests; sourceTree = "<group>"; };
+		2FD0893C2E9E8AF700868599 /* VoiceCodeUITests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = VoiceCodeUITests; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
