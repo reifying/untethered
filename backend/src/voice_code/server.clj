@@ -804,13 +804,13 @@
           "upload_file"
           (let [filename (:filename data)
                 content (:content data)
-                working-directory (:working-directory data)]
-            (if-not (and filename content working-directory)
+                storage-location (:storage-location data)]
+            (if-not (and filename content storage-location)
               (send-to-client! channel
                                {:type :error
-                                :message "filename, content, and working_directory required in upload_file message"})
+                                :message "filename, content, and storage_location required in upload_file message"})
               (try
-                (let [result (resources/upload-file! working-directory filename content)]
+                (let [result (resources/upload-file! storage-location filename content)]
                   (log/info "File uploaded successfully"
                             {:filename (:filename result)
                              :path (:path result)
@@ -828,35 +828,35 @@
                                     :message (str "Failed to upload file: " (ex-message e))})))))
 
           "list_resources"
-          (let [working-directory (:working-directory data)]
-            (if-not working-directory
+          (let [storage-location (:storage-location data)]
+            (if-not storage-location
               (send-to-client! channel
                                {:type :error
-                                :message "working_directory required in list_resources message"})
+                                :message "storage_location required in list_resources message"})
               (try
-                (let [resource-list (resources/list-resources working-directory)]
+                (let [resource-list (resources/list-resources storage-location)]
                   (log/info "Listing resources"
-                            {:working-directory working-directory
+                            {:storage-location storage-location
                              :count (count resource-list)})
                   (send-to-client! channel
                                    {:type :resources-list
                                     :resources resource-list
-                                    :working-directory working-directory}))
+                                    :storage-location storage-location}))
                 (catch Exception e
-                  (log/error e "Failed to list resources" {:working-directory working-directory})
+                  (log/error e "Failed to list resources" {:storage-location storage-location})
                   (send-to-client! channel
                                    {:type :error
                                     :message (str "Failed to list resources: " (ex-message e))})))))
 
           "delete_resource"
           (let [filename (:filename data)
-                working-directory (:working-directory data)]
-            (if-not (and filename working-directory)
+                storage-location (:storage-location data)]
+            (if-not (and filename storage-location)
               (send-to-client! channel
                                {:type :error
-                                :message "filename and working_directory required in delete_resource message"})
+                                :message "filename and storage_location required in delete_resource message"})
               (try
-                (let [result (resources/delete-resource! working-directory filename)]
+                (let [result (resources/delete-resource! storage-location filename)]
                   (log/info "Resource deleted successfully"
                             {:filename filename
                              :path (:path result)})

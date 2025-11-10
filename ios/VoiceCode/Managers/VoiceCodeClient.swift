@@ -14,6 +14,7 @@ class VoiceCodeClient: ObservableObject {
     @Published var runningCommands: [String: CommandExecution] = [:]  // command_session_id -> execution
     @Published var commandHistory: [CommandHistorySession] = []  // Command history sessions
     @Published var commandOutputFull: CommandOutputFull?  // Full output for a command (single at a time)
+    @Published var fileUploadResponse: (filename: String, success: Bool)?  // Latest file upload response
 
     private var webSocket: URLSessionWebSocketTask?
     private var reconnectionTimer: DispatchSourceTimer?
@@ -498,6 +499,23 @@ class VoiceCodeClient: ObservableObject {
                    let output = try? JSONDecoder().decode(CommandOutputFull.self, from: jsonData) {
                     self.commandOutputFull = output
                     print("   Command session: \(output.commandSessionId)")
+                }
+
+            case "file-uploaded", "file_uploaded":
+                // File upload successful
+                if let filename = json["filename"] as? String {
+                    print("✅ [VoiceCodeClient] File uploaded successfully: \(filename)")
+                    self.fileUploadResponse = (filename: filename, success: true)
+                }
+
+            case "error":
+                // Check if this is a file upload error
+                if let message = json["message"] as? String,
+                   message.contains("Failed to upload file") {
+                    // Extract filename from error message if possible
+                    print("❌ [VoiceCodeClient] File upload failed: \(message)")
+                    // For now, we can't reliably extract filename from error message
+                    // ResourcesManager will timeout instead
                 }
 
             default:
