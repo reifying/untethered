@@ -10,9 +10,9 @@ IOS_DIR := ios
 BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
-.PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device generate-project show-destinations check-sdk
-.PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
-.PHONY: archive export-ipa upload-testflight publish-testflight deploy-testflight
+.PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
+.PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
+.PHONY: bump-build archive export-ipa upload-testflight publish-testflight deploy-testflight
 
 # Default target
 help:
@@ -50,6 +50,7 @@ help:
 	@echo "  backend-test-manual-broadcast     - Test 8: Multi-client broadcast (FREE)"
 	@echo "  backend-test-manual-errors        - Test 9: Error handling (FREE)"
 	@echo "  backend-test-manual-real-data     - Test 10: Real data validation with 700+ sessions (FREE)"
+	@echo "  backend-test-manual-resources     - Test 11: Resources integration (FREE)"
 	@echo ""
 	@echo "Backend manual test suites:"
 	@echo "  backend-test-manual-free          - Run all FREE manual tests"
@@ -177,10 +178,14 @@ backend-test-manual-real-data:
 	@echo "Running Test 10: Real Data Validation with 700+ sessions (FREE)"
 	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-10-real-data-validation"
 
+backend-test-manual-resources:
+	@echo "Running Test 11: Resources Integration (FREE)"
+	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -n voice-code.test-resources-integration"
+
 # Run all free manual tests
 backend-test-manual-free:
 	@echo "Running all FREE manual tests (no Claude invocations)..."
-	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -r 'voice-code\.test-(0[3489]|10)-.*'"
+	$(WRAP) bash -c "cd $(BACKEND_DIR) && clojure -M:manual-test -d manual_test -r 'voice-code\.(test-(0[3489]|10)-.*|test-resources-integration)'"
 
 # Run ALL manual tests (including paid)
 backend-test-manual-all:
