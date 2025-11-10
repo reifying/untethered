@@ -310,16 +310,11 @@ struct ConversationView: View {
             }
         }
 
+        // Simple confirmation to prevent accidental compaction (buttons are crowded in toolbar)
         .alert("Compact Session?", isPresented: $showingCompactConfirmation) {
             Button("Cancel", role: .cancel) { }
             Button("Compact", role: .destructive) {
                 compactSession()
-            }
-        } message: {
-            VStack(spacing: 8) {
-                Text("This will summarize your conversation history to reduce file size and improve performance.")
-                Text("\(session.messageCount) messages")
-                Text("⚠️ This cannot be undone")
             }
         }
         .alert("Session Already Compacted", isPresented: $showingAlreadyCompactedAlert) {
