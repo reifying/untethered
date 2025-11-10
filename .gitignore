@@ -109,8 +109,18 @@ backend/resources/sessions.edn
 backend/.nrepl-port
 backend/.nrepl-pid
 server.log
+backend/server.log
 console.out
 console_frequency.txt
+
+# Debug and test logs
+backend*.log
+*.log
+test_assessment.md
+verify-fix.md
+
+# IPA packaging logs
+build/ipa/Packaging.log
 
 # Node.js (not used - backend is Clojure)
 backend/node_modules/
