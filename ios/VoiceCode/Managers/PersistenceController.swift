@@ -6,7 +6,7 @@ import os.log
 
 private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "Persistence")
 
-struct PersistenceController {
+class PersistenceController {
     static let shared = PersistenceController()
 
     /// Preview instance for SwiftUI previews
@@ -65,7 +65,7 @@ struct PersistenceController {
                 logger.error("CoreData failed to load: \(error.localizedDescription)")
 
                 // Attempt recovery by deleting and recreating the store
-                if let storeURL = container.persistentStoreDescriptions.first?.url {
+                if let storeURL = self.container.persistentStoreDescriptions.first?.url {
                     logger.warning("Attempting to recover by deleting corrupt store...")
 
                     do {
@@ -73,7 +73,7 @@ struct PersistenceController {
                         logger.info("Deleted corrupt store, reloading...")
 
                         // Attempt to reload after deletion
-                        container.loadPersistentStores { recoveryDescription, recoveryError in
+                        self.container.loadPersistentStores { recoveryDescription, recoveryError in
                             if let recoveryError = recoveryError {
                                 logger.error("Recovery failed: \(recoveryError.localizedDescription)")
                                 // Cannot recover - show error to user but don't crash
