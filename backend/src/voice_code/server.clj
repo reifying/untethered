@@ -11,7 +11,8 @@
             [voice-code.replication :as repl]
             [voice-code.worktree :as worktree]
             [voice-code.commands :as commands]
-            [voice-code.commands-history :as cmd-history])
+            [voice-code.commands-history :as cmd-history]
+            [voice-code.resources :as resources])
   (:gen-class))
 
 ;; JSON key conversion utilities
@@ -799,6 +800,75 @@
                 (send-to-client! channel
                                  {:type :error
                                   :message (str "Command output not found: " command-session-id)}))))
+
+          "upload_file"
+          (let [filename (:filename data)
+                content (:content data)
+                working-directory (:working-directory data)]
+            (if-not (and filename content working-directory)
+              (send-to-client! channel
+                               {:type :error
+                                :message "filename, content, and working_directory required in upload_file message"})
+              (try
+                (let [result (resources/upload-file! working-directory filename content)]
+                  (log/info "File uploaded successfully"
+                            {:filename (:filename result)
+                             :path (:path result)
+                             :size (:size result)})
+                  (send-to-client! channel
+                                   {:type :file-uploaded
+                                    :filename (:filename result)
+                                    :path (:path result)
+                                    :size (:size result)
+                                    :timestamp (:timestamp result)}))
+                (catch Exception e
+                  (log/error e "Failed to upload file" {:filename filename})
+                  (send-to-client! channel
+                                   {:type :error
+                                    :message (str "Failed to upload file: " (ex-message e))})))))
+
+          "list_resources"
+          (let [working-directory (:working-directory data)]
+            (if-not working-directory
+              (send-to-client! channel
+                               {:type :error
+                                :message "working_directory required in list_resources message"})
+              (try
+                (let [resource-list (resources/list-resources working-directory)]
+                  (log/info "Listing resources"
+                            {:working-directory working-directory
+                             :count (count resource-list)})
+                  (send-to-client! channel
+                                   {:type :resources-list
+                                    :resources resource-list
+                                    :working-directory working-directory}))
+                (catch Exception e
+                  (log/error e "Failed to list resources" {:working-directory working-directory})
+                  (send-to-client! channel
+                                   {:type :error
+                                    :message (str "Failed to list resources: " (ex-message e))})))))
+
+          "delete_resource"
+          (let [filename (:filename data)
+                working-directory (:working-directory data)]
+            (if-not (and filename working-directory)
+              (send-to-client! channel
+                               {:type :error
+                                :message "filename and working_directory required in delete_resource message"})
+              (try
+                (let [result (resources/delete-resource! working-directory filename)]
+                  (log/info "Resource deleted successfully"
+                            {:filename filename
+                             :path (:path result)})
+                  (send-to-client! channel
+                                   {:type :resource-deleted
+                                    :filename filename
+                                    :path (:path result)}))
+                (catch Exception e
+                  (log/error e "Failed to delete resource" {:filename filename})
+                  (send-to-client! channel
+                                   {:type :error
+                                    :message (str "Failed to delete resource: " (ex-message e))})))))
 
         ;; Unknown message type
           (do

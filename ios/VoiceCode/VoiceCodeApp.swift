@@ -7,6 +7,13 @@ import UserNotifications
 
 private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "RootView")
 
+// MARK: - Navigation Targets
+
+enum ResourcesNavigationTarget: Hashable {
+    case list
+    case share
+}
+
 @main
 struct VoiceCodeApp: App {
     let persistenceController = PersistenceController.shared
@@ -28,6 +35,7 @@ struct RootView: View {
     @ObservedObject var settings: AppSettings
     @StateObject private var voiceOutput = VoiceOutputManager()
     @StateObject private var client: VoiceCodeClient
+    @StateObject private var resourcesManager: ResourcesManager
     @State private var showingSettings = false
     @State private var navigationPath = NavigationPath()
     @State private var recentSessions: [RecentSession] = []
@@ -37,16 +45,18 @@ struct RootView: View {
         // Create VoiceOutputManager with AppSettings for centralized voice management
         let voiceManager = VoiceOutputManager(appSettings: settings)
         _voiceOutput = StateObject(wrappedValue: voiceManager)
-        _client = StateObject(wrappedValue: VoiceCodeClient(
+        let voiceClient = VoiceCodeClient(
             serverURL: settings.fullServerURL,
             voiceOutputManager: voiceManager,
             appSettings: settings
-        ))
+        )
+        _client = StateObject(wrappedValue: voiceClient)
+        _resourcesManager = StateObject(wrappedValue: ResourcesManager(voiceCodeClient: voiceClient, appSettings: settings))
     }
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
-            DirectoryListView(client: client, settings: settings, voiceOutput: voiceOutput, showingSettings: $showingSettings, recentSessions: $recentSessions, navigationPath: $navigationPath)
+            DirectoryListView(client: client, settings: settings, voiceOutput: voiceOutput, showingSettings: $showingSettings, recentSessions: $recentSessions, navigationPath: $navigationPath, resourcesManager: resourcesManager)
                 .navigationDestination(for: String.self) { workingDirectory in
                     SessionsForDirectoryView(
                         workingDirectory: workingDirectory,
@@ -64,6 +74,14 @@ struct RootView: View {
                         voiceOutput: voiceOutput,
                         settings: settings
                     )
+                }
+                .navigationDestination(for: ResourcesNavigationTarget.self) { target in
+                    switch target {
+                    case .list:
+                        ResourcesView(resourcesManager: resourcesManager, client: client)
+                    case .share:
+                        ResourceShareView(resourcesManager: resourcesManager)
+                    }
                 }
         }
         .sheet(isPresented: $showingSettings) {
@@ -106,6 +124,17 @@ struct RootView: View {
             }
             logger.info("🔌 Connecting to backend...")
             client.connect()
+
+            // Process pending uploads after connection
+            logger.info("📂 Checking for pending resource uploads...")
+            resourcesManager.updatePendingCount()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            logger.info("🔄 App entering foreground, checking for pending uploads...")
+            resourcesManager.updatePendingCount()
+            if client.isConnected {
+                resourcesManager.processPendingUploads()
+            }
         }
     }
 }
