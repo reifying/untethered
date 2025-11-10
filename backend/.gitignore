@@ -1,6 +1,8 @@
 # Clojure
 .cpcache/
 .nrepl-port
+.nrepl-pid
+.backend-pid
 .lein-*
 
 # IDE

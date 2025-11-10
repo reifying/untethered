@@ -10,7 +10,7 @@ BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
 .PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device
-.PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-restart backend-nrepl backend-nrepl-stop
+.PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
 .PHONY: bump-build archive export-ipa upload-testflight publish-testflight deploy-testflight
 
 # Default target
@@ -30,7 +30,8 @@ help:
 	@echo ""
 	@echo "Backend server management:"
 	@echo "  backend-run       - Start the backend server"
-	@echo "  backend-stop      - Stop the backend server"
+	@echo "  backend-stop      - Stop the backend server (Makefile-started instance only)"
+	@echo "  backend-stop-all  - Stop ALL backend servers (including manually started instances)"
 	@echo "  backend-restart   - Restart the backend server"
 	@echo "  backend-nrepl     - Start nREPL server (usage: make backend-nrepl [PORT=7888])"
 	@echo "  backend-nrepl-stop - Stop nREPL server"
@@ -183,14 +184,27 @@ backend-clean:
 	cd $(BACKEND_DIR) && rm -f server.log
 	cd $(BACKEND_DIR) && rm -f **/test-*.jsonl
 
-# Server management
+# Backend server management
+# Note: Uses PID file to track Makefile-started instance (typically port 8080)
+#       Manually started instances (e.g., port 9999 for remote work) are not managed
 backend-run:
 	@echo "Starting voice-code backend server..."
-	cd $(BACKEND_DIR) && clojure -M -m voice-code.server
+	@cd $(BACKEND_DIR) && ./start-server.sh
 
 backend-stop:
-	@echo "Stopping voice-code backend server..."
-	@pkill -f "clojure.*voice-code.*server" || echo "No server running"
+	@if [ -f $(BACKEND_DIR)/.backend-pid ]; then \
+		echo "Stopping voice-code backend server (PID: $$(cat $(BACKEND_DIR)/.backend-pid))..."; \
+		kill $$(cat $(BACKEND_DIR)/.backend-pid) 2>/dev/null || echo "Process already stopped"; \
+		rm -f $(BACKEND_DIR)/.backend-pid; \
+		echo "Backend server stopped"; \
+	else \
+		echo "No backend server running (no PID file found)"; \
+	fi
+
+backend-stop-all:
+	@echo "Stopping ALL voice-code backend servers..."
+	@pkill -f "clojure.*voice-code.*server" || echo "No servers running"
+	@rm -f $(BACKEND_DIR)/.backend-pid
 
 backend-restart: backend-stop
 	@echo "Waiting for server to stop..."
