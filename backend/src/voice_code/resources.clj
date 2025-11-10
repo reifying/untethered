@@ -7,11 +7,22 @@
   (:import [java.util Base64]
            [java.time Instant]))
 
+(defn expand-path
+  "Expands tilde and resolves path to absolute path.
+  Returns absolute path string."
+  [path]
+  (let [expanded (if (str/starts-with? path "~")
+                   (str/replace-first path "~" (System/getProperty "user.home"))
+                   path)]
+    (.getAbsolutePath (io/file expanded))))
+
 (defn ensure-resources-directory!
   "Ensures .untethered/resources directory exists in working directory.
-  Creates parent directories if needed."
+  Creates parent directories if needed.
+  Supports tilde expansion and absolute paths."
   [working-directory]
-  (let [resources-dir (io/file working-directory ".untethered" "resources")]
+  (let [expanded-dir (expand-path working-directory)
+        resources-dir (io/file expanded-dir ".untethered" "resources")]
     (.mkdirs resources-dir)
     resources-dir))
 
@@ -29,7 +40,8 @@
   "Returns unique filename by appending timestamp if file already exists.
   Format: name-YYYYMMDDHHmmss.ext"
   [working-directory filename]
-  (let [target-file (io/file working-directory ".untethered" "resources" filename)]
+  (let [expanded-dir (expand-path working-directory)
+        target-file (io/file expanded-dir ".untethered" "resources" filename)]
     (if (.exists target-file)
       (let [timestamp (-> (Instant/now)
                          (.toString)
@@ -45,7 +57,8 @@
   "Writes base64-encoded file to resources directory.
   Returns map with :filename, :path, :size, and :timestamp.
   Handles filename conflicts by appending timestamp.
-  Enforces 100MB file size limit."
+  Enforces 100MB file size limit.
+  Supports tilde expansion and absolute paths."
   [working-directory filename base64-content]
   (try
     ;; Validate filename doesn't contain path traversal
@@ -55,34 +68,55 @@
       (throw (ex-info "Invalid filename: contains path traversal characters"
                       {:filename filename})))
 
-    (let [resources-dir (ensure-resources-directory! working-directory)
-          unique-filename (handle-filename-conflict working-directory filename)
-          target-file (io/file resources-dir unique-filename)
-          decoded-bytes (.decode (Base64/getDecoder) base64-content)
+    ;; Decode base64 with error handling
+    (let [decoded-bytes (try
+                          (.decode (Base64/getDecoder) base64-content)
+                          (catch IllegalArgumentException e
+                            ;; Re-throw IllegalArgumentException as-is for invalid base64
+                            (log/error "Invalid base64 content" {:filename filename :error (.getMessage e)})
+                            (throw e))
+                          (catch Exception e
+                            ;; Catch oversized payloads that might cause OutOfMemoryError
+                            (log/error "Failed to decode file content" {:filename filename :error (.getMessage e)})
+                            (throw (ex-info "File content too large or invalid"
+                                          {:filename filename
+                                           :error (.getMessage e)}
+                                          e))))
           file-size (count decoded-bytes)]
 
       ;; Enforce file size limit
       (when (> file-size max-file-size)
+        (log/warn "File upload rejected: size exceeds limit"
+                  {:filename filename
+                   :size file-size
+                   :max-size max-file-size})
         (throw (ex-info (format "File too large: %d bytes (max: %d bytes)" file-size max-file-size)
                         {:filename filename
                          :size file-size
                          :max-size max-file-size})))
 
-      (log/info "Uploading file"
-                {:working-directory working-directory
-                 :original-filename filename
-                 :final-filename unique-filename
-                 :size file-size})
+      (let [resources-dir (ensure-resources-directory! working-directory)
+            unique-filename (handle-filename-conflict working-directory filename)
+            target-file (io/file resources-dir unique-filename)]
 
-      (with-open [out (io/output-stream target-file)]
-        (.write out decoded-bytes))
+        (log/info "Uploading file"
+                  {:working-directory working-directory
+                   :original-filename filename
+                   :final-filename unique-filename
+                   :size file-size})
 
-      {:filename unique-filename
-       :path (str ".untethered/resources/" unique-filename)
-       :size (.length target-file)
-       :timestamp (Instant/now)})
+        (with-open [out (io/output-stream target-file)]
+          (.write out decoded-bytes))
+
+        {:filename unique-filename
+         :path (str ".untethered/resources/" unique-filename)
+         :size (.length target-file)
+         :timestamp (Instant/now)}))
     (catch IllegalArgumentException e
-      (log/error "Invalid base64 content" {:filename filename :error (.getMessage e)})
+      ;; Re-throw IllegalArgumentException as-is for invalid base64
+      (throw e))
+    (catch clojure.lang.ExceptionInfo e
+      ;; Re-throw ex-info with structured data
       (throw e))
     (catch Exception e
       (log/error "Failed to upload file"
@@ -98,9 +132,11 @@
   "Lists all files in resources directory with metadata.
   Returns vector of maps with :filename, :path, :size, :timestamp.
   Sorted by timestamp descending (most recent first).
-  Returns empty vector if directory doesn't exist."
+  Returns empty vector if directory doesn't exist.
+  Supports tilde expansion and absolute paths."
   [working-directory]
-  (let [resources-dir (io/file working-directory ".untethered" "resources")]
+  (let [expanded-dir (expand-path working-directory)
+        resources-dir (io/file expanded-dir ".untethered" "resources")]
     (if (.exists resources-dir)
       (let [files (filter #(.isFile %) (.listFiles resources-dir))]
         (log/debug "Listing resources"
@@ -121,9 +157,11 @@
 (defn delete-resource!
   "Deletes a resource file from backend storage.
   Returns map with :deleted true and :path.
-  Throws ex-info if file doesn't exist."
+  Throws ex-info if file doesn't exist.
+  Supports tilde expansion and absolute paths."
   [working-directory filename]
-  (let [target-file (io/file working-directory ".untethered" "resources" filename)
+  (let [expanded-dir (expand-path working-directory)
+        target-file (io/file expanded-dir ".untethered" "resources" filename)
         absolute-path (.getAbsolutePath target-file)]
     (if (.exists target-file)
       (do
