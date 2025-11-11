@@ -3,7 +3,7 @@ import Combine
 
 /// Manages file resources uploaded via Share Extension and synced with backend
 class ResourcesManager: ObservableObject {
-    private let appGroupIdentifier = "group.com.travisbrown.untethered"
+    private let appGroupIdentifier = "group.com.910labs.untethered.resources"
     private let voiceCodeClient: VoiceCodeClient
     private let appSettings: AppSettings
 

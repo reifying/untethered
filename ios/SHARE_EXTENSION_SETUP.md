@@ -5,10 +5,9 @@ This document describes how to manually add the Share Extension target to the Xc
 ## Prerequisites
 
 All source files have been created in `ios/VoiceCodeShareExtension/`:
-- `ShareViewController.swift` - Main extension logic
-- `Info.plist` - Extension configuration
+- `ShareViewController.swift` - Main extension logic (programmatic UI, no storyboard)
+- `Info.plist` - Extension configuration (uses NSExtensionPrincipalClass)
 - `VoiceCodeShareExtension.entitlements` - App Group entitlements
-- `Base.lproj/MainInterface.storyboard` - UI storyboard
 
 The main app's entitlements have been updated with App Group capability.
 
@@ -44,13 +43,13 @@ Xcode creates default files. Replace them with our prepared files:
 1. **Delete** the auto-generated files:
    - `ShareViewController.swift` (in target folder)
    - `Info.plist` (in target folder)
-   - `MainInterface.storyboard` (in target folder)
+   - `MainInterface.storyboard` (in target folder) - not needed, we use programmatic UI
 
 2. **Add** our prepared files to the target:
    - Select the `VoiceCodeShareExtension` group in navigator
    - Right-click → **Add Files to "VoiceCode"...**
    - Navigate to `ios/VoiceCodeShareExtension/`
-   - Select all files (ShareViewController.swift, Info.plist, Base.lproj folder, VoiceCodeShareExtension.entitlements)
+   - Select files: `ShareViewController.swift`, `Info.plist`, `VoiceCodeShareExtension.entitlements`
    - **Important:** Check "Copy items if needed" is UNCHECKED (files are already in correct location)
    - Under "Add to targets", check **VoiceCodeShareExtension** ONLY
    - Click **Add**
@@ -69,7 +68,7 @@ Select the **VoiceCodeShareExtension** target and configure:
 1. Select your development team
 2. The App Groups capability should already be present (from entitlements file)
    - If not present, click **+ Capability** → **App Groups**
-   - Add: `group.com.travisbrown.untethered`
+   - Add: `group.com.910labs.untethered.resources`
 
 #### Build Settings Tab
 - Search for "Bundle Identifier"
@@ -83,7 +82,7 @@ Select the **VoiceCode** target:
 
 #### Signing & Capabilities Tab
 - The App Groups capability should already be present (already updated in entitlements)
-- Verify it includes: `group.com.travisbrown.untethered`
+- Verify it includes: `group.com.910labs.untethered.resources`
 
 ### 7. Build and Test
 
@@ -113,7 +112,7 @@ Select the **VoiceCode** target:
 
 ### Extension doesn't appear in share sheet
 - Verify App Groups capability is enabled for BOTH targets
-- Verify both targets use the same App Group identifier: `group.com.travisbrown.untethered`
+- Verify both targets use the same App Group identifier: `group.com.910labs.untethered.resources`
 - Clean build folder (Shift+⌘K) and rebuild
 - Restart device/simulator
 
@@ -123,7 +122,7 @@ Select the **VoiceCode** target:
 
 ### Runtime crashes
 - Check that Info.plist is correctly configured
-- Verify NSExtensionMainStoryboard points to "MainInterface"
+- Verify NSExtensionPrincipalClass is set to `$(PRODUCT_MODULE_NAME).ShareViewController`
 - Check Console app for detailed error messages
 
 ## Next Steps

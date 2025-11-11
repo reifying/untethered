@@ -12,7 +12,7 @@ WRAP := ./scripts/wrap-command
 
 .PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
-.PHONY: bump-build archive export-ipa upload-testflight publish-testflight deploy-testflight
+.PHONY: bump-build archive export-ipa upload-testflight deploy-testflight
 
 # Default target
 help:
@@ -61,8 +61,9 @@ help:
 	@echo "  help              - Show this help message"
 	@echo ""
 	@echo "TestFlight publishing:"
-	@echo "  deploy-testflight  - ⭐ Deploy: archive + export + upload (edit ios/project.yml to bump version)"
-	@echo "  publish-testflight - Archive + export + upload"
+	@echo "  deploy-testflight  - ⭐ Deploy new build: smart bump + archive + export + upload"
+	@echo "  bump-build         - Smart bump: queries TestFlight for latest build number"
+	@echo "  bump-build-simple  - Simple increment (may conflict across branches)"
 	@echo "  archive            - Create iOS archive for distribution"
 	@echo "  export-ipa         - Export IPA from archive"
 	@echo "  upload-testflight  - Upload IPA to TestFlight"
@@ -274,12 +275,11 @@ publish-testflight:
 	@echo "Starting complete TestFlight publish workflow..."
 	$(WRAP) bash -c 'source .envrc && ./scripts/publish-testflight.sh publish'
 
-# Deploy: archive -> export -> upload
-# NOTE: Edit CURRENT_PROJECT_VERSION in ios/project.yml to increment build number before deploying
+# Deploy new build: smart bump -> archive -> export -> upload
 deploy-testflight:
-	@echo "Deploying to TestFlight..."
-	@echo "⚠️  Remember to increment CURRENT_PROJECT_VERSION in ios/project.yml before deploying"
-	@bash -c 'source .envrc && $(MAKE) publish-testflight'
+	@echo "Deploying new build to TestFlight..."
+	@$(MAKE) bump-build
+	@$(WRAP) bash -c 'source .envrc && ./scripts/publish-testflight.sh publish'
 	@echo "✅ Deployment complete! Check App Store Connect in ~15 minutes."
 
 # Debug target to show available destinations
