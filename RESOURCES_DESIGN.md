@@ -104,7 +104,7 @@ Note: Uses absolute path for clarity to AI agent.
 - User gets immediate feedback without waiting for network
 
 **Implementation Details:**
-- Share Extension writes to: `group.com.travisbrown.untethered/pending-uploads/`
+- Share Extension writes to: `group.com.910labs.untethered.resources/pending-uploads/`
 - Each pending upload: `<uuid>.json` (metadata) + `<uuid>.data` (file contents)
 - Main app checks pending uploads on:
   - App launch
@@ -249,7 +249,7 @@ Note: `working_directory` parameter will be removed once global storage is imple
 - Communicates with main app via App Group
 
 **App Group:**
-- Identifier: `group.com.travisbrown.untethered`
+- Identifier: `group.com.910labs.untethered.resources`
 - Shares data between Share Extension and main app
 - Used for pending uploads queue
 
@@ -259,7 +259,7 @@ Note: `working_directory` parameter will be removed once global storage is imple
 3. Reads file data into memory
 4. Stores in App Group shared container:
    ```
-   group.com.travisbrown.untethered/pending-uploads/
+   group.com.910labs.untethered.resources/pending-uploads/
    - <uuid>.json (metadata: filename, size, timestamp)
    - <uuid>.data (file contents)
    ```

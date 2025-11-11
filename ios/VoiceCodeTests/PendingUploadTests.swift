@@ -7,7 +7,7 @@ final class PendingUploadTests: XCTestCase {
 
     // MARK: - Properties
 
-    private let appGroupIdentifier = "group.com.travisbrown.untethered"
+    private let appGroupIdentifier = "group.com.910labs.untethered.resources"
     private var testContainerURL: URL!
     private var pendingUploadsURL: URL!
 

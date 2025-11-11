@@ -98,7 +98,7 @@ struct ResourceShareView: View {
 
         // Save to App Group pending-uploads
         guard let containerURL = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: "group.com.travisbrown.untethered"
+            forSecurityApplicationGroupIdentifier: "group.com.910labs.untethered.resources"
         ) else {
             errorMessage = "Failed to access App Group container"
             showingError = true

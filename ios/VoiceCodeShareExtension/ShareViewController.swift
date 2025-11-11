@@ -1,5 +1,4 @@
 import UIKit
-import Social
 import UniformTypeIdentifiers
 import MobileCoreServices
 
@@ -9,7 +8,7 @@ class ShareViewController: UIViewController {
 
     // MARK: - Constants
 
-    private let appGroupIdentifier = "group.com.travisbrown.untethered"
+    private let appGroupIdentifier = "group.com.910labs.untethered.resources"
 
     // MARK: - Lifecycle
 
@@ -37,6 +36,16 @@ class ShareViewController: UIViewController {
                     handleFileURLProvider(provider)
                     return
                 }
+                // Check for plain text (crash logs, diagnostics)
+                else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
+                    handleTextProvider(provider)
+                    return
+                }
+                // Check for data
+                else if provider.hasItemConformingToTypeIdentifier(UTType.data.identifier) {
+                    handleDataProvider(provider)
+                    return
+                }
                 // Check if provider has content (fallback for some apps)
                 else if provider.hasItemConformingToTypeIdentifier(UTType.item.identifier) {
                     handleItemProvider(provider)
@@ -45,7 +54,7 @@ class ShareViewController: UIViewController {
             }
         }
 
-        completeRequest(success: false, error: "No supported file attachments found")
+        completeRequest(success: false, error: "No supported content found")
     }
 
     private func handleFileURLProvider(_ provider: NSItemProvider) {
@@ -63,6 +72,49 @@ class ShareViewController: UIViewController {
             }
 
             self.saveFileToAppGroup(url: url, originalFilename: url.lastPathComponent)
+        }
+    }
+
+    private func handleTextProvider(_ provider: NSItemProvider) {
+        provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { [weak self] (item, error) in
+            guard let self = self else { return }
+
+            if let error = error {
+                self.completeRequest(success: false, error: "Failed to load text: \(error.localizedDescription)")
+                return
+            }
+
+            guard let text = item as? String else {
+                self.completeRequest(success: false, error: "Invalid text content")
+                return
+            }
+
+            // Save text as a .txt file
+            guard let data = text.data(using: .utf8) else {
+                self.completeRequest(success: false, error: "Failed to encode text")
+                return
+            }
+
+            self.saveDataToAppGroup(data: data, filename: "crash-report.txt")
+        }
+    }
+
+    private func handleDataProvider(_ provider: NSItemProvider) {
+        provider.loadItem(forTypeIdentifier: UTType.data.identifier, options: nil) { [weak self] (item, error) in
+            guard let self = self else { return }
+
+            if let error = error {
+                self.completeRequest(success: false, error: "Failed to load data: \(error.localizedDescription)")
+                return
+            }
+
+            if let data = item as? Data {
+                self.saveDataToAppGroup(data: data, filename: "shared-content.dat")
+            } else if let url = item as? URL {
+                self.saveFileToAppGroup(url: url, originalFilename: url.lastPathComponent)
+            } else {
+                self.completeRequest(success: false, error: "Unsupported data type")
+            }
         }
     }
 
@@ -84,6 +136,19 @@ class ShareViewController: UIViewController {
     }
 
     private func saveFileToAppGroup(url: URL, originalFilename: String) {
+        // Read file data
+        let fileData: Data
+        do {
+            fileData = try Data(contentsOf: url)
+        } catch {
+            completeRequest(success: false, error: "Failed to read file: \(error.localizedDescription)")
+            return
+        }
+
+        saveDataToAppGroup(data: fileData, filename: originalFilename)
+    }
+
+    private func saveDataToAppGroup(data: Data, filename: String) {
         guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) else {
             completeRequest(success: false, error: "Failed to access App Group container")
             return
@@ -102,19 +167,10 @@ class ShareViewController: UIViewController {
         // Generate unique ID for this upload
         let uploadId = UUID().uuidString.lowercased()
 
-        // Read file data
-        let fileData: Data
-        do {
-            fileData = try Data(contentsOf: url)
-        } catch {
-            completeRequest(success: false, error: "Failed to read file: \(error.localizedDescription)")
-            return
-        }
-
         // Save file data
         let dataFileURL = pendingUploadsURL.appendingPathComponent("\(uploadId).data")
         do {
-            try fileData.write(to: dataFileURL)
+            try data.write(to: dataFileURL)
         } catch {
             completeRequest(success: false, error: "Failed to write file data: \(error.localizedDescription)")
             return
@@ -123,8 +179,8 @@ class ShareViewController: UIViewController {
         // Save metadata
         let metadata: [String: Any] = [
             "id": uploadId,
-            "filename": originalFilename,
-            "size": fileData.count,
+            "filename": filename,
+            "size": data.count,
             "timestamp": ISO8601DateFormatter().string(from: Date())
         ]
 
