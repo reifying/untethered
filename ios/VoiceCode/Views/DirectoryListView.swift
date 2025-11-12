@@ -132,6 +132,23 @@ struct DirectoryListView: View {
                     } header: {
                         Text("Projects")
                     }
+
+                    // Debug section
+                    Section {
+                        NavigationLink(destination: DebugLogsView()) {
+                            HStack {
+                                Image(systemName: "ladybug")
+                                    .foregroundColor(.orange)
+                                Text("Debug Logs")
+                                    .font(.body)
+                            }
+                        }
+                    } header: {
+                        Text("Debug")
+                    } footer: {
+                        Text("View and copy app logs for troubleshooting")
+                            .font(.caption2)
+                    }
                 }
                 .refreshable {
                     logger.info("Pull-to-refresh triggered - requesting session list")
