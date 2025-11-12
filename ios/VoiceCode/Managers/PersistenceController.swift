@@ -99,9 +99,32 @@ class PersistenceController {
 
         // Enable automatic merging of changes from parent context
         container.viewContext.automaticallyMergesChangesFromParent = true
-        
+
         // Set merge policy to prefer property-level changes
         container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+
+        // CRITICAL: Ensure all CoreData merge notifications arrive on main queue
+        // This prevents SwiftUI @FetchRequest updates from occurring on background threads
+        // which would cause AttributeGraph crashes during rapid UI updates (typing/voice input)
+
+        // Configure observer to merge background context saves on main thread
+        NotificationCenter.default.addObserver(
+            forName: .NSManagedObjectContextDidSave,
+            object: nil,
+            queue: .main
+        ) { [weak container] notification in
+            guard let container = container,
+                  let context = notification.object as? NSManagedObjectContext,
+                  context != container.viewContext,
+                  context.persistentStoreCoordinator == container.viewContext.persistentStoreCoordinator else {
+                return
+            }
+
+            // Merge changes on main thread
+            container.viewContext.perform {
+                container.viewContext.mergeChanges(fromContextDidSave: notification)
+            }
+        }
     }
 
     /// Save the view context if there are changes
