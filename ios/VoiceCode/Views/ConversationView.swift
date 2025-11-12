@@ -342,31 +342,43 @@ struct ConversationView: View {
                 }
             )
         }
-        .onAppear {
-            // Reset scroll flags when view appears (handles navigation back to session)
-            print("👁️ [AutoScroll] View appeared, resetting state")
-            hasPerformedInitialScroll = false
-            autoScrollEnabled = true  // Re-enable auto-scroll on view appear
-            print("👁️ [AutoScroll] Auto-scroll enabled on view appear")
+        .task {
+            // Defer state initialization to after view is fully mounted
+            // This prevents AttributeGraph crashes from state mutations during onAppear
+            await MainActor.run {
+                // Reset scroll flags when view appears (handles navigation back to session)
+                print("👁️ [AutoScroll] View appeared, resetting state")
+                hasPerformedInitialScroll = false
+                autoScrollEnabled = true  // Re-enable auto-scroll on view appear
+                print("👁️ [AutoScroll] Auto-scroll enabled on view appear")
 
-            loadSessionIfNeeded()
-            setupVoiceInput()
+                loadSessionIfNeeded()
+                setupVoiceInput()
 
-            // Restore draft text for this session
-            let sessionID = session.id.uuidString.lowercased()
-            promptText = draftManager.getDraft(sessionID: sessionID)
-            
-            // Restore compaction state for this session
-            if let stats = recentCompactionsBySession[session.id],
-               let timestamp = compactionTimestamps[session.id] {
-                wasRecentlyCompacted = true
-                lastCompactionStats = stats
-            } else {
-                wasRecentlyCompacted = false
-                lastCompactionStats = nil
+                // Restore draft text for this session
+                let sessionID = session.id.uuidString.lowercased()
+                let draftText = draftManager.getDraft(sessionID: sessionID)
+
+                // Only set if there's actual draft text to avoid triggering onChange unnecessarily
+                if !draftText.isEmpty {
+                    promptText = draftText
+                }
+
+                // Restore compaction state for this session
+                if let stats = recentCompactionsBySession[session.id],
+                   let timestamp = compactionTimestamps[session.id] {
+                    wasRecentlyCompacted = true
+                    lastCompactionStats = stats
+                } else {
+                    wasRecentlyCompacted = false
+                    lastCompactionStats = nil
+                }
             }
         }
         .onChange(of: promptText) { oldValue, newValue in
+            // Only save draft if value actually changed (prevents duplicate saves on restoration)
+            guard oldValue != newValue else { return }
+
             // Auto-save draft as user types
             let sessionID = session.id.uuidString.lowercased()
             draftManager.saveDraft(sessionID: sessionID, text: newValue)
