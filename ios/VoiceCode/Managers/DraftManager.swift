@@ -5,14 +5,9 @@ import Foundation
 import Combine
 
 class DraftManager: ObservableObject {
-    @Published private var drafts: [String: String] {
-        didSet {
-            // Defer UserDefaults write to avoid SwiftUI update conflicts
-            DispatchQueue.main.async { [drafts] in
-                UserDefaults.standard.set(drafts, forKey: "sessionDrafts")
-            }
-        }
-    }
+    @Published private var drafts: [String: String] = [:]
+
+    private var saveWorkItem: DispatchWorkItem?
 
     init() {
         self.drafts = UserDefaults.standard.dictionary(forKey: "sessionDrafts") as? [String: String] ?? [:]
@@ -26,6 +21,15 @@ class DraftManager: ObservableObject {
         } else {
             drafts[sessionID] = text
         }
+
+        // Debounce UserDefaults writes to avoid conflicts during rapid typing
+        saveWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            UserDefaults.standard.set(self.drafts, forKey: "sessionDrafts")
+        }
+        saveWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
     }
 
     /// Get draft text for a session. Returns empty string if no draft exists.
