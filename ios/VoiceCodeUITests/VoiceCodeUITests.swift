@@ -104,7 +104,7 @@ final class VoiceCodeUITests: XCTestCase {
         }
 
         textField.tap()
-        sleep(0.2)
+        usleep(200_000) // 200ms
 
         // Type characters one at a time - this is where the crash happens
         // The crash occurs because @Published drafts fires on each keystroke,
