@@ -30,6 +30,7 @@ class ResourcesManager: ObservableObject {
         // Monitor file upload responses
         voiceCodeClient.$fileUploadResponse
             .compactMap { $0 }
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] response in
                 self?.handleUploadResponse(filename: response.filename, success: response.success)
             }
@@ -230,8 +231,16 @@ class ResourcesManager: ObservableObject {
 
     /// Call this when file-uploaded or error response received from backend
     func handleUploadResponse(filename: String, success: Bool) {
+        // Backend may return a different filename if there was a conflict (e.g., "file-20251111123456.txt")
+        // Since uploads are processed sequentially, match against the original filename or just take the first pending
         if let completion = pendingAcknowledgments[filename] {
+            // Exact match
             pendingAcknowledgments.removeValue(forKey: filename)
+            completion(success)
+        } else if let (originalFilename, completion) = pendingAcknowledgments.first {
+            // Filename changed due to conflict, complete the first pending upload
+            print("⚠️ [ResourcesManager] Filename mismatch: sent '\(originalFilename)', received '\(filename)'. Completing first pending upload.")
+            pendingAcknowledgments.removeValue(forKey: originalFilename)
             completion(success)
         }
     }
