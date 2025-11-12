@@ -5,7 +5,10 @@ import Foundation
 import Combine
 
 class DraftManager: ObservableObject {
-    @Published private var drafts: [String: String] = [:]
+    // CRITICAL: NOT @Published - drafts is internal state only
+    // Publishing this causes SwiftUI re-evaluation on every keystroke,
+    // triggering AttributeGraph crashes when TextField binding updates
+    private var drafts: [String: String] = [:]
 
     private var saveWorkItem: DispatchWorkItem?
 
