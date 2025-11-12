@@ -447,8 +447,12 @@ struct ConversationView: View {
         // Optimistically lock the session before sending
         // Use session.id (iOS UUID) for locking since that's what backend echoes in turn_complete
         let sessionId = session.id.uuidString.lowercased()
-        client.lockedSessions.insert(sessionId)
-        print("🔒 [ConversationView] Optimistically locked session: \(sessionId)")
+
+        // Defer lock to avoid SwiftUI update conflicts
+        DispatchQueue.main.async {
+            self.client.lockedSessions.insert(sessionId)
+            print("🔒 [ConversationView] Optimistically locked session: \(sessionId)")
+        }
 
         // Create optimistic message
         client.sessionSyncManager.createOptimisticMessage(sessionId: session.id, text: trimmedText) { messageId in

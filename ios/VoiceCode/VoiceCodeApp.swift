@@ -119,8 +119,12 @@ struct RootView: View {
 
                 let parsed = sessions.compactMap { RecentSession(json: $0) }
                 logger.info("✅ Successfully parsed \(parsed.count) of \(sessions.count) sessions")
-                self.recentSessions = parsed
-                logger.info("🔄 Updated recentSessions state array, count: \(self.recentSessions.count)")
+
+                // Defer state update to avoid SwiftUI update conflicts
+                DispatchQueue.main.async {
+                    self.recentSessions = parsed
+                    logger.info("🔄 Updated recentSessions state array, count: \(self.recentSessions.count)")
+                }
             }
             logger.info("🔌 Connecting to backend...")
             client.connect()
