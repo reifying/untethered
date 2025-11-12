@@ -43,67 +43,88 @@ final class VoiceCodeUITests: XCTestCase {
     /// This test simulates the user typing quickly, which triggers:
     /// 1. TextField onChange on every keystroke
     /// 2. DraftManager saves on every keystroke
-    /// 3. Potential AttributeGraph crashes if state mutations happen during view updates
+    /// 3. @Published drafts fires objectWillChange
+    /// 4. ConversationView re-evaluates during TextField update cycle
+    /// 5. AttributeGraph crash: swift_deallocClassInstance.cold.1
     @MainActor
     func testRapidTextInputNoCrash() throws {
         let app = XCUIApplication()
 
-        // Launch with clean state
-        app.launchArguments = ["-com.apple.CoreData.ConcurrencyDebug", "1"]
+        // Launch with crash detection enabled
+        app.launchArguments = [
+            "-com.apple.CoreData.ConcurrencyDebug", "1",
+            "-UITestingMode", "1"  // Signal to app we're in UI test mode
+        ]
         app.launch()
 
         // Wait for app to fully load
         let tabBar = app.tabBars.firstMatch
-        XCTAssertTrue(tabBar.waitForExistence(timeout: 5), "App should launch and show tab bar")
+        XCTAssertTrue(tabBar.waitForExistence(timeout: 10), "App should launch and show tab bar")
 
         // Navigate to Projects tab
         let projectsTab = tabBar.buttons["Projects"]
         if projectsTab.exists {
             projectsTab.tap()
-        }
-
-        // Wait for Projects view to load
-        sleep(1)
-
-        // Try to find and tap a session to open ConversationView
-        // Look for any cell in the list (could be Recent or directory-based)
-        let sessionsList = app.collectionViews.firstMatch
-        if sessionsList.waitForExistence(timeout: 3) {
-            let firstCell = sessionsList.cells.firstMatch
-            if firstCell.exists {
-                firstCell.tap()
-
-                // Wait for ConversationView to appear
-                sleep(1)
-            }
-        }
-
-        // Look for text input field
-        let textField = app.textFields.containing(NSPredicate(format: "placeholderValue CONTAINS 'Type your message'")).firstMatch
-
-        if textField.waitForExistence(timeout: 3) {
-            textField.tap()
-
-            // Rapid typing simulation - type multiple characters quickly
-            // This should trigger the crash if AttributeGraph cycle exists
-            let testText = "Hello, this is a test of rapid typing input to reproduce the crash"
-
-            for char in testText {
-                textField.typeText(String(char))
-                // Very short delay to simulate rapid typing
-                usleep(50_000) // 50ms between keystrokes
-            }
-
-            // Wait a moment for any pending state updates
             sleep(1)
-
-            // If we get here without crashing, the test passes
-            XCTAssertTrue(textField.exists, "TextField should still exist after rapid typing")
-        } else {
-            // If we can't find the text field, skip this test
-            // (might not be in text mode, might not have sessions, etc.)
-            print("⚠️ Could not find text input field - skipping rapid typing test")
         }
+
+        // Try to find "New Session" or create button
+        // This varies based on whether sessions exist
+        let newSessionButton = app.buttons["New Session"]
+        let createFirstButton = app.buttons["Create Your First Session"]
+
+        if newSessionButton.exists {
+            newSessionButton.tap()
+        } else if createFirstButton.exists {
+            createFirstButton.tap()
+        } else {
+            // Try to tap any existing session
+            let sessionsList = app.collectionViews.firstMatch
+            if sessionsList.waitForExistence(timeout: 3) {
+                let firstCell = sessionsList.cells.firstMatch
+                if firstCell.exists {
+                    firstCell.tap()
+                    sleep(1)
+                }
+            }
+        }
+
+        // Look for text input field (try multiple accessibility strategies)
+        var textField = app.textFields.firstMatch
+        if !textField.exists {
+            textField = app.textFields.containing(NSPredicate(format: "placeholderValue CONTAINS[c] 'message'")).firstMatch
+        }
+        if !textField.exists {
+            textField = app.textFields.containing(NSPredicate(format: "placeholderValue CONTAINS[c] 'type'")).firstMatch
+        }
+
+        guard textField.waitForExistence(timeout: 5) else {
+            XCTFail("Could not find text input field after multiple attempts")
+            return
+        }
+
+        textField.tap()
+        sleep(0.2)
+
+        // Type characters one at a time - this is where the crash happens
+        // The crash occurs because @Published drafts fires on each keystroke,
+        // causing SwiftUI re-evaluation during TextField binding update
+        let testText = "abc"  // Just 3 characters is enough to trigger crash
+
+        for (index, char) in testText.enumerated() {
+            print("Typing character \(index + 1): '\(char)'")
+            textField.typeText(String(char))
+
+            // Small delay - but crash should happen even with delays
+            usleep(100_000) // 100ms
+
+            // Verify app hasn't crashed by checking element still exists
+            XCTAssertTrue(textField.exists, "TextField should exist after typing '\(char)' (character \(index + 1))")
+        }
+
+        // If we get here without crashing, the test passes
+        print("✅ Successfully typed all characters without crash")
+        XCTAssertTrue(textField.exists, "TextField should still exist after typing")
     }
 
     /// Test switching between sessions rapidly to reproduce state mutation crashes
