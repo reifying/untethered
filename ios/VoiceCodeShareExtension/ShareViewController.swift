@@ -202,19 +202,15 @@ class ShareViewController: UIViewController {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
 
-            if let error = error {
-                let alert = UIAlertController(
-                    title: success ? "File Saved" : "Error",
-                    message: success ? "File will be uploaded when you open the app" : error,
-                    preferredStyle: .alert
-                )
-                alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
-                    self.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
-                })
-                self.present(alert, animated: true)
-            } else {
+            let alert = UIAlertController(
+                title: success ? "File Saved" : "Error",
+                message: success ? "File will be uploaded when you open the app" : (error ?? "Unknown error"),
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
                 self.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
-            }
+            })
+            self.present(alert, animated: true)
         }
     }
 }
