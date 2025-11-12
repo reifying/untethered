@@ -10,7 +10,7 @@ IOS_DIR := ios
 BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
-.PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
+.PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
 .PHONY: bump-build archive export-ipa upload-testflight deploy-testflight
 
@@ -25,6 +25,8 @@ help:
 	@echo "  test-quiet        - Run all iOS tests with minimal output"
 	@echo "  test-class        - Run specific test class (usage: make test-class CLASS=TestClassName)"
 	@echo "  test-method       - Run specific test method (usage: make test-method CLASS=TestClassName METHOD=test_method_name)"
+	@echo "  test-ui           - Run all UI tests"
+	@echo "  test-ui-crash     - Run crash reproduction UI tests only"
 	@echo "  build             - Build the iOS project (auto-generates project first)"
 	@echo "  clean             - Clean iOS build artifacts"
 	@echo "  setup-simulator   - Create and boot simulator: $(SIMULATOR_NAME)"
@@ -123,6 +125,14 @@ ifndef METHOD
 	$(error METHOD is required. Usage: make test-method CLASS=OptimisticUITests METHOD=test_method_name)
 endif
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeTests/$(CLASS)/$(METHOD)"
+
+# Run all UI tests
+test-ui: setup-simulator
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeUITests"
+
+# Run crash reproduction UI tests
+test-ui-crash: setup-simulator
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeUITests/VoiceCodeUITests/testRapidTextInputNoCrash -only-testing:VoiceCodeUITests/VoiceCodeUITests/testTypeImmediatelyAfterViewAppearsNoCrash"
 
 # Build and install to connected iPhone (mimics Xcode's Run button)
 deploy-device:
