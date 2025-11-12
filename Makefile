@@ -27,6 +27,7 @@ help:
 	@echo "  test-method       - Run specific test method (usage: make test-method CLASS=TestClassName METHOD=test_method_name)"
 	@echo "  test-ui           - Run all UI tests"
 	@echo "  test-ui-crash     - Run crash reproduction UI tests only"
+	@echo "  test-integration  - Run integration test with real backend (requires backend + sessions)"
 	@echo "  build             - Build the iOS project (auto-generates project first)"
 	@echo "  clean             - Clean iOS build artifacts"
 	@echo "  setup-simulator   - Create and boot simulator: $(SIMULATOR_NAME)"
@@ -133,6 +134,14 @@ test-ui: setup-simulator
 # Run crash reproduction UI tests
 test-ui-crash: setup-simulator
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeUITests/VoiceCodeUITests/testRapidTextInputNoCrash -only-testing:VoiceCodeUITests/VoiceCodeUITests/testTypeImmediatelyAfterViewAppearsNoCrash"
+
+# Run integration test with real backend (requires backend running and sessions)
+test-integration: setup-simulator
+	@echo "⚠️  This test requires:"
+	@echo "   1. Backend running (make backend-run)"
+	@echo "   2. At least one session exists"
+	@echo ""
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeUITests/CrashReproductionTest"
 
 # Build and install to connected iPhone (mimics Xcode's Run button)
 deploy-device:
