@@ -20,6 +20,7 @@ class ResourcesManager: ObservableObject {
 
         // Monitor connection state to process uploads when connected
         voiceCodeClient.$isConnected
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] isConnected in
                 if isConnected {
                     self?.processPendingUploads()

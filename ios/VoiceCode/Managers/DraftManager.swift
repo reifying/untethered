@@ -7,7 +7,10 @@ import Combine
 class DraftManager: ObservableObject {
     @Published private var drafts: [String: String] {
         didSet {
-            UserDefaults.standard.set(drafts, forKey: "sessionDrafts")
+            // Defer UserDefaults write to avoid SwiftUI update conflicts
+            DispatchQueue.main.async { [drafts] in
+                UserDefaults.standard.set(drafts, forKey: "sessionDrafts")
+            }
         }
     }
 
