@@ -84,15 +84,18 @@ class VoiceCodeClient: ObservableObject {
 
     func connect(sessionId: String? = nil) {
         self.sessionId = sessionId
+        LogManager.shared.log("Connecting to WebSocket: \(serverURL)", category: "VoiceCodeClient")
 
         guard let url = URL(string: serverURL) else {
             currentError = "Invalid server URL"
+            LogManager.shared.log("Invalid server URL: \(serverURL)", category: "VoiceCodeClient")
             return
         }
 
         let request = URLRequest(url: url)
         webSocket = URLSession.shared.webSocketTask(with: request)
         webSocket?.resume()
+        LogManager.shared.log("WebSocket task resumed", category: "VoiceCodeClient")
 
         receiveMessage()
         setupReconnection()
@@ -223,13 +226,16 @@ class VoiceCodeClient: ObservableObject {
                 // Connected confirmation received - reset reconnection attempts
                 self.reconnectionAttempts = 0
                 print("✅ [VoiceCodeClient] Session registered: \(json["message"] as? String ?? "")")
+                LogManager.shared.log("Session registered: \(json["message"] as? String ?? "")", category: "VoiceCodeClient")
                 if let sessionId = json["session_id"] as? String {
                     print("📥 [VoiceCodeClient] Backend confirmed session: \(sessionId)")
+                    LogManager.shared.log("Backend confirmed session: \(sessionId)", category: "VoiceCodeClient")
                 }
 
                 // Restore subscriptions after reconnection
                 if !self.activeSubscriptions.isEmpty {
                     print("🔄 [VoiceCodeClient] Restoring \(self.activeSubscriptions.count) subscription(s) after reconnection")
+                    LogManager.shared.log("Restoring \(self.activeSubscriptions.count) subscription(s) after reconnection", category: "VoiceCodeClient")
                     for sessionId in self.activeSubscriptions {
                         print("🔄 [VoiceCodeClient] Resubscribing to session: \(sessionId)")
                         let message: [String: Any] = [
@@ -505,7 +511,10 @@ class VoiceCodeClient: ObservableObject {
                 // File upload successful
                 if let filename = json["filename"] as? String {
                     print("✅ [VoiceCodeClient] File uploaded successfully: \(filename)")
+                    LogManager.shared.log("File uploaded successfully: \(filename)", category: "VoiceCodeClient")
                     self.fileUploadResponse = (filename: filename, success: true)
+                } else {
+                    LogManager.shared.log("Received file_uploaded message without filename", category: "VoiceCodeClient")
                 }
 
             case "error":
@@ -514,6 +523,7 @@ class VoiceCodeClient: ObservableObject {
                    message.contains("Failed to upload file") {
                     // Extract filename from error message if possible
                     print("❌ [VoiceCodeClient] File upload failed: \(message)")
+                    LogManager.shared.log("File upload failed: \(message)", category: "VoiceCodeClient")
                     // For now, we can't reliably extract filename from error message
                     // ResourcesManager will timeout instead
                 }
@@ -852,12 +862,18 @@ class VoiceCodeClient: ObservableObject {
     func sendMessage(_ message: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: message),
               let text = String(data: data, encoding: .utf8) else {
+            LogManager.shared.log("Failed to serialize message", category: "VoiceCodeClient")
             return
+        }
+
+        if let messageType = message["type"] as? String {
+            LogManager.shared.log("Sending message type: \(messageType)", category: "VoiceCodeClient")
         }
 
         let message = URLSessionWebSocketTask.Message.string(text)
         webSocket?.send(message) { error in
             if let error = error {
+                LogManager.shared.log("Failed to send message: \(error.localizedDescription)", category: "VoiceCodeClient")
                 DispatchQueue.main.async {
                     self.currentError = error.localizedDescription
                 }
