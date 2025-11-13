@@ -44,14 +44,17 @@ class ResourcesManager: ObservableObject {
     func processPendingUploads() {
         guard !isProcessing else {
             print("⏭️ [ResourcesManager] Already processing uploads, skipping")
+            LogManager.shared.log("Already processing uploads, skipping", category: "ResourcesManager")
             return
         }
 
         guard voiceCodeClient.isConnected else {
             print("⚠️ [ResourcesManager] Not connected, deferring upload processing")
+            LogManager.shared.log("Not connected, deferring upload processing", category: "ResourcesManager")
             return
         }
 
+        LogManager.shared.log("Starting upload processing", category: "ResourcesManager")
         Task {
             await processUploadsAsync()
         }
@@ -60,6 +63,7 @@ class ResourcesManager: ObservableObject {
     /// Get count of pending uploads without processing them
     func updatePendingCount() {
         guard let pendingUploadsURL = getPendingUploadsDirectory() else {
+            LogManager.shared.log("Failed to get pending uploads directory", category: "ResourcesManager")
             DispatchQueue.main.async {
                 self.pendingUploadCount = 0
             }
@@ -72,11 +76,13 @@ class ResourcesManager: ObservableObject {
                 includingPropertiesForKeys: nil
             ).filter { $0.pathExtension == "json" }
 
+            LogManager.shared.log("Updated pending count: \(metadataFiles.count)", category: "ResourcesManager")
             DispatchQueue.main.async {
                 self.pendingUploadCount = metadataFiles.count
             }
         } catch {
             print("⚠️ [ResourcesManager] Failed to count pending uploads: \(error)")
+            LogManager.shared.log("Failed to count pending uploads: \(error)", category: "ResourcesManager")
             DispatchQueue.main.async {
                 self.pendingUploadCount = 0
             }
@@ -89,19 +95,23 @@ class ResourcesManager: ObservableObject {
         await MainActor.run {
             self.isProcessing = true
         }
+        LogManager.shared.log("Set isProcessing = true", category: "ResourcesManager")
 
         defer {
             Task { @MainActor in
                 self.isProcessing = false
+                LogManager.shared.log("Set isProcessing = false", category: "ResourcesManager")
             }
         }
 
         guard let pendingUploadsURL = getPendingUploadsDirectory() else {
             print("❌ [ResourcesManager] Failed to access App Group container")
+            LogManager.shared.log("Failed to access App Group container", category: "ResourcesManager")
             return
         }
 
         print("📂 [ResourcesManager] Checking for pending uploads at: \(pendingUploadsURL.path)")
+        LogManager.shared.log("Checking for pending uploads at: \(pendingUploadsURL.path)", category: "ResourcesManager")
 
         // Find all metadata files
         let metadataFiles: [URL]
@@ -112,11 +122,13 @@ class ResourcesManager: ObservableObject {
             ).filter { $0.pathExtension == "json" }
         } catch {
             print("❌ [ResourcesManager] Failed to list pending uploads: \(error)")
+            LogManager.shared.log("Failed to list pending uploads: \(error)", category: "ResourcesManager")
             return
         }
 
         guard !metadataFiles.isEmpty else {
             print("✅ [ResourcesManager] No pending uploads found")
+            LogManager.shared.log("No pending uploads found", category: "ResourcesManager")
             await MainActor.run {
                 self.pendingUploadCount = 0
             }
@@ -124,6 +136,7 @@ class ResourcesManager: ObservableObject {
         }
 
         print("📤 [ResourcesManager] Found \(metadataFiles.count) pending upload(s)")
+        LogManager.shared.log("Found \(metadataFiles.count) pending upload(s)", category: "ResourcesManager")
         await MainActor.run {
             self.pendingUploadCount = metadataFiles.count
         }
@@ -141,6 +154,7 @@ class ResourcesManager: ObservableObject {
         let uploadId = metadataURL.deletingPathExtension().lastPathComponent
 
         print("📄 [ResourcesManager] Processing upload: \(uploadId)")
+        LogManager.shared.log("Processing upload: \(uploadId)", category: "ResourcesManager")
 
         // Read metadata
         let metadata: [String: Any]
@@ -148,21 +162,26 @@ class ResourcesManager: ObservableObject {
             let metadataData = try Data(contentsOf: metadataURL)
             guard let json = try JSONSerialization.jsonObject(with: metadataData) as? [String: Any] else {
                 print("❌ [ResourcesManager] Invalid metadata format for upload: \(uploadId)")
+                LogManager.shared.log("Invalid metadata format for upload: \(uploadId)", category: "ResourcesManager")
                 try? FileManager.default.removeItem(at: metadataURL)
                 return
             }
             metadata = json
         } catch {
             print("❌ [ResourcesManager] Failed to read metadata for upload \(uploadId): \(error)")
+            LogManager.shared.log("Failed to read metadata for upload \(uploadId): \(error)", category: "ResourcesManager")
             try? FileManager.default.removeItem(at: metadataURL)
             return
         }
 
         guard let filename = metadata["filename"] as? String else {
             print("❌ [ResourcesManager] Missing filename in metadata for upload: \(uploadId)")
+            LogManager.shared.log("Missing filename in metadata for upload: \(uploadId)", category: "ResourcesManager")
             try? FileManager.default.removeItem(at: metadataURL)
             return
         }
+
+        LogManager.shared.log("Read metadata for file: \(filename)", category: "ResourcesManager")
 
         // Read file data
         let dataURL = pendingUploadsURL.appendingPathComponent("\(uploadId).data")
@@ -171,6 +190,7 @@ class ResourcesManager: ObservableObject {
             fileData = try Data(contentsOf: dataURL)
         } catch {
             print("❌ [ResourcesManager] Failed to read data file for upload \(uploadId): \(error)")
+            LogManager.shared.log("Failed to read data file for upload \(uploadId): \(error)", category: "ResourcesManager")
             // Clean up metadata if data file is missing
             try? FileManager.default.removeItem(at: metadataURL)
             return
@@ -180,6 +200,7 @@ class ResourcesManager: ObservableObject {
         let base64Content = fileData.base64EncodedString()
 
         print("📤 [ResourcesManager] Uploading file: \(filename) (\(fileData.count) bytes)")
+        LogManager.shared.log("Uploading file: \(filename) (\(fileData.count) bytes)", category: "ResourcesManager")
 
         // Send upload_file message
         let success = await sendUploadMessage(filename: filename, content: base64Content)
@@ -190,11 +211,14 @@ class ResourcesManager: ObservableObject {
                 try FileManager.default.removeItem(at: metadataURL)
                 try FileManager.default.removeItem(at: dataURL)
                 print("✅ [ResourcesManager] Upload successful, cleaned up: \(uploadId)")
+                LogManager.shared.log("Upload successful, cleaned up: \(uploadId)", category: "ResourcesManager")
             } catch {
                 print("⚠️ [ResourcesManager] Upload successful but failed to clean up files: \(error)")
+                LogManager.shared.log("Upload successful but failed to clean up files: \(error)", category: "ResourcesManager")
             }
         } else {
             print("⚠️ [ResourcesManager] Upload failed, will retry later: \(uploadId)")
+            LogManager.shared.log("Upload failed, will retry later: \(uploadId)", category: "ResourcesManager")
         }
     }
 
@@ -208,9 +232,11 @@ class ResourcesManager: ObservableObject {
             ]
 
             print("📨 [ResourcesManager] Sending upload_file message for: \(filename) to: \(appSettings.resourceStorageLocation)")
+            LogManager.shared.log("Sending upload_file message for: \(filename) to: \(appSettings.resourceStorageLocation)", category: "ResourcesManager")
 
             // Store continuation to be called when acknowledgment received
             pendingAcknowledgments[filename] = { success in
+                LogManager.shared.log("Received acknowledgment for \(filename): success=\(success)", category: "ResourcesManager")
                 continuation.resume(returning: success)
             }
 
@@ -221,6 +247,7 @@ class ResourcesManager: ObservableObject {
                 guard let self = self else { return }
                 if self.pendingAcknowledgments[filename] != nil {
                     print("⚠️ [ResourcesManager] Upload timeout for: \(filename)")
+                    LogManager.shared.log("Upload timeout for: \(filename)", category: "ResourcesManager")
                     self.pendingAcknowledgments.removeValue(forKey: filename)
                     continuation.resume(returning: false)
                 }
@@ -232,17 +259,23 @@ class ResourcesManager: ObservableObject {
 
     /// Call this when file-uploaded or error response received from backend
     func handleUploadResponse(filename: String, success: Bool) {
+        LogManager.shared.log("handleUploadResponse called for \(filename): success=\(success)", category: "ResourcesManager")
+
         // Backend may return a different filename if there was a conflict (e.g., "file-20251111123456.txt")
         // Since uploads are processed sequentially, match against the original filename or just take the first pending
         if let completion = pendingAcknowledgments[filename] {
             // Exact match
+            LogManager.shared.log("Found exact match for \(filename), calling completion handler", category: "ResourcesManager")
             pendingAcknowledgments.removeValue(forKey: filename)
             completion(success)
         } else if let (originalFilename, completion) = pendingAcknowledgments.first {
             // Filename changed due to conflict, complete the first pending upload
             print("⚠️ [ResourcesManager] Filename mismatch: sent '\(originalFilename)', received '\(filename)'. Completing first pending upload.")
+            LogManager.shared.log("Filename mismatch: sent '\(originalFilename)', received '\(filename)'. Completing first pending upload.", category: "ResourcesManager")
             pendingAcknowledgments.removeValue(forKey: originalFilename)
             completion(success)
+        } else {
+            LogManager.shared.log("No pending acknowledgment found for \(filename)", category: "ResourcesManager")
         }
     }
 

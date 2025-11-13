@@ -12,7 +12,7 @@ WRAP := ./scripts/wrap-command
 
 .PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
-.PHONY: bump-build archive export-ipa upload-testflight deploy-testflight
+.PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 
 # Default target
 help:
@@ -277,6 +277,18 @@ backend-nrepl-stop:
 # TestFlight Publishing
 # Requires: App Store Connect API keys set in environment (.envrc)
 # See: docs/testflight-deployment-setup.md
+
+# Increment build number (queries TestFlight for latest to avoid conflicts)
+bump-build:
+	@echo "Smart build number bump (queries TestFlight)..."
+	@$(WRAP) bash -c 'source .envrc && ./scripts/smart-bump-build.sh'
+
+# Simple increment (legacy, may cause conflicts on different branches)
+bump-build-simple:
+	@echo "Incrementing build number (simple)..."
+	@cd $(IOS_DIR) && xcrun agvtool next-version -all
+	@echo "\nNew build number:"
+	@cd $(IOS_DIR) && xcrun agvtool what-version
 
 # Create archive
 archive:
