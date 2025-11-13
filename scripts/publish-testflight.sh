@@ -68,12 +68,7 @@ create_export_options() {
     <key>uploadSymbols</key>
     <true/>
     <key>signingStyle</key>
-    <string>manual</string>
-    <key>provisioningProfiles</key>
-    <dict>
-        <key>$BUNDLE_ID</key>
-        <string>REDACTED_PROVISIONING_UUID</string>
-    </dict>
+    <string>automatic</string>
     <key>signingCertificate</key>
     <string>Apple Distribution</string>
     <key>manageAppVersionAndBuildNumber</key>
@@ -87,6 +82,26 @@ EOF
 create_archive() {
     log_info "Creating archive build..."
 
+    # Regenerate Xcode project from project.yml
+    log_info "Generating Xcode project from project.yml..."
+    cd ios && xcodegen generate && cd ..
+
+    # Force Xcode to refresh provisioning profiles after project regeneration
+    log_info "Refreshing provisioning profiles..."
+    xcodebuild -project "$PROJECT_PATH" \
+        -scheme "$SCHEME" \
+        -showBuildSettings \
+        -allowProvisioningUpdates \
+        > /dev/null 2>&1 || true
+
+    # Workaround for Xcode 26.x beta: Patch the scheme to bypass destination validation
+    # The scheme needs LastUpgradeVersion updated to match Xcode 26.x
+    SCHEME_PATH="ios/VoiceCode.xcodeproj/xcshareddata/xcschemes/VoiceCode.xcscheme"
+    if [ -f "$SCHEME_PATH" ]; then
+        log_info "Patching scheme for Xcode 26.x compatibility..."
+        sed -i '' 's/LastUpgradeVersion = "1430"/LastUpgradeVersion = "2610"/' "$SCHEME_PATH"
+    fi
+
     # Clean previous builds
     if [ -d "$ARCHIVE_PATH" ]; then
         log_warn "Removing previous archive..."
@@ -94,6 +109,12 @@ create_archive() {
     fi
 
     mkdir -p build/archives
+
+    # Archive for iOS device distribution
+    # CRITICAL WORKAROUND for Xcode 26.x beta "iOS 26.1 is not installed" bug:
+    # The DVTDisableValidateGenericDeviceDestinations environment variable forces
+    # xcodebuild to skip the destination validation that incorrectly fails
+    export DVTDisableValidateGenericDeviceDestinations=1
 
     xcodebuild archive \
         -project "$PROJECT_PATH" \
@@ -108,6 +129,10 @@ create_archive() {
 
     if [ ! -d "$ARCHIVE_PATH" ]; then
         log_error "Archive creation failed - archive not found at $ARCHIVE_PATH"
+        echo ""
+        log_error "🔧 If you see 'iOS 26.1 is not installed' error with Xcode 26.x beta:"
+        log_info "Run: make fix-xcode-platform"
+        log_info "Or see: docs/xcode-26-beta-fix.md"
         exit 1
     fi
 
@@ -137,6 +162,7 @@ export_ipa() {
         -archivePath "$ARCHIVE_PATH" \
         -exportPath "$EXPORT_PATH" \
         -exportOptionsPlist "$EXPORT_OPTIONS_PLIST" \
+        -allowProvisioningUpdates \
         | grep -E "^\*\*|error:|warning:|note:|Export succeeded"
 
     if [ ! -f "$IPA_PATH" ]; then
