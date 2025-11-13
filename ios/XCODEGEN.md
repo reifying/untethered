@@ -124,6 +124,32 @@ targets:
 
 Or edit the physical `ios/VoiceCode/Info.plist` file directly.
 
+### Version and Build Number Management
+
+**IMPORTANT:** Version and build numbers are managed in `ios/project.yml`, NOT in Info.plist files.
+
+To change the version or build number, edit `ios/project.yml`:
+
+```yaml
+settings:
+  base:
+    MARKETING_VERSION: "1.0"      # App version (e.g., 1.0, 1.1, 2.0)
+    CURRENT_PROJECT_VERSION: "43" # Build number (must increment for each upload)
+```
+
+The Info.plist files use build setting variables:
+- `CFBundleShortVersionString: $(MARKETING_VERSION)`
+- `CFBundleVersion: $(CURRENT_PROJECT_VERSION)`
+
+**Do NOT:**
+- Manually edit version numbers in Info.plist files (they will be overridden)
+- Use `make bump-build` (agvtool) - it doesn't work with XcodeGen's approach
+
+**To increment build for TestFlight:**
+1. Edit `CURRENT_PROJECT_VERSION` in `ios/project.yml`
+2. Increment the number (e.g., "43" → "44")
+3. Run `make deploy-testflight`
+
 ## Git Workflow
 
 The `.xcodeproj` directory is **generated** and **ignored by git**. Only these files are tracked:
