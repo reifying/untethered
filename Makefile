@@ -4,12 +4,13 @@
 # iOS Configuration
 SCHEME := VoiceCode
 SIMULATOR_NAME := iPhone 16 Pro
-DESTINATION := 'platform=iOS Simulator,name=$(SIMULATOR_NAME)'
+SIMULATOR_OS := 18.6
+DESTINATION := 'platform=iOS Simulator,name=$(SIMULATOR_NAME),OS=$(SIMULATOR_OS)'
 IOS_DIR := ios
 BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
-.PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device
+.PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device generate-project show-destinations check-sdk fix-xcode-platform
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
 .PHONY: bump-build archive export-ipa upload-testflight publish-testflight deploy-testflight
 
@@ -18,12 +19,13 @@ help:
 	@echo "Available targets:"
 	@echo ""
 	@echo "iOS targets:"
+	@echo "  generate-project  - Generate Xcode project from project.yml (XcodeGen)"
 	@echo "  test              - Run all iOS tests with standard output"
 	@echo "  test-verbose      - Run all iOS tests with detailed output"
 	@echo "  test-quiet        - Run all iOS tests with minimal output"
 	@echo "  test-class        - Run specific test class (usage: make test-class CLASS=TestClassName)"
 	@echo "  test-method       - Run specific test method (usage: make test-method CLASS=TestClassName METHOD=test_method_name)"
-	@echo "  build             - Build the iOS project"
+	@echo "  build             - Build the iOS project (auto-generates project first)"
 	@echo "  clean             - Clean iOS build artifacts"
 	@echo "  setup-simulator   - Create and boot simulator: $(SIMULATOR_NAME)"
 	@echo "  deploy-device     - Build and install to connected iPhone (fast deployment)"
@@ -64,6 +66,11 @@ help:
 	@echo "  archive            - Create iOS archive for distribution"
 	@echo "  export-ipa         - Export IPA from archive"
 	@echo "  upload-testflight  - Upload IPA to TestFlight"
+	@echo ""
+	@echo "Debugging:"
+	@echo "  show-destinations  - Show available build destinations"
+	@echo "  check-sdk          - Show iOS SDK version info"
+	@echo "  fix-xcode-platform - Fix Xcode 26.x beta platform issues (opens Xcode)"
 
 # Ensure simulator exists and is booted
 setup-simulator:
@@ -72,21 +79,27 @@ setup-simulator:
 	@echo "Simulator ready"
 
 # Run tests with standard output
-test: setup-simulator
+test: generate-project setup-simulator
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION)"
 
 # Run tests with verbose output (shows all test execution details)
-test-verbose: setup-simulator
+test-verbose: generate-project setup-simulator
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -verbose"
 
 # Run tests with minimal output (just results)
-test-quiet: setup-simulator
+test-quiet: generate-project setup-simulator
 	@echo "Running tests..."
 	@cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) 2>&1 | grep -E "(Test Suite|Test Case.*passed|Test Case.*failed|Executed.*tests|Failing tests:)" || true
 	@echo "Test run complete."
 
+# Generate Xcode project from project.yml (XcodeGen)
+generate-project:
+	@echo "Generating Xcode project from project.yml..."
+	cd $(IOS_DIR) && xcodegen generate
+	@echo "✅ Project generated successfully"
+
 # Build the project and compile tests
-build: setup-simulator
+build: generate-project setup-simulator
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild build -scheme $(SCHEME) -destination $(DESTINATION) && xcodebuild build-for-testing -scheme $(SCHEME) -destination $(DESTINATION)"
 
 # Clean build artifacts
@@ -95,14 +108,14 @@ clean:
 	rm -rf ~/Library/Developer/Xcode/DerivedData/VoiceCode-*
 
 # Run specific test class (usage: make test-class CLASS=OptimisticUITests)
-test-class: setup-simulator
+test-class: generate-project setup-simulator
 ifndef CLASS
 	$(error CLASS is required. Usage: make test-class CLASS=OptimisticUITests)
 endif
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeTests/$(CLASS)"
 
 # Run specific test method (usage: make test-method CLASS=OptimisticUITests METHOD=testCreateOptimisticMessage)
-test-method: setup-simulator
+test-method: generate-project setup-simulator
 ifndef CLASS
 	$(error CLASS is required. Usage: make test-method CLASS=OptimisticUITests METHOD=test_method_name)
 endif
@@ -271,3 +284,17 @@ deploy-testflight:
 	@$(MAKE) bump-build
 	@bash -c 'source .envrc && $(MAKE) publish-testflight'
 	@echo "✅ Deployment complete! Check App Store Connect in ~15 minutes."
+
+# Debug target to show available destinations
+show-destinations: generate-project
+	@cd $(IOS_DIR) && xcodebuild -project VoiceCode.xcodeproj -scheme $(SCHEME) -showdestinations
+
+# Debug target to check SDK info
+check-sdk:
+	@xcodebuild -version -sdk iphoneos
+
+# Fix Xcode 26.x beta platform issue by opening Xcode Settings
+fix-xcode-platform:
+	@echo "🔧 Xcode 26.x beta requires manual iOS platform installation"
+	@echo ""
+	@./scripts/open-xcode-platforms.sh

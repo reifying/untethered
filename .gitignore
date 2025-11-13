@@ -96,9 +96,9 @@ iOSInjectionProject/
 *.swiftpm
 
 # Xcode Patch
-*.xcodeproj/*
-!*.xcodeproj/project.pbxproj
-!*.xcodeproj/xcshareddata/
+# XcodeGen generates the .xcodeproj from project.yml
+*.xcodeproj
+*.xcworkspace
 !*.xcworkspace/contents.xcworkspacedata
 /*.gcno
 
