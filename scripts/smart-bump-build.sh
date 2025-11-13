@@ -29,11 +29,12 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
-# Get current local version info
+# Get current local version info from project.yml
 get_local_version() {
     cd ios
-    LOCAL_VERSION=$(xcrun agvtool what-marketing-version -terse1)
-    LOCAL_BUILD=$(xcrun agvtool what-version -terse)
+    # Read version from project.yml (XcodeGen source of truth)
+    LOCAL_VERSION=$(grep "MARKETING_VERSION:" project.yml | sed 's/.*MARKETING_VERSION: //' | tr -d '"' | tr -d ' ')
+    LOCAL_BUILD=$(grep "CURRENT_PROJECT_VERSION:" project.yml | sed 's/.*CURRENT_PROJECT_VERSION: //' | tr -d '"' | tr -d ' ')
     cd ..
     log_info "Local version: $LOCAL_VERSION ($LOCAL_BUILD)"
 }
@@ -76,12 +77,13 @@ get_remote_build() {
     echo "$REMOTE_BUILD"
 }
 
-# Set build number to specific value
+# Set build number to specific value in project.yml
 set_build_number() {
     local new_build=$1
-    log_info "Setting build number to $new_build..."
+    log_info "Setting build number to $new_build in project.yml..."
     cd ios
-    xcrun agvtool new-version -all "$new_build"
+    # Update CURRENT_PROJECT_VERSION in project.yml
+    sed -i '' "s/CURRENT_PROJECT_VERSION: .*/CURRENT_PROJECT_VERSION: $new_build/" project.yml
     cd ..
 }
 
@@ -109,16 +111,18 @@ main() {
     else
         # Fallback: simple increment
         log_warn "Using fallback: incrementing local build number"
-        cd ios
-        xcrun agvtool next-version -all
-        cd ..
+        NEXT_BUILD=$((LOCAL_BUILD + 1))
+        set_build_number "$NEXT_BUILD"
     fi
 
     # Show final version
     echo ""
     log_info "Final version:"
     cd ios
-    xcrun agvtool what-version
+    FINAL_VERSION=$(grep "MARKETING_VERSION:" project.yml | sed 's/.*MARKETING_VERSION: //' | tr -d '"' | tr -d ' ')
+    FINAL_BUILD=$(grep "CURRENT_PROJECT_VERSION:" project.yml | sed 's/.*CURRENT_PROJECT_VERSION: //' | tr -d '"' | tr -d ' ')
+    echo "Current version of project is:"
+    echo "    $FINAL_VERSION ($FINAL_BUILD)"
     cd ..
 }
 

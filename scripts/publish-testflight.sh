@@ -41,11 +41,11 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Get current version info
+# Get current version info from project.yml
 get_version_info() {
     cd ios
-    VERSION=$(xcrun agvtool what-marketing-version -terse1)
-    BUILD=$(xcrun agvtool what-version -terse)
+    VERSION=$(grep "MARKETING_VERSION:" project.yml | sed 's/.*MARKETING_VERSION: //' | tr -d '"' | tr -d ' ')
+    BUILD=$(grep "CURRENT_PROJECT_VERSION:" project.yml | sed 's/.*CURRENT_PROJECT_VERSION: //' | tr -d '"' | tr -d ' ')
     cd ..
     log_info "Current version: $VERSION ($BUILD)"
 }
