@@ -120,11 +120,7 @@ class VoiceInputManager: NSObject, ObservableObject {
 
         DispatchQueue.main.async {
             self.isRecording = false
-
-            // Notify completion
-            if !self.transcribedText.isEmpty {
-                self.onTranscriptionComplete?(self.transcribedText)
-            }
+            // Note: onTranscriptionComplete callback is never set - handled by view layer instead
         }
 
         // Reset audio session

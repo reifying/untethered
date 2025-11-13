@@ -815,8 +815,15 @@ struct ConversationVoiceInputView: View {
             if voiceInput.isRecording {
                 Button(action: {
                     voiceInput.stopRecording()
+
+                    // Defer completion callback to avoid re-entrant SwiftUI updates
+                    // stopRecording() sets isRecording=false which triggers a view update
+                    // We need to wait for that update to complete before calling onTranscriptionComplete
                     if !voiceInput.transcribedText.isEmpty {
-                        onTranscriptionComplete(voiceInput.transcribedText)
+                        let text = voiceInput.transcribedText
+                        DispatchQueue.main.async {
+                            onTranscriptionComplete(text)
+                        }
                     }
                 }) {
                     VStack {
