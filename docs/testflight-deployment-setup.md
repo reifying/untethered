@@ -11,24 +11,30 @@
 
 ### Deploy to TestFlight (Recommended - Single Command)
 
+**IMPORTANT**: This project uses XcodeGen. Version/build numbers are managed in `ios/project.yml`, not via `agvtool`.
+
 ```bash
-make deploy-testflight    # ⭐ EVERYTHING: Bump + Archive + Export + Upload (~2 min)
+# 1. Edit ios/project.yml - Increment CURRENT_PROJECT_VERSION (e.g., "43" → "44")
+# 2. Deploy:
+make deploy-testflight    # ⭐ Archive + Export + Upload (~2 min)
 ```
 
 ### Alternative: Step-by-Step
 
 ```bash
-make bump-build           # 1. Increment build number only
-make publish-testflight   # 2. Archive + Export + Upload (no bump)
+# 1. Edit ios/project.yml - Increment CURRENT_PROJECT_VERSION
+# 2. Run:
+make publish-testflight   # Archive + Export + Upload
 ```
 
 ### Advanced: Granular Control
 
 ```bash
-make bump-build           # 1. Increment build number
-make archive              # 2. Create archive
-make export-ipa           # 3. Export IPA from archive
-make upload-testflight    # 4. Upload to TestFlight
+# 1. Edit ios/project.yml - Increment CURRENT_PROJECT_VERSION
+# 2. Run individual steps:
+make archive              # 1. Create archive
+make export-ipa           # 2. Export IPA from archive
+make upload-testflight    # 3. Upload to TestFlight
 ```
 
 ---
@@ -78,18 +84,18 @@ export ASC_KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p
 
 ### Incrementing Versions
 
+**With XcodeGen**, edit `ios/project.yml`:
+
+```yaml
+settings:
+  base:
+    MARKETING_VERSION: "1.0"      # App version (0.1.0, 1.0.0, etc.)
+    CURRENT_PROJECT_VERSION: "44" # Build number (increment for each upload)
+```
+
 ```bash
-# Increment build number (most common)
-make bump-build
-
-# Manually set version
-cd ios
-xcrun agvtool new-marketing-version 0.2.0  # Update marketing version
-xcrun agvtool new-version -all 1           # Reset build number
-
-# Check current version
-xcrun agvtool what-marketing-version -terse1
-xcrun agvtool what-version -terse
+# Check what will be deployed
+grep -A1 "MARKETING_VERSION\|CURRENT_PROJECT_VERSION" ios/project.yml
 ```
 
 ### Version Strategy
@@ -170,10 +176,8 @@ echo "Key exists: $([ -f "$ASC_KEY_PATH" ] && echo yes || echo no)"
 ### "Build number already used"
 
 ```bash
-# Increment build number
-make bump-build
-
-# Then retry upload
+# 1. Edit ios/project.yml and increment CURRENT_PROJECT_VERSION
+# 2. Then retry upload
 make upload-testflight
 ```
 
@@ -238,8 +242,9 @@ make upload-testflight
 
 5. **Automation Scripts**
    - Created `scripts/publish-testflight.sh`
-   - Added Makefile targets: bump-build, archive, export-ipa, upload-testflight, publish-testflight
+   - Added Makefile targets: archive, export-ipa, upload-testflight, publish-testflight, deploy-testflight
    - Configured environment variable sourcing in Makefile
+   - **2025-11-13**: Migrated to XcodeGen - version/build managed in `ios/project.yml`
 
 6. **First Build**
    - Version 0.1.0, Build 1

@@ -10,9 +10,9 @@ IOS_DIR := ios
 BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
-.PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device generate-project show-destinations check-sdk fix-xcode-platform
+.PHONY: help test test-verbose test-quiet test-class test-method build clean setup-simulator deploy-device generate-project show-destinations check-sdk
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
-.PHONY: bump-build archive export-ipa upload-testflight publish-testflight deploy-testflight
+.PHONY: archive export-ipa upload-testflight publish-testflight deploy-testflight
 
 # Default target
 help:
@@ -60,9 +60,8 @@ help:
 	@echo "  help              - Show this help message"
 	@echo ""
 	@echo "TestFlight publishing:"
-	@echo "  deploy-testflight  - ⭐ Deploy new build: bump + archive + export + upload"
-	@echo "  bump-build         - Increment iOS build number"
-	@echo "  publish-testflight - Archive + export + upload (no bump)"
+	@echo "  deploy-testflight  - ⭐ Deploy: archive + export + upload (edit ios/project.yml to bump version)"
+	@echo "  publish-testflight - Archive + export + upload"
 	@echo "  archive            - Create iOS archive for distribution"
 	@echo "  export-ipa         - Export IPA from archive"
 	@echo "  upload-testflight  - Upload IPA to TestFlight"
@@ -70,7 +69,6 @@ help:
 	@echo "Debugging:"
 	@echo "  show-destinations  - Show available build destinations"
 	@echo "  check-sdk          - Show iOS SDK version info"
-	@echo "  fix-xcode-platform - Fix Xcode 26.x beta platform issues (opens Xcode)"
 
 # Ensure simulator exists and is booted
 setup-simulator:
@@ -251,13 +249,6 @@ backend-nrepl-stop:
 # Requires: App Store Connect API keys set in environment (.envrc)
 # See: docs/testflight-deployment-setup.md
 
-# Increment build number
-bump-build:
-	@echo "Incrementing build number..."
-	@cd $(IOS_DIR) && xcrun agvtool next-version -all
-	@echo "\nNew build number:"
-	@cd $(IOS_DIR) && xcrun agvtool what-version
-
 # Create archive
 archive:
 	@echo "Creating archive build..."
@@ -278,10 +269,11 @@ publish-testflight:
 	@echo "Starting complete TestFlight publish workflow..."
 	$(WRAP) bash -c 'source .envrc && ./scripts/publish-testflight.sh publish'
 
-# Deploy new build: bump version -> archive -> export -> upload (most common workflow)
+# Deploy: archive -> export -> upload
+# NOTE: Edit CURRENT_PROJECT_VERSION in ios/project.yml to increment build number before deploying
 deploy-testflight:
-	@echo "Deploying new build to TestFlight..."
-	@$(MAKE) bump-build
+	@echo "Deploying to TestFlight..."
+	@echo "⚠️  Remember to increment CURRENT_PROJECT_VERSION in ios/project.yml before deploying"
 	@bash -c 'source .envrc && $(MAKE) publish-testflight'
 	@echo "✅ Deployment complete! Check App Store Connect in ~15 minutes."
 
@@ -292,9 +284,3 @@ show-destinations: generate-project
 # Debug target to check SDK info
 check-sdk:
 	@xcodebuild -version -sdk iphoneos
-
-# Fix Xcode 26.x beta platform issue by opening Xcode Settings
-fix-xcode-platform:
-	@echo "🔧 Xcode 26.x beta requires manual iOS platform installation"
-	@echo ""
-	@./scripts/open-xcode-platforms.sh
