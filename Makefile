@@ -135,6 +135,10 @@ test-ui: setup-simulator
 test-ui-crash: setup-simulator
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeUITests/VoiceCodeUITests/testRapidTextInputNoCrash -only-testing:VoiceCodeUITests/VoiceCodeUITests/testTypeImmediatelyAfterViewAppearsNoCrash"
 
+# Run simple crash test (no backend required)
+test-crash-simple: setup-simulator
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeUITests/SimpleCrashTest"
+
 # Run integration test with real backend (requires backend running and sessions)
 test-integration: setup-simulator
 	@echo "⚠️  This test requires:"

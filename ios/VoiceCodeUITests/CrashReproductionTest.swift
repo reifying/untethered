@@ -46,35 +46,32 @@ final class CrashReproductionTest: XCTestCase {
         // Wait for backend connection and session list to load
         sleep(2)
 
-        // Find an existing session
-        let sessionsList = app.collectionViews.firstMatch
-        guard sessionsList.waitForExistence(timeout: 5) else {
-            XCTFail("""
-                No sessions found. This test requires:
-                1. Backend running (make backend-run)
-                2. At least one existing session
+        // Try to find a "New Session" button or similar
+        let newSessionButton = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'new'")).firstMatch
+        if newSessionButton.exists {
+            print("Creating new session...")
+            newSessionButton.tap()
+            sleep(1)
+        } else {
+            // If there's already a session, tap it
+            let sessionsList = app.collectionViews.firstMatch
+            guard sessionsList.waitForExistence(timeout: 5) else {
+                XCTFail("""
+                    Cannot find sessions list or new session button.
+                    Make sure backend is running (make backend-run).
+                    """)
+                return
+            }
 
-                Create a session manually first, then run this test.
-                """)
-            return
+            let cellCount = sessionsList.cells.count
+            if cellCount > 0 {
+                print("Found \(cellCount) existing sessions, using first one")
+                sessionsList.cells.firstMatch.tap()
+            } else {
+                XCTFail("No sessions found and no 'New Session' button")
+                return
+            }
         }
-
-        let cellCount = sessionsList.cells.count
-        guard cellCount > 0 else {
-            XCTFail("""
-                No session cells found. Create a session first:
-                1. Open the app manually
-                2. Create a session
-                3. Run this test again
-                """)
-            return
-        }
-
-        print("Found \(cellCount) sessions")
-
-        // Tap the first session
-        let firstCell = sessionsList.cells.firstMatch
-        firstCell.tap()
 
         // Wait for ConversationView to load
         sleep(1)
