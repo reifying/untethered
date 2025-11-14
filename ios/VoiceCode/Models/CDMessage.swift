@@ -39,11 +39,15 @@ extension CDMessage {
         return NSFetchRequest<CDMessage>(entityName: "CDMessage")
     }
     
-    /// Fetch all messages for a session, sorted by timestamp
+    /// Fetch most recent 50 messages for a session, sorted by timestamp
+    /// Limits to 50 messages to prevent AttributeGraph crashes with large conversations
+    /// Messages are still stored in CoreData - this just limits what's displayed
     static func fetchMessages(sessionId: UUID) -> NSFetchRequest<CDMessage> {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
-        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: true)]
+        // Sort descending to get most recent 50, then reverse in view for chronological display
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: false)]
+        request.fetchLimit = 50
         return request
     }
     

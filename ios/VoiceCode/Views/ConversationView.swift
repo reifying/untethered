@@ -105,7 +105,8 @@ struct ConversationView: View {
                             .padding(.top, 100)
                         } else {
                             LazyVStack(spacing: 12) {
-                                ForEach(messages) { message in
+                                // Messages fetched descending (newest first) but displayed ascending (oldest first)
+                                ForEach(Array(messages.reversed())) { message in
                                     CDMessageView(
                                         message: message,
                                         voiceOutput: voiceOutput,
@@ -116,9 +117,10 @@ struct ConversationView: View {
                                     )
                                     .id(message.id)
                                     .onAppear {
-                                        // Track last visible message for scroll detection
-                                        if message.id == messages.last?.id {
-                                            print("🔵 [AutoScroll] Last message is visible (at bottom)")
+                                        // Track newest message for scroll detection
+                                        // messages is sorted descending, so first is newest
+                                        if message.id == messages.first?.id {
+                                            print("🔵 [AutoScroll] Newest message is visible (at bottom)")
                                             if !autoScrollEnabled {
                                                 print("🔵 [AutoScroll] Re-enabling auto-scroll")
                                                 autoScrollEnabled = true
@@ -126,9 +128,9 @@ struct ConversationView: View {
                                         }
                                     }
                                     .onDisappear {
-                                        // Last message disappeared - user scrolled up
-                                        if message.id == messages.last?.id {
-                                            print("⚪️ [AutoScroll] Last message disappeared (scrolled up)")
+                                        // Newest message disappeared - user scrolled up
+                                        if message.id == messages.first?.id {
+                                            print("⚪️ [AutoScroll] Newest message disappeared (scrolled up)")
                                             if autoScrollEnabled {
                                                 print("⚪️ [AutoScroll] Disabling auto-scroll")
                                                 autoScrollEnabled = false
@@ -528,14 +530,27 @@ struct ConversationView: View {
         dateFormatter.timeStyle = .short
         exportText += "Exported: \(dateFormatter.string(from: Date()))\n"
         exportText += "\n---\n\n"
-        
-        // Add all messages in chronological order
-        for message in messages {
-            let roleLabel = message.role == "user" ? "User" : "Assistant"
-            exportText += "[\(roleLabel)]\n"
-            exportText += "\(message.text)\n\n"
+
+        // Fetch ALL messages for export (not just the displayed 50)
+        let exportFetchRequest = CDMessage.fetchRequest()
+        exportFetchRequest.predicate = NSPredicate(format: "sessionId == %@", session.id as CVarArg)
+        exportFetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: true)]
+
+        do {
+            let allMessages = try viewContext.fetch(exportFetchRequest)
+            exportText += "Message Count: \(allMessages.count)\n\n"
+
+            // Add all messages in chronological order
+            for message in allMessages {
+                let roleLabel = message.role == "user" ? "User" : "Assistant"
+                exportText += "[\(roleLabel)]\n"
+                exportText += "\(message.text)\n\n"
+            }
+        } catch {
+            print("❌ Failed to fetch messages for export: \(error)")
+            exportText += "Error: Failed to export messages\n"
         }
-        
+
         // Copy to clipboard
         UIPasteboard.general.string = exportText
         
@@ -685,6 +700,31 @@ struct CDMessageView: View {
     @ObservedObject var settings: AppSettings
     let onInferName: (String) -> Void
 
+    @State private var showFullMessage = false
+
+    // Truncation constant - show half on each side
+    private let truncationLength = 500  // Total visible chars (250 + 250)
+
+    private var displayText: String {
+        let text = message.text
+
+        // Only truncate if text exceeds threshold
+        guard text.count > truncationLength else {
+            return text
+        }
+
+        let halfLength = truncationLength / 2
+        let head = String(text.prefix(halfLength))
+        let tail = String(text.suffix(halfLength))
+        let omittedCount = text.count - truncationLength
+
+        return "\(head)\n\n[... \(omittedCount) characters omitted ...]\n\n\(tail)"
+    }
+
+    private var isTruncated: Bool {
+        message.text.count > truncationLength
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             // Role indicator
@@ -699,8 +739,8 @@ struct CDMessageView: View {
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
 
-                // Message text
-                Text(message.text)
+                // Message text (truncated for display)
+                Text(displayText)
                     .font(.body)
                     .textSelection(.enabled)
                     .contextMenu {
@@ -723,6 +763,16 @@ struct CDMessageView: View {
                             Label("Infer Name", systemImage: "sparkles.rectangle.stack")
                         }
                     }
+
+                // Show expand button for truncated messages
+                if isTruncated {
+                    Button(action: { showFullMessage = true }) {
+                        Label("View Full Message", systemImage: "arrow.up.left.and.arrow.down.right")
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                    }
+                    .padding(.top, 4)
+                }
                 
                 // Status and timestamp
                 HStack(spacing: 8) {
@@ -754,6 +804,43 @@ struct CDMessageView: View {
             RoundedRectangle(cornerRadius: 12)
                 .fill(message.role == "user" ? Color.blue.opacity(0.1) : Color.green.opacity(0.1))
         )
+        .sheet(isPresented: $showFullMessage) {
+            MessageDetailView(message: message)
+        }
+    }
+}
+
+// MARK: - Message Detail View
+
+struct MessageDetailView: View {
+    @ObservedObject var message: CDMessage
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                Text(message.text)
+                    .font(.body)
+                    .textSelection(.enabled)
+                    .padding()
+            }
+            .navigationTitle("Full Message")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button(action: {
+                        UIPasteboard.general.string = message.text
+                    }) {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                }
+            }
+        }
     }
 }
 
