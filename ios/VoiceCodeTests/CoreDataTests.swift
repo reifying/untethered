@@ -253,10 +253,11 @@ final class CoreDataTests: XCTestCase {
         // Fetch messages for our session
         let fetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
         let messages = try context.fetch(fetchRequest)
-        
+
         XCTAssertEqual(messages.count, 3)
-        XCTAssertEqual(messages[0].text, "Message 0")
-        XCTAssertEqual(messages[2].text, "Message 2")
+        // Messages are sorted descending (newest first) by fetchMessages
+        XCTAssertEqual(messages[0].text, "Message 2")
+        XCTAssertEqual(messages[2].text, "Message 0")
     }
     
     func testCDMessageFetchByTextAndRole() throws {
