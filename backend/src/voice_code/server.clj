@@ -885,38 +885,120 @@
                    {:type :error
                     :message (str "Error processing message: " (ex-message e))})))))
 
-;; WebSocket handler
-(defn websocket-handler
-  "Handle WebSocket connections"
-  [request]
-  (http/with-channel request channel
-    (if (http/websocket? channel)
-      (do
-        (log/info "WebSocket connection established" {:remote-addr (:remote-addr request)})
+;; HTTP Upload handler
+(defn handle-http-upload
+  "Handle HTTP POST /upload requests for synchronous file uploads from share extension.
+  Expects multipart/form-data with fields: filename, content (base64), storage_location"
+  [req channel]
+  (try
+    (let [body (slurp (:body req))
+          data (parse-json body)
+          filename (:filename data)
+          content (:content data)
+          storage-location (:storage-location data)]
 
-        ;; Send hello message
+      (if-not (and filename content storage-location)
         (http/send! channel
-                    (generate-json
-                     {:type :hello
-                      :message "Welcome to voice-code backend"
-                      :version "0.2.0"}))
-
-        ;; Handle incoming messages
-        (http/on-receive channel
-                         (fn [msg]
-                           (handle-message channel msg)))
-
-        ;; Handle connection close
-        (http/on-close channel
-                       (fn [status]
-                         (log/info "WebSocket connection closed" {:status status})
-                         (unregister-channel! channel))))
-
-      ;; Not a WebSocket request
+                    {:status 400
+                     :headers {"Content-Type" "application/json"}
+                     :body (generate-json
+                            {:success false
+                             :error "filename, content, and storage_location are required"})})
+        (try
+          (let [result (resources/upload-file! storage-location filename content)
+                absolute-path (str (resources/expand-path storage-location) "/" (:path result))]
+            (log/info "HTTP upload successful"
+                      {:filename (:filename result)
+                       :size (:size result)
+                       :path absolute-path})
+            (http/send! channel
+                        {:status 200
+                         :headers {"Content-Type" "application/json"}
+                         :body (generate-json
+                                {:success true
+                                 :filename (:filename result)
+                                 :path absolute-path
+                                 :relative-path (:path result)
+                                 :size (:size result)
+                                 :timestamp (.toString (:timestamp result))})}))
+          (catch IllegalArgumentException e
+            (log/error "Invalid base64 content in HTTP upload" {:filename filename})
+            (http/send! channel
+                        {:status 400
+                         :headers {"Content-Type" "application/json"}
+                         :body (generate-json
+                                {:success false
+                                 :error "Invalid file content encoding"})}))
+          (catch clojure.lang.ExceptionInfo e
+            (let [data (ex-data e)]
+              (log/error e "HTTP upload failed" data)
+              (http/send! channel
+                          {:status (if (= "Resource not found" (ex-message e)) 404 400)
+                           :headers {"Content-Type" "application/json"}
+                           :body (generate-json
+                                  {:success false
+                                   :error (ex-message e)
+                                   :details data})})))
+          (catch Exception e
+            (log/error e "Unexpected error in HTTP upload" {:filename filename})
+            (http/send! channel
+                        {:status 500
+                         :headers {"Content-Type" "application/json"}
+                         :body (generate-json
+                                {:success false
+                                 :error (str "Failed to upload file: " (ex-message e))})})))))
+    (catch Exception e
+      (log/error e "Error parsing HTTP upload request")
       (http/send! channel
                   {:status 400
-                   :headers {"Content-Type" "text/plain"}
-                   :body "This endpoint requires WebSocket connection"}))))
+                   :headers {"Content-Type" "application/json"}
+                   :body (generate-json
+                          {:success false
+                           :error (str "Invalid request: " (ex-message e))})}))))
+
+;; WebSocket handler
+(defn websocket-handler
+  "Handle WebSocket connections and HTTP upload requests"
+  [request]
+  ;; Check for HTTP POST to /upload BEFORE with-channel
+  (if (and (= :post (:request-method request))
+           (= "/upload" (:uri request)))
+    ;; Handle synchronous HTTP upload
+    (let [response (atom nil)]
+      (http/with-channel request channel
+        (handle-http-upload request channel)
+        ;; For synchronous response, we don't keep the channel open
+        (http/close channel)))
+
+    ;; Handle WebSocket connections
+    (http/with-channel request channel
+      (if (http/websocket? channel)
+        (do
+          (log/info "WebSocket connection established" {:remote-addr (:remote-addr request)})
+
+          ;; Send hello message
+          (http/send! channel
+                      (generate-json
+                       {:type :hello
+                        :message "Welcome to voice-code backend"
+                        :version "0.2.0"}))
+
+          ;; Handle incoming messages
+          (http/on-receive channel
+                           (fn [msg]
+                             (handle-message channel msg)))
+
+          ;; Handle connection close
+          (http/on-close channel
+                         (fn [status]
+                           (log/info "WebSocket connection closed" {:status status})
+                           (unregister-channel! channel))))
+
+        ;; Not a WebSocket request and not /upload
+        (http/send! channel
+                    {:status 400
+                     :headers {"Content-Type" "text/plain"}
+                     :body "This endpoint requires WebSocket connection"})))))
 
 (defn -main
   "Start the WebSocket server"
