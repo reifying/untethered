@@ -707,29 +707,6 @@ struct CDMessageView: View {
 
     @State private var showFullMessage = false
 
-    // Truncation constant - show half on each side
-    private let truncationLength = 500  // Total visible chars (250 + 250)
-
-    private var displayText: String {
-        let text = message.text
-
-        // Only truncate if text exceeds threshold
-        guard text.count > truncationLength else {
-            return text
-        }
-
-        let halfLength = truncationLength / 2
-        let head = String(text.prefix(halfLength))
-        let tail = String(text.suffix(halfLength))
-        let omittedCount = text.count - truncationLength
-
-        return "\(head)\n\n[... \(omittedCount) characters omitted ...]\n\n\(tail)"
-    }
-
-    private var isTruncated: Bool {
-        message.text.count > truncationLength
-    }
-
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             // Role indicator
@@ -745,7 +722,8 @@ struct CDMessageView: View {
                     .foregroundColor(.secondary)
 
                 // Message text (truncated for display)
-                Text(displayText)
+                // Uses cached displayText from CDMessage to avoid recomputation
+                Text(message.displayText)
                     .font(.body)
                     .textSelection(.enabled)
                     .contextMenu {
@@ -770,7 +748,7 @@ struct CDMessageView: View {
                     }
 
                 // Show expand button for truncated messages
-                if isTruncated {
+                if message.isTruncated {
                     Button(action: { showFullMessage = true }) {
                         Label("View Full Message", systemImage: "arrow.up.left.and.arrow.down.right")
                             .font(.caption)

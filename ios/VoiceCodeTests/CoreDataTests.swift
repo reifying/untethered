@@ -396,13 +396,13 @@ final class CoreDataTests: XCTestCase {
     // MARK: - AttributeGraph Crash Prevention Tests
 
     func testMessageFetchLimitPreventsStaleReferences() throws {
-        // Test that the 50-message fetch limit doesn't cause stale references
+        // Test that the 25-message fetch limit doesn't cause stale references
         // when messages are removed from FetchedResults during view updates
 
         let sessionId = UUID()
 
-        // Create 60 messages (exceeds 50-message limit)
-        for i in 0..<60 {
+        // Create 35 messages (exceeds 25-message limit)
+        for i in 0..<35 {
             let message = CDMessage(context: context)
             message.id = UUID()
             message.sessionId = sessionId
@@ -414,12 +414,12 @@ final class CoreDataTests: XCTestCase {
 
         try context.save()
 
-        // Fetch with 50-message limit
+        // Fetch with 25-message limit
         let fetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
         let messages = try context.fetch(fetchRequest)
 
-        // Should only return 50 most recent
-        XCTAssertEqual(messages.count, 50)
+        // Should only return 25 most recent
+        XCTAssertEqual(messages.count, 25)
 
         // Verify fetch request properties prevent faulting
         XCTAssertTrue(fetchRequest.includesPropertyValues)
@@ -430,9 +430,9 @@ final class CoreDataTests: XCTestCase {
         XCTAssertFalse(messageTexts.contains("Message 0"))
         XCTAssertFalse(messageTexts.contains("Message 9"))
 
-        // Verify newest messages are included (50-59)
-        XCTAssertTrue(messageTexts.contains("Message 50"))
-        XCTAssertTrue(messageTexts.contains("Message 59"))
+        // Verify newest messages are included (25-34)
+        XCTAssertTrue(messageTexts.contains("Message 25"))
+        XCTAssertTrue(messageTexts.contains("Message 34"))
     }
 
     func testMessageObjectsNotFaultedAfterFetch() throws {

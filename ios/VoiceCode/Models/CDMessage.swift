@@ -31,6 +31,51 @@ public class CDMessage: NSManagedObject {
             status = newValue.rawValue
         }
     }
+
+    // MARK: - Display Properties
+
+    /// Truncation length for visual display (first N + last N chars)
+    private static let truncationHalfLength = 250
+
+    /// Cached display text with truncation applied
+    /// Computed once and cached to avoid recalculation on every layout pass
+    private var _displayTextCache: String?
+    private var _displayTextCacheKey: Int?
+
+    /// Display text with truncation for UI rendering
+    /// Returns first 250 + last 250 chars if text exceeds 500 chars
+    /// Cached based on text.count to avoid recomputation during layout
+    var displayText: String {
+        // Check cache validity (keyed by text length)
+        let cacheKey = text.count
+        if let cached = _displayTextCache, _displayTextCacheKey == cacheKey {
+            return cached
+        }
+
+        // Compute truncated text
+        let truncationLength = Self.truncationHalfLength * 2
+        let result: String
+
+        if text.count <= truncationLength {
+            result = text
+        } else {
+            let head = String(text.prefix(Self.truncationHalfLength))
+            let tail = String(text.suffix(Self.truncationHalfLength))
+            let omittedCount = text.count - truncationLength
+            result = "\(head)\n\n[... \(omittedCount) characters omitted ...]\n\n\(tail)"
+        }
+
+        // Cache result
+        _displayTextCache = result
+        _displayTextCacheKey = cacheKey
+
+        return result
+    }
+
+    /// Whether this message's text is truncated in display
+    var isTruncated: Bool {
+        text.count > (Self.truncationHalfLength * 2)
+    }
 }
 
 // MARK: - Fetch Request
@@ -39,15 +84,16 @@ extension CDMessage {
         return NSFetchRequest<CDMessage>(entityName: "CDMessage")
     }
     
-    /// Fetch most recent 50 messages for a session, sorted by timestamp
-    /// Limits to 50 messages to prevent AttributeGraph crashes with large conversations
+    /// Fetch most recent 25 messages for a session, sorted by timestamp
+    /// Limits to 25 messages to prevent AttributeGraph hangs with layout calculations
     /// Messages are still stored in CoreData - this just limits what's displayed
+    /// Reduced from 50 to 25 based on hang report showing 10s timeout with 50 messages
     static func fetchMessages(sessionId: UUID) -> NSFetchRequest<CDMessage> {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
-        // Sort descending to get most recent 50, then reverse in view for chronological display
+        // Sort descending to get most recent 25, then reverse in view for chronological display
         request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: false)]
-        request.fetchLimit = 50
+        request.fetchLimit = 25
 
         // Ensure all properties are loaded to prevent faulting during view updates
         // This prevents CoreData from deallocating objects mid-update
