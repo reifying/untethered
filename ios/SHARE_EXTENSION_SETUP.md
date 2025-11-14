@@ -68,7 +68,7 @@ Select the **VoiceCodeShareExtension** target and configure:
 1. Select your development team
 2. The App Groups capability should already be present (from entitlements file)
    - If not present, click **+ Capability** → **App Groups**
-   - Add: `group.com.910labs.untethered.resources`
+   - Add: `group.com.910labs.untethered.resources` (MUST match main app)
 
 #### Build Settings Tab
 - Search for "Bundle Identifier"
@@ -82,7 +82,7 @@ Select the **VoiceCode** target:
 
 #### Signing & Capabilities Tab
 - The App Groups capability should already be present (already updated in entitlements)
-- Verify it includes: `group.com.910labs.untethered.resources`
+- Verify it includes: `group.com.910labs.untethered.resources` (MUST match share extension)
 
 ### 7. Build and Test
 
@@ -112,9 +112,15 @@ Select the **VoiceCode** target:
 
 ### Extension doesn't appear in share sheet
 - Verify App Groups capability is enabled for BOTH targets
-- Verify both targets use the same App Group identifier: `group.com.910labs.untethered.resources`
+- Verify both targets use the EXACT SAME App Group identifier: `group.com.910labs.untethered.resources`
 - Clean build folder (Shift+⌘K) and rebuild
 - Restart device/simulator
+
+### Failed to access app group container
+- The app group identifier in code MUST EXACTLY match the entitlements
+- Code uses: `group.com.910labs.untethered.resources`
+- Entitlements must have: `group.com.910labs.untethered.resources`
+- If they don't match, update entitlements files and regenerate Xcode project with `make xcode`
 
 ### Build errors about missing files
 - Verify all files are added to VoiceCodeShareExtension target membership

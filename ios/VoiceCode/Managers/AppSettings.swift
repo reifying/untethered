@@ -6,15 +6,22 @@ import Combine
 import AVFoundation
 
 class AppSettings: ObservableObject {
+    private let appGroupID = "group.com.910labs.untethered.resources"
+    private var sharedDefaults: UserDefaults? {
+        UserDefaults(suiteName: appGroupID)
+    }
+
     @Published var serverURL: String {
         didSet {
             UserDefaults.standard.set(serverURL, forKey: "serverURL")
+            sharedDefaults?.set(serverURL, forKey: "serverURL")
         }
     }
 
     @Published var serverPort: String {
         didSet {
             UserDefaults.standard.set(serverPort, forKey: "serverPort")
+            sharedDefaults?.set(serverPort, forKey: "serverPort")
         }
     }
 
@@ -49,6 +56,7 @@ class AppSettings: ObservableObject {
     @Published var resourceStorageLocation: String {
         didSet {
             UserDefaults.standard.set(resourceStorageLocation, forKey: "resourceStorageLocation")
+            sharedDefaults?.set(resourceStorageLocation, forKey: "resourceStorageLocation")
         }
     }
 
@@ -116,6 +124,16 @@ class AppSettings: ObservableObject {
         self.recentSessionsLimit = UserDefaults.standard.object(forKey: "recentSessionsLimit") as? Int ?? 5
         self.notifyOnResponse = UserDefaults.standard.object(forKey: "notifyOnResponse") as? Bool ?? true
         self.resourceStorageLocation = UserDefaults.standard.string(forKey: "resourceStorageLocation") ?? "~/Downloads"
+
+        // Sync settings to shared UserDefaults for share extension access
+        syncToSharedDefaults()
+    }
+
+    /// Sync current settings to shared UserDefaults so share extension can access them
+    private func syncToSharedDefaults() {
+        sharedDefaults?.set(serverURL, forKey: "serverURL")
+        sharedDefaults?.set(serverPort, forKey: "serverPort")
+        sharedDefaults?.set(resourceStorageLocation, forKey: "resourceStorageLocation")
     }
 
     func testConnection(completion: @escaping (Bool, String) -> Void) {
