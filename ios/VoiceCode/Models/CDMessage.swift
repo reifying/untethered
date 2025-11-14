@@ -48,6 +48,12 @@ extension CDMessage {
         // Sort descending to get most recent 50, then reverse in view for chronological display
         request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: false)]
         request.fetchLimit = 50
+
+        // Ensure all properties are loaded to prevent faulting during view updates
+        // This prevents CoreData from deallocating objects mid-update
+        request.includesPropertyValues = true
+        request.returnsObjectsAsFaults = false
+
         return request
     }
     

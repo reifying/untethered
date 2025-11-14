@@ -106,7 +106,8 @@ struct ConversationView: View {
                         } else {
                             LazyVStack(spacing: 12) {
                                 // Messages fetched descending (newest first) but displayed ascending (oldest first)
-                                ForEach(Array(messages.reversed())) { message in
+                                // Use reversed() view instead of Array() to avoid detached snapshots with stale references
+                                ForEach(messages.reversed(), id: \.id) { message in
                                     CDMessageView(
                                         message: message,
                                         voiceOutput: voiceOutput,
@@ -116,9 +117,11 @@ struct ConversationView: View {
                                         }
                                     )
                                     .id(message.id)
-                                    .onAppear {
+                                    .onAppear { [weak message] in
                                         // Track newest message for scroll detection
                                         // messages is sorted descending, so first is newest
+                                        // Use weak reference to prevent retaining deallocated messages
+                                        guard let message = message else { return }
                                         if message.id == messages.first?.id {
                                             print("🔵 [AutoScroll] Newest message is visible (at bottom)")
                                             if !autoScrollEnabled {
@@ -127,8 +130,10 @@ struct ConversationView: View {
                                             }
                                         }
                                     }
-                                    .onDisappear {
+                                    .onDisappear { [weak message] in
                                         // Newest message disappeared - user scrolled up
+                                        // Use weak reference to prevent retaining deallocated messages
+                                        guard let message = message else { return }
                                         if message.id == messages.first?.id {
                                             print("⚪️ [AutoScroll] Newest message disappeared (scrolled up)")
                                             if autoScrollEnabled {

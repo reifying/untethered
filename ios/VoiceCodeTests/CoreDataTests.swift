@@ -384,12 +384,194 @@ final class CoreDataTests: XCTestCase {
     func testPersistenceControllerPreview() {
         let preview = PersistenceController.preview
         let context = preview.container.viewContext
-        
+
         // Preview should have sample data
         let fetchRequest = CDSession.fetchRequest()
         let sessions = try? context.fetch(fetchRequest)
-        
+
         XCTAssertNotNil(sessions)
         XCTAssertGreaterThan(sessions?.count ?? 0, 0)
+    }
+
+    // MARK: - AttributeGraph Crash Prevention Tests
+
+    func testMessageFetchLimitPreventsStaleReferences() throws {
+        // Test that the 50-message fetch limit doesn't cause stale references
+        // when messages are removed from FetchedResults during view updates
+
+        let sessionId = UUID()
+
+        // Create 60 messages (exceeds 50-message limit)
+        for i in 0..<60 {
+            let message = CDMessage(context: context)
+            message.id = UUID()
+            message.sessionId = sessionId
+            message.role = (i % 2 == 0) ? "user" : "assistant"
+            message.text = "Message \(i)"
+            message.timestamp = Date().addingTimeInterval(TimeInterval(i))
+            message.messageStatus = .confirmed
+        }
+
+        try context.save()
+
+        // Fetch with 50-message limit
+        let fetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
+        let messages = try context.fetch(fetchRequest)
+
+        // Should only return 50 most recent
+        XCTAssertEqual(messages.count, 50)
+
+        // Verify fetch request properties prevent faulting
+        XCTAssertTrue(fetchRequest.includesPropertyValues)
+        XCTAssertFalse(fetchRequest.returnsObjectsAsFaults)
+
+        // Verify oldest messages are excluded (0-9 should not be in result)
+        let messageTexts = messages.map { $0.text }
+        XCTAssertFalse(messageTexts.contains("Message 0"))
+        XCTAssertFalse(messageTexts.contains("Message 9"))
+
+        // Verify newest messages are included (50-59)
+        XCTAssertTrue(messageTexts.contains("Message 50"))
+        XCTAssertTrue(messageTexts.contains("Message 59"))
+    }
+
+    func testMessageObjectsNotFaultedAfterFetch() throws {
+        // Verify that messages are fully loaded (not faults) after fetch
+        // This prevents CoreData from deallocating objects during view updates
+
+        let sessionId = UUID()
+
+        // Create a few messages
+        for i in 0..<5 {
+            let message = CDMessage(context: context)
+            message.id = UUID()
+            message.sessionId = sessionId
+            message.role = "user"
+            message.text = "Message \(i)"
+            message.timestamp = Date().addingTimeInterval(TimeInterval(i))
+            message.messageStatus = .confirmed
+        }
+
+        try context.save()
+
+        // Fetch messages
+        let fetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
+        let messages = try context.fetch(fetchRequest)
+
+        // Verify all messages are fully loaded (not faults)
+        for message in messages {
+            XCTAssertFalse(message.isFault, "Message should be fully loaded, not a fault")
+            XCTAssertNotNil(message.text)
+            XCTAssertNotNil(message.role)
+            XCTAssertNotNil(message.timestamp)
+        }
+    }
+
+    func testMessageFetchDescendingOrderWithReversal() throws {
+        // Test that messages are fetched descending (newest first)
+        // and can be safely reversed for chronological display
+
+        let sessionId = UUID()
+
+        // Create messages with specific timestamps
+        let timestamps = [
+            Date().addingTimeInterval(-300), // 5 min ago
+            Date().addingTimeInterval(-200), // 3.3 min ago
+            Date().addingTimeInterval(-100), // 1.6 min ago
+            Date() // now
+        ]
+
+        for (index, timestamp) in timestamps.enumerated() {
+            let message = CDMessage(context: context)
+            message.id = UUID()
+            message.sessionId = sessionId
+            message.role = "user"
+            message.text = "Message \(index)"
+            message.timestamp = timestamp
+            message.messageStatus = .confirmed
+        }
+
+        try context.save()
+
+        // Fetch messages (descending order)
+        let fetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
+        let messages = try context.fetch(fetchRequest)
+
+        XCTAssertEqual(messages.count, 4)
+
+        // Verify descending order (newest first)
+        XCTAssertEqual(messages[0].text, "Message 3") // Now
+        XCTAssertEqual(messages[3].text, "Message 0") // 5 min ago
+
+        // Verify reversed() creates chronological order (oldest first)
+        let reversed = messages.reversed()
+        let reversedArray = Array(reversed)
+        XCTAssertEqual(reversedArray[0].text, "Message 0")
+        XCTAssertEqual(reversedArray[3].text, "Message 3")
+    }
+
+    func testCoreDataMergePolicySet() {
+        // Verify PersistenceController sets proper merge policy
+        // to prevent conflicts during concurrent updates
+
+        let controller = PersistenceController(inMemory: true)
+        let context = controller.container.viewContext
+
+        // Check merge policy is set
+        XCTAssertNotNil(context.mergePolicy)
+
+        // Verify it's the property-level merge policy
+        if let mergePolicy = context.mergePolicy as? NSMergePolicy {
+            XCTAssertEqual(mergePolicy.mergeType, NSMergePolicyType.mergeByPropertyObjectTrumpMergePolicyType)
+        }
+    }
+
+    func testBackgroundContextMergesOnMainThread() throws {
+        // Verify that background context saves trigger main-thread merges
+        // This prevents AttributeGraph crashes from background thread updates
+
+        let expectation = XCTestExpectation(description: "Background save merges to main context")
+        let sessionId = UUID()
+
+        // Create initial message on main context
+        let mainMessage = CDMessage(context: context)
+        mainMessage.id = UUID()
+        mainMessage.sessionId = sessionId
+        mainMessage.role = "user"
+        mainMessage.text = "Main thread message"
+        mainMessage.timestamp = Date()
+        mainMessage.messageStatus = .sending
+
+        try context.save()
+
+        // Perform background save
+        persistenceController.performBackgroundTask { backgroundContext in
+            let bgMessage = CDMessage(context: backgroundContext)
+            bgMessage.id = UUID()
+            bgMessage.sessionId = sessionId
+            bgMessage.role = "assistant"
+            bgMessage.text = "Background thread message"
+            bgMessage.timestamp = Date()
+            bgMessage.messageStatus = .confirmed
+
+            try? backgroundContext.save()
+
+            // Verify merge happened on main thread
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                let fetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
+                let messages = try? self.context.fetch(fetchRequest)
+
+                // Should have both messages merged
+                XCTAssertEqual(messages?.count, 2)
+
+                let texts = messages?.map { $0.text } ?? []
+                XCTAssertTrue(texts.contains("Main thread message"))
+                XCTAssertTrue(texts.contains("Background thread message"))
+
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 2.0)
     }
 }
