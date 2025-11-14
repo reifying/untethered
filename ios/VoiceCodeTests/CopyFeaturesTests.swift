@@ -209,14 +209,17 @@ class CopyFeaturesTests: XCTestCase {
         
         // Fetch messages in order
         let fetchRequest = CDMessage.fetchMessages(sessionId: testSession.id)
-        let messages = try context.fetch(fetchRequest)
-        
+        let fetchedMessages = try context.fetch(fetchRequest)
+
+        // Reverse to get chronological order (fetchMessages returns descending)
+        let messages = Array(fetchedMessages.reversed())
+
         // Verify messages are in chronological order
         XCTAssertEqual(messages.count, 5)
         for i in 0..<messages.count {
             XCTAssertTrue(messages[i].text.contains("Message \(i)"))
         }
-        
+
         // Generate export
         var exportText = ""
         for message in messages {
