@@ -29,30 +29,47 @@ struct VoiceCodeApp: App {
     }
 }
 
+// MARK: - Root View Model
+
+/// Root view model managing the main app dependencies
+///
+/// Thread Safety: This class is isolated to the main actor since it manages
+/// UI-related managers and state. All initialization happens on the main thread.
+@MainActor
+class RootViewModel: ObservableObject {
+    let voiceOutput: VoiceOutputManager
+    let client: VoiceCodeClient
+    let resourcesManager: ResourcesManager
+
+    init(settings: AppSettings) {
+        // Create all managers in correct order with proper dependencies
+        self.voiceOutput = VoiceOutputManager(appSettings: settings)
+        self.client = VoiceCodeClient(
+            serverURL: settings.fullServerURL,
+            voiceOutputManager: self.voiceOutput,
+            appSettings: settings
+        )
+        self.resourcesManager = ResourcesManager(voiceCodeClient: self.client, appSettings: settings)
+    }
+}
+
 // MARK: - Root View
 
 struct RootView: View {
     @ObservedObject var settings: AppSettings
-    @StateObject private var voiceOutput = VoiceOutputManager()
-    @StateObject private var client: VoiceCodeClient
-    @StateObject private var resourcesManager: ResourcesManager
+    @StateObject private var viewModel: RootViewModel
     @State private var showingSettings = false
     @State private var navigationPath = NavigationPath()
     @State private var recentSessions: [RecentSession] = []
 
     init(settings: AppSettings) {
         self.settings = settings
-        // Create VoiceOutputManager with AppSettings for centralized voice management
-        let voiceManager = VoiceOutputManager(appSettings: settings)
-        _voiceOutput = StateObject(wrappedValue: voiceManager)
-        let voiceClient = VoiceCodeClient(
-            serverURL: settings.fullServerURL,
-            voiceOutputManager: voiceManager,
-            appSettings: settings
-        )
-        _client = StateObject(wrappedValue: voiceClient)
-        _resourcesManager = StateObject(wrappedValue: ResourcesManager(voiceCodeClient: voiceClient, appSettings: settings))
+        _viewModel = StateObject(wrappedValue: RootViewModel(settings: settings))
     }
+
+    private var voiceOutput: VoiceOutputManager { viewModel.voiceOutput }
+    private var client: VoiceCodeClient { viewModel.client }
+    private var resourcesManager: ResourcesManager { viewModel.resourcesManager }
 
     var body: some View {
         NavigationStack(path: $navigationPath) {

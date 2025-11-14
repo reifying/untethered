@@ -53,16 +53,22 @@ class ShareViewController: UIViewController {
             guard let self = self else { return }
 
             if let error = error {
-                self.completeRequest(success: false, error: "Failed to load file: \(error.localizedDescription)")
+                Task { @MainActor in
+                    self.completeRequest(success: false, error: "Failed to load file: \(error.localizedDescription)")
+                }
                 return
             }
 
             guard let url = item as? URL else {
-                self.completeRequest(success: false, error: "Invalid file URL")
+                Task { @MainActor in
+                    self.completeRequest(success: false, error: "Invalid file URL")
+                }
                 return
             }
 
-            self.saveFileToAppGroup(url: url, originalFilename: url.lastPathComponent)
+            Task { @MainActor in
+                self.saveFileToAppGroup(url: url, originalFilename: url.lastPathComponent)
+            }
         }
     }
 
@@ -71,14 +77,20 @@ class ShareViewController: UIViewController {
             guard let self = self else { return }
 
             if let error = error {
-                self.completeRequest(success: false, error: "Failed to load item: \(error.localizedDescription)")
+                Task { @MainActor in
+                    self.completeRequest(success: false, error: "Failed to load item: \(error.localizedDescription)")
+                }
                 return
             }
 
             if let url = item as? URL {
-                self.saveFileToAppGroup(url: url, originalFilename: url.lastPathComponent)
+                Task { @MainActor in
+                    self.saveFileToAppGroup(url: url, originalFilename: url.lastPathComponent)
+                }
             } else {
-                self.completeRequest(success: false, error: "Unsupported item type")
+                Task { @MainActor in
+                    self.completeRequest(success: false, error: "Unsupported item type")
+                }
             }
         }
     }

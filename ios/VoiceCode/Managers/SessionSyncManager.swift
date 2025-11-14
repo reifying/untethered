@@ -262,6 +262,14 @@ class SessionSyncManager {
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
 
+            Task {
+                await self.handleSessionUpdatedAsync(sessionId: sessionId, messages: messages, context: backgroundContext)
+            }
+        }
+    }
+
+    private func handleSessionUpdatedAsync(sessionId: String, messages: [[String: Any]], context: NSManagedObjectContext) async {
+
             // Validate UUID format
             guard let sessionUUID = UUID(uuidString: sessionId) else {
                 logger.error("Invalid session ID format in handleSessionUpdated: \(sessionId)")
@@ -272,12 +280,12 @@ class SessionSyncManager {
             let fetchRequest = CDSession.fetchSession(id: sessionUUID)
 
             let session: CDSession
-            if let existingSession = try? backgroundContext.fetch(fetchRequest).first {
+            if let existingSession = try? context.fetch(fetchRequest).first {
                 session = existingSession
             } else {
                 // Session not in our list yet - create it from the update
                 logger.info("Creating new session from update: \(sessionId)")
-                session = CDSession(context: backgroundContext)
+                session = CDSession(context: context)
                 session.id = sessionUUID
                 session.backendName = "" // Will be updated on next session_list
                 session.workingDirectory = "" // Will be updated on next session_list
@@ -286,8 +294,10 @@ class SessionSyncManager {
                 session.isLocallyCreated = false
             }
 
-            // Check if this session is currently active
-            let isActiveSession = ActiveSessionManager.shared.isActive(sessionUUID)
+            // Check if this session is currently active (must access on main thread)
+            let isActiveSession = await MainActor.run {
+                ActiveSessionManager.shared.isActive(sessionUUID)
+            }
 
             // Process each message - reconcile optimistic ones, create new ones
             var newMessageCount = 0
@@ -317,7 +327,7 @@ class SessionSyncManager {
 
                 logger.info("🔍 Looking for optimistic message to reconcile: role=\(role) text_length=\(text.count) session=\(sessionId)")
                 
-                if let existingMessage = try? backgroundContext.fetch(fetchRequest).first {
+                if let existingMessage = try? context.fetch(fetchRequest).first {
                     // Reconcile optimistic message
                     logger.info("✅ Found optimistic message to reconcile: id=\(existingMessage.id) current_status=\(existingMessage.messageStatus.rawValue)")
                     existingMessage.messageStatus = .confirmed
@@ -332,7 +342,7 @@ class SessionSyncManager {
                 } else {
                     // Create new message (backend-originated or not found)
                     logger.info("❌ No optimistic message found - creating new message: role=\(role) text_length=\(text.count)")
-                    self.createMessage(messageData, sessionId: sessionId, in: backgroundContext, session: session)
+                    self.createMessage(messageData, sessionId: sessionId, in: context, session: session)
                     newMessageCount += 1
 
                     // Collect assistant messages for speaking (if active session)
@@ -384,8 +394,8 @@ class SessionSyncManager {
             }
 
             do {
-                if backgroundContext.hasChanges {
-                    try backgroundContext.save()
+                if context.hasChanges {
+                    try context.save()
                     logger.info("Updated session: \(sessionId)")
                 }
 
@@ -393,7 +403,7 @@ class SessionSyncManager {
                 // VoiceOutputManager automatically uses configured voice from AppSettings
                 // Remove code blocks from text before speaking for better listening experience
                 if isActiveSession && !assistantMessagesToSpeak.isEmpty {
-                    DispatchQueue.main.async { [weak self] in
+                    await MainActor.run { [weak self] in
                         guard let self = self else { return }
                         for text in assistantMessagesToSpeak {
                             let processedText = TextProcessor.removeCodeBlocks(from: text)
@@ -404,7 +414,6 @@ class SessionSyncManager {
             } catch {
                 logger.error("Failed to save session_updated: \(error.localizedDescription)")
             }
-        }
     }
     
     // MARK: - Private Helpers

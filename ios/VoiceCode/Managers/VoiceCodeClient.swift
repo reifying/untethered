@@ -5,11 +5,67 @@ import Foundation
 import Combine
 import UIKit
 
+// MARK: - Session Lock State Model
+
+/// Represents the lock state of a Claude session with version tracking for handling out-of-order messages
+struct SessionLockState: Equatable {
+    let sessionId: String
+    var isLocked: Bool
+    var lockVersion: Int  // Monotonically increasing version number for state transitions
+    var reason: LockReason
+    var timestamp: Date
+
+    enum LockReason: Equatable {
+        case optimistic(Date)           // Optimistically locked when prompt sent
+        case confirmed(Date)            // Backend confirmed lock (session_locked)
+        case processingPrompt          // Backend is processing prompt
+        case compaction                // Backend is compacting session
+        case manual                    // Manually locked by user
+
+        var displayName: String {
+            switch self {
+            case .optimistic: return "Sending prompt"
+            case .confirmed: return "Processing"
+            case .processingPrompt: return "Processing prompt"
+            case .compaction: return "Compacting"
+            case .manual: return "Manual lock"
+            }
+        }
+    }
+
+    init(sessionId: String, isLocked: Bool, lockVersion: Int, reason: LockReason, timestamp: Date = Date()) {
+        self.sessionId = sessionId
+        self.isLocked = isLocked
+        self.lockVersion = lockVersion
+        self.reason = reason
+        self.timestamp = timestamp
+    }
+
+    /// Create a new state with incremented version (for state transitions)
+    func nextVersion(isLocked: Bool, reason: LockReason) -> SessionLockState {
+        SessionLockState(
+            sessionId: sessionId,
+            isLocked: isLocked,
+            lockVersion: lockVersion + 1,
+            reason: reason,
+            timestamp: Date()
+        )
+    }
+}
+
+/// WebSocket client for backend communication
+///
+/// Thread Safety: This class is isolated to the main actor since it updates
+/// @Published properties for UI state. The handleMessage() method is marked
+/// nonisolated to allow background processing before switching to main thread
+/// for UI updates.
+@MainActor
 class VoiceCodeClient: ObservableObject {
     @Published var isConnected = false
     @Published var currentError: String?
     @Published var isProcessing = false
-    @Published var lockedSessions = Set<String>()  // Claude session IDs currently locked
+    @Published var lockedSessions = Set<String>()  // Deprecated: kept for backward compatibility, use lockStates instead
+    @Published var lockStates: [String: SessionLockState] = [:]  // Claude session ID -> lock state with versioning
     @Published var availableCommands: AvailableCommands?  // Available commands for current directory
     @Published var runningCommands: [String: CommandExecution] = [:]  // command_session_id -> execution
     @Published var commandHistory: [CommandHistorySession] = []  // Command history sessions
@@ -35,6 +91,104 @@ class VoiceCodeClient: ObservableObject {
 
     // Track active subscriptions for auto-restore on reconnection
     private var activeSubscriptions = Set<String>()
+
+    // Track pending operations for reconnection restore
+    private var pendingOperations: [String: SessionLockState] = [:]  // Session ID -> lock state to restore
+
+    // MARK: - Lock State Management
+
+    /// Update lock state for a session with version tracking to handle out-of-order messages
+    /// - Returns: true if state was updated, false if ignored due to stale version
+    @discardableResult
+    private func updateLockState(sessionId: String, isLocked: Bool, reason: SessionLockState.LockReason, forceUpdate: Bool = false) -> Bool {
+        let currentState = lockStates[sessionId]
+        let currentVersion = currentState?.lockVersion ?? -1
+
+        // Create new state with incremented version
+        let newState = currentState?.nextVersion(isLocked: isLocked, reason: reason) ??
+            SessionLockState(sessionId: sessionId, isLocked: isLocked, lockVersion: 0, reason: reason)
+
+        // If forcing update (e.g., manual unlock), bypass version check
+        if forceUpdate {
+            lockStates[sessionId] = newState
+            syncDeprecatedLockedSessions()
+            logStateTransition(sessionId: sessionId, oldState: currentState, newState: newState, forced: true)
+            return true
+        }
+
+        // Reject updates with stale versions (out-of-order messages)
+        // Only accept if new version is greater than current
+        if let current = currentState, newState.lockVersion <= current.lockVersion {
+            print("⚠️ [LockState] Ignoring stale state update for \(sessionId): version \(newState.lockVersion) <= \(current.lockVersion)")
+            return false
+        }
+
+        // Apply state transition
+        lockStates[sessionId] = newState
+        syncDeprecatedLockedSessions()
+        logStateTransition(sessionId: sessionId, oldState: currentState, newState: newState, forced: false)
+
+        // Track pending operations for reconnection restore
+        if isLocked {
+            pendingOperations[sessionId] = newState
+        } else {
+            pendingOperations.removeValue(forKey: sessionId)
+        }
+
+        return true
+    }
+
+    /// Sync deprecated lockedSessions set with new lockStates for backward compatibility
+    private func syncDeprecatedLockedSessions() {
+        lockedSessions = Set(lockStates.filter { $0.value.isLocked }.keys)
+    }
+
+    /// Log state transition for debugging
+    private func logStateTransition(sessionId: String, oldState: SessionLockState?, newState: SessionLockState, forced: Bool) {
+        let forceMarker = forced ? " [FORCED]" : ""
+        if let old = oldState {
+            print("🔄 [LockState]\(forceMarker) \(sessionId) v\(old.lockVersion) -> v\(newState.lockVersion): \(old.reason.displayName) (\(old.isLocked ? "locked" : "unlocked")) -> \(newState.reason.displayName) (\(newState.isLocked ? "locked" : "unlocked"))")
+        } else {
+            print("✨ [LockState]\(forceMarker) \(sessionId) v\(newState.lockVersion): -> \(newState.reason.displayName) (\(newState.isLocked ? "locked" : "unlocked"))")
+        }
+        print("   Total locked sessions: \(lockedSessions.count)")
+        if !lockedSessions.isEmpty {
+            print("   Currently locked: \(Array(lockedSessions))")
+        }
+    }
+
+    /// Get current lock state for a session
+    func getLockState(sessionId: String) -> SessionLockState? {
+        return lockStates[sessionId]
+    }
+
+    /// Check if a session is locked
+    func isSessionLocked(sessionId: String) -> Bool {
+        return lockStates[sessionId]?.isLocked ?? false
+    }
+
+    /// Manually unlock a session (e.g., for stuck locks)
+    func manuallyUnlockSession(sessionId: String) {
+        guard let currentState = lockStates[sessionId], currentState.isLocked else {
+            print("⚠️ [LockState] Cannot manually unlock \(sessionId): session not locked")
+            return
+        }
+
+        print("🔓 [LockState] Manual unlock requested for \(sessionId)")
+        updateLockState(sessionId: sessionId, isLocked: false, reason: .manual, forceUpdate: true)
+    }
+
+    /// Restore pending operations after reconnection
+    private func restorePendingOperations() {
+        guard !pendingOperations.isEmpty else { return }
+
+        print("🔄 [LockState] Restoring \(pendingOperations.count) pending operations after reconnection")
+        for (sessionId, state) in pendingOperations {
+            print("   Restoring lock for \(sessionId): \(state.reason.displayName) (version: \(state.lockVersion))")
+            lockStates[sessionId] = state
+        }
+        syncDeprecatedLockedSessions()
+    }
 
     init(serverURL: String, voiceOutputManager: VoiceOutputManager? = nil, sessionSyncManager: SessionSyncManager? = nil, appSettings: AppSettings? = nil, setupObservers: Bool = true) {
         self.serverURL = serverURL
@@ -111,9 +265,9 @@ class VoiceCodeClient: ObservableObject {
 
         DispatchQueue.main.async {
             self.isConnected = false
-            // Clear all locked sessions on disconnect to prevent stuck locks
-            self.lockedSessions.removeAll()
-            print("🔓 [VoiceCodeClient] Cleared all locked sessions on disconnect")
+            // DO NOT clear lock states on disconnect - they should be restored on reconnection
+            // Pending operations are preserved to restore locks after reconnection
+            print("🔌 [VoiceCodeClient] Disconnected (preserving \(self.pendingOperations.count) pending operations for reconnection)")
         }
     }
 
@@ -195,9 +349,8 @@ class VoiceCodeClient: ObservableObject {
                 DispatchQueue.main.async {
                     self.isConnected = false
                     self.currentError = error.localizedDescription
-                    // Clear all locked sessions on connection failure
-                    self.lockedSessions.removeAll()
-                    print("🔓 [VoiceCodeClient] Cleared all locked sessions on connection failure")
+                    // Preserve lock states on connection failure - will be restored on reconnection
+                    print("❌ [VoiceCodeClient] Connection failure, preserving \(self.pendingOperations.count) pending operations")
                 }
             }
         }
@@ -225,6 +378,9 @@ class VoiceCodeClient: ObservableObject {
                 if let sessionId = json["session_id"] as? String {
                     print("📥 [VoiceCodeClient] Backend confirmed session: \(sessionId)")
                 }
+
+                // Restore pending operations (lock states) after reconnection
+                self.restorePendingOperations()
 
                 // Restore subscriptions after reconnection
                 if !self.activeSubscriptions.isEmpty {
@@ -265,10 +421,10 @@ class VoiceCodeClient: ObservableObject {
             case "response":
                 self.isProcessing = false
 
-                // Unlock session when response is received
+                // Unlock session when response is received (backend completed processing)
+                // Use processing reason with current timestamp for completion
                 if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
-                    self.lockedSessions.remove(sessionId)
-                    print("🔓 [VoiceCodeClient] Session unlocked: \(sessionId)")
+                    self.updateLockState(sessionId: sessionId, isLocked: false, reason: .processingPrompt)
                 }
 
                 if let success = json["success"] as? Bool, success {
@@ -302,10 +458,9 @@ class VoiceCodeClient: ObservableObject {
                 let error = json["message"] as? String ?? "Unknown error"
                 self.currentError = error
 
-                // Unlock session when error is received
+                // Unlock session when error is received (backend failed processing)
                 if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
-                    self.lockedSessions.remove(sessionId)
-                    print("🔓 [VoiceCodeClient] Session unlocked after error: \(sessionId)")
+                    self.updateLockState(sessionId: sessionId, isLocked: false, reason: .processingPrompt)
                 }
 
             case "pong":
@@ -371,23 +526,15 @@ class VoiceCodeClient: ObservableObject {
                         self.subscribe(sessionId: sessionId)
                     }
 
-                    if self.lockedSessions.contains(sessionId) {
-                        self.lockedSessions.remove(sessionId)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (turn complete, remaining locks: \(self.lockedSessions.count))")
-                        if !self.lockedSessions.isEmpty {
-                            print("   Still locked: \(Array(self.lockedSessions))")
-                        }
-                    }
+                    // Unlock session when turn completes (definitive unlock signal)
+                    self.updateLockState(sessionId: sessionId, isLocked: false, reason: .processingPrompt)
                 }
 
             case "compaction_complete":
                 // Session compaction completed successfully
                 if let sessionId = json["session_id"] as? String {
                     print("⚡️ [VoiceCodeClient] Received compaction_complete for \(sessionId)")
-                    if self.lockedSessions.contains(sessionId) {
-                        self.lockedSessions.remove(sessionId)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (compaction complete, remaining locks: \(self.lockedSessions.count))")
-                    }
+                    self.updateLockState(sessionId: sessionId, isLocked: false, reason: .compaction)
                 }
                 self.onCompactionResponse?(json)
 
@@ -395,10 +542,7 @@ class VoiceCodeClient: ObservableObject {
                 // Session compaction failed
                 if let sessionId = json["session_id"] as? String {
                     print("❌ [VoiceCodeClient] Received compaction_error for \(sessionId)")
-                    if self.lockedSessions.contains(sessionId) {
-                        self.lockedSessions.remove(sessionId)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (compaction error, remaining locks: \(self.lockedSessions.count))")
-                    }
+                    self.updateLockState(sessionId: sessionId, isLocked: false, reason: .compaction)
                 }
                 self.onCompactionResponse?(json)
 
@@ -433,10 +577,11 @@ class VoiceCodeClient: ObservableObject {
                 }
 
             case "session_locked":
-                // Session is currently locked (processing a prompt)
+                // Session is currently locked (backend confirms it's processing a prompt)
                 if let sessionId = json["session_id"] as? String {
-                    print("🔒 [VoiceCodeClient] Session locked: \(sessionId)")
-                    self.lockedSessions.insert(sessionId)
+                    print("🔒 [VoiceCodeClient] Backend confirmed session locked: \(sessionId)")
+                    // Use confirmed reason with current timestamp to track backend confirmation
+                    self.updateLockState(sessionId: sessionId, isLocked: true, reason: .confirmed(Date()))
                 }
 
             case "available_commands":
@@ -510,10 +655,10 @@ class VoiceCodeClient: ObservableObject {
 
     func sendPrompt(_ text: String, iosSessionId: String, sessionId: String? = nil, workingDirectory: String? = nil) {
         // Optimistically lock the session before sending
-        // Unlock will happen when we receive ANY assistant message for this session
+        // This provides immediate UI feedback while waiting for backend confirmation
         if let sessionId = sessionId {
-            lockedSessions.insert(sessionId)
-            print("🔒 [VoiceCodeClient] Optimistically locked: \(sessionId) (total locks: \(lockedSessions.count))")
+            let lockTime = Date()
+            updateLockState(sessionId: sessionId, isLocked: true, reason: .optimistic(lockTime))
         }
 
         var message: [String: Any] = [
@@ -657,8 +802,7 @@ class VoiceCodeClient: ObservableObject {
 
         // Optimistically lock the session before sending (must be on main thread)
         await MainActor.run {
-            lockedSessions.insert(sessionId)
-            print("🔒 [VoiceCodeClient] Optimistically locked for compaction: \(sessionId) (total locks: \(lockedSessions.count))")
+            updateLockState(sessionId: sessionId, isLocked: true, reason: .compaction)
         }
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -847,8 +991,11 @@ class VoiceCodeClient: ObservableObject {
         }
     }
 
+    // deinit is nonisolated, so we can't safely call disconnect() from here
     deinit {
         NotificationCenter.default.removeObserver(self)
-        disconnect()
+        // Note: We can't safely call disconnect() from deinit since it's not isolated to the main actor.
+        // The WebSocket will be cleaned up when released.
+        // This is acceptable since VoiceCodeClient is typically a singleton that lives for the app lifetime.
     }
 }

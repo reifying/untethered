@@ -5,6 +5,13 @@ import Foundation
 import AVFoundation
 import Combine
 
+/// Manages text-to-speech output with background playback support
+///
+/// Thread Safety: This class is isolated to the main actor since it updates
+/// @Published properties for UI state. The AVSpeechSynthesizerDelegate methods
+/// are marked nonisolated since they're called from the audio thread, and they
+/// properly dispatch to the main thread when updating @Published properties.
+@MainActor
 class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     @Published var isSpeaking = false
 
@@ -66,7 +73,9 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
         // Play silent audio every 25 seconds to keep the audio session alive
         keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 25.0, repeats: true) { [weak self] _ in
-            self?.playSilence()
+            Task { @MainActor [weak self] in
+                self?.playSilence()
+            }
         }
     }
 
@@ -158,48 +167,51 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
     // MARK: - AVSpeechSynthesizerDelegate
 
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        DispatchQueue.main.async {
+    // Delegate methods are called from the audio thread, so they must be nonisolated.
+    // They dispatch to main thread when updating @Published properties.
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        Task { @MainActor in
             self.isSpeaking = true
+            // Start keep-alive timer for long TTS playback
+            self.startKeepAliveTimer()
         }
-        // Start keep-alive timer for long TTS playback
-        startKeepAliveTimer()
     }
 
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        // Stop keep-alive timer
-        stopKeepAliveTimer()
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            // Stop keep-alive timer
+            self.stopKeepAliveTimer()
 
-        // Only deactivate audio session if background playback is disabled
-        // Keeping it active when locked allows subsequent TTS to play without app suspension
-        if !(appSettings?.continuePlaybackWhenLocked ?? true) {
-            let audioSession = AVAudioSession.sharedInstance()
-            do {
-                try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
-            } catch {
-                print("Failed to deactivate audio session: \(error)")
+            // Only deactivate audio session if background playback is disabled
+            // Keeping it active when locked allows subsequent TTS to play without app suspension
+            if !(self.appSettings?.continuePlaybackWhenLocked ?? true) {
+                let audioSession = AVAudioSession.sharedInstance()
+                do {
+                    try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+                } catch {
+                    print("Failed to deactivate audio session: \(error)")
+                }
             }
-        }
 
-        DispatchQueue.main.async {
             self.isSpeaking = false
             self.onSpeechComplete?()
         }
     }
 
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        // Stop keep-alive timer
-        stopKeepAliveTimer()
-
-        DispatchQueue.main.async {
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            // Stop keep-alive timer
+            self.stopKeepAliveTimer()
             self.isSpeaking = false
         }
     }
 
+    // deinit is nonisolated, so we need to be careful about calling MainActor-isolated methods
     deinit {
-        stopKeepAliveTimer()
-        if synthesizer.isSpeaking {
-            synthesizer.stopSpeaking(at: .immediate)
-        }
+        // Note: We can't safely call stopKeepAliveTimer() or check synthesizer state from deinit
+        // since it's not isolated to the main actor. The timer will be cleaned up when released.
+        // This is acceptable since VoiceOutputManager is typically a singleton that lives for
+        // the app lifetime.
     }
 }

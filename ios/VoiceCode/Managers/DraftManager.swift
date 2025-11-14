@@ -4,6 +4,12 @@
 import Foundation
 import Combine
 
+/// Manages draft prompt text for sessions with automatic persistence
+///
+/// Thread Safety: This class is isolated to the main actor since it updates
+/// @Published properties and interacts with UserDefaults. All methods must be
+/// called from the main thread.
+@MainActor
 class DraftManager: ObservableObject {
     @Published private var drafts: [String: String] {
         didSet {

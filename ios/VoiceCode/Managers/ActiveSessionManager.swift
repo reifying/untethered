@@ -9,6 +9,11 @@ import Foundation
 import Combine
 
 /// Manages which session is currently active/visible to the user
+///
+/// Thread Safety: This class is isolated to the main actor since it updates
+/// @Published properties that drive UI state. All methods must be called from
+/// the main thread.
+@MainActor
 class ActiveSessionManager: ObservableObject {
     static let shared = ActiveSessionManager()
 

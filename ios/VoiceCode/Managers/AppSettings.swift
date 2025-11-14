@@ -5,6 +5,12 @@ import Foundation
 import Combine
 import AVFoundation
 
+/// Application settings with automatic persistence to UserDefaults
+///
+/// Thread Safety: This class is isolated to the main actor since it updates
+/// @Published properties that drive UI state and settings. All methods must be
+/// called from the main thread.
+@MainActor
 class AppSettings: ObservableObject {
     @Published var serverURL: String {
         didSet {

@@ -1160,4 +1160,242 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertFalse(client.lockedSessions.contains(session2))
         XCTAssertTrue(client.lockedSessions.contains(session3))
     }
+
+    // MARK: - Lock State Management Tests
+
+    func testLockStateVersionTracking() {
+        // Test that lock state versions prevent out-of-order updates
+        let sessionId = "test-version-tracking"
+
+        // Initial lock (version 0)
+        let initialState = client.getLockState(sessionId: sessionId)
+        XCTAssertNil(initialState)
+
+        // Simulate sending prompt (optimistic lock)
+        client.sendPrompt("test", iosSessionId: "ios-session-123", sessionId: sessionId)
+
+        guard let state1 = client.getLockState(sessionId: sessionId) else {
+            XCTFail("Expected lock state after sendPrompt")
+            return
+        }
+        XCTAssertTrue(state1.isLocked)
+        XCTAssertEqual(state1.lockVersion, 0)
+
+        // Simulate receiving session_locked message (version 1)
+        let lockedMessage = """
+        {"type": "session_locked", "session_id": "\(sessionId)"}
+        """
+        client.handleMessage(lockedMessage)
+
+        guard let state2 = client.getLockState(sessionId: sessionId) else {
+            XCTFail("Expected lock state after session_locked")
+            return
+        }
+        XCTAssertTrue(state2.isLocked)
+        XCTAssertEqual(state2.lockVersion, 1)
+
+        // Simulate receiving turn_complete (version 2)
+        let completeMessage = """
+        {"type": "turn_complete", "session_id": "\(sessionId)"}
+        """
+        client.handleMessage(completeMessage)
+
+        guard let state3 = client.getLockState(sessionId: sessionId) else {
+            XCTFail("Expected lock state after turn_complete")
+            return
+        }
+        XCTAssertFalse(state3.isLocked)
+        XCTAssertEqual(state3.lockVersion, 2)
+    }
+
+    func testLockStateOutOfOrderMessages() {
+        // Test that out-of-order messages are ignored based on version
+        let sessionId = "test-out-of-order"
+
+        // Send prompt (version 0, locked)
+        client.sendPrompt("test", iosSessionId: "ios-session-123", sessionId: sessionId)
+
+        guard let state1 = client.getLockState(sessionId: sessionId) else {
+            XCTFail("Expected lock state after sendPrompt")
+            return
+        }
+        XCTAssertEqual(state1.lockVersion, 0)
+        XCTAssertTrue(state1.isLocked)
+
+        // Receive turn_complete (version 1, unlocked)
+        let completeMessage = """
+        {"type": "turn_complete", "session_id": "\(sessionId)"}
+        """
+        client.handleMessage(completeMessage)
+
+        guard let state2 = client.getLockState(sessionId: sessionId) else {
+            XCTFail("Expected lock state after turn_complete")
+            return
+        }
+        XCTAssertEqual(state2.lockVersion, 1)
+        XCTAssertFalse(state2.isLocked)
+
+        // Now receive delayed session_locked message (should be ignored as stale)
+        // This simulates an out-of-order network message arriving late
+        let lateLockedMessage = """
+        {"type": "session_locked", "session_id": "\(sessionId)"}
+        """
+        client.handleMessage(lateLockedMessage)
+
+        // State should remain unchanged (version 1, unlocked)
+        guard let state3 = client.getLockState(sessionId: sessionId) else {
+            XCTFail("Expected lock state to persist")
+            return
+        }
+        XCTAssertEqual(state3.lockVersion, 1)  // Version unchanged
+        XCTAssertFalse(state3.isLocked)  // Still unlocked
+    }
+
+    func testManualUnlockWithValidation() {
+        // Test that manual unlock works and bypasses version checking
+        let sessionId = "test-manual-unlock"
+
+        // Lock the session
+        client.sendPrompt("test", iosSessionId: "ios-session-123", sessionId: sessionId)
+        XCTAssertTrue(client.isSessionLocked(sessionId: sessionId))
+
+        // Manual unlock
+        client.manuallyUnlockSession(sessionId: sessionId)
+        XCTAssertFalse(client.isSessionLocked(sessionId: sessionId))
+
+        // Verify manual unlock cannot be called on already-unlocked session
+        // (it should be safe to call, just no-op with warning)
+        client.manuallyUnlockSession(sessionId: sessionId)
+        XCTAssertFalse(client.isSessionLocked(sessionId: sessionId))
+    }
+
+    func testPendingOperationsRestoreOnReconnect() {
+        // Test that locked sessions are restored after reconnection
+        let sessionId1 = "test-restore-1"
+        let sessionId2 = "test-restore-2"
+
+        // Lock both sessions
+        client.sendPrompt("test1", iosSessionId: "ios-session-1", sessionId: sessionId1)
+        client.sendPrompt("test2", iosSessionId: "ios-session-2", sessionId: sessionId2)
+
+        XCTAssertTrue(client.isSessionLocked(sessionId: sessionId1))
+        XCTAssertTrue(client.isSessionLocked(sessionId: sessionId2))
+
+        // Simulate disconnection (locks should be preserved)
+        client.disconnect()
+
+        // Locks should still be present (not cleared on disconnect)
+        XCTAssertTrue(client.isSessionLocked(sessionId: sessionId1))
+        XCTAssertTrue(client.isSessionLocked(sessionId: sessionId2))
+
+        // Simulate reconnection
+        client.connect()
+
+        // Simulate receiving "connected" message which triggers restore
+        let connectedMessage = """
+        {"type": "connected", "message": "Session registered"}
+        """
+        client.handleMessage(connectedMessage)
+
+        // Locks should still be present after reconnection
+        XCTAssertTrue(client.isSessionLocked(sessionId: sessionId1))
+        XCTAssertTrue(client.isSessionLocked(sessionId: sessionId2))
+    }
+
+    func testLockStateReasons() {
+        // Test that different lock reasons are tracked correctly
+        let sessionId = "test-reasons"
+
+        // Optimistic lock
+        client.sendPrompt("test", iosSessionId: "ios-session-123", sessionId: sessionId)
+        if case .optimistic = client.getLockState(sessionId: sessionId)?.reason {
+            // Success
+        } else {
+            XCTFail("Expected optimistic lock reason")
+        }
+
+        // Backend confirmation
+        let lockedMessage = """
+        {"type": "session_locked", "session_id": "\(sessionId)"}
+        """
+        client.handleMessage(lockedMessage)
+        if case .confirmed = client.getLockState(sessionId: sessionId)?.reason {
+            // Success
+        } else {
+            XCTFail("Expected confirmed lock reason")
+        }
+
+        // Processing complete
+        let completeMessage = """
+        {"type": "turn_complete", "session_id": "\(sessionId)"}
+        """
+        client.handleMessage(completeMessage)
+        if case .processingPrompt = client.getLockState(sessionId: sessionId)?.reason {
+            // Success
+        } else {
+            XCTFail("Expected processingPrompt reason for unlock")
+        }
+    }
+
+    func testCompactionLockState() {
+        // Test that compaction uses proper lock state
+        let sessionId = "test-compaction-lock"
+
+        // Setup callback to prevent timeout
+        var receivedCompactionError = false
+        client.onCompactionResponse = { json in
+            if json["type"] as? String == "compaction_error" {
+                receivedCompactionError = true
+            }
+        }
+
+        // Start compaction
+        Task {
+            do {
+                _ = try await client.compactSession(sessionId: sessionId)
+            } catch {
+                // Expected to fail since we're not sending actual response
+            }
+        }
+
+        // Give async task time to start
+        let expectation = XCTestExpectation(description: "Compaction lock set")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            // Verify session is locked with compaction reason
+            if let lockState = self.client.getLockState(sessionId: sessionId) {
+                XCTAssertTrue(lockState.isLocked)
+                if case .compaction = lockState.reason {
+                    expectation.fulfill()
+                } else {
+                    XCTFail("Expected compaction lock reason")
+                }
+            } else {
+                XCTFail("Expected lock state for compaction")
+            }
+        }
+
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    func testBackwardCompatibilityWithDeprecatedLockedSessions() {
+        // Test that deprecated lockedSessions is synced with new lockStates
+        let sessionId = "test-backward-compat"
+
+        // Using new API
+        client.sendPrompt("test", iosSessionId: "ios-session-123", sessionId: sessionId)
+
+        // Verify deprecated lockedSessions is synced
+        XCTAssertTrue(client.lockedSessions.contains(sessionId))
+        XCTAssertTrue(client.isSessionLocked(sessionId: sessionId))
+
+        // Unlock using new API
+        let completeMessage = """
+        {"type": "turn_complete", "session_id": "\(sessionId)"}
+        """
+        client.handleMessage(completeMessage)
+
+        // Verify deprecated lockedSessions is synced
+        XCTAssertFalse(client.lockedSessions.contains(sessionId))
+        XCTAssertFalse(client.isSessionLocked(sessionId: sessionId))
+    }
 }

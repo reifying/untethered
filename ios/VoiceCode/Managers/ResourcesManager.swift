@@ -2,6 +2,11 @@ import Foundation
 import Combine
 
 /// Manages file resources uploaded via Share Extension and synced with backend
+///
+/// Thread Safety: This class is isolated to the main actor since it updates
+/// @Published properties for UI state. Background file operations are performed
+/// in async tasks that properly switch to main thread for UI updates.
+@MainActor
 class ResourcesManager: ObservableObject {
     private let appGroupIdentifier = "group.com.travisbrown.untethered"
     private let voiceCodeClient: VoiceCodeClient
@@ -49,9 +54,7 @@ class ResourcesManager: ObservableObject {
     /// Get count of pending uploads without processing them
     func updatePendingCount() {
         guard let pendingUploadsURL = getPendingUploadsDirectory() else {
-            DispatchQueue.main.async {
-                self.pendingUploadCount = 0
-            }
+            self.pendingUploadCount = 0
             return
         }
 
@@ -61,28 +64,20 @@ class ResourcesManager: ObservableObject {
                 includingPropertiesForKeys: nil
             ).filter { $0.pathExtension == "json" }
 
-            DispatchQueue.main.async {
-                self.pendingUploadCount = metadataFiles.count
-            }
+            self.pendingUploadCount = metadataFiles.count
         } catch {
             print("⚠️ [ResourcesManager] Failed to count pending uploads: \(error)")
-            DispatchQueue.main.async {
-                self.pendingUploadCount = 0
-            }
+            self.pendingUploadCount = 0
         }
     }
 
     // MARK: - Internal Processing
 
     private func processUploadsAsync() async {
-        await MainActor.run {
-            self.isProcessing = true
-        }
+        self.isProcessing = true
 
         defer {
-            Task { @MainActor in
-                self.isProcessing = false
-            }
+            self.isProcessing = false
         }
 
         guard let pendingUploadsURL = getPendingUploadsDirectory() else {
@@ -106,16 +101,12 @@ class ResourcesManager: ObservableObject {
 
         guard !metadataFiles.isEmpty else {
             print("✅ [ResourcesManager] No pending uploads found")
-            await MainActor.run {
-                self.pendingUploadCount = 0
-            }
+            self.pendingUploadCount = 0
             return
         }
 
         print("📤 [ResourcesManager] Found \(metadataFiles.count) pending upload(s)")
-        await MainActor.run {
-            self.pendingUploadCount = metadataFiles.count
-        }
+        self.pendingUploadCount = metadataFiles.count
 
         // Process each upload
         for metadataURL in metadataFiles {

@@ -32,10 +32,21 @@ struct ConversationView: View {
     @State private var compactionTimestamps: [UUID: Date] = [:]
     @State private var recentCompactionsBySession: [UUID: VoiceCodeClient.CompactionResult] = [:]
     
-    // Auto-scroll state
-    @State private var hasPerformedInitialScroll = false
-    @State private var autoScrollEnabled = true  // Auto-scroll on by default
+    // Auto-scroll state - single source of truth
+    enum AutoScrollState {
+        case initializing   // View appeared, waiting for first scroll
+        case enabled        // Auto-scroll on, will scroll on new messages
+        case disabled       // User scrolled up, won't auto-scroll
+
+        var isAutoScrollActive: Bool {
+            self == .enabled || self == .initializing
+        }
+    }
+
+    @State private var autoScrollState: AutoScrollState = .initializing
     @State private var scrollProxy: ScrollViewProxy?
+    @State private var lastMessageCount: Int = 0
+    @State private var scrollDebounceTask: Task<Void, Never>?
 
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
@@ -57,14 +68,19 @@ struct ConversationView: View {
     // Check if current session is locked
     private var isSessionLocked: Bool {
         let claudeSessionId = session.id.uuidString.lowercased()
-        return client.lockedSessions.contains(claudeSessionId)
+        return client.isSessionLocked(sessionId: claudeSessionId)
     }
 
-    // Manual unlock function
+    // Get current lock state for display
+    private var lockState: SessionLockState? {
+        let claudeSessionId = session.id.uuidString.lowercased()
+        return client.getLockState(sessionId: claudeSessionId)
+    }
+
+    // Manual unlock function with validation
     private func manualUnlock() {
         let claudeSessionId = session.id.uuidString.lowercased()
-        client.lockedSessions.remove(claudeSessionId)
-        print("🔓 [Manual] User manually unlocked session: \(claudeSessionId)")
+        client.manuallyUnlockSession(sessionId: claudeSessionId)
     }
 
     var body: some View {
@@ -77,7 +93,7 @@ struct ConversationView: View {
                         .onAppear {
                             scrollProxy = proxy
                         }
-                    
+
                     ScrollView {
                         if isLoading {
                             VStack(spacing: 16) {
@@ -116,23 +132,17 @@ struct ConversationView: View {
                                     )
                                     .id(message.id)
                                     .onAppear {
-                                        // Track last visible message for scroll detection
-                                        if message.id == messages.last?.id {
-                                            print("🔵 [AutoScroll] Last message is visible (at bottom)")
-                                            if !autoScrollEnabled {
-                                                print("🔵 [AutoScroll] Re-enabling auto-scroll")
-                                                autoScrollEnabled = true
-                                            }
+                                        // Detect when last message comes into view (user scrolled to bottom)
+                                        if message.id == messages.last?.id, autoScrollState == .disabled {
+                                            print("🔵 [AutoScroll] Last message visible, re-enabling auto-scroll")
+                                            autoScrollState = .enabled
                                         }
                                     }
                                     .onDisappear {
-                                        // Last message disappeared - user scrolled up
-                                        if message.id == messages.last?.id {
-                                            print("⚪️ [AutoScroll] Last message disappeared (scrolled up)")
-                                            if autoScrollEnabled {
-                                                print("⚪️ [AutoScroll] Disabling auto-scroll")
-                                                autoScrollEnabled = false
-                                            }
+                                        // Detect when last message leaves view (user scrolled up)
+                                        if message.id == messages.last?.id, autoScrollState.isAutoScrollActive {
+                                            print("⚪️ [AutoScroll] Last message disappeared, disabling auto-scroll")
+                                            autoScrollState = .disabled
                                         }
                                     }
                                 }
@@ -145,28 +155,8 @@ struct ConversationView: View {
                             .padding()
                         }
                     }
-                    .onChange(of: messages.count) { oldCount, newCount in
-                        // Auto-scroll to new messages if enabled
-                        guard newCount > oldCount else { return }
-
-                        print("📨 [AutoScroll] New messages: \(oldCount) -> \(newCount), auto-scroll: \(autoScrollEnabled ? "enabled" : "disabled")")
-
-                        if autoScrollEnabled {
-                            print("📨 [AutoScroll] Scrolling to bottom anchor")
-                            withAnimation {
-                                proxy.scrollTo("bottom", anchor: .bottom)
-                            }
-                        } else {
-                            print("📨 [AutoScroll] Skipping auto-scroll (disabled)")
-                        }
-                    }
-                    .onChange(of: isLoading) { wasLoading, nowLoading in
-                        // When loading finishes, perform initial scroll to bottom
-                        if wasLoading && !nowLoading && !hasPerformedInitialScroll {
-                            hasPerformedInitialScroll = true
-                            // Non-animated for immediate positioning
-                            proxy.scrollTo("bottom", anchor: .bottom)
-                        }
+                    .onChange(of: messages.count) { _, newCount in
+                        handleMessageCountChange(newCount: newCount, proxy: proxy)
                     }
                 }
             }
@@ -250,8 +240,8 @@ struct ConversationView: View {
                     Button(action: {
                         toggleAutoScroll()
                     }) {
-                        Image(systemName: autoScrollEnabled ? "arrow.down.circle.fill" : "arrow.down.circle")
-                            .foregroundColor(autoScrollEnabled ? .blue : .gray)
+                        Image(systemName: autoScrollState.isAutoScrollActive ? "arrow.down.circle.fill" : "arrow.down.circle")
+                            .foregroundColor(autoScrollState.isAutoScrollActive ? .blue : .gray)
                     }
                     
                     // Compact button
@@ -269,7 +259,7 @@ struct ConversationView: View {
                                 .foregroundColor(wasRecentlyCompacted ? .green : .primary)
                         }
                     }
-                    .disabled(isCompacting || client.lockedSessions.contains(session.id.uuidString.lowercased()))
+                    .disabled(isCompacting || isSessionLocked)
 
                     Button(action: {
                         client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
@@ -343,11 +333,10 @@ struct ConversationView: View {
             )
         }
         .onAppear {
-            // Reset scroll flags when view appears (handles navigation back to session)
-            print("👁️ [AutoScroll] View appeared, resetting state")
-            hasPerformedInitialScroll = false
-            autoScrollEnabled = true  // Re-enable auto-scroll on view appear
-            print("👁️ [AutoScroll] Auto-scroll enabled on view appear")
+            // Reset auto-scroll state when view appears
+            print("👁️ [AutoScroll] View appeared, state: initializing")
+            autoScrollState = .initializing
+            lastMessageCount = messages.count
 
             loadSessionIfNeeded()
             setupVoiceInput()
@@ -355,7 +344,7 @@ struct ConversationView: View {
             // Restore draft text for this session
             let sessionID = session.id.uuidString.lowercased()
             promptText = draftManager.getDraft(sessionID: sessionID)
-            
+
             // Restore compaction state for this session
             if let stats = recentCompactionsBySession[session.id],
                let timestamp = compactionTimestamps[session.id] {
@@ -365,6 +354,19 @@ struct ConversationView: View {
                 wasRecentlyCompacted = false
                 lastCompactionStats = nil
             }
+
+            // Perform initial scroll after a brief delay (let messages load)
+            scrollDebounceTask?.cancel()
+            scrollDebounceTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 300_000_000) // 300ms
+                guard !Task.isCancelled else { return }
+
+                if !messages.isEmpty, let proxy = scrollProxy {
+                    print("👁️ [AutoScroll] Performing initial scroll to bottom")
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                    autoScrollState = .enabled
+                }
+            }
         }
         .onChange(of: promptText) { oldValue, newValue in
             // Auto-save draft as user types
@@ -372,6 +374,10 @@ struct ConversationView: View {
             draftManager.saveDraft(sessionID: sessionID, text: newValue)
         }
         .onDisappear {
+            // Cancel any pending scroll tasks
+            scrollDebounceTask?.cancel()
+            scrollDebounceTask = nil
+
             // Clear active session for smart speaking
             ActiveSessionManager.shared.clearActiveSession()
 
@@ -444,11 +450,8 @@ struct ConversationView: View {
         let sessionID = session.id.uuidString.lowercased()
         draftManager.clearDraft(sessionID: sessionID)
 
-        // Optimistically lock the session before sending
-        // Use session.id (iOS UUID) for locking since that's what backend echoes in turn_complete
-        let sessionId = session.id.uuidString.lowercased()
-        client.lockedSessions.insert(sessionId)
-        print("🔒 [ConversationView] Optimistically locked session: \(sessionId)")
+        // Note: Optimistic locking is now handled by VoiceCodeClient.sendPrompt()
+        // No need to duplicate lock logic here
 
         // Create optimistic message
         client.sessionSyncManager.createOptimisticMessage(sessionId: session.id, text: trimmedText) { messageId in
@@ -468,12 +471,12 @@ struct ConversationView: View {
         ]
 
         if isNewSession {
-            message["new_session_id"] = sessionId
-            print("📤 [ConversationView] Sending prompt with new_session_id: \(sessionId)")
+            message["new_session_id"] = sessionID
+            print("📤 [ConversationView] Sending prompt with new_session_id: \(sessionID)")
             // Note: Subscribe will happen when we receive turn_complete (after backend creates session)
         } else {
-            message["resume_session_id"] = sessionId
-            print("📤 [ConversationView] Sending prompt with resume_session_id: \(sessionId)")
+            message["resume_session_id"] = sessionID
+            print("📤 [ConversationView] Sending prompt with resume_session_id: \(sessionID)")
         }
 
         client.sendMessage(message)
@@ -615,24 +618,61 @@ struct ConversationView: View {
         return "\(count)"
     }
     
+    // MARK: - Auto-scroll Logic
+
+    private func handleMessageCountChange(newCount: Int, proxy: ScrollViewProxy) {
+        // Only auto-scroll if count increased AND auto-scroll is active
+        guard newCount > lastMessageCount else {
+            lastMessageCount = newCount
+            return
+        }
+
+        let delta = newCount - lastMessageCount
+        lastMessageCount = newCount
+
+        print("📨 [AutoScroll] Messages: +\(delta), state: \(autoScrollState), total: \(newCount)")
+
+        guard autoScrollState.isAutoScrollActive else {
+            print("📨 [AutoScroll] Skipping (disabled)")
+            return
+        }
+
+        // Debounce rapid message additions
+        scrollDebounceTask?.cancel()
+        scrollDebounceTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            guard !Task.isCancelled else { return }
+
+            print("📨 [AutoScroll] Scrolling to bottom")
+            withAnimation {
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+
+            // Transition from initializing to enabled after first scroll
+            if autoScrollState == .initializing {
+                autoScrollState = .enabled
+            }
+        }
+    }
+
     private func toggleAutoScroll() {
-        print("🔘 [AutoScroll] Toggle button tapped, current state: \(autoScrollEnabled ? "enabled" : "disabled")")
-        if autoScrollEnabled {
+        print("🔘 [AutoScroll] Toggle tapped, current: \(autoScrollState)")
+
+        switch autoScrollState {
+        case .initializing, .enabled:
             // Disable auto-scroll
-            print("🔘 [AutoScroll] Disabling via manual toggle")
-            autoScrollEnabled = false
-        } else {
-            // Re-enable auto-scroll and jump to bottom
-            print("🔘 [AutoScroll] Re-enabling via manual toggle and jumping to bottom")
-            autoScrollEnabled = true
+            print("🔘 [AutoScroll] Disabling")
+            autoScrollState = .disabled
+
+        case .disabled:
+            // Re-enable and scroll to bottom immediately
+            print("🔘 [AutoScroll] Re-enabling and scrolling to bottom")
+            autoScrollState = .enabled
 
             if let proxy = scrollProxy {
-                print("🔘 [AutoScroll] Scrolling to bottom anchor")
                 withAnimation(.spring()) {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
-            } else {
-                print("🔘 [AutoScroll] No scroll proxy available")
             }
         }
     }

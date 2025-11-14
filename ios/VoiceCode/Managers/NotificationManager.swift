@@ -8,6 +8,12 @@ import Intents
 
 private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "NotificationManager")
 
+/// Manages user notifications with custom actions for Claude responses
+///
+/// Thread Safety: This class is isolated to the main actor since it manages
+/// notification state. The UNUserNotificationCenterDelegate methods are marked
+/// nonisolated since they're called from the notification center's queue.
+@MainActor
 class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationManager()
     
@@ -145,47 +151,52 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     }
     
     // MARK: - UNUserNotificationCenterDelegate
-    
+
+    // Delegate methods are called from the notification center's queue, so they must be nonisolated.
+    // They properly access main-actor-isolated properties through Task blocks.
+
     /// Handle notification actions (Read Aloud button tap)
-    func userNotificationCenter(
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let actionIdentifier = response.actionIdentifier
         let userInfo = response.notification.request.content.userInfo
-        
+
         logger.info("📱 Notification action received: \(actionIdentifier)")
-        
-        if actionIdentifier == readAloudActionIdentifier {
-            // Extract response text from userInfo
-            if let text = userInfo["responseText"] as? String {
-                logger.info("🔊 Reading response aloud (\(text.count) characters)")
-                
-                // Trigger TTS playback via VoiceOutputManager
-                voiceOutputManager?.speak(text)
-            } else {
-                logger.error("❌ No response text found in notification userInfo")
-            }
-            
-            // Clean up stored response
-            if let notificationId = userInfo["notificationId"] as? String {
-                pendingResponses.removeValue(forKey: notificationId)
-            }
-        } else if actionIdentifier == dismissActionIdentifier {
-            logger.info("✋ User dismissed notification")
-            
-            // Clean up stored response
-            if let notificationId = userInfo["notificationId"] as? String {
-                pendingResponses.removeValue(forKey: notificationId)
+
+        Task { @MainActor in
+            if actionIdentifier == self.readAloudActionIdentifier {
+                // Extract response text from userInfo
+                if let text = userInfo["responseText"] as? String {
+                    logger.info("🔊 Reading response aloud (\(text.count) characters)")
+
+                    // Trigger TTS playback via VoiceOutputManager
+                    self.voiceOutputManager?.speak(text)
+                } else {
+                    logger.error("❌ No response text found in notification userInfo")
+                }
+
+                // Clean up stored response
+                if let notificationId = userInfo["notificationId"] as? String {
+                    self.pendingResponses.removeValue(forKey: notificationId)
+                }
+            } else if actionIdentifier == self.dismissActionIdentifier {
+                logger.info("✋ User dismissed notification")
+
+                // Clean up stored response
+                if let notificationId = userInfo["notificationId"] as? String {
+                    self.pendingResponses.removeValue(forKey: notificationId)
+                }
             }
         }
-        
+
         completionHandler()
     }
-    
+
     /// Handle notification delivery when app is in foreground
-    func userNotificationCenter(
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void

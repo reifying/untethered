@@ -5,6 +5,12 @@ import Foundation
 import Speech
 import AVFoundation
 
+/// Manages speech recognition for voice input
+///
+/// Thread Safety: This class is isolated to the main actor since it updates
+/// @Published properties for UI state. Speech recognition callbacks automatically
+/// dispatch to the main thread.
+@MainActor
 class VoiceInputManager: NSObject, ObservableObject {
     @Published var isRecording = false
     @Published var transcribedText = ""
@@ -134,9 +140,10 @@ class VoiceInputManager: NSObject, ObservableObject {
 
     // MARK: - Cleanup
 
+    // deinit is nonisolated, so we can't safely call stopRecording() from here
     deinit {
-        if isRecording {
-            stopRecording()
-        }
+        // Note: We can't safely call stopRecording() from deinit since it's not isolated to the main actor.
+        // The audio engine and recognition task will be cleaned up when released.
+        // This is acceptable since VoiceInputManager is typically a singleton that lives for the app lifetime.
     }
 }
