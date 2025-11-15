@@ -60,6 +60,12 @@ class AppSettings: ObservableObject {
         }
     }
 
+    @Published var queueEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(queueEnabled, forKey: "queueEnabled")
+        }
+    }
+
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
         let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
@@ -124,6 +130,7 @@ class AppSettings: ObservableObject {
         self.recentSessionsLimit = UserDefaults.standard.object(forKey: "recentSessionsLimit") as? Int ?? 5
         self.notifyOnResponse = UserDefaults.standard.object(forKey: "notifyOnResponse") as? Bool ?? true
         self.resourceStorageLocation = UserDefaults.standard.string(forKey: "resourceStorageLocation") ?? "~/Downloads"
+        self.queueEnabled = UserDefaults.standard.object(forKey: "queueEnabled") as? Bool ?? false
 
         // Sync settings to shared UserDefaults for share extension access
         syncToSharedDefaults()

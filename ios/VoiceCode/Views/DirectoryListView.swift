@@ -29,8 +29,22 @@ struct DirectoryListView: View {
     @State private var newWorkingDirectory = ""
     @State private var createWorktree = false
     @State private var isRecentExpanded = true
+    @State private var isQueueExpanded = true
     @State private var showingCopyConfirmation = false
     @State private var copyConfirmationMessage = ""
+
+    // Queue sessions filtered by lock state and sorted by position (FIFO)
+    private var queuedSessions: [CDSession] {
+        sessions
+            .filter { $0.isInQueue && !$0.markedDeleted }
+            .filter { !isSessionLocked($0) }
+            .sorted { $0.queuePosition < $1.queuePosition }
+    }
+
+    private func isSessionLocked(_ session: CDSession) -> Bool {
+        let claudeSessionId = session.id.uuidString.lowercased()
+        return client.lockedSessions.contains(claudeSessionId)
+    }
 
     // Directory metadata computed from sessions
     struct DirectoryInfo: Identifiable {
@@ -114,7 +128,27 @@ struct DirectoryListView: View {
                             Text("Recent")
                         }
                     }
-                    
+
+                    // Queue section
+                    if settings.queueEnabled && !queuedSessions.isEmpty {
+                        Section(isExpanded: $isQueueExpanded) {
+                            ForEach(queuedSessions) { session in
+                                NavigationLink(value: session.id) {
+                                    CDSessionRowContent(session: session)
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        removeFromQueue(session)
+                                    } label: {
+                                        Label("Remove", systemImage: "xmark.circle")
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("Queue")
+                        }
+                    }
+
                     // Projects (Directories) section
                     Section {
                         ForEach(directories) { directory in
@@ -240,6 +274,34 @@ struct DirectoryListView: View {
             )
         }
 
+    }
+
+    // MARK: - Queue Management
+
+    private func removeFromQueue(_ session: CDSession) {
+        guard session.isInQueue else { return }
+
+        let removedPosition = session.queuePosition
+        session.isInQueue = false
+        session.queuePosition = 0
+        session.queuedAt = nil
+
+        // Reorder remaining queue items
+        let fetchRequest = CDSession.fetchActiveSessions()
+        fetchRequest.predicate = NSPredicate(format: "isInQueue == YES AND queuePosition > %d", removedPosition)
+
+        if let sessionsToReorder = try? viewContext.fetch(fetchRequest) {
+            for s in sessionsToReorder {
+                s.queuePosition -= 1
+            }
+        }
+
+        do {
+            try viewContext.save()
+            logger.info("✅ [Queue] Removed session from queue, reordered sessions")
+        } catch {
+            logger.error("❌ [Queue] Failed to remove session from queue: \(error)")
+        }
     }
 
     private func copyToClipboard(_ text: String, message: String) {
