@@ -289,13 +289,6 @@ struct ConversationView: View {
                     }
 
                     Button(action: {
-                        newSessionName = session.localName ?? session.backendName
-                        showingRenameSheet = true
-                    }) {
-                        Image(systemName: "pencil")
-                    }
-                    
-                    Button(action: {
                         copySessionID()
                     }) {
                         Image(systemName: "number")
