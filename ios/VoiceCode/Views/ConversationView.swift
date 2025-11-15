@@ -300,6 +300,16 @@ struct ConversationView: View {
                     }) {
                         Image(systemName: "number")
                     }
+
+                    // Queue remove button
+                    if settings.queueEnabled && session.isInQueue {
+                        Button(action: {
+                            removeFromQueue(session)
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.orange)
+                        }
+                    }
                 }
             }
         }
@@ -462,6 +472,11 @@ struct ConversationView: View {
         // Clear draft after successful send
         let sessionID = session.id.uuidString.lowercased()
         draftManager.clearDraft(sessionID: sessionID)
+
+        // Add to queue if enabled
+        if settings.queueEnabled {
+            addToQueue(session)
+        }
 
         // Optimistically lock the session before sending
         // Use session.id (iOS UUID) for locking since that's what backend echoes in turn_complete
@@ -670,6 +685,82 @@ struct ConversationView: View {
             } else {
                 print("🔘 [AutoScroll] No scroll proxy available")
             }
+        }
+    }
+
+    // MARK: - Queue Management
+
+    private func addToQueue(_ session: CDSession) {
+        if session.isInQueue {
+            // Already in queue - move to end
+            let currentPosition = session.queuePosition
+            let fetchRequest = CDSession.fetchActiveSessions()
+            fetchRequest.predicate = NSPredicate(format: "isInQueue == YES")
+            fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDSession.queuePosition, ascending: false)]
+            fetchRequest.fetchLimit = 1
+
+            guard let maxPosition = (try? viewContext.fetch(fetchRequest).first?.queuePosition) else { return }
+
+            // Decrement positions between current and max
+            let reorderRequest = CDSession.fetchActiveSessions()
+            reorderRequest.predicate = NSPredicate(
+                format: "isInQueue == YES AND queuePosition > %d AND id != %@",
+                currentPosition,
+                session.id as CVarArg
+            )
+
+            if let sessionsToReorder = try? viewContext.fetch(reorderRequest) {
+                for s in sessionsToReorder {
+                    s.queuePosition -= 1
+                }
+            }
+
+            session.queuePosition = maxPosition
+            session.queuedAt = Date()
+        } else {
+            // New to queue - add at end
+            let fetchRequest = CDSession.fetchActiveSessions()
+            fetchRequest.predicate = NSPredicate(format: "isInQueue == YES")
+            fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDSession.queuePosition, ascending: false)]
+            fetchRequest.fetchLimit = 1
+
+            let maxPosition = (try? viewContext.fetch(fetchRequest).first?.queuePosition) ?? 0
+
+            session.isInQueue = true
+            session.queuePosition = maxPosition + 1
+            session.queuedAt = Date()
+        }
+
+        do {
+            try viewContext.save()
+            print("✅ [Queue] Added session to queue at position \(session.queuePosition)")
+        } catch {
+            print("❌ [Queue] Failed to add session to queue: \(error)")
+        }
+    }
+
+    private func removeFromQueue(_ session: CDSession) {
+        guard session.isInQueue else { return }
+
+        let removedPosition = session.queuePosition
+        session.isInQueue = false
+        session.queuePosition = 0
+        session.queuedAt = nil
+
+        // Reorder remaining queue items
+        let fetchRequest = CDSession.fetchActiveSessions()
+        fetchRequest.predicate = NSPredicate(format: "isInQueue == YES AND queuePosition > %d", removedPosition)
+
+        let sessionsToReorder = (try? viewContext.fetch(fetchRequest)) ?? []
+        for s in sessionsToReorder {
+            s.queuePosition -= 1
+        }
+
+        do {
+            try viewContext.save()
+            print("✅ [Queue] Removed session from queue, reordered \(sessionsToReorder.count) sessions")
+        } catch {
+            print("❌ [Queue] Failed to remove session from queue: \(error)")
         }
     }
 }

@@ -87,6 +87,14 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
 
+                Section(header: Text("Queue")) {
+                    Toggle("Enable Queue", isOn: $settings.queueEnabled)
+
+                    Text("Show threads in queue on the Projects view. Threads are added when you send a message and removed manually.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
                 Section(header: Text("Resources")) {
                     TextField("Storage Location", text: $settings.resourceStorageLocation)
                         .autocapitalization(.none)
