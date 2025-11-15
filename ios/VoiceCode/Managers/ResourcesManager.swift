@@ -9,6 +9,8 @@ class ResourcesManager: ObservableObject {
 
     @Published var isProcessing = false
     @Published var pendingUploadCount = 0
+    @Published var resources: [Resource] = []
+    @Published var isLoadingResources = false
 
     private var processTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
@@ -36,9 +38,44 @@ class ResourcesManager: ObservableObject {
                 self?.handleUploadResponse(filename: response.filename, success: response.success)
             }
             .store(in: &cancellables)
+
+        // Monitor resources list updates
+        voiceCodeClient.$resourcesList
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] resourcesList in
+                self?.resources = resourcesList
+                self?.isLoadingResources = false
+                LogManager.shared.log("Resources list updated: \(resourcesList.count) resources", category: "ResourcesManager")
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Public Interface
+
+    /// Request list of resources from backend
+    func listResources() {
+        guard voiceCodeClient.isConnected else {
+            print("⚠️ [ResourcesManager] Not connected, cannot list resources")
+            LogManager.shared.log("Not connected, cannot list resources", category: "ResourcesManager")
+            return
+        }
+
+        isLoadingResources = true
+        LogManager.shared.log("Requesting resources list", category: "ResourcesManager")
+        voiceCodeClient.listResources(storageLocation: appSettings.resourceStorageLocation)
+    }
+
+    /// Delete a resource from backend
+    func deleteResource(_ resource: Resource) {
+        guard voiceCodeClient.isConnected else {
+            print("⚠️ [ResourcesManager] Not connected, cannot delete resource")
+            LogManager.shared.log("Not connected, cannot delete resource", category: "ResourcesManager")
+            return
+        }
+
+        LogManager.shared.log("Deleting resource: \(resource.filename)", category: "ResourcesManager")
+        voiceCodeClient.deleteResource(filename: resource.filename, storageLocation: appSettings.resourceStorageLocation)
+    }
 
     /// Process all pending uploads from the App Group container
     func processPendingUploads() {

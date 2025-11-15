@@ -15,6 +15,7 @@ class VoiceCodeClient: ObservableObject {
     @Published var commandHistory: [CommandHistorySession] = []  // Command history sessions
     @Published var commandOutputFull: CommandOutputFull?  // Full output for a command (single at a time)
     @Published var fileUploadResponse: (filename: String, success: Bool)?  // Latest file upload response
+    @Published var resourcesList: [Resource] = []  // List of uploaded resources
 
     private var webSocket: URLSessionWebSocketTask?
     private var reconnectionTimer: DispatchSourceTimer?
@@ -517,6 +518,29 @@ class VoiceCodeClient: ObservableObject {
                     LogManager.shared.log("Received file_uploaded message without filename", category: "VoiceCodeClient")
                 }
 
+            case "resources-list", "resources_list":
+                // Resources list received from backend
+                print("📋 [VoiceCodeClient] Received resources_list")
+                if let resourcesArray = json["resources"] as? [[String: Any]] {
+                    let resources = resourcesArray.compactMap { Resource(json: $0) }
+                    print("   Found \(resources.count) resources")
+                    LogManager.shared.log("Resources list received: \(resources.count) resources", category: "VoiceCodeClient")
+                    self.resourcesList = resources
+                } else {
+                    print("⚠️ [VoiceCodeClient] Invalid resources_list format")
+                    LogManager.shared.log("Invalid resources_list format", category: "VoiceCodeClient")
+                    self.resourcesList = []
+                }
+
+            case "resource-deleted", "resource_deleted":
+                // Resource deleted successfully
+                if let filename = json["filename"] as? String {
+                    print("🗑️ [VoiceCodeClient] Resource deleted: \(filename)")
+                    LogManager.shared.log("Resource deleted: \(filename)", category: "VoiceCodeClient")
+                    // Remove from local list
+                    self.resourcesList.removeAll { $0.filename == filename }
+                }
+
             case "error":
                 // Check if this is a file upload error
                 if let message = json["message"] as? String,
@@ -879,6 +903,29 @@ class VoiceCodeClient: ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - Resources
+
+    func listResources(storageLocation: String) {
+        let message: [String: Any] = [
+            "type": "list_resources",
+            "storage_location": storageLocation
+        ]
+        print("📋 [VoiceCodeClient] Requesting resources list from: \(storageLocation)")
+        LogManager.shared.log("Requesting resources list from: \(storageLocation)", category: "VoiceCodeClient")
+        sendMessage(message)
+    }
+
+    func deleteResource(filename: String, storageLocation: String) {
+        let message: [String: Any] = [
+            "type": "delete_resource",
+            "filename": filename,
+            "storage_location": storageLocation
+        ]
+        print("🗑️ [VoiceCodeClient] Requesting deletion of: \(filename)")
+        LogManager.shared.log("Requesting deletion of: \(filename)", category: "VoiceCodeClient")
+        sendMessage(message)
     }
 
     deinit {
