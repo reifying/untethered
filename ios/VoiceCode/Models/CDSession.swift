@@ -18,6 +18,11 @@ public class CDSession: NSManagedObject {
     @NSManaged public var isLocallyCreated: Bool
     @NSManaged public var messages: NSSet?
 
+    // Queue management properties
+    @NSManaged public var isInQueue: Bool
+    @NSManaged public var queuePosition: Int32
+    @NSManaged public var queuedAt: Date?
+
     /// Display name: local custom name if set, otherwise backend name
     var displayName: String {
         localName ?? backendName
