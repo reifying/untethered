@@ -117,31 +117,6 @@ struct ConversationView: View {
                                         }
                                     )
                                     .id(message.id)
-                                    .onAppear { [weak message] in
-                                        // Track newest message for scroll detection
-                                        // messages is sorted descending, so first is newest
-                                        // Use weak reference to prevent retaining deallocated messages
-                                        guard let message = message else { return }
-                                        if message.id == messages.first?.id {
-                                            print("🔵 [AutoScroll] Newest message is visible (at bottom)")
-                                            if !autoScrollEnabled {
-                                                print("🔵 [AutoScroll] Re-enabling auto-scroll")
-                                                autoScrollEnabled = true
-                                            }
-                                        }
-                                    }
-                                    .onDisappear { [weak message] in
-                                        // Newest message disappeared - user scrolled up
-                                        // Use weak reference to prevent retaining deallocated messages
-                                        guard let message = message else { return }
-                                        if message.id == messages.first?.id {
-                                            print("⚪️ [AutoScroll] Newest message disappeared (scrolled up)")
-                                            if autoScrollEnabled {
-                                                print("⚪️ [AutoScroll] Disabling auto-scroll")
-                                                autoScrollEnabled = false
-                                            }
-                                        }
-                                    }
                                 }
 
                                 // Invisible anchor for scroll target (ensures we scroll past last message)
@@ -158,10 +133,16 @@ struct ConversationView: View {
 
                         print("📨 [AutoScroll] New messages: \(oldCount) -> \(newCount), auto-scroll: \(autoScrollEnabled ? "enabled" : "disabled")")
 
+                        // Debounce scroll to avoid triggering during layout calculations
+                        // This prevents the 9s hang in _PaddingLayout.placement
                         if autoScrollEnabled {
-                            print("📨 [AutoScroll] Scrolling to bottom anchor")
-                            withAnimation {
-                                proxy.scrollTo("bottom", anchor: .bottom)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                // Re-check autoScrollEnabled after delay in case user disabled it
+                                guard self.autoScrollEnabled else { return }
+                                print("📨 [AutoScroll] Scrolling to bottom anchor (debounced)")
+                                withAnimation(.linear(duration: 0.2)) {
+                                    proxy.scrollTo("bottom", anchor: .bottom)
+                                }
                             }
                         } else {
                             print("📨 [AutoScroll] Skipping auto-scroll (disabled)")
@@ -722,73 +703,55 @@ struct CDMessageView: View {
                     .foregroundColor(.secondary)
 
                 // Message text (truncated for display)
-                // Uses cached displayText from CDMessage to avoid recomputation
+                // Removed .textSelection and .contextMenu to reduce layout overhead
+                // Users can tap "View Full" button to access full text and actions
                 Text(message.displayText)
                     .font(.body)
-                    .textSelection(.enabled)
-                    .contextMenu {
-                        Button(action: {
-                            UIPasteboard.general.string = message.text
-                        }) {
-                            Label("Copy", systemImage: "doc.on.doc")
-                        }
+                    .lineLimit(20)  // Hard limit to prevent excessive layout calculations
 
-                        Button(action: {
-                            let processedText = TextProcessor.removeCodeBlocks(from: message.text)
-                            voiceOutput.speak(processedText)
-                        }) {
-                            Label("Read Aloud", systemImage: "speaker.wave.2.fill")
-                        }
-
-                        Button(action: {
-                            onInferName(message.text)
-                        }) {
-                            Label("Infer Name", systemImage: "sparkles.rectangle.stack")
+                // Show expand button for truncated messages OR for quick actions
+                Button(action: { showFullMessage = true }) {
+                    HStack(spacing: 4) {
+                        if message.isTruncated {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.caption2)
+                            Text("View Full")
+                                .font(.caption)
+                        } else {
+                            Image(systemName: "ellipsis.circle")
+                                .font(.caption2)
+                            Text("Actions")
+                                .font(.caption)
                         }
                     }
-
-                // Show expand button for truncated messages
-                if message.isTruncated {
-                    Button(action: { showFullMessage = true }) {
-                        Label("View Full Message", systemImage: "arrow.up.left.and.arrow.down.right")
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                    }
-                    .padding(.top, 4)
+                    .foregroundColor(.blue)
                 }
-                
-                // Status and timestamp
+
+                // Simplified status and timestamp
                 HStack(spacing: 8) {
                     if message.messageStatus == .sending {
-                        ProgressView()
-                            .scaleEffect(0.7)
-                        Text("Sending...")
+                        Image(systemName: "clock")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     } else if message.messageStatus == .error {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.caption2)
                             .foregroundColor(.red)
-                        Text("Failed to send")
-                            .font(.caption2)
-                            .foregroundColor(.red)
                     }
-                    
+
                     Spacer()
-                    
+
                     Text(message.timestamp, style: .time)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
             }
         }
-        .padding()
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(message.role == "user" ? Color.blue.opacity(0.1) : Color.green.opacity(0.1))
-        )
+        .padding(12)  // Explicit padding value instead of default
+        .background(Color(message.role == "user" ? .systemBlue : .systemGreen).opacity(0.1))
+        .cornerRadius(12)
         .sheet(isPresented: $showFullMessage) {
-            MessageDetailView(message: message)
+            MessageDetailView(message: message, voiceOutput: voiceOutput, onInferName: onInferName)
         }
     }
 }
@@ -797,15 +760,80 @@ struct CDMessageView: View {
 
 struct MessageDetailView: View {
     @ObservedObject var message: CDMessage
+    @ObservedObject var voiceOutput: VoiceOutputManager
+    let onInferName: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var showCopiedConfirmation = false
 
     var body: some View {
         NavigationView {
-            ScrollView {
-                Text(message.text)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .padding()
+            VStack(spacing: 0) {
+                ScrollView {
+                    Text(message.text)
+                        .font(.body)
+                        .textSelection(.enabled)
+                        .padding()
+                }
+
+                Divider()
+
+                // Action buttons at bottom for better accessibility
+                HStack(spacing: 20) {
+                    Button(action: {
+                        UIPasteboard.general.string = message.text
+
+                        // Haptic feedback
+                        let generator = UINotificationFeedbackGenerator()
+                        generator.notificationOccurred(.success)
+
+                        // Show confirmation
+                        withAnimation {
+                            showCopiedConfirmation = true
+                        }
+
+                        // Hide after 1.5 seconds
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            withAnimation {
+                                showCopiedConfirmation = false
+                            }
+                        }
+                    }) {
+                        VStack(spacing: 4) {
+                            Image(systemName: showCopiedConfirmation ? "checkmark.circle.fill" : "doc.on.doc")
+                                .font(.title2)
+                                .foregroundColor(showCopiedConfirmation ? .green : .primary)
+                            Text(showCopiedConfirmation ? "Copied!" : "Copy")
+                                .font(.caption)
+                                .foregroundColor(showCopiedConfirmation ? .green : .primary)
+                        }
+                    }
+
+                    Button(action: {
+                        let processedText = TextProcessor.removeCodeBlocks(from: message.text)
+                        voiceOutput.speak(processedText)
+                    }) {
+                        VStack(spacing: 4) {
+                            Image(systemName: "speaker.wave.2.fill")
+                                .font(.title2)
+                            Text("Read Aloud")
+                                .font(.caption)
+                        }
+                    }
+
+                    Button(action: {
+                        onInferName(message.text)
+                        dismiss()
+                    }) {
+                        VStack(spacing: 4) {
+                            Image(systemName: "sparkles.rectangle.stack")
+                                .font(.title2)
+                            Text("Infer Name")
+                                .font(.caption)
+                        }
+                    }
+                }
+                .padding()
+                .background(Color(UIColor.systemBackground))
             }
             .navigationTitle("Full Message")
             .navigationBarTitleDisplayMode(.inline)
@@ -813,13 +841,6 @@ struct MessageDetailView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
                         dismiss()
-                    }
-                }
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button(action: {
-                        UIPasteboard.general.string = message.text
-                    }) {
-                        Label("Copy", systemImage: "doc.on.doc")
                     }
                 }
             }
