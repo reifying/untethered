@@ -30,14 +30,14 @@ final class RecentSessionsDebugTests: XCTestCase {
             "working_directory": "/Users/travisbrown/code/mono/hunt910-stand-filter"
         ]
 
-        let session = RecentSession(json: backendJSON)
+        let sessions = RecentSession.parseRecentSessions([backendJSON])
 
-        XCTAssertNotNil(session, "Should parse backend JSON with name field")
-        XCTAssertEqual(session?.sessionId, "82cbb54e-f076-453a-8777-7111a3f49eb4")
-        XCTAssertEqual(session?.workingDirectory, "/Users/travisbrown/code/mono/hunt910-stand-filter")
-        XCTAssertEqual(session?.displayName, "hunt910-stand-filter")
+        XCTAssertEqual(sessions.count, 1, "Should parse backend JSON with name field")
+        XCTAssertEqual(sessions.first?.sessionId, "82cbb54e-f076-453a-8777-7111a3f49eb4")
+        XCTAssertEqual(sessions.first?.workingDirectory, "/Users/travisbrown/code/mono/hunt910-stand-filter")
+        XCTAssertEqual(sessions.first?.displayName, "hunt910-stand-filter")
     }
-    
+
     func testDisplayNameWithCoreDataSession() {
         // Create a CoreData session with a custom name
         let sessionId = UUID(uuidString: "82cbb54e-f076-453a-8777-7111a3f49eb4")!
@@ -49,7 +49,6 @@ final class RecentSessionsDebugTests: XCTestCase {
         cdSession.messageCount = Int32(0)
         cdSession.preview = ""
         cdSession.unreadCount = 0
-        cdSession.markedDeleted = false
 
         // Create CDUserSession to set custom name
         let userSession = CDUserSession(context: viewContext)
@@ -68,13 +67,13 @@ final class RecentSessionsDebugTests: XCTestCase {
             "last_modified": "2025-10-23T13:29:31.809Z"
         ]
 
-        let recentSession = RecentSession(json: backendJSON)!
+        let sessions = RecentSession.parseRecentSessions([backendJSON])
 
         // Display name should come from backend
-        let displayName = recentSession.displayName
-        XCTAssertEqual(displayName, "My Custom Session Name")
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions.first?.displayName, "My Custom Session Name")
     }
-    
+
     func testDisplayNameFromBackend() {
         // RecentSession gets name directly from backend (no CoreData lookup needed)
         let backendJSON: [String: Any] = [
@@ -84,13 +83,13 @@ final class RecentSessionsDebugTests: XCTestCase {
             "last_modified": "2025-10-23T13:29:31.809Z"
         ]
 
-        let recentSession = RecentSession(json: backendJSON)!
+        let sessions = RecentSession.parseRecentSessions([backendJSON])
 
         // Should use backend-provided name (Claude summary)
-        let displayName = recentSession.displayName
-        XCTAssertEqual(displayName, "Code Review: My Project Architecture")
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions.first?.displayName, "Code Review: My Project Architecture")
     }
-    
+
     func testParseMinimalJSON() {
         let json: [String: Any] = [
             "session_id": "test-123",
@@ -99,8 +98,8 @@ final class RecentSessionsDebugTests: XCTestCase {
             "last_modified": "2025-10-23T13:29:31.809Z"
         ]
 
-        let session = RecentSession(json: json)
-        XCTAssertNotNil(session, "Should parse JSON with all required fields")
-        XCTAssertEqual(session?.displayName, "test - 2025-10-23 13:29")
+        let sessions = RecentSession.parseRecentSessions([json])
+        XCTAssertEqual(sessions.count, 1, "Should parse JSON with all required fields")
+        XCTAssertEqual(sessions.first?.displayName, "test - 2025-10-23 13:29")
     }
 }

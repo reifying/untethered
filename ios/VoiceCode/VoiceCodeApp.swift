@@ -131,9 +131,9 @@ struct RootView: View {
                     logger.info("🔍 First session JSON: \(firstSession)")
                 }
 
-                // Use batch parsing to eliminate N+1 queries (single CoreData fetch for all sessions)
-                let parsed = RecentSession.parseRecentSessions(sessions, using: self.viewContext)
-                logger.info("✅ Successfully parsed \(parsed.count) of \(sessions.count) sessions with batch fetch")
+                // Backend provides session names directly - no CoreData lookup needed
+                let parsed = RecentSession.parseRecentSessions(sessions)
+                logger.info("✅ Successfully parsed \(parsed.count) of \(sessions.count) sessions from backend")
 
                 // Defer state update to avoid SwiftUI update conflicts
                 DispatchQueue.main.async {

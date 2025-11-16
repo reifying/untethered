@@ -14,7 +14,7 @@ struct RecentSession: Identifiable, Equatable {
 
     // Parse from WebSocket JSON (snake_case keys)
     // Backend sends 'name' field (Claude summary or dir-timestamp fallback)
-    init?(json: [String: Any]) {
+    private init?(json: [String: Any]) {
         guard let sessionId = json["session_id"] as? String,
               let name = json["name"] as? String,
               let workingDirectory = json["working_directory"] as? String,
@@ -49,8 +49,13 @@ struct RecentSession: Identifiable, Equatable {
         self.lastModified = lastModified
     }
 
-    // Display name now comes directly from backend (no CoreData lookup needed)
+    // Display name comes directly from backend (no CoreData lookup needed)
     var displayName: String {
         name
+    }
+
+    // Batch parse recent sessions (simplified - backend provides all data)
+    static func parseRecentSessions(_ jsonArray: [[String: Any]]) -> [RecentSession] {
+        return jsonArray.compactMap { RecentSession(json: $0) }
     }
 }
