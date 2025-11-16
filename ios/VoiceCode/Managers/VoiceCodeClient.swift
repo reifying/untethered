@@ -104,7 +104,8 @@ class VoiceCodeClient: ObservableObject {
         receiveMessage()
         setupReconnection()
 
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             self.isConnected = true
             self.currentError = nil
         }
@@ -117,7 +118,8 @@ class VoiceCodeClient: ObservableObject {
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
 
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             self.isConnected = false
             // Clear all locked sessions on disconnect to prevent stuck locks
             self.lockedSessions.removeAll()
@@ -162,7 +164,8 @@ class VoiceCodeClient: ObservableObject {
                     print("❌ [VoiceCodeClient] Max reconnection attempts (\(self.maxReconnectionAttempts)) reached. Stopping.")
                     self.reconnectionTimer?.cancel()
                     self.reconnectionTimer = nil
-                    DispatchQueue.main.async {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
                         self.currentError = "Unable to connect to server after \(self.maxReconnectionAttempts) attempts. Please check your server settings."
                     }
                     return
@@ -200,7 +203,8 @@ class VoiceCodeClient: ObservableObject {
                 self.receiveMessage()
 
             case .failure(let error):
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
                     self.isConnected = false
                     self.currentError = error.localizedDescription
                     // Clear all locked sessions on connection failure
@@ -218,7 +222,8 @@ class VoiceCodeClient: ObservableObject {
             return
         }
 
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             switch type {
             case "hello":
                 // Initial welcome message from server
@@ -925,7 +930,8 @@ class VoiceCodeClient: ObservableObject {
         webSocket?.send(message) { error in
             if let error = error {
                 LogManager.shared.log("Failed to send message: \(error.localizedDescription)", category: "VoiceCodeClient")
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
                     self.currentError = error.localizedDescription
                 }
             }
