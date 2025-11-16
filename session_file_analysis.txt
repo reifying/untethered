@@ -1,0 +1,168 @@
+# Session File Pattern Analysis
+Date: 2025-11-16
+Total files analyzed: 675 session files (excluding agent files)
+
+## First Line Type Distribution
+
+Type                Count    Percentage
+------------------------------------------------
+user                454      67.4%
+summary             58       8.6%
+queue-operation     41       6.1%
+EMPTY FILES         121      18.0%
+------------------------------------------------
+
+## Summary Placement Analysis
+
+Files analyzed (non-empty): 553
+Files with summaries: 75
+Summaries at line 1: 58
+Summaries elsewhere: 65
+Files with multiple summaries: 62
+
+## Key Findings
+
+1. **Summaries are NOT just at the beginning**
+   - Only 58 files have a summary at line 1
+   - 65 files have summaries scattered throughout the file
+   - 62 files contain MULTIPLE summaries at different positions
+
+2. **Summary appears to mark compaction boundaries**
+   - Files like 815a11d7-c242-43ce-bc4e-f81ce6472344.jsonl have 49 summaries
+   - Files like fe207645-9165-4c92-bdc7-e994a2d8f3cb.jsonl have 106 summaries
+   - These appear at regular intervals (every 20-30 lines in heavily compacted sessions)
+
+3. **Distribution of summaries per file:**
+
+Summaries | Files
+----------|------
+        0 |   600
+        1 |    13
+        2 |    12
+        3 |     9
+        4 |     2
+        5 |     2
+        7 |     3
+        8 |     3
+        9 |     3
+       10 |     5
+       12 |     2
+       13 |     1
+       14 |     1
+       15 |     1
+       16 |     1
+       17 |     1
+       19 |     1
+       20 |     1
+       23 |     1
+       25 |     1
+       26 |     2
+       34 |     1
+       41 |     2
+       49 |     2
+       56 |     1
+       57 |     1
+       58 |     1
+       99 |     1
+      106 |     1
+
+Statistics:
+- Files with 0 summaries: 600 (88.9%)
+- Files with 1 summary: 13 (1.9%)
+- Files with 2+ summaries: 62 (9.2%)
+- Max summaries in one file: 106
+
+## Content Structure by Type
+
+**Type: summary** (old format)
+- Keys: type, summary, leafUuid
+- Content location: direct "summary" field
+- Example: "Claude Code Warmup: Codebase Navigation Ready"
+
+**Type: queue-operation** (new format)
+- Keys: type, operation, timestamp, content, sessionId
+- Content location: "content" field
+- Example: "Help me prepare to open source this application. What do we need to consider"
+
+**Type: user** (most common)
+- Keys: parentUuid, isSidechain, userType, cwd, sessionId, version, gitBranch, type, message, uuid, timestamp
+- Content location: message.content (string)
+- Example: "Warmup"
+
+## Implications for Session Naming
+
+1. The "summary" type is NOT a session name - it's a compaction summary
+2. Summaries appear at compaction boundaries, not just session start
+3. Files with multiple summaries indicate sessions that have been compacted multiple times
+4. The first line with type="summary" might be a good session name, but:
+   - Only available in 13% of files (75/553)
+   - Many files have been compacted multiple times with different summaries
+   
+5. For most sessions (67.4%), we need to extract from type="user" first line
+
+## Deep Analysis - Message Content for Session Naming
+
+### Key Findings from Deeper Analysis
+
+1. **History.jsonl Discovery**
+   - Location: `~/.claude/history.jsonl`
+   - Contains: User prompts with `display` field
+   - Structure: `{display: "prompt text", project: "/path", timestamp: ms}`
+   - Problem: Not linked to session IDs, only has project path and timestamp
+   - Coverage: Last entry from Nov 14, doesn't cover recent sessions
+
+2. **No Session Metadata Index Found**
+   - Searched for: session names, titles, metadata files
+   - Checked: todos/, session-env/, projects/ directories
+   - Result: No separate metadata/index files with session names
+   - Conclusion: Session name must be derived from JSONL content
+
+3. **User Message Quality Analysis**
+   - First messages are often context-priming (e.g., "Warmup")
+   - queue-operation messages contain actual substantive prompts
+   - Need to filter out non-substantive messages
+
+### Message Content Patterns
+
+**High-quality naming candidates:**
+- queue-operation content: "Look at how we currently name our back in sessions..."
+- queue-operation content: "Add git push as a common command option..."
+- queue-operation content: "Analyze but don't fix yet /Users/travisbrown/Downloads..."
+- user message content: Substantive prompts after warmup
+
+**Poor naming candidates:**
+- "Warmup" (too generic)
+- Very short commands like "!ls"
+- Error dumps
+- Single-word responses
+
+### Recommendations
+
+Based on this analysis, here's the recommended priority for extracting session names:
+
+1. **First priority**: Extract from first `queue-operation` with `content` field
+   - Most recent format
+   - Contains actual user intent
+   - Truncate to 60-80 characters
+
+2. **Second priority**: Extract from first `user` message where content != "Warmup"
+   - Skip generic warmup messages
+   - Use actual substantive prompt
+
+3. **Third priority**: Use first line `summary` if type="summary"
+   - Only for older sessions
+   - Note: These are compaction summaries, not session names
+
+4. **Fallback**: Directory + timestamp format
+   - When no substantive content found
+   - Format: "voice-code - 2025-11-16 09:09"
+
+### Content Filtering Recommendations
+
+To improve name quality:
+- Skip messages with content == "Warmup"
+- Skip messages with content == "!ls" or other shell commands
+- Skip very short content (< 10 chars)
+- Prefer longer, descriptive prompts
+- Clean whitespace and newlines from extracted names
+
