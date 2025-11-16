@@ -33,15 +33,20 @@
                 "project_commands should be empty when no directory set")
             (is (vector? (:general_commands available-cmd))
                 "general_commands should be a vector")
-            (is (= 1 (count (:general_commands available-cmd)))
-                "Should have exactly 1 general command")
+            (is (= 2 (count (:general_commands available-cmd)))
+                "Should have exactly 2 general commands")
 
             ;; Verify git.status command
-            (let [git-status (first (:general_commands available-cmd))]
+            (let [git-status (first (:general_commands available-cmd))
+                  git-push (second (:general_commands available-cmd))]
               (is (= "git.status" (:id git-status)))
               (is (= "Git Status" (:label git-status)))
               (is (= "Show git working tree status" (:description git-status)))
-              (is (= "command" (:type git-status))))))))))
+              (is (= "command" (:type git-status)))
+              (is (= "git.push" (:id git-push)))
+              (is (= "Git Push" (:label git-push)))
+              (is (= "Push commits to remote repository" (:description git-push)))
+              (is (= "command" (:type git-push))))))))))
 
 (deftest test-available-commands-sent-after-set-directory
   (testing "available_commands message sent after set-directory with project commands"
@@ -72,7 +77,7 @@
           (is (= "available_commands" (:type available-cmd)))
           (is (= test-dir (:working_directory available-cmd)))
           (is (= 3 (count (:project_commands available-cmd))))
-          (is (= 1 (count (:general_commands available-cmd))))
+          (is (= 2 (count (:general_commands available-cmd))))
 
           ;; Verify project commands
           (let [cmds (:project_commands available-cmd)]
@@ -82,19 +87,20 @@
             (is (= "group" (:type (nth cmds 2)))))
 
           ;; Verify general commands
-          (is (= "git.status" (:id (first (:general_commands available-cmd))))))))))
+          (is (= "git.status" (:id (first (:general_commands available-cmd)))))
+          (is (= "git.push" (:id (second (:general_commands available-cmd))))))))))
 
 (deftest test-available-commands-message-format-snake-case
   (testing "available_commands message uses snake_case keys in JSON"
     (let [test-data {:type :available-commands
                      :working-directory "/test/path"
                      :project-commands [{:id "build"
-                                        :label "Build"
-                                        :type :command}]
+                                         :label "Build"
+                                         :type :command}]
                      :general-commands [{:id "git.status"
-                                        :label "Git Status"
-                                        :description "Show git working tree status"
-                                        :type :command}]}
+                                         :label "Git Status"
+                                         :description "Show git working tree status"
+                                         :type :command}]}
           json-str (server/generate-json test-data)
           parsed (json/parse-string json-str true)]
       (is (= "available_commands" (:type parsed)))
@@ -132,20 +138,20 @@
               available-cmd (second messages)]
           (is (= "available_commands" (:type available-cmd)))
           (is (empty? (:project_commands available-cmd)))
-          (is (= 1 (count (:general_commands available-cmd)))))))))
+          (is (= 2 (count (:general_commands available-cmd)))))))))
 
 (deftest test-available-commands-key-conversion
   (testing "Kebab-case to snake_case conversion for all keys"
     (let [test-data {:type :available-commands
                      :working-directory "/test"
                      :project-commands [{:id "docker.compose.up"
-                                        :label "Up"
-                                        :type :command
-                                        :group "docker.compose"}]
+                                         :label "Up"
+                                         :type :command
+                                         :group "docker.compose"}]
                      :general-commands [{:id "git.status"
-                                        :label "Git Status"
-                                        :description "Show git working tree status"
-                                        :type :command}]}
+                                         :label "Git Status"
+                                         :description "Show git working tree status"
+                                         :type :command}]}
           json-str (server/generate-json test-data)
           parsed (json/parse-string json-str true)]
       (is (contains? parsed :type))
@@ -160,7 +166,7 @@
         (is (contains? cmd :group))))))
 
 (deftest test-general-commands-always-includes-git-status
-  (testing "general_commands always includes git.status"
+  (testing "general_commands always includes git.status and git.push"
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
 
     (doseq [test-dir ["/tmp/dir1" "/home/user/project" "/var/lib/app"]]
@@ -176,9 +182,11 @@
                                    :path test-dir}))
 
           (let [messages (parse-messages @sent-messages)
-                available-cmd (second messages)]
-            (is (= 1 (count (:general_commands available-cmd))))
-            (is (= "git.status" (:id (first (:general_commands available-cmd)))))))))))
+                available-cmd (second messages)
+                general-cmds (:general_commands available-cmd)]
+            (is (= 2 (count general-cmds)))
+            (is (= "git.status" (:id (first general-cmds))))
+            (is (= "git.push" (:id (second general-cmds))))))))))
 
 (deftest test-available-commands-with-complex-makefile
   (testing "available_commands handles complex Makefile structure with groups"
@@ -221,7 +229,7 @@
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
     (let [test-dir "/tmp/deterministic-test"
           mock-commands [{:id "build" :label "Build" :type :command}
-                        {:id "test" :label "Test" :type :command}]]
+                         {:id "test" :label "Test" :type :command}]]
 
       (let [messages1 (atom [])
             messages2 (atom [])]
@@ -250,9 +258,9 @@
 (deftest test-available-commands-format-matches-spec
   (testing "available_commands message format exactly matches STANDARDS.md specification"
     (let [expected-format {:type "available_commands"
-                          :working_directory "/path"
-                          :project_commands []
-                          :general_commands []}
+                           :working_directory "/path"
+                           :project_commands []
+                           :general_commands []}
           test-data {:type :available-commands
                      :working-directory "/path"
                      :project-commands []

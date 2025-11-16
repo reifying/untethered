@@ -343,6 +343,10 @@
                                 :general-commands [{:id "git.status"
                                                     :label "Git Status"
                                                     :description "Show git working tree status"
+                                                    :type :command}
+                                                   {:id "git.push"
+                                                    :label "Git Push"
+                                                    :description "Push commits to remote repository"
                                                     :type :command}]})))
 
           "subscribe"
@@ -533,6 +537,10 @@
                       general-commands [{:id "git.status"
                                          :label "Git Status"
                                          :description "Show git working tree status"
+                                         :type :command}
+                                        {:id "git.push"
+                                         :label "Git Push"
+                                         :description "Push commits to remote repository"
                                          :type :command}]]
                   (send-to-client! channel
                                    {:type :available-commands

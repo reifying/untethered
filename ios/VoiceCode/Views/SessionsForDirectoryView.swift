@@ -90,7 +90,7 @@ struct SessionsForDirectoryView: View {
                 }
                 .refreshable {
                     logger.info("Pull-to-refresh triggered - requesting session list")
-                    client.requestSessionList()
+                    await client.requestSessionList()
                 }
             }
         }
@@ -171,7 +171,9 @@ struct SessionsForDirectoryView: View {
 
                     Button(action: {
                         logger.info("🔄 Refresh button tapped - requesting session list from backend")
-                        client.requestSessionList()
+                        Task {
+                            await client.requestSessionList()
+                        }
                     }) {
                         Image(systemName: "arrow.clockwise")
                     }

@@ -38,6 +38,9 @@ class VoiceCodeClient: ObservableObject {
     // Track active subscriptions for auto-restore on reconnection
     private var activeSubscriptions = Set<String>()
 
+    // Continuation for async session list requests
+    private var sessionListContinuation: CheckedContinuation<Void, Never>?
+
     init(serverURL: String, voiceOutputManager: VoiceOutputManager? = nil, sessionSyncManager: SessionSyncManager? = nil, appSettings: AppSettings? = nil, setupObservers: Bool = true) {
         self.serverURL = serverURL
         self.appSettings = appSettings
@@ -324,7 +327,17 @@ class VoiceCodeClient: ObservableObject {
                 // Initial session list received after connection
                 if let sessions = json["sessions"] as? [[String: Any]] {
                     print("📋 [VoiceCodeClient] Received session_list with \(sessions.count) sessions")
-                    self.sessionSyncManager.handleSessionList(sessions)
+
+                    // Handle session list asynchronously and resume continuation when done
+                    Task {
+                        await self.sessionSyncManager.handleSessionList(sessions)
+
+                        // Resume any waiting continuation after CoreData save completes
+                        if let continuation = self.sessionListContinuation {
+                            self.sessionListContinuation = nil
+                            continuation.resume()
+                        }
+                    }
                 }
 
             case "recent_sessions":
@@ -627,22 +640,36 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
-    func requestSessionList() {
+    func requestSessionList() async {
         // Request fresh session list from backend
         // Backend will respond with session_list message
-        var message: [String: Any] = [
-            "type": "connect"
-        ]
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            // Store continuation to resume when session_list is received
+            sessionListContinuation = continuation
 
-        // Include recent sessions limit from settings
-        if let limit = appSettings?.recentSessionsLimit {
-            message["recent_sessions_limit"] = limit
-            print("🔄 [VoiceCodeClient] Requesting session list refresh (recent sessions limit: \(limit))")
-        } else {
-            print("🔄 [VoiceCodeClient] Requesting session list refresh")
+            var message: [String: Any] = [
+                "type": "connect"
+            ]
+
+            // Include recent sessions limit from settings
+            if let limit = appSettings?.recentSessionsLimit {
+                message["recent_sessions_limit"] = limit
+                print("🔄 [VoiceCodeClient] Requesting session list refresh (recent sessions limit: \(limit))")
+            } else {
+                print("🔄 [VoiceCodeClient] Requesting session list refresh")
+            }
+
+            sendMessage(message)
+
+            // Set a timeout to prevent infinite waiting
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+                if let cont = self?.sessionListContinuation {
+                    self?.sessionListContinuation = nil
+                    cont.resume()
+                    print("⚠️ [VoiceCodeClient] Session list request timed out after 5 seconds")
+                }
+            }
         }
-
-        sendMessage(message)
     }
 
     func requestSessionRefresh(sessionId: String) {

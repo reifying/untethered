@@ -23,7 +23,7 @@ class SessionSyncManager {
     
     /// Handle session_list message from backend
     /// - Parameter sessions: Array of session metadata dictionaries
-    func handleSessionList(_ sessions: [[String: Any]]) {
+    func handleSessionList(_ sessions: [[String: Any]]) async {
         logger.info("📥 Received session_list with \(sessions.count) sessions")
 
         // Log all received sessions with their details
@@ -36,31 +36,38 @@ class SessionSyncManager {
             logger.info("  [\(index + 1)] \(sessionId) | \(messageCount) msgs | \(name) | \(workingDir)")
         }
 
-        persistenceController.performBackgroundTask { [weak self] backgroundContext in
-            guard let self = self else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            persistenceController.performBackgroundTask { [weak self] backgroundContext in
+                guard let self = self else {
+                    continuation.resume()
+                    return
+                }
 
-            for sessionData in sessions {
-                self.upsertSession(sessionData, in: backgroundContext)
-            }
+                for sessionData in sessions {
+                    self.upsertSession(sessionData, in: backgroundContext)
+                }
 
-            do {
-                if backgroundContext.hasChanges {
-                    try backgroundContext.save()
-                    logger.info("✅ Saved \(sessions.count) sessions to CoreData")
+                do {
+                    if backgroundContext.hasChanges {
+                        try backgroundContext.save()
+                        logger.info("✅ Saved \(sessions.count) sessions to CoreData")
 
-                    // Log what's actually in CoreData after save
-                    let fetchRequest = CDSession.fetchActiveSessions()
-                    if let allSessions = try? backgroundContext.fetch(fetchRequest) {
-                        logger.info("💾 CoreData now contains \(allSessions.count) total active sessions")
-                        let hunt910Sessions = allSessions.filter { $0.workingDirectory.contains("hunt910") }
-                        logger.info("🎯 hunt910 sessions in CoreData: \(hunt910Sessions.count)")
-                        for session in hunt910Sessions.sorted(by: { $0.lastModified > $1.lastModified }).prefix(10) {
-                            logger.info("  - \(session.id.uuidString.lowercased()) | \(session.messageCount) msgs | markedDeleted=\(session.markedDeleted)")
+                        // Log what's actually in CoreData after save
+                        let fetchRequest = CDSession.fetchActiveSessions()
+                        if let allSessions = try? backgroundContext.fetch(fetchRequest) {
+                            logger.info("💾 CoreData now contains \(allSessions.count) total active sessions")
+                            let hunt910Sessions = allSessions.filter { $0.workingDirectory.contains("hunt910") }
+                            logger.info("🎯 hunt910 sessions in CoreData: \(hunt910Sessions.count)")
+                            for session in hunt910Sessions.sorted(by: { $0.lastModified > $1.lastModified }).prefix(10) {
+                                logger.info("  - \(session.id.uuidString.lowercased()) | \(session.messageCount) msgs | markedDeleted=\(session.markedDeleted)")
+                            }
                         }
                     }
+                } catch {
+                    logger.error("❌ Failed to save session_list: \(error.localizedDescription)")
                 }
-            } catch {
-                logger.error("❌ Failed to save session_list: \(error.localizedDescription)")
+
+                continuation.resume()
             }
         }
     }
