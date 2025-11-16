@@ -250,8 +250,12 @@
 
 (defn extract-metadata-from-file
   "Extract metadata from a .jsonl file without loading all messages.
-  Returns map with :message-count, :preview, :first-message, :last-message, :last-message-timestamp
-  Note: message-count reflects only user/assistant messages (after filtering internal messages)"
+  Returns map with :message-count, :preview, :first-message, :last-message, :last-message-timestamp, :claude-summary
+  Note: message-count reflects only user/assistant messages (after filtering internal messages)
+  claude-summary extraction priority (based on Claude Code research):
+  1. First type='summary' (official Claude Code session title, LLM-generated)
+  2. First queue-operation content (new sessions without titles yet)
+  3. First user message content (final fallback, filtered)"
   [file]
   (try
     (with-open [rdr (io/reader file)]
@@ -260,6 +264,41 @@
                               (map parse-jsonl-line)
                               (filter some?)
                               (vec))
+            ;; Helper to check if content is substantive
+            is-substantive? (fn [content]
+                              (and content
+                                   (string? content)
+                                   (>= (count content) 10)
+                                   (not= content "Warmup")
+                                   (not (str/starts-with? content "!"))
+                                   (not (str/includes? content "API Error:"))
+                                   (not (str/includes? content "error"))))
+            ;; Extract session name per research findings:
+            ;; Priority 1: First type=summary (official Claude Code session title)
+            ;; Priority 2: First queue-operation content (new sessions without titles)
+            ;; Priority 3: First user message content (filtered)
+            claude-summary (or
+                            ;; Priority 1: First type=summary (official session title from Claude Code)
+                            (when-let [first-summary (first (filter #(= (:type %) "summary") all-messages))]
+                              (:summary first-summary))
+                            ;; Priority 2: First queue-operation content (new format sessions)
+                            (when-let [queue-op (first (filter #(= (:type %) "queue-operation") all-messages))]
+                              (when-let [content (:content queue-op)]
+                                (when (is-substantive? content)
+                                  ;; Truncate to 60 chars for readability
+                                  (let [truncated (subs content 0 (min 60 (count content)))]
+                                    (if (> (count content) 60)
+                                      (str truncated "...")
+                                      truncated)))))
+                            ;; Priority 3: First user message content (filtered fallback)
+                            (when-let [user-msg (first (filter #(= (:type %) "user") all-messages))]
+                              (when-let [msg-content (get-in user-msg [:message :content])]
+                                (when (and (string? msg-content) (is-substantive? msg-content))
+                                  ;; Truncate to 60 chars
+                                  (let [truncated (subs msg-content 0 (min 60 (count msg-content)))]
+                                    (if (> (count msg-content) 60)
+                                      (str truncated "...")
+                                      truncated))))))
             ;; Filter out internal messages before counting
             messages (filter-internal-messages all-messages)
             message-count (count messages)
@@ -281,25 +320,35 @@
                                        (.toEpochMilli (java.time.Instant/parse ts))
                                        (catch Exception e
                                          (log/debug "Failed to parse timestamp" {:timestamp ts :error (ex-message e)})
-                                         nil))))}))
+                                         nil))))
+         :claude-summary claude-summary}))
     (catch Exception e
       (log/warn e "Failed to extract metadata from file" {:file (.getPath file)})
       {:message-count 0
        :preview ""
        :first-message nil
        :last-message nil
-       :last-message-timestamp nil})))
+       :last-message-timestamp nil
+       :claude-summary nil})))
 
 (defn generate-session-name
   "Generate a default name for a session.
-  Format: '<dir-name> - <timestamp>'"
-  [session-id working-dir created-at]
-  (let [dir-name (last (str/split working-dir #"/"))
-        timestamp (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm")
-        instant (java.time.Instant/ofEpochMilli created-at)
-        zoned (.atZone instant (java.time.ZoneId/systemDefault))
-        formatted-time (.format timestamp zoned)]
-    (str dir-name " - " formatted-time)))
+  Uses extracted session name per Claude Code research findings:
+  1. First type='summary' (official Claude Code LLM-generated session title)
+  2. First queue-operation content (new sessions without titles yet, filtered)
+  3. First user message content (final fallback, filtered)
+  Falls back to: '<dir-name> - <timestamp>'"
+  [session-id working-dir created-at claude-summary]
+  (if (and claude-summary (not (str/blank? claude-summary)))
+    ;; Use extracted session name (priority: summary > queue-op > user message)
+    claude-summary
+    ;; Fallback to directory-timestamp format
+    (let [dir-name (last (str/split working-dir #"/"))
+          timestamp (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm")
+          instant (java.time.Instant/ofEpochMilli created-at)
+          zoned (.atZone instant (java.time.ZoneId/systemDefault))
+          formatted-time (.format timestamp zoned)]
+      (str dir-name " - " formatted-time))))
 
 (defn build-session-metadata
   "Build metadata map for a single .jsonl file"
@@ -311,7 +360,8 @@
         last-modified (or (:last-message-timestamp file-metadata)
                           (.lastModified file))
         created-at (.lastModified file)
-        name (generate-session-name session-id working-dir created-at)
+        claude-summary (:claude-summary file-metadata)
+        name (generate-session-name session-id working-dir created-at claude-summary)
         metadata {:session-id session-id
                   :file (.getAbsolutePath file)
                   :name name
@@ -330,7 +380,8 @@
                :name name
                :message-count (:message-count file-metadata)
                :last-modified last-modified
-               :used-message-timestamp (boolean (:last-message-timestamp file-metadata))})
+               :used-message-timestamp (boolean (:last-message-timestamp file-metadata))
+               :used-claude-summary (boolean claude-summary)})
     metadata)) ; Timestamp when iOS first notified
 
 (defn build-index!
