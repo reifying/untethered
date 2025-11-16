@@ -136,15 +136,15 @@
   "Send the recent sessions list to a connected client.
   Uses the new recent_sessions message type (distinct from session-list).
   Converts :last-modified from milliseconds to ISO-8601 string for JSON.
-  Sends session-id, working-directory, last-modified (no name - iOS provides its own).
-  Note: get-recent-sessions already filters out sessions with 0 messages."
+  Sends session-id, name, working-directory, last-modified."
   [channel limit]
   (let [sessions (repl/get-recent-sessions limit)
-        ;; Convert to minimal format with ISO-8601 timestamp
-        ;; Note: name field removed - iOS decorates with its own names from CoreData
+        ;; Convert to format with ISO-8601 timestamp
+        ;; Include name field (generated from Claude summary or fallback to dir-timestamp)
         sessions-minimal (mapv
                           (fn [session]
                             {:session-id (:session-id session)
+                             :name (:name session)
                              :working-directory (:working-directory session)
                              :last-modified (.format (java.time.format.DateTimeFormatter/ISO_INSTANT)
                                                      (java.time.Instant/ofEpochMilli (:last-modified session)))})

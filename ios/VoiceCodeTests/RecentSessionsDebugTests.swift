@@ -57,43 +57,47 @@ final class RecentSessionsDebugTests: XCTestCase {
         
         try! viewContext.save()
         
-        // Create RecentSession from backend data (no name field)
+        // Create RecentSession from backend data (includes name from backend)
         let backendJSON: [String: Any] = [
             "session_id": "82cbb54e-f076-453a-8777-7111a3f49eb4",
+            "name": "My Custom Session Name",
             "working_directory": "/Users/travisbrown/code/mono/hunt910-stand-filter",
             "last_modified": "2025-10-23T13:29:31.809Z"
         ]
-        
+
         let recentSession = RecentSession(json: backendJSON)!
-        
-        // Display name should come from CDUserSession custom name
-        let displayName = recentSession.displayName(using: viewContext)
+
+        // Display name should come from backend
+        let displayName = recentSession.displayName
         XCTAssertEqual(displayName, "My Custom Session Name")
     }
     
-    func testDisplayNameFallbackToDirectory() {
-        // RecentSession for a session NOT in CoreData
+    func testDisplayNameFromBackend() {
+        // RecentSession gets name directly from backend (no CoreData lookup needed)
         let backendJSON: [String: Any] = [
             "session_id": "99999999-9999-9999-9999-999999999999",
+            "name": "Code Review: My Project Architecture",
             "working_directory": "/Users/travisbrown/code/mono/my-project",
             "last_modified": "2025-10-23T13:29:31.809Z"
         ]
-        
+
         let recentSession = RecentSession(json: backendJSON)!
-        
-        // Should fallback to directory name
-        let displayName = recentSession.displayName(using: viewContext)
-        XCTAssertEqual(displayName, "my-project")
+
+        // Should use backend-provided name (Claude summary)
+        let displayName = recentSession.displayName
+        XCTAssertEqual(displayName, "Code Review: My Project Architecture")
     }
     
     func testParseMinimalJSON() {
         let json: [String: Any] = [
             "session_id": "test-123",
+            "name": "test - 2025-10-23 13:29",
             "working_directory": "/tmp",
             "last_modified": "2025-10-23T13:29:31.809Z"
         ]
-        
+
         let session = RecentSession(json: json)
-        XCTAssertNotNil(session, "Should parse minimal JSON without name")
+        XCTAssertNotNil(session, "Should parse JSON with all required fields")
+        XCTAssertEqual(session?.displayName, "test - 2025-10-23 13:29")
     }
 }
