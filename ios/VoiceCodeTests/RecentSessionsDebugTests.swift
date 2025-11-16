@@ -21,19 +21,21 @@ final class RecentSessionsDebugTests: XCTestCase {
         super.tearDown()
     }
 
-    func testParseBackendJSONWithoutName() {
-        // Backend now sends JSON without 'name' field (iOS provides its own)
+    func testParseBackendJSONWithName() {
+        // Backend now sends JSON with 'name' field
         let backendJSON: [String: Any] = [
             "session_id": "82cbb54e-f076-453a-8777-7111a3f49eb4",
+            "name": "hunt910-stand-filter",
             "last_modified": "2025-10-23T13:29:31.809Z",
             "working_directory": "/Users/travisbrown/code/mono/hunt910-stand-filter"
         ]
-        
+
         let session = RecentSession(json: backendJSON)
-        
-        XCTAssertNotNil(session, "Should parse backend JSON without name field")
+
+        XCTAssertNotNil(session, "Should parse backend JSON with name field")
         XCTAssertEqual(session?.sessionId, "82cbb54e-f076-453a-8777-7111a3f49eb4")
         XCTAssertEqual(session?.workingDirectory, "/Users/travisbrown/code/mono/hunt910-stand-filter")
+        XCTAssertEqual(session?.displayName, "hunt910-stand-filter")
     }
     
     func testDisplayNameWithCoreDataSession() {
@@ -44,9 +46,10 @@ final class RecentSessionsDebugTests: XCTestCase {
         cdSession.backendName = sessionId.uuidString.lowercased()
         cdSession.workingDirectory = "/Users/travisbrown/code/mono/hunt910-stand-filter"
         cdSession.lastModified = Date()
-        cdSession.messageCount = 0
+        cdSession.messageCount = Int32(0)
         cdSession.preview = ""
         cdSession.unreadCount = 0
+        cdSession.markedDeleted = false
 
         // Create CDUserSession to set custom name
         let userSession = CDUserSession(context: viewContext)
@@ -54,9 +57,9 @@ final class RecentSessionsDebugTests: XCTestCase {
         userSession.customName = "My Custom Session Name"
         userSession.isUserDeleted = false
         userSession.createdAt = Date()
-        
+
         try! viewContext.save()
-        
+
         // Create RecentSession from backend data (includes name from backend)
         let backendJSON: [String: Any] = [
             "session_id": "82cbb54e-f076-453a-8777-7111a3f49eb4",

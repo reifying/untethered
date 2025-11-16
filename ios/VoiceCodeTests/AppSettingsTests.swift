@@ -50,19 +50,49 @@ final class AppSettingsTests: XCTestCase {
     // MARK: - Property Tests
 
     func testServerURLPersistence() {
+        let expectation = XCTestExpectation(description: "Server URL persists after debounce")
+
+        // Get initial value (set by syncToSharedDefaults in init)
+        let initialValue = UserDefaults.standard.string(forKey: "serverURL")
+
         settings.serverURL = "192.168.1.100"
 
-        // Value should be saved to UserDefaults
-        let saved = UserDefaults.standard.string(forKey: "serverURL")
-        XCTAssertEqual(saved, "192.168.1.100")
+        // Value should NOT be saved immediately (debounced)
+        let savedImmediate = UserDefaults.standard.string(forKey: "serverURL")
+        XCTAssertEqual(savedImmediate, initialValue, "Value should not change immediately due to debouncing")
+
+        // Wait for debounce delay (0.5s) + buffer
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            // Value should be saved after debounce delay
+            let saved = UserDefaults.standard.string(forKey: "serverURL")
+            XCTAssertEqual(saved, "192.168.1.100")
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1.0)
     }
 
     func testServerPortPersistence() {
+        let expectation = XCTestExpectation(description: "Server port persists after debounce")
+
+        // Get initial value (set by syncToSharedDefaults in init)
+        let initialValue = UserDefaults.standard.string(forKey: "serverPort")
+
         settings.serverPort = "3000"
 
-        // Value should be saved to UserDefaults
-        let saved = UserDefaults.standard.string(forKey: "serverPort")
-        XCTAssertEqual(saved, "3000")
+        // Value should NOT be saved immediately (debounced)
+        let savedImmediate = UserDefaults.standard.string(forKey: "serverPort")
+        XCTAssertEqual(savedImmediate, initialValue, "Value should not change immediately due to debouncing")
+
+        // Wait for debounce delay (0.5s) + buffer
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            // Value should be saved after debounce delay
+            let saved = UserDefaults.standard.string(forKey: "serverPort")
+            XCTAssertEqual(saved, "3000")
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1.0)
     }
 
     func testFullServerURL() {
@@ -173,16 +203,30 @@ final class AppSettingsTests: XCTestCase {
     // MARK: - Multiple Instances
 
     func testMultipleInstances() {
+        let expectation = XCTestExpectation(description: "Multiple instances see persisted changes")
+
+        // Keep settings2 alive throughout the test
+        var settings2: AppSettings?
+
         settings.serverURL = "192.168.1.1"
 
-        let settings2 = AppSettings()
-        XCTAssertEqual(settings2.serverURL, "192.168.1.1")
+        // Wait for debounce to persist the value
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            settings2 = AppSettings()
+            XCTAssertEqual(settings2?.serverURL, "192.168.1.1")
 
-        settings2.serverURL = "192.168.1.2"
+            settings2?.serverURL = "192.168.1.2"
 
-        // First instance should see the updated value from UserDefaults
-        let settings3 = AppSettings()
-        XCTAssertEqual(settings3.serverURL, "192.168.1.2")
+            // Wait for second debounce
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                // Third instance should see the updated value from UserDefaults
+                let settings3 = AppSettings()
+                XCTAssertEqual(settings3.serverURL, "192.168.1.2")
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 2.0)
     }
 
     // MARK: - Voice Selection Tests
@@ -271,5 +315,98 @@ final class AppSettingsTests: XCTestCase {
         // Toggle back to true
         settings.continuePlaybackWhenLocked = true
         XCTAssertTrue(settings.continuePlaybackWhenLocked)
+    }
+
+    // MARK: - Debouncing Tests
+
+    func testServerPortDebouncing() {
+        let expectation = XCTestExpectation(description: "Multiple rapid changes only save once")
+
+        // Get initial value (set by syncToSharedDefaults in init)
+        let initialValue = UserDefaults.standard.string(forKey: "serverPort")
+
+        // Simulate rapid typing (like user typing "3000")
+        settings.serverPort = "3"
+        settings.serverPort = "30"
+        settings.serverPort = "300"
+        settings.serverPort = "3000"
+
+        // Immediately after typing, UserDefaults should still have old value
+        let savedImmediate = UserDefaults.standard.string(forKey: "serverPort")
+        XCTAssertEqual(savedImmediate, initialValue, "Value should not change immediately during typing")
+
+        // UI should update immediately (via @Published)
+        XCTAssertEqual(settings.serverPort, "3000", "UI should reflect latest value immediately")
+
+        // After debounce delay, UserDefaults should have final value
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            let saved = UserDefaults.standard.string(forKey: "serverPort")
+            XCTAssertEqual(saved, "3000", "Final value should be saved after debounce")
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    func testServerURLDebouncing() {
+        let expectation = XCTestExpectation(description: "Multiple rapid changes only save once")
+
+        // Get initial value (set by syncToSharedDefaults in init)
+        let initialValue = UserDefaults.standard.string(forKey: "serverURL")
+
+        // Simulate rapid typing
+        settings.serverURL = "192"
+        settings.serverURL = "192.168"
+        settings.serverURL = "192.168.1"
+        settings.serverURL = "192.168.1.100"
+
+        // Immediately after typing, UserDefaults should still have initial value
+        let savedImmediate = UserDefaults.standard.string(forKey: "serverURL")
+        XCTAssertEqual(savedImmediate, initialValue, "Value should not change during typing")
+
+        // UI should update immediately
+        XCTAssertEqual(settings.serverURL, "192.168.1.100", "UI should reflect latest value immediately")
+
+        // After debounce delay, UserDefaults should have final value
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            let saved = UserDefaults.standard.string(forKey: "serverURL")
+            XCTAssertEqual(saved, "192.168.1.100", "Final value should be saved after debounce")
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    func testDebouncingDoesNotAffectUIUpdates() {
+        // UI should update immediately even though persistence is debounced
+        settings.serverPort = "3000"
+        XCTAssertEqual(settings.serverPort, "3000", "Published property should update immediately")
+
+        settings.serverURL = "test.com"
+        XCTAssertEqual(settings.serverURL, "test.com", "Published property should update immediately")
+    }
+
+    func testSharedDefaultsDebouncing() {
+        let expectation = XCTestExpectation(description: "Shared defaults also debounced")
+
+        settings.serverPort = "9999"
+
+        // Shared defaults should not be updated immediately
+        if let sharedDefaults = UserDefaults(suiteName: "group.com.910labs.untethered.resources") {
+            let savedImmediate = sharedDefaults.string(forKey: "serverPort")
+            // Could be nil or "8080" depending on initial sync
+            XCTAssertNotEqual(savedImmediate, "9999", "Shared defaults should not update immediately")
+
+            // After debounce, shared defaults should be updated
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                let saved = sharedDefaults.string(forKey: "serverPort")
+                XCTAssertEqual(saved, "9999", "Shared defaults should be updated after debounce")
+                expectation.fulfill()
+            }
+        } else {
+            XCTFail("Could not access shared UserDefaults")
+        }
+
+        wait(for: [expectation], timeout: 1.0)
     }
 }

@@ -41,6 +41,11 @@ class VoiceCodeClient: ObservableObject {
     // Continuation for async session list requests
     private var sessionListContinuation: CheckedContinuation<Void, Never>?
 
+    // Debouncing mechanism for @Published property updates
+    private var pendingUpdates: [String: Any] = [:]
+    private var debounceWorkItem: DispatchWorkItem?
+    private let debounceDelay: TimeInterval = 0.1  // 100ms
+
     init(serverURL: String, voiceOutputManager: VoiceOutputManager? = nil, sessionSyncManager: SessionSyncManager? = nil, appSettings: AppSettings? = nil, setupObservers: Bool = true) {
         self.serverURL = serverURL
         self.appSettings = appSettings
@@ -84,6 +89,98 @@ class VoiceCodeClient: ObservableObject {
         }
     }
 
+    // MARK: - Debouncing
+
+    /// Schedule a debounced update for a @Published property
+    /// - Parameters:
+    ///   - key: Property name identifier
+    ///   - value: New value to set
+    private func scheduleUpdate(key: String, value: Any) {
+        // Store pending update
+        pendingUpdates[key] = value
+
+        // Cancel existing work item
+        debounceWorkItem?.cancel()
+
+        // Create new work item that applies all pending updates
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.applyPendingUpdates()
+        }
+
+        debounceWorkItem = workItem
+
+        // Schedule on main queue with delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + debounceDelay, execute: workItem)
+    }
+
+    /// Apply all pending updates to @Published properties
+    private func applyPendingUpdates() {
+        guard !pendingUpdates.isEmpty else { return }
+
+        let updates = pendingUpdates
+        pendingUpdates.removeAll()
+
+        // Apply all updates atomically on main queue
+        for (key, value) in updates {
+            switch key {
+            case "lockedSessions":
+                if let sessions = value as? Set<String> {
+                    self.lockedSessions = sessions
+                }
+            case "runningCommands":
+                if let commands = value as? [String: CommandExecution] {
+                    self.runningCommands = commands
+                }
+            case "availableCommands":
+                if let commands = value as? AvailableCommands? {
+                    self.availableCommands = commands
+                }
+            case "commandHistory":
+                if let history = value as? [CommandHistorySession] {
+                    self.commandHistory = history
+                }
+            case "commandOutputFull":
+                if let output = value as? CommandOutputFull? {
+                    self.commandOutputFull = output
+                }
+            case "resourcesList":
+                if let resources = value as? [Resource] {
+                    self.resourcesList = resources
+                }
+            case "isProcessing":
+                if let processing = value as? Bool {
+                    self.isProcessing = processing
+                }
+            case "currentError":
+                if let error = value as? String? {
+                    self.currentError = error
+                }
+            case "fileUploadResponse":
+                if let response = value as? (filename: String, success: Bool)? {
+                    self.fileUploadResponse = response
+                }
+            default:
+                break
+            }
+        }
+    }
+
+    /// Flush all pending updates immediately (for critical operations)
+    private func flushPendingUpdates() {
+        debounceWorkItem?.cancel()
+        debounceWorkItem = nil
+        applyPendingUpdates()
+    }
+
+    /// Get current value for a property, checking pending updates first
+    private func getCurrentValue<T>(for key: String, current: T) -> T {
+        if let pending = pendingUpdates[key] as? T {
+            return pending
+        }
+        return current
+    }
+
     // MARK: - Connection Management
 
     func connect(sessionId: String? = nil) {
@@ -104,7 +201,8 @@ class VoiceCodeClient: ObservableObject {
         receiveMessage()
         setupReconnection()
 
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             self.isConnected = true
             self.currentError = nil
         }
@@ -117,10 +215,12 @@ class VoiceCodeClient: ObservableObject {
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
 
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             self.isConnected = false
             // Clear all locked sessions on disconnect to prevent stuck locks
-            self.lockedSessions.removeAll()
+            self.scheduleUpdate(key: "lockedSessions", value: Set<String>())
+            self.flushPendingUpdates()  // Immediate flush for critical operation
             print("🔓 [VoiceCodeClient] Cleared all locked sessions on disconnect")
         }
     }
@@ -162,7 +262,8 @@ class VoiceCodeClient: ObservableObject {
                     print("❌ [VoiceCodeClient] Max reconnection attempts (\(self.maxReconnectionAttempts)) reached. Stopping.")
                     self.reconnectionTimer?.cancel()
                     self.reconnectionTimer = nil
-                    DispatchQueue.main.async {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
                         self.currentError = "Unable to connect to server after \(self.maxReconnectionAttempts) attempts. Please check your server settings."
                     }
                     return
@@ -200,11 +301,13 @@ class VoiceCodeClient: ObservableObject {
                 self.receiveMessage()
 
             case .failure(let error):
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
                     self.isConnected = false
-                    self.currentError = error.localizedDescription
+                    self.scheduleUpdate(key: "currentError", value: error.localizedDescription as String?)
                     // Clear all locked sessions on connection failure
-                    self.lockedSessions.removeAll()
+                    self.scheduleUpdate(key: "lockedSessions", value: Set<String>())
+                    self.flushPendingUpdates()  // Immediate flush for critical operation
                     print("🔓 [VoiceCodeClient] Cleared all locked sessions on connection failure")
                 }
             }
@@ -218,7 +321,8 @@ class VoiceCodeClient: ObservableObject {
             return
         }
 
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             switch type {
             case "hello":
                 // Initial welcome message from server
@@ -268,17 +372,19 @@ class VoiceCodeClient: ObservableObject {
 
             case "ack":
                 // Acknowledgment received
-                self.isProcessing = true
+                scheduleUpdate(key: "isProcessing", value: true)
                 if let message = json["message"] as? String {
                     print("Server ack: \(message)")
                 }
 
             case "response":
-                self.isProcessing = false
+                scheduleUpdate(key: "isProcessing", value: false)
 
                 // Unlock session when response is received
                 if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
-                    self.lockedSessions.remove(sessionId)
+                    var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
+                    updatedSessions.remove(sessionId)
+                    scheduleUpdate(key: "lockedSessions", value: updatedSessions)
                     print("🔓 [VoiceCodeClient] Session unlocked: \(sessionId)")
                 }
 
@@ -301,21 +407,23 @@ class VoiceCodeClient: ObservableObject {
                         print("⚠️ [VoiceCodeClient] No claude session_id in backend response")
                     }
 
-                    self.currentError = nil
+                    scheduleUpdate(key: "currentError", value: nil as String?)
                 } else {
                     // Error response
                     let error = json["error"] as? String ?? "Unknown error"
-                    self.currentError = error
+                    scheduleUpdate(key: "currentError", value: error as String?)
                 }
 
             case "error":
-                self.isProcessing = false
+                scheduleUpdate(key: "isProcessing", value: false)
                 let error = json["message"] as? String ?? "Unknown error"
-                self.currentError = error
+                scheduleUpdate(key: "currentError", value: error as String?)
 
                 // Unlock session when error is received
                 if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
-                    self.lockedSessions.remove(sessionId)
+                    var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
+                    updatedSessions.remove(sessionId)
+                    scheduleUpdate(key: "lockedSessions", value: updatedSessions)
                     print("🔓 [VoiceCodeClient] Session unlocked after error: \(sessionId)")
                 }
 
@@ -392,11 +500,14 @@ class VoiceCodeClient: ObservableObject {
                         self.subscribe(sessionId: sessionId)
                     }
 
-                    if self.lockedSessions.contains(sessionId) {
-                        self.lockedSessions.remove(sessionId)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (turn complete, remaining locks: \(self.lockedSessions.count))")
-                        if !self.lockedSessions.isEmpty {
-                            print("   Still locked: \(Array(self.lockedSessions))")
+                    let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
+                    if currentSessions.contains(sessionId) {
+                        var updatedSessions = currentSessions
+                        updatedSessions.remove(sessionId)
+                        scheduleUpdate(key: "lockedSessions", value: updatedSessions)
+                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (turn complete, remaining locks: \(updatedSessions.count))")
+                        if !updatedSessions.isEmpty {
+                            print("   Still locked: \(Array(updatedSessions))")
                         }
                     }
                 }
@@ -405,9 +516,12 @@ class VoiceCodeClient: ObservableObject {
                 // Session compaction completed successfully
                 if let sessionId = json["session_id"] as? String {
                     print("⚡️ [VoiceCodeClient] Received compaction_complete for \(sessionId)")
-                    if self.lockedSessions.contains(sessionId) {
-                        self.lockedSessions.remove(sessionId)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (compaction complete, remaining locks: \(self.lockedSessions.count))")
+                    let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
+                    if currentSessions.contains(sessionId) {
+                        var updatedSessions = currentSessions
+                        updatedSessions.remove(sessionId)
+                        scheduleUpdate(key: "lockedSessions", value: updatedSessions)
+                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (compaction complete, remaining locks: \(updatedSessions.count))")
                     }
                 }
                 self.onCompactionResponse?(json)
@@ -416,9 +530,12 @@ class VoiceCodeClient: ObservableObject {
                 // Session compaction failed
                 if let sessionId = json["session_id"] as? String {
                     print("❌ [VoiceCodeClient] Received compaction_error for \(sessionId)")
-                    if self.lockedSessions.contains(sessionId) {
-                        self.lockedSessions.remove(sessionId)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (compaction error, remaining locks: \(self.lockedSessions.count))")
+                    let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
+                    if currentSessions.contains(sessionId) {
+                        var updatedSessions = currentSessions
+                        updatedSessions.remove(sessionId)
+                        scheduleUpdate(key: "lockedSessions", value: updatedSessions)
+                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (compaction error, remaining locks: \(updatedSessions.count))")
                     }
                 }
                 self.onCompactionResponse?(json)
@@ -450,14 +567,16 @@ class VoiceCodeClient: ObservableObject {
                 print("❌ [VoiceCodeClient] Received worktree_session_error")
                 if let error = json["error"] as? String {
                     print("   Error: \(error)")
-                    self.currentError = error
+                    scheduleUpdate(key: "currentError", value: error as String?)
                 }
 
             case "session_locked":
                 // Session is currently locked (processing a prompt)
                 if let sessionId = json["session_id"] as? String {
                     print("🔒 [VoiceCodeClient] Session locked: \(sessionId)")
-                    self.lockedSessions.insert(sessionId)
+                    var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
+                    updatedSessions.insert(sessionId)
+                    scheduleUpdate(key: "lockedSessions", value: updatedSessions)
                 }
 
             case "available_commands":
@@ -465,7 +584,7 @@ class VoiceCodeClient: ObservableObject {
                 print("📋 [VoiceCodeClient] Received available_commands")
                 if let jsonData = try? JSONSerialization.data(withJSONObject: json),
                    let commands = try? JSONDecoder().decode(AvailableCommands.self, from: jsonData) {
-                    self.availableCommands = commands
+                    scheduleUpdate(key: "availableCommands", value: commands as AvailableCommands?)
                     print("   Project commands: \(commands.projectCommands.count)")
                     print("   General commands: \(commands.generalCommands.count)")
                 }
@@ -476,7 +595,9 @@ class VoiceCodeClient: ObservableObject {
                    let shellCommand = json["shell_command"] as? String {
                     print("🚀 [VoiceCodeClient] Command started: \(commandId) (\(commandSessionId))")
                     let execution = CommandExecution(id: commandSessionId, commandId: commandId, shellCommand: shellCommand)
-                    self.runningCommands[commandSessionId] = execution
+                    var updatedCommands = getCurrentValue(for: "runningCommands", current: self.runningCommands)
+                    updatedCommands[commandSessionId] = execution
+                    scheduleUpdate(key: "runningCommands", value: updatedCommands)
                 }
 
             case "command_output":
@@ -485,7 +606,9 @@ class VoiceCodeClient: ObservableObject {
                    let text = json["text"] as? String,
                    let stream = CommandExecution.OutputLine.StreamType(rawValue: streamString) {
                     print("📝 [VoiceCodeClient] Command output [\(streamString)]: \(text.prefix(50))...")
-                    self.runningCommands[commandSessionId]?.appendOutput(stream: stream, text: text)
+                    var updatedCommands = getCurrentValue(for: "runningCommands", current: self.runningCommands)
+                    updatedCommands[commandSessionId]?.appendOutput(stream: stream, text: text)
+                    scheduleUpdate(key: "runningCommands", value: updatedCommands)
                 }
 
             case "command_complete":
@@ -494,7 +617,9 @@ class VoiceCodeClient: ObservableObject {
                    let durationMs = json["duration_ms"] as? Int {
                     let duration = TimeInterval(durationMs) / 1000.0
                     print("✅ [VoiceCodeClient] Command complete: \(commandSessionId) (exit: \(exitCode), duration: \(duration)s)")
-                    self.runningCommands[commandSessionId]?.complete(exitCode: exitCode, duration: duration)
+                    var updatedCommands = getCurrentValue(for: "runningCommands", current: self.runningCommands)
+                    updatedCommands[commandSessionId]?.complete(exitCode: exitCode, duration: duration)
+                    scheduleUpdate(key: "runningCommands", value: updatedCommands)
                 }
 
             case "command_error":
@@ -502,14 +627,14 @@ class VoiceCodeClient: ObservableObject {
                    let error = json["error"] as? String {
                     print("❌ [VoiceCodeClient] Command error: \(commandId) - \(error)")
                     // Command error means it failed to start, not tracked in runningCommands
-                    self.currentError = "Command failed: \(error)"
+                    scheduleUpdate(key: "currentError", value: "Command failed: \(error)" as String?)
                 }
 
             case "command_history":
                 print("📜 [VoiceCodeClient] Received command_history")
                 if let jsonData = try? JSONSerialization.data(withJSONObject: json),
                    let history = try? JSONDecoder().decode(CommandHistory.self, from: jsonData) {
-                    self.commandHistory = history.sessions
+                    scheduleUpdate(key: "commandHistory", value: history.sessions)
                     print("   History sessions: \(history.sessions.count)")
                 }
 
@@ -517,7 +642,7 @@ class VoiceCodeClient: ObservableObject {
                 print("📄 [VoiceCodeClient] Received command_output_full")
                 if let jsonData = try? JSONSerialization.data(withJSONObject: json),
                    let output = try? JSONDecoder().decode(CommandOutputFull.self, from: jsonData) {
-                    self.commandOutputFull = output
+                    scheduleUpdate(key: "commandOutputFull", value: output as CommandOutputFull?)
                     print("   Command session: \(output.commandSessionId)")
                 }
 
@@ -526,7 +651,7 @@ class VoiceCodeClient: ObservableObject {
                 if let filename = json["filename"] as? String {
                     print("✅ [VoiceCodeClient] File uploaded successfully: \(filename)")
                     LogManager.shared.log("File uploaded successfully: \(filename)", category: "VoiceCodeClient")
-                    self.fileUploadResponse = (filename: filename, success: true)
+                    scheduleUpdate(key: "fileUploadResponse", value: (filename: filename, success: true) as (filename: String, success: Bool)?)
                 } else {
                     LogManager.shared.log("Received file_uploaded message without filename", category: "VoiceCodeClient")
                 }
@@ -538,11 +663,11 @@ class VoiceCodeClient: ObservableObject {
                     let resources = resourcesArray.compactMap { Resource(json: $0) }
                     print("   Found \(resources.count) resources")
                     LogManager.shared.log("Resources list received: \(resources.count) resources", category: "VoiceCodeClient")
-                    self.resourcesList = resources
+                    scheduleUpdate(key: "resourcesList", value: resources)
                 } else {
                     print("⚠️ [VoiceCodeClient] Invalid resources_list format")
                     LogManager.shared.log("Invalid resources_list format", category: "VoiceCodeClient")
-                    self.resourcesList = []
+                    scheduleUpdate(key: "resourcesList", value: [] as [Resource])
                 }
 
             case "resource-deleted", "resource_deleted":
@@ -551,7 +676,9 @@ class VoiceCodeClient: ObservableObject {
                     print("🗑️ [VoiceCodeClient] Resource deleted: \(filename)")
                     LogManager.shared.log("Resource deleted: \(filename)", category: "VoiceCodeClient")
                     // Remove from local list
-                    self.resourcesList.removeAll { $0.filename == filename }
+                    var updatedResources = getCurrentValue(for: "resourcesList", current: self.resourcesList)
+                    updatedResources.removeAll { $0.filename == filename }
+                    scheduleUpdate(key: "resourcesList", value: updatedResources)
                 }
 
             case "error":
@@ -577,8 +704,11 @@ class VoiceCodeClient: ObservableObject {
         // Optimistically lock the session before sending
         // Unlock will happen when we receive ANY assistant message for this session
         if let sessionId = sessionId {
-            lockedSessions.insert(sessionId)
-            print("🔒 [VoiceCodeClient] Optimistically locked: \(sessionId) (total locks: \(lockedSessions.count))")
+            var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
+            updatedSessions.insert(sessionId)
+            scheduleUpdate(key: "lockedSessions", value: updatedSessions)
+            flushPendingUpdates()  // Immediate flush for optimistic locking
+            print("🔒 [VoiceCodeClient] Optimistically locked: \(sessionId) (total locks: \(updatedSessions.count))")
         }
 
         var message: [String: Any] = [
@@ -736,8 +866,11 @@ class VoiceCodeClient: ObservableObject {
 
         // Optimistically lock the session before sending (must be on main thread)
         await MainActor.run {
-            lockedSessions.insert(sessionId)
-            print("🔒 [VoiceCodeClient] Optimistically locked for compaction: \(sessionId) (total locks: \(lockedSessions.count))")
+            var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
+            updatedSessions.insert(sessionId)
+            scheduleUpdate(key: "lockedSessions", value: updatedSessions)
+            flushPendingUpdates()  // Immediate flush for optimistic locking
+            print("🔒 [VoiceCodeClient] Optimistically locked for compaction: \(sessionId) (total locks: \(updatedSessions.count))")
         }
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -925,7 +1058,8 @@ class VoiceCodeClient: ObservableObject {
         webSocket?.send(message) { error in
             if let error = error {
                 LogManager.shared.log("Failed to send message: \(error.localizedDescription)", category: "VoiceCodeClient")
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
                     self.currentError = error.localizedDescription
                 }
             }

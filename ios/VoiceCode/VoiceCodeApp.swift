@@ -19,10 +19,37 @@ struct VoiceCodeApp: App {
     let persistenceController = PersistenceController.shared
     @StateObject private var settings = AppSettings()
     @StateObject private var draftManager = DraftManager()
+    @StateObject private var voiceOutput: VoiceOutputManager
+    @StateObject private var client: VoiceCodeClient
+    @StateObject private var resourcesManager: ResourcesManager
+
+    init() {
+        // Create instances in correct dependency order
+        let settings = AppSettings()
+        let voiceManager = VoiceOutputManager(appSettings: settings)
+        let voiceClient = VoiceCodeClient(
+            serverURL: settings.fullServerURL,
+            voiceOutputManager: voiceManager,
+            appSettings: settings
+        )
+        let resManager = ResourcesManager(voiceCodeClient: voiceClient, appSettings: settings)
+
+        // Initialize StateObjects
+        _settings = StateObject(wrappedValue: settings)
+        _draftManager = StateObject(wrappedValue: DraftManager())
+        _voiceOutput = StateObject(wrappedValue: voiceManager)
+        _client = StateObject(wrappedValue: voiceClient)
+        _resourcesManager = StateObject(wrappedValue: resManager)
+    }
 
     var body: some Scene {
         WindowGroup {
-            RootView(settings: settings)
+            RootView(
+                settings: settings,
+                voiceOutput: voiceOutput,
+                client: client,
+                resourcesManager: resourcesManager
+            )
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
                 .environmentObject(draftManager)
         }
@@ -33,26 +60,13 @@ struct VoiceCodeApp: App {
 
 struct RootView: View {
     @ObservedObject var settings: AppSettings
-    @StateObject private var voiceOutput = VoiceOutputManager()
-    @StateObject private var client: VoiceCodeClient
-    @StateObject private var resourcesManager: ResourcesManager
+    @ObservedObject var voiceOutput: VoiceOutputManager
+    @ObservedObject var client: VoiceCodeClient
+    @ObservedObject var resourcesManager: ResourcesManager
     @State private var showingSettings = false
     @State private var navigationPath = NavigationPath()
     @State private var recentSessions: [RecentSession] = []
-
-    init(settings: AppSettings) {
-        self.settings = settings
-        // Create VoiceOutputManager with AppSettings for centralized voice management
-        let voiceManager = VoiceOutputManager(appSettings: settings)
-        _voiceOutput = StateObject(wrappedValue: voiceManager)
-        let voiceClient = VoiceCodeClient(
-            serverURL: settings.fullServerURL,
-            voiceOutputManager: voiceManager,
-            appSettings: settings
-        )
-        _client = StateObject(wrappedValue: voiceClient)
-        _resourcesManager = StateObject(wrappedValue: ResourcesManager(voiceCodeClient: voiceClient, appSettings: settings))
-    }
+    @Environment(\.managedObjectContext) private var viewContext
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -117,8 +131,9 @@ struct RootView: View {
                     logger.info("🔍 First session JSON: \(firstSession)")
                 }
 
-                let parsed = sessions.compactMap { RecentSession(json: $0) }
-                logger.info("✅ Successfully parsed \(parsed.count) of \(sessions.count) sessions")
+                // Use batch parsing to eliminate N+1 queries (single CoreData fetch for all sessions)
+                let parsed = RecentSession.parseRecentSessions(sessions, using: self.viewContext)
+                logger.info("✅ Successfully parsed \(parsed.count) of \(sessions.count) sessions with batch fetch")
 
                 // Defer state update to avoid SwiftUI update conflicts
                 DispatchQueue.main.async {

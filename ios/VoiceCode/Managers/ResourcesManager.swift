@@ -277,7 +277,7 @@ class ResourcesManager: ObservableObject {
                 continuation.resume(returning: success)
             }
 
-            voiceCodeClient.sendMessage(message)
+            self.voiceCodeClient.sendMessage(message)
 
             // Timeout after 30 seconds if no response
             DispatchQueue.main.asyncAfter(deadline: .now() + 30.0) { [weak self] in
