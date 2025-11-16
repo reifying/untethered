@@ -160,6 +160,24 @@
       (is (= "third message" (:last-message metadata)))
       (is (str/includes? (:preview metadata) "third message"))))
 
+  (testing "Extract Claude summary from first line"
+    (let [messages ["{\"type\":\"summary\",\"summary\":\"Code Review: Hunt910 App Architecture\",\"leafUuid\":\"d786bf4d-541b-4fe6-a1ca-fac84bf084ca\"}"
+                    "{\"role\":\"user\",\"text\":\"first message\"}"
+                    "{\"role\":\"assistant\",\"text\":\"second message\"}"]
+          file (create-test-jsonl-file "test-with-summary.jsonl" messages)
+          metadata (repl/extract-metadata-from-file file)]
+      (is (= 2 (:message-count metadata))) ; summary filtered out
+      (is (= "Code Review: Hunt910 App Architecture" (:claude-summary metadata)))
+      (is (= "first message" (:first-message metadata)))))
+
+  (testing "Extract Claude summary from first summary entry (not first line)"
+    (let [messages ["{\"role\":\"user\",\"text\":\"first message\"}"
+                    "{\"type\":\"summary\",\"summary\":\"Session Summary\"}"]
+          file (create-test-jsonl-file "test-summary-not-first.jsonl" messages)
+          metadata (repl/extract-metadata-from-file file)]
+      (is (= "Session Summary" (:claude-summary metadata)))
+      (is (= 1 (:message-count metadata))))) ; summary filtered but extracted
+
   (testing "Extract timestamp from last message"
     (let [messages ["{\"role\":\"user\",\"text\":\"message 1\",\"timestamp\":\"2025-10-22T10:00:00Z\"}"
                     "{\"role\":\"assistant\",\"text\":\"message 2\",\"timestamp\":\"2025-10-22T11:30:00Z\"}"]
@@ -185,15 +203,30 @@
       (is (nil? (:last-message-timestamp metadata))))))
 
 (deftest test-generate-session-name
-  (testing "Generate session name with timestamp"
+  (testing "Uses Claude summary when available"
     (let [session-id "test-session-123"
           working-dir "/Users/foo/projects/myproject"
-          created-at 1697460800000 ; 2023-10-16 13:33:20 UTC
-          name (repl/generate-session-name session-id working-dir created-at)]
+          created-at 1697460800000
+          claude-summary "Code Review: Hunt910 App Architecture"
+          name (repl/generate-session-name session-id working-dir created-at claude-summary)]
+      (is (= "Code Review: Hunt910 App Architecture" name))))
+
+  (testing "Falls back to directory-timestamp format when no summary"
+    (let [session-id "test-session-123"
+          working-dir "/Users/foo/projects/myproject"
+          created-at 1697460800000
+          name (repl/generate-session-name session-id working-dir created-at nil)]
       (is (str/includes? name "myproject"))
       (is (str/includes? name "2023-10-16"))
-      ;; No longer includes "Terminal:" prefix
-      (is (not (str/includes? name "Terminal:")))))) ; Year from timestamp
+      (is (not (str/includes? name "Terminal:")))))
+
+  (testing "Falls back when summary is blank string"
+    (let [session-id "test-session-123"
+          working-dir "/Users/foo/projects/myproject"
+          created-at 1697460800000
+          name (repl/generate-session-name session-id working-dir created-at "")]
+      (is (str/includes? name "myproject"))
+      (is (str/includes? name "2023-10-16"))))) ; Year from timestamp
 
 (deftest test-build-session-metadata
   (testing "Build complete session metadata for valid UUID filename"
