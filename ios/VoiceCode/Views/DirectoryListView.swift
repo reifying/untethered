@@ -18,6 +18,9 @@ struct DirectoryListView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @EnvironmentObject var draftManager: DraftManager
 
+    // ViewModel isolates observation to only lockedSessions (not all 9 @Published properties)
+    @StateObject private var viewModel: DirectoryListViewModel
+
     // Fetch active (non-deleted) sessions from CoreData
     @FetchRequest(
         fetchRequest: CDSession.fetchActiveSessions(),
@@ -33,17 +36,39 @@ struct DirectoryListView: View {
     @State private var showingCopyConfirmation = false
     @State private var copyConfirmationMessage = ""
 
+    // Cached computed properties to prevent recomputation on every render
+    @State private var cachedDirectories: [DirectoryInfo] = []
+    @State private var cachedQueuedSessions: [CDSession] = []
+
     // Queue sessions filtered by lock state and sorted by position (FIFO)
     private var queuedSessions: [CDSession] {
-        sessions
-            .filter { $0.isInQueue && !$0.markedDeleted }
-            .filter { !isSessionLocked($0) }
-            .sorted { $0.queuePosition < $1.queuePosition }
+        cachedQueuedSessions
+    }
+
+    init(
+        client: VoiceCodeClient,
+        settings: AppSettings,
+        voiceOutput: VoiceOutputManager,
+        showingSettings: Binding<Bool>,
+        recentSessions: Binding<[RecentSession]>,
+        navigationPath: Binding<NavigationPath>,
+        resourcesManager: ResourcesManager
+    ) {
+        self.client = client
+        self.settings = settings
+        self.voiceOutput = voiceOutput
+        self._showingSettings = showingSettings
+        self._recentSessions = recentSessions
+        self._navigationPath = navigationPath
+        self.resourcesManager = resourcesManager
+
+        // Initialize ViewModel to isolate observation scope
+        self._viewModel = StateObject(wrappedValue: DirectoryListViewModel(client: client))
     }
 
     private func isSessionLocked(_ session: CDSession) -> Bool {
         let claudeSessionId = session.id.uuidString.lowercased()
-        return client.lockedSessions.contains(claudeSessionId)
+        return viewModel.isSessionLocked(claudeSessionId)
     }
 
     // Directory metadata computed from sessions
@@ -59,23 +84,7 @@ struct DirectoryListView: View {
 
     // Compute directory list from sessions
     private var directories: [DirectoryInfo] {
-        let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
-
-        return grouped.map { workingDirectory, sessions in
-            let directoryName = (workingDirectory as NSString).lastPathComponent
-            let sessionCount = sessions.count
-            let totalUnread = sessions.reduce(0) { $0 + Int($1.unreadCount) }
-            let lastModified = sessions.map { $0.lastModified }.max() ?? Date.distantPast
-
-            return DirectoryInfo(
-                workingDirectory: workingDirectory,
-                directoryName: directoryName,
-                sessionCount: sessionCount,
-                totalUnread: totalUnread,
-                lastModified: lastModified
-            )
-        }
-        .sorted { $0.lastModified > $1.lastModified } // Most recent first
+        cachedDirectories
     }
 
     // Default working directory for new sessions (most recently used)
@@ -136,6 +145,7 @@ struct DirectoryListView: View {
                                 NavigationLink(value: session.id) {
                                     CDSessionRowContent(session: session)
                                 }
+                                .id(session.id) // Stable view identity prevents motion vector recalculation
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                     Button(role: .destructive) {
                                         removeFromQueue(session)
@@ -155,6 +165,7 @@ struct DirectoryListView: View {
                             NavigationLink(value: directory.workingDirectory) {
                                 DirectoryRowContent(directory: directory)
                             }
+                            .id(directory.workingDirectory) // Stable view identity prevents motion vector recalculation
                             .contextMenu {
                                 Button(action: {
                                     copyToClipboard(directory.workingDirectory, message: "Directory path copied to clipboard")
@@ -275,7 +286,46 @@ struct DirectoryListView: View {
                 }
             )
         }
+        .onAppear {
+            updateCachedDirectories()
+            updateCachedQueuedSessions()
+        }
+        .onChange(of: sessions.count) { _ in
+            updateCachedDirectories()
+            updateCachedQueuedSessions()
+        }
+        .onChange(of: viewModel.lockedSessions) { _ in
+            updateCachedQueuedSessions()
+        }
+    }
 
+    // MARK: - Cache Update Methods
+
+    private func updateCachedDirectories() {
+        let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
+
+        cachedDirectories = grouped.map { workingDirectory, sessions in
+            let directoryName = (workingDirectory as NSString).lastPathComponent
+            let sessionCount = sessions.count
+            let totalUnread = sessions.reduce(0) { $0 + Int($1.unreadCount) }
+            let lastModified = sessions.map { $0.lastModified }.max() ?? Date.distantPast
+
+            return DirectoryInfo(
+                workingDirectory: workingDirectory,
+                directoryName: directoryName,
+                sessionCount: sessionCount,
+                totalUnread: totalUnread,
+                lastModified: lastModified
+            )
+        }
+        .sorted { $0.lastModified > $1.lastModified } // Most recent first
+    }
+
+    private func updateCachedQueuedSessions() {
+        cachedQueuedSessions = sessions
+            .filter { $0.isInQueue && !$0.markedDeleted }
+            .filter { !isSessionLocked($0) }
+            .sorted { $0.queuePosition < $1.queuePosition }
     }
 
     // MARK: - Queue Management
@@ -446,12 +496,11 @@ struct DirectoryRowContent: View {
 
 struct RecentSessionRowContent: View {
     let session: RecentSession
-    @Environment(\.managedObjectContext) private var viewContext
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            // Line 1: Session name (from CoreData or fallback to directory name)
-            Text(session.displayName(using: viewContext))
+            // Line 1: Session name (pre-fetched from batch query, no N+1 CoreData lookup)
+            Text(session.displayName)
                 .font(.headline)
             
             // Line 2: Session ID (first 8 chars) + working directory

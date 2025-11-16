@@ -203,7 +203,7 @@ final class QueueManagementTests: XCTestCase {
         // Given: A session with queue attributes
         let session = createTestSession(name: "Migration Test")
         session.isInQueue = true
-        session.queuePosition = 5
+        session.queuePosition = Int32(5)
         session.queuedAt = Date()
 
         // When: Saving and refetching
@@ -212,7 +212,7 @@ final class QueueManagementTests: XCTestCase {
 
         // Then: Queue attributes should persist
         XCTAssertTrue(session.isInQueue)
-        XCTAssertEqual(session.queuePosition, 5)
+        XCTAssertEqual(session.queuePosition, Int32(5))
         XCTAssertNotNil(session.queuedAt)
     }
 
@@ -242,7 +242,7 @@ final class QueueManagementTests: XCTestCase {
 
         // Queue defaults
         session.isInQueue = false
-        session.queuePosition = 0
+        session.queuePosition = Int32(0)
         session.queuedAt = nil
 
         return session
@@ -297,7 +297,7 @@ final class QueueManagementTests: XCTestCase {
 
         let removedPosition = session.queuePosition
         session.isInQueue = false
-        session.queuePosition = 0
+        session.queuePosition = Int32(0)
         session.queuedAt = nil
 
         // Reorder remaining queue items

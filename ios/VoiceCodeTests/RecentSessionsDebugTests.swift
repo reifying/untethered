@@ -28,12 +28,12 @@ final class RecentSessionsDebugTests: XCTestCase {
             "last_modified": "2025-10-23T13:29:31.809Z",
             "working_directory": "/Users/travisbrown/code/mono/hunt910-stand-filter"
         ]
-        
-        let session = RecentSession(json: backendJSON)
-        
-        XCTAssertNotNil(session, "Should parse backend JSON without name field")
-        XCTAssertEqual(session?.sessionId, "82cbb54e-f076-453a-8777-7111a3f49eb4")
-        XCTAssertEqual(session?.workingDirectory, "/Users/travisbrown/code/mono/hunt910-stand-filter")
+
+        let sessions = RecentSession.parseRecentSessions([backendJSON], using: viewContext)
+
+        XCTAssertEqual(sessions.count, 1, "Should parse backend JSON without name field")
+        XCTAssertEqual(sessions.first?.sessionId, "82cbb54e-f076-453a-8777-7111a3f49eb4")
+        XCTAssertEqual(sessions.first?.workingDirectory, "/Users/travisbrown/code/mono/hunt910-stand-filter")
     }
     
     func testDisplayNameWithCoreDataSession() {
@@ -45,24 +45,25 @@ final class RecentSessionsDebugTests: XCTestCase {
         cdSession.localName = "My Custom Session Name"
         cdSession.workingDirectory = "/Users/travisbrown/code/mono/hunt910-stand-filter"
         cdSession.lastModified = Date()
-        cdSession.messageCount = 0
+        cdSession.messageCount = Int32(0)
         cdSession.preview = ""
-        cdSession.unreadCount = 0
+        cdSession.unreadCount = Int32(0)
         cdSession.markedDeleted = false
-        
+
         try! viewContext.save()
-        
-        // Create RecentSession from backend data (no name field)
+
+        // Create RecentSession from backend data (no name field) using batch parsing
         let backendJSON: [String: Any] = [
             "session_id": "82cbb54e-f076-453a-8777-7111a3f49eb4",
             "working_directory": "/Users/travisbrown/code/mono/hunt910-stand-filter",
             "last_modified": "2025-10-23T13:29:31.809Z"
         ]
-        
-        let recentSession = RecentSession(json: backendJSON)!
-        
-        // Display name should come from CoreData
-        let displayName = recentSession.displayName(using: viewContext)
+
+        let recentSessions = RecentSession.parseRecentSessions([backendJSON], using: viewContext)
+        XCTAssertEqual(recentSessions.count, 1)
+
+        // Display name should be pre-fetched from CoreData
+        let displayName = recentSessions.first!.displayName
         XCTAssertEqual(displayName, "My Custom Session Name")
     }
     
@@ -73,11 +74,12 @@ final class RecentSessionsDebugTests: XCTestCase {
             "working_directory": "/Users/travisbrown/code/mono/my-project",
             "last_modified": "2025-10-23T13:29:31.809Z"
         ]
-        
-        let recentSession = RecentSession(json: backendJSON)!
-        
+
+        let recentSessions = RecentSession.parseRecentSessions([backendJSON], using: viewContext)
+        XCTAssertEqual(recentSessions.count, 1)
+
         // Should fallback to directory name
-        let displayName = recentSession.displayName(using: viewContext)
+        let displayName = recentSessions.first!.displayName
         XCTAssertEqual(displayName, "my-project")
     }
     
@@ -87,8 +89,8 @@ final class RecentSessionsDebugTests: XCTestCase {
             "working_directory": "/tmp",
             "last_modified": "2025-10-23T13:29:31.809Z"
         ]
-        
-        let session = RecentSession(json: json)
-        XCTAssertNotNil(session, "Should parse minimal JSON without name")
+
+        let sessions = RecentSession.parseRecentSessions([json], using: viewContext)
+        XCTAssertEqual(sessions.count, 1, "Should parse minimal JSON without name")
     }
 }

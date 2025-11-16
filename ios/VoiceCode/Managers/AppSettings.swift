@@ -10,20 +10,10 @@ class AppSettings: ObservableObject {
     private var sharedDefaults: UserDefaults? {
         UserDefaults(suiteName: appGroupID)
     }
+    private var cancellables = Set<AnyCancellable>()
 
-    @Published var serverURL: String {
-        didSet {
-            UserDefaults.standard.set(serverURL, forKey: "serverURL")
-            sharedDefaults?.set(serverURL, forKey: "serverURL")
-        }
-    }
-
-    @Published var serverPort: String {
-        didSet {
-            UserDefaults.standard.set(serverPort, forKey: "serverPort")
-            sharedDefaults?.set(serverPort, forKey: "serverPort")
-        }
-    }
+    @Published var serverURL: String
+    @Published var serverPort: String
 
     @Published var selectedVoiceIdentifier: String? {
         didSet {
@@ -123,6 +113,7 @@ class AppSettings: ObservableObject {
     }
 
     init() {
+        // Load initial values BEFORE setting up publishers to avoid triggering writes on launch
         self.serverURL = UserDefaults.standard.string(forKey: "serverURL") ?? ""
         self.serverPort = UserDefaults.standard.string(forKey: "serverPort") ?? "8080"
         self.selectedVoiceIdentifier = UserDefaults.standard.string(forKey: "selectedVoiceIdentifier")
@@ -131,6 +122,29 @@ class AppSettings: ObservableObject {
         self.notifyOnResponse = UserDefaults.standard.object(forKey: "notifyOnResponse") as? Bool ?? true
         self.resourceStorageLocation = UserDefaults.standard.string(forKey: "resourceStorageLocation") ?? "~/Downloads"
         self.queueEnabled = UserDefaults.standard.object(forKey: "queueEnabled") as? Bool ?? false
+
+        // Set up debounced publishers for text fields (serverURL and serverPort)
+        // dropFirst() skips the initial value to avoid writing on init
+        // Only save to UserDefaults after user stops typing for 0.5 seconds
+        $serverURL
+            .dropFirst()
+            .debounce(for: .seconds(0.5), scheduler: DispatchQueue.main)
+            .sink { [weak self] value in
+                guard let self = self else { return }
+                UserDefaults.standard.set(value, forKey: "serverURL")
+                self.sharedDefaults?.set(value, forKey: "serverURL")
+            }
+            .store(in: &cancellables)
+
+        $serverPort
+            .dropFirst()
+            .debounce(for: .seconds(0.5), scheduler: DispatchQueue.main)
+            .sink { [weak self] value in
+                guard let self = self else { return }
+                UserDefaults.standard.set(value, forKey: "serverPort")
+                self.sharedDefaults?.set(value, forKey: "serverPort")
+            }
+            .store(in: &cancellables)
 
         // Sync settings to shared UserDefaults for share extension access
         syncToSharedDefaults()
