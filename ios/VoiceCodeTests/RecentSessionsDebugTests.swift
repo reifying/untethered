@@ -39,16 +39,21 @@ final class RecentSessionsDebugTests: XCTestCase {
     func testDisplayNameWithCoreDataSession() {
         // Create a CoreData session with a custom name
         let sessionId = UUID(uuidString: "82cbb54e-f076-453a-8777-7111a3f49eb4")!
-        let cdSession = CDSession(context: viewContext)
+        let cdSession = CDBackendSession(context: viewContext)
         cdSession.id = sessionId
         cdSession.backendName = sessionId.uuidString.lowercased()
-        cdSession.localName = "My Custom Session Name"
         cdSession.workingDirectory = "/Users/travisbrown/code/mono/hunt910-stand-filter"
         cdSession.lastModified = Date()
         cdSession.messageCount = 0
         cdSession.preview = ""
         cdSession.unreadCount = 0
-        cdSession.markedDeleted = false
+
+        // Create CDUserSession to set custom name
+        let userSession = CDUserSession(context: viewContext)
+        userSession.id = sessionId
+        userSession.customName = "My Custom Session Name"
+        userSession.isUserDeleted = false
+        userSession.createdAt = Date()
         
         try! viewContext.save()
         
@@ -61,7 +66,7 @@ final class RecentSessionsDebugTests: XCTestCase {
         
         let recentSession = RecentSession(json: backendJSON)!
         
-        // Display name should come from CoreData
+        // Display name should come from CDUserSession custom name
         let displayName = recentSession.displayName(using: viewContext)
         XCTAssertEqual(displayName, "My Custom Session Name")
     }

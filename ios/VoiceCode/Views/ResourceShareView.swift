@@ -74,7 +74,7 @@ struct ResourceShareView: View {
         }
     }
 
-    private func uploadFile(fileURL: URL, toSession session: CDSession) {
+    private func uploadFile(fileURL: URL, toSession session: CDBackendSession) {
         // Access security-scoped resource
         guard fileURL.startAccessingSecurityScopedResource() else {
             errorMessage = "Failed to access file"

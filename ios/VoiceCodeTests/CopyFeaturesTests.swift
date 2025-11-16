@@ -12,7 +12,7 @@ import CoreData
 class CopyFeaturesTests: XCTestCase {
     var persistenceController: PersistenceController!
     var context: NSManagedObjectContext!
-    var testSession: CDSession!
+    var testSession: CDBackendSession!
 
     override func setUp() {
         super.setUp()
@@ -20,7 +20,7 @@ class CopyFeaturesTests: XCTestCase {
         context = persistenceController.container.viewContext
         
         // Create a test session
-        testSession = CDSession(context: context)
+        testSession = CDBackendSession(context: context)
         testSession.id = UUID()
         testSession.backendName = "Test Session"
         testSession.workingDirectory = "/Users/test/project"
@@ -146,7 +146,7 @@ class CopyFeaturesTests: XCTestCase {
         let messages = try context.fetch(fetchRequest)
         
         // Generate export text
-        var exportText = "# \(testSession.displayName)\n"
+        var exportText = "# \(testSession.displayName(context: context))\n"
         exportText += "Working Directory: \(testSession.workingDirectory)\n"
         
         let dateFormatter = DateFormatter()
@@ -172,7 +172,7 @@ class CopyFeaturesTests: XCTestCase {
 
     func testSessionExportWithNoMessages() throws {
         // Generate export text for session with no messages
-        var exportText = "# \(testSession.displayName)\n"
+        var exportText = "# \(testSession.displayName(context: context))\n"
         exportText += "Working Directory: \(testSession.workingDirectory)\n"
         
         let dateFormatter = DateFormatter()
@@ -303,13 +303,17 @@ class CopyFeaturesTests: XCTestCase {
     }
 
     func testSessionExportWithCustomSessionName() throws {
-        // Set custom local name
-        testSession.localName = "My Custom Session Name"
+        // Set custom name via CDUserSession
+        let userSession = CDUserSession(context: context)
+        userSession.id = testSession.id
+        userSession.createdAt = Date()
+        userSession.customName = "My Custom Session Name"
+        userSession.isUserDeleted = false
         try context.save()
-        
-        // Generate export with display name (should use localName)
-        var exportText = "# \(testSession.displayName)\n"
-        
+
+        // Generate export with display name (should use customName)
+        var exportText = "# \(testSession.displayName(context: context))\n"
+
         // Verify custom name is used
         XCTAssertTrue(exportText.contains("My Custom Session Name"))
     }
@@ -330,7 +334,7 @@ class CopyFeaturesTests: XCTestCase {
         let fetchRequest = CDMessage.fetchMessages(sessionId: testSession.id)
         let messages = try context.fetch(fetchRequest)
         
-        var exportText = "# \(testSession.displayName)\n"
+        var exportText = "# \(testSession.displayName(context: context))\n"
         exportText += "Working Directory: \(testSession.workingDirectory)\n"
         
         let dateFormatter = DateFormatter()
@@ -390,7 +394,7 @@ class CopyFeaturesTests: XCTestCase {
 
     func testCopyDifferentSessionIDs() throws {
         // Create second session
-        let session2 = CDSession(context: context)
+        let session2 = CDBackendSession(context: context)
         session2.id = UUID()
         session2.backendName = "Test Session 2"
         session2.workingDirectory = "/Users/test/project2"
@@ -486,7 +490,7 @@ class CopyFeaturesTests: XCTestCase {
 
     func testCopyDirectoryPathFromDifferentSessions() throws {
         // Create second session with different directory
-        let session2 = CDSession(context: context)
+        let session2 = CDBackendSession(context: context)
         session2.id = UUID()
         session2.backendName = "Test Session 2"
         session2.workingDirectory = "/Users/test/another-project"
@@ -571,13 +575,13 @@ class CopyFeaturesTests: XCTestCase {
 
     func testContextMenuCopyMultipleItems() throws {
         // Create multiple sessions
-        let session2 = CDSession(context: context)
+        let session2 = CDBackendSession(context: context)
         session2.id = UUID()
         session2.backendName = "Session 2"
         session2.workingDirectory = "/Users/test/project2"
         session2.lastModified = Date()
         
-        let session3 = CDSession(context: context)
+        let session3 = CDBackendSession(context: context)
         session3.id = UUID()
         session3.backendName = "Session 3"
         session3.workingDirectory = "/Users/test/project3"

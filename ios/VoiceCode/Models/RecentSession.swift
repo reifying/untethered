@@ -49,13 +49,13 @@ struct RecentSession: Identifiable, Equatable {
         guard let uuid = UUID(uuidString: sessionId) else {
             return fallbackName
         }
-        
-        let request = CDSession.fetchSession(id: uuid)
+
+        let request = CDBackendSession.fetchBackendSession(id: uuid)
         guard let session = try? context.fetch(request).first else {
             return fallbackName
         }
-        
-        return session.displayName
+
+        return session.displayName(context: context)
     }
     
     // Fallback name derived from working directory (last path component)

@@ -7,12 +7,13 @@ import CoreData
 // MARK: - CoreData Session Row Content
 
 struct CDSessionRowContent: View {
-    @ObservedObject var session: CDSession
+    @ObservedObject var session: CDBackendSession
+    @Environment(\.managedObjectContext) private var viewContext
 
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.displayName)
+                Text(session.displayName(context: viewContext))
                     .font(.headline)
 
                 HStack(spacing: 8) {
@@ -120,3 +121,6 @@ struct NewSessionView: View {
         }
     }
 }
+
+// Alias for backwards compatibility with existing code
+typealias CDBackendSessionRowContent = CDSessionRowContent

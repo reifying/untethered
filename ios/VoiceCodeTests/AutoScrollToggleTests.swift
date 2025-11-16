@@ -10,7 +10,7 @@ import CoreData
 
 final class AutoScrollToggleTests: XCTestCase {
     var testContext: NSManagedObjectContext!
-    var testSession: CDSession!
+    var testSession: CDBackendSession!
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -42,8 +42,8 @@ final class AutoScrollToggleTests: XCTestCase {
         return container.viewContext
     }
 
-    private func createTestSession() -> CDSession {
-        let session = CDSession(context: testContext)
+    private func createTestSession() -> CDBackendSession {
+        let session = CDBackendSession(context: testContext)
         session.id = UUID()
         session.backendName = "Test Session"
         session.workingDirectory = "/test"

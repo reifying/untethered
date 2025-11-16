@@ -28,22 +28,20 @@ final class NewSessionNavigationTests: XCTestCase {
         let sessionName = "Test Session"
         let workingDir = "/Users/test/project"
 
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = sessionId.uuidString.lowercased()
-        session.localName = sessionName
         session.workingDirectory = workingDir
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = true
 
         try context.save()
 
         // Fetch the session back
-        let fetchRequest: NSFetchRequest<CDSession> = CDSession.fetchRequest()
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
         fetchRequest.predicate = NSPredicate(format: "id == %@", sessionId as CVarArg)
         let fetched = try context.fetch(fetchRequest)
 
@@ -52,11 +50,9 @@ final class NewSessionNavigationTests: XCTestCase {
         let createdSession = fetched.first!
         XCTAssertEqual(createdSession.id, sessionId, "Session ID should match")
         XCTAssertEqual(createdSession.backendName, sessionId.uuidString.lowercased(), "Backend name should be lowercase UUID")
-        XCTAssertEqual(createdSession.localName, sessionName, "Local name should match")
         XCTAssertEqual(createdSession.workingDirectory, workingDir, "Working directory should match")
         XCTAssertEqual(createdSession.messageCount, 0, "Message count should be 0")
         XCTAssertEqual(createdSession.unreadCount, 0, "Unread count should be 0")
-        XCTAssertEqual(createdSession.markedDeleted, false, "Should not be marked deleted")
         XCTAssertEqual(createdSession.isLocallyCreated, true, "Should be marked as locally created")
     }
 
@@ -66,22 +62,20 @@ final class NewSessionNavigationTests: XCTestCase {
         let sessionName = "Default Dir Session"
         let defaultDir = FileManager.default.currentDirectoryPath
 
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = sessionId.uuidString.lowercased()
-        session.localName = sessionName
         session.workingDirectory = defaultDir
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = true
 
         try context.save()
 
         // Fetch and verify
-        let fetchRequest: NSFetchRequest<CDSession> = CDSession.fetchRequest()
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
         fetchRequest.predicate = NSPredicate(format: "id == %@", sessionId as CVarArg)
         let fetched = try context.fetch(fetchRequest)
 
@@ -93,21 +87,19 @@ final class NewSessionNavigationTests: XCTestCase {
         // Verify that backend name is always lowercase
         let sessionId = UUID()
 
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = sessionId.uuidString.lowercased()
-        session.localName = "Test"
         session.workingDirectory = "/tmp"
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = true
 
         try context.save()
 
-        let fetchRequest: NSFetchRequest<CDSession> = CDSession.fetchRequest()
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
         fetchRequest.predicate = NSPredicate(format: "id == %@", sessionId as CVarArg)
         let fetched = try context.fetch(fetchRequest)
 
@@ -161,23 +153,20 @@ final class NewSessionNavigationTests: XCTestCase {
     func testNewlyCreatedSessionAppearsInFetchRequest() throws {
         // Create a new session
         let sessionId = UUID()
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = sessionId.uuidString.lowercased()
-        session.localName = "New Session"
         session.workingDirectory = "/Users/test/project"
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = true
 
         try context.save()
 
         // Verify it appears in active sessions fetch
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         XCTAssertTrue(sessions.contains(where: { $0.id == sessionId }), "Newly created session should appear in active sessions")
     }
@@ -187,23 +176,21 @@ final class NewSessionNavigationTests: XCTestCase {
         let workingDir = "/Users/test/project-a"
         let sessionId = UUID()
 
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = sessionId.uuidString.lowercased()
-        session.localName = "New Session"
         session.workingDirectory = workingDir
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = true
 
         try context.save()
 
         // Fetch sessions filtered by directory
-        let fetchRequest: NSFetchRequest<CDSession> = CDSession.fetchRequest()
-        fetchRequest.predicate = NSPredicate(format: "workingDirectory == %@ AND markedDeleted == NO", workingDir)
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
+        fetchRequest.predicate = NSPredicate(format: "workingDirectory == %@", workingDir)
 
         let sessions = try context.fetch(fetchRequest)
 
@@ -218,26 +205,23 @@ final class NewSessionNavigationTests: XCTestCase {
         // But test that CoreData can handle it if it somehow gets through
         let sessionId = UUID()
 
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = sessionId.uuidString.lowercased()
-        session.localName = ""  // Empty name
         session.workingDirectory = "/tmp"
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = true
 
         try context.save()
 
-        let fetchRequest: NSFetchRequest<CDSession> = CDSession.fetchRequest()
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
         fetchRequest.predicate = NSPredicate(format: "id == %@", sessionId as CVarArg)
         let fetched = try context.fetch(fetchRequest)
 
         XCTAssertEqual(fetched.count, 1)
-        XCTAssertEqual(fetched.first?.localName, "", "Should allow empty name")
     }
 
     func testCreateMultipleSessionsInSameDirectory() throws {
@@ -245,25 +229,23 @@ final class NewSessionNavigationTests: XCTestCase {
         let workingDir = "/Users/test/project"
         let sessionIds = [UUID(), UUID(), UUID()]
 
-        for (index, sessionId) in sessionIds.enumerated() {
-            let session = CDSession(context: context)
+        for sessionId in sessionIds {
+            let session = CDBackendSession(context: context)
             session.id = sessionId
             session.backendName = sessionId.uuidString.lowercased()
-            session.localName = "Session \(index + 1)"
             session.workingDirectory = workingDir
             session.lastModified = Date()
             session.messageCount = 0
             session.preview = ""
             session.unreadCount = 0
-            session.markedDeleted = false
             session.isLocallyCreated = true
         }
 
         try context.save()
 
         // Fetch all sessions in this directory
-        let fetchRequest: NSFetchRequest<CDSession> = CDSession.fetchRequest()
-        fetchRequest.predicate = NSPredicate(format: "workingDirectory == %@ AND markedDeleted == NO", workingDir)
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
+        fetchRequest.predicate = NSPredicate(format: "workingDirectory == %@", workingDir)
 
         let sessions = try context.fetch(fetchRequest)
 
@@ -276,16 +258,14 @@ final class NewSessionNavigationTests: XCTestCase {
 
         // Create session
         let sessionId = UUID()
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = sessionId.uuidString.lowercased()
-        session.localName = "Nav Test Session"
         session.workingDirectory = "/Users/test/project"
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = true
 
         try context.save()
@@ -297,7 +277,7 @@ final class NewSessionNavigationTests: XCTestCase {
         XCTAssertEqual(navigationPath.count, 1, "Should have navigated to session")
 
         // Verify session exists in CoreData
-        let fetchRequest: NSFetchRequest<CDSession> = CDSession.fetchRequest()
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
         fetchRequest.predicate = NSPredicate(format: "id == %@", sessionId as CVarArg)
         let fetched = try context.fetch(fetchRequest)
 
@@ -310,21 +290,19 @@ final class NewSessionNavigationTests: XCTestCase {
         // Test that isLocallyCreated flag is set for new sessions
         let sessionId = UUID()
 
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = sessionId.uuidString.lowercased()
-        session.localName = "Locally Created"
         session.workingDirectory = "/tmp"
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = true
 
         try context.save()
 
-        let fetchRequest: NSFetchRequest<CDSession> = CDSession.fetchRequest()
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
         fetchRequest.predicate = NSPredicate(format: "id == %@", sessionId as CVarArg)
         let fetched = try context.fetch(fetchRequest)
 
@@ -334,39 +312,35 @@ final class NewSessionNavigationTests: XCTestCase {
     func testLocallyCreatedVsBackendSessions() throws {
         // Create one locally created session and one backend session
         let localSessionId = UUID()
-        let localSession = CDSession(context: context)
+        let localSession = CDBackendSession(context: context)
         localSession.id = localSessionId
         localSession.backendName = localSessionId.uuidString.lowercased()
-        localSession.localName = "Local"
         localSession.workingDirectory = "/tmp"
         localSession.lastModified = Date()
         localSession.messageCount = 0
         localSession.preview = ""
         localSession.unreadCount = 0
-        localSession.markedDeleted = false
         localSession.isLocallyCreated = true
 
         let backendSessionId = UUID()
-        let backendSession = CDSession(context: context)
+        let backendSession = CDBackendSession(context: context)
         backendSession.id = backendSessionId
         backendSession.backendName = backendSessionId.uuidString.lowercased()
-        backendSession.localName = "Backend"
         backendSession.workingDirectory = "/tmp"
         backendSession.lastModified = Date()
         backendSession.messageCount = 0
         backendSession.preview = ""
         backendSession.unreadCount = 0
-        backendSession.markedDeleted = false
         backendSession.isLocallyCreated = false
 
         try context.save()
 
         // Fetch and verify
-        let localFetch: NSFetchRequest<CDSession> = CDSession.fetchRequest()
+        let localFetch: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
         localFetch.predicate = NSPredicate(format: "isLocallyCreated == YES")
         let localSessions = try context.fetch(localFetch)
 
-        let backendFetch: NSFetchRequest<CDSession> = CDSession.fetchRequest()
+        let backendFetch: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
         backendFetch.predicate = NSPredicate(format: "isLocallyCreated == NO")
         let backendSessions = try context.fetch(backendFetch)
 

@@ -11,7 +11,7 @@ struct SessionLookupView: View {
     @ObservedObject var voiceOutput: VoiceOutputManager
     @ObservedObject var settings: AppSettings
 
-    @FetchRequest private var sessions: FetchedResults<CDSession>
+    @FetchRequest private var sessions: FetchedResults<CDBackendSession>
     
     @State private var showingCopyConfirmation = false
 
@@ -22,7 +22,7 @@ struct SessionLookupView: View {
         self.settings = settings
 
         // Fetch session by ID
-        _sessions = FetchRequest<CDSession>(
+        _sessions = FetchRequest<CDBackendSession>(
             sortDescriptors: [],
             predicate: NSPredicate(format: "id == %@", sessionId as CVarArg),
             animation: .default

@@ -29,7 +29,7 @@ final class NewSessionSubscribeTests: XCTestCase {
 
     func testNewSessionDoesNotSubscribeOnLoad() {
         // Given: A new session with no messages (messageCount == 0)
-        let newSession = CDSession(context: context)
+        let newSession = CDBackendSession(context: context)
         newSession.id = UUID()
         newSession.workingDirectory = "/test/path"
         newSession.backendName = newSession.id.uuidString.lowercased()
@@ -37,7 +37,6 @@ final class NewSessionSubscribeTests: XCTestCase {
         newSession.preview = ""
         newSession.messageCount = 0
         newSession.unreadCount = 0
-        newSession.markedDeleted = false
         newSession.isLocallyCreated = true
 
         // Verify session is new (no messages)
@@ -54,7 +53,7 @@ final class NewSessionSubscribeTests: XCTestCase {
 
     func testExistingSessionSubscribesOnLoad() {
         // Given: An existing session with messages (messageCount > 0)
-        let existingSession = CDSession(context: context)
+        let existingSession = CDBackendSession(context: context)
         existingSession.id = UUID()
         existingSession.workingDirectory = "/test/path"
         existingSession.backendName = existingSession.id.uuidString.lowercased()
@@ -62,7 +61,6 @@ final class NewSessionSubscribeTests: XCTestCase {
         existingSession.preview = "Test preview"
         existingSession.messageCount = 0  // Start at 0
         existingSession.unreadCount = 0
-        existingSession.markedDeleted = false
         existingSession.isLocallyCreated = false
 
         // Add a message to make it an existing session
@@ -86,7 +84,7 @@ final class NewSessionSubscribeTests: XCTestCase {
 
     func testNewSessionTransitionsToExistingAfterFirstMessage() {
         // Given: A new session
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = UUID()
         session.workingDirectory = "/test/path"
         session.backendName = session.id.uuidString.lowercased()
@@ -94,7 +92,6 @@ final class NewSessionSubscribeTests: XCTestCase {
         session.preview = ""
         session.messageCount = 0
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = true
 
         // Initially new (no messages)
@@ -119,7 +116,7 @@ final class NewSessionSubscribeTests: XCTestCase {
 
     func testMultipleMessagesStillSubscribes() {
         // Given: A session with multiple messages
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = UUID()
         session.workingDirectory = "/test/path"
         session.backendName = session.id.uuidString.lowercased()
@@ -127,7 +124,6 @@ final class NewSessionSubscribeTests: XCTestCase {
         session.preview = "Test preview"
         session.messageCount = 0
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = false
 
         // Add multiple messages
@@ -148,7 +144,7 @@ final class NewSessionSubscribeTests: XCTestCase {
 
     func testSessionWithOptimisticMessageDoesNotSubscribe() {
         // Given: A new session with only an optimistic message
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = UUID()
         session.workingDirectory = "/test/path"
         session.backendName = session.id.uuidString.lowercased()
@@ -156,7 +152,6 @@ final class NewSessionSubscribeTests: XCTestCase {
         session.preview = ""
         session.messageCount = 0
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = true
 
         // Add optimistic message (not yet confirmed by backend)

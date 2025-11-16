@@ -29,7 +29,7 @@ class SessionGroupingTests: XCTestCase {
 
     func testSessionsGroupedByWorkingDirectory() throws {
         // Create sessions with different working directories
-        let session1 = CDSession(context: context)
+        let session1 = CDBackendSession(context: context)
         session1.id = UUID()
         session1.backendName = "Session 1"
         session1.workingDirectory = "/projects/app1"
@@ -37,10 +37,9 @@ class SessionGroupingTests: XCTestCase {
         session1.messageCount = 0
         session1.preview = ""
         session1.unreadCount = 0
-        session1.markedDeleted = false
         session1.isLocallyCreated = true
 
-        let session2 = CDSession(context: context)
+        let session2 = CDBackendSession(context: context)
         session2.id = UUID()
         session2.backendName = "Session 2"
         session2.workingDirectory = "/projects/app2"
@@ -48,10 +47,9 @@ class SessionGroupingTests: XCTestCase {
         session2.messageCount = 0
         session2.preview = ""
         session2.unreadCount = 0
-        session2.markedDeleted = false
         session2.isLocallyCreated = true
 
-        let session3 = CDSession(context: context)
+        let session3 = CDBackendSession(context: context)
         session3.id = UUID()
         session3.backendName = "Session 3"
         session3.workingDirectory = "/projects/app1"
@@ -59,14 +57,12 @@ class SessionGroupingTests: XCTestCase {
         session3.messageCount = 0
         session3.preview = ""
         session3.unreadCount = 0
-        session3.markedDeleted = false
         session3.isLocallyCreated = true
 
         try context.save()
 
         // Fetch all sessions
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         // Group sessions manually to verify grouping logic
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
@@ -82,7 +78,7 @@ class SessionGroupingTests: XCTestCase {
         let oldDate = Date(timeIntervalSinceNow: -1000)
         let recentDate = Date()
 
-        let session1 = CDSession(context: context)
+        let session1 = CDBackendSession(context: context)
         session1.id = UUID()
         session1.backendName = "Old Session"
         session1.workingDirectory = "/projects/old"
@@ -90,10 +86,9 @@ class SessionGroupingTests: XCTestCase {
         session1.messageCount = 0
         session1.preview = ""
         session1.unreadCount = 0
-        session1.markedDeleted = false
         session1.isLocallyCreated = true
 
-        let session2 = CDSession(context: context)
+        let session2 = CDBackendSession(context: context)
         session2.id = UUID()
         session2.backendName = "Recent Session"
         session2.workingDirectory = "/projects/recent"
@@ -101,13 +96,11 @@ class SessionGroupingTests: XCTestCase {
         session2.messageCount = 0
         session2.preview = ""
         session2.unreadCount = 0
-        session2.markedDeleted = false
 
         try context.save()
 
         // Fetch and group sessions
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
 
         // Sort directories by most recent modification
@@ -130,7 +123,7 @@ class SessionGroupingTests: XCTestCase {
         let middleDate = Date(timeIntervalSinceNow: -500)
         let recentDate = Date()
 
-        let session1 = CDSession(context: context)
+        let session1 = CDBackendSession(context: context)
         session1.id = UUID()
         session1.backendName = "Old"
         session1.workingDirectory = "/projects/app"
@@ -138,10 +131,9 @@ class SessionGroupingTests: XCTestCase {
         session1.messageCount = 0
         session1.preview = ""
         session1.unreadCount = 0
-        session1.markedDeleted = false
         session1.isLocallyCreated = true
 
-        let session2 = CDSession(context: context)
+        let session2 = CDBackendSession(context: context)
         session2.id = UUID()
         session2.backendName = "Recent"
         session2.workingDirectory = "/projects/app"
@@ -149,10 +141,9 @@ class SessionGroupingTests: XCTestCase {
         session2.messageCount = 0
         session2.preview = ""
         session2.unreadCount = 0
-        session2.markedDeleted = false
         session2.isLocallyCreated = true
 
-        let session3 = CDSession(context: context)
+        let session3 = CDBackendSession(context: context)
         session3.id = UUID()
         session3.backendName = "Middle"
         session3.workingDirectory = "/projects/app"
@@ -160,14 +151,12 @@ class SessionGroupingTests: XCTestCase {
         session3.messageCount = 0
         session3.preview = ""
         session3.unreadCount = 0
-        session3.markedDeleted = false
         session3.isLocallyCreated = true
 
         try context.save()
 
         // Fetch and group sessions
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
 
         // Sort sessions within the group
@@ -185,7 +174,7 @@ class SessionGroupingTests: XCTestCase {
         let oldDate = Date(timeIntervalSinceNow: -1000)
         let recentDate = Date()
 
-        let session1 = CDSession(context: context)
+        let session1 = CDBackendSession(context: context)
         session1.id = UUID()
         session1.backendName = "Old Session"
         session1.workingDirectory = "/projects/old"
@@ -193,10 +182,9 @@ class SessionGroupingTests: XCTestCase {
         session1.messageCount = 0
         session1.preview = ""
         session1.unreadCount = 0
-        session1.markedDeleted = false
         session1.isLocallyCreated = true
 
-        let session2 = CDSession(context: context)
+        let session2 = CDBackendSession(context: context)
         session2.id = UUID()
         session2.backendName = "Recent Session"
         session2.workingDirectory = "/projects/recent"
@@ -204,13 +192,11 @@ class SessionGroupingTests: XCTestCase {
         session2.messageCount = 0
         session2.preview = ""
         session2.unreadCount = 0
-        session2.markedDeleted = false
 
         try context.save()
 
         // Fetch and group sessions
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
 
         // Get default (most recent) working directory
@@ -229,8 +215,7 @@ class SessionGroupingTests: XCTestCase {
 
     func testEmptySessionsListHasNoGroups() throws {
         // Fetch sessions when none exist
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         // Group sessions
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
@@ -242,7 +227,7 @@ class SessionGroupingTests: XCTestCase {
 
     func testSingleSessionCreatesOneGroup() throws {
         // Create a single session
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = UUID()
         session.backendName = "Single Session"
         session.workingDirectory = "/projects/app"
@@ -250,14 +235,12 @@ class SessionGroupingTests: XCTestCase {
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = true
 
         try context.save()
 
         // Fetch and group sessions
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
 
         // Verify one group
@@ -267,7 +250,7 @@ class SessionGroupingTests: XCTestCase {
 
     func testDeletedSessionsNotIncludedInGroups() throws {
         // Create active and deleted sessions
-        let activeSession = CDSession(context: context)
+        let activeSession = CDBackendSession(context: context)
         activeSession.id = UUID()
         activeSession.backendName = "Active"
         activeSession.workingDirectory = "/projects/app"
@@ -275,10 +258,9 @@ class SessionGroupingTests: XCTestCase {
         activeSession.messageCount = 0
         activeSession.preview = ""
         activeSession.unreadCount = 0
-        activeSession.markedDeleted = false
         activeSession.isLocallyCreated = true
 
-        let deletedSession = CDSession(context: context)
+        let deletedSession = CDBackendSession(context: context)
         deletedSession.id = UUID()
         deletedSession.backendName = "Deleted"
         deletedSession.workingDirectory = "/projects/app"
@@ -286,14 +268,17 @@ class SessionGroupingTests: XCTestCase {
         deletedSession.messageCount = 0
         deletedSession.preview = ""
         deletedSession.unreadCount = 0
-        deletedSession.markedDeleted = true
+        // Mark as deleted via CDUserSession
+        let userSession = CDUserSession(context: context)
+        userSession.id = deletedSession.id
+        userSession.isUserDeleted = true
+        userSession.createdAt = Date()
         deletedSession.isLocallyCreated = true
 
         try context.save()
 
         // Fetch active sessions only
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         // Verify only active session is included
         XCTAssertEqual(sessions.count, 1)
@@ -303,7 +288,7 @@ class SessionGroupingTests: XCTestCase {
     func testGroupCountReflectsNumberOfSessions() throws {
         // Create multiple sessions in same directory
         for i in 1...5 {
-            let session = CDSession(context: context)
+            let session = CDBackendSession(context: context)
             session.id = UUID()
             session.backendName = "Session \(i)"
             session.workingDirectory = "/projects/app"
@@ -311,15 +296,13 @@ class SessionGroupingTests: XCTestCase {
             session.messageCount = 0
             session.preview = ""
             session.unreadCount = 0
-            session.markedDeleted = false
-            session.isLocallyCreated = true
+                session.isLocallyCreated = true
         }
 
         try context.save()
 
         // Fetch and group sessions
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
 
         // Verify group count
@@ -331,7 +314,7 @@ class SessionGroupingTests: XCTestCase {
         let oldDate = Date(timeIntervalSinceNow: -1000)
         let newDate = Date()
 
-        let session1 = CDSession(context: context)
+        let session1 = CDBackendSession(context: context)
         session1.id = UUID()
         session1.backendName = "Session 1"
         session1.workingDirectory = "/projects/app1"
@@ -339,10 +322,9 @@ class SessionGroupingTests: XCTestCase {
         session1.messageCount = 0
         session1.preview = ""
         session1.unreadCount = 0
-        session1.markedDeleted = false
         session1.isLocallyCreated = true
 
-        let session2 = CDSession(context: context)
+        let session2 = CDBackendSession(context: context)
         session2.id = UUID()
         session2.backendName = "Session 2"
         session2.workingDirectory = "/projects/app2"
@@ -350,13 +332,11 @@ class SessionGroupingTests: XCTestCase {
         session2.messageCount = 0
         session2.preview = ""
         session2.unreadCount = 0
-        session2.markedDeleted = false
 
         try context.save()
 
         // Get initial sort order
-        let fetchRequest = CDSession.fetchActiveSessions()
-        var sessions = try context.fetch(fetchRequest)
+        var sessions = try CDBackendSession.fetchActiveSessions(context: context)
         var grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
         var sortedDirs = grouped.keys.sorted { dir1, dir2 in
             let sessions1 = grouped[dir1] ?? []
@@ -373,7 +353,7 @@ class SessionGroupingTests: XCTestCase {
         try context.save()
 
         // Get new sort order
-        sessions = try context.fetch(fetchRequest)
+        sessions = try CDBackendSession.fetchActiveSessions(context: context)
         grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
         sortedDirs = grouped.keys.sorted { dir1, dir2 in
             let sessions1 = grouped[dir1] ?? []

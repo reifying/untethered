@@ -281,7 +281,7 @@ backend-nrepl-stop:
 # Increment build number (queries TestFlight for latest to avoid conflicts)
 bump-build:
 	@echo "Smart build number bump (queries TestFlight)..."
-	@$(WRAP) bash -c 'source .envrc && ./scripts/smart-bump-build.sh'
+	@$(WRAP) ./scripts/smart-bump-build.sh
 
 # Simple increment (legacy, may cause conflicts on different branches)
 bump-build-simple:
@@ -303,18 +303,18 @@ export-ipa:
 # Upload to TestFlight
 upload-testflight:
 	@echo "Uploading to TestFlight..."
-	$(WRAP) bash -c 'source .envrc && ./scripts/publish-testflight.sh upload'
+	$(WRAP) ./scripts/publish-testflight.sh upload
 
 # Complete publish workflow: archive -> export -> upload
 publish-testflight:
 	@echo "Starting complete TestFlight publish workflow..."
-	$(WRAP) bash -c 'source .envrc && ./scripts/publish-testflight.sh publish'
+	$(WRAP) ./scripts/publish-testflight.sh publish
 
 # Deploy new build: smart bump -> archive -> export -> upload
 deploy-testflight:
 	@echo "Deploying new build to TestFlight..."
 	@$(MAKE) bump-build
-	@$(WRAP) bash -c 'source .envrc && ./scripts/publish-testflight.sh publish'
+	@$(WRAP) ./scripts/publish-testflight.sh publish
 	@echo "✅ Deployment complete! Check App Store Connect in ~15 minutes."
 
 # Debug target to show available destinations

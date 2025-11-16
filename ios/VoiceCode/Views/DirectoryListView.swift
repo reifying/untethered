@@ -19,10 +19,7 @@ struct DirectoryListView: View {
     @EnvironmentObject var draftManager: DraftManager
 
     // Fetch active (non-deleted) sessions from CoreData
-    @FetchRequest(
-        fetchRequest: CDSession.fetchActiveSessions(),
-        animation: .default)
-    private var sessions: FetchedResults<CDSession>
+    @State private var sessions: [CDBackendSession] = []
 
     @State private var showingNewSession = false
     @State private var newSessionName = ""
@@ -34,14 +31,14 @@ struct DirectoryListView: View {
     @State private var copyConfirmationMessage = ""
 
     // Queue sessions filtered by lock state and sorted by position (FIFO)
-    private var queuedSessions: [CDSession] {
+    private var queuedSessions: [CDBackendSession] {
         sessions
-            .filter { $0.isInQueue && !$0.markedDeleted }
+            .filter { $0.isInQueue }
             .filter { !isSessionLocked($0) }
             .sorted { $0.queuePosition < $1.queuePosition }
     }
 
-    private func isSessionLocked(_ session: CDSession) -> Bool {
+    private func isSessionLocked(_ session: CDBackendSession) -> Bool {
         let claudeSessionId = session.id.uuidString.lowercased()
         return client.lockedSessions.contains(claudeSessionId)
     }
@@ -134,7 +131,7 @@ struct DirectoryListView: View {
                         Section(isExpanded: $isQueueExpanded) {
                             ForEach(queuedSessions) { session in
                                 NavigationLink(value: session.id) {
-                                    CDSessionRowContent(session: session)
+                                    CDBackendSessionRowContent(session: session)
                                 }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                     Button(role: .destructive) {
@@ -188,6 +185,15 @@ struct DirectoryListView: View {
                     logger.info("Pull-to-refresh triggered - requesting session list")
                     await client.requestSessionList()
                 }
+            }
+        }
+        .task {
+            // Load sessions when view appears
+            do {
+                sessions = try CDBackendSession.fetchActiveSessions(context: viewContext)
+            } catch {
+                logger.error("❌ Failed to fetch active sessions: \(error)")
+                sessions = []
             }
         }
         .overlay(alignment: .top) {
@@ -280,7 +286,7 @@ struct DirectoryListView: View {
 
     // MARK: - Queue Management
 
-    private func removeFromQueue(_ session: CDSession) {
+    private func removeFromQueue(_ session: CDBackendSession) {
         guard session.isInQueue else { return }
 
         let removedPosition = session.queuePosition
@@ -289,7 +295,7 @@ struct DirectoryListView: View {
         session.queuedAt = nil
 
         // Reorder remaining queue items
-        let fetchRequest = CDSession.fetchActiveSessions()
+        let fetchRequest = CDBackendSession.fetchRequest()
         fetchRequest.predicate = NSPredicate(format: "isInQueue == YES AND queuePosition > %d", removedPosition)
 
         if let sessionsToReorder = try? viewContext.fetch(fetchRequest) {
@@ -334,18 +340,28 @@ struct DirectoryListView: View {
         // Generate new UUID for session
         let sessionId = UUID()
 
-        // Create CDSession in CoreData
-        let session = CDSession(context: viewContext)
+        // Create CDBackendSession in CoreData
+        let session = CDBackendSession(context: viewContext)
         session.id = sessionId
         session.backendName = sessionId.uuidString.lowercased()  // Backend ID = iOS UUID for new sessions
-        session.localName = name  // User-friendly display name
         session.workingDirectory = workingDirectory ?? FileManager.default.currentDirectoryPath
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = true
+
+        // Create CDUserSession with custom name
+        let fetchRequest = CDUserSession.fetchUserSession(id: sessionId)
+        let userSession: CDUserSession
+        if let existing = try? viewContext.fetch(fetchRequest).first {
+            userSession = existing
+        } else {
+            userSession = CDUserSession(context: viewContext)
+            userSession.id = sessionId
+            userSession.createdAt = Date()
+        }
+        userSession.customName = name
 
         // Save to CoreData
         do {

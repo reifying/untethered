@@ -33,14 +33,13 @@ class PromptSendingTests: XCTestCase {
     func testNewSessionGeneratesUUID() throws {
         // Create new session
         let sessionId = UUID()
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = "New Session"
         session.workingDirectory = "/test"
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
-        session.markedDeleted = false
 
         try context.save()
 
@@ -52,14 +51,13 @@ class PromptSendingTests: XCTestCase {
 
     func testNewSessionHasNoMessages() throws {
         let sessionId = UUID()
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = "New Session"
         session.workingDirectory = "/test"
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
-        session.markedDeleted = false
 
         try context.save()
 
@@ -75,14 +73,13 @@ class PromptSendingTests: XCTestCase {
 
     func testFirstPromptIncreasesMessageCount() throws {
         let sessionId = UUID()
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = "Test Session"
         session.workingDirectory = "/test"
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
-        session.markedDeleted = false
 
         try context.save()
 
@@ -104,7 +101,7 @@ class PromptSendingTests: XCTestCase {
 
         // Refetch session
         context.refreshAllObjects()
-        let fetchRequest = CDSession.fetchSession(id: sessionId)
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
         let updatedSession = try context.fetch(fetchRequest).first
 
         XCTAssertEqual(updatedSession?.messageCount, 1)
@@ -112,14 +109,13 @@ class PromptSendingTests: XCTestCase {
 
     func testSubsequentPromptsIncreaseMessageCount() throws {
         let sessionId = UUID()
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = "Test Session"
         session.workingDirectory = "/test"
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
-        session.markedDeleted = false
 
         try context.save()
 
@@ -146,66 +142,10 @@ class PromptSendingTests: XCTestCase {
 
         // Verify count
         context.refreshAllObjects()
-        let fetchRequest = CDSession.fetchSession(id: sessionId)
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
         let updatedSession = try context.fetch(fetchRequest).first
 
         XCTAssertEqual(updatedSession?.messageCount, 2)
-    }
-
-    // MARK: - Session Lifecycle Tests
-
-    func testSessionDeletionMarksAsDeleted() throws {
-        let sessionId = UUID()
-        let session = CDSession(context: context)
-        session.id = sessionId
-        session.backendName = "Test Session"
-        session.workingDirectory = "/test"
-        session.lastModified = Date()
-        session.messageCount = 0
-        session.preview = ""
-        session.markedDeleted = false
-
-        try context.save()
-
-        // Mark as deleted
-        session.markedDeleted = true
-        try context.save()
-
-        // Verify marked as deleted
-        let fetchRequest = CDSession.fetchSession(id: sessionId)
-        let deletedSession = try context.fetch(fetchRequest).first
-
-        XCTAssertTrue(deletedSession?.markedDeleted ?? false)
-    }
-
-    func testDeletedSessionsNotInActiveFetch() throws {
-        let sessionId1 = UUID()
-        let session1 = CDSession(context: context)
-        session1.id = sessionId1
-        session1.backendName = "Active Session"
-        session1.workingDirectory = "/test"
-        session1.lastModified = Date()
-        session1.messageCount = 0
-        session1.preview = ""
-        session1.markedDeleted = false
-
-        let sessionId2 = UUID()
-        let session2 = CDSession(context: context)
-        session2.id = sessionId2
-        session2.backendName = "Deleted Session"
-        session2.workingDirectory = "/test"
-        session2.lastModified = Date()
-        session2.messageCount = 0
-        session2.preview = ""
-        session2.markedDeleted = true
-
-        try context.save()
-
-        // Fetch active sessions only
-        let activeSessions = try context.fetch(CDSession.fetchActiveSessions())
-
-        XCTAssertEqual(activeSessions.count, 1)
-        XCTAssertEqual(activeSessions[0].id, sessionId1)
     }
 
     // MARK: - Working Directory Tests
@@ -214,19 +154,18 @@ class PromptSendingTests: XCTestCase {
         let sessionId = UUID()
         let workingDir = "/Users/test/project"
 
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = "Test Session"
         session.workingDirectory = workingDir
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
-        session.markedDeleted = false
 
         try context.save()
 
         // Verify working directory
-        let fetchRequest = CDSession.fetchSession(id: sessionId)
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
         let savedSession = try context.fetch(fetchRequest).first
 
         XCTAssertEqual(savedSession?.workingDirectory, workingDir)
@@ -236,14 +175,13 @@ class PromptSendingTests: XCTestCase {
         let sessionId = UUID()
         let workingDir = "/Users/test/project"
 
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = "Test Session"
         session.workingDirectory = workingDir
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
-        session.markedDeleted = false
 
         try context.save()
 
@@ -263,7 +201,7 @@ class PromptSendingTests: XCTestCase {
 
         // Verify working directory unchanged
         context.refreshAllObjects()
-        let fetchRequest = CDSession.fetchSession(id: sessionId)
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
         let updatedSession = try context.fetch(fetchRequest).first
 
         XCTAssertEqual(updatedSession?.workingDirectory, workingDir)

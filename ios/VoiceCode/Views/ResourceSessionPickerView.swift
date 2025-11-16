@@ -6,12 +6,12 @@ import CoreData
 
 struct ResourceSessionPickerView: View {
     @FetchRequest(
-        sortDescriptors: [NSSortDescriptor(keyPath: \CDSession.lastModified, ascending: false)],
+        sortDescriptors: [NSSortDescriptor(keyPath: \CDBackendSession.lastModified, ascending: false)],
         animation: .default
     )
-    private var sessions: FetchedResults<CDSession>
+    private var sessions: FetchedResults<CDBackendSession>
 
-    let onSelect: (CDSession) -> Void
+    let onSelect: (CDBackendSession) -> Void
     let onCancel: () -> Void
 
     var body: some View {
@@ -27,7 +27,7 @@ struct ResourceSessionPickerView: View {
                         Button(action: {
                             onSelect(session)
                         }) {
-                            CDSessionRowContent(session: session)
+                            CDBackendSessionRowContent(session: session)
                         }
                     }
                 }

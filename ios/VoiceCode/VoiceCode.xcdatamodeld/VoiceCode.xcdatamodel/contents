@@ -1,13 +1,11 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <model type="com.apple.IDECoreDataModeler.DataModel" documentVersion="1.0" lastSavedToolsVersion="22758" systemVersion="23F79" minimumToolsVersion="Automatic" sourceLanguage="Swift" userDefinedModelVersionIdentifier="">
-    <entity name="CDSession" representedClassName="CDSession" syncable="YES">
+    <entity name="CDBackendSession" representedClassName="CDBackendSession" renamingIdentifier="CDSession" syncable="YES">
         <attribute name="backendName" attributeType="String"/>
         <attribute name="id" attributeType="UUID" usesScalarValueType="NO"/>
         <attribute name="isInQueue" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
         <attribute name="isLocallyCreated" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
         <attribute name="lastModified" attributeType="Date" usesScalarValueType="NO"/>
-        <attribute name="localName" optional="YES" attributeType="String"/>
-        <attribute name="markedDeleted" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
         <attribute name="messageCount" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="preview" attributeType="String" defaultValueString=""/>
         <attribute name="queuePosition" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="YES"/>
@@ -15,6 +13,17 @@
         <attribute name="unreadCount" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="workingDirectory" attributeType="String"/>
         <relationship name="messages" optional="YES" toMany="YES" deletionRule="Cascade" destinationEntity="CDMessage" inverseName="session" inverseEntity="CDMessage"/>
+        <uniquenessConstraints>
+            <uniquenessConstraint>
+                <constraint value="id"/>
+            </uniquenessConstraint>
+        </uniquenessConstraints>
+    </entity>
+    <entity name="CDUserSession" representedClassName="CDUserSession" syncable="YES">
+        <attribute name="customName" optional="YES" attributeType="String"/>
+        <attribute name="id" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="isUserDeleted" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="createdAt" attributeType="Date" usesScalarValueType="NO"/>
         <uniquenessConstraints>
             <uniquenessConstraint>
                 <constraint value="id"/>
@@ -29,7 +38,7 @@
         <attribute name="status" attributeType="String" defaultValueString="confirmed"/>
         <attribute name="text" attributeType="String"/>
         <attribute name="timestamp" attributeType="Date" usesScalarValueType="NO"/>
-        <relationship name="session" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="CDSession" inverseName="messages" inverseEntity="CDSession"/>
+        <relationship name="session" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="CDBackendSession" inverseName="messages" inverseEntity="CDBackendSession"/>
         <uniquenessConstraints>
             <uniquenessConstraint>
                 <constraint value="id"/>

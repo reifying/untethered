@@ -27,7 +27,7 @@ final class NavigationStabilityTests: XCTestCase {
         let sessionIds = [UUID(), UUID(), UUID()]
 
         for (index, sessionId) in sessionIds.enumerated() {
-            let session = CDSession(context: context)
+            let session = CDBackendSession(context: context)
             session.id = sessionId
             session.backendName = "Session \(index)"
             session.workingDirectory = "/test"
@@ -35,15 +35,13 @@ final class NavigationStabilityTests: XCTestCase {
             session.messageCount = Int32(index)
             session.preview = ""
             session.unreadCount = 0
-            session.markedDeleted = false
             session.isLocallyCreated = false
         }
 
         try context.save()
 
         // Fetch all sessions
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         XCTAssertEqual(sessions.count, 3, "Should have 3 sessions")
 
@@ -63,7 +61,7 @@ final class NavigationStabilityTests: XCTestCase {
 
         // Create sessions with different lastModified times
         for (index, sessionId) in sessionIds.enumerated() {
-            let session = CDSession(context: context)
+            let session = CDBackendSession(context: context)
             session.id = sessionId
             session.backendName = "Session \(index)"
             session.workingDirectory = "/test"
@@ -71,15 +69,13 @@ final class NavigationStabilityTests: XCTestCase {
             session.messageCount = Int32(index)
             session.preview = ""
             session.unreadCount = 0
-            session.markedDeleted = false
             session.isLocallyCreated = false
         }
 
         try context.save()
 
         // Fetch sessions (sorted by lastModified descending)
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         // Middle session (index 1) should be in middle position
         let middleId = sessionIds[1]
@@ -93,7 +89,7 @@ final class NavigationStabilityTests: XCTestCase {
 
         // Re-fetch with updated sort order
         context.refreshAllObjects()
-        let updatedSessions = try context.fetch(fetchRequest)
+        let updatedSessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         // Verify we still have 3 sessions
         XCTAssertEqual(updatedSessions.count, 3, "Should still have 3 sessions")
@@ -109,7 +105,7 @@ final class NavigationStabilityTests: XCTestCase {
         let sessionId = UUID()
 
         // Create session
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = "Test Session"
         session.workingDirectory = "/test"
@@ -117,14 +113,12 @@ final class NavigationStabilityTests: XCTestCase {
         session.messageCount = 5
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = false
 
         try context.save()
 
         // Fetch sessions
-        let fetchRequest = CDSession.fetchActiveSessions()
-        var sessions = try context.fetch(fetchRequest)
+        var sessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         XCTAssertEqual(sessions.count, 1)
 
@@ -133,7 +127,7 @@ final class NavigationStabilityTests: XCTestCase {
         try context.save()
 
         // Re-fetch
-        sessions = try context.fetch(fetchRequest)
+        sessions = try CDBackendSession.fetchActiveSessions(context: context)
         XCTAssertEqual(sessions.count, 0)
 
         // Simulate navigationDestination lookup for deleted session
@@ -152,7 +146,7 @@ final class NavigationStabilityTests: XCTestCase {
             let sessionId = UUID()
             sessionIds.append(sessionId)
 
-            let session = CDSession(context: context)
+            let session = CDBackendSession(context: context)
             session.id = sessionId
             session.backendName = "Session \(i)"
             session.workingDirectory = "/test"
@@ -160,15 +154,13 @@ final class NavigationStabilityTests: XCTestCase {
             session.messageCount = Int32(i)
             session.preview = ""
             session.unreadCount = 0
-            session.markedDeleted = false
             session.isLocallyCreated = false
         }
 
         try context.save()
 
         // Fetch all sessions
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         XCTAssertEqual(sessions.count, 100)
 
@@ -189,7 +181,7 @@ final class NavigationStabilityTests: XCTestCase {
         let sessionIds = [UUID(), UUID(), UUID(), UUID(), UUID()]
 
         for (index, sessionId) in sessionIds.enumerated() {
-            let session = CDSession(context: context)
+            let session = CDBackendSession(context: context)
             session.id = sessionId
             session.backendName = "Session \(index)"
             session.workingDirectory = "/test"
@@ -197,14 +189,12 @@ final class NavigationStabilityTests: XCTestCase {
             session.messageCount = Int32(index)
             session.preview = ""
             session.unreadCount = 0
-            session.markedDeleted = false
             session.isLocallyCreated = false
         }
 
         try context.save()
 
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         // Simulate user tapping multiple sessions in sequence
         for targetId in sessionIds {
@@ -221,7 +211,7 @@ final class NavigationStabilityTests: XCTestCase {
         let sessionIds = [UUID(), UUID(), UUID()]
 
         for (index, sessionId) in sessionIds.enumerated() {
-            let session = CDSession(context: context)
+            let session = CDBackendSession(context: context)
             session.id = sessionId
             session.backendName = "Session \(index)"
             session.workingDirectory = "/test"
@@ -229,14 +219,12 @@ final class NavigationStabilityTests: XCTestCase {
             session.messageCount = Int32(index)
             session.preview = ""
             session.unreadCount = 0
-            session.markedDeleted = false
             session.isLocallyCreated = false
         }
 
         try context.save()
 
-        let fetchRequest = CDSession.fetchActiveSessions()
-        var sessions = try context.fetch(fetchRequest)
+        var sessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         // "Navigate" to middle session by UUID
         let targetId = sessionIds[1]
@@ -250,7 +238,7 @@ final class NavigationStabilityTests: XCTestCase {
         try context.save()
 
         // Re-fetch (simulates @FetchRequest update)
-        sessions = try context.fetch(fetchRequest)
+        sessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         // Array order changed, but UUID lookup still works
         foundSession = sessions.first(where: { $0.id == targetId })

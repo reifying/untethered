@@ -33,7 +33,7 @@ class SmartSpeakingTests: XCTestCase {
 
     func testUnreadCountInitializedToZero() throws {
         let sessionId = UUID()
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = "Test Session"
         session.workingDirectory = "/test"
@@ -41,11 +41,10 @@ class SmartSpeakingTests: XCTestCase {
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
 
         try context.save()
 
-        let fetchRequest = CDSession.fetchSession(id: sessionId)
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
         let savedSession = try context.fetch(fetchRequest).first
 
         XCTAssertEqual(savedSession?.unreadCount, 0)
@@ -54,7 +53,7 @@ class SmartSpeakingTests: XCTestCase {
     func testActiveSessionDoesNotIncrementUnreadCount() throws {
         // Create session
         let sessionId = UUID()
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = "Active Session"
         session.workingDirectory = "/test"
@@ -62,7 +61,6 @@ class SmartSpeakingTests: XCTestCase {
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
 
         try context.save()
 
@@ -89,7 +87,7 @@ class SmartSpeakingTests: XCTestCase {
 
         // Verify unread count did NOT increase (active session)
         context.refreshAllObjects()
-        let fetchRequest = CDSession.fetchSession(id: sessionId)
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
         let updatedSession = try context.fetch(fetchRequest).first
 
         XCTAssertEqual(updatedSession?.unreadCount, 0)
@@ -98,7 +96,7 @@ class SmartSpeakingTests: XCTestCase {
     func testClearingUnreadCountOnSessionOpen() throws {
         // Create session with unread messages
         let sessionId = UUID()
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = "Test Session"
         session.workingDirectory = "/test"
@@ -106,7 +104,6 @@ class SmartSpeakingTests: XCTestCase {
         session.messageCount = 5
         session.preview = ""
         session.unreadCount = 3
-        session.markedDeleted = false
 
         try context.save()
 
@@ -115,7 +112,7 @@ class SmartSpeakingTests: XCTestCase {
         try context.save()
 
         // Verify unread count cleared
-        let fetchRequest = CDSession.fetchSession(id: sessionId)
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
         let updatedSession = try context.fetch(fetchRequest).first
 
         XCTAssertEqual(updatedSession?.unreadCount, 0)
@@ -178,7 +175,7 @@ class SmartSpeakingTests: XCTestCase {
 
         // Create session
         let sessionId = UUID()
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = "Active Session"
         session.workingDirectory = "/test"
@@ -186,7 +183,6 @@ class SmartSpeakingTests: XCTestCase {
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
 
         try context.save()
 
@@ -237,7 +233,7 @@ class SmartSpeakingTests: XCTestCase {
 
         // Create session
         let sessionId = UUID()
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = "Background Session"
         session.workingDirectory = "/test"
@@ -245,7 +241,6 @@ class SmartSpeakingTests: XCTestCase {
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
 
         try context.save()
 

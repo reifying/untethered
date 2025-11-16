@@ -33,15 +33,14 @@ class OptimisticUITests: XCTestCase {
     func testCreateOptimisticMessage() throws {
         // Create session first
         let sessionId = UUID()
-        let session = CDSession(context: context)
+        let session = CDBackendSession(context: context)
         session.id = sessionId
         session.backendName = "Test Session"
         session.workingDirectory = "/test"
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
-        session.markedDeleted = false
-        
+
         try context.save()
         
         // Create optimistic message
@@ -80,7 +79,7 @@ class OptimisticUITests: XCTestCase {
         XCTAssertNil(message.serverTimestamp)
         
         // Verify session was updated
-        let sessionFetchRequest = CDSession.fetchSession(id: sessionId)
+        let sessionFetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
         let updatedSession = try context.fetch(sessionFetchRequest).first
         
         XCTAssertEqual(updatedSession?.messageCount, 1)

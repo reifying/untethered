@@ -53,13 +53,13 @@ class SessionSyncManager {
                         logger.info("✅ Saved \(sessions.count) sessions to CoreData")
 
                         // Log what's actually in CoreData after save
-                        let fetchRequest = CDSession.fetchActiveSessions()
+                        let fetchRequest = CDBackendSession.fetchAllBackendSessions()
                         if let allSessions = try? backgroundContext.fetch(fetchRequest) {
                             logger.info("💾 CoreData now contains \(allSessions.count) total active sessions")
                             let hunt910Sessions = allSessions.filter { $0.workingDirectory.contains("hunt910") }
                             logger.info("🎯 hunt910 sessions in CoreData: \(hunt910Sessions.count)")
                             for session in hunt910Sessions.sorted(by: { $0.lastModified > $1.lastModified }).prefix(10) {
-                                logger.info("  - \(session.id.uuidString.lowercased()) | \(session.messageCount) msgs | markedDeleted=\(session.markedDeleted)")
+                                logger.info("  - \(session.id.uuidString.lowercased()) | \(session.messageCount) msgs")
                             }
                         }
                     }
@@ -137,7 +137,7 @@ class SessionSyncManager {
             }
 
             // Fetch the session
-            let fetchRequest = CDSession.fetchSession(id: sessionUUID)
+            let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionUUID)
 
             guard let session = try? backgroundContext.fetch(fetchRequest).first else {
                 logger.warning("Session not found for history: \(sessionId)")
@@ -194,7 +194,7 @@ class SessionSyncManager {
             guard let self = self else { return }
 
             // Fetch the session
-            let fetchRequest = CDSession.fetchSession(id: sessionId)
+            let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
 
             guard let session = try? backgroundContext.fetch(fetchRequest).first else {
                 logger.warning("Session not found for optimistic message: \(sessionId.uuidString.lowercased())")
@@ -276,19 +276,18 @@ class SessionSyncManager {
             }
 
             // Fetch or create the session
-            let fetchRequest = CDSession.fetchSession(id: sessionUUID)
+            let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionUUID)
 
-            let session: CDSession
+            let session: CDBackendSession
             if let existingSession = try? backgroundContext.fetch(fetchRequest).first {
                 session = existingSession
             } else {
                 // Session not in our list yet - create it from the update
                 logger.info("Creating new session from update: \(sessionId)")
-                session = CDSession(context: backgroundContext)
+                session = CDBackendSession(context: backgroundContext)
                 session.id = sessionUUID
                 session.backendName = "" // Will be updated on next session_list
                 session.workingDirectory = "" // Will be updated on next session_list
-                session.markedDeleted = false
                 session.unreadCount = 0
                 session.isLocallyCreated = false
             }
@@ -366,9 +365,9 @@ class SessionSyncManager {
                     
                     // Post notification for assistant messages when app is backgrounded
                     if !assistantMessagesToSpeak.isEmpty {
-                        let sessionName = session.localName ?? session.backendName
+                        let sessionName = session.displayName(context: backgroundContext)
                         logger.info("📬 Posting notification for \(assistantMessagesToSpeak.count) assistant messages")
-                        
+
                         // Post notification on main thread
                         // Combine multiple messages into one notification
                         let combinedText = assistantMessagesToSpeak.joined(separator: "\n\n")
@@ -625,10 +624,10 @@ class SessionSyncManager {
         }
         
         // Try to fetch existing session
-        let fetchRequest = CDSession.fetchSession(id: sessionId)
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
         let existingSession = try? context.fetch(fetchRequest).first
         
-        let session = existingSession ?? CDSession(context: context)
+        let session = existingSession ?? CDBackendSession(context: context)
         
         // Update fields
         session.id = sessionId
@@ -656,15 +655,14 @@ class SessionSyncManager {
         // Clear isLocallyCreated flag since session is now synced from backend
         session.isLocallyCreated = false
 
-        // Don't override local deletion status or unread count
+        // Don't override unread count for existing sessions
         if existingSession == nil {
-            session.markedDeleted = false
             session.unreadCount = 0
         }
     }
     
     /// Create a message in CoreData
-    private func createMessage(_ messageData: [String: Any], sessionId: String, in context: NSManagedObjectContext, session: CDSession) {
+    private func createMessage(_ messageData: [String: Any], sessionId: String, in context: NSManagedObjectContext, session: CDBackendSession) {
         // Extract fields from raw .jsonl format
         guard let role = extractRole(from: messageData),
               let text = extractText(from: messageData) else {
@@ -699,30 +697,35 @@ class SessionSyncManager {
     
     // MARK: - Name Update Handling
 
-    /// Update a session's localName (user's custom name)
+    /// Update a session's custom name (via CDUserSession)
     /// - Parameters:
     ///   - sessionId: Session UUID
     ///   - name: New name to set
     func updateSessionLocalName(sessionId: UUID, name: String) {
-        logger.info("Updating session localName: \(sessionId.uuidString.lowercased()) -> \(name)")
+        logger.info("Updating session custom name: \(sessionId.uuidString.lowercased()) -> \(name)")
 
         persistenceController.performBackgroundTask { backgroundContext in
-            let fetchRequest = CDSession.fetchSession(id: sessionId)
+            // Fetch or create CDUserSession
+            let fetchRequest = CDUserSession.fetchUserSession(id: sessionId)
 
-            guard let session = try? backgroundContext.fetch(fetchRequest).first else {
-                logger.warning("Session not found for name update: \(sessionId.uuidString.lowercased())")
-                return
+            let userSession: CDUserSession
+            if let existing = try? backgroundContext.fetch(fetchRequest).first {
+                userSession = existing
+            } else {
+                userSession = CDUserSession(context: backgroundContext)
+                userSession.id = sessionId
+                userSession.createdAt = Date()
             }
 
-            session.localName = name
+            userSession.customName = name
 
             do {
                 if backgroundContext.hasChanges {
                     try backgroundContext.save()
-                    logger.info("Updated session localName: \(sessionId.uuidString.lowercased())")
+                    logger.info("Updated session custom name: \(sessionId.uuidString.lowercased())")
                 }
             } catch {
-                logger.error("Failed to update session localName: \(error.localizedDescription)")
+                logger.error("Failed to update session custom name: \(error.localizedDescription)")
             }
         }
     }
@@ -736,7 +739,7 @@ class SessionSyncManager {
         
         persistenceController.performBackgroundTask { backgroundContext in
             // Fetch all sessions
-            let sessionFetchRequest: NSFetchRequest<CDSession> = CDSession.fetchRequest()
+            let sessionFetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
             
             do {
                 let sessions = try backgroundContext.fetch(sessionFetchRequest)

@@ -5,7 +5,7 @@ import SwiftUI
 import CoreData
 
 struct ConversationView: View {
-    @ObservedObject var session: CDSession
+    @ObservedObject var session: CDBackendSession
     @ObservedObject var client: VoiceCodeClient
     @StateObject var voiceOutput: VoiceOutputManager
     @StateObject var voiceInput: VoiceInputManager
@@ -40,7 +40,7 @@ struct ConversationView: View {
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
 
-    init(session: CDSession, client: VoiceCodeClient, voiceOutput: VoiceOutputManager = VoiceOutputManager(), voiceInput: VoiceInputManager = VoiceInputManager(), settings: AppSettings) {
+    init(session: CDBackendSession, client: VoiceCodeClient, voiceOutput: VoiceOutputManager = VoiceOutputManager(), voiceInput: VoiceInputManager = VoiceInputManager(), settings: AppSettings) {
         _session = ObservedObject(wrappedValue: session)
         self.client = client
         _voiceOutput = StateObject(wrappedValue: voiceOutput)
@@ -423,8 +423,17 @@ struct ConversationView: View {
         let trimmedName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return }
 
-        // Set localName to the custom name
-        session.localName = trimmedName
+        // Create or update CDUserSession with custom name
+        let fetchRequest = CDUserSession.fetchUserSession(id: session.id)
+        let userSession: CDUserSession
+        if let existing = try? viewContext.fetch(fetchRequest).first {
+            userSession = existing
+        } else {
+            userSession = CDUserSession(context: viewContext)
+            userSession.id = session.id
+            userSession.createdAt = Date()
+        }
+        userSession.customName = trimmedName
 
         // Save to CoreData
         do {
@@ -515,7 +524,7 @@ struct ConversationView: View {
     
     private func exportSessionToPlainText() {
         // Format session header
-        var exportText = "# \(session.displayName)\n"
+        var exportText = "# \(session.displayName(context: viewContext))\n"
         exportText += "Session ID: \(session.id.uuidString.lowercased())\n"
         exportText += "Working Directory: \(session.workingDirectory)\n"
 
@@ -664,19 +673,19 @@ struct ConversationView: View {
 
     // MARK: - Queue Management
 
-    private func addToQueue(_ session: CDSession) {
+    private func addToQueue(_ session: CDBackendSession) {
         if session.isInQueue {
             // Already in queue - move to end
             let currentPosition = session.queuePosition
-            let fetchRequest = CDSession.fetchActiveSessions()
+            let fetchRequest = CDBackendSession.fetchRequest()
             fetchRequest.predicate = NSPredicate(format: "isInQueue == YES")
-            fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDSession.queuePosition, ascending: false)]
+            fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDBackendSession.queuePosition, ascending: false)]
             fetchRequest.fetchLimit = 1
 
             guard let maxPosition = (try? viewContext.fetch(fetchRequest).first?.queuePosition) else { return }
 
             // Decrement positions between current and max
-            let reorderRequest = CDSession.fetchActiveSessions()
+            let reorderRequest = CDBackendSession.fetchRequest()
             reorderRequest.predicate = NSPredicate(
                 format: "isInQueue == YES AND queuePosition > %d AND id != %@",
                 currentPosition,
@@ -693,9 +702,9 @@ struct ConversationView: View {
             session.queuedAt = Date()
         } else {
             // New to queue - add at end
-            let fetchRequest = CDSession.fetchActiveSessions()
+            let fetchRequest = CDBackendSession.fetchRequest()
             fetchRequest.predicate = NSPredicate(format: "isInQueue == YES")
-            fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDSession.queuePosition, ascending: false)]
+            fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDBackendSession.queuePosition, ascending: false)]
             fetchRequest.fetchLimit = 1
 
             let maxPosition = (try? viewContext.fetch(fetchRequest).first?.queuePosition) ?? 0
@@ -713,7 +722,7 @@ struct ConversationView: View {
         }
     }
 
-    private func removeFromQueue(_ session: CDSession) {
+    private func removeFromQueue(_ session: CDBackendSession) {
         guard session.isInQueue else { return }
 
         let removedPosition = session.queuePosition
@@ -722,7 +731,7 @@ struct ConversationView: View {
         session.queuedAt = nil
 
         // Reorder remaining queue items
-        let fetchRequest = CDSession.fetchActiveSessions()
+        let fetchRequest = CDBackendSession.fetchRequest()
         fetchRequest.predicate = NSPredicate(format: "isInQueue == YES AND queuePosition > %d", removedPosition)
 
         let sessionsToReorder = (try? viewContext.fetch(fetchRequest)) ?? []

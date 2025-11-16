@@ -145,7 +145,11 @@ final class QueueManagementTests: XCTestCase {
         addToQueue(session1)
         addToQueue(session2)
 
-        session2.markedDeleted = true
+        // Mark session2 as deleted via CDUserSession
+        let userSession = CDUserSession(context: context)
+        userSession.id = session2.id
+        userSession.isUserDeleted = true
+        userSession.createdAt = Date()
         try context.save()
 
         // When: Fetching queued sessions
@@ -228,15 +232,14 @@ final class QueueManagementTests: XCTestCase {
 
     // MARK: - Helper Methods
 
-    private func createTestSession(name: String) -> CDSession {
-        let session = CDSession(context: context)
+    private func createTestSession(name: String) -> CDBackendSession {
+        let session = CDBackendSession(context: context)
         session.id = UUID()
         session.backendName = name
         session.workingDirectory = "/test"
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
-        session.markedDeleted = false
         session.isLocallyCreated = false
         session.unreadCount = 0
 
@@ -248,19 +251,19 @@ final class QueueManagementTests: XCTestCase {
         return session
     }
 
-    private func addToQueue(_ session: CDSession) {
+    private func addToQueue(_ session: CDBackendSession) {
         if session.isInQueue {
             // Already in queue - move to end
             let currentPosition = session.queuePosition
-            let fetchRequest = CDSession.fetchActiveSessions()
+            let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
             fetchRequest.predicate = NSPredicate(format: "isInQueue == YES")
-            fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDSession.queuePosition, ascending: false)]
+            fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDBackendSession.queuePosition, ascending: false)]
             fetchRequest.fetchLimit = 1
 
             guard let maxPosition = (try? context.fetch(fetchRequest).first?.queuePosition) else { return }
 
             // Decrement positions between current and max
-            let reorderRequest = CDSession.fetchActiveSessions()
+            let reorderRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
             reorderRequest.predicate = NSPredicate(
                 format: "isInQueue == YES AND queuePosition > %d AND id != %@",
                 currentPosition,
@@ -277,9 +280,9 @@ final class QueueManagementTests: XCTestCase {
             session.queuedAt = Date()
         } else {
             // New to queue - add at end
-            let fetchRequest = CDSession.fetchActiveSessions()
+            let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
             fetchRequest.predicate = NSPredicate(format: "isInQueue == YES")
-            fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDSession.queuePosition, ascending: false)]
+            fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDBackendSession.queuePosition, ascending: false)]
             fetchRequest.fetchLimit = 1
 
             let maxPosition = (try? context.fetch(fetchRequest).first?.queuePosition) ?? 0
@@ -292,7 +295,7 @@ final class QueueManagementTests: XCTestCase {
         try? context.save()
     }
 
-    private func removeFromQueue(_ session: CDSession) {
+    private func removeFromQueue(_ session: CDBackendSession) {
         guard session.isInQueue else { return }
 
         let removedPosition = session.queuePosition
@@ -301,7 +304,7 @@ final class QueueManagementTests: XCTestCase {
         session.queuedAt = nil
 
         // Reorder remaining queue items
-        let fetchRequest = CDSession.fetchActiveSessions()
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
         fetchRequest.predicate = NSPredicate(format: "isInQueue == YES AND queuePosition > %d", removedPosition)
 
         let sessionsToReorder = (try? context.fetch(fetchRequest)) ?? []
@@ -312,10 +315,10 @@ final class QueueManagementTests: XCTestCase {
         try? context.save()
     }
 
-    private func fetchQueuedSessions() -> [CDSession] {
-        let fetchRequest = CDSession.fetchActiveSessions()
-        fetchRequest.predicate = NSPredicate(format: "isInQueue == YES AND markedDeleted == NO")
-        fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDSession.queuePosition, ascending: true)]
+    private func fetchQueuedSessions() -> [CDBackendSession] {
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
+        fetchRequest.predicate = NSPredicate(format: "isInQueue == YES")
+        fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDBackendSession.queuePosition, ascending: true)]
 
         return (try? context.fetch(fetchRequest)) ?? []
     }

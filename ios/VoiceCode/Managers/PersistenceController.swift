@@ -15,14 +15,13 @@ class PersistenceController {
         let viewContext = controller.container.viewContext
 
         // Create sample data for previews
-        let session = CDSession(context: viewContext)
+        let session = CDBackendSession(context: viewContext)
         session.id = UUID()
         session.backendName = "Terminal: voice-code - 2025-10-17 14:30"
         session.workingDirectory = "/Users/travis/code/voice-code"
         session.lastModified = Date()
         session.messageCount = 2
         session.preview = "Hello! How can I help you?"
-        session.markedDeleted = false
 
         let message1 = CDMessage(context: viewContext)
         message1.id = UUID()

@@ -19,7 +19,7 @@ struct SessionsForDirectoryView: View {
     @EnvironmentObject var draftManager: DraftManager
 
     // Fetch sessions filtered by working directory
-    @FetchRequest private var sessions: FetchedResults<CDSession>
+    @FetchRequest private var sessions: FetchedResults<CDBackendSession>
 
     @State private var showingNewSession = false
     @State private var newSessionName = ""
@@ -37,9 +37,9 @@ struct SessionsForDirectoryView: View {
         self._navigationPath = navigationPath
 
         // Initialize FetchRequest with predicate filtering by directory
-        _sessions = FetchRequest<CDSession>(
-            sortDescriptors: [NSSortDescriptor(keyPath: \CDSession.lastModified, ascending: false)],
-            predicate: NSPredicate(format: "workingDirectory == %@ AND markedDeleted == NO", workingDirectory),
+        _sessions = FetchRequest<CDBackendSession>(
+            sortDescriptors: [NSSortDescriptor(keyPath: \CDBackendSession.lastModified, ascending: false)],
+            predicate: NSPredicate(format: "workingDirectory == %@", workingDirectory),
             animation: .default
         )
     }
@@ -70,7 +70,7 @@ struct SessionsForDirectoryView: View {
                 List {
                     ForEach(sessions) { session in
                         NavigationLink(value: session.id) {
-                            CDSessionRowContent(session: session)
+                            CDBackendSessionRowContent(session: session)
                         }
                         .contextMenu {
                             Button(action: {
@@ -235,18 +235,28 @@ struct SessionsForDirectoryView: View {
         // Generate new UUID for session
         let sessionId = UUID()
 
-        // Create CDSession in CoreData
-        let session = CDSession(context: viewContext)
+        // Create CDBackendSession in CoreData
+        let session = CDBackendSession(context: viewContext)
         session.id = sessionId
         session.backendName = sessionId.uuidString.lowercased()  // Backend ID = iOS UUID for new sessions
-        session.localName = name  // User-friendly display name
         session.workingDirectory = workingDirectory
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
         session.unreadCount = 0
-        session.markedDeleted = false
         session.isLocallyCreated = true
+
+        // Create CDUserSession with custom name
+        let fetchRequest = CDUserSession.fetchUserSession(id: sessionId)
+        let userSession: CDUserSession
+        if let existing = try? viewContext.fetch(fetchRequest).first {
+            userSession = existing
+        } else {
+            userSession = CDUserSession(context: viewContext)
+            userSession.id = sessionId
+            userSession.createdAt = Date()
+        }
+        userSession.customName = name
 
         // Save to CoreData
         do {
@@ -287,7 +297,7 @@ struct SessionsForDirectoryView: View {
         logger.info("📋 Copied directory path to clipboard: \(self.workingDirectory)")
     }
     
-    private func copySessionID(_ session: CDSession) {
+    private func copySessionID(_ session: CDBackendSession) {
         // Copy session ID to clipboard
         UIPasteboard.general.string = session.id.uuidString.lowercased()
         
@@ -308,9 +318,20 @@ struct SessionsForDirectoryView: View {
         }
     }
 
-    private func deleteSession(_ session: CDSession) {
-        // Mark as deleted locally
-        session.markedDeleted = true
+    private func deleteSession(_ session: CDBackendSession) {
+        // Create or update CDUserSession to mark as deleted
+        let fetchRequest: NSFetchRequest<CDUserSession> = CDUserSession.fetchRequest()
+        fetchRequest.predicate = NSPredicate(format: "id == %@", session.id as CVarArg)
+
+        let userSession: CDUserSession
+        if let existing = try? viewContext.fetch(fetchRequest).first {
+            userSession = existing
+        } else {
+            userSession = CDUserSession(context: viewContext)
+            userSession.id = session.id
+        }
+
+        userSession.isUserDeleted = true
 
         // Clean up draft for this session
         let sessionID = session.id.uuidString.lowercased()

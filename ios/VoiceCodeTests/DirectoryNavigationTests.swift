@@ -27,16 +27,14 @@ final class DirectoryNavigationTests: XCTestCase {
         unreadCount: Int32,
         messageCount: Int32,
         name: String = "Test Session"
-    ) -> CDSession {
-        let session = CDSession(context: context)
+    ) -> CDBackendSession {
+        let session = CDBackendSession(context: context)
         session.id = UUID()
         session.workingDirectory = workingDirectory
         session.lastModified = lastModified
         session.unreadCount = unreadCount
         session.messageCount = messageCount
         session.backendName = name
-        session.localName = name
-        session.markedDeleted = false
         session.preview = "Preview text"
         session.isLocallyCreated = false
 
@@ -54,8 +52,7 @@ final class DirectoryNavigationTests: XCTestCase {
         createSession(workingDirectory: "/Users/test/project-c", lastModified: Date(), unreadCount: 0, messageCount: 1)
 
         // Fetch all sessions
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         // Group by directory (simulating DirectoryListView logic)
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
@@ -77,8 +74,7 @@ final class DirectoryNavigationTests: XCTestCase {
         createSession(workingDirectory: "/Users/test/middle", lastModified: oneHourAgo, unreadCount: 0, messageCount: 2)
 
         // Fetch and group
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
 
         // Sort by most recent (simulating DirectoryListView logic)
@@ -104,8 +100,7 @@ final class DirectoryNavigationTests: XCTestCase {
         createSession(workingDirectory: "/Users/test/project-b", lastModified: Date(), unreadCount: 2, messageCount: 4)
 
         // Fetch and group
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
 
         // Calculate aggregate unread
@@ -128,8 +123,7 @@ final class DirectoryNavigationTests: XCTestCase {
         createSession(workingDirectory: "/Users/test/single", lastModified: Date(), unreadCount: 0, messageCount: 1)
 
         // Fetch and group
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
 
         XCTAssertEqual(grouped["/Users/test/many"]?.count, 5, "Should have 5 sessions")
@@ -167,9 +161,9 @@ final class DirectoryNavigationTests: XCTestCase {
         createSession(workingDirectory: "/Users/test/project-c", lastModified: now, unreadCount: 0, messageCount: 1, name: "Session C1")
 
         // Fetch sessions filtered by directory (simulating SessionsForDirectoryView)
-        let fetchRequest: NSFetchRequest<CDSession> = CDSession.fetchRequest()
-        fetchRequest.predicate = NSPredicate(format: "workingDirectory == %@ AND markedDeleted == NO", "/Users/test/project-a")
-        fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDSession.lastModified, ascending: false)]
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
+        fetchRequest.predicate = NSPredicate(format: "workingDirectory == %@", "/Users/test/project-a")
+        fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDBackendSession.lastModified, ascending: false)]
 
         let filteredSessions = try context.fetch(fetchRequest)
 
@@ -193,9 +187,9 @@ final class DirectoryNavigationTests: XCTestCase {
         createSession(workingDirectory: "/Users/test/project", lastModified: oneMinuteAgo, unreadCount: 0, messageCount: 1, name: "Middle")
 
         // Fetch sessions for directory, sorted by lastModified
-        let fetchRequest: NSFetchRequest<CDSession> = CDSession.fetchRequest()
-        fetchRequest.predicate = NSPredicate(format: "workingDirectory == %@ AND markedDeleted == NO", "/Users/test/project")
-        fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDSession.lastModified, ascending: false)]
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
+        fetchRequest.predicate = NSPredicate(format: "workingDirectory == %@", "/Users/test/project")
+        fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDBackendSession.lastModified, ascending: false)]
 
         let sortedSessions = try context.fetch(fetchRequest)
 
@@ -209,8 +203,7 @@ final class DirectoryNavigationTests: XCTestCase {
 
     func testEmptyDirectoriesList() throws {
         // No sessions at all
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         XCTAssertEqual(sessions.count, 0, "Should have no sessions")
 
@@ -222,8 +215,8 @@ final class DirectoryNavigationTests: XCTestCase {
         // Create sessions in one directory, fetch from another
         createSession(workingDirectory: "/Users/test/project-a", lastModified: Date(), unreadCount: 0, messageCount: 5)
 
-        let fetchRequest: NSFetchRequest<CDSession> = CDSession.fetchRequest()
-        fetchRequest.predicate = NSPredicate(format: "workingDirectory == %@ AND markedDeleted == NO", "/Users/test/project-b")
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
+        fetchRequest.predicate = NSPredicate(format: "workingDirectory == %@", "/Users/test/project-b")
 
         let sessions = try context.fetch(fetchRequest)
 
@@ -238,12 +231,12 @@ final class DirectoryNavigationTests: XCTestCase {
         createSession(workingDirectory: "/Users/test/project", lastModified: Date(), unreadCount: 0, messageCount: 3, name: "Active 2")
 
         let deletedSession = createSession(workingDirectory: "/Users/test/project", lastModified: Date(), unreadCount: 0, messageCount: 2, name: "Deleted")
-        deletedSession.markedDeleted = true
+        // Actually delete the session from Core Data
+        context.delete(deletedSession)
         try context.save()
 
         // Fetch active sessions
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
 
         XCTAssertEqual(sessions.count, 2, "Should only have 2 active sessions")
         XCTAssertFalse(sessions.contains { $0.backendName == "Deleted" }, "Deleted session should be filtered out")
@@ -262,8 +255,8 @@ final class DirectoryNavigationTests: XCTestCase {
         createSession(workingDirectory: "/Users/test/project", lastModified: oneHourAgo, unreadCount: 0, messageCount: 1)
 
         // Fetch sessions and find most recent
-        let fetchRequest: NSFetchRequest<CDSession> = CDSession.fetchRequest()
-        fetchRequest.predicate = NSPredicate(format: "workingDirectory == %@ AND markedDeleted == NO", "/Users/test/project")
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
+        fetchRequest.predicate = NSPredicate(format: "workingDirectory == %@", "/Users/test/project")
 
         let sessions = try context.fetch(fetchRequest)
         let mostRecent = sessions.map { $0.lastModified }.max()
@@ -279,8 +272,7 @@ final class DirectoryNavigationTests: XCTestCase {
     func testDirectoryWithSingleSession() throws {
         createSession(workingDirectory: "/Users/test/single", lastModified: Date(), unreadCount: 5, messageCount: 10)
 
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
 
         XCTAssertEqual(grouped.count, 1, "Should have 1 directory")
@@ -298,9 +290,9 @@ final class DirectoryNavigationTests: XCTestCase {
         createSession(workingDirectory: "/Users/test/project", lastModified: now, unreadCount: 0, messageCount: 1, name: "Session 2")
         createSession(workingDirectory: "/Users/test/project", lastModified: now, unreadCount: 0, messageCount: 1, name: "Session 3")
 
-        let fetchRequest: NSFetchRequest<CDSession> = CDSession.fetchRequest()
-        fetchRequest.predicate = NSPredicate(format: "workingDirectory == %@ AND markedDeleted == NO", "/Users/test/project")
-        fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDSession.lastModified, ascending: false)]
+        let fetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
+        fetchRequest.predicate = NSPredicate(format: "workingDirectory == %@", "/Users/test/project")
+        fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDBackendSession.lastModified, ascending: false)]
 
         let sessions = try context.fetch(fetchRequest)
 
@@ -312,8 +304,7 @@ final class DirectoryNavigationTests: XCTestCase {
     func testUnreadBadgeHiddenWhenZero() throws {
         createSession(workingDirectory: "/Users/test/project", lastModified: Date(), unreadCount: 0, messageCount: 5)
 
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
 
         let totalUnread = grouped["/Users/test/project"]?.reduce(0) { $0 + Int($1.unreadCount) } ?? 0
@@ -326,8 +317,7 @@ final class DirectoryNavigationTests: XCTestCase {
         createSession(workingDirectory: "/Users/test/project", lastModified: Date(), unreadCount: 3, messageCount: 5)
         createSession(workingDirectory: "/Users/test/project", lastModified: Date(), unreadCount: 2, messageCount: 5)
 
-        let fetchRequest = CDSession.fetchActiveSessions()
-        let sessions = try context.fetch(fetchRequest)
+        let sessions = try CDBackendSession.fetchActiveSessions(context: context)
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
 
         let totalUnread = grouped["/Users/test/project"]?.reduce(0) { $0 + Int($1.unreadCount) } ?? 0

@@ -20,7 +20,7 @@ public class CDMessage: NSManagedObject {
     @NSManaged public var timestamp: Date
     @NSManaged private var status: String
     @NSManaged public var serverTimestamp: Date?
-    @NSManaged public var session: CDSession?
+    @NSManaged public var session: CDBackendSession?
     
     /// Typed status accessor
     var messageStatus: MessageStatus {
