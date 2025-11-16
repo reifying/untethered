@@ -1,28 +1,10 @@
 // RecentSessionBatchParsingTests.swift
-// Tests for batch parsing of recent sessions (fixes N+1 query pattern)
+// Tests for batch parsing of recent sessions from backend data
 
 import XCTest
-import CoreData
 @testable import VoiceCode
 
 final class RecentSessionBatchParsingTests: XCTestCase {
-    var viewContext: NSManagedObjectContext!
-
-    override func setUp() {
-        super.setUp()
-        viewContext = PersistenceController.preview.container.viewContext
-
-        // Clean up any existing test data
-        let fetchRequest: NSFetchRequest<NSFetchRequestResult> = CDSession.fetchRequest()
-        let deleteRequest = NSBatchDeleteRequest(fetchRequest: fetchRequest)
-        try? viewContext.execute(deleteRequest)
-        try? viewContext.save()
-    }
-
-    override func tearDown() {
-        viewContext = nil
-        super.tearDown()
-    }
 
     // MARK: - Batch Parsing Tests
 
@@ -31,309 +13,191 @@ final class RecentSessionBatchParsingTests: XCTestCase {
         let jsonArray: [[String: Any]] = []
 
         // When: Batch parsing
-        let result = RecentSession.parseRecentSessions(jsonArray, using: viewContext)
+        let result = RecentSession.parseRecentSessions(jsonArray)
 
         // Then: Should return empty array
         XCTAssertEqual(result.count, 0, "Empty JSON should produce empty result")
     }
 
     func testBatchParseWithSingleSession() {
-        // Given: One session in CoreData
+        // Given: JSON with backend-provided name
         let sessionId = UUID()
-        let session = CDSession(context: viewContext)
-        session.id = sessionId
-        session.backendName = sessionId.uuidString.lowercased()
-        session.localName = "Test Session"
-        session.workingDirectory = "/Users/test/project"
-        session.lastModified = Date()
-        session.messageCount = Int32(5)
-        session.preview = "Test preview"
-        session.unreadCount = Int32(0)
-        session.markedDeleted = false
-        session.isLocallyCreated = true
-
-        try? viewContext.save()
-
-        // And: Matching JSON
         let jsonArray: [[String: Any]] = [
             [
                 "session_id": sessionId.uuidString.lowercased(),
+                "name": "Test Session from Backend",
                 "working_directory": "/Users/test/project",
                 "last_modified": "2025-11-15T12:00:00.000Z"
             ]
         ]
 
         // When: Batch parsing
-        let result = RecentSession.parseRecentSessions(jsonArray, using: viewContext)
+        let result = RecentSession.parseRecentSessions(jsonArray)
 
-        // Then: Should parse successfully with display name from CoreData
+        // Then: Should parse successfully with backend-provided name
         XCTAssertEqual(result.count, 1)
         XCTAssertEqual(result[0].sessionId, sessionId.uuidString.lowercased())
-        XCTAssertEqual(result[0].displayName, "Test Session", "Display name should come from CoreData")
+        XCTAssertEqual(result[0].displayName, "Test Session from Backend", "Display name should come from backend")
         XCTAssertEqual(result[0].workingDirectory, "/Users/test/project")
     }
 
     func testBatchParseWithMultipleSessions() {
-        // Given: 10 sessions in CoreData
-        let sessions = (1...10).map { i -> (UUID, CDSession) in
-            let sessionId = UUID()
-            let session = CDSession(context: viewContext)
-            session.id = sessionId
-            session.backendName = sessionId.uuidString.lowercased()
-            session.localName = "Test Session \(i)"
-            session.workingDirectory = "/Users/test/project\(i)"
-            session.lastModified = Date()
-            session.messageCount = Int32(i)
-            session.preview = "Preview \(i)"
-            session.unreadCount = Int32(0)
-            session.markedDeleted = false
-            session.isLocallyCreated = true
-            return (sessionId, session)
-        }
-
-        try? viewContext.save()
-
-        // And: Matching JSON array
-        let jsonArray = sessions.map { (sessionId, session) -> [String: Any] in
+        // Given: 10 sessions with backend-provided names
+        let jsonArray = (1...10).map { i -> [String: Any] in
             return [
-                "session_id": sessionId.uuidString.lowercased(),
-                "working_directory": session.workingDirectory,
+                "session_id": UUID().uuidString.lowercased(),
+                "name": "Backend Session \(i)",
+                "working_directory": "/Users/test/project\(i)",
                 "last_modified": "2025-11-15T12:00:00.000Z"
             ]
         }
 
-        // When: Batch parsing (single CoreData query for all 10 sessions)
-        let result = RecentSession.parseRecentSessions(jsonArray, using: viewContext)
+        // When: Batch parsing
+        let result = RecentSession.parseRecentSessions(jsonArray)
 
-        // Then: Should parse all 10 sessions with correct display names
+        // Then: Should parse all 10 sessions with correct names
         XCTAssertEqual(result.count, 10, "Should parse all sessions")
 
         for (index, recentSession) in result.enumerated() {
-            let expectedName = "Test Session \(index + 1)"
+            let expectedName = "Backend Session \(index + 1)"
             XCTAssertEqual(recentSession.displayName, expectedName,
-                          "Display name should match CoreData session at index \(index)")
+                          "Display name should match backend-provided name at index \(index)")
         }
     }
 
-    func testBatchParseFallbackWhenSessionNotInCoreData() {
-        // Given: JSON with session NOT in CoreData
-        let sessionId = UUID()
+    func testBatchParseSkipsMalformedSessions() {
+        // Given: JSON with some malformed entries
         let jsonArray: [[String: Any]] = [
             [
-                "session_id": sessionId.uuidString.lowercased(),
-                "working_directory": "/Users/test/project",
+                "session_id": UUID().uuidString.lowercased(),
+                "name": "Valid Session 1",
+                "working_directory": "/Users/test/project1",
                 "last_modified": "2025-11-15T12:00:00.000Z"
-            ]
-        ]
-
-        // When: Batch parsing
-        let result = RecentSession.parseRecentSessions(jsonArray, using: viewContext)
-
-        // Then: Should use fallback name (last path component of working directory)
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0].displayName, "project",
-                      "Display name should fallback to directory name when not in CoreData")
-    }
-
-    func testBatchParseMixedSessionsWithAndWithoutCoreDataMatch() {
-        // Given: 5 sessions in CoreData
-        let coreDataSessions = (1...5).map { i -> (UUID, CDSession) in
-            let sessionId = UUID()
-            let session = CDSession(context: viewContext)
-            session.id = sessionId
-            session.backendName = sessionId.uuidString.lowercased()
-            session.localName = "CoreData Session \(i)"
-            session.workingDirectory = "/Users/test/coredata\(i)"
-            session.lastModified = Date()
-            session.messageCount = Int32(0)
-            session.preview = ""
-            session.unreadCount = Int32(0)
-            session.markedDeleted = false
-            session.isLocallyCreated = true
-            return (sessionId, session)
-        }
-
-        try? viewContext.save()
-
-        // And: 5 sessions NOT in CoreData
-        let nonCoreDataSessions = (6...10).map { i -> (UUID, String) in
-            return (UUID(), "/Users/test/fallback\(i)")
-        }
-
-        // And: JSON array with both types
-        var jsonArray: [[String: Any]] = coreDataSessions.map { (sessionId, session) in
-            return [
-                "session_id": sessionId.uuidString.lowercased(),
-                "working_directory": session.workingDirectory,
-                "last_modified": "2025-11-15T12:00:00.000Z"
-            ]
-        }
-
-        jsonArray += nonCoreDataSessions.map { (sessionId, workingDirectory) in
-            return [
-                "session_id": sessionId.uuidString.lowercased(),
-                "working_directory": workingDirectory,
-                "last_modified": "2025-11-15T12:00:00.000Z"
-            ]
-        }
-
-        // When: Batch parsing
-        let result = RecentSession.parseRecentSessions(jsonArray, using: viewContext)
-
-        // Then: Should have 10 sessions with correct display names
-        XCTAssertEqual(result.count, 10)
-
-        // First 5 should use CoreData names
-        for i in 0..<5 {
-            XCTAssertEqual(result[i].displayName, "CoreData Session \(i + 1)",
-                          "Session \(i) should use CoreData display name")
-        }
-
-        // Last 5 should use fallback names
-        for i in 5..<10 {
-            XCTAssertEqual(result[i].displayName, "fallback\(i + 1)",
-                          "Session \(i) should use fallback display name")
-        }
-    }
-
-    // MARK: - Performance Tests
-
-    func testBatchParsingPerformanceWithLargeDataset() {
-        // Given: 50 sessions in CoreData (realistic backend limit)
-        let sessions = (1...50).map { i -> (UUID, CDSession) in
-            let sessionId = UUID()
-            let session = CDSession(context: viewContext)
-            session.id = sessionId
-            session.backendName = sessionId.uuidString.lowercased()
-            session.localName = "Session \(i)"
-            session.workingDirectory = "/Users/test/project\(i)"
-            session.lastModified = Date()
-            session.messageCount = Int32(0)
-            session.preview = ""
-            session.unreadCount = Int32(0)
-            session.markedDeleted = false
-            session.isLocallyCreated = true
-            return (sessionId, session)
-        }
-
-        try? viewContext.save()
-
-        let jsonArray = sessions.map { (sessionId, session) -> [String: Any] in
-            return [
-                "session_id": sessionId.uuidString.lowercased(),
-                "working_directory": session.workingDirectory,
-                "last_modified": "2025-11-15T12:00:00.000Z"
-            ]
-        }
-
-        // When: Measuring batch parsing performance
-        measure {
-            let _ = RecentSession.parseRecentSessions(jsonArray, using: viewContext)
-        }
-
-        // Then: Should complete efficiently with single query (not 50 queries)
-    }
-
-    func testSingleQueryVerification() {
-        // This test verifies that batch parsing uses exactly ONE CoreData query
-        // Note: This is a behavior verification, not a strict unit test
-
-        // Given: 10 sessions
-        let sessions = (1...10).map { i -> (UUID, CDSession) in
-            let sessionId = UUID()
-            let session = CDSession(context: viewContext)
-            session.id = sessionId
-            session.backendName = sessionId.uuidString.lowercased()
-            session.localName = "Session \(i)"
-            session.workingDirectory = "/Users/test/project"
-            session.lastModified = Date()
-            session.messageCount = Int32(0)
-            session.preview = ""
-            session.unreadCount = Int32(0)
-            session.markedDeleted = false
-            session.isLocallyCreated = true
-            return (sessionId, session)
-        }
-
-        try? viewContext.save()
-
-        let jsonArray = sessions.map { (sessionId, _) -> [String: Any] in
-            return [
-                "session_id": sessionId.uuidString.lowercased(),
-                "working_directory": "/Users/test/project",
-                "last_modified": "2025-11-15T12:00:00.000Z"
-            ]
-        }
-
-        // When: Batch parsing
-        let result = RecentSession.parseRecentSessions(jsonArray, using: viewContext)
-
-        // Then: Should parse all successfully
-        XCTAssertEqual(result.count, 10)
-
-        // Note: The implementation uses:
-        // fetchRequest.predicate = NSPredicate(format: "id IN %@", sessionIds)
-        // This is a SINGLE CoreData query that fetches all sessions at once,
-        // eliminating the N+1 pattern where each row would trigger a separate query
-    }
-
-    // MARK: - Edge Cases
-
-    func testBatchParseWithInvalidJSON() {
-        // Given: JSON with missing fields
-        let jsonArray: [[String: Any]] = [
-            ["session_id": "invalid"],  // Missing working_directory and last_modified
-            [
-                "session_id": UUID().uuidString,
-                "working_directory": "/Users/test/project"
-                // Missing last_modified
             ],
             [
-                "session_id": UUID().uuidString,
-                "working_directory": "/Users/test/project",
+                // Missing session_id - should be skipped
+                "name": "Invalid Session",
+                "working_directory": "/Users/test/project2",
                 "last_modified": "2025-11-15T12:00:00.000Z"
-            ]  // This one is valid
-        ]
-
-        // When: Batch parsing
-        let result = RecentSession.parseRecentSessions(jsonArray, using: viewContext)
-
-        // Then: Should skip invalid entries and parse only valid one
-        XCTAssertEqual(result.count, 1, "Should skip invalid JSON entries")
-    }
-
-    func testBatchParseWithCaseSensitiveSessionIds() {
-        // Given: Session with lowercase ID in CoreData
-        let sessionId = UUID()
-        let session = CDSession(context: viewContext)
-        session.id = sessionId
-        session.backendName = sessionId.uuidString.lowercased()
-        session.localName = "Test Session"
-        session.workingDirectory = "/Users/test/project"
-        session.lastModified = Date()
-        session.messageCount = Int32(0)
-        session.preview = ""
-        session.unreadCount = Int32(0)
-        session.markedDeleted = false
-        session.isLocallyCreated = true
-
-        try? viewContext.save()
-
-        // And: JSON with uppercase UUID (backend might send either case)
-        let jsonArray: [[String: Any]] = [
+            ],
             [
-                "session_id": sessionId.uuidString.uppercased(),  // Uppercase
-                "working_directory": "/Users/test/project",
+                "session_id": UUID().uuidString.lowercased(),
+                "name": "Valid Session 2",
+                "working_directory": "/Users/test/project3",
+                "last_modified": "2025-11-15T12:00:00.000Z"
+            ],
+            [
+                // Missing name - should be skipped
+                "session_id": UUID().uuidString.lowercased(),
+                "working_directory": "/Users/test/project4",
                 "last_modified": "2025-11-15T12:00:00.000Z"
             ]
         ]
 
         // When: Batch parsing
-        let result = RecentSession.parseRecentSessions(jsonArray, using: viewContext)
+        let result = RecentSession.parseRecentSessions(jsonArray)
 
-        // Then: Should match case-insensitively
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0].displayName, "Test Session",
-                      "Should match session case-insensitively")
+        // Then: Should only parse valid sessions
+        XCTAssertEqual(result.count, 2, "Should only parse 2 valid sessions out of 4")
+        XCTAssertEqual(result[0].displayName, "Valid Session 1")
+        XCTAssertEqual(result[1].displayName, "Valid Session 2")
+    }
+
+    func testBatchParseWithClaudeSummaryNames() {
+        // Given: JSON with Claude-generated summary names (realistic backend data)
+        let jsonArray: [[String: Any]] = [
+            [
+                "session_id": UUID().uuidString.lowercased(),
+                "name": "Code Review: Implementing WebSocket reconnection logic",
+                "working_directory": "/Users/travis/code/voice-code",
+                "last_modified": "2025-11-15T14:30:00.000Z"
+            ],
+            [
+                "session_id": UUID().uuidString.lowercased(),
+                "name": "Bug Fix: Resolving CoreData threading issues",
+                "working_directory": "/Users/travis/code/voice-code",
+                "last_modified": "2025-11-15T13:00:00.000Z"
+            ]
+        ]
+
+        // When: Batch parsing
+        let result = RecentSession.parseRecentSessions(jsonArray)
+
+        // Then: Should preserve Claude's summary names
+        XCTAssertEqual(result.count, 2)
+        XCTAssertEqual(result[0].displayName, "Code Review: Implementing WebSocket reconnection logic")
+        XCTAssertEqual(result[1].displayName, "Bug Fix: Resolving CoreData threading issues")
+    }
+
+    func testBatchParsePreservesTimestamps() {
+        // Given: JSON with different timestamps
+        let timestamp1 = "2025-11-15T14:30:45.123Z"
+        let timestamp2 = "2025-11-14T10:15:30.456Z"
+
+        let jsonArray: [[String: Any]] = [
+            [
+                "session_id": UUID().uuidString.lowercased(),
+                "name": "Recent Session",
+                "working_directory": "/Users/test/project1",
+                "last_modified": timestamp1
+            ],
+            [
+                "session_id": UUID().uuidString.lowercased(),
+                "name": "Older Session",
+                "working_directory": "/Users/test/project2",
+                "last_modified": timestamp2
+            ]
+        ]
+
+        // When: Batch parsing
+        let result = RecentSession.parseRecentSessions(jsonArray)
+
+        // Then: Timestamps should be parsed correctly
+        XCTAssertEqual(result.count, 2)
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        XCTAssertEqual(result[0].lastModified, formatter.date(from: timestamp1))
+        XCTAssertEqual(result[1].lastModified, formatter.date(from: timestamp2))
+    }
+
+    func testBatchParseHandlesInvalidTimestamp() {
+        // Given: JSON with invalid timestamp
+        let jsonArray: [[String: Any]] = [
+            [
+                "session_id": UUID().uuidString.lowercased(),
+                "name": "Session with bad timestamp",
+                "working_directory": "/Users/test/project",
+                "last_modified": "not-a-valid-timestamp"
+            ]
+        ]
+
+        // When: Batch parsing
+        let result = RecentSession.parseRecentSessions(jsonArray)
+
+        // Then: Should skip session with invalid timestamp
+        XCTAssertEqual(result.count, 0, "Should skip session with invalid timestamp")
+    }
+
+    func testBatchParseEfficiency() {
+        // Given: Large batch of 100 sessions (simulating real-world usage)
+        let jsonArray = (1...100).map { i -> [String: Any] in
+            return [
+                "session_id": UUID().uuidString.lowercased(),
+                "name": "Session \(i)",
+                "working_directory": "/Users/test/project\(i)",
+                "last_modified": "2025-11-15T12:00:00.000Z"
+            ]
+        }
+
+        // When: Batch parsing (should be fast - no CoreData queries)
+        let start = Date()
+        let result = RecentSession.parseRecentSessions(jsonArray)
+        let duration = Date().timeIntervalSince(start)
+
+        // Then: Should parse all 100 sessions quickly (< 100ms)
+        XCTAssertEqual(result.count, 100)
+        XCTAssertLessThan(duration, 0.1, "Batch parsing should be fast without CoreData queries")
     }
 }

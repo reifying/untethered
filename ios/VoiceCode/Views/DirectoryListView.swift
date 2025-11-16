@@ -329,7 +329,7 @@ struct DirectoryListView: View {
 
     private func updateCachedQueuedSessions() {
         cachedQueuedSessions = sessions
-            .filter { $0.isInQueue && !$0.markedDeleted }
+            .filter { $0.isInQueue }
             .filter { !isSessionLocked($0) }
             .sorted { $0.queuePosition < $1.queuePosition }
     }
