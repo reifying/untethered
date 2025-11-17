@@ -579,6 +579,19 @@ class VoiceCodeClient: ObservableObject {
                     scheduleUpdate(key: "lockedSessions", value: updatedSessions)
                 }
 
+            case "session_killed":
+                // Session process was terminated
+                if let sessionId = json["session_id"] as? String {
+                    print("🛑 [VoiceCodeClient] Session killed: \(sessionId)")
+                    let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
+                    if currentSessions.contains(sessionId) {
+                        var updatedSessions = currentSessions
+                        updatedSessions.remove(sessionId)
+                        scheduleUpdate(key: "lockedSessions", value: updatedSessions)
+                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (killed, remaining locks: \(updatedSessions.count))")
+                    }
+                }
+
             case "available_commands":
                 // Available commands for current directory
                 print("📋 [VoiceCodeClient] Received available_commands")
@@ -962,6 +975,17 @@ class VoiceCodeClient: ObservableObject {
             timeoutWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: workItem)
         }
+    }
+
+    func killSession(sessionId: String) {
+        print("🛑 [VoiceCodeClient] Killing session: \(sessionId)")
+
+        let message: [String: Any] = [
+            "type": "kill_session",
+            "session_id": sessionId
+        ]
+
+        sendMessage(message)
     }
 
     func requestInferredName(sessionId: String, messageText: String) {
