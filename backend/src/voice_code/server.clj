@@ -598,6 +598,33 @@
                             {:session-id session-id})
                   (send-session-locked! channel session-id)))))
 
+          "kill_session"
+          (let [session-id (:session-id data)]
+            (if-not session-id
+              (http/send! channel
+                          (generate-json
+                           {:type :error
+                            :message "session_id required in kill_session message"}))
+              (do
+                (log/info "Kill session requested" {:session-id session-id})
+                ;; Attempt to kill the Claude process
+                (let [result (claude/kill-claude-session session-id)]
+                  (if (:success result)
+                    (do
+                      ;; Release the session lock
+                      (repl/release-session-lock! session-id)
+                      (log/info "Session killed successfully" {:session-id session-id})
+                      (send-to-client! channel
+                                       {:type :session-killed
+                                        :session-id session-id
+                                        :message "Session process terminated"}))
+                    (do
+                      (log/error "Failed to kill session" {:session-id session-id :error (:error result)})
+                      (send-to-client! channel
+                                       {:type :error
+                                        :message (str "Failed to kill session: " (:error result))
+                                        :session-id session-id})))))))
+
           "infer_session_name"
           (let [session-id (:session-id data)
                 message-text (:message-text data)]
