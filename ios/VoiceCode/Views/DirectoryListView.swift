@@ -356,6 +356,7 @@ struct DirectoryListView: View {
 
         do {
             try viewContext.save()
+            updateCachedQueuedSessions()
             logger.info("✅ [Queue] Removed session from queue, reordered sessions")
         } catch {
             logger.error("❌ [Queue] Failed to remove session from queue: \(error)")
