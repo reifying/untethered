@@ -9,6 +9,54 @@
   (:import [java.io File]
            [java.lang ProcessBuilder$Redirect]))
 
+;; ============================================================================
+;; Active Claude Process Tracking
+;; ============================================================================
+
+;; Atom tracking active Claude CLI processes: session-id -> Process object.
+;; Used to enable killing in-progress sessions.
+(defonce active-claude-processes (atom {}))
+
+(defn kill-claude-session
+  "Kill an active Claude CLI process for the given session ID.
+
+  Attempts graceful termination with .destroy() first, then force-kills
+  with .destroyForcibly() if the process doesn't exit within 200ms.
+
+  Returns:
+    {:success true} if process was killed or didn't exist
+    {:success false :error string} if kill failed"
+  [session-id]
+  (if-let [process (get @active-claude-processes session-id)]
+    (try
+      (log/info "Killing Claude process" {:session-id session-id})
+
+      ;; Attempt graceful shutdown first
+      (.destroy process)
+
+      ;; Wait briefly for graceful exit
+      (Thread/sleep 200)
+
+      ;; Force kill if still alive
+      (when (.isAlive process)
+        (log/warn "Process still alive after destroy, force killing" {:session-id session-id})
+        (.destroyForcibly process))
+
+      ;; Remove from tracking
+      (swap! active-claude-processes dissoc session-id)
+
+      (log/info "Successfully killed Claude process" {:session-id session-id})
+      {:success true}
+
+      (catch Exception e
+        (log/error e "Failed to kill Claude process" {:session-id session-id})
+        {:success false
+         :error (ex-message e)}))
+    ;; Process not found - return success (idempotent)
+    (do
+      (log/debug "No active process to kill" {:session-id session-id})
+      {:success true})))
+
 (defn get-claude-cli-path
   []
   (or (System/getenv "CLAUDE_CLI_PATH")
@@ -31,10 +79,13 @@
   "Run a process with stdout/stderr redirected to temp files.
   Returns a map with :exit, :out, and :err.
   This function can be mocked in tests.
-  Supports optional timeout in milliseconds."
+  Supports optional timeout in milliseconds.
+  If session-id is provided, tracks the process in active-claude-processes."
   ([cli-path args working-dir]
-   (run-process-with-file-redirection cli-path args working-dir nil))
+   (run-process-with-file-redirection cli-path args working-dir nil nil))
   ([cli-path args working-dir timeout-ms]
+   (run-process-with-file-redirection cli-path args working-dir timeout-ms nil))
+  ([cli-path args working-dir timeout-ms session-id]
    (let [stdout-path (java.nio.file.Files/createTempFile
                       "claude-stdout-" ".json"
                       (into-array java.nio.file.attribute.FileAttribute
@@ -55,18 +106,30 @@
              all-args (into [cli-path] args)
              process (apply proc/start process-opts all-args)
              exit-ref (proc/exit-ref process)]
+
+         ;; Track process if session-id provided
+         (when session-id
+           (swap! active-claude-processes assoc session-id process)
+           (log/info "Tracking Claude process" {:session-id session-id}))
+
          (.close (.getOutputStream process))
-         (let [exit-code (if timeout-ms
-                           (deref exit-ref timeout-ms :timeout)
-                           @exit-ref)]
-           (when (= exit-code :timeout)
-             (.destroyForcibly process)
-             (throw (ex-info "Process timeout" {:timeout-ms timeout-ms})))
-           (let [stdout (slurp stdout-file)
-                 stderr (slurp stderr-file)]
-             {:exit exit-code
-              :out stdout
-              :err stderr})))
+         (try
+           (let [exit-code (if timeout-ms
+                             (deref exit-ref timeout-ms :timeout)
+                             @exit-ref)]
+             (when (= exit-code :timeout)
+               (.destroyForcibly process)
+               (throw (ex-info "Process timeout" {:timeout-ms timeout-ms})))
+             (let [stdout (slurp stdout-file)
+                   stderr (slurp stderr-file)]
+               {:exit exit-code
+                :out stdout
+                :err stderr}))
+           (finally
+             ;; Clean up process tracking
+             (when session-id
+               (swap! active-claude-processes dissoc session-id)
+               (log/info "Removed Claude process tracking" {:session-id session-id})))))
        (finally
          (try (.delete stdout-file) (catch Exception e (log/warn e "Failed to delete stdout file")))
          (try (.delete stderr-file) (catch Exception e (log/warn e "Failed to delete stderr file"))))))))
@@ -80,6 +143,8 @@
       (throw (ex-info "Claude CLI not found" {})))
 
     (let [expanded-dir (expand-tilde working-directory)
+          ;; Determine which session-id to use for tracking (new or resume)
+          tracking-session-id (or new-session-id resume-session-id)
           args (cond-> ["--dangerously-skip-permissions"
                         "--print"
                         "--output-format" "json"
@@ -94,7 +159,7 @@
                        :working-directory expanded-dir
                        :model model})
 
-          result (run-process-with-file-redirection cli-path args expanded-dir timeout)]
+          result (run-process-with-file-redirection cli-path args expanded-dir timeout tracking-session-id)]
 
       (log/debug "Claude CLI completed"
                  {:exit (:exit result)

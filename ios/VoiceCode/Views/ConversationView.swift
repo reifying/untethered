@@ -25,7 +25,8 @@ struct ConversationView: View {
     @State private var showingAlreadyCompactedAlert = false
     @State private var isCompacting = false
     @State private var compactSuccessMessage: String?
-    
+    @State private var showingKillConfirmation = false
+
     // Compaction feedback state
     @State private var wasRecentlyCompacted: Bool = false
     @State private var lastCompactionStats: VoiceCodeClient.CompactionResult?
@@ -234,6 +235,16 @@ struct ConversationView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
+                    // Kill session button (only visible when session is locked)
+                    if isSessionLocked {
+                        Button(action: {
+                            showingKillConfirmation = true
+                        }) {
+                            Image(systemName: "stop.circle.fill")
+                                .foregroundColor(.red)
+                        }
+                    }
+
                     // Auto-scroll toggle button (always visible)
                     Button(action: {
                         toggleAutoScroll()
@@ -241,7 +252,7 @@ struct ConversationView: View {
                         Image(systemName: autoScrollEnabled ? "arrow.down.circle.fill" : "arrow.down.circle")
                             .foregroundColor(autoScrollEnabled ? .blue : .gray)
                     }
-                    
+
                     // Compact button
                     Button(action: {
                         if wasRecentlyCompacted {
@@ -299,6 +310,16 @@ struct ConversationView: View {
                     .padding(.top, 8)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
+        }
+
+        // Kill session confirmation
+        .alert("Stop Session?", isPresented: $showingKillConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Stop", role: .destructive) {
+                killSession()
+            }
+        } message: {
+            Text("This will terminate the current Claude process. The session will be unlocked and you can send a new prompt.")
         }
 
         // Simple confirmation to prevent accidental compaction (buttons are crowded in toolbar)
@@ -584,6 +605,31 @@ struct ConversationView: View {
             showingCopyConfirmation = true
         }
         
+        // Hide confirmation after 2 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation {
+                showingCopyConfirmation = false
+            }
+        }
+    }
+
+    private func killSession() {
+        let sessionId = session.id.uuidString.lowercased()
+        print("🛑 [ConversationView] Killing session: \(sessionId)")
+
+        // Trigger haptic feedback
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.warning)
+
+        // Send kill request
+        client.killSession(sessionId: sessionId)
+
+        // Show confirmation banner
+        copyConfirmationMessage = "Session stopped"
+        withAnimation {
+            showingCopyConfirmation = true
+        }
+
         // Hide confirmation after 2 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             withAnimation {
