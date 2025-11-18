@@ -403,7 +403,7 @@ class SessionSyncManager {
                         guard let self = self else { return }
                         for text in assistantMessagesToSpeak {
                             let processedText = TextProcessor.removeCodeBlocks(from: text)
-                            self.voiceOutputManager?.speak(processedText)
+                            self.voiceOutputManager?.speak(processedText, respectSilentMode: true)
                         }
                     }
                 }
