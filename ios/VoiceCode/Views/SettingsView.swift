@@ -72,6 +72,12 @@ struct SettingsView: View {
                 }
 
                 Section(header: Text("Audio Playback")) {
+                    Toggle("Silence speech when phone is on vibrate", isOn: $settings.respectSilentMode)
+
+                    Text("When enabled, speech will not play when your phone's ringer switch is on silent/vibrate")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
                     Toggle("Continue playback when locked", isOn: $settings.continuePlaybackWhenLocked)
 
                     Text("When enabled, audio will continue playing even when you lock your screen")
