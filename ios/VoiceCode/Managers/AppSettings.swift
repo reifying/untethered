@@ -56,6 +56,12 @@ class AppSettings: ObservableObject {
         }
     }
 
+    @Published var respectSilentMode: Bool {
+        didSet {
+            UserDefaults.standard.set(respectSilentMode, forKey: "respectSilentMode")
+        }
+    }
+
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
         let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
@@ -122,6 +128,7 @@ class AppSettings: ObservableObject {
         self.notifyOnResponse = UserDefaults.standard.object(forKey: "notifyOnResponse") as? Bool ?? true
         self.resourceStorageLocation = UserDefaults.standard.string(forKey: "resourceStorageLocation") ?? "~/Downloads"
         self.queueEnabled = UserDefaults.standard.object(forKey: "queueEnabled") as? Bool ?? false
+        self.respectSilentMode = UserDefaults.standard.object(forKey: "respectSilentMode") as? Bool ?? true
 
         // Set up debounced publishers for text fields (serverURL and serverPort)
         // dropFirst() skips the initial value to avoid writing on init

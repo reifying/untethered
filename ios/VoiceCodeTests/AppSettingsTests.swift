@@ -317,6 +317,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(settings.continuePlaybackWhenLocked)
     }
 
+<<<<<<< HEAD
     // MARK: - Debouncing Tests
 
     func testServerPortDebouncing() {
@@ -408,5 +409,38 @@ final class AppSettingsTests: XCTestCase {
         }
 
         wait(for: [expectation], timeout: 1.0)
+    }
+
+    // MARK: - Respect Silent Mode Tests
+
+    func testDefaultRespectSilentMode() {
+        // Default should be true (enabled)
+        XCTAssertTrue(settings.respectSilentMode)
+    }
+
+    func testRespectSilentModePersistence() {
+        // Set to false
+        settings.respectSilentMode = false
+
+        // Value should be saved to UserDefaults
+        let saved = UserDefaults.standard.bool(forKey: "respectSilentMode")
+        XCTAssertFalse(saved)
+
+        // Create new instance and verify it loads the saved value
+        let newSettings = AppSettings()
+        XCTAssertFalse(newSettings.respectSilentMode)
+    }
+
+    func testRespectSilentModeToggle() {
+        // Start with default (true)
+        XCTAssertTrue(settings.respectSilentMode)
+
+        // Toggle to false
+        settings.respectSilentMode = false
+        XCTAssertFalse(settings.respectSilentMode)
+
+        // Toggle back to true
+        settings.respectSilentMode = true
+        XCTAssertTrue(settings.respectSilentMode)
     }
 }

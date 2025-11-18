@@ -10,6 +10,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
     private let synthesizer = AVSpeechSynthesizer()
     private weak var appSettings: AppSettings?
+    private let audioSessionManager = DeviceAudioSessionManager()
     var onSpeechComplete: (() -> Void)?
 
     // Background playback support
@@ -101,14 +102,25 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
             synthesizer.stopSpeaking(at: .immediate)
         }
 
-        // Configure audio session for playback
-        let audioSession = AVAudioSession.sharedInstance()
+        // Configure audio session based on settings
         do {
-            // Use .playback category if user wants audio to continue when locked
-            // Otherwise use .ambient which stops when screen locks
-            let category: AVAudioSession.Category = (appSettings?.continuePlaybackWhenLocked ?? true) ? .playback : .ambient
-            try audioSession.setCategory(category, mode: .spokenAudio, options: [])
-            try audioSession.setActive(true)
+            let respectSilentMode = appSettings?.respectSilentMode ?? true
+            let continueWhenLocked = appSettings?.continuePlaybackWhenLocked ?? true
+
+            if respectSilentMode {
+                // Use .ambient category which respects the silent switch
+                // Audio will not play when the ringer switch is on silent/vibrate
+                try audioSessionManager.configureAudioSessionForSilentMode()
+            } else {
+                // Use .playback category which ignores the silent switch
+                // Audio plays regardless of ringer switch position
+                try audioSessionManager.configureAudioSessionForForcedPlayback()
+            }
+
+            // Note: continuePlaybackWhenLocked is handled by the category choice:
+            // - .ambient stops when screen locks (regardless of setting)
+            // - .playback can continue when locked (if iOS allows background audio)
+            // For silent mode respect, we always use .ambient, which takes precedence
         } catch {
             print("Failed to setup audio session: \(error)")
             return
