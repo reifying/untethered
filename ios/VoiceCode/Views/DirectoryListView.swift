@@ -37,6 +37,13 @@ struct DirectoryListView: View {
     @State private var cachedDirectories: [DirectoryInfo] = []
     @State private var cachedQueuedSessions: [CDBackendSession] = []
 
+    // Background state tracking to suspend updates when not visible
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var isAppActive = true
+
+    // Debounce work item for queue updates
+    @State private var queueUpdateWorkItem: DispatchWorkItem?
+
     // Queue sessions filtered by lock state and sorted by position (FIFO)
     private var queuedSessions: [CDBackendSession] {
         cachedQueuedSessions
@@ -303,11 +310,31 @@ struct DirectoryListView: View {
         .onChange(of: viewModel.lockedSessions) { _ in
             updateCachedQueuedSessions()
         }
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            // Track app state to suspend layout updates in background
+            isAppActive = (newPhase == .active)
+
+            if newPhase == .active && oldPhase == .background {
+                logger.info("📱 App returned to foreground, refreshing caches")
+                updateCachedDirectories()
+                updateCachedQueuedSessions()
+            } else if newPhase == .background {
+                logger.info("📱 App entering background, suspending cache updates")
+                // Cancel any pending debounced updates
+                queueUpdateWorkItem?.cancel()
+            }
+        }
     }
 
     // MARK: - Cache Update Methods
 
     private func updateCachedDirectories() {
+        // Skip updates when app is in background to prevent watchdog kills
+        guard isAppActive else {
+            logger.debug("⏸️ Skipping directory cache update (app in background)")
+            return
+        }
+
         let grouped = Dictionary(grouping: sessions, by: { $0.workingDirectory })
 
         cachedDirectories = grouped.map { workingDirectory, sessions in
@@ -328,10 +355,40 @@ struct DirectoryListView: View {
     }
 
     private func updateCachedQueuedSessions() {
-        cachedQueuedSessions = sessions
-            .filter { $0.isInQueue }
-            .filter { !isSessionLocked($0) }
-            .sorted { $0.queuePosition < $1.queuePosition }
+        // Skip updates when app is in background to prevent watchdog kills
+        guard isAppActive else {
+            logger.debug("⏸️ Skipping queue cache update (app in background)")
+            return
+        }
+
+        // Debounce updates to prevent rapid-fire recalculations
+        queueUpdateWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [viewModel, sessions] in
+            // CRITICAL: Take snapshot to avoid triggering SwiftUI dependency tracking
+            // Reading viewModel.lockedSessions inside filter() causes infinite layout loop
+            // that triggers iOS watchdog termination (0x8BADF00D) when app is in background
+            let lockedSessionIds = viewModel.lockedSessions
+
+            let updatedSessions = sessions
+                .filter { $0.isInQueue }
+                .filter { session in
+                    let sessionId = session.id.uuidString.lowercased()
+                    return !lockedSessionIds.contains(sessionId)
+                }
+                .sorted { $0.queuePosition < $1.queuePosition }
+
+            // Update on main thread
+            DispatchQueue.main.async {
+                self.cachedQueuedSessions = updatedSessions
+                logger.debug("🔄 Updated queue cache: \(updatedSessions.count) sessions")
+            }
+        }
+
+        queueUpdateWorkItem = workItem
+
+        // Debounce by 150ms to batch rapid updates
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
     }
 
     // MARK: - Queue Management
