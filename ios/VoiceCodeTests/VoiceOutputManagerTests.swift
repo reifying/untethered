@@ -38,8 +38,8 @@ final class VoiceOutputManagerTests: XCTestCase {
         // Set respectSilentMode to true (default)
         settings.respectSilentMode = true
 
-        // Trigger speech (will configure audio session)
-        manager.speakWithVoice("Test", rate: 0.5, voiceIdentifier: nil)
+        // Trigger AUTOMATIC speech with respectSilentMode flag (simulates automatic reading)
+        manager.speakWithVoice("Test", rate: 0.5, voiceIdentifier: nil, respectSilentMode: true)
 
         // Verify audio session is configured to respect silent mode
         let audioSession = AVAudioSession.sharedInstance()
@@ -53,12 +53,12 @@ final class VoiceOutputManagerTests: XCTestCase {
         // Set respectSilentMode to false
         settings.respectSilentMode = false
 
-        // Trigger speech (will configure audio session)
-        manager.speakWithVoice("Test", rate: 0.5, voiceIdentifier: nil)
+        // Trigger AUTOMATIC speech with respectSilentMode flag
+        manager.speakWithVoice("Test", rate: 0.5, voiceIdentifier: nil, respectSilentMode: true)
 
-        // Verify audio session is configured to ignore silent mode
+        // Verify audio session is configured to ignore silent mode (because setting is false)
         let audioSession = AVAudioSession.sharedInstance()
-        XCTAssertEqual(audioSession.category, .playback, "Audio session should use .playback category when respectSilentMode is false")
+        XCTAssertEqual(audioSession.category, .playback, "Audio session should use .playback category when respectSilentMode setting is false")
 
         // Stop speech to clean up
         manager.stop()
@@ -67,48 +67,47 @@ final class VoiceOutputManagerTests: XCTestCase {
     func testAudioSessionConfigurationSwitching() {
         // Start with respectSilentMode enabled
         settings.respectSilentMode = true
-        manager.speakWithVoice("Test 1", rate: 0.5, voiceIdentifier: nil)
+        manager.speakWithVoice("Test 1", rate: 0.5, voiceIdentifier: nil, respectSilentMode: true)
         XCTAssertEqual(AVAudioSession.sharedInstance().category, .ambient)
         manager.stop()
 
         // Switch to respectSilentMode disabled
         settings.respectSilentMode = false
-        manager.speakWithVoice("Test 2", rate: 0.5, voiceIdentifier: nil)
+        manager.speakWithVoice("Test 2", rate: 0.5, voiceIdentifier: nil, respectSilentMode: true)
         XCTAssertEqual(AVAudioSession.sharedInstance().category, .playback)
         manager.stop()
 
         // Switch back to respectSilentMode enabled
         settings.respectSilentMode = true
-        manager.speakWithVoice("Test 3", rate: 0.5, voiceIdentifier: nil)
+        manager.speakWithVoice("Test 3", rate: 0.5, voiceIdentifier: nil, respectSilentMode: true)
         XCTAssertEqual(AVAudioSession.sharedInstance().category, .ambient)
         manager.stop()
     }
 
-    // MARK: - Default Behavior Tests
+    // MARK: - Manual vs Automatic Speech Tests
 
-    func testDefaultRespectSilentModeBehavior() {
-        // Without explicit setting, should default to true (respect silent mode)
-        // Create manager without settings
-        let managerWithoutSettings = VoiceOutputManager(appSettings: nil)
-
-        managerWithoutSettings.speakWithVoice("Test", rate: 0.5, voiceIdentifier: nil)
-
-        // Should use .ambient category by default
-        let audioSession = AVAudioSession.sharedInstance()
-        XCTAssertEqual(audioSession.category, .ambient, "Should default to respecting silent mode")
-
-        managerWithoutSettings.stop()
-    }
-
-    // MARK: - Integration with speak() Method
-
-    func testSpeakMethodUsesSettings() {
-        // The speak() method should also respect the setting
+    func testManualSpeechIgnoresSilentMode() {
+        // Manual speech (default respectSilentMode=false) should always use .playback
         settings.respectSilentMode = true
+
+        // Call speak() without respectSilentMode flag (manual action)
         manager.speak("Test message")
 
         let audioSession = AVAudioSession.sharedInstance()
-        XCTAssertEqual(audioSession.category, .ambient)
+        XCTAssertEqual(audioSession.category, .playback, "Manual speech should ignore silent mode setting")
+
+        manager.stop()
+    }
+
+    func testAutomaticSpeechRespectsSilentMode() {
+        // Automatic speech (respectSilentMode=true) should respect the setting
+        settings.respectSilentMode = true
+
+        // Call speak() with respectSilentMode=true flag (automatic action)
+        manager.speak("Test message", respectSilentMode: true)
+
+        let audioSession = AVAudioSession.sharedInstance()
+        XCTAssertEqual(audioSession.category, .ambient, "Automatic speech should respect silent mode when enabled")
 
         manager.stop()
     }

@@ -86,9 +86,10 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     /// - Parameters:
     ///   - text: The text to speak
     ///   - rate: Speech rate (default: 0.5)
-    func speak(_ text: String, rate: Float = 0.5) {
+    ///   - respectSilentMode: Whether to respect silent mode setting (default: false for manual actions)
+    func speak(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false) {
         let voiceIdentifier = appSettings?.selectedVoiceIdentifier
-        speakWithVoice(text, rate: rate, voiceIdentifier: voiceIdentifier)
+        speakWithVoice(text, rate: rate, voiceIdentifier: voiceIdentifier, respectSilentMode: respectSilentMode)
     }
 
     /// Speak text with a specific voice identifier (for special cases like voice preview)
@@ -96,7 +97,8 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     ///   - text: The text to speak
     ///   - rate: Speech rate (default: 0.5)
     ///   - voiceIdentifier: Optional voice identifier to use instead of user's configured voice
-    func speakWithVoice(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil) {
+    ///   - respectSilentMode: Whether to respect the silent mode setting (default: false for manual actions)
+    func speakWithVoice(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil, respectSilentMode: Bool = false) {
         // Stop any ongoing speech
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
@@ -104,10 +106,10 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
         // Configure audio session based on settings
         do {
-            let respectSilentMode = appSettings?.respectSilentMode ?? true
+            let shouldRespectSilentMode = respectSilentMode && (appSettings?.respectSilentMode ?? true)
             let continueWhenLocked = appSettings?.continuePlaybackWhenLocked ?? true
 
-            if respectSilentMode {
+            if shouldRespectSilentMode {
                 // Use .ambient category which respects the silent switch
                 // Audio will not play when the ringer switch is on silent/vibrate
                 try audioSessionManager.configureAudioSessionForSilentMode()
