@@ -322,8 +322,20 @@ class SessionSyncManager {
                 let fetchRequest = CDMessage.fetchMessage(sessionId: sessionUUID, role: role, text: text)
 
                 logger.info("🔍 Looking for optimistic message to reconcile: role=\(role) text_length=\(text.count) session=\(sessionId)")
-                
-                if let existingMessage = try? backgroundContext.fetch(fetchRequest).first {
+
+                var existingMessage = try? backgroundContext.fetch(fetchRequest).first
+
+                // If no exact match and backend sent queue-operation, try matching with user role
+                // (queue-operation messages from Claude CLI correspond to user prompts)
+                if existingMessage == nil && role == "queue-operation" {
+                    let userFetchRequest = CDMessage.fetchMessage(sessionId: sessionUUID, role: "user", text: text)
+                    existingMessage = try? backgroundContext.fetch(userFetchRequest).first
+                    if existingMessage != nil {
+                        logger.info("🔄 Matched queue-operation to optimistic user message")
+                    }
+                }
+
+                if let existingMessage = existingMessage {
                     // Reconcile optimistic message
                     logger.info("✅ Found optimistic message to reconcile: id=\(existingMessage.id) current_status=\(existingMessage.messageStatus.rawValue)")
                     existingMessage.messageStatus = .confirmed
