@@ -11,6 +11,7 @@ struct CDSessionRowContent: View {
     @Environment(\.managedObjectContext) private var viewContext
 
     var body: some View {
+        let _ = RenderTracker.count(Self.self)
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text(session.displayName(context: viewContext))

@@ -69,6 +69,7 @@ struct ConversationView: View {
     }
 
     var body: some View {
+        let _ = RenderTracker.count(Self.self)
         VStack(spacing: 0) {
             // Messages area
             ZStack(alignment: .bottomTrailing) {
@@ -828,6 +829,7 @@ struct CDMessageView: View {
     @State private var showFullMessage = false
 
     var body: some View {
+        let _ = RenderTracker.count(Self.self)
         HStack(alignment: .top, spacing: 12) {
             // Role indicator
             Image(systemName: message.role == "user" ? "person.circle.fill" : "cpu")
