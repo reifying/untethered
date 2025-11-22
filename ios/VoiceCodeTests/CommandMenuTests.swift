@@ -311,7 +311,9 @@ final class CommandMenuTests: XCTestCase {
 
         // Capture sent message (would need to expose sendMessage or mock WebSocket)
         // For now, verify method doesn't crash
-        client.executeCommand(commandId: "test.command", workingDirectory: "/test")
+        Task {
+            _ = await client.executeCommand(commandId: "test.command", workingDirectory: "/test")
+        }
 
         // In a real integration test, we'd verify the WebSocket message
         XCTAssertTrue(true) // Placeholder assertion

@@ -89,7 +89,9 @@ final class CommandExecutionIntegrationTests: XCTestCase {
         let workingDir = "/Users/test/project"
 
         // Execute command (would send WebSocket message in real scenario)
-        client.executeCommand(commandId: commandId, workingDirectory: workingDir)
+        Task {
+            _ = await client.executeCommand(commandId: commandId, workingDirectory: workingDir)
+        }
 
         // Step 3: Backend sends command_started
         commandSessionId = "cmd-550e8400-e29b-41d4-a716-446655440000"
@@ -204,7 +206,9 @@ final class CommandExecutionIntegrationTests: XCTestCase {
         let expectedKeys = ["type", "command_id", "working_directory"]
 
         // Execute command (message would be sent via WebSocket)
-        client.executeCommand(commandId: commandId, workingDirectory: workingDir)
+        Task {
+            _ = await client.executeCommand(commandId: commandId, workingDirectory: workingDir)
+        }
 
         // Verify method completes without crash
         XCTAssertTrue(true)
@@ -215,7 +219,9 @@ final class CommandExecutionIntegrationTests: XCTestCase {
         let commandId = "git.status"
         let workingDir = "/Users/test/My Project With Spaces"
 
-        client.executeCommand(commandId: commandId, workingDirectory: workingDir)
+        Task {
+            _ = await client.executeCommand(commandId: commandId, workingDirectory: workingDir)
+        }
         XCTAssertTrue(true)
     }
 
@@ -228,7 +234,9 @@ final class CommandExecutionIntegrationTests: XCTestCase {
         ]
 
         for (commandId, workingDir) in commands {
-            client.executeCommand(commandId: commandId, workingDirectory: workingDir)
+            Task {
+                _ = await client.executeCommand(commandId: commandId, workingDirectory: workingDir)
+            }
         }
 
         // All commands should execute without blocking
