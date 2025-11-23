@@ -426,6 +426,17 @@ struct ConversationView: View {
         session.unreadCount = 0
         try? viewContext.save()
 
+        // Prune old messages on background context before loading
+        // iOS only needs recent messages; backend retains full history
+        let sessionId = session.id
+        PersistenceController.shared.performBackgroundTask { backgroundContext in
+            let deletedCount = CDMessage.pruneOldMessages(sessionId: sessionId, in: backgroundContext)
+            if deletedCount > 0 {
+                try? backgroundContext.save()
+                print("🧹 [ConversationView] Pruned \(deletedCount) old messages from session")
+            }
+        }
+
         // Subscribe to the session to load full history
         // Skip subscribe for new sessions (messageCount == 0) to avoid "session not found" error
         // The session will be created when the first prompt is sent

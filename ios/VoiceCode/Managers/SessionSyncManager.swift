@@ -407,6 +407,16 @@ class SessionSyncManager {
                     logger.info("Updated session: \(sessionId)")
                 }
 
+                // Prune old messages if threshold exceeded
+                // This keeps CoreData footprint bounded during long conversations
+                if CDMessage.needsPruning(sessionId: sessionUUID, in: backgroundContext) {
+                    let deletedCount = CDMessage.pruneOldMessages(sessionId: sessionUUID, in: backgroundContext)
+                    if deletedCount > 0 {
+                        try? backgroundContext.save()
+                        logger.info("🧹 Pruned \(deletedCount) old messages from session \(sessionId)")
+                    }
+                }
+
                 // Speak assistant messages on main thread (only for active session)
                 // VoiceOutputManager automatically uses configured voice from AppSettings
                 // Remove code blocks from text before speaking for better listening experience
