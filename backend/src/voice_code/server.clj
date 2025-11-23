@@ -570,14 +570,10 @@
                       (let [result (claude/compact-session session-id)]
                         (if (:success result)
                           (do
-                            (log/info "Session compaction successful" {:session-id session-id :result result})
+                            (log/info "Session compaction successful" {:session-id session-id})
                             (send-to-client! channel
                                              {:type :compaction-complete
-                                              :session-id session-id
-                                              :old-message-count (:old-message-count result)
-                                              :new-message-count (:new-message-count result)
-                                              :messages-removed (:messages-removed result)
-                                              :pre-tokens (:pre-tokens result)}))
+                                              :session-id session-id}))
                           (do
                             (log/error "Session compaction failed" {:session-id session-id :error (:error result)})
                             (send-to-client! channel

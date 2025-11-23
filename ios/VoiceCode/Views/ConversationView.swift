@@ -29,9 +29,7 @@ struct ConversationView: View {
 
     // Compaction feedback state
     @State private var wasRecentlyCompacted: Bool = false
-    @State private var lastCompactionStats: VoiceCodeClient.CompactionResult?
     @State private var compactionTimestamps: [UUID: Date] = [:]
-    @State private var recentCompactionsBySession: [UUID: VoiceCodeClient.CompactionResult] = [:]
     
     // Auto-scroll state
     @State private var hasPerformedInitialScroll = false
@@ -335,9 +333,8 @@ struct ConversationView: View {
                 showingCompactConfirmation = true
             }
         } message: {
-            if let stats = lastCompactionStats,
-               let timestamp = compactionTimestamps[session.id] {
-                Text("This session was compacted \(timestamp.relativeTimeString()).\n• Removed \(stats.messagesRemoved) messages\n• Saved \(stats.preTokens.map { formatTokenCount($0) + " tokens" } ?? "tokens")")
+            if let timestamp = compactionTimestamps[session.id] {
+                Text("This session was compacted \(timestamp.relativeTimeString()).\n\nCompact again?")
             } else {
                 Text("This session was recently compacted.\n\nCompact again?")
             }
@@ -377,13 +374,10 @@ struct ConversationView: View {
                 }
 
                 // Restore compaction state for this session
-                if let stats = recentCompactionsBySession[session.id],
-                   let timestamp = compactionTimestamps[session.id] {
+                if compactionTimestamps[session.id] != nil {
                     wasRecentlyCompacted = true
-                    lastCompactionStats = stats
                 } else {
                     wasRecentlyCompacted = false
-                    lastCompactionStats = nil
                 }
             }
         }
@@ -471,7 +465,6 @@ struct ConversationView: View {
 
         // Reset compaction feedback state when user sends a message
         wasRecentlyCompacted = false
-        lastCompactionStats = nil
 
         // Clear draft after successful send
         let sessionID = session.id.uuidString.lowercased()
@@ -648,19 +641,12 @@ struct ConversationView: View {
                 await MainActor.run {
                     isCompacting = false
 
-                    // Set green state and store stats
+                    // Set green state
                     wasRecentlyCompacted = true
-                    lastCompactionStats = result
                     compactionTimestamps[session.id] = Date()
-                    recentCompactionsBySession[session.id] = result
 
                     // Show success message
-                    let message = "Session compacted\nRemoved \(result.messagesRemoved) messages"
-                    if let preTokens = result.preTokens {
-                        compactSuccessMessage = "\(message), saved \(formatTokenCount(preTokens)) tokens"
-                    } else {
-                        compactSuccessMessage = message
-                    }
+                    compactSuccessMessage = "Session compacted"
 
                     withAnimation {
                         showingCopyConfirmation = true
@@ -687,14 +673,6 @@ struct ConversationView: View {
         }
     }
 
-    private func formatTokenCount(_ count: Int) -> String {
-        if count >= 1000 {
-            let k = Double(count) / 1000.0
-            return String(format: "%.1fK", k)
-        }
-        return "\(count)"
-    }
-    
     private func toggleAutoScroll() {
         print("🔘 [AutoScroll] Toggle button tapped, current state: \(autoScrollEnabled ? "enabled" : "disabled")")
         if autoScrollEnabled {

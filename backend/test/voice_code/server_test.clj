@@ -332,11 +332,7 @@
                     voice-code.claude/compact-session
                     (fn [session-id]
                       (reset! compact-called session-id)
-                      {:success true
-                       :old-message-count 150
-                       :new-message-count 23
-                       :messages-removed 127
-                       :pre-tokens 42300})]
+                      {:success true})]
 
         (server/handle-message :test-ch "{\"type\":\"compact_session\",\"session_id\":\"test-session-123\"}")
 
@@ -347,11 +343,7 @@
         (is (= 1 (count @sent-messages)))
         (let [response (first @sent-messages)]
           (is (= "compaction_complete" (:type response)))
-          (is (= "test-session-123" (:session_id response)))
-          (is (= 150 (:old_message_count response)))
-          (is (= 23 (:new_message_count response)))
-          (is (= 127 (:messages_removed response)))
-          (is (= 42300 (:pre_tokens response))))))))
+          (is (= "test-session-123" (:session_id response))))))))
 
 (deftest test-handle-compact-session-failure
   (testing "compact_session returns error when compaction fails"

@@ -863,10 +863,6 @@ class VoiceCodeClient: ObservableObject {
 
     struct CompactionResult {
         let sessionId: String
-        let oldMessageCount: Int
-        let newMessageCount: Int
-        let messagesRemoved: Int
-        let preTokens: Int?
     }
 
     func compactSession(sessionId: String) async throws -> CompactionResult {
@@ -903,17 +899,9 @@ class VoiceCodeClient: ObservableObject {
 
                 if messageType == "compaction_complete" {
                     let returnedSessionId = json["session_id"] as? String ?? sessionId
-                    let oldCount = json["old_message_count"] as? Int ?? 0
-                    let newCount = json["new_message_count"] as? Int ?? 0
-                    let removed = json["messages_removed"] as? Int ?? 0
-                    let preTokens = json["pre_tokens"] as? Int
 
                     let result = CompactionResult(
-                        sessionId: returnedSessionId,
-                        oldMessageCount: oldCount,
-                        newMessageCount: newCount,
-                        messagesRemoved: removed,
-                        preTokens: preTokens
+                        sessionId: returnedSessionId
                     )
 
                     resumeLock.lock()

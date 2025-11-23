@@ -4,7 +4,7 @@
 import CoreData
 import os.log
 
-private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "Persistence")
+private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "Persistence")
 
 class PersistenceController {
     static let shared = PersistenceController()
@@ -18,7 +18,7 @@ class PersistenceController {
         let session = CDBackendSession(context: viewContext)
         session.id = UUID()
         session.backendName = "Terminal: voice-code - 2025-10-17 14:30"
-        session.workingDirectory = "/Users/travis/code/voice-code"
+        session.workingDirectory = "~/projects/voice-code" 
         session.lastModified = Date()
         session.messageCount = 2
         session.preview = "Hello! How can I help you?"

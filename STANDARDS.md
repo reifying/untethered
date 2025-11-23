@@ -263,15 +263,11 @@ Sent when Claude CLI finishes processing a prompt successfully (turn is complete
 ```json
 {
   "type": "compaction_complete",
-  "session_id": "<claude-session-id>",
-  "old_message_count": 150,
-  "new_message_count": 20,
-  "messages_removed": 130,
-  "pre_tokens": 42300
+  "session_id": "<claude-session-id>"
 }
 ```
 
-Sent when session compaction succeeds. Includes statistics about messages removed and token count before compaction.
+Sent when session compaction succeeds.
 
 **Compaction Error**
 ```json
@@ -308,19 +304,17 @@ Sent automatically after `connected` response. Provides the N most recently modi
 ### Session Compaction
 
 **Overview:**
-Session compaction reduces conversation history by summarizing older messages. This improves performance and reduces storage/token costs while preserving conversation context.
+Session compaction summarizes conversation history to reduce context window usage. The goal is token reduction (smaller context window), not file size reduction. The JSONL file structure may change but that's incidental.
 
 **Behavior:**
 - Session ID remains the same after compaction
-- Adds `compact_boundary` marker to JSONL file with metadata
+- Claude CLI handles the summarization internally
 - Conversation history is summarized, not deleted
 - Operation cannot be undone
-- Recommended when sessions exceed ~50K tokens or 100+ messages
 
 **When to use:**
-- Long-running sessions with extensive history
-- Performance degradation due to large session files
-- Approaching context window limits
+- Long-running sessions approaching context window limits
+- Performance degradation due to large context
 
 ### Session Persistence
 

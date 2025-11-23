@@ -1,6 +1,6 @@
 We track work in Beads instead of Markdown. Run `bd quickstart` to see how.
 
-This is October 2025 or later.
+This is November 2025 or later.
 
 ## Clojure MCP Setup (Required First Step)
 
