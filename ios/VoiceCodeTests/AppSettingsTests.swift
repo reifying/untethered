@@ -317,7 +317,6 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(settings.continuePlaybackWhenLocked)
     }
 
-<<<<<<< HEAD
     // MARK: - Debouncing Tests
 
     func testServerPortDebouncing() {
@@ -442,5 +441,33 @@ final class AppSettingsTests: XCTestCase {
         // Toggle back to true
         settings.respectSilentMode = true
         XCTAssertTrue(settings.respectSilentMode)
+    }
+
+    // MARK: - Server Configuration Tests
+
+    func testIsServerConfiguredDefault() {
+        // Default should be false (empty server URL)
+        XCTAssertFalse(settings.isServerConfigured)
+    }
+
+    func testIsServerConfiguredWithURL() {
+        // Setting a server URL should make it configured
+        settings.serverURL = "192.168.1.100"
+        XCTAssertTrue(settings.isServerConfigured)
+    }
+
+    func testIsServerConfiguredWithWhitespaceOnly() {
+        // Whitespace-only should not count as configured
+        settings.serverURL = "   "
+        XCTAssertFalse(settings.isServerConfigured)
+    }
+
+    func testIsServerConfiguredAfterClearing() {
+        // Setting then clearing should return to unconfigured
+        settings.serverURL = "192.168.1.100"
+        XCTAssertTrue(settings.isServerConfigured)
+
+        settings.serverURL = ""
+        XCTAssertFalse(settings.isServerConfigured)
     }
 }

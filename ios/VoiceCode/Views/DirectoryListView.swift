@@ -99,8 +99,30 @@ struct DirectoryListView: View {
     var body: some View {
         let _ = RenderTracker.count(Self.self)
         Group {
-            if sessions.isEmpty {
-                // Empty state: no sessions at all
+            if !settings.isServerConfigured {
+                // First-run state: server not configured
+                VStack(spacing: 16) {
+                    Image(systemName: "server.rack")
+                        .font(.system(size: 64))
+                        .foregroundColor(.secondary)
+                    Text("Configure Server")
+                        .font(.title2)
+                        .foregroundColor(.secondary)
+                    Text("Connect to your voice-code backend to get started.")
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                    Button(action: { showingSettings = true }) {
+                        Label("Open Settings", systemImage: "gear")
+                            .font(.headline)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .padding(.top, 8)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if sessions.isEmpty && recentSessions.isEmpty {
+                // Empty state: server configured but no sessions yet
                 VStack(spacing: 16) {
                     Image(systemName: "folder")
                         .font(.system(size: 64))
@@ -323,6 +345,20 @@ struct DirectoryListView: View {
                 logger.info("📱 App entering background, suspending cache updates")
                 // Cancel any pending debounced updates
                 queueUpdateWorkItem?.cancel()
+            }
+        }
+        .onChange(of: client.isConnected) { _, isConnected in
+            // Refetch sessions when connection state changes
+            // This handles server URL changes which clear and reload sessions
+            if isConnected {
+                logger.info("🔄 Connection state changed to connected, refetching sessions")
+                do {
+                    sessions = try CDBackendSession.fetchActiveSessions(context: viewContext)
+                    updateCachedDirectories()
+                    updateCachedQueuedSessions()
+                } catch {
+                    logger.error("❌ Failed to refetch sessions after connection: \(error)")
+                }
             }
         }
     }

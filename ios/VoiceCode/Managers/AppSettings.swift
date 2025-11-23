@@ -68,6 +68,11 @@ class AppSettings: ObservableObject {
         return "ws://\(cleanURL):\(cleanPort)"
     }
 
+    /// Returns true if the server has been configured (non-empty address)
+    var isServerConfigured: Bool {
+        !serverURL.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     // Get available voices sorted by quality (premium first)
     static var availableVoices: [(identifier: String, name: String, quality: String, language: String)] {
         let allVoices = AVSpeechSynthesisVoice.speechVoices()
