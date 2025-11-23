@@ -1,0 +1,2 @@
+# Auto-resolve project.yml version conflicts by taking the higher version
+project.yml merge=project-version
