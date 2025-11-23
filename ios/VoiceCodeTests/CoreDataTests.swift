@@ -252,9 +252,9 @@ final class CoreDataTests: XCTestCase {
         let messages = try context.fetch(fetchRequest)
 
         XCTAssertEqual(messages.count, 3)
-        // Messages are sorted descending (newest first) by fetchMessages
-        XCTAssertEqual(messages[0].text, "Message 2")
-        XCTAssertEqual(messages[2].text, "Message 0")
+        // Messages are sorted ascending (oldest first) for chronological display
+        XCTAssertEqual(messages[0].text, "Message 0")
+        XCTAssertEqual(messages[2].text, "Message 2")
     }
     
     func testCDMessageFetchByTextAndRole() throws {
@@ -390,13 +390,13 @@ final class CoreDataTests: XCTestCase {
 
     // MARK: - AttributeGraph Crash Prevention Tests
 
-    func testMessageFetchLimitPreventsStaleReferences() throws {
-        // Test that the 25-message fetch limit doesn't cause stale references
-        // when messages are removed from FetchedResults during view updates
+    func testMessageFetchReturnsAllMessages() throws {
+        // Test that fetchMessages returns all messages for a session
+        // (no fetchLimit - hangs prevented by animation:nil and removed withAnimation wrappers)
 
         let sessionId = UUID()
 
-        // Create 35 messages (exceeds 25-message limit)
+        // Create 35 messages
         for i in 0..<35 {
             let message = CDMessage(context: context)
             message.id = UUID()
@@ -409,25 +409,25 @@ final class CoreDataTests: XCTestCase {
 
         try context.save()
 
-        // Fetch with 25-message limit
+        // Fetch all messages
         let fetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
         let messages = try context.fetch(fetchRequest)
 
-        // Should only return 25 most recent
-        XCTAssertEqual(messages.count, 25)
+        // Should return all 35 messages
+        XCTAssertEqual(messages.count, 35)
 
         // Verify fetch request properties prevent faulting
         XCTAssertTrue(fetchRequest.includesPropertyValues)
         XCTAssertFalse(fetchRequest.returnsObjectsAsFaults)
 
-        // Verify oldest messages are excluded (0-9 should not be in result)
+        // Verify all messages are included (oldest to newest)
         let messageTexts = messages.map { $0.text }
-        XCTAssertFalse(messageTexts.contains("Message 0"))
-        XCTAssertFalse(messageTexts.contains("Message 9"))
-
-        // Verify newest messages are included (25-34)
-        XCTAssertTrue(messageTexts.contains("Message 25"))
+        XCTAssertTrue(messageTexts.contains("Message 0"))
         XCTAssertTrue(messageTexts.contains("Message 34"))
+
+        // Verify ascending order (oldest first)
+        XCTAssertEqual(messages.first?.text, "Message 0")
+        XCTAssertEqual(messages.last?.text, "Message 34")
     }
 
     func testMessageObjectsNotFaultedAfterFetch() throws {
@@ -462,9 +462,9 @@ final class CoreDataTests: XCTestCase {
         }
     }
 
-    func testMessageFetchDescendingOrderWithReversal() throws {
-        // Test that messages are fetched descending (newest first)
-        // and can be safely reversed for chronological display
+    func testMessageFetchAscendingOrder() throws {
+        // Test that messages are fetched ascending (oldest first)
+        // for direct chronological display in chat UI
 
         let sessionId = UUID()
 
@@ -488,21 +488,15 @@ final class CoreDataTests: XCTestCase {
 
         try context.save()
 
-        // Fetch messages (descending order)
+        // Fetch messages (ascending order - oldest first)
         let fetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
         let messages = try context.fetch(fetchRequest)
 
         XCTAssertEqual(messages.count, 4)
 
-        // Verify descending order (newest first)
-        XCTAssertEqual(messages[0].text, "Message 3") // Now
-        XCTAssertEqual(messages[3].text, "Message 0") // 5 min ago
-
-        // Verify reversed() creates chronological order (oldest first)
-        let reversed = messages.reversed()
-        let reversedArray = Array(reversed)
-        XCTAssertEqual(reversedArray[0].text, "Message 0")
-        XCTAssertEqual(reversedArray[3].text, "Message 3")
+        // Verify ascending order (oldest first) - ready for chronological display
+        XCTAssertEqual(messages[0].text, "Message 0") // 5 min ago
+        XCTAssertEqual(messages[3].text, "Message 3") // Now
     }
 
     func testCoreDataMergePolicySet() {

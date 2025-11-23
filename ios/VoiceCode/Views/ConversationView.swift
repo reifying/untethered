@@ -109,9 +109,8 @@ struct ConversationView: View {
                             .padding(.top, 100)
                         } else {
                             LazyVStack(spacing: 12) {
-                                // Messages fetched descending (newest first) but displayed ascending (oldest first)
-                                // Use reversed() view instead of Array() to avoid detached snapshots with stale references
-                                ForEach(messages.reversed(), id: \.id) { message in
+                                // Messages fetched ascending (oldest first) for chronological display
+                                ForEach(messages, id: \.id) { message in
                                     CDMessageView(
                                         message: message,
                                         voiceOutput: voiceOutput,

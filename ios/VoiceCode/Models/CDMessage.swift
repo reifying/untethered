@@ -84,16 +84,13 @@ extension CDMessage {
         return NSFetchRequest<CDMessage>(entityName: "CDMessage")
     }
     
-    /// Fetch most recent 10 messages for a session, sorted by timestamp
-    /// Limits to 10 messages to prevent AttributeGraph hangs with layout calculations
-    /// Messages are still stored in CoreData - this just limits what's displayed
-    /// Reduced from 25 to 10 based on 9s hang in _PaddingLayout.placement calculations
+    /// Fetch all messages for a session, sorted chronologically (oldest first)
+    /// No fetchLimit - hangs prevented by animation:nil and removed withAnimation wrappers
     static func fetchMessages(sessionId: UUID) -> NSFetchRequest<CDMessage> {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
-        // Sort descending to get most recent 10, then reverse in view for chronological display
-        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: false)]
-        request.fetchLimit = 10
+        // Sort ascending for chronological display (oldest first, newest at bottom)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: true)]
 
         // Ensure all properties are loaded to prevent faulting during view updates
         // This prevents CoreData from deallocating objects mid-update
