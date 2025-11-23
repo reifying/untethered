@@ -84,16 +84,13 @@ extension CDMessage {
         return NSFetchRequest<CDMessage>(entityName: "CDMessage")
     }
     
-    /// Fetch most recent 10 messages for a session, sorted by timestamp
-    /// Limits to 10 messages to prevent AttributeGraph hangs with layout calculations
-    /// Messages are still stored in CoreData - this just limits what's displayed
-    /// Reduced from 25 to 10 based on 9s hang in _PaddingLayout.placement calculations
+    /// Fetch all messages for a session, sorted chronologically (oldest first)
+    /// No fetchLimit - hangs prevented by animation:nil and removed withAnimation wrappers
     static func fetchMessages(sessionId: UUID) -> NSFetchRequest<CDMessage> {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
-        // Sort descending to get most recent 10, then reverse in view for chronological display
-        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: false)]
-        request.fetchLimit = 10
+        // Sort ascending for chronological display (oldest first, newest at bottom)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: true)]
 
         // Ensure all properties are loaded to prevent faulting during view updates
         // This prevents CoreData from deallocating objects mid-update
@@ -122,3 +119,70 @@ extension CDMessage {
 }
 
 extension CDMessage: Identifiable {}
+
+// MARK: - Message Pruning
+extension CDMessage {
+    /// Maximum number of messages to retain per session in iOS CoreData
+    /// Backend retains full history in .jsonl files; iOS is just a "window" into recent messages
+    static let maxMessagesPerSession = 50
+
+    /// Threshold for triggering mid-conversation pruning
+    /// When message count exceeds maxMessagesPerSession + pruneThreshold, prune back to maxMessagesPerSession
+    static let pruneThreshold = 10
+
+    /// Delete oldest messages for a session, keeping only the newest `keepCount` messages
+    /// - Parameters:
+    ///   - sessionId: The session UUID to prune messages for
+    ///   - keepCount: Number of newest messages to retain (default: maxMessagesPerSession)
+    ///   - context: The managed object context to use
+    /// - Returns: Number of messages deleted
+    @discardableResult
+    static func pruneOldMessages(
+        sessionId: UUID,
+        keepCount: Int = maxMessagesPerSession,
+        in context: NSManagedObjectContext
+    ) -> Int {
+        // Fetch all messages for session, sorted oldest first
+        let countRequest = fetchRequest()
+        countRequest.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
+
+        guard let totalCount = try? context.count(for: countRequest),
+              totalCount > keepCount else {
+            return 0
+        }
+
+        let deleteCount = totalCount - keepCount
+
+        // Fetch the oldest messages to delete
+        let deleteRequest = fetchRequest()
+        deleteRequest.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
+        deleteRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: true)]
+        deleteRequest.fetchLimit = deleteCount
+
+        guard let messagesToDelete = try? context.fetch(deleteRequest) else {
+            return 0
+        }
+
+        for message in messagesToDelete {
+            context.delete(message)
+        }
+
+        return messagesToDelete.count
+    }
+
+    /// Check if a session needs pruning based on current message count
+    /// - Parameters:
+    ///   - sessionId: The session UUID to check
+    ///   - context: The managed object context to use
+    /// - Returns: true if message count exceeds maxMessagesPerSession + pruneThreshold
+    static func needsPruning(sessionId: UUID, in context: NSManagedObjectContext) -> Bool {
+        let countRequest = fetchRequest()
+        countRequest.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
+
+        guard let count = try? context.count(for: countRequest) else {
+            return false
+        }
+
+        return count > (maxMessagesPerSession + pruneThreshold)
+    }
+}

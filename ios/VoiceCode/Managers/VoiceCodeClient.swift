@@ -41,6 +41,9 @@ class VoiceCodeClient: ObservableObject {
     // Continuation for async session list requests
     private var sessionListContinuation: CheckedContinuation<Void, Never>?
 
+    // Continuations for async command execution requests (commandId -> continuation)
+    private var commandExecutionContinuations: [String: CheckedContinuation<String, Never>] = [:]
+
     // Debouncing mechanism for @Published property updates
     private var pendingUpdates: [String: Any] = [:]
     private var debounceWorkItem: DispatchWorkItem?
@@ -611,6 +614,12 @@ class VoiceCodeClient: ObservableObject {
                     var updatedCommands = getCurrentValue(for: "runningCommands", current: self.runningCommands)
                     updatedCommands[commandSessionId] = execution
                     scheduleUpdate(key: "runningCommands", value: updatedCommands)
+
+                    // Resume any waiting continuation with the command session ID
+                    if let continuation = commandExecutionContinuations[commandId] {
+                        commandExecutionContinuations.removeValue(forKey: commandId)
+                        continuation.resume(returning: commandSessionId)
+                    }
                 }
 
             case "command_output":
@@ -1021,15 +1030,25 @@ class VoiceCodeClient: ObservableObject {
 
     // MARK: - Command Execution
 
-    func executeCommand(commandId: String, workingDirectory: String) {
+    /// Execute a command and return the command session ID when it starts
+    /// - Parameters:
+    ///   - commandId: The command identifier to execute
+    ///   - workingDirectory: The directory to execute the command in
+    /// - Returns: The command session ID assigned by the backend
+    func executeCommand(commandId: String, workingDirectory: String) async -> String {
         print("📤 [VoiceCodeClient] Executing command: \(commandId) in \(workingDirectory)")
 
-        let message: [String: Any] = [
-            "type": "execute_command",
-            "command_id": commandId,
-            "working_directory": workingDirectory
-        ]
-        sendMessage(message)
+        return await withCheckedContinuation { continuation in
+            // Store continuation to be resumed when command_started arrives
+            commandExecutionContinuations[commandId] = continuation
+
+            let message: [String: Any] = [
+                "type": "execute_command",
+                "command_id": commandId,
+                "working_directory": workingDirectory
+            ]
+            sendMessage(message)
+        }
     }
 
     func getCommandHistory(workingDirectory: String? = nil, limit: Int = 50) {

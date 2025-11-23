@@ -13,9 +13,11 @@ struct DebugLogsView: View {
     enum LogSource: String, CaseIterable {
         case system = "System Logs"
         case captured = "Captured Logs"
+        case renderStats = "Render Stats"
     }
 
     var body: some View {
+        let _ = RenderTracker.count(Self.self)
         VStack(spacing: 0) {
             // Log source picker
             Picker("Log Source", selection: $logSource) {
@@ -41,18 +43,37 @@ struct DebugLogsView: View {
 
             // Action buttons
             HStack(spacing: 16) {
-                Button(action: {
-                    copyLogs()
-                }) {
-                    HStack {
-                        Image(systemName: "doc.on.clipboard")
-                        Text("Copy Last 15KB")
+                if logSource == .renderStats {
+                    // Reset button for render stats
+                    Button(action: {
+                        RenderTracker.reset()
+                        loadRenderStats()
+                    }) {
+                        HStack {
+                            Image(systemName: "trash")
+                            Text("Reset Stats")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.red.opacity(0.8))
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
+                } else {
+                    // Copy button for logs
+                    Button(action: {
+                        copyLogs()
+                    }) {
+                        HStack {
+                            Image(systemName: "doc.on.clipboard")
+                            Text("Copy Last 15KB")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                    }
                 }
 
                 Button(action: {
@@ -97,6 +118,8 @@ struct DebugLogsView: View {
             loadSystemLogs()
         case .captured:
             loadCapturedLogs()
+        case .renderStats:
+            loadRenderStats()
         }
     }
 
@@ -133,6 +156,10 @@ struct DebugLogsView: View {
         }
     }
 
+    private func loadRenderStats() {
+        logs = RenderTracker.generateReport()
+    }
+
     private func copyLogs() {
         let logsToCopy: String
 
@@ -158,6 +185,9 @@ struct DebugLogsView: View {
             logsToCopy = LogManager.shared.getRecentLogs(maxBytes: 15_000)
             UIPasteboard.general.string = logsToCopy
             showCopyConfirmation()
+        case .renderStats:
+            // Render stats don't use copy button (has reset button instead)
+            break
         }
     }
 
