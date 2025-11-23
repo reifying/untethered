@@ -49,9 +49,11 @@ struct ConversationView: View {
         self.settings = settings
 
         // Setup fetch request for this session's messages
+        // Note: animation: nil prevents SwiftUI from triggering animated transitions
+        // for every CoreData change, reducing render cycles significantly
         _messages = FetchRequest(
             fetchRequest: CDMessage.fetchMessages(sessionId: session.id),
-            animation: .default
+            animation: nil
         )
     }
 
@@ -113,7 +115,6 @@ struct ConversationView: View {
                                     CDMessageView(
                                         message: message,
                                         voiceOutput: voiceOutput,
-                                        settings: settings,
                                         onInferName: { messageText in
                                             client.requestInferredName(sessionId: session.id.uuidString.lowercased(), messageText: messageText)
                                         }
@@ -142,9 +143,9 @@ struct ConversationView: View {
                                 // Re-check autoScrollEnabled after delay in case user disabled it
                                 guard self.autoScrollEnabled else { return }
                                 print("📨 [AutoScroll] Scrolling to bottom anchor (debounced)")
-                                withAnimation(.linear(duration: 0.2)) {
-                                    proxy.scrollTo("bottom", anchor: .bottom)
-                                }
+                                // Note: Removed withAnimation wrapper to prevent multiple layout passes
+                                // that can cause 9s hangs in _PaddingLayout.placement
+                                proxy.scrollTo("bottom", anchor: .bottom)
                             }
                         } else {
                             print("📨 [AutoScroll] Skipping auto-scroll (disabled)")
@@ -709,9 +710,8 @@ struct ConversationView: View {
 
             if let proxy = scrollProxy {
                 print("🔘 [AutoScroll] Scrolling to bottom anchor")
-                withAnimation(.spring()) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
+                // Note: Removed withAnimation wrapper to prevent multiple layout passes
+                proxy.scrollTo("bottom", anchor: .bottom)
             } else {
                 print("🔘 [AutoScroll] No scroll proxy available")
             }
@@ -821,9 +821,8 @@ extension Date {
 // MARK: - CoreData Message View
 
 struct CDMessageView: View {
-    @ObservedObject var message: CDMessage
-    @ObservedObject var voiceOutput: VoiceOutputManager
-    @ObservedObject var settings: AppSettings
+    let message: CDMessage
+    let voiceOutput: VoiceOutputManager
     let onInferName: (String) -> Void
 
     @State private var showFullMessage = false
