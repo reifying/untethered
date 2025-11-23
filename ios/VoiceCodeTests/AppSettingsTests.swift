@@ -232,8 +232,14 @@ final class AppSettingsTests: XCTestCase {
     // MARK: - Voice Selection Tests
 
     func testDefaultVoiceSelection() {
-        // Default should be nil (system default)
-        XCTAssertNil(settings.selectedVoiceIdentifier)
+        // On first launch, should default to first available premium voice (if any)
+        let availableVoices = AppSettings.availableVoices
+        if let firstVoice = availableVoices.first {
+            XCTAssertEqual(settings.selectedVoiceIdentifier, firstVoice.identifier)
+        } else {
+            // No premium voices available on this device
+            XCTAssertNil(settings.selectedVoiceIdentifier)
+        }
     }
 
     func testVoiceSelectionPersistence() {
@@ -317,7 +323,6 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(settings.continuePlaybackWhenLocked)
     }
 
-<<<<<<< HEAD
     // MARK: - Debouncing Tests
 
     func testServerPortDebouncing() {
@@ -442,5 +447,122 @@ final class AppSettingsTests: XCTestCase {
         // Toggle back to true
         settings.respectSilentMode = true
         XCTAssertTrue(settings.respectSilentMode)
+    }
+
+    // MARK: - All Premium Voices Tests
+
+    func testAllPremiumVoicesIdentifier() {
+        // The constant should be defined
+        XCTAssertEqual(AppSettings.allPremiumVoicesIdentifier, "com.voicecode.all-premium-voices")
+    }
+
+    func testPremiumVoicesProperty() {
+        // Should return only premium quality voices
+        let premiumVoices = AppSettings.premiumVoices
+
+        // All should be premium quality
+        for voice in premiumVoices {
+            XCTAssertEqual(voice.quality, "Premium", "Voice \(voice.name) should be Premium quality")
+        }
+
+        // All should be English
+        for voice in premiumVoices {
+            XCTAssertTrue(
+                voice.language.lowercased().hasPrefix("en-") || voice.language.lowercased() == "en",
+                "Voice should be English, got: \(voice.language)"
+            )
+        }
+    }
+
+    func testResolveVoiceIdentifierWithNilSelection() {
+        // When no voice is selected, should return nil
+        settings.selectedVoiceIdentifier = nil
+        let resolved = settings.resolveVoiceIdentifier(forSessionId: "test-session")
+        XCTAssertNil(resolved)
+    }
+
+    func testResolveVoiceIdentifierWithSpecificVoice() {
+        // When a specific voice is selected, should return that voice
+        let testVoiceId = "com.apple.voice.premium.en-US.Samantha"
+        settings.selectedVoiceIdentifier = testVoiceId
+        let resolved = settings.resolveVoiceIdentifier(forSessionId: "test-session")
+        XCTAssertEqual(resolved, testVoiceId)
+    }
+
+    func testResolveVoiceIdentifierWithAllPremiumNoSession() {
+        // When "All Premium Voices" is selected but no session ID provided
+        settings.selectedVoiceIdentifier = AppSettings.allPremiumVoicesIdentifier
+
+        let premiumVoices = AppSettings.premiumVoices
+        guard !premiumVoices.isEmpty else {
+            // No premium voices on device, should fall back to first available
+            let resolved = settings.resolveVoiceIdentifier(forSessionId: nil)
+            XCTAssertEqual(resolved, AppSettings.availableVoices.first?.identifier)
+            return
+        }
+
+        // With no session ID, should return first premium voice
+        let resolved = settings.resolveVoiceIdentifier(forSessionId: nil)
+        XCTAssertEqual(resolved, premiumVoices.first?.identifier)
+    }
+
+    func testResolveVoiceIdentifierDeterministic() {
+        // Same session ID should always resolve to same voice
+        settings.selectedVoiceIdentifier = AppSettings.allPremiumVoicesIdentifier
+
+        let premiumVoices = AppSettings.premiumVoices
+        guard premiumVoices.count > 1 else {
+            // Need at least 2 voices to test rotation
+            return
+        }
+
+        let sessionId = "test-session-12345"
+        let resolved1 = settings.resolveVoiceIdentifier(forSessionId: sessionId)
+        let resolved2 = settings.resolveVoiceIdentifier(forSessionId: sessionId)
+        let resolved3 = settings.resolveVoiceIdentifier(forSessionId: sessionId)
+
+        XCTAssertEqual(resolved1, resolved2)
+        XCTAssertEqual(resolved2, resolved3)
+    }
+
+    func testResolveVoiceIdentifierDistribution() {
+        // Different session IDs should (statistically) resolve to different voices
+        settings.selectedVoiceIdentifier = AppSettings.allPremiumVoicesIdentifier
+
+        let premiumVoices = AppSettings.premiumVoices
+        guard premiumVoices.count > 1 else {
+            // Need at least 2 voices to test distribution
+            return
+        }
+
+        // Generate many session IDs and check distribution
+        var voiceCounts: [String: Int] = [:]
+        for _ in 0..<100 {
+            let sessionId = UUID().uuidString
+            if let voiceId = settings.resolveVoiceIdentifier(forSessionId: sessionId) {
+                voiceCounts[voiceId, default: 0] += 1
+            }
+        }
+
+        // With 100 random sessions and multiple voices, we should see variation
+        // (At least 2 different voices should be selected)
+        XCTAssertGreaterThan(voiceCounts.count, 1, "Voice rotation should use multiple voices")
+    }
+
+    func testResolveVoiceIdentifierWithSinglePremiumVoice() {
+        // This test verifies behavior when only one premium voice exists
+        // We can't easily mock the voice list, but we can test the logic conceptually
+
+        settings.selectedVoiceIdentifier = AppSettings.allPremiumVoicesIdentifier
+
+        let premiumVoices = AppSettings.premiumVoices
+        if premiumVoices.count == 1 {
+            // With only one premium voice, all sessions should get that voice
+            let resolved1 = settings.resolveVoiceIdentifier(forSessionId: "session-1")
+            let resolved2 = settings.resolveVoiceIdentifier(forSessionId: "session-2")
+            XCTAssertEqual(resolved1, resolved2)
+            XCTAssertEqual(resolved1, premiumVoices.first?.identifier)
+        }
+        // If 0 or 2+ voices, other tests cover that
     }
 }

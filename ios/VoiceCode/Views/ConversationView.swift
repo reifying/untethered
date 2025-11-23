@@ -938,7 +938,7 @@ struct MessageDetailView: View {
 
                     Button(action: {
                         let processedText = TextProcessor.removeCodeBlocks(from: message.text)
-                        voiceOutput.speak(processedText)
+                        voiceOutput.speak(processedText, sessionId: message.sessionId.uuidString.lowercased())
                     }) {
                         VStack(spacing: 4) {
                             Image(systemName: "speaker.wave.2.fill")

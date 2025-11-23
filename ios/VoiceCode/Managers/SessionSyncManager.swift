@@ -387,7 +387,8 @@ class SessionSyncManager {
                             Task {
                                 await NotificationManager.shared.postResponseNotification(
                                     text: combinedText,
-                                    sessionName: sessionName
+                                    sessionName: sessionName,
+                                    sessionId: sessionId
                                 )
                             }
                         }
@@ -425,7 +426,7 @@ class SessionSyncManager {
                         guard let self = self else { return }
                         for text in assistantMessagesToSpeak {
                             let processedText = TextProcessor.removeCodeBlocks(from: text)
-                            self.voiceOutputManager?.speak(processedText, respectSilentMode: true)
+                            self.voiceOutputManager?.speak(processedText, respectSilentMode: true, sessionId: sessionId)
                         }
                     }
                 }

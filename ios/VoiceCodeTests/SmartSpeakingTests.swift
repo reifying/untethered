@@ -282,10 +282,12 @@ class SmartSpeakingTests: XCTestCase {
 class MockVoiceOutputManager: VoiceOutputManager {
     var speakWasCalled = false
     var lastSpokenText: String?
+    var lastSessionId: String?
 
-    override func speak(_ text: String, rate: Float = 0.5) {
+    override func speak(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false, sessionId: String? = nil) {
         speakWasCalled = true
         lastSpokenText = text
-        print("🎤 [MockVoiceOutput] speak() called with text: \(text)")
+        lastSessionId = sessionId
+        print("🎤 [MockVoiceOutput] speak() called with text: \(text), sessionId: \(sessionId ?? "nil")")
     }
 }

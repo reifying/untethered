@@ -88,12 +88,13 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     }
     
     // MARK: - Posting Notifications
-    
+
     /// Post a notification when Claude response arrives
     /// - Parameters:
     ///   - text: The Claude response text
     ///   - sessionName: Optional session name for context
-    func postResponseNotification(text: String, sessionName: String? = nil) async {
+    ///   - sessionId: Optional session ID for voice rotation
+    func postResponseNotification(text: String, sessionName: String? = nil, sessionId: String? = nil) async {
         // Check authorization status
         let status = await checkAuthorizationStatus()
         
@@ -123,10 +124,14 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
         pendingResponses[notificationId] = text
         
         // Add full text to userInfo for retrieval in action handler
-        content.userInfo = [
+        var userInfo: [String: Any] = [
             "responseText": text,
             "notificationId": notificationId
         ]
+        if let sessionId = sessionId {
+            userInfo["sessionId"] = sessionId
+        }
+        content.userInfo = userInfo
         
         // Create trigger (immediate delivery)
         let request = UNNotificationRequest(
@@ -161,9 +166,10 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
             // Extract response text from userInfo
             if let text = userInfo["responseText"] as? String {
                 logger.info("🔊 Reading response aloud (\(text.count) characters)")
-                
+
                 // Trigger TTS playback via VoiceOutputManager
-                voiceOutputManager?.speak(text)
+                let sessionId = userInfo["sessionId"] as? String
+                voiceOutputManager?.speak(text, sessionId: sessionId)
             } else {
                 logger.error("❌ No response text found in notification userInfo")
             }

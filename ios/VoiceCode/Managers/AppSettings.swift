@@ -6,6 +6,9 @@ import Combine
 import AVFoundation
 
 class AppSettings: ObservableObject {
+    /// Special identifier for "All Premium Voices" rotation mode
+    static let allPremiumVoicesIdentifier = "com.voicecode.all-premium-voices"
+
     private let appGroupID = "group.com.910labs.untethered.resources"
     private var sharedDefaults: UserDefaults? {
         UserDefaults(suiteName: appGroupID)
@@ -118,11 +121,78 @@ class AppSettings: ObservableObject {
         return voices
     }
 
+    /// Get only premium quality voices (for "All Premium Voices" rotation)
+    static var premiumVoices: [(identifier: String, name: String, quality: String, language: String)] {
+        let allVoices = AVSpeechSynthesisVoice.speechVoices()
+
+        return allVoices
+            .filter {
+                let lang = $0.language.lowercased()
+                return lang.hasPrefix("en-") || lang == "en"
+            }
+            .filter { $0.quality == .premium }
+            .sorted { $0.name < $1.name }
+            .map { voice in
+                (voice.identifier, voice.name, "Premium", voice.language)
+            }
+    }
+
+    /// Resolve the actual voice identifier to use for speech
+    /// - Parameters:
+    ///   - sessionId: Optional session ID for deterministic voice rotation
+    /// - Returns: Voice identifier to use, or nil for system default
+    func resolveVoiceIdentifier(forSessionId sessionId: String? = nil) -> String? {
+        guard let selected = selectedVoiceIdentifier else {
+            return nil
+        }
+
+        // If not using "All Premium Voices" mode, return the selected voice directly
+        guard selected == Self.allPremiumVoicesIdentifier else {
+            return selected
+        }
+
+        // Get available premium voices
+        let premiumVoices = Self.premiumVoices
+
+        // No premium voices available - fall back to first available voice or nil
+        guard !premiumVoices.isEmpty else {
+            return Self.availableVoices.first?.identifier
+        }
+
+        // Only one premium voice - use it
+        guard premiumVoices.count > 1 else {
+            return premiumVoices.first?.identifier
+        }
+
+        // Multiple premium voices - rotate based on session ID hash
+        guard let sessionId = sessionId else {
+            // No session ID provided - use first premium voice
+            return premiumVoices.first?.identifier
+        }
+
+        // Use stable hash of session ID to select voice
+        let hashValue = abs(sessionId.hashValue)
+        let index = hashValue % premiumVoices.count
+        let selectedVoice = premiumVoices[index]
+        print("🎙️ Voice rotation: session \(sessionId.prefix(8))... → \(selectedVoice.name) (index \(index) of \(premiumVoices.count))")
+        return selectedVoice.identifier
+    }
+
     init() {
         // Load initial values BEFORE setting up publishers to avoid triggering writes on launch
         self.serverURL = UserDefaults.standard.string(forKey: "serverURL") ?? ""
         self.serverPort = UserDefaults.standard.string(forKey: "serverPort") ?? "8080"
-        self.selectedVoiceIdentifier = UserDefaults.standard.string(forKey: "selectedVoiceIdentifier")
+
+        // On first launch, default to the first available premium voice
+        if let savedVoice = UserDefaults.standard.string(forKey: "selectedVoiceIdentifier") {
+            self.selectedVoiceIdentifier = savedVoice
+        } else if let firstPremiumVoice = Self.availableVoices.first {
+            self.selectedVoiceIdentifier = firstPremiumVoice.identifier
+            UserDefaults.standard.set(firstPremiumVoice.identifier, forKey: "selectedVoiceIdentifier")
+        } else {
+            self.selectedVoiceIdentifier = nil
+        }
+
         self.continuePlaybackWhenLocked = UserDefaults.standard.object(forKey: "continuePlaybackWhenLocked") as? Bool ?? true
         self.recentSessionsLimit = UserDefaults.standard.object(forKey: "recentSessionsLimit") as? Int ?? 5
         self.notifyOnResponse = UserDefaults.standard.object(forKey: "notifyOnResponse") as? Bool ?? true

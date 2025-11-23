@@ -87,8 +87,9 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     ///   - text: The text to speak
     ///   - rate: Speech rate (default: 0.5)
     ///   - respectSilentMode: Whether to respect silent mode setting (default: false for manual actions)
-    func speak(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false) {
-        let voiceIdentifier = appSettings?.selectedVoiceIdentifier
+    ///   - sessionId: Optional session ID for voice rotation when "All Premium Voices" is selected
+    func speak(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false, sessionId: String? = nil) {
+        let voiceIdentifier = appSettings?.resolveVoiceIdentifier(forSessionId: sessionId)
         speakWithVoice(text, rate: rate, voiceIdentifier: voiceIdentifier, respectSilentMode: respectSilentMode)
     }
 

@@ -36,12 +36,25 @@ struct SettingsView: View {
                 Section(header: Text("Voice Selection")) {
                     Picker("Voice", selection: $settings.selectedVoiceIdentifier) {
                         Text("System Default").tag(nil as String?)
+                        if !AppSettings.premiumVoices.isEmpty {
+                            Text("All Premium Voices").tag(AppSettings.allPremiumVoicesIdentifier as String?)
+                        }
                         ForEach(AppSettings.availableVoices, id: \.identifier) { voice in
                             Text(voice.name).tag(voice.identifier as String?)
                         }
                     }
 
-                    if let selectedId = settings.selectedVoiceIdentifier,
+                    if settings.selectedVoiceIdentifier == AppSettings.allPremiumVoicesIdentifier {
+                        let premiumCount = AppSettings.premiumVoices.count
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Rotates between \(premiumCount) premium voice\(premiumCount == 1 ? "" : "s")")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text("Each session uses a consistent voice")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    } else if let selectedId = settings.selectedVoiceIdentifier,
                        let voice = AppSettings.availableVoices.first(where: { $0.identifier == selectedId }) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Quality: \(voice.quality)")
