@@ -7,6 +7,13 @@ import os.log
 
 private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "SessionSync")
 
+// MARK: - Notification Names
+
+extension Notification.Name {
+    /// Posted when session list is updated from backend
+    static let sessionListDidUpdate = Notification.Name("sessionListDidUpdate")
+}
+
 /// Manages synchronization of session metadata between backend and CoreData
 class SessionSyncManager {
     private let persistenceController: PersistenceController
@@ -61,6 +68,11 @@ class SessionSyncManager {
                             for session in hunt910Sessions.sorted(by: { $0.lastModified > $1.lastModified }).prefix(10) {
                                 logger.info("  - \(session.id.uuidString.lowercased()) | \(session.messageCount) msgs")
                             }
+                        }
+
+                        // Notify observers that session list was updated
+                        DispatchQueue.main.async {
+                            NotificationCenter.default.post(name: .sessionListDidUpdate, object: nil)
                         }
                     }
                 } catch {
