@@ -3,6 +3,9 @@
 
 import SwiftUI
 import CoreData
+import os.log
+
+private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "ConversationView")
 
 struct ConversationView: View {
     @ObservedObject var session: CDBackendSession
@@ -131,14 +134,14 @@ struct ConversationView: View {
                     .onChange(of: messages.count) { oldCount, newCount in
                         // Hide loading indicator when messages arrive
                         if isLoading && newCount > 0 {
-                            print("⏱️ [ConversationView] Messages arrived (\(newCount)), hiding loading indicator")
+                            logger.info("⏱️ Messages arrived (\(newCount)), hiding loading indicator")
                             isLoading = false
                         }
 
                         // Auto-scroll to new messages if enabled
                         guard newCount > oldCount else { return }
 
-                        print("📨 [AutoScroll] New messages: \(oldCount) -> \(newCount), auto-scroll: \(autoScrollEnabled ? "enabled" : "disabled")")
+                        logger.debug("📨 New messages: \(oldCount) -> \(newCount), auto-scroll: \(self.autoScrollEnabled ? "enabled" : "disabled")")
 
                         // Debounce scroll to avoid triggering during layout calculations
                         // This prevents the 9s hang in _PaddingLayout.placement
@@ -146,13 +149,13 @@ struct ConversationView: View {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                                 // Re-check autoScrollEnabled after delay in case user disabled it
                                 guard self.autoScrollEnabled else { return }
-                                print("📨 [AutoScroll] Scrolling to bottom anchor (debounced)")
+                                logger.debug("📨 Scrolling to bottom anchor (debounced)")
                                 // Note: Removed withAnimation wrapper to prevent multiple layout passes
                                 // that can cause 9s hangs in _PaddingLayout.placement
                                 proxy.scrollTo("bottom", anchor: .bottom)
                             }
                         } else {
-                            print("📨 [AutoScroll] Skipping auto-scroll (disabled)")
+                            logger.debug("📨 Skipping auto-scroll (disabled)")
                         }
                     }
                     .onChange(of: isLoading) { wasLoading, nowLoading in
@@ -418,13 +421,14 @@ struct ConversationView: View {
         guard !hasLoadedMessages else { return }
 
         let loadStart = Date()
-        print("⏱️ [ConversationView] loadSessionIfNeeded START - session: \(session.id.uuidString.lowercased().prefix(8))... (existing messages: \(messages.count))")
+        logger.info("⏱️ loadSessionIfNeeded START - session: \(self.session.id.uuidString.lowercased().prefix(8))... (existing messages: \(self.messages.count))")
 
         hasLoadedMessages = true
 
         // If messages already exist in CoreData, skip loading indicator and scroll immediately
         if !messages.isEmpty {
-            print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - messages already cached (\(messages.count)), skipping loading indicator")
+            let elapsedMs = Int(Date().timeIntervalSince(loadStart) * 1000)
+            logger.info("⏱️ +\(elapsedMs)ms - messages already cached (\(self.messages.count)), skipping loading indicator")
             isLoading = false
             // Scroll to bottom on next run loop (after view is laid out)
             DispatchQueue.main.async {
@@ -439,12 +443,14 @@ struct ConversationView: View {
 
         // Mark session as active for smart speaking
         ActiveSessionManager.shared.setActiveSession(session.id)
-        print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - setActiveSession complete")
+        let activeSessionMs = Int(Date().timeIntervalSince(loadStart) * 1000)
+        logger.info("⏱️ +\(activeSessionMs)ms - setActiveSession complete")
 
         // Clear unread count when opening session
         session.unreadCount = 0
         try? viewContext.save()
-        print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - cleared unread count")
+        let clearedUnreadMs = Int(Date().timeIntervalSince(loadStart) * 1000)
+        logger.info("⏱️ +\(clearedUnreadMs)ms - cleared unread count")
 
         // Prune old messages on background context before loading
         // iOS only needs recent messages; backend retains full history
@@ -452,22 +458,24 @@ struct ConversationView: View {
         PersistenceController.shared.performBackgroundTask { backgroundContext in
             let pruneStart = Date()
             let deletedCount = CDMessage.pruneOldMessages(sessionId: sessionId, in: backgroundContext)
+            let pruneMs = Int(Date().timeIntervalSince(pruneStart) * 1000)
             if deletedCount > 0 {
                 try? backgroundContext.save()
-                print("⏱️ [ConversationView] Pruned \(deletedCount) messages in \(String(format: "%.0f", Date().timeIntervalSince(pruneStart) * 1000))ms")
+                logger.info("⏱️ Pruned \(deletedCount) messages in \(pruneMs)ms")
             } else {
-                print("⏱️ [ConversationView] No pruning needed (\(String(format: "%.0f", Date().timeIntervalSince(pruneStart) * 1000))ms)")
+                logger.info("⏱️ No pruning needed (\(pruneMs)ms)")
             }
         }
 
         // Subscribe to the session to load full history
         // Skip subscribe for new sessions (messageCount == 0) to avoid "session not found" error
         // The session will be created when the first prompt is sent
+        let subscribeMs = Int(Date().timeIntervalSince(loadStart) * 1000)
         if session.messageCount > 0 {
-            print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - subscribing to session (messageCount: \(session.messageCount))")
+            logger.info("⏱️ +\(subscribeMs)ms - subscribing to session (messageCount: \(self.session.messageCount))")
             client.subscribe(sessionId: session.id.uuidString.lowercased())
         } else {
-            print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - skipping subscribe (new session)")
+            logger.info("⏱️ +\(subscribeMs)ms - skipping subscribe (new session)")
         }
 
         // Fallback timeout to hide loading indicator if messages don't arrive
@@ -475,7 +483,8 @@ struct ConversationView: View {
         if isLoading {
             DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
                 if self.isLoading {
-                    print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - loading indicator hidden (5s timeout fallback)")
+                    let timeoutMs = Int(Date().timeIntervalSince(loadStart) * 1000)
+                    logger.info("⏱️ +\(timeoutMs)ms - loading indicator hidden (5s timeout fallback)")
                     self.isLoading = false
                 }
             }
