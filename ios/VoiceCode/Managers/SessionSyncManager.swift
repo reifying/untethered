@@ -137,7 +137,8 @@ class SessionSyncManager {
     ///   - sessionId: Session UUID
     ///   - messages: Array of all message dictionaries for the session
     func handleSessionHistory(sessionId: String, messages: [[String: Any]]) {
-        logger.info("Received session_history for: \(sessionId) with \(messages.count) messages")
+        let historyStart = Date()
+        logger.info("⏱️ handleSessionHistory START - \(sessionId.prefix(8))... with \(messages.count) messages")
 
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
@@ -149,25 +150,31 @@ class SessionSyncManager {
             }
 
             // Fetch the session
+            let fetchStart = Date()
             let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionUUID)
 
             guard let session = try? backgroundContext.fetch(fetchRequest).first else {
                 logger.warning("Session not found for history: \(sessionId)")
                 return
             }
-            
+            logger.info("⏱️ +\(Int(Date().timeIntervalSince(fetchStart) * 1000))ms - fetched session")
+
             // Clear existing messages (if any) and add all from history
+            let deleteStart = Date()
             if let existingMessages = session.messages?.allObjects as? [CDMessage] {
                 for message in existingMessages {
                     backgroundContext.delete(message)
                 }
+                logger.info("⏱️ +\(Int(Date().timeIntervalSince(deleteStart) * 1000))ms - deleted \(existingMessages.count) existing messages")
             }
-            
+
             // Add all messages from history
+            let createStart = Date()
             for messageData in messages {
                 self.createMessage(messageData, sessionId: sessionId, in: backgroundContext, session: session)
             }
-            
+            logger.info("⏱️ +\(Int(Date().timeIntervalSince(createStart) * 1000))ms - created \(messages.count) messages")
+
             // Update session metadata
             session.messageCount = Int32(messages.count)
             // Note: Do NOT update lastModified here - we're replaying existing history.
@@ -178,11 +185,13 @@ class SessionSyncManager {
                let text = self.extractText(from: lastMessage) {
                 session.preview = String(text.prefix(100))
             }
-            
+
             do {
                 if backgroundContext.hasChanges {
+                    let saveStart = Date()
                     try backgroundContext.save()
-                    logger.info("Loaded session history: \(sessionId) (\(messages.count) messages)")
+                    logger.info("⏱️ +\(Int(Date().timeIntervalSince(saveStart) * 1000))ms - saved to CoreData")
+                    logger.info("⏱️ handleSessionHistory COMPLETE - total: \(Int(Date().timeIntervalSince(historyStart) * 1000))ms for \(messages.count) messages")
                 }
             } catch {
                 logger.error("Failed to save session_history: \(error.localizedDescription)")

@@ -411,24 +411,32 @@ struct ConversationView: View {
     private func loadSessionIfNeeded() {
         guard !hasLoadedMessages else { return }
 
+        let loadStart = Date()
+        print("⏱️ [ConversationView] loadSessionIfNeeded START - session: \(session.id.uuidString.lowercased().prefix(8))...")
+
         isLoading = true
         hasLoadedMessages = true
 
         // Mark session as active for smart speaking
         ActiveSessionManager.shared.setActiveSession(session.id)
+        print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - setActiveSession complete")
 
         // Clear unread count when opening session
         session.unreadCount = 0
         try? viewContext.save()
+        print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - cleared unread count")
 
         // Prune old messages on background context before loading
         // iOS only needs recent messages; backend retains full history
         let sessionId = session.id
         PersistenceController.shared.performBackgroundTask { backgroundContext in
+            let pruneStart = Date()
             let deletedCount = CDMessage.pruneOldMessages(sessionId: sessionId, in: backgroundContext)
             if deletedCount > 0 {
                 try? backgroundContext.save()
-                print("🧹 [ConversationView] Pruned \(deletedCount) old messages from session")
+                print("⏱️ [ConversationView] Pruned \(deletedCount) messages in \(String(format: "%.0f", Date().timeIntervalSince(pruneStart) * 1000))ms")
+            } else {
+                print("⏱️ [ConversationView] No pruning needed (\(String(format: "%.0f", Date().timeIntervalSince(pruneStart) * 1000))ms)")
             }
         }
 
@@ -436,13 +444,15 @@ struct ConversationView: View {
         // Skip subscribe for new sessions (messageCount == 0) to avoid "session not found" error
         // The session will be created when the first prompt is sent
         if session.messageCount > 0 {
+            print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - subscribing to session (messageCount: \(session.messageCount))")
             client.subscribe(sessionId: session.id.uuidString.lowercased())
         } else {
-            print("📝 [ConversationView] Skipping subscribe for new session (no messages yet)")
+            print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - skipping subscribe (new session)")
         }
 
         // Stop loading indicator after a delay (messages will populate via CoreData sync)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - loading indicator hidden (1s delay complete)")
             isLoading = false
         }
     }
