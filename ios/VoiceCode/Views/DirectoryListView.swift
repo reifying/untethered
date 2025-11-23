@@ -347,18 +347,16 @@ struct DirectoryListView: View {
                 queueUpdateWorkItem?.cancel()
             }
         }
-        .onChange(of: client.isConnected) { _, isConnected in
-            // Refetch sessions when connection state changes
-            // This handles server URL changes which clear and reload sessions
-            if isConnected {
-                logger.info("🔄 Connection state changed to connected, refetching sessions")
-                do {
-                    sessions = try CDBackendSession.fetchActiveSessions(context: viewContext)
-                    updateCachedDirectories()
-                    updateCachedQueuedSessions()
-                } catch {
-                    logger.error("❌ Failed to refetch sessions after connection: \(error)")
-                }
+        .onReceive(NotificationCenter.default.publisher(for: .sessionListDidUpdate)) { _ in
+            // Refetch sessions when backend sends updated session list
+            // This handles initial connection, server URL changes, and refresh requests
+            logger.info("🔄 Session list updated notification received, refetching sessions")
+            do {
+                sessions = try CDBackendSession.fetchActiveSessions(context: viewContext)
+                updateCachedDirectories()
+                updateCachedQueuedSessions()
+            } catch {
+                logger.error("❌ Failed to refetch sessions after update: \(error)")
             }
         }
     }
