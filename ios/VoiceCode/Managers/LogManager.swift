@@ -80,7 +80,11 @@ class LogManager {
         }
     }
 
+    /// App subsystem for filtering OSLog entries
+    private static let appSubsystem = "com.travisbrown.VoiceCode"
+
     /// Get system logs from OSLog (last 15KB, complete lines)
+    /// Filters to only include logs from the app's subsystem to exclude framework noise
     func getSystemLogs(maxBytes: Int = 15_000) async throws -> String {
         let store = try OSLogStore(scope: .currentProcessIdentifier)
         let position = store.position(timeIntervalSinceEnd: -3600) // Last hour
@@ -89,7 +93,9 @@ class LogManager {
         let entries = try store.getEntries(at: position)
 
         for entry in entries {
-            if let logEntry = entry as? OSLogEntryLog {
+            // Filter to only include app-specific logs (excludes CoreData, SwiftUI, etc.)
+            if let logEntry = entry as? OSLogEntryLog,
+               logEntry.subsystem == Self.appSubsystem {
                 let timestamp = DateFormatter.logTimestamp.string(from: logEntry.date)
                 let logLine = "[\(timestamp)] [\(logEntry.category)] \(logEntry.composedMessage)"
                 logLines.append(logLine)

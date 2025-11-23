@@ -47,9 +47,11 @@ struct ConversationView: View {
         self.settings = settings
 
         // Setup fetch request for this session's messages
+        // Note: animation: nil prevents SwiftUI from triggering animated transitions
+        // for every CoreData change, reducing render cycles significantly
         _messages = FetchRequest(
             fetchRequest: CDMessage.fetchMessages(sessionId: session.id),
-            animation: .default
+            animation: nil
         )
     }
 
@@ -67,6 +69,7 @@ struct ConversationView: View {
     }
 
     var body: some View {
+        let _ = RenderTracker.count(Self.self)
         VStack(spacing: 0) {
             // Messages area
             ZStack(alignment: .bottomTrailing) {
@@ -104,13 +107,11 @@ struct ConversationView: View {
                             .padding(.top, 100)
                         } else {
                             LazyVStack(spacing: 12) {
-                                // Messages fetched descending (newest first) but displayed ascending (oldest first)
-                                // Use reversed() view instead of Array() to avoid detached snapshots with stale references
-                                ForEach(messages.reversed(), id: \.id) { message in
+                                // Messages fetched ascending (oldest first) for chronological display
+                                ForEach(messages, id: \.id) { message in
                                     CDMessageView(
                                         message: message,
                                         voiceOutput: voiceOutput,
-                                        settings: settings,
                                         onInferName: { messageText in
                                             client.requestInferredName(sessionId: session.id.uuidString.lowercased(), messageText: messageText)
                                         }
@@ -139,9 +140,9 @@ struct ConversationView: View {
                                 // Re-check autoScrollEnabled after delay in case user disabled it
                                 guard self.autoScrollEnabled else { return }
                                 print("📨 [AutoScroll] Scrolling to bottom anchor (debounced)")
-                                withAnimation(.linear(duration: 0.2)) {
-                                    proxy.scrollTo("bottom", anchor: .bottom)
-                                }
+                                // Note: Removed withAnimation wrapper to prevent multiple layout passes
+                                // that can cause 9s hangs in _PaddingLayout.placement
+                                proxy.scrollTo("bottom", anchor: .bottom)
                             }
                         } else {
                             print("📨 [AutoScroll] Skipping auto-scroll (disabled)")
@@ -419,6 +420,17 @@ struct ConversationView: View {
         session.unreadCount = 0
         try? viewContext.save()
 
+        // Prune old messages on background context before loading
+        // iOS only needs recent messages; backend retains full history
+        let sessionId = session.id
+        PersistenceController.shared.performBackgroundTask { backgroundContext in
+            let deletedCount = CDMessage.pruneOldMessages(sessionId: sessionId, in: backgroundContext)
+            if deletedCount > 0 {
+                try? backgroundContext.save()
+                print("🧹 [ConversationView] Pruned \(deletedCount) old messages from session")
+            }
+        }
+
         // Subscribe to the session to load full history
         // Skip subscribe for new sessions (messageCount == 0) to avoid "session not found" error
         // The session will be created when the first prompt is sent
@@ -686,9 +698,8 @@ struct ConversationView: View {
 
             if let proxy = scrollProxy {
                 print("🔘 [AutoScroll] Scrolling to bottom anchor")
-                withAnimation(.spring()) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
+                // Note: Removed withAnimation wrapper to prevent multiple layout passes
+                proxy.scrollTo("bottom", anchor: .bottom)
             } else {
                 print("🔘 [AutoScroll] No scroll proxy available")
             }
@@ -798,14 +809,14 @@ extension Date {
 // MARK: - CoreData Message View
 
 struct CDMessageView: View {
-    @ObservedObject var message: CDMessage
-    @ObservedObject var voiceOutput: VoiceOutputManager
-    @ObservedObject var settings: AppSettings
+    let message: CDMessage
+    let voiceOutput: VoiceOutputManager
     let onInferName: (String) -> Void
 
     @State private var showFullMessage = false
 
     var body: some View {
+        let _ = RenderTracker.count(Self.self)
         HStack(alignment: .top, spacing: 12) {
             // Role indicator
             Image(systemName: message.role == "user" ? "person.circle.fill" : "cpu")

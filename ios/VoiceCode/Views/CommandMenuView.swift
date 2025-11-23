@@ -29,6 +29,7 @@ struct CommandMenuView: View {
     }
 
     var body: some View {
+        let _ = RenderTracker.count(Self.self)
         NavigationView {
             ZStack {
                 // NavigationLink hidden in background for programmatic navigation
@@ -132,13 +133,12 @@ struct CommandMenuView: View {
     private func executeCommand(commandId: String) {
         print("📤 [CommandMenuView] Executing command: \(commandId)")
         sorter.markCommandUsed(commandId: commandId)
-        client.executeCommand(commandId: commandId, workingDirectory: workingDirectory)
 
-        // Wait briefly for backend to send command_started message with session ID
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            // Find the most recent command (the one we just started)
-            if let mostRecentCommand = client.runningCommands.values.max(by: { $0.startTime < $1.startTime }) {
-                activeCommandSessionId = mostRecentCommand.id
+        // Execute command asynchronously and navigate to the correct session
+        Task {
+            let commandSessionId = await client.executeCommand(commandId: commandId, workingDirectory: workingDirectory)
+            await MainActor.run {
+                activeCommandSessionId = commandSessionId
                 navigateToExecution = true
             }
         }

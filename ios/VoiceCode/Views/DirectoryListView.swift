@@ -97,6 +97,7 @@ struct DirectoryListView: View {
     }
 
     var body: some View {
+        let _ = RenderTracker.count(Self.self)
         Group {
             if sessions.isEmpty {
                 // Empty state: no sessions at all
@@ -515,6 +516,7 @@ struct DirectoryRowContent: View {
     let directory: DirectoryListView.DirectoryInfo
 
     var body: some View {
+        let _ = RenderTracker.count(Self.self)
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 // Line 1: Folder icon + directory name + unread badge
@@ -572,6 +574,7 @@ struct RecentSessionRowContent: View {
     let session: RecentSession
 
     var body: some View {
+        let _ = RenderTracker.count(Self.self)
         VStack(alignment: .leading, spacing: 4) {
             // Line 1: Session name (from backend: Claude summary or dir-timestamp)
             Text(session.displayName)

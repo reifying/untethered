@@ -207,12 +207,9 @@ class CopyFeaturesTests: XCTestCase {
         
         try context.save()
         
-        // Fetch messages in order
+        // Fetch messages in order (ascending - oldest first for chronological display)
         let fetchRequest = CDMessage.fetchMessages(sessionId: testSession.id)
-        let fetchedMessages = try context.fetch(fetchRequest)
-
-        // Reverse to get chronological order (fetchMessages returns descending)
-        let messages = Array(fetchedMessages.reversed())
+        let messages = try context.fetch(fetchRequest)
 
         // Verify messages are in chronological order
         XCTAssertEqual(messages.count, 5)

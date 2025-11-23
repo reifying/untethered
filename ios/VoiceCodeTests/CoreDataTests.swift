@@ -252,9 +252,9 @@ final class CoreDataTests: XCTestCase {
         let messages = try context.fetch(fetchRequest)
 
         XCTAssertEqual(messages.count, 3)
-        // Messages are sorted descending (newest first) by fetchMessages
-        XCTAssertEqual(messages[0].text, "Message 2")
-        XCTAssertEqual(messages[2].text, "Message 0")
+        // Messages are sorted ascending (oldest first) for chronological display
+        XCTAssertEqual(messages[0].text, "Message 0")
+        XCTAssertEqual(messages[2].text, "Message 2")
     }
     
     func testCDMessageFetchByTextAndRole() throws {
@@ -390,13 +390,13 @@ final class CoreDataTests: XCTestCase {
 
     // MARK: - AttributeGraph Crash Prevention Tests
 
-    func testMessageFetchLimitPreventsStaleReferences() throws {
-        // Test that the 25-message fetch limit doesn't cause stale references
-        // when messages are removed from FetchedResults during view updates
+    func testMessageFetchReturnsAllMessages() throws {
+        // Test that fetchMessages returns all messages for a session
+        // (no fetchLimit - hangs prevented by animation:nil and removed withAnimation wrappers)
 
         let sessionId = UUID()
 
-        // Create 35 messages (exceeds 25-message limit)
+        // Create 35 messages
         for i in 0..<35 {
             let message = CDMessage(context: context)
             message.id = UUID()
@@ -409,25 +409,25 @@ final class CoreDataTests: XCTestCase {
 
         try context.save()
 
-        // Fetch with 25-message limit
+        // Fetch all messages
         let fetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
         let messages = try context.fetch(fetchRequest)
 
-        // Should only return 25 most recent
-        XCTAssertEqual(messages.count, 25)
+        // Should return all 35 messages
+        XCTAssertEqual(messages.count, 35)
 
         // Verify fetch request properties prevent faulting
         XCTAssertTrue(fetchRequest.includesPropertyValues)
         XCTAssertFalse(fetchRequest.returnsObjectsAsFaults)
 
-        // Verify oldest messages are excluded (0-9 should not be in result)
+        // Verify all messages are included (oldest to newest)
         let messageTexts = messages.map { $0.text }
-        XCTAssertFalse(messageTexts.contains("Message 0"))
-        XCTAssertFalse(messageTexts.contains("Message 9"))
-
-        // Verify newest messages are included (25-34)
-        XCTAssertTrue(messageTexts.contains("Message 25"))
+        XCTAssertTrue(messageTexts.contains("Message 0"))
         XCTAssertTrue(messageTexts.contains("Message 34"))
+
+        // Verify ascending order (oldest first)
+        XCTAssertEqual(messages.first?.text, "Message 0")
+        XCTAssertEqual(messages.last?.text, "Message 34")
     }
 
     func testMessageObjectsNotFaultedAfterFetch() throws {
@@ -462,9 +462,9 @@ final class CoreDataTests: XCTestCase {
         }
     }
 
-    func testMessageFetchDescendingOrderWithReversal() throws {
-        // Test that messages are fetched descending (newest first)
-        // and can be safely reversed for chronological display
+    func testMessageFetchAscendingOrder() throws {
+        // Test that messages are fetched ascending (oldest first)
+        // for direct chronological display in chat UI
 
         let sessionId = UUID()
 
@@ -488,21 +488,15 @@ final class CoreDataTests: XCTestCase {
 
         try context.save()
 
-        // Fetch messages (descending order)
+        // Fetch messages (ascending order - oldest first)
         let fetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
         let messages = try context.fetch(fetchRequest)
 
         XCTAssertEqual(messages.count, 4)
 
-        // Verify descending order (newest first)
-        XCTAssertEqual(messages[0].text, "Message 3") // Now
-        XCTAssertEqual(messages[3].text, "Message 0") // 5 min ago
-
-        // Verify reversed() creates chronological order (oldest first)
-        let reversed = messages.reversed()
-        let reversedArray = Array(reversed)
-        XCTAssertEqual(reversedArray[0].text, "Message 0")
-        XCTAssertEqual(reversedArray[3].text, "Message 3")
+        // Verify ascending order (oldest first) - ready for chronological display
+        XCTAssertEqual(messages[0].text, "Message 0") // 5 min ago
+        XCTAssertEqual(messages[3].text, "Message 3") // Now
     }
 
     func testCoreDataMergePolicySet() {
@@ -568,5 +562,142 @@ final class CoreDataTests: XCTestCase {
         }
 
         wait(for: [expectation], timeout: 2.0)
+    }
+
+    // MARK: - Message Pruning Tests
+
+    func testPruneOldMessagesDeletesOldest() throws {
+        // Create session
+        let session = CDBackendSession(context: context)
+        session.id = UUID()
+        session.backendName = "prune-test"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+
+        // Create 10 messages with timestamps
+        for i in 0..<10 {
+            let message = CDMessage(context: context)
+            message.id = UUID()
+            message.sessionId = session.id
+            message.role = i % 2 == 0 ? "user" : "assistant"
+            message.text = "Message \(i)"
+            message.timestamp = Date().addingTimeInterval(Double(i) * 60) // 1 min apart
+            message.messageStatus = .confirmed
+            message.session = session
+        }
+
+        try context.save()
+
+        // Verify 10 messages exist
+        let beforeFetch = CDMessage.fetchMessages(sessionId: session.id)
+        let beforeMessages = try context.fetch(beforeFetch)
+        XCTAssertEqual(beforeMessages.count, 10)
+
+        // Prune to keep only newest 5
+        let deleted = CDMessage.pruneOldMessages(sessionId: session.id, keepCount: 5, in: context)
+        try context.save()
+
+        XCTAssertEqual(deleted, 5)
+
+        // Verify only 5 remain
+        let afterMessages = try context.fetch(beforeFetch)
+        XCTAssertEqual(afterMessages.count, 5)
+
+        // Verify the oldest were deleted (messages 0-4) and newest kept (5-9)
+        let texts = afterMessages.map { $0.text }
+        XCTAssertFalse(texts.contains("Message 0"))
+        XCTAssertFalse(texts.contains("Message 4"))
+        XCTAssertTrue(texts.contains("Message 5"))
+        XCTAssertTrue(texts.contains("Message 9"))
+    }
+
+    func testPruneOldMessagesNoPruningNeeded() throws {
+        // Create session with few messages
+        let session = CDBackendSession(context: context)
+        session.id = UUID()
+        session.backendName = "no-prune-test"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+
+        // Create only 3 messages
+        for i in 0..<3 {
+            let message = CDMessage(context: context)
+            message.id = UUID()
+            message.sessionId = session.id
+            message.role = "user"
+            message.text = "Message \(i)"
+            message.timestamp = Date().addingTimeInterval(Double(i) * 60)
+            message.messageStatus = .confirmed
+            message.session = session
+        }
+
+        try context.save()
+
+        // Try to prune with keepCount of 5 (more than we have)
+        let deleted = CDMessage.pruneOldMessages(sessionId: session.id, keepCount: 5, in: context)
+
+        XCTAssertEqual(deleted, 0)
+
+        // Verify all 3 still exist
+        let fetchRequest = CDMessage.fetchMessages(sessionId: session.id)
+        let messages = try context.fetch(fetchRequest)
+        XCTAssertEqual(messages.count, 3)
+    }
+
+    func testNeedsPruningThreshold() throws {
+        // Create session
+        let session = CDBackendSession(context: context)
+        session.id = UUID()
+        session.backendName = "threshold-test"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+
+        try context.save()
+
+        // With 0 messages, should not need pruning
+        XCTAssertFalse(CDMessage.needsPruning(sessionId: session.id, in: context))
+
+        // Add messages up to maxMessagesPerSession (50) - should not need pruning
+        for i in 0..<CDMessage.maxMessagesPerSession {
+            let message = CDMessage(context: context)
+            message.id = UUID()
+            message.sessionId = session.id
+            message.role = "user"
+            message.text = "Message \(i)"
+            message.timestamp = Date().addingTimeInterval(Double(i))
+            message.messageStatus = .confirmed
+            message.session = session
+        }
+
+        try context.save()
+        XCTAssertFalse(CDMessage.needsPruning(sessionId: session.id, in: context))
+
+        // Add pruneThreshold more messages (10) - now should need pruning
+        for i in 0..<CDMessage.pruneThreshold {
+            let message = CDMessage(context: context)
+            message.id = UUID()
+            message.sessionId = session.id
+            message.role = "user"
+            message.text = "Extra \(i)"
+            message.timestamp = Date().addingTimeInterval(Double(100 + i))
+            message.messageStatus = .confirmed
+            message.session = session
+        }
+
+        try context.save()
+        XCTAssertFalse(CDMessage.needsPruning(sessionId: session.id, in: context))
+
+        // Add one more to exceed threshold
+        let extraMessage = CDMessage(context: context)
+        extraMessage.id = UUID()
+        extraMessage.sessionId = session.id
+        extraMessage.role = "user"
+        extraMessage.text = "Trigger"
+        extraMessage.timestamp = Date().addingTimeInterval(200)
+        extraMessage.messageStatus = .confirmed
+        extraMessage.session = session
+
+        try context.save()
+        XCTAssertTrue(CDMessage.needsPruning(sessionId: session.id, in: context))
     }
 }

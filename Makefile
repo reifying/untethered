@@ -311,7 +311,7 @@ publish-testflight:
 	$(WRAP) ./scripts/publish-testflight.sh publish
 
 # Deploy new build: smart bump -> archive -> export -> upload
-deploy-testflight:
+deploy-testflight: generate-project
 	@echo "Deploying new build to TestFlight..."
 	@$(MAKE) bump-build
 	@$(WRAP) ./scripts/publish-testflight.sh publish
