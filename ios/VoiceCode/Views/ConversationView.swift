@@ -129,6 +129,12 @@ struct ConversationView: View {
                         }
                     }
                     .onChange(of: messages.count) { oldCount, newCount in
+                        // Hide loading indicator when messages arrive
+                        if isLoading && newCount > 0 {
+                            print("⏱️ [ConversationView] Messages arrived (\(newCount)), hiding loading indicator")
+                            isLoading = false
+                        }
+
                         // Auto-scroll to new messages if enabled
                         guard newCount > oldCount else { return }
 
@@ -412,10 +418,24 @@ struct ConversationView: View {
         guard !hasLoadedMessages else { return }
 
         let loadStart = Date()
-        print("⏱️ [ConversationView] loadSessionIfNeeded START - session: \(session.id.uuidString.lowercased().prefix(8))...")
+        print("⏱️ [ConversationView] loadSessionIfNeeded START - session: \(session.id.uuidString.lowercased().prefix(8))... (existing messages: \(messages.count))")
 
-        isLoading = true
         hasLoadedMessages = true
+
+        // If messages already exist in CoreData, skip loading indicator and scroll immediately
+        if !messages.isEmpty {
+            print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - messages already cached (\(messages.count)), skipping loading indicator")
+            isLoading = false
+            // Scroll to bottom on next run loop (after view is laid out)
+            DispatchQueue.main.async {
+                if !self.hasPerformedInitialScroll {
+                    self.hasPerformedInitialScroll = true
+                    self.scrollProxy?.scrollTo("bottom", anchor: .bottom)
+                }
+            }
+        } else {
+            isLoading = true
+        }
 
         // Mark session as active for smart speaking
         ActiveSessionManager.shared.setActiveSession(session.id)
@@ -450,10 +470,15 @@ struct ConversationView: View {
             print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - skipping subscribe (new session)")
         }
 
-        // Stop loading indicator after a delay (messages will populate via CoreData sync)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - loading indicator hidden (1s delay complete)")
-            isLoading = false
+        // Fallback timeout to hide loading indicator if messages don't arrive
+        // Only needed when isLoading was set to true (no cached messages)
+        if isLoading {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                if self.isLoading {
+                    print("⏱️ [ConversationView] +\(String(format: "%.0f", Date().timeIntervalSince(loadStart) * 1000))ms - loading indicator hidden (5s timeout fallback)")
+                    self.isLoading = false
+                }
+            }
         }
     }
     
