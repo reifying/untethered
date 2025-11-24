@@ -42,6 +42,7 @@ struct ConversationView: View {
     @StateObject var voiceInput: VoiceInputManager
     @ObservedObject var settings: AppSettings
     @Environment(\.managedObjectContext) private var viewContext
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var draftManager: DraftManager
 
     @State private var isLoading = false
@@ -137,7 +138,9 @@ struct ConversationView: View {
                             }
                             .frame(maxWidth: .infinity)
                             .padding(.top, 100)
-                        } else {
+                        } else if scenePhase == .active {
+                            // Only render message list when app is active to prevent
+                            // background render loops that cause watchdog kills
                             LazyVStack(spacing: 12) {
                                 // Messages fetched ascending (oldest first) for chronological display
                                 ForEach(messages, id: \.id) { message in
@@ -157,6 +160,9 @@ struct ConversationView: View {
                                     .id("bottom")
                             }
                             .padding()
+                        } else {
+                            // Show placeholder when backgrounded to prevent layout loops
+                            Color.clear
                         }
                     }
                     .onChange(of: messages.count) { oldCount, newCount in
