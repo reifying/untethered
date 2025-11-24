@@ -4,6 +4,9 @@
 import Foundation
 import Combine
 import UIKit
+import os.log
+
+private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "VoiceCodeClient")
 
 class VoiceCodeClient: ObservableObject {
     @Published var isConnected = false
@@ -124,6 +127,10 @@ class VoiceCodeClient: ObservableObject {
         let updates = pendingUpdates
         pendingUpdates.removeAll()
 
+        // Log which properties are being updated
+        let keys = updates.keys.sorted().joined(separator: ", ")
+        logger.debug("🔄 VoiceCodeClient updating: \(keys)")
+
         // Apply all updates atomically on main queue
         for (key, value) in updates {
             switch key {
@@ -206,6 +213,7 @@ class VoiceCodeClient: ObservableObject {
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            logger.debug("🔄 VoiceCodeClient updating: isConnected=true")
             self.isConnected = true
             self.currentError = nil
         }
@@ -220,6 +228,7 @@ class VoiceCodeClient: ObservableObject {
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            logger.debug("🔄 VoiceCodeClient updating: isConnected=false")
             self.isConnected = false
             // Clear all locked sessions on disconnect to prevent stuck locks
             self.scheduleUpdate(key: "lockedSessions", value: Set<String>())
@@ -306,6 +315,7 @@ class VoiceCodeClient: ObservableObject {
             case .failure(let error):
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
+                    logger.debug("🔄 VoiceCodeClient updating: isConnected=false (failure)")
                     self.isConnected = false
                     self.scheduleUpdate(key: "currentError", value: error.localizedDescription as String?)
                     // Clear all locked sessions on connection failure

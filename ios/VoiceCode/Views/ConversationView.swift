@@ -7,6 +7,34 @@ import os.log
 
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "ConversationView")
 
+// Render loop detector - tracks renders per second
+private class RenderLoopDetector {
+    static let shared = RenderLoopDetector()
+    private var renderCount = 0
+    private var windowStart = Date()
+    private let windowSize: TimeInterval = 1.0  // 1 second window
+    private let threshold = 50  // More than 50 renders/sec is suspicious
+
+    func recordRender() {
+        let now = Date()
+        if now.timeIntervalSince(windowStart) > windowSize {
+            // Check if we exceeded threshold in the last window
+            if renderCount > threshold {
+                logger.error("🚨 RENDER LOOP DETECTED: \(self.renderCount) renders in 1 second!")
+            }
+            // Reset window
+            renderCount = 1
+            windowStart = now
+        } else {
+            renderCount += 1
+            // Log warning at multiples of threshold while in same window
+            if renderCount == threshold || renderCount == threshold * 2 {
+                logger.warning("⚠️ High render rate: \(self.renderCount) renders in <1s")
+            }
+        }
+    }
+}
+
 struct ConversationView: View {
     @ObservedObject var session: CDBackendSession
     @ObservedObject var client: VoiceCodeClient
@@ -73,6 +101,7 @@ struct ConversationView: View {
 
     var body: some View {
         let _ = RenderTracker.count(Self.self)
+        let _ = RenderLoopDetector.shared.recordRender()
         VStack(spacing: 0) {
             // Messages area
             ZStack(alignment: .bottomTrailing) {
@@ -112,14 +141,13 @@ struct ConversationView: View {
                             LazyVStack(spacing: 12) {
                                 // Messages fetched ascending (oldest first) for chronological display
                                 ForEach(messages, id: \.id) { message in
-                                    CDMessageView(
+                                    EquatableView(content: CDMessageView(
                                         message: message,
                                         voiceOutput: voiceOutput,
-                                        session: session,
-                                        onInferName: { messageText in
-                                            client.requestInferredName(sessionId: session.id.uuidString.lowercased(), messageText: messageText)
+                                        onInferName: { [weak client] messageText in
+                                            client?.requestInferredName(sessionId: session.id.uuidString.lowercased(), messageText: messageText)
                                         }
-                                    )
+                                    ))
                                     .id(message.id)
                                 }
 
@@ -416,7 +444,7 @@ struct ConversationView: View {
             }
         }
     }
-    
+
     private func loadSessionIfNeeded() {
         guard !hasLoadedMessages else { return }
 
@@ -853,16 +881,23 @@ extension Date {
 
 // MARK: - CoreData Message View
 
-struct CDMessageView: View {
+struct CDMessageView: View, Equatable {
     let message: CDMessage
     let voiceOutput: VoiceOutputManager
-    @ObservedObject var session: CDBackendSession
     let onInferName: (String) -> Void
 
     @State private var showFullMessage = false
 
+    // Custom equality - only re-render if message object identity changes
+    // Uses ObjectIdentifier to avoid accessing CoreData properties which can crash
+    // if the managed object is deleted or faulted on a different thread
+    static func == (lhs: CDMessageView, rhs: CDMessageView) -> Bool {
+        ObjectIdentifier(lhs.message) == ObjectIdentifier(rhs.message)
+    }
+
     var body: some View {
         let _ = RenderTracker.count(Self.self)
+        let _ = RenderLoopDetector.shared.recordRender()
         HStack(alignment: .top, spacing: 12) {
             // Role indicator
             Image(systemName: message.role == "user" ? "person.circle.fill" : "cpu")
@@ -925,7 +960,7 @@ struct CDMessageView: View {
         .background(Color(message.role == "user" ? .systemBlue : .systemGreen).opacity(0.1))
         .cornerRadius(12)
         .sheet(isPresented: $showFullMessage) {
-            MessageDetailView(message: message, voiceOutput: voiceOutput, session: session, onInferName: onInferName)
+            MessageDetailView(message: message, voiceOutput: voiceOutput, onInferName: onInferName)
         }
     }
 }
@@ -935,7 +970,6 @@ struct CDMessageView: View {
 struct MessageDetailView: View {
     @ObservedObject var message: CDMessage
     @ObservedObject var voiceOutput: VoiceOutputManager
-    @ObservedObject var session: CDBackendSession
     let onInferName: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var showCopiedConfirmation = false
@@ -985,7 +1019,7 @@ struct MessageDetailView: View {
 
                     Button(action: {
                         let processedText = TextProcessor.removeCodeBlocks(from: message.text)
-                        voiceOutput.speak(processedText, workingDirectory: session.workingDirectory)
+                        voiceOutput.speak(processedText, sessionId: message.sessionId.uuidString.lowercased())
                     }) {
                         VStack(spacing: 4) {
                             Image(systemName: "speaker.wave.2.fill")
@@ -1144,6 +1178,7 @@ struct ConversationTextInputView: View {
     let onManualUnlock: () -> Void
 
     var body: some View {
+        let _ = RenderLoopDetector.shared.recordRender()
         HStack {
             TextField(isDisabled ? "Session locked - tap to unlock" : "Type your message...", text: $text, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
