@@ -111,104 +111,89 @@ struct ConversationView: View {
         VStack(spacing: 0) {
             // Messages area
             ZStack(alignment: .bottomTrailing) {
-                ScrollViewReader { proxy in
-                    Color.clear
-                        .frame(height: 0)
+                if isLoading {
+                    VStack(spacing: 16) {
+                        ProgressView()
+                        Text("Loading conversation...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.top, 100)
+                } else if messages.isEmpty && hasLoadedMessages {
+                    VStack(spacing: 16) {
+                        Image(systemName: "message")
+                            .font(.system(size: 64))
+                            .foregroundColor(.secondary)
+                        Text("No messages yet")
+                            .font(.title2)
+                            .foregroundColor(.secondary)
+                        Text("Start a conversation to see messages here.")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 100)
+                } else if scenePhase == .active {
+                    // Use List instead of LazyVStack for native cell reuse and 10x better performance
+                    // List uses UICollectionView (iOS 16+) with proper view recycling
+                    ScrollViewReader { proxy in
+                        List {
+                            ForEach(messages) { message in
+                                CDMessageView(
+                                    message: message,
+                                    voiceOutput: voiceOutput,
+                                    onInferName: handleInferName
+                                )
+                                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                                .listRowSeparator(.hidden)
+                            }
+                        }
+                        .listStyle(.plain)
+                        .scrollContentBackground(.hidden)
                         .onAppear {
                             scrollProxy = proxy
                         }
-                    
-                    ScrollView {
-                        if isLoading {
-                            VStack(spacing: 16) {
-                                ProgressView()
-                                Text("Loading conversation...")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                        .onChange(of: messages.count) { oldCount, newCount in
+                            // Hide loading indicator when messages arrive
+                            if isLoading && newCount > 0 {
+                                logger.info("⏱️ Messages arrived (\(newCount)), hiding loading indicator")
+                                isLoading = false
                             }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .padding(.top, 100)
-                        } else if messages.isEmpty && hasLoadedMessages {
-                            VStack(spacing: 16) {
-                                Image(systemName: "message")
-                                    .font(.system(size: 64))
-                                    .foregroundColor(.secondary)
-                                Text("No messages yet")
-                                    .font(.title2)
-                                    .foregroundColor(.secondary)
-                                Text("Start a conversation to see messages here.")
-                                    .font(.body)
-                                    .foregroundColor(.secondary)
-                                    .multilineTextAlignment(.center)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 100)
-                        } else if scenePhase == .active {
-                            // Use List instead of LazyVStack for native cell reuse and 10x better performance
-                            // List uses UICollectionView (iOS 16+) with proper view recycling
-                            List {
-                                ForEach(messages) { message in
-                                    CDMessageView(
-                                        message: message,
-                                        voiceOutput: voiceOutput,
-                                        onInferName: handleInferName
-                                    )
-                                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                                    .listRowSeparator(.hidden)
+
+                            // Auto-scroll to new messages if enabled
+                            guard newCount > oldCount else { return }
+
+                            logger.debug("📨 New messages: \(oldCount) -> \(newCount), auto-scroll: \(self.autoScrollEnabled ? "enabled" : "disabled")")
+
+                            // Debounce scroll to avoid triggering during layout calculations
+                            if autoScrollEnabled {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                    // Re-check autoScrollEnabled after delay in case user disabled it
+                                    guard self.autoScrollEnabled, let lastMessage = self.messages.last else { return }
+                                    logger.debug("📨 Scrolling to last message (debounced)")
+                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
                                 }
-
-                                // Invisible anchor for scroll target
-                                Color.clear
-                                    .frame(height: 1)
-                                    .id("bottom")
-                                    .listRowInsets(EdgeInsets())
-                                    .listRowSeparator(.hidden)
+                            } else {
+                                logger.debug("📨 Skipping auto-scroll (disabled)")
                             }
-                            .listStyle(.plain)
-                            .scrollContentBackground(.hidden)
-                        } else {
-                            // Show placeholder when backgrounded to prevent layout loops
-                            Color.clear
                         }
-                    }
-                    .onChange(of: messages.count) { oldCount, newCount in
-                        // Hide loading indicator when messages arrive
-                        if isLoading && newCount > 0 {
-                            logger.info("⏱️ Messages arrived (\(newCount)), hiding loading indicator")
-                            isLoading = false
-                        }
-
-                        // Auto-scroll to new messages if enabled
-                        guard newCount > oldCount else { return }
-
-                        logger.debug("📨 New messages: \(oldCount) -> \(newCount), auto-scroll: \(self.autoScrollEnabled ? "enabled" : "disabled")")
-
-                        // Debounce scroll to avoid triggering during layout calculations
-                        // This prevents the 9s hang in _PaddingLayout.placement
-                        if autoScrollEnabled {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                // Re-check autoScrollEnabled after delay in case user disabled it
-                                guard self.autoScrollEnabled else { return }
-                                logger.debug("📨 Scrolling to bottom anchor (debounced)")
-                                // Note: Removed withAnimation wrapper to prevent multiple layout passes
-                                // that can cause 9s hangs in _PaddingLayout.placement
-                                proxy.scrollTo("bottom", anchor: .bottom)
+                        .onChange(of: isLoading) { wasLoading, nowLoading in
+                            // When loading finishes, perform initial scroll to bottom
+                            if wasLoading && !nowLoading && !hasPerformedInitialScroll, let lastMessage = messages.last {
+                                hasPerformedInitialScroll = true
+                                // Non-animated for immediate positioning
+                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
                             }
-                        } else {
-                            logger.debug("📨 Skipping auto-scroll (disabled)")
                         }
                     }
-                    .onChange(of: isLoading) { wasLoading, nowLoading in
-                        // When loading finishes, perform initial scroll to bottom
-                        if wasLoading && !nowLoading && !hasPerformedInitialScroll {
-                            hasPerformedInitialScroll = true
-                            // Non-animated for immediate positioning
-                            proxy.scrollTo("bottom", anchor: .bottom)
-                        }
-                    }
+                } else {
+                    // Show placeholder when backgrounded to prevent layout loops
+                    Color.clear
                 }
             }
-            
+
             Divider()
             
             // Input area
