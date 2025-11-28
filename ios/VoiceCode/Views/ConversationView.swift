@@ -144,15 +144,28 @@ struct ConversationView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.top, 100)
                         } else if scenePhase == .active {
-                            // Only render message list when app is active to prevent
-                            // background render loops that cause watchdog kills.
-                            // MessageListView is wrapped in EquatableView to prevent re-renders
-                            // when parent state changes (e.g., VoiceCodeClient updates)
-                            EquatableView(content: MessageListView(
-                                messages: Array(messages),
-                                voiceOutput: voiceOutput,
-                                onInferName: handleInferName
-                            ))
+                            // Use List instead of LazyVStack for native cell reuse and 10x better performance
+                            // List uses UICollectionView (iOS 16+) with proper view recycling
+                            List {
+                                ForEach(messages) { message in
+                                    CDMessageView(
+                                        message: message,
+                                        voiceOutput: voiceOutput,
+                                        onInferName: handleInferName
+                                    )
+                                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                                    .listRowSeparator(.hidden)
+                                }
+
+                                // Invisible anchor for scroll target
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id("bottom")
+                                    .listRowInsets(EdgeInsets())
+                                    .listRowSeparator(.hidden)
+                            }
+                            .listStyle(.plain)
+                            .scrollContentBackground(.hidden)
                         } else {
                             // Show placeholder when backgrounded to prevent layout loops
                             Color.clear
@@ -878,56 +891,6 @@ extension Date {
     }
 }
 
-// MARK: - Message List Container
-
-/// Isolated view for message list to prevent re-renders from parent view changes.
-/// This view only re-renders when the message list content actually changes.
-struct MessageListView: View, Equatable {
-    let messages: [CDMessage]
-    let voiceOutput: VoiceOutputManager
-    let onInferName: (String) -> Void
-
-    // Only re-render when message list content actually changes
-    static func == (lhs: MessageListView, rhs: MessageListView) -> Bool {
-        // Compare message count first (fast path)
-        guard lhs.messages.count == rhs.messages.count else { return false }
-
-        // Compare messages by identity and status
-        for (l, r) in zip(lhs.messages, rhs.messages) {
-            // Object identity check (handles additions/removals/reordering)
-            if ObjectIdentifier(l) != ObjectIdentifier(r) {
-                return false
-            }
-            // Status check for in-place updates (e.g., sending -> confirmed)
-            // This ensures optimistic messages re-render when status changes
-            if l.messageStatus != r.messageStatus {
-                return false
-            }
-        }
-        return true
-    }
-
-    var body: some View {
-        let _ = RenderTracker.count(Self.self)
-        LazyVStack(spacing: 12) {
-            ForEach(messages, id: \.id) { message in
-                CDMessageView(
-                    message: message,
-                    voiceOutput: voiceOutput,
-                    onInferName: onInferName
-                )
-                .id(message.id)
-            }
-
-            // Invisible anchor for scroll target
-            Color.clear
-                .frame(height: 1)
-                .id("bottom")
-        }
-        .padding()
-    }
-}
-
 // MARK: - CoreData Message View
 
 struct CDMessageView: View {
@@ -1060,7 +1023,7 @@ struct MessageDetailView: View {
 
                     Button(action: {
                         let processedText = TextProcessor.removeCodeBlocks(from: message.text)
-                        voiceOutput.speak(processedText, sessionId: message.sessionId.uuidString.lowercased())
+                        voiceOutput.speak(processedText, workingDirectory: message.session?.workingDirectory)
                     }) {
                         VStack(spacing: 4) {
                             Image(systemName: "speaker.wave.2.fill")
