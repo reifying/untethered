@@ -58,6 +58,7 @@ struct ConversationView: View {
     @State private var isCompacting = false
     @State private var compactSuccessMessage: String?
     @State private var showingKillConfirmation = false
+    @State private var showingSessionInfo = false
 
     // Compaction feedback state
     @State private var wasRecentlyCompacted: Bool = false
@@ -279,6 +280,13 @@ struct ConversationView: View {
                         }
                     }
 
+                    // Session info button
+                    Button(action: {
+                        showingSessionInfo = true
+                    }) {
+                        Image(systemName: "info.circle")
+                    }
+
                     // Auto-scroll toggle button (always visible)
                     Button(action: {
                         toggleAutoScroll()
@@ -308,16 +316,6 @@ struct ConversationView: View {
                         client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
                     }) {
                         Image(systemName: "arrow.clockwise")
-                    }
-
-                    Button(action: exportSessionToPlainText) {
-                        Image(systemName: "doc.on.clipboard")
-                    }
-
-                    Button(action: {
-                        copySessionID()
-                    }) {
-                        Image(systemName: "number")
                     }
 
                     // Queue remove button
@@ -386,6 +384,10 @@ struct ConversationView: View {
                     showingRenameSheet = false
                 }
             )
+        }
+        .sheet(isPresented: $showingSessionInfo) {
+            SessionInfoView(session: session)
+                .environment(\.managedObjectContext, viewContext)
         }
         .task {
             // Defer state initialization to after view is fully mounted
