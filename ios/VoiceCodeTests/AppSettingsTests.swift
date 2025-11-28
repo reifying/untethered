@@ -477,7 +477,7 @@ final class AppSettingsTests: XCTestCase {
     func testResolveVoiceIdentifierWithNilSelection() {
         // When no voice is selected, should return nil
         settings.selectedVoiceIdentifier = nil
-        let resolved = settings.resolveVoiceIdentifier(forSessionId: "test-session")
+        let resolved = settings.resolveVoiceIdentifier(forWorkingDirectory: "/Users/test/project")
         XCTAssertNil(resolved)
     }
 
@@ -485,29 +485,29 @@ final class AppSettingsTests: XCTestCase {
         // When a specific voice is selected, should return that voice
         let testVoiceId = "com.apple.voice.premium.en-US.Samantha"
         settings.selectedVoiceIdentifier = testVoiceId
-        let resolved = settings.resolveVoiceIdentifier(forSessionId: "test-session")
+        let resolved = settings.resolveVoiceIdentifier(forWorkingDirectory: "/Users/test/project")
         XCTAssertEqual(resolved, testVoiceId)
     }
 
-    func testResolveVoiceIdentifierWithAllPremiumNoSession() {
-        // When "All Premium Voices" is selected but no session ID provided
+    func testResolveVoiceIdentifierWithAllPremiumNoWorkingDirectory() {
+        // When "All Premium Voices" is selected but no working directory provided
         settings.selectedVoiceIdentifier = AppSettings.allPremiumVoicesIdentifier
 
         let premiumVoices = AppSettings.premiumVoices
         guard !premiumVoices.isEmpty else {
             // No premium voices on device, should fall back to first available
-            let resolved = settings.resolveVoiceIdentifier(forSessionId: nil)
+            let resolved = settings.resolveVoiceIdentifier(forWorkingDirectory: nil)
             XCTAssertEqual(resolved, AppSettings.availableVoices.first?.identifier)
             return
         }
 
-        // With no session ID, should return first premium voice
-        let resolved = settings.resolveVoiceIdentifier(forSessionId: nil)
+        // With no working directory, should return first premium voice
+        let resolved = settings.resolveVoiceIdentifier(forWorkingDirectory: nil)
         XCTAssertEqual(resolved, premiumVoices.first?.identifier)
     }
 
     func testResolveVoiceIdentifierDeterministic() {
-        // Same session ID should always resolve to same voice
+        // Same working directory should always resolve to same voice
         settings.selectedVoiceIdentifier = AppSettings.allPremiumVoicesIdentifier
 
         let premiumVoices = AppSettings.premiumVoices
@@ -516,17 +516,17 @@ final class AppSettingsTests: XCTestCase {
             return
         }
 
-        let sessionId = "test-session-12345"
-        let resolved1 = settings.resolveVoiceIdentifier(forSessionId: sessionId)
-        let resolved2 = settings.resolveVoiceIdentifier(forSessionId: sessionId)
-        let resolved3 = settings.resolveVoiceIdentifier(forSessionId: sessionId)
+        let workingDirectory = "/Users/test/voice-code"
+        let resolved1 = settings.resolveVoiceIdentifier(forWorkingDirectory: workingDirectory)
+        let resolved2 = settings.resolveVoiceIdentifier(forWorkingDirectory: workingDirectory)
+        let resolved3 = settings.resolveVoiceIdentifier(forWorkingDirectory: workingDirectory)
 
         XCTAssertEqual(resolved1, resolved2)
         XCTAssertEqual(resolved2, resolved3)
     }
 
     func testResolveVoiceIdentifierDistribution() {
-        // Different session IDs should (statistically) resolve to different voices
+        // Different working directories should (statistically) resolve to different voices
         settings.selectedVoiceIdentifier = AppSettings.allPremiumVoicesIdentifier
 
         let premiumVoices = AppSettings.premiumVoices
@@ -535,16 +535,16 @@ final class AppSettingsTests: XCTestCase {
             return
         }
 
-        // Generate many session IDs and check distribution
+        // Generate many working directories and check distribution
         var voiceCounts: [String: Int] = [:]
-        for _ in 0..<100 {
-            let sessionId = UUID().uuidString
-            if let voiceId = settings.resolveVoiceIdentifier(forSessionId: sessionId) {
+        for i in 0..<100 {
+            let workingDirectory = "/Users/test/project-\(i)"
+            if let voiceId = settings.resolveVoiceIdentifier(forWorkingDirectory: workingDirectory) {
                 voiceCounts[voiceId, default: 0] += 1
             }
         }
 
-        // With 100 random sessions and multiple voices, we should see variation
+        // With 100 different projects and multiple voices, we should see variation
         // (At least 2 different voices should be selected)
         XCTAssertGreaterThan(voiceCounts.count, 1, "Voice rotation should use multiple voices")
     }
@@ -557,13 +557,76 @@ final class AppSettingsTests: XCTestCase {
 
         let premiumVoices = AppSettings.premiumVoices
         if premiumVoices.count == 1 {
-            // With only one premium voice, all sessions should get that voice
-            let resolved1 = settings.resolveVoiceIdentifier(forSessionId: "session-1")
-            let resolved2 = settings.resolveVoiceIdentifier(forSessionId: "session-2")
+            // With only one premium voice, all projects should get that voice
+            let resolved1 = settings.resolveVoiceIdentifier(forWorkingDirectory: "/Users/test/project-1")
+            let resolved2 = settings.resolveVoiceIdentifier(forWorkingDirectory: "/Users/test/project-2")
             XCTAssertEqual(resolved1, resolved2)
             XCTAssertEqual(resolved1, premiumVoices.first?.identifier)
         }
         // If 0 or 2+ voices, other tests cover that
+    }
+
+    // MARK: - Stable Hash Tests
+
+    func testStableHashConsistency() {
+        // Same string should always produce same hash across multiple calls
+        settings.selectedVoiceIdentifier = AppSettings.allPremiumVoicesIdentifier
+
+        let premiumVoices = AppSettings.premiumVoices
+        guard premiumVoices.count > 1 else {
+            return
+        }
+
+        let path = "/Users/test/my-project"
+        let voice1 = settings.resolveVoiceIdentifier(forWorkingDirectory: path)
+        let voice2 = settings.resolveVoiceIdentifier(forWorkingDirectory: path)
+        let voice3 = settings.resolveVoiceIdentifier(forWorkingDirectory: path)
+
+        XCTAssertEqual(voice1, voice2, "Same path should produce same voice")
+        XCTAssertEqual(voice2, voice3, "Same path should produce same voice")
+    }
+
+    func testStableHashDifferentProjects() {
+        // Different project paths should (likely) produce different voices
+        settings.selectedVoiceIdentifier = AppSettings.allPremiumVoicesIdentifier
+
+        let premiumVoices = AppSettings.premiumVoices
+        guard premiumVoices.count > 1 else {
+            return
+        }
+
+        let project1 = "/Users/test/voice-code"
+        let project2 = "/Users/test/other-project"
+
+        let voice1 = settings.resolveVoiceIdentifier(forWorkingDirectory: project1)
+        let voice2 = settings.resolveVoiceIdentifier(forWorkingDirectory: project2)
+
+        // With multiple voices available, there's a good chance these differ
+        // But we can't assert they're different since hash collisions are possible
+        XCTAssertNotNil(voice1)
+        XCTAssertNotNil(voice2)
+    }
+
+    func testStableHashSameProjectDifferentWorktrees() {
+        // Same project in different worktrees should use different voices
+        // (since we hash the full path, not the project root)
+        settings.selectedVoiceIdentifier = AppSettings.allPremiumVoicesIdentifier
+
+        let premiumVoices = AppSettings.premiumVoices
+        guard premiumVoices.count > 1 else {
+            return
+        }
+
+        let mainPath = "/Users/test/voice-code"
+        let worktreePath = "/Users/test/voice-code-feature-branch"
+
+        let voice1 = settings.resolveVoiceIdentifier(forWorkingDirectory: mainPath)
+        let voice2 = settings.resolveVoiceIdentifier(forWorkingDirectory: worktreePath)
+
+        // Different paths = consistent but independent voices
+        XCTAssertNotNil(voice1)
+        XCTAssertNotNil(voice2)
+        // We don't assert they're different since hash collisions can occur
     }
 
     // MARK: - Server Configuration Tests

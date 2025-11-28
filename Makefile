@@ -153,7 +153,7 @@ deploy-device:
 	@echo "Make sure your iPhone is connected via USB and unlocked"
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild build -scheme $(SCHEME) -destination 'generic/platform=iOS' -allowProvisioningUpdates -derivedDataPath build CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM=REDACTED_TEAM_ID"
 	@echo "Installing to device..."
-	cd $(IOS_DIR) && xcrun devicectl device install app --device $$(xcrun devicectl list devices | grep -i "iphone" | grep "connected" | grep -o '[0-9A-F]\{8\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{12\}' | head -1) build/Build/Products/Debug-iphoneos/VoiceCode.app
+	cd $(IOS_DIR) && xcrun devicectl device install app --device $$(xcrun devicectl list devices | grep -i "iphone" | grep -E "(connected|available)" | grep -o '[0-9A-F]\{8\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{12\}' | head -1) build/Build/Products/Debug-iphoneos/VoiceCode.app
 	@echo "✅ Deployed to iPhone! Launch the app manually."
 
 # Backend targets

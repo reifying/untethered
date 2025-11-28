@@ -142,11 +142,22 @@ class AppSettings: ObservableObject {
             }
     }
 
+    /// Compute a stable hash for a string that remains consistent across app launches
+    /// - Parameter string: The string to hash
+    /// - Returns: A non-negative integer hash value
+    private func stableHash(_ string: String) -> Int {
+        var hash = 0
+        for char in string.unicodeScalars {
+            hash = hash &* 31 &+ Int(char.value)
+        }
+        return abs(hash)
+    }
+
     /// Resolve the actual voice identifier to use for speech
     /// - Parameters:
-    ///   - sessionId: Optional session ID for deterministic voice rotation
+    ///   - workingDirectory: Optional working directory for deterministic voice rotation
     /// - Returns: Voice identifier to use, or nil for system default
-    func resolveVoiceIdentifier(forSessionId sessionId: String? = nil) -> String? {
+    func resolveVoiceIdentifier(forWorkingDirectory workingDirectory: String? = nil) -> String? {
         guard let selected = selectedVoiceIdentifier else {
             return nil
         }
@@ -169,17 +180,17 @@ class AppSettings: ObservableObject {
             return premiumVoices.first?.identifier
         }
 
-        // Multiple premium voices - rotate based on session ID hash
-        guard let sessionId = sessionId else {
-            // No session ID provided - use first premium voice
+        // Multiple premium voices - rotate based on working directory hash
+        guard let workingDirectory = workingDirectory else {
+            // No working directory provided - use first premium voice
             return premiumVoices.first?.identifier
         }
 
-        // Use stable hash of session ID to select voice
-        let hashValue = abs(sessionId.hashValue)
+        // Use stable hash of working directory to select voice
+        let hashValue = stableHash(workingDirectory)
         let index = hashValue % premiumVoices.count
         let selectedVoice = premiumVoices[index]
-        print("🎙️ Voice rotation: session \(sessionId.prefix(8))... → \(selectedVoice.name) (index \(index) of \(premiumVoices.count))")
+        print("🎙️ Voice rotation: project \(workingDirectory.split(separator: "/").last ?? "unknown") → \(selectedVoice.name) (index \(index) of \(premiumVoices.count))")
         return selectedVoice.identifier
     }
 

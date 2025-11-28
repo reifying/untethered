@@ -50,7 +50,7 @@ struct SettingsView: View {
                             Text("Rotates between \(premiumCount) premium voice\(premiumCount == 1 ? "" : "s")")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("Each session uses a consistent voice")
+                            Text("Each project uses a consistent voice")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }

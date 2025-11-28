@@ -112,6 +112,7 @@ struct ConversationView: View {
                                     CDMessageView(
                                         message: message,
                                         voiceOutput: voiceOutput,
+                                        session: session,
                                         onInferName: { messageText in
                                             client.requestInferredName(sessionId: session.id.uuidString.lowercased(), messageText: messageText)
                                         }
@@ -811,6 +812,7 @@ extension Date {
 struct CDMessageView: View {
     let message: CDMessage
     let voiceOutput: VoiceOutputManager
+    @ObservedObject var session: CDBackendSession
     let onInferName: (String) -> Void
 
     @State private var showFullMessage = false
@@ -879,7 +881,7 @@ struct CDMessageView: View {
         .background(Color(message.role == "user" ? .systemBlue : .systemGreen).opacity(0.1))
         .cornerRadius(12)
         .sheet(isPresented: $showFullMessage) {
-            MessageDetailView(message: message, voiceOutput: voiceOutput, onInferName: onInferName)
+            MessageDetailView(message: message, voiceOutput: voiceOutput, session: session, onInferName: onInferName)
         }
     }
 }
@@ -889,6 +891,7 @@ struct CDMessageView: View {
 struct MessageDetailView: View {
     @ObservedObject var message: CDMessage
     @ObservedObject var voiceOutput: VoiceOutputManager
+    @ObservedObject var session: CDBackendSession
     let onInferName: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var showCopiedConfirmation = false
@@ -938,7 +941,7 @@ struct MessageDetailView: View {
 
                     Button(action: {
                         let processedText = TextProcessor.removeCodeBlocks(from: message.text)
-                        voiceOutput.speak(processedText, sessionId: message.sessionId.uuidString.lowercased())
+                        voiceOutput.speak(processedText, workingDirectory: session.workingDirectory)
                     }) {
                         VStack(spacing: 4) {
                             Image(systemName: "speaker.wave.2.fill")

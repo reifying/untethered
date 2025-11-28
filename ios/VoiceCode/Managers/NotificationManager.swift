@@ -93,43 +93,43 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     /// - Parameters:
     ///   - text: The Claude response text
     ///   - sessionName: Optional session name for context
-    ///   - sessionId: Optional session ID for voice rotation
-    func postResponseNotification(text: String, sessionName: String? = nil, sessionId: String? = nil) async {
+    ///   - workingDirectory: Optional working directory for voice rotation
+    func postResponseNotification(text: String, sessionName: String? = nil, workingDirectory: String? = nil) async {
         // Check authorization status
         let status = await checkAuthorizationStatus()
-        
+
         guard status == .authorized || status == .provisional else {
             logger.warning("⚠️ Cannot post notification - authorization status: \(status.rawValue)")
             return
         }
-        
+
         // Create notification content
         let content = UNMutableNotificationContent()
         content.title = "Claude Response"
         if let sessionName = sessionName {
             content.subtitle = sessionName
         }
-        
+
         // Truncate text preview to first 100 characters
         let preview = text.prefix(100)
         content.body = preview.count < text.count ? "\(preview)..." : String(preview)
-        
+
         content.sound = .default
         content.categoryIdentifier = categoryIdentifier
-        
+
         // Generate unique identifier for this notification
         let notificationId = UUID().uuidString
-        
+
         // Store full response text for action handling
         pendingResponses[notificationId] = text
-        
+
         // Add full text to userInfo for retrieval in action handler
         var userInfo: [String: Any] = [
             "responseText": text,
             "notificationId": notificationId
         ]
-        if let sessionId = sessionId {
-            userInfo["sessionId"] = sessionId
+        if let workingDirectory = workingDirectory {
+            userInfo["workingDirectory"] = workingDirectory
         }
         content.userInfo = userInfo
         
@@ -168,8 +168,8 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
                 logger.info("🔊 Reading response aloud (\(text.count) characters)")
 
                 // Trigger TTS playback via VoiceOutputManager
-                let sessionId = userInfo["sessionId"] as? String
-                voiceOutputManager?.speak(text, sessionId: sessionId)
+                let workingDirectory = userInfo["workingDirectory"] as? String
+                voiceOutputManager?.speak(text, workingDirectory: workingDirectory)
             } else {
                 logger.error("❌ No response text found in notification userInfo")
             }

@@ -395,12 +395,13 @@ class SessionSyncManager {
                         // Post notification on main thread
                         // Combine multiple messages into one notification
                         let combinedText = assistantMessagesToSpeak.joined(separator: "\n\n")
+                        let workingDirectory = session.workingDirectory
                         DispatchQueue.main.async {
                             Task {
                                 await NotificationManager.shared.postResponseNotification(
                                     text: combinedText,
                                     sessionName: sessionName,
-                                    sessionId: sessionId
+                                    workingDirectory: workingDirectory
                                 )
                             }
                         }
@@ -434,11 +435,12 @@ class SessionSyncManager {
                 // VoiceOutputManager automatically uses configured voice from AppSettings
                 // Remove code blocks from text before speaking for better listening experience
                 if isActiveSession && !assistantMessagesToSpeak.isEmpty {
+                    let workingDirectory = session.workingDirectory
                     DispatchQueue.main.async { [weak self] in
                         guard let self = self else { return }
                         for text in assistantMessagesToSpeak {
                             let processedText = TextProcessor.removeCodeBlocks(from: text)
-                            self.voiceOutputManager?.speak(processedText, respectSilentMode: true, sessionId: sessionId)
+                            self.voiceOutputManager?.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory)
                         }
                     }
                 }
