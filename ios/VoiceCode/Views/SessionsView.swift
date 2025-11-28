@@ -18,14 +18,7 @@ struct CDSessionRowContent: View {
                     .font(.headline)
 
                 HStack(spacing: 8) {
-                    Text("[\(session.id.uuidString.lowercased().prefix(8))]")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .fontDesign(.monospaced)
-                    Text("•")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text(session.workingDirectory)
+                    Text(URL(fileURLWithPath: session.workingDirectory).lastPathComponent)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
