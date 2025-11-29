@@ -12,6 +12,7 @@ struct SettingsView: View {
     @State private var testResult: String?
     @State private var testSuccess = false
     @State private var previewingVoice = false
+    @State private var localSystemPrompt: String = ""
 
     let onServerChange: (String) -> Void
     let voiceOutputManager: VoiceOutputManager?
@@ -125,9 +126,12 @@ struct SettingsView: View {
                 }
 
                 Section(header: Text("System Prompt")) {
-                    TextField("Custom System Prompt", text: $settings.systemPrompt, axis: .vertical)
+                    TextField("Custom System Prompt", text: $localSystemPrompt, axis: .vertical)
                         .lineLimit(3...6)
                         .autocapitalization(.sentences)
+                        .onChange(of: localSystemPrompt) { newValue in
+                            settings.systemPrompt = newValue
+                        }
 
                     Text("Optional instructions to append to Claude's system prompt on every message. Leave empty to use default behavior.")
                         .font(.caption)
@@ -192,6 +196,10 @@ struct SettingsView: View {
                         dismiss()
                     }
                 }
+            }
+            .onAppear {
+                // Initialize local state from settings
+                localSystemPrompt = settings.systemPrompt
             }
         }
     }

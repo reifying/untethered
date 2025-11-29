@@ -596,8 +596,13 @@ struct ConversationView: View {
         }
 
         // Include system prompt if configured and non-empty
+        print("🔍 [ConversationView] System prompt value: '\(settings.systemPrompt)'")
+        print("🔍 [ConversationView] System prompt isEmpty: \(settings.systemPrompt.isEmpty)")
         if !settings.systemPrompt.isEmpty {
             message["system_prompt"] = settings.systemPrompt
+            print("✅ [ConversationView] Including system_prompt in message")
+        } else {
+            print("⚠️ [ConversationView] NOT including system_prompt (empty)")
         }
 
         client.sendMessage(message)
