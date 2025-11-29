@@ -665,33 +665,65 @@ final class AppSettingsTests: XCTestCase {
     }
 
     func testSystemPromptPersistence() {
+        let expectation = XCTestExpectation(description: "System prompt persists after debounce")
+
         let testPrompt = "You are a helpful coding assistant"
+
+        // Get initial value (empty on first run)
+        let initialValue = UserDefaults.standard.string(forKey: "systemPrompt")
+
         settings.systemPrompt = testPrompt
 
-        // Value should be saved to UserDefaults
-        let saved = UserDefaults.standard.string(forKey: "systemPrompt")
-        XCTAssertEqual(saved, testPrompt)
+        // Value should NOT be saved immediately (debounced)
+        let savedImmediate = UserDefaults.standard.string(forKey: "systemPrompt")
+        XCTAssertEqual(savedImmediate, initialValue, "Value should not change immediately due to debouncing")
 
-        // Create new instance and verify it loads the saved value
-        let newSettings = AppSettings()
-        XCTAssertEqual(newSettings.systemPrompt, testPrompt)
+        // UI should update immediately
+        XCTAssertEqual(settings.systemPrompt, testPrompt)
+
+        // Wait for debounce delay (0.5s) + buffer
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            // Value should be saved after debounce delay
+            let saved = UserDefaults.standard.string(forKey: "systemPrompt")
+            XCTAssertEqual(saved, testPrompt)
+
+            // Create new instance and verify it loads the saved value
+            let newSettings = AppSettings()
+            XCTAssertEqual(newSettings.systemPrompt, testPrompt)
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1.0)
     }
 
     func testSystemPromptClear() {
-        // Set a system prompt
+        let expectation = XCTestExpectation(description: "System prompt clears after debounce")
+
+        // Set a system prompt first
         settings.systemPrompt = "You are a helpful assistant"
         XCTAssertEqual(settings.systemPrompt, "You are a helpful assistant")
 
-        // Clear it
-        settings.systemPrompt = ""
-        XCTAssertEqual(settings.systemPrompt, "")
+        // Wait for it to persist
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            // Clear it
+            self.settings.systemPrompt = ""
+            XCTAssertEqual(self.settings.systemPrompt, "")
 
-        // Should be empty in UserDefaults
-        let saved = UserDefaults.standard.string(forKey: "systemPrompt")
-        XCTAssertEqual(saved, "")
+            // Wait for clear to persist
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                // Should be empty in UserDefaults
+                let saved = UserDefaults.standard.string(forKey: "systemPrompt")
+                XCTAssertEqual(saved, "")
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 2.0)
     }
 
     func testSystemPromptWithMultipleLines() {
+        let expectation = XCTestExpectation(description: "Multiline system prompt persists after debounce")
+
         let multilinePrompt = """
         You are a helpful assistant.
         Please be concise and direct.
@@ -699,26 +731,69 @@ final class AppSettingsTests: XCTestCase {
         """
         settings.systemPrompt = multilinePrompt
 
-        // Value should be saved with newlines preserved
-        let saved = UserDefaults.standard.string(forKey: "systemPrompt")
-        XCTAssertEqual(saved, multilinePrompt)
+        // Wait for debounce delay (0.5s) + buffer
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            // Value should be saved with newlines preserved
+            let saved = UserDefaults.standard.string(forKey: "systemPrompt")
+            XCTAssertEqual(saved, multilinePrompt)
 
-        // Create new instance and verify it loads correctly
-        let newSettings = AppSettings()
-        XCTAssertEqual(newSettings.systemPrompt, multilinePrompt)
+            // Create new instance and verify it loads correctly
+            let newSettings = AppSettings()
+            XCTAssertEqual(newSettings.systemPrompt, multilinePrompt)
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1.0)
     }
 
     func testSystemPromptUpdates() {
+        let expectation = XCTestExpectation(description: "System prompt updates persist after debounce")
+
         // Set initial value
         settings.systemPrompt = "First prompt"
         XCTAssertEqual(settings.systemPrompt, "First prompt")
 
-        // Update to new value
-        settings.systemPrompt = "Second prompt"
-        XCTAssertEqual(settings.systemPrompt, "Second prompt")
+        // Wait for it to persist
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            // Update to new value
+            self.settings.systemPrompt = "Second prompt"
+            XCTAssertEqual(self.settings.systemPrompt, "Second prompt")
 
-        // Verify UserDefaults was updated
-        let saved = UserDefaults.standard.string(forKey: "systemPrompt")
-        XCTAssertEqual(saved, "Second prompt")
+            // Wait for update to persist
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                // Verify UserDefaults was updated
+                let saved = UserDefaults.standard.string(forKey: "systemPrompt")
+                XCTAssertEqual(saved, "Second prompt")
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 2.0)
+    }
+
+    // MARK: - Voice Caching Tests
+
+    func testVoiceCaching() {
+        // First call should populate cache
+        let voices1 = AppSettings.availableVoices
+
+        // Second call should return cached value (should be instant)
+        let voices2 = AppSettings.availableVoices
+
+        // Should return same array
+        XCTAssertEqual(voices1.count, voices2.count)
+        XCTAssertEqual(voices1.map { $0.identifier }, voices2.map { $0.identifier })
+    }
+
+    func testPremiumVoiceCaching() {
+        // First call should populate cache
+        let voices1 = AppSettings.premiumVoices
+
+        // Second call should return cached value (should be instant)
+        let voices2 = AppSettings.premiumVoices
+
+        // Should return same array
+        XCTAssertEqual(voices1.count, voices2.count)
+        XCTAssertEqual(voices1.map { $0.identifier }, voices2.map { $0.identifier })
     }
 }

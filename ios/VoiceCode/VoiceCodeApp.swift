@@ -120,7 +120,10 @@ struct RootView: View {
                     logger.info("✅ Notifications enabled for 'Read Aloud' feature")
                 }
             }
-            
+
+            // Pre-load voices asynchronously to avoid Settings view hangs
+            AppSettings.preloadVoices()
+
             // Set up callback for recent_sessions before connecting
             client.onRecentSessionsReceived = { sessions in
                 logger.info("📥 Received \(sessions.count) recent sessions from backend")

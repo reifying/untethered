@@ -65,11 +65,7 @@ class AppSettings: ObservableObject {
         }
     }
 
-    @Published var systemPrompt: String {
-        didSet {
-            UserDefaults.standard.set(systemPrompt, forKey: "systemPrompt")
-        }
-    }
+    @Published var systemPrompt: String
 
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
@@ -82,8 +78,27 @@ class AppSettings: ObservableObject {
         !serverURL.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    // Cache for voices to avoid blocking main thread
+    private static var cachedAvailableVoices: [(identifier: String, name: String, quality: String, language: String)]?
+    private static var cachedPremiumVoices: [(identifier: String, name: String, quality: String, language: String)]?
+
+    /// Pre-load voices asynchronously to avoid blocking the main thread later
+    static func preloadVoices() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            // Trigger voice loading and caching
+            _ = Self.availableVoices
+            _ = Self.premiumVoices
+            print("🎙️ Voices pre-loaded and cached")
+        }
+    }
+
     // Get available voices sorted by quality (premium first)
     static var availableVoices: [(identifier: String, name: String, quality: String, language: String)] {
+        // Return cached value if available
+        if let cached = cachedAvailableVoices {
+            return cached
+        }
+
         let allVoices = AVSpeechSynthesisVoice.speechVoices()
 
         // Debug: Print all available voices
@@ -129,14 +144,21 @@ class AppSettings: ObservableObject {
             print("  - \(voice.1)")
         }
 
+        // Cache the result
+        cachedAvailableVoices = voices
         return voices
     }
 
     /// Get only premium quality voices (for "All Premium Voices" rotation)
     static var premiumVoices: [(identifier: String, name: String, quality: String, language: String)] {
+        // Return cached value if available
+        if let cached = cachedPremiumVoices {
+            return cached
+        }
+
         let allVoices = AVSpeechSynthesisVoice.speechVoices()
 
-        return allVoices
+        let voices = allVoices
             .filter {
                 let lang = $0.language.lowercased()
                 return lang.hasPrefix("en-") || lang == "en"
@@ -146,6 +168,10 @@ class AppSettings: ObservableObject {
             .map { voice in
                 (voice.identifier, voice.name, "Premium", voice.language)
             }
+
+        // Cache the result
+        cachedPremiumVoices = voices
+        return voices
     }
 
     /// Compute a stable hash for a string that remains consistent across app launches
@@ -243,6 +269,15 @@ class AppSettings: ObservableObject {
                 guard let self = self else { return }
                 UserDefaults.standard.set(value, forKey: "serverPort")
                 self.sharedDefaults?.set(value, forKey: "serverPort")
+            }
+            .store(in: &cancellables)
+
+        $systemPrompt
+            .dropFirst()
+            .debounce(for: .seconds(0.5), scheduler: DispatchQueue.main)
+            .sink { [weak self] value in
+                guard let self = self else { return }
+                UserDefaults.standard.set(value, forKey: "systemPrompt")
             }
             .store(in: &cancellables)
 

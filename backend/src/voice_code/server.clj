@@ -416,6 +416,7 @@
                 prompt-text (:text data)
                 ios-working-dir (:working-directory data)
                 system-prompt (:system-prompt data)
+                _ (log/info "🔍 System prompt received from iOS" {:value system-prompt :has-value? (some? system-prompt)})
               ;; Determine actual working directory to use:
               ;; - For resumed sessions: Use stored working dir from session metadata (extracted from .jsonl cwd)
               ;; - For new sessions: Use iOS-provided dir, with fallback if placeholder
