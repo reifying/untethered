@@ -656,4 +656,69 @@ final class AppSettingsTests: XCTestCase {
         settings.serverURL = ""
         XCTAssertFalse(settings.isServerConfigured)
     }
+
+    // MARK: - System Prompt Tests
+
+    func testDefaultSystemPrompt() {
+        // Default should be empty string
+        XCTAssertEqual(settings.systemPrompt, "")
+    }
+
+    func testSystemPromptPersistence() {
+        let testPrompt = "You are a helpful coding assistant"
+        settings.systemPrompt = testPrompt
+
+        // Value should be saved to UserDefaults
+        let saved = UserDefaults.standard.string(forKey: "systemPrompt")
+        XCTAssertEqual(saved, testPrompt)
+
+        // Create new instance and verify it loads the saved value
+        let newSettings = AppSettings()
+        XCTAssertEqual(newSettings.systemPrompt, testPrompt)
+    }
+
+    func testSystemPromptClear() {
+        // Set a system prompt
+        settings.systemPrompt = "You are a helpful assistant"
+        XCTAssertEqual(settings.systemPrompt, "You are a helpful assistant")
+
+        // Clear it
+        settings.systemPrompt = ""
+        XCTAssertEqual(settings.systemPrompt, "")
+
+        // Should be empty in UserDefaults
+        let saved = UserDefaults.standard.string(forKey: "systemPrompt")
+        XCTAssertEqual(saved, "")
+    }
+
+    func testSystemPromptWithMultipleLines() {
+        let multilinePrompt = """
+        You are a helpful assistant.
+        Please be concise and direct.
+        Focus on code quality.
+        """
+        settings.systemPrompt = multilinePrompt
+
+        // Value should be saved with newlines preserved
+        let saved = UserDefaults.standard.string(forKey: "systemPrompt")
+        XCTAssertEqual(saved, multilinePrompt)
+
+        // Create new instance and verify it loads correctly
+        let newSettings = AppSettings()
+        XCTAssertEqual(newSettings.systemPrompt, multilinePrompt)
+    }
+
+    func testSystemPromptUpdates() {
+        // Set initial value
+        settings.systemPrompt = "First prompt"
+        XCTAssertEqual(settings.systemPrompt, "First prompt")
+
+        // Update to new value
+        settings.systemPrompt = "Second prompt"
+        XCTAssertEqual(settings.systemPrompt, "Second prompt")
+
+        // Verify UserDefaults was updated
+        let saved = UserDefaults.standard.string(forKey: "systemPrompt")
+        XCTAssertEqual(saved, "Second prompt")
+    }
 }

@@ -595,6 +595,11 @@ struct ConversationView: View {
             print("📤 [ConversationView] Sending prompt with resume_session_id: \(sessionId)")
         }
 
+        // Include system prompt if configured and non-empty
+        if !settings.systemPrompt.isEmpty {
+            message["system_prompt"] = settings.systemPrompt
+        }
+
         client.sendMessage(message)
     }
     

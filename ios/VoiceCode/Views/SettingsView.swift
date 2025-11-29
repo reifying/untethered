@@ -124,6 +124,16 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
 
+                Section(header: Text("System Prompt")) {
+                    TextField("Custom System Prompt", text: $settings.systemPrompt, axis: .vertical)
+                        .lineLimit(3...6)
+                        .autocapitalization(.sentences)
+
+                    Text("Optional instructions to append to Claude's system prompt on every message. Leave empty to use default behavior.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
                 Section(header: Text("Connection Test")) {
                     Button(action: testConnection) {
                         HStack {

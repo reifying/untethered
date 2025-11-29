@@ -732,7 +732,7 @@ class VoiceCodeClient: ObservableObject {
 
     // MARK: - Send Messages
 
-    func sendPrompt(_ text: String, iosSessionId: String, sessionId: String? = nil, workingDirectory: String? = nil) {
+    func sendPrompt(_ text: String, iosSessionId: String, sessionId: String? = nil, workingDirectory: String? = nil, systemPrompt: String? = nil) {
         // Optimistically lock the session before sending
         // Unlock will happen when we receive ANY assistant message for this session
         if let sessionId = sessionId {
@@ -758,6 +758,11 @@ class VoiceCodeClient: ObservableObject {
 
         if let workingDirectory = workingDirectory {
             message["working_directory"] = workingDirectory
+        }
+
+        // Include system prompt if provided and non-empty (backend handles whitespace trimming)
+        if let systemPrompt = systemPrompt, !systemPrompt.isEmpty {
+            message["system_prompt"] = systemPrompt
         }
 
         print("📤 [VoiceCodeClient] Sending from iOS session: \(iosSessionId)")

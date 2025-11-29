@@ -135,7 +135,7 @@
          (try (.delete stderr-file) (catch Exception e (log/warn e "Failed to delete stderr file"))))))))
 
 (defn invoke-claude
-  [prompt & {:keys [new-session-id resume-session-id model working-directory timeout]
+  [prompt & {:keys [new-session-id resume-session-id model working-directory timeout system-prompt]
              :or {model "sonnet"
                   timeout 3600000}}]
   (let [cli-path (get-claude-cli-path)]
@@ -145,19 +145,24 @@
     (let [expanded-dir (expand-tilde working-directory)
           ;; Determine which session-id to use for tracking (new or resume)
           tracking-session-id (or new-session-id resume-session-id)
+          ;; Trim and check if system-prompt has content
+          trimmed-system-prompt (when system-prompt (clojure.string/trim system-prompt))
+          has-system-prompt? (and trimmed-system-prompt (not (clojure.string/blank? trimmed-system-prompt)))
           args (cond-> ["--dangerously-skip-permissions"
                         "--print"
                         "--output-format" "json"
                         "--model" model]
                  new-session-id (concat ["--session-id" new-session-id])
                  resume-session-id (concat ["--resume" resume-session-id])
+                 has-system-prompt? (concat ["--append-system-prompt" trimmed-system-prompt])
                  true (concat [prompt]))
 
           _ (log/info "Invoking Claude CLI"
                       {:new-session-id new-session-id
                        :resume-session-id resume-session-id
                        :working-directory expanded-dir
-                       :model model})
+                       :model model
+                       :has-system-prompt has-system-prompt?})
 
           result (run-process-with-file-redirection cli-path args expanded-dir timeout tracking-session-id)]
 
@@ -212,10 +217,11 @@
   - working-directory: Optional working directory for Claude
   - model: Model to use (default: sonnet)
   - timeout-ms: Timeout in milliseconds (default: 86400000 = 24 hours)
+  - system-prompt: Optional system prompt to append (uses --append-system-prompt)
 
   Returns immediately. Calls callback-fn when done or on timeout.
   Response map will have :success true/false and either :result or :error."
-  [prompt callback-fn & {:keys [new-session-id resume-session-id working-directory model timeout-ms]
+  [prompt callback-fn & {:keys [new-session-id resume-session-id working-directory model timeout-ms system-prompt]
                          :or {model "sonnet"
                               timeout-ms 86400000}}]
   (async/go
@@ -226,7 +232,8 @@
                                          :resume-session-id resume-session-id
                                          :model model
                                          :working-directory working-directory
-                                         :timeout timeout-ms)
+                                         :timeout timeout-ms
+                                         :system-prompt system-prompt)
                           (catch Exception e
                             (log/error e "Exception in Claude invocation")
                             {:success false

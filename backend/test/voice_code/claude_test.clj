@@ -199,6 +199,121 @@
           (is (:error result))
           (is (re-find #"Exception" (:error result))))))))
 
+(deftest test-invoke-claude-with-system-prompt
+  (testing "Claude invocation with system prompt"
+    (let [called-args (atom nil)]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms session-id]
+                      (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
+                      {:exit 0
+                       :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
+        (claude/invoke-claude "test" :system-prompt "You are a helpful assistant")
+        (let [{:keys [args]} @called-args]
+          (is (some #(= "--append-system-prompt" %) args))
+          (is (some #(= "You are a helpful assistant" %) args))))))
+
+  (testing "Claude invocation ignores empty system prompt"
+    (let [called-args (atom nil)]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms session-id]
+                      (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
+                      {:exit 0
+                       :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
+        (claude/invoke-claude "test" :system-prompt "")
+        (let [{:keys [args]} @called-args]
+          (is (not (some #(= "--append-system-prompt" %) args)))))))
+
+  (testing "Claude invocation ignores whitespace-only system prompt"
+    (let [called-args (atom nil)]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms session-id]
+                      (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
+                      {:exit 0
+                       :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
+        (claude/invoke-claude "test" :system-prompt "   \n\t  ")
+        (let [{:keys [args]} @called-args]
+          (is (not (some #(= "--append-system-prompt" %) args)))))))
+
+  (testing "Claude invocation trims system prompt whitespace"
+    (let [called-args (atom nil)]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms session-id]
+                      (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
+                      {:exit 0
+                       :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
+        (claude/invoke-claude "test" :system-prompt "  You are a helpful assistant  \n")
+        (let [{:keys [args]} @called-args]
+          (is (some #(= "--append-system-prompt" %) args))
+          (is (some #(= "You are a helpful assistant" %) args))))))
+
+  (testing "Claude invocation ignores nil system prompt"
+    (let [called-args (atom nil)]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms session-id]
+                      (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
+                      {:exit 0
+                       :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
+        (claude/invoke-claude "test" :system-prompt nil)
+        (let [{:keys [args]} @called-args]
+          (is (not (some #(= "--append-system-prompt" %) args)))))))
+
+  (testing "Claude invocation without system prompt parameter"
+    (let [called-args (atom nil)]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms session-id]
+                      (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
+                      {:exit 0
+                       :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
+        (claude/invoke-claude "test")
+        (let [{:keys [args]} @called-args]
+          (is (not (some #(= "--append-system-prompt" %) args))))))))
+
+(deftest test-invoke-claude-async-with-system-prompt
+  (testing "Async invocation passes system prompt to invoke-claude"
+    (let [result-promise (promise)
+          invoked-with-system-prompt (atom nil)]
+      (with-redefs [claude/invoke-claude
+                    (fn [prompt & {:keys [system-prompt]}]
+                      (reset! invoked-with-system-prompt system-prompt)
+                      {:success true :result "OK" :session-id "test-123"})]
+
+        (claude/invoke-claude-async
+         "test prompt"
+         (fn [response]
+           (deliver result-promise response))
+         :system-prompt "You are a helpful assistant"
+         :timeout-ms 5000)
+
+        (let [result (deref result-promise 10000 :timeout)]
+          (is (not= :timeout result))
+          (is (:success result))
+          (is (= "You are a helpful assistant" @invoked-with-system-prompt))))))
+
+  (testing "Async invocation without system prompt"
+    (let [result-promise (promise)
+          invoked-with-system-prompt (atom :not-set)]
+      (with-redefs [claude/invoke-claude
+                    (fn [prompt & {:keys [system-prompt]}]
+                      (reset! invoked-with-system-prompt system-prompt)
+                      {:success true :result "OK" :session-id "test-123"})]
+
+        (claude/invoke-claude-async
+         "test prompt"
+         (fn [response]
+           (deliver result-promise response))
+         :timeout-ms 5000)
+
+        (let [result (deref result-promise 10000 :timeout)]
+          (is (not= :timeout result))
+          (is (:success result))
+          (is (nil? @invoked-with-system-prompt)))))))
+
 ;; Compaction Tests
 
 (deftest test-get-session-file-path

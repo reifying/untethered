@@ -134,9 +134,16 @@ iOS → Backend: {
   "type": "prompt",
   "text": "<prompt-text>",
   "session_id": "<claude-session-id>",  // Optional: nil = new session
-  "working_directory": "<path>"          // Optional: overrides session default
+  "working_directory": "<path>",         // Optional: overrides session default
+  "system_prompt": "<custom-prompt>"     // Optional: appends to Claude's system prompt
 }
 ```
+
+**Fields:**
+- `text` (required): The prompt text to send to Claude
+- `session_id` (optional): Claude session ID to resume, or nil for new session
+- `working_directory` (optional): Override session's default working directory
+- `system_prompt` (optional): Custom system prompt to append via `--append-system-prompt`. Empty or whitespace-only values are ignored.
 
 **Set Working Directory**
 ```json

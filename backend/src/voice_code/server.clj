@@ -415,6 +415,7 @@
                 resume-session-id (:resume-session-id data)
                 prompt-text (:text data)
                 ios-working-dir (:working-directory data)
+                system-prompt (:system-prompt data)
               ;; Determine actual working directory to use:
               ;; - For resumed sessions: Use stored working dir from session metadata (extracted from .jsonl cwd)
               ;; - For new sessions: Use iOS-provided dir, with fallback if placeholder
@@ -513,7 +514,8 @@
                      :new-session-id new-session-id
                      :resume-session-id resume-session-id
                      :working-directory working-dir
-                     :timeout-ms 86400000))
+                     :timeout-ms 86400000
+                     :system-prompt system-prompt))
                   (do
                   ;; Session is locked, send session_locked message
                     (log/info "Session locked, rejecting prompt"
