@@ -111,6 +111,7 @@ public class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizer
             let shouldRespectSilentMode = respectSilentMode && (appSettings?.respectSilentMode ?? true)
             let continueWhenLocked = appSettings?.continuePlaybackWhenLocked ?? true
 
+            #if os(iOS)
             if shouldRespectSilentMode {
                 // Use .ambient category which respects the silent switch
                 // Audio will not play when the ringer switch is on silent/vibrate
@@ -122,6 +123,7 @@ public class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizer
                 try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [])
                 try AVAudioSession.sharedInstance().setActive(true)
             }
+            #endif
 
             // Note: continuePlaybackWhenLocked is handled by the category choice:
             // - .ambient stops when screen locks (regardless of setting)
@@ -188,8 +190,9 @@ public class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizer
         // Stop keep-alive timer
         stopKeepAliveTimer()
 
-        // Only deactivate audio session if background playback is disabled
+        // Only deactivate audio session if background playback is disabled (iOS only)
         // Keeping it active when locked allows subsequent TTS to play without app suspension
+        #if os(iOS)
         if !(appSettings?.continuePlaybackWhenLocked ?? true) {
             let audioSession = AVAudioSession.sharedInstance()
             do {
@@ -198,6 +201,7 @@ public class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizer
                 print("Failed to deactivate audio session: \(error)")
             }
         }
+        #endif
 
         DispatchQueue.main.async {
             self.isSpeaking = false

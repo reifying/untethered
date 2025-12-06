@@ -11,6 +11,7 @@ BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
 .PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
+.PHONY: macos-generate macos-build macos-run macos-clean
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 
@@ -32,6 +33,12 @@ help:
 	@echo "  clean             - Clean iOS build artifacts"
 	@echo "  setup-simulator   - Create and boot simulator: $(SIMULATOR_NAME)"
 	@echo "  deploy-device     - Build and install to connected iPhone (fast deployment)"
+	@echo ""
+	@echo "macOS targets:"
+	@echo "  macos-generate    - Generate macOS Xcode project from project.yml"
+	@echo "  macos-build       - Build the macOS app"
+	@echo "  macos-run         - Build and launch the macOS app"
+	@echo "  macos-clean       - Clean macOS build artifacts"
 	@echo ""
 	@echo "Backend server management:"
 	@echo "  backend-run       - Start the backend server"
@@ -155,6 +162,33 @@ deploy-device:
 	@echo "Installing to device..."
 	cd $(IOS_DIR) && xcrun devicectl device install app --device $$(xcrun devicectl list devices | grep -i "iphone" | grep -E "(connected|available)" | grep -o '[0-9A-F]\{8\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{12\}' | head -1) build/Build/Products/Debug-iphoneos/VoiceCode.app
 	@echo "✅ Deployed to iPhone! Launch the app manually."
+
+# macOS targets
+
+# macOS Configuration
+MACOS_DIR := macos
+MACOS_SCHEME := UntetheredMac
+
+# Generate macOS Xcode project
+macos-generate:
+	@echo "Generating macOS Xcode project from project.yml..."
+	cd $(MACOS_DIR) && xcodegen generate
+	@echo "✅ macOS project generated successfully"
+
+# Build macOS app
+macos-build: macos-generate
+	$(WRAP) bash -c "cd $(MACOS_DIR) && xcodebuild build -scheme $(MACOS_SCHEME) -destination 'platform=macOS'"
+
+# Run macOS app
+macos-run: macos-build
+	@echo "Launching macOS app..."
+	open $(MACOS_DIR)/build/Build/Products/Debug/UntetheredMac.app || \
+	open ~/Library/Developer/Xcode/DerivedData/UntetheredMac-*/Build/Products/Debug/UntetheredMac.app
+
+# Clean macOS build artifacts
+macos-clean:
+	cd $(MACOS_DIR) && xcodebuild clean -scheme $(MACOS_SCHEME) || true
+	rm -rf ~/Library/Developer/Xcode/DerivedData/UntetheredMac-*
 
 # Backend targets
 
