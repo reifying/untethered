@@ -5,19 +5,20 @@ import Foundation
 import AVFoundation
 import Combine
 
-class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
-    @Published var isSpeaking = false
+public class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, @unchecked Sendable {
+    @Published public var isSpeaking = false
 
     private let synthesizer = AVSpeechSynthesizer()
     private weak var appSettings: AppSettings?
-    private let audioSessionManager = DeviceAudioSessionManager()
-    var onSpeechComplete: (() -> Void)?
+    // DeviceAudioSessionManager is iOS-specific, not available in Shared framework
+    // private let audioSessionManager = DeviceAudioSessionManager()
+    public var onSpeechComplete: (() -> Void)?
 
     // Background playback support
     private var silencePlayer: AVAudioPlayer?
     private var keepAliveTimer: Timer?
 
-    init(appSettings: AppSettings? = nil) {
+    public init(appSettings: AppSettings? = nil) {
         self.appSettings = appSettings
         super.init()
         synthesizer.delegate = self
@@ -88,7 +89,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     ///   - rate: Speech rate (default: 0.5)
     ///   - respectSilentMode: Whether to respect silent mode setting (default: false for manual actions)
     ///   - workingDirectory: Optional working directory for voice rotation when "All Premium Voices" is selected
-    func speak(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false, workingDirectory: String? = nil) {
+    public func speak(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false, workingDirectory: String? = nil) {
         let voiceIdentifier = appSettings?.resolveVoiceIdentifier(forWorkingDirectory: workingDirectory)
         speakWithVoice(text, rate: rate, voiceIdentifier: voiceIdentifier, respectSilentMode: respectSilentMode)
     }
@@ -99,7 +100,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     ///   - rate: Speech rate (default: 0.5)
     ///   - voiceIdentifier: Optional voice identifier to use instead of user's configured voice
     ///   - respectSilentMode: Whether to respect the silent mode setting (default: false for manual actions)
-    func speakWithVoice(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil, respectSilentMode: Bool = false) {
+    public func speakWithVoice(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil, respectSilentMode: Bool = false) {
         // Stop any ongoing speech
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
@@ -113,11 +114,13 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
             if shouldRespectSilentMode {
                 // Use .ambient category which respects the silent switch
                 // Audio will not play when the ringer switch is on silent/vibrate
-                try audioSessionManager.configureAudioSessionForSilentMode()
+                try AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
+                try AVAudioSession.sharedInstance().setActive(true)
             } else {
                 // Use .playback category which ignores the silent switch
                 // Audio plays regardless of ringer switch position
-                try audioSessionManager.configureAudioSessionForForcedPlayback()
+                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [])
+                try AVAudioSession.sharedInstance().setActive(true)
             }
 
             // Note: continuePlaybackWhenLocked is handled by the category choice:
@@ -155,7 +158,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         }
     }
 
-    func stop() {
+    public func stop() {
         stopKeepAliveTimer()
         synthesizer.stopSpeaking(at: .immediate)
         DispatchQueue.main.async {
@@ -163,17 +166,17 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         }
     }
 
-    func pause() {
+    public func pause() {
         synthesizer.pauseSpeaking(at: .word)
     }
 
-    func resume() {
+    public func resume() {
         synthesizer.continueSpeaking()
     }
 
     // MARK: - AVSpeechSynthesizerDelegate
 
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
         DispatchQueue.main.async {
             self.isSpeaking = true
         }
@@ -181,7 +184,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         startKeepAliveTimer()
     }
 
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         // Stop keep-alive timer
         stopKeepAliveTimer()
 
@@ -202,7 +205,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         }
     }
 
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         // Stop keep-alive timer
         stopKeepAliveTimer()
 

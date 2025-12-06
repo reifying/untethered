@@ -3,6 +3,7 @@
 
 import SwiftUI
 import CoreData
+import UntetheredCore
 
 // MARK: - CoreData Session Row Content
 

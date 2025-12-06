@@ -3,14 +3,14 @@
 
 import Foundation
 
-struct TextProcessor {
+public struct TextProcessor {
     /// Remove code blocks from markdown text for better text-to-speech experience
     /// Removes both fenced code blocks (```...```) and inline code (`...`)
     /// Replaces them with spoken descriptions
     ///
     /// - Parameter markdown: The markdown text to process
     /// - Returns: Text with code blocks removed/replaced
-    static func removeCodeBlocks(from markdown: String) -> String {
+    public static func removeCodeBlocks(from markdown: String) -> String {
         var text = markdown
         
         // Remove fenced code blocks (```language\ncode\n```)

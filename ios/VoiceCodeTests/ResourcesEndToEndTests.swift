@@ -1,6 +1,7 @@
 import XCTest
 import Combine
 @testable import VoiceCode
+@testable import UntetheredCore
 
 /// End-to-end integration tests for complete Resources feature flow.
 /// Tests: Share Extension → App Group → ResourcesManager → WebSocket → Backend

@@ -8,6 +8,7 @@
 import XCTest
 import CoreData
 @testable import VoiceCode
+@testable import UntetheredCore
 
 class ReadAloudTests: XCTestCase {
     var persistenceController: PersistenceController!

@@ -2,6 +2,7 @@
 // Command execution menu with MRU sorting and hierarchical display
 
 import SwiftUI
+import UntetheredCore
 
 struct CommandMenuView: View {
     @ObservedObject var client: VoiceCodeClient
@@ -198,6 +199,7 @@ struct CommandRowView: View {
 // MARK: - Preview
 
 struct CommandMenuView_Previews: PreviewProvider {
+    @MainActor
     static var previews: some View {
         let client = VoiceCodeClient(serverURL: "ws://localhost:8080")
 

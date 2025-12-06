@@ -5,6 +5,7 @@ import Foundation
 import UserNotifications
 import OSLog
 import Intents
+import UntetheredCore
 
 private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "NotificationManager")
 

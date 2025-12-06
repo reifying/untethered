@@ -2,6 +2,7 @@
 // Display running and completed command executions with streaming output
 
 import SwiftUI
+import UntetheredCore
 
 struct CommandExecutionView: View {
     @ObservedObject var client: VoiceCodeClient

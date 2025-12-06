@@ -19,7 +19,7 @@ extension CDUserSession {
     }
 
     /// Fetch a specific user session by ID
-    static func fetchUserSession(id: UUID) -> NSFetchRequest<CDUserSession> {
+    public static func fetchUserSession(id: UUID) -> NSFetchRequest<CDUserSession> {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "id == %@", id as CVarArg)
         request.fetchLimit = 1

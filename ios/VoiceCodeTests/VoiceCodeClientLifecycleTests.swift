@@ -1,9 +1,11 @@
 import XCTest
 import SwiftUI
 @testable import VoiceCode
+@testable import UntetheredCore
 
 /// Tests that VoiceCodeClient remains alive during SwiftUI view updates and copies.
 /// This addresses the crash where VoiceCodeClient was being deallocated during RootView assignWithCopy operations.
+@MainActor
 final class VoiceCodeClientLifecycleTests: XCTestCase {
 
     /// Test that VoiceCodeClient stays alive when owned at the App level

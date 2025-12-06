@@ -25,7 +25,7 @@ public class CDBackendSession: NSManagedObject {
 // MARK: - User Customization Enrichment
 extension CDBackendSession {
     /// Display name: user's custom name if set, otherwise backend name
-    func displayName(context: NSManagedObjectContext) -> String {
+    public func displayName(context: NSManagedObjectContext) -> String {
         let request = CDUserSession.fetchUserSession(id: id)
         if let userSession = try? context.fetch(request).first,
            let customName = userSession.customName {
@@ -35,7 +35,7 @@ extension CDBackendSession {
     }
 
     /// Check if user has marked this session as deleted
-    func isUserDeleted(context: NSManagedObjectContext) -> Bool {
+    public func isUserDeleted(context: NSManagedObjectContext) -> Bool {
         let request = CDUserSession.fetchUserSession(id: id)
         if let userSession = try? context.fetch(request).first {
             return userSession.isUserDeleted
@@ -52,14 +52,14 @@ extension CDBackendSession {
     }
 
     /// Fetch all backend sessions, sorted by last modified date
-    static func fetchAllBackendSessions() -> NSFetchRequest<CDBackendSession> {
+    public static func fetchAllBackendSessions() -> NSFetchRequest<CDBackendSession> {
         let request = fetchRequest()
         request.sortDescriptors = [NSSortDescriptor(keyPath: \CDBackendSession.lastModified, ascending: false)]
         return request
     }
 
     /// Fetch active sessions (not marked deleted by user)
-    static func fetchActiveSessions(context: NSManagedObjectContext) throws -> [CDBackendSession] {
+    public static func fetchActiveSessions(context: NSManagedObjectContext) throws -> [CDBackendSession] {
         let request = fetchAllBackendSessions()
         let allSessions = try context.fetch(request)
         return allSessions.filter { session in
@@ -68,7 +68,7 @@ extension CDBackendSession {
     }
 
     /// Fetch active sessions for a specific working directory
-    static func fetchActiveSessions(workingDirectory: String, context: NSManagedObjectContext) throws -> [CDBackendSession] {
+    public static func fetchActiveSessions(workingDirectory: String, context: NSManagedObjectContext) throws -> [CDBackendSession] {
         let request = fetchAllBackendSessions()
         request.predicate = NSPredicate(format: "workingDirectory == %@", workingDirectory)
         let allSessions = try context.fetch(request)
@@ -78,7 +78,7 @@ extension CDBackendSession {
     }
 
     /// Fetch a specific session by ID
-    static func fetchBackendSession(id: UUID) -> NSFetchRequest<CDBackendSession> {
+    public static func fetchBackendSession(id: UUID) -> NSFetchRequest<CDBackendSession> {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "id == %@", id as CVarArg)
         request.fetchLimit = 1

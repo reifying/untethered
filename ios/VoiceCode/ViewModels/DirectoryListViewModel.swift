@@ -3,12 +3,14 @@
 
 import Foundation
 import Combine
+import UntetheredCore
 
 /// Isolates observation of VoiceCodeClient to only relevant properties
 ///
 /// DirectoryListView observes the entire VoiceCodeClient (9 @Published properties),
 /// causing unnecessary re-renders when unrelated state changes (isConnected, currentError, etc.).
 /// This ViewModel subscribes only to lockedSessions, reducing view invalidations by 78%.
+@MainActor
 class DirectoryListViewModel: ObservableObject {
     @Published var lockedSessions: Set<String> = []
 

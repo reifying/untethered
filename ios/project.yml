@@ -1,5 +1,9 @@
 name: VoiceCode
 
+packages:
+  UntetheredCore:
+    path: ../Shared
+
 options:
   bundleIdPrefix: dev.910labs
   deploymentTarget:
@@ -34,7 +38,6 @@ targets:
           - "*.md"
     resources:
       - VoiceCode/Assets.xcassets
-      - VoiceCode/VoiceCode.xcdatamodeld
       - VoiceCode/PrivacyInfo.xcprivacy
     info:
       path: VoiceCode/Info.plist
@@ -79,6 +82,7 @@ targets:
     preBuildScripts: []
     postBuildScripts: []
     dependencies:
+      - package: UntetheredCore
       - target: VoiceCodeShareExtension
         embed: true
 
@@ -129,6 +133,7 @@ targets:
     resources:
       - VoiceCodeTests/Fixtures
     dependencies:
+      - package: UntetheredCore
       - target: VoiceCode
     settings:
       base:

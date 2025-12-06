@@ -3,6 +3,7 @@
 
 import SwiftUI
 import CoreData
+import UntetheredCore
 
 struct SessionLookupView: View {
     let sessionId: UUID

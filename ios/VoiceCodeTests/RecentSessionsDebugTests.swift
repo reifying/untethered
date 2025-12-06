@@ -4,6 +4,8 @@
 import XCTest
 import CoreData
 @testable import VoiceCode
+@testable import UntetheredCore
+@testable import VoiceCode
 
 final class RecentSessionsDebugTests: XCTestCase {
     var persistenceController: PersistenceController!

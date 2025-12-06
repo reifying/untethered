@@ -1,14 +1,14 @@
 import Foundation
 
 /// Represents a file resource uploaded to the backend
-struct Resource: Identifiable, Codable, Equatable {
-    let id: UUID
-    let filename: String
-    let path: String  // Relative path: .untethered/resources/filename
-    let size: Int64
-    let timestamp: Date
+public struct Resource: Identifiable, Codable, Equatable {
+    public let id: UUID
+    public let filename: String
+    public let path: String  // Relative path: .untethered/resources/filename
+    public let size: Int64
+    public let timestamp: Date
 
-    init(id: UUID = UUID(), filename: String, path: String, size: Int64, timestamp: Date) {
+    public init(id: UUID = UUID(), filename: String, path: String, size: Int64, timestamp: Date) {
         self.id = id
         self.filename = filename
         self.path = path
@@ -16,7 +16,7 @@ struct Resource: Identifiable, Codable, Equatable {
         self.timestamp = timestamp
     }
 
-    init?(json: [String: Any]) {
+    public init?(json: [String: Any]) {
         guard let filename = json["filename"] as? String,
               let path = json["path"] as? String,
               let size = json["size"] as? Int64 else {
@@ -38,14 +38,14 @@ struct Resource: Identifiable, Codable, Equatable {
     }
 
     /// Human-readable file size
-    var formattedSize: String {
+    public var formattedSize: String {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: size)
     }
 
     /// Relative timestamp (e.g., "2 min ago")
-    var relativeTimestamp: String {
+    public var relativeTimestamp: String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: timestamp, relativeTo: Date())

@@ -1,6 +1,8 @@
 import XCTest
 @testable import VoiceCode
+@testable import UntetheredCore
 
+@MainActor
 final class VoiceCodeClientResourcesTests: XCTestCase {
     var client: VoiceCodeClient!
     

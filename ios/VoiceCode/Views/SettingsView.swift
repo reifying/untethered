@@ -3,6 +3,7 @@
 
 import SwiftUI
 import AVFoundation
+import UntetheredCore
 
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings

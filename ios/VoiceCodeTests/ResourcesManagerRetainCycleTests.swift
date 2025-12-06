@@ -1,6 +1,7 @@
 import XCTest
 import Combine
 @testable import VoiceCode
+@testable import UntetheredCore
 
 /// Tests to verify ResourcesManager doesn't create retain cycles with VoiceCodeClient
 final class ResourcesManagerRetainCycleTests: XCTestCase {

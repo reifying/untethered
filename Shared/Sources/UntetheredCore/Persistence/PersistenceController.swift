@@ -6,11 +6,11 @@ import os.log
 
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "Persistence")
 
-class PersistenceController {
-    static let shared = PersistenceController()
+public class PersistenceController {
+    nonisolated(unsafe) public static let shared = PersistenceController()
 
     /// Preview instance for SwiftUI previews
-    static var preview: PersistenceController = {
+    nonisolated(unsafe) public static var preview: PersistenceController = {
         let controller = PersistenceController(inMemory: true)
         let viewContext = controller.container.viewContext
 
@@ -50,10 +50,16 @@ class PersistenceController {
         return controller
     }()
 
-    let container: NSPersistentContainer
+    public let container: NSPersistentContainer
 
-    init(inMemory: Bool = false) {
-        container = NSPersistentContainer(name: "VoiceCode")
+    public init(inMemory: Bool = false) {
+        // Load model from Bundle.module (Swift Package)
+        guard let modelURL = Bundle.module.url(forResource: "VoiceCode", withExtension: "momd"),
+              let model = NSManagedObjectModel(contentsOf: modelURL) else {
+            fatalError("Failed to load VoiceCode.xcdatamodeld from Bundle.module")
+        }
+
+        container = NSPersistentContainer(name: "VoiceCode", managedObjectModel: model)
 
         if inMemory {
             container.persistentStoreDescriptions.first?.url = URL(fileURLWithPath: "/dev/null")
@@ -100,7 +106,8 @@ class PersistenceController {
         container.viewContext.automaticallyMergesChangesFromParent = true
 
         // Set merge policy to prefer property-level changes
-        container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        // Using NSMergePolicy initializer instead of global constant for concurrency safety
+        container.viewContext.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
 
         // CRITICAL: Ensure all CoreData merge notifications arrive on main queue
         // This prevents SwiftUI @FetchRequest updates from occurring on background threads
@@ -127,7 +134,7 @@ class PersistenceController {
     }
 
     /// Save the view context if there are changes
-    func save() {
+    public func save() {
         let context = container.viewContext
         
         guard context.hasChanges else { return }
@@ -141,7 +148,7 @@ class PersistenceController {
     }
 
     /// Perform a background task
-    func performBackgroundTask(_ block: @escaping (NSManagedObjectContext) -> Void) {
+    public func performBackgroundTask(_ block: @escaping @Sendable (NSManagedObjectContext) -> Void) {
         container.performBackgroundTask(block)
     }
 }

@@ -23,7 +23,7 @@ public class CDMessage: NSManagedObject {
     @NSManaged public var session: CDBackendSession?
     
     /// Typed status accessor
-    var messageStatus: MessageStatus {
+    public var messageStatus: MessageStatus {
         get {
             MessageStatus(rawValue: status) ?? .confirmed
         }
@@ -45,7 +45,7 @@ public class CDMessage: NSManagedObject {
     /// Display text with truncation for UI rendering
     /// Returns first 250 + last 250 chars if text exceeds 500 chars
     /// Cached based on text.count to avoid recomputation during layout
-    var displayText: String {
+    public var displayText: String {
         // Check cache validity (keyed by text length)
         let cacheKey = text.count
         if let cached = _displayTextCache, _displayTextCacheKey == cacheKey {
@@ -73,7 +73,7 @@ public class CDMessage: NSManagedObject {
     }
 
     /// Whether this message's text is truncated in display
-    var isTruncated: Bool {
+    public var isTruncated: Bool {
         text.count > (Self.truncationHalfLength * 2)
     }
 }
@@ -86,7 +86,7 @@ extension CDMessage {
     
     /// Fetch all messages for a session, sorted chronologically (oldest first)
     /// No fetchLimit - hangs prevented by animation:nil and removed withAnimation wrappers
-    static func fetchMessages(sessionId: UUID) -> NSFetchRequest<CDMessage> {
+    public static func fetchMessages(sessionId: UUID) -> NSFetchRequest<CDMessage> {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
         // Sort ascending for chronological display (oldest first, newest at bottom)
@@ -99,17 +99,17 @@ extension CDMessage {
 
         return request
     }
-    
+
     /// Fetch a specific message by ID
-    static func fetchMessage(id: UUID) -> NSFetchRequest<CDMessage> {
+    public static func fetchMessage(id: UUID) -> NSFetchRequest<CDMessage> {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "id == %@", id as CVarArg)
         request.fetchLimit = 1
         return request
     }
-    
+
     /// Find message by text and role for reconciliation
-    static func fetchMessage(sessionId: UUID, role: String, text: String) -> NSFetchRequest<CDMessage> {
+    public static func fetchMessage(sessionId: UUID, role: String, text: String) -> NSFetchRequest<CDMessage> {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "sessionId == %@ AND role == %@ AND text == %@",
                                        sessionId as CVarArg, role, text)
@@ -124,11 +124,11 @@ extension CDMessage: Identifiable {}
 extension CDMessage {
     /// Maximum number of messages to retain per session in iOS CoreData
     /// Backend retains full history in .jsonl files; iOS is just a "window" into recent messages
-    static let maxMessagesPerSession = 50
+    public static let maxMessagesPerSession = 50
 
     /// Threshold for triggering mid-conversation pruning
     /// When message count exceeds maxMessagesPerSession + pruneThreshold, prune back to maxMessagesPerSession
-    static let pruneThreshold = 10
+    public static let pruneThreshold = 10
 
     /// Delete oldest messages for a session, keeping only the newest `keepCount` messages
     /// - Parameters:
@@ -137,7 +137,7 @@ extension CDMessage {
     ///   - context: The managed object context to use
     /// - Returns: Number of messages deleted
     @discardableResult
-    static func pruneOldMessages(
+    public static func pruneOldMessages(
         sessionId: UUID,
         keepCount: Int = maxMessagesPerSession,
         in context: NSManagedObjectContext
@@ -175,7 +175,7 @@ extension CDMessage {
     ///   - sessionId: The session UUID to check
     ///   - context: The managed object context to use
     /// - Returns: true if message count exceeds maxMessagesPerSession + pruneThreshold
-    static func needsPruning(sessionId: UUID, in context: NSManagedObjectContext) -> Bool {
+    public static func needsPruning(sessionId: UUID, in context: NSManagedObjectContext) -> Bool {
         let countRequest = fetchRequest()
         countRequest.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
 

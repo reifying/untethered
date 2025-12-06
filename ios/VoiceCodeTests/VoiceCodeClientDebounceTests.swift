@@ -3,7 +3,9 @@
 
 import XCTest
 @testable import VoiceCode
+@testable import UntetheredCore
 
+@MainActor
 class VoiceCodeClientDebounceTests: XCTestCase {
     var client: VoiceCodeClient!
 

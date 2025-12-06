@@ -4,6 +4,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import CoreData
+import UntetheredCore
 
 struct ResourceShareView: View {
     @Environment(\.managedObjectContext) private var viewContext

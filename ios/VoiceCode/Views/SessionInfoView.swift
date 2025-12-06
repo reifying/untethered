@@ -3,6 +3,7 @@
 
 import SwiftUI
 import CoreData
+import UntetheredCore
 
 struct SessionInfoView: View {
     @ObservedObject var session: CDBackendSession

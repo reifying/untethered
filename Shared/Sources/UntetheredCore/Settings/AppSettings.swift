@@ -5,9 +5,9 @@ import Foundation
 import Combine
 import AVFoundation
 
-class AppSettings: ObservableObject {
+public class AppSettings: ObservableObject {
     /// Special identifier for "All Premium Voices" rotation mode
-    static let allPremiumVoicesIdentifier = "com.voicecode.all-premium-voices"
+    public static let allPremiumVoicesIdentifier = "com.voicecode.all-premium-voices"
 
     private let appGroupID = "group.com.910labs.untethered.resources"
     private var sharedDefaults: UserDefaults? {
@@ -15,10 +15,10 @@ class AppSettings: ObservableObject {
     }
     private var cancellables = Set<AnyCancellable>()
 
-    @Published var serverURL: String
-    @Published var serverPort: String
+    @Published public var serverURL: String
+    @Published public var serverPort: String
 
-    @Published var selectedVoiceIdentifier: String? {
+    @Published public var selectedVoiceIdentifier: String? {
         didSet {
             if let identifier = selectedVoiceIdentifier {
                 UserDefaults.standard.set(identifier, forKey: "selectedVoiceIdentifier")
@@ -28,62 +28,62 @@ class AppSettings: ObservableObject {
         }
     }
 
-    @Published var continuePlaybackWhenLocked: Bool {
+    @Published public var continuePlaybackWhenLocked: Bool {
         didSet {
             UserDefaults.standard.set(continuePlaybackWhenLocked, forKey: "continuePlaybackWhenLocked")
         }
     }
 
-    @Published var recentSessionsLimit: Int {
+    @Published public var recentSessionsLimit: Int {
         didSet {
             UserDefaults.standard.set(recentSessionsLimit, forKey: "recentSessionsLimit")
         }
     }
 
-    @Published var notifyOnResponse: Bool {
+    @Published public var notifyOnResponse: Bool {
         didSet {
             UserDefaults.standard.set(notifyOnResponse, forKey: "notifyOnResponse")
         }
     }
 
-    @Published var resourceStorageLocation: String {
+    @Published public var resourceStorageLocation: String {
         didSet {
             UserDefaults.standard.set(resourceStorageLocation, forKey: "resourceStorageLocation")
             sharedDefaults?.set(resourceStorageLocation, forKey: "resourceStorageLocation")
         }
     }
 
-    @Published var queueEnabled: Bool {
+    @Published public var queueEnabled: Bool {
         didSet {
             UserDefaults.standard.set(queueEnabled, forKey: "queueEnabled")
         }
     }
 
-    @Published var respectSilentMode: Bool {
+    @Published public var respectSilentMode: Bool {
         didSet {
             UserDefaults.standard.set(respectSilentMode, forKey: "respectSilentMode")
         }
     }
 
-    @Published var systemPrompt: String
+    @Published public var systemPrompt: String
 
-    var fullServerURL: String {
+    public var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
         let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
         return "ws://\(cleanURL):\(cleanPort)"
     }
 
     /// Returns true if the server has been configured (non-empty address)
-    var isServerConfigured: Bool {
+    public var isServerConfigured: Bool {
         !serverURL.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     // Cache for voices to avoid blocking main thread
-    private static var cachedAvailableVoices: [(identifier: String, name: String, quality: String, language: String)]?
-    private static var cachedPremiumVoices: [(identifier: String, name: String, quality: String, language: String)]?
+    nonisolated(unsafe) private static var cachedAvailableVoices: [(identifier: String, name: String, quality: String, language: String)]?
+    nonisolated(unsafe) private static var cachedPremiumVoices: [(identifier: String, name: String, quality: String, language: String)]?
 
     /// Pre-load voices asynchronously to avoid blocking the main thread later
-    static func preloadVoices() {
+    public static func preloadVoices() {
         DispatchQueue.global(qos: .userInitiated).async {
             // Trigger voice loading and caching
             _ = Self.availableVoices
@@ -93,7 +93,7 @@ class AppSettings: ObservableObject {
     }
 
     // Get available voices sorted by quality (premium first)
-    static var availableVoices: [(identifier: String, name: String, quality: String, language: String)] {
+    public static var availableVoices: [(identifier: String, name: String, quality: String, language: String)] {
         // Return cached value if available
         if let cached = cachedAvailableVoices {
             return cached
@@ -150,7 +150,7 @@ class AppSettings: ObservableObject {
     }
 
     /// Get only premium quality voices (for "All Premium Voices" rotation)
-    static var premiumVoices: [(identifier: String, name: String, quality: String, language: String)] {
+    public static var premiumVoices: [(identifier: String, name: String, quality: String, language: String)] {
         // Return cached value if available
         if let cached = cachedPremiumVoices {
             return cached
@@ -189,7 +189,7 @@ class AppSettings: ObservableObject {
     /// - Parameters:
     ///   - workingDirectory: Optional working directory for deterministic voice rotation
     /// - Returns: Voice identifier to use, or nil for system default
-    func resolveVoiceIdentifier(forWorkingDirectory workingDirectory: String? = nil) -> String? {
+    public func resolveVoiceIdentifier(forWorkingDirectory workingDirectory: String? = nil) -> String? {
         guard let selected = selectedVoiceIdentifier else {
             return nil
         }
@@ -226,7 +226,7 @@ class AppSettings: ObservableObject {
         return selectedVoice.identifier
     }
 
-    init() {
+    public init() {
         // Load initial values BEFORE setting up publishers to avoid triggering writes on launch
         self.serverURL = UserDefaults.standard.string(forKey: "serverURL") ?? ""
         self.serverPort = UserDefaults.standard.string(forKey: "serverPort") ?? "8080"
@@ -292,7 +292,7 @@ class AppSettings: ObservableObject {
         sharedDefaults?.set(resourceStorageLocation, forKey: "resourceStorageLocation")
     }
 
-    func testConnection(completion: @escaping (Bool, String) -> Void) {
+    public func testConnection(completion: @escaping @Sendable (Bool, String) -> Void) {
         // Basic validation
         guard !serverURL.isEmpty else {
             completion(false, "Server address is required")
@@ -342,7 +342,7 @@ class AppSettings: ObservableObject {
 // MARK: - AVSpeechSynthesisVoiceQuality Extensions
 
 extension AVSpeechSynthesisVoiceQuality {
-    var displayName: String {
+    public var displayName: String {
         switch self {
         case .default:
             return "Default"
@@ -355,7 +355,7 @@ extension AVSpeechSynthesisVoiceQuality {
         }
     }
 
-    var sortOrder: Int {
+    public var sortOrder: Int {
         switch self {
         case .premium:
             return 0

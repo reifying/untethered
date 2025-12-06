@@ -8,6 +8,7 @@
 import XCTest
 import CoreData
 @testable import VoiceCode
+@testable import UntetheredCore
 
 class SmartSpeakingTests: XCTestCase {
     var persistenceController: PersistenceController!

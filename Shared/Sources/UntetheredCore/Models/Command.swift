@@ -3,19 +3,19 @@
 
 import Foundation
 
-struct Command: Identifiable, Codable, Equatable {
-    let id: String
-    let label: String
-    let type: CommandType
-    let description: String?
-    let children: [Command]?
+public struct Command: Identifiable, Codable, Equatable {
+    public let id: String
+    public let label: String
+    public let type: CommandType
+    public let description: String?
+    public let children: [Command]?
 
-    enum CommandType: String, Codable {
+    public enum CommandType: String, Codable {
         case command = "command"
         case group = "group"
     }
 
-    init(id: String, label: String, type: CommandType, description: String? = nil, children: [Command]? = nil) {
+    public init(id: String, label: String, type: CommandType, description: String? = nil, children: [Command]? = nil) {
         self.id = id
         self.label = label
         self.type = type
@@ -24,7 +24,7 @@ struct Command: Identifiable, Codable, Equatable {
     }
 
     // Decode from JSON (snake_case to camelCase conversion)
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         label = try container.decode(String.self, forKey: .label)
@@ -33,17 +33,23 @@ struct Command: Identifiable, Codable, Equatable {
         children = try container.decodeIfPresent([Command].self, forKey: .children)
     }
 
-    private enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case id, label, type, description, children
     }
 }
 
-struct AvailableCommands: Codable {
-    let workingDirectory: String?
-    let projectCommands: [Command]
-    let generalCommands: [Command]
+public struct AvailableCommands: Codable {
+    public let workingDirectory: String?
+    public let projectCommands: [Command]
+    public let generalCommands: [Command]
 
-    private enum CodingKeys: String, CodingKey {
+    public init(workingDirectory: String?, projectCommands: [Command], generalCommands: [Command]) {
+        self.workingDirectory = workingDirectory
+        self.projectCommands = projectCommands
+        self.generalCommands = generalCommands
+    }
+
+    public enum CodingKeys: String, CodingKey {
         case workingDirectory = "working_directory"
         case projectCommands = "project_commands"
         case generalCommands = "general_commands"
@@ -51,34 +57,34 @@ struct AvailableCommands: Codable {
 }
 
 // CommandExecution tracks a running or completed command execution
-struct CommandExecution: Identifiable, Equatable {
-    let id: String  // command_session_id
-    let commandId: String
-    let shellCommand: String
-    var status: ExecutionStatus
-    var output: [OutputLine]
-    var exitCode: Int?
-    var startTime: Date
-    var duration: TimeInterval?
+public struct CommandExecution: Identifiable, Equatable {
+    public let id: String  // command_session_id
+    public let commandId: String
+    public let shellCommand: String
+    public var status: ExecutionStatus
+    public var output: [OutputLine]
+    public var exitCode: Int?
+    public var startTime: Date
+    public var duration: TimeInterval?
 
-    enum ExecutionStatus: Equatable {
+    public enum ExecutionStatus: Equatable {
         case running
         case completed
         case error
     }
 
-    struct OutputLine: Identifiable, Equatable {
-        let id = UUID()
-        let stream: StreamType
-        let text: String
+    public struct OutputLine: Identifiable, Equatable {
+        public let id = UUID()
+        public let stream: StreamType
+        public let text: String
 
-        enum StreamType: String {
+        public enum StreamType: String {
             case stdout
             case stderr
         }
     }
 
-    init(id: String, commandId: String, shellCommand: String) {
+    public init(id: String, commandId: String, shellCommand: String) {
         self.id = id
         self.commandId = commandId
         self.shellCommand = shellCommand
@@ -89,11 +95,11 @@ struct CommandExecution: Identifiable, Equatable {
         self.duration = nil
     }
 
-    mutating func appendOutput(stream: OutputLine.StreamType, text: String) {
+    public mutating func appendOutput(stream: OutputLine.StreamType, text: String) {
         output.append(OutputLine(stream: stream, text: text))
     }
 
-    mutating func complete(exitCode: Int, duration: TimeInterval) {
+    public mutating func complete(exitCode: Int, duration: TimeInterval) {
         self.exitCode = exitCode
         self.duration = duration
         self.status = exitCode == 0 ? .completed : .error
@@ -101,19 +107,19 @@ struct CommandExecution: Identifiable, Equatable {
 }
 
 // CommandHistorySession represents a single command execution from history
-struct CommandHistorySession: Identifiable, Codable, Equatable {
-    let commandSessionId: String
-    let commandId: String
-    let shellCommand: String
-    let workingDirectory: String
-    let timestamp: Date
-    let exitCode: Int?
-    let durationMs: Int?
-    let outputPreview: String
+public struct CommandHistorySession: Identifiable, Codable, Equatable {
+    public let commandSessionId: String
+    public let commandId: String
+    public let shellCommand: String
+    public let workingDirectory: String
+    public let timestamp: Date
+    public let exitCode: Int?
+    public let durationMs: Int?
+    public let outputPreview: String
 
-    var id: String { commandSessionId }
+    public var id: String { commandSessionId }
 
-    private enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case commandSessionId = "command_session_id"
         case commandId = "command_id"
         case shellCommand = "shell_command"
@@ -124,7 +130,7 @@ struct CommandHistorySession: Identifiable, Codable, Equatable {
         case outputPreview = "output_preview"
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         commandSessionId = try container.decode(String.self, forKey: .commandSessionId)
         commandId = try container.decode(String.self, forKey: .commandId)
@@ -147,7 +153,7 @@ struct CommandHistorySession: Identifiable, Codable, Equatable {
         }
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(commandSessionId, forKey: .commandSessionId)
         try container.encode(commandId, forKey: .commandId)
@@ -165,7 +171,7 @@ struct CommandHistorySession: Identifiable, Codable, Equatable {
     }
 
     // For testing
-    init(commandSessionId: String, commandId: String, shellCommand: String, workingDirectory: String, timestamp: Date, exitCode: Int?, durationMs: Int?, outputPreview: String) {
+    public init(commandSessionId: String, commandId: String, shellCommand: String, workingDirectory: String, timestamp: Date, exitCode: Int?, durationMs: Int?, outputPreview: String) {
         self.commandSessionId = commandSessionId
         self.commandId = commandId
         self.shellCommand = shellCommand
@@ -177,23 +183,23 @@ struct CommandHistorySession: Identifiable, Codable, Equatable {
     }
 }
 
-struct CommandHistory: Codable {
-    let sessions: [CommandHistorySession]
-    let limit: Int
+public struct CommandHistory: Codable {
+    public let sessions: [CommandHistorySession]
+    public let limit: Int
 }
 
 // CommandOutputFull represents the full output response for a command
-struct CommandOutputFull: Codable, Equatable {
-    let commandSessionId: String
-    let output: String
-    let exitCode: Int
-    let timestamp: Date
-    let durationMs: Int
-    let commandId: String
-    let shellCommand: String
-    let workingDirectory: String
+public struct CommandOutputFull: Codable, Equatable {
+    public let commandSessionId: String
+    public let output: String
+    public let exitCode: Int
+    public let timestamp: Date
+    public let durationMs: Int
+    public let commandId: String
+    public let shellCommand: String
+    public let workingDirectory: String
 
-    private enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case commandSessionId = "command_session_id"
         case output
         case exitCode = "exit_code"
@@ -204,7 +210,7 @@ struct CommandOutputFull: Codable, Equatable {
         case workingDirectory = "working_directory"
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         commandSessionId = try container.decode(String.self, forKey: .commandSessionId)
         output = try container.decode(String.self, forKey: .output)
@@ -227,7 +233,7 @@ struct CommandOutputFull: Codable, Equatable {
         }
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(commandSessionId, forKey: .commandSessionId)
         try container.encode(output, forKey: .output)
@@ -245,7 +251,7 @@ struct CommandOutputFull: Codable, Equatable {
     }
 
     // For testing
-    init(commandSessionId: String, output: String, exitCode: Int, timestamp: Date, durationMs: Int, commandId: String, shellCommand: String, workingDirectory: String) {
+    public init(commandSessionId: String, output: String, exitCode: Int, timestamp: Date, durationMs: Int, commandId: String, shellCommand: String, workingDirectory: String) {
         self.commandSessionId = commandSessionId
         self.output = output
         self.exitCode = exitCode

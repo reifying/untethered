@@ -2,6 +2,7 @@
 // Main view for managing uploaded resources
 
 import SwiftUI
+import UntetheredCore
 
 struct ResourcesView: View {
     @ObservedObject var resourcesManager: ResourcesManager

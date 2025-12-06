@@ -3,10 +3,10 @@
 
 import Foundation
 
-struct GitBranchDetector {
+public struct GitBranchDetector {
     /// Detects the current git branch for a given working directory
     /// Returns nil if the directory is not a git repository or if detection fails
-    static func detectBranch(workingDirectory: String) async -> String? {
+    public static func detectBranch(workingDirectory: String) async -> String? {
         // On iOS, we can't use Process to run git commands
         // Instead, read .git/HEAD file directly
         let gitHeadPath = (workingDirectory as NSString).appendingPathComponent(".git/HEAD")

@@ -3,6 +3,7 @@
 
 import XCTest
 @testable import VoiceCode
+@testable import UntetheredCore
 
 final class RecentSessionBatchParsingTests: XCTestCase {
 

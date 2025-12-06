@@ -3,22 +3,27 @@
 
 import Foundation
 import Combine
+#if canImport(UIKit)
 import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 import os.log
 
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "VoiceCodeClient")
 
-class VoiceCodeClient: ObservableObject {
-    @Published var isConnected = false
-    @Published var currentError: String?
-    @Published var isProcessing = false
-    @Published var lockedSessions = Set<String>()  // Claude session IDs currently locked
-    @Published var availableCommands: AvailableCommands?  // Available commands for current directory
-    @Published var runningCommands: [String: CommandExecution] = [:]  // command_session_id -> execution
-    @Published var commandHistory: [CommandHistorySession] = []  // Command history sessions
-    @Published var commandOutputFull: CommandOutputFull?  // Full output for a command (single at a time)
-    @Published var fileUploadResponse: (filename: String, success: Bool)?  // Latest file upload response
-    @Published var resourcesList: [Resource] = []  // List of uploaded resources
+@MainActor
+public class VoiceCodeClient: ObservableObject {
+    @Published public var isConnected = false
+    @Published public var currentError: String?
+    @Published public var isProcessing = false
+    @Published public var lockedSessions = Set<String>()  // Claude session IDs currently locked
+    @Published public var availableCommands: AvailableCommands?  // Available commands for current directory
+    @Published public var runningCommands: [String: CommandExecution] = [:]  // command_session_id -> execution
+    @Published public var commandHistory: [CommandHistorySession] = []  // Command history sessions
+    @Published public var commandOutputFull: CommandOutputFull?  // Full output for a command (single at a time)
+    @Published public var fileUploadResponse: (filename: String, success: Bool)?  // Latest file upload response
+    @Published public var resourcesList: [Resource] = []  // List of uploaded resources
 
     private var webSocket: URLSessionWebSocketTask?
     private var reconnectionTimer: DispatchSourceTimer?
@@ -27,15 +32,15 @@ class VoiceCodeClient: ObservableObject {
     private var maxReconnectionDelay: TimeInterval = 60.0 // Max 60 seconds
     private var maxReconnectionAttempts = 20 // ~17 minutes max (1+2+4+8+16+32+60*14)
 
-    var onMessageReceived: ((Message, String) -> Void)?  // (message, iosSessionId)
-    var onSessionIdReceived: ((String) -> Void)?
-    var onReplayReceived: ((Message) -> Void)?
-    var onCompactionResponse: (([String: Any]) -> Void)?  // Callback for compaction_complete/compaction_error
-    var onInferNameResponse: (([String: Any]) -> Void)?  // Callback for session_name_inferred/infer_name_error
-    var onRecentSessionsReceived: (([[String: Any]]) -> Void)?  // Callback for recent_sessions message
+    public var onMessageReceived: ((Message, String) -> Void)?  // (message, iosSessionId)
+    public var onSessionIdReceived: ((String) -> Void)?
+    public var onReplayReceived: ((Message) -> Void)?
+    public var onCompactionResponse: (([String: Any]) -> Void)?  // Callback for compaction_complete/compaction_error
+    public var onInferNameResponse: (([String: Any]) -> Void)?  // Callback for session_name_inferred/infer_name_error
+    public var onRecentSessionsReceived: (([[String: Any]]) -> Void)?  // Callback for recent_sessions message
 
     private var sessionId: String?
-    let sessionSyncManager: SessionSyncManager
+    public let sessionSyncManager: SessionSyncManager
     private var appSettings: AppSettings?
 
     // Track active subscriptions for auto-restore on reconnection
@@ -52,7 +57,7 @@ class VoiceCodeClient: ObservableObject {
     private var debounceWorkItem: DispatchWorkItem?
     private let debounceDelay: TimeInterval = 0.1  // 100ms
 
-    init(serverURL: String, voiceOutputManager: VoiceOutputManager? = nil, sessionSyncManager: SessionSyncManager? = nil, appSettings: AppSettings? = nil, setupObservers: Bool = true) {
+    public init(serverURL: String, voiceOutputManager: VoiceOutputManager? = nil, sessionSyncManager: SessionSyncManager? = nil, appSettings: AppSettings? = nil, setupObservers: Bool = true) {
         self.serverURL = serverURL
         self.appSettings = appSettings
 
@@ -70,6 +75,7 @@ class VoiceCodeClient: ObservableObject {
     }
 
     private func setupLifecycleObservers() {
+        #if os(iOS)
         // Reconnect when app returns to foreground
         NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification,
@@ -93,6 +99,31 @@ class VoiceCodeClient: ObservableObject {
             guard let self = self else { return }
             print("📱 [VoiceCodeClient] App entering background")
         }
+        #elseif os(macOS)
+        // Reconnect when app becomes active
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            if !self.isConnected {
+                print("💻 [VoiceCodeClient] App becoming active, attempting reconnection...")
+                self.reconnectionAttempts = 0 // Reset backoff on activation
+                self.connect(sessionId: self.sessionId)
+            }
+        }
+
+        // Handle app deactivation
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            print("💻 [VoiceCodeClient] App resigned active")
+        }
+        #endif
     }
 
     // MARK: - Debouncing
@@ -193,20 +224,20 @@ class VoiceCodeClient: ObservableObject {
 
     // MARK: - Connection Management
 
-    func connect(sessionId: String? = nil) {
+    public func connect(sessionId: String? = nil) {
         self.sessionId = sessionId
-        LogManager.shared.log("Connecting to WebSocket: \(serverURL)", category: "VoiceCodeClient")
+        logger.info("Connecting to WebSocket: \(self.serverURL)")
 
         guard let url = URL(string: serverURL) else {
             currentError = "Invalid server URL"
-            LogManager.shared.log("Invalid server URL: \(serverURL)", category: "VoiceCodeClient")
+            logger.info("Invalid server URL: \(self.serverURL)")
             return
         }
 
         let request = URLRequest(url: url)
         webSocket = URLSession.shared.webSocketTask(with: request)
         webSocket?.resume()
-        LogManager.shared.log("WebSocket task resumed", category: "VoiceCodeClient")
+        logger.info("WebSocket task resumed")
 
         receiveMessage()
         setupReconnection()
@@ -219,7 +250,7 @@ class VoiceCodeClient: ObservableObject {
         }
     }
 
-    func disconnect() {
+    public func disconnect() {
         reconnectionTimer?.cancel()
         reconnectionTimer = nil
 
@@ -237,7 +268,7 @@ class VoiceCodeClient: ObservableObject {
         }
     }
 
-    func updateServerURL(_ url: String) {
+    public func updateServerURL(_ url: String) {
         print("🔄 [VoiceCodeClient] Updating server URL from \(serverURL) to \(url)")
         
         // Clear all sessions from old server
@@ -347,16 +378,16 @@ class VoiceCodeClient: ObservableObject {
                 // Connected confirmation received - reset reconnection attempts
                 self.reconnectionAttempts = 0
                 print("✅ [VoiceCodeClient] Session registered: \(json["message"] as? String ?? "")")
-                LogManager.shared.log("Session registered: \(json["message"] as? String ?? "")", category: "VoiceCodeClient")
+                logger.info("Session registered: \(json["message"] as? String ?? "")")
                 if let sessionId = json["session_id"] as? String {
                     print("📥 [VoiceCodeClient] Backend confirmed session: \(sessionId)")
-                    LogManager.shared.log("Backend confirmed session: \(sessionId)", category: "VoiceCodeClient")
+                    logger.info("Backend confirmed session: \(sessionId)")
                 }
 
                 // Restore subscriptions after reconnection
                 if !self.activeSubscriptions.isEmpty {
                     print("🔄 [VoiceCodeClient] Restoring \(self.activeSubscriptions.count) subscription(s) after reconnection")
-                    LogManager.shared.log("Restoring \(self.activeSubscriptions.count) subscription(s) after reconnection", category: "VoiceCodeClient")
+                    logger.info("Restoring \(self.activeSubscriptions.count) subscription(s) after reconnection")
                     for sessionId in self.activeSubscriptions {
                         print("🔄 [VoiceCodeClient] Resubscribing to session: \(sessionId)")
                         let message: [String: Any] = [
@@ -682,10 +713,10 @@ class VoiceCodeClient: ObservableObject {
                 // File upload successful
                 if let filename = json["filename"] as? String {
                     print("✅ [VoiceCodeClient] File uploaded successfully: \(filename)")
-                    LogManager.shared.log("File uploaded successfully: \(filename)", category: "VoiceCodeClient")
+                    logger.info("File uploaded successfully: \(filename)")
                     scheduleUpdate(key: "fileUploadResponse", value: (filename: filename, success: true) as (filename: String, success: Bool)?)
                 } else {
-                    LogManager.shared.log("Received file_uploaded message without filename", category: "VoiceCodeClient")
+                    logger.info("Received file_uploaded message without filename")
                 }
 
             case "resources-list", "resources_list":
@@ -694,11 +725,11 @@ class VoiceCodeClient: ObservableObject {
                 if let resourcesArray = json["resources"] as? [[String: Any]] {
                     let resources = resourcesArray.compactMap { Resource(json: $0) }
                     print("   Found \(resources.count) resources")
-                    LogManager.shared.log("Resources list received: \(resources.count) resources", category: "VoiceCodeClient")
+                    logger.info("Resources list received: \(resources.count) resources")
                     scheduleUpdate(key: "resourcesList", value: resources)
                 } else {
                     print("⚠️ [VoiceCodeClient] Invalid resources_list format")
-                    LogManager.shared.log("Invalid resources_list format", category: "VoiceCodeClient")
+                    logger.info("Invalid resources_list format")
                     scheduleUpdate(key: "resourcesList", value: [] as [Resource])
                 }
 
@@ -706,7 +737,7 @@ class VoiceCodeClient: ObservableObject {
                 // Resource deleted successfully
                 if let filename = json["filename"] as? String {
                     print("🗑️ [VoiceCodeClient] Resource deleted: \(filename)")
-                    LogManager.shared.log("Resource deleted: \(filename)", category: "VoiceCodeClient")
+                    logger.info("Resource deleted: \(filename)")
                     // Remove from local list
                     var updatedResources = getCurrentValue(for: "resourcesList", current: self.resourcesList)
                     updatedResources.removeAll { $0.filename == filename }
@@ -719,7 +750,7 @@ class VoiceCodeClient: ObservableObject {
                    message.contains("Failed to upload file") {
                     // Extract filename from error message if possible
                     print("❌ [VoiceCodeClient] File upload failed: \(message)")
-                    LogManager.shared.log("File upload failed: \(message)", category: "VoiceCodeClient")
+                    logger.info("File upload failed: \(message)")
                     // For now, we can't reliably extract filename from error message
                     // ResourcesManager will timeout instead
                 }
@@ -732,7 +763,7 @@ class VoiceCodeClient: ObservableObject {
 
     // MARK: - Send Messages
 
-    func sendPrompt(_ text: String, iosSessionId: String, sessionId: String? = nil, workingDirectory: String? = nil, systemPrompt: String? = nil) {
+    public func sendPrompt(_ text: String, iosSessionId: String, sessionId: String? = nil, workingDirectory: String? = nil, systemPrompt: String? = nil) {
         // Optimistically lock the session before sending
         // Unlock will happen when we receive ANY assistant message for this session
         if let sessionId = sessionId {
@@ -770,7 +801,7 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
-    func setWorkingDirectory(_ path: String) {
+    public func setWorkingDirectory(_ path: String) {
         let message: [String: Any] = [
             "type": "set_directory",
             "path": path
@@ -778,12 +809,12 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
-    func ping() {
+    public func ping() {
         let message: [String: Any] = ["type": "ping"]
         sendMessage(message)
     }
-    
-    func subscribe(sessionId: String) {
+
+    public func subscribe(sessionId: String) {
         // Track subscription for auto-restore on reconnection
         activeSubscriptions.insert(sessionId)
 
@@ -795,7 +826,7 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
     
-    func unsubscribe(sessionId: String) {
+    public func unsubscribe(sessionId: String) {
         // Remove from active subscriptions
         activeSubscriptions.remove(sessionId)
 
@@ -807,7 +838,7 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
-    func requestSessionList() async {
+    public func requestSessionList() async {
         // Request fresh session list from backend
         // Backend will respond with session_list message
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -839,7 +870,7 @@ class VoiceCodeClient: ObservableObject {
         }
     }
 
-    func requestSessionRefresh(sessionId: String) {
+    public func requestSessionRefresh(sessionId: String) {
         // Refresh a specific session by unsubscribing and re-subscribing
         // This will fetch the latest messages from the backend
         print("🔄 [VoiceCodeClient] Requesting session refresh: \(sessionId)")
@@ -885,11 +916,11 @@ class VoiceCodeClient: ObservableObject {
 
     // MARK: - Session Compaction
 
-    struct CompactionResult {
-        let sessionId: String
+    public struct CompactionResult {
+        public let sessionId: String
     }
 
-    func compactSession(sessionId: String) async throws -> CompactionResult {
+    public func compactSession(sessionId: String) async throws -> CompactionResult {
         // Prevent concurrent compactions
         guard onCompactionResponse == nil else {
             throw NSError(domain: "VoiceCodeClient",
@@ -989,7 +1020,7 @@ class VoiceCodeClient: ObservableObject {
         }
     }
 
-    func killSession(sessionId: String) {
+    public func killSession(sessionId: String) {
         print("🛑 [VoiceCodeClient] Killing session: \(sessionId)")
 
         let message: [String: Any] = [
@@ -1000,7 +1031,7 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
-    func requestInferredName(sessionId: String, messageText: String) {
+    public func requestInferredName(sessionId: String, messageText: String) {
         print("✨ [VoiceCodeClient] Requesting inferred name for session: \(sessionId)")
 
         // Set up callback for name inference response
@@ -1050,7 +1081,7 @@ class VoiceCodeClient: ObservableObject {
     ///   - commandId: The command identifier to execute
     ///   - workingDirectory: The directory to execute the command in
     /// - Returns: The command session ID assigned by the backend
-    func executeCommand(commandId: String, workingDirectory: String) async -> String {
+    public func executeCommand(commandId: String, workingDirectory: String) async -> String {
         print("📤 [VoiceCodeClient] Executing command: \(commandId) in \(workingDirectory)")
 
         return await withCheckedContinuation { continuation in
@@ -1066,7 +1097,7 @@ class VoiceCodeClient: ObservableObject {
         }
     }
 
-    func getCommandHistory(workingDirectory: String? = nil, limit: Int = 50) {
+    public func getCommandHistory(workingDirectory: String? = nil, limit: Int = 50) {
         print("📤 [VoiceCodeClient] Requesting command history (limit: \(limit))")
 
         var message: [String: Any] = [
@@ -1079,7 +1110,7 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
-    func getCommandOutput(commandSessionId: String) {
+    public func getCommandOutput(commandSessionId: String) {
         print("📤 [VoiceCodeClient] Requesting command output for: \(commandSessionId)")
 
         let message: [String: Any] = [
@@ -1089,21 +1120,21 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
-    func sendMessage(_ message: [String: Any]) {
+    public func sendMessage(_ message: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: message),
               let text = String(data: data, encoding: .utf8) else {
-            LogManager.shared.log("Failed to serialize message", category: "VoiceCodeClient")
+            logger.info("Failed to serialize message")
             return
         }
 
         if let messageType = message["type"] as? String {
-            LogManager.shared.log("Sending message type: \(messageType)", category: "VoiceCodeClient")
+            logger.info("Sending message type: \(messageType)")
         }
 
         let message = URLSessionWebSocketTask.Message.string(text)
         webSocket?.send(message) { error in
             if let error = error {
-                LogManager.shared.log("Failed to send message: \(error.localizedDescription)", category: "VoiceCodeClient")
+                logger.info("Failed to send message: \(error.localizedDescription)")
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
                     self.currentError = error.localizedDescription
@@ -1114,29 +1145,30 @@ class VoiceCodeClient: ObservableObject {
 
     // MARK: - Resources
 
-    func listResources(storageLocation: String) {
+    public func listResources(storageLocation: String) {
         let message: [String: Any] = [
             "type": "list_resources",
             "storage_location": storageLocation
         ]
         print("📋 [VoiceCodeClient] Requesting resources list from: \(storageLocation)")
-        LogManager.shared.log("Requesting resources list from: \(storageLocation)", category: "VoiceCodeClient")
+        logger.info("Requesting resources list from: \(storageLocation)")
         sendMessage(message)
     }
 
-    func deleteResource(filename: String, storageLocation: String) {
+    public func deleteResource(filename: String, storageLocation: String) {
         let message: [String: Any] = [
             "type": "delete_resource",
             "filename": filename,
             "storage_location": storageLocation
         ]
         print("🗑️ [VoiceCodeClient] Requesting deletion of: \(filename)")
-        LogManager.shared.log("Requesting deletion of: \(filename)", category: "VoiceCodeClient")
+        logger.info("Requesting deletion of: \(filename)")
         sendMessage(message)
     }
 
-    deinit {
+    nonisolated deinit {
         NotificationCenter.default.removeObserver(self)
-        disconnect()
+        // Note: Cannot call disconnect() here due to MainActor isolation
+        // WebSocket will be cleaned up when reference is released
     }
 }

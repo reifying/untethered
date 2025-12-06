@@ -11,26 +11,26 @@ private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "S
 
 extension Notification.Name {
     /// Posted when session list is updated from backend
-    static let sessionListDidUpdate = Notification.Name("sessionListDidUpdate")
+    public static let sessionListDidUpdate = Notification.Name("sessionListDidUpdate")
 }
 
 /// Manages synchronization of session metadata between backend and CoreData
-class SessionSyncManager {
+public class SessionSyncManager: @unchecked Sendable {
     private let persistenceController: PersistenceController
     private let context: NSManagedObjectContext
-    private weak var voiceOutputManager: VoiceOutputManager?
+    private nonisolated(unsafe) var voiceOutputManager: VoiceOutputManager?
 
-    init(persistenceController: PersistenceController = .shared, voiceOutputManager: VoiceOutputManager? = nil) {
+    public init(persistenceController: PersistenceController = .shared, voiceOutputManager: VoiceOutputManager? = nil) {
         self.persistenceController = persistenceController
         self.context = persistenceController.container.viewContext
         self.voiceOutputManager = voiceOutputManager
     }
-    
+
     // MARK: - Session List Handling
-    
+
     /// Handle session_list message from backend
     /// - Parameter sessions: Array of session metadata dictionaries
-    func handleSessionList(_ sessions: [[String: Any]]) async {
+    public func handleSessionList(_ sessions: [[String: Any]]) async {
         logger.info("📥 Received session_list with \(sessions.count) sessions")
 
         // Log all received sessions with their details
@@ -43,6 +43,7 @@ class SessionSyncManager {
             logger.info("  [\(index + 1)] \(sessionId) | \(messageCount) msgs | \(name) | \(workingDir)")
         }
 
+        nonisolated(unsafe) let sessionsCopy = sessions
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             persistenceController.performBackgroundTask { [weak self] backgroundContext in
                 guard let self = self else {
@@ -50,14 +51,14 @@ class SessionSyncManager {
                     return
                 }
 
-                for sessionData in sessions {
+                for sessionData in sessionsCopy {
                     self.upsertSession(sessionData, in: backgroundContext)
                 }
 
                 do {
                     if backgroundContext.hasChanges {
                         try backgroundContext.save()
-                        logger.info("✅ Saved \(sessions.count) sessions to CoreData")
+                        logger.info("✅ Saved \(sessionsCopy.count) sessions to CoreData")
 
                         // Log what's actually in CoreData after save
                         let fetchRequest = CDBackendSession.fetchAllBackendSessions()
@@ -85,10 +86,10 @@ class SessionSyncManager {
     }
     
     // MARK: - Session Created Handling
-    
+
     /// Handle session_created message from backend
     /// - Parameter sessionData: Session metadata dictionary
-    func handleSessionCreated(_ sessionData: [String: Any]) {
+    public func handleSessionCreated(_ sessionData: [String: Any]) {
         let sessionId = sessionData["session_id"] as? String ?? "unknown"
         let name = sessionData["name"] as? String ?? "unknown"
         let workingDir = sessionData["working_directory"] as? String ?? "unknown"
@@ -114,15 +115,19 @@ class SessionSyncManager {
 
         logger.info("✅ Accepting session_created for: \(sessionId)")
 
+        // Extract data outside the @Sendable closure
+        let sessionIdCopy = sessionId
+        nonisolated(unsafe) let sessionDataCopy = sessionData
+
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
-            
-            self.upsertSession(sessionData, in: backgroundContext)
-            
+
+            self.upsertSession(sessionDataCopy, in: backgroundContext)
+
             do {
                 if backgroundContext.hasChanges {
                     try backgroundContext.save()
-                    logger.info("Created session: \(sessionId)")
+                    logger.info("Created session: \(sessionIdCopy)")
                 }
             } catch {
                 logger.error("Failed to save session_created: \(error.localizedDescription)")
@@ -131,21 +136,26 @@ class SessionSyncManager {
     }
     
     // MARK: - Session History Handling
-    
+
     /// Handle session_history message from backend (full conversation history)
     /// - Parameters:
     ///   - sessionId: Session UUID
     ///   - messages: Array of all message dictionaries for the session
-    func handleSessionHistory(sessionId: String, messages: [[String: Any]]) {
+    public func handleSessionHistory(sessionId: String, messages: [[String: Any]]) {
         let historyStart = Date()
         logger.info("⏱️ handleSessionHistory START - \(sessionId.prefix(8))... with \(messages.count) messages")
 
+        // Extract data outside the @Sendable closure
+        let sessionIdCopy = sessionId
+        nonisolated(unsafe) let messagesCopy = messages
+        let messagesCount = messages.count
+
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
-            guard let self = self else { return }
+            guard let self else { return }
 
             // Validate UUID format
-            guard let sessionUUID = UUID(uuidString: sessionId) else {
-                logger.error("Invalid session ID format in handleSessionHistory: \(sessionId)")
+            guard let sessionUUID = UUID(uuidString: sessionIdCopy) else {
+                logger.error("Invalid session ID format in handleSessionHistory: \(sessionIdCopy)")
                 return
             }
 
@@ -154,7 +164,7 @@ class SessionSyncManager {
             let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionUUID)
 
             guard let session = try? backgroundContext.fetch(fetchRequest).first else {
-                logger.warning("Session not found for history: \(sessionId)")
+                logger.warning("Session not found for history: \(sessionIdCopy)")
                 return
             }
             logger.info("⏱️ +\(Int(Date().timeIntervalSince(fetchStart) * 1000))ms - fetched session")
@@ -170,18 +180,18 @@ class SessionSyncManager {
 
             // Add all messages from history
             let createStart = Date()
-            for messageData in messages {
-                self.createMessage(messageData, sessionId: sessionId, in: backgroundContext, session: session)
+            for messageData in messagesCopy {
+                self.createMessage(messageData, sessionId: sessionIdCopy, in: backgroundContext, session: session)
             }
-            logger.info("⏱️ +\(Int(Date().timeIntervalSince(createStart) * 1000))ms - created \(messages.count) messages")
+            logger.info("⏱️ +\(Int(Date().timeIntervalSince(createStart) * 1000))ms - created \(messagesCount) messages")
 
             // Update session metadata
-            session.messageCount = Int32(messages.count)
+            session.messageCount = Int32(messagesCount)
             // Note: Do NOT update lastModified here - we're replaying existing history.
             // The correct lastModified timestamp was already set from the backend's session_list message.
             // Only handleSessionUpdated() should update lastModified for truly NEW messages.
 
-            if let lastMessage = messages.last,
+            if let lastMessage = messagesCopy.last,
                let text = self.extractText(from: lastMessage) {
                 session.preview = String(text.prefix(100))
             }
@@ -191,7 +201,7 @@ class SessionSyncManager {
                     let saveStart = Date()
                     try backgroundContext.save()
                     logger.info("⏱️ +\(Int(Date().timeIntervalSince(saveStart) * 1000))ms - saved to CoreData")
-                    logger.info("⏱️ handleSessionHistory COMPLETE - total: \(Int(Date().timeIntervalSince(historyStart) * 1000))ms for \(messages.count) messages")
+                    logger.info("⏱️ handleSessionHistory COMPLETE - total: \(Int(Date().timeIntervalSince(historyStart) * 1000))ms for \(messagesCount) messages")
                 }
             } catch {
                 logger.error("Failed to save session_history: \(error.localizedDescription)")
@@ -200,50 +210,52 @@ class SessionSyncManager {
     }
     
     // MARK: - Optimistic UI
-    
+
     /// Create an optimistic message immediately when user sends a prompt
     /// - Parameters:
     ///   - sessionId: Session UUID
     ///   - text: User's prompt text
     ///   - completion: Called on main thread with the created message ID
-    func createOptimisticMessage(sessionId: UUID, text: String, completion: @escaping (UUID) -> Void) {
+    public func createOptimisticMessage(sessionId: UUID, text: String, completion: @escaping @Sendable (UUID) -> Void) {
         logger.info("Creating optimistic message for session: \(sessionId.uuidString.lowercased())")
 
         let messageId = UUID()
+        let sessionIdCopy = sessionId
+        let textCopy = text
 
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
-            guard let self = self else { return }
+            guard let self else { return }
 
             // Fetch the session
-            let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
+            let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionIdCopy)
 
             guard let session = try? backgroundContext.fetch(fetchRequest).first else {
-                logger.warning("Session not found for optimistic message: \(sessionId.uuidString.lowercased())")
+                logger.warning("Session not found for optimistic message: \(sessionIdCopy.uuidString.lowercased())")
                 return
             }
-            
+
             // Create optimistic message
             let message = CDMessage(context: backgroundContext)
             message.id = messageId
-            message.sessionId = sessionId
+            message.sessionId = sessionIdCopy
             message.role = "user"
-            message.text = text
+            message.text = textCopy
             message.timestamp = Date()
             message.messageStatus = .sending
             message.session = session
-            
-            logger.info("📝 Optimistic message prepared: id=\(messageId) sessionId=\(sessionId.uuidString.lowercased()) role=user text_length=\(text.count) status=sending")
-            
+
+            logger.info("📝 Optimistic message prepared: id=\(messageId) sessionId=\(sessionIdCopy.uuidString.lowercased()) role=user text_length=\(textCopy.count) status=sending")
+
             // Update session metadata optimistically
             session.lastModified = Date()
             session.messageCount += 1
-            session.preview = String(text.prefix(100))
-            
+            session.preview = String(textCopy.prefix(100))
+
             do {
                 if backgroundContext.hasChanges {
                     try backgroundContext.save()
                     logger.info("📝 Saved optimistic message: \(messageId)")
-                    
+
                     DispatchQueue.main.async {
                         completion(messageId)
                     }
@@ -279,20 +291,25 @@ class SessionSyncManager {
     }
     
     // MARK: - Session Updated Handling
-    
+
     /// Handle session_updated message from backend
     /// - Parameters:
     ///   - sessionId: Session UUID
     ///   - messages: Array of new message dictionaries
-    func handleSessionUpdated(sessionId: String, messages: [[String: Any]]) {
+    public func handleSessionUpdated(sessionId: String, messages: [[String: Any]]) {
         logger.info("Received session_updated for: \(sessionId) with \(messages.count) messages")
 
+        // Extract data outside the @Sendable closure
+        let sessionIdCopy = sessionId
+        nonisolated(unsafe) let messagesCopy = messages
+        let activeSessionManager = ActiveSessionManager.shared
+
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
-            guard let self = self else { return }
+            guard let self else { return }
 
             // Validate UUID format
-            guard let sessionUUID = UUID(uuidString: sessionId) else {
-                logger.error("Invalid session ID format in handleSessionUpdated: \(sessionId)")
+            guard let sessionUUID = UUID(uuidString: sessionIdCopy) else {
+                logger.error("Invalid session ID format in handleSessionUpdated: \(sessionIdCopy)")
                 return
             }
 
@@ -304,7 +321,7 @@ class SessionSyncManager {
                 session = existingSession
             } else {
                 // Session not in our list yet - create it from the update
-                logger.info("Creating new session from update: \(sessionId)")
+                logger.info("Creating new session from update: \(sessionIdCopy)")
                 session = CDBackendSession(context: backgroundContext)
                 session.id = sessionUUID
                 session.backendName = "" // Will be updated on next session_list
@@ -314,13 +331,13 @@ class SessionSyncManager {
             }
 
             // Check if this session is currently active
-            let isActiveSession = ActiveSessionManager.shared.isActive(sessionUUID)
+            let isActiveSession = activeSessionManager.isActive(sessionUUID)
 
             // Process each message - reconcile optimistic ones, create new ones
             var newMessageCount = 0
             var assistantMessagesToSpeak: [String] = []
 
-            for messageData in messages {
+            for messageData in messagesCopy {
                 // Extract fields from raw .jsonl format
                 guard let role = self.extractRole(from: messageData),
                       let text = self.extractText(from: messageData) else {
@@ -342,7 +359,7 @@ class SessionSyncManager {
                 // Try to reconcile optimistic message first
                 let fetchRequest = CDMessage.fetchMessage(sessionId: sessionUUID, role: role, text: text)
 
-                logger.info("🔍 Looking for optimistic message to reconcile: role=\(role) text_length=\(text.count) session=\(sessionId)")
+                logger.info("🔍 Looking for optimistic message to reconcile: role=\(role) text_length=\(text.count) session=\(sessionIdCopy)")
 
                 var existingMessage = try? backgroundContext.fetch(fetchRequest).first
 
@@ -371,7 +388,7 @@ class SessionSyncManager {
                 } else {
                     // Create new message (backend-originated or not found)
                     logger.info("❌ No optimistic message found - creating new message: role=\(role) text_length=\(text.count)")
-                    self.createMessage(messageData, sessionId: sessionId, in: backgroundContext, session: session)
+                    self.createMessage(messageData, sessionId: sessionIdCopy, in: backgroundContext, session: session)
                     newMessageCount += 1
 
                     // Collect assistant messages for speaking (if active session)
@@ -396,30 +413,19 @@ class SessionSyncManager {
                     session.unreadCount += Int32(newMessageCount)
                     logger.info("Background session: incremented unread count to \(session.unreadCount)")
                     
-                    // Post notification for assistant messages when app is backgrounded
+                    // TODO: Platform-specific notification handling
+                    // NotificationManager is iOS-specific and should be called from the iOS app layer
+                    // For now, just log that notifications would be posted
                     if !assistantMessagesToSpeak.isEmpty {
                         let sessionName = session.displayName(context: backgroundContext)
-                        logger.info("📬 Posting notification for \(assistantMessagesToSpeak.count) assistant messages")
-
-                        // Post notification on main thread
-                        // Combine multiple messages into one notification
-                        let combinedText = assistantMessagesToSpeak.joined(separator: "\n\n")
-                        let workingDirectory = session.workingDirectory
-                        DispatchQueue.main.async {
-                            Task {
-                                await NotificationManager.shared.postResponseNotification(
-                                    text: combinedText,
-                                    sessionName: sessionName,
-                                    workingDirectory: workingDirectory
-                                )
-                            }
-                        }
+                        logger.info("📬 Would post notification for \(assistantMessagesToSpeak.count) assistant messages in session: \(sessionName)")
+                        // Platform-specific code (iOS app) should observe notifications and handle this
                     }
                 }
             }
 
             // Update preview with last message text
-            if let lastMessage = messages.last,
+            if let lastMessage = messagesCopy.last,
                let text = self.extractText(from: lastMessage) {
                 session.preview = String(text.prefix(100))
             }
@@ -427,7 +433,7 @@ class SessionSyncManager {
             do {
                 if backgroundContext.hasChanges {
                     try backgroundContext.save()
-                    logger.info("Updated session: \(sessionId)")
+                    logger.info("Updated session: \(sessionIdCopy)")
                 }
 
                 // Prune old messages if threshold exceeded
@@ -436,7 +442,7 @@ class SessionSyncManager {
                     let deletedCount = CDMessage.pruneOldMessages(sessionId: sessionUUID, in: backgroundContext)
                     if deletedCount > 0 {
                         try? backgroundContext.save()
-                        logger.info("🧹 Pruned \(deletedCount) old messages from session \(sessionId)")
+                        logger.info("🧹 Pruned \(deletedCount) old messages from session \(sessionIdCopy)")
                     }
                 }
 
@@ -747,7 +753,7 @@ class SessionSyncManager {
     /// - Parameters:
     ///   - sessionId: Session UUID
     ///   - name: New name to set
-    func updateSessionLocalName(sessionId: UUID, name: String) {
+    public func updateSessionLocalName(sessionId: UUID, name: String) {
         logger.info("Updating session custom name: \(sessionId.uuidString.lowercased()) -> \(name)")
 
         persistenceController.performBackgroundTask { backgroundContext in
@@ -780,7 +786,7 @@ class SessionSyncManager {
 
     /// Clear all sessions and messages when changing servers
     /// This ensures we don't show sessions from the old server
-    func clearAllSessions() {
+    public func clearAllSessions() {
         logger.info("Clearing all sessions due to server change")
         
         persistenceController.performBackgroundTask { backgroundContext in

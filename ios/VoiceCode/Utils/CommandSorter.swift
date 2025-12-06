@@ -2,6 +2,7 @@
 // MRU (Most Recently Used) sorting for commands
 
 import Foundation
+import UntetheredCore
 
 class CommandSorter {
     private let userDefaults: UserDefaults

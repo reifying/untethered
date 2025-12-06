@@ -4,17 +4,17 @@
 import Foundation
 import CoreData
 
-struct RecentSession: Identifiable, Equatable {
-    let sessionId: String
-    let name: String
-    let workingDirectory: String
-    let lastModified: Date
+public struct RecentSession: Identifiable, Equatable {
+    public let sessionId: String
+    public let name: String
+    public let workingDirectory: String
+    public let lastModified: Date
 
-    var id: String { sessionId }
+    public var id: String { sessionId }
 
     // Parse from WebSocket JSON (snake_case keys)
     // Backend sends 'name' field (Claude summary or dir-timestamp fallback)
-    private init?(json: [String: Any]) {
+    init?(json: [String: Any]) {
         guard let sessionId = json["session_id"] as? String,
               let name = json["name"] as? String,
               let workingDirectory = json["working_directory"] as? String,
@@ -42,7 +42,7 @@ struct RecentSession: Identifiable, Equatable {
     }
 
     // For testing
-    init(sessionId: String, name: String, workingDirectory: String, lastModified: Date) {
+    public init(sessionId: String, name: String, workingDirectory: String, lastModified: Date) {
         self.sessionId = sessionId
         self.name = name
         self.workingDirectory = workingDirectory
@@ -50,12 +50,12 @@ struct RecentSession: Identifiable, Equatable {
     }
 
     // Display name comes directly from backend (no CoreData lookup needed)
-    var displayName: String {
+    public var displayName: String {
         name
     }
 
     // Batch parse recent sessions (simplified - backend provides all data)
-    static func parseRecentSessions(_ jsonArray: [[String: Any]]) -> [RecentSession] {
+    public static func parseRecentSessions(_ jsonArray: [[String: Any]]) -> [RecentSession] {
         return jsonArray.compactMap { RecentSession(json: $0) }
     }
 }

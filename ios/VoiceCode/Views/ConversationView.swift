@@ -4,6 +4,7 @@
 import SwiftUI
 import CoreData
 import os.log
+import UntetheredCore
 
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "ConversationView")
 
@@ -72,7 +73,7 @@ struct ConversationView: View {
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
 
-    init(session: CDBackendSession, client: VoiceCodeClient, voiceOutput: VoiceOutputManager = VoiceOutputManager(), voiceInput: VoiceInputManager = VoiceInputManager(), settings: AppSettings) {
+    init(session: CDBackendSession, client: VoiceCodeClient, voiceOutput: VoiceOutputManager = VoiceOutputManager(), voiceInput: VoiceInputManager = MainActor.assumeIsolated { VoiceInputManager() }, settings: AppSettings) {
         _session = ObservedObject(wrappedValue: session)
         self.client = client
         _voiceOutput = StateObject(wrappedValue: voiceOutput)
