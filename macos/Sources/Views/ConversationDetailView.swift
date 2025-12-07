@@ -13,6 +13,11 @@ struct ConversationDetailView: View {
 
     @State private var promptText = ""
     @State private var hasPerformedInitialScroll = false
+    @StateObject private var voiceInputManager = VoiceInputManager()
+    @StateObject private var voiceOutputManager: VoiceOutputManager
+    @State private var isSpaceBarPressed = false
+    @State private var showPermissionAlert = false
+    @State private var permissionAlertMessage = ""
 
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
@@ -23,6 +28,9 @@ struct ConversationDetailView: View {
             fetchRequest: CDMessage.fetchMessages(sessionId: session.id),
             animation: nil
         )
+        // Initialize voice output manager with app settings
+        // Note: settings not available yet in init, will be passed via environment
+        _voiceOutputManager = StateObject(wrappedValue: VoiceOutputManager())
     }
 
     // Check if session is locked
@@ -41,7 +49,17 @@ struct ConversationDetailView: View {
 
                 Spacer()
 
-                if isSessionLocked {
+                // Voice status indicator
+                if voiceInputManager.isRecording {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 8, height: 8)
+                        Text("Listening...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                } else if isSessionLocked {
                     HStack(spacing: 4) {
                         ProgressView()
                             .scaleEffect(0.7)
@@ -50,6 +68,27 @@ struct ConversationDetailView: View {
                             .foregroundColor(.secondary)
                     }
                 }
+
+                // Stop speaking button (visible when TTS is playing)
+                if voiceOutputManager.isSpeaking {
+                    Button(action: {
+                        voiceOutputManager.stop()
+                    }) {
+                        Image(systemName: "stop.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Stop speaking (⌘⇧S)")
+                }
+
+                // Microphone button
+                Button(action: toggleRecording) {
+                    Image(systemName: voiceInputManager.isRecording ? "mic.fill" : "mic")
+                        .foregroundColor(voiceInputManager.isRecording ? .red : .secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(isSessionLocked || !client.isConnected)
+                .help("Voice input (Hold Space bar)")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -62,7 +101,7 @@ struct ConversationDetailView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
                         ForEach(messages) { message in
-                            MessageRowView(message: message)
+                            MessageRowView(message: message, voiceOutputManager: voiceOutputManager)
                                 .id(message.id)
                         }
                     }
@@ -72,6 +111,11 @@ struct ConversationDetailView: View {
                     if let lastMessage = messages.last {
                         withAnimation {
                             proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                        }
+
+                        // Auto-play assistant responses if enabled
+                        if settings.autoPlayResponses && lastMessage.role == "assistant" {
+                            voiceOutputManager.speak(lastMessage.displayText)
                         }
                     }
                 }
@@ -108,6 +152,34 @@ struct ConversationDetailView: View {
             .padding()
             .background(Color(nsColor: .controlBackgroundColor))
         }
+        .onAppear {
+            // Request microphone and speech recognition permissions on first use
+            if voiceInputManager.authorizationStatus == .notDetermined {
+                voiceInputManager.requestAuthorization { granted in
+                    if !granted {
+                        permissionAlertMessage = "Microphone and speech recognition permissions are required for voice input."
+                        showPermissionAlert = true
+                    }
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .stopSpeaking)) { _ in
+            voiceOutputManager.stop()
+        }
+        .onChange(of: voiceInputManager.transcribedText) { newText in
+            // When transcription completes, populate the input field
+            if !newText.isEmpty && !voiceInputManager.isRecording {
+                promptText = newText
+            }
+        }
+        .alert("Permission Required", isPresented: $showPermissionAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(permissionAlertMessage)
+        }
+        // Keyboard shortcuts - Note: Space bar push-to-talk is a future enhancement
+        // macOS SwiftUI doesn't support key down/up events easily
+        // For now, users can click the mic button or use voice commands
     }
 
     private func sendPrompt() {
@@ -140,12 +212,47 @@ struct ConversationDetailView: View {
 
         promptText = ""
     }
+
+    // MARK: - Voice Input
+
+    private func toggleRecording() {
+        if voiceInputManager.isRecording {
+            stopRecording()
+        } else {
+            startRecording()
+        }
+    }
+
+    private func startRecording() {
+        guard !isSessionLocked, client.isConnected else { return }
+
+        // Check permissions
+        guard voiceInputManager.authorizationStatus == .authorized else {
+            voiceInputManager.requestAuthorization { granted in
+                if granted {
+                    voiceInputManager.startRecording()
+                } else {
+                    permissionAlertMessage = "Microphone and speech recognition permissions are required for voice input. Please grant access in System Settings."
+                    showPermissionAlert = true
+                }
+            }
+            return
+        }
+
+        voiceInputManager.startRecording()
+    }
+
+    private func stopRecording() {
+        voiceInputManager.stopRecording()
+    }
 }
 
 // MARK: - Message Row
 
 struct MessageRowView: View {
     @ObservedObject var message: CDMessage
+    @EnvironmentObject var settings: AppSettings
+    var voiceOutputManager: VoiceOutputManager?
 
     private var roleIcon: String {
         message.role == "user" ? "person.fill" : "cpu"
@@ -176,6 +283,19 @@ struct MessageRowView: View {
                     if message.messageStatus == .sending {
                         ProgressView()
                             .scaleEffect(0.6)
+                    }
+
+                    // Play button for assistant messages
+                    if message.role == "assistant", let voiceManager = voiceOutputManager {
+                        Button(action: {
+                            voiceManager.speak(message.displayText)
+                        }) {
+                            Image(systemName: "speaker.wave.2.fill")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Play message")
                     }
                 }
 

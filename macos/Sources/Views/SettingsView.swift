@@ -26,6 +26,13 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
 
+            Section(header: Text("Voice Settings")) {
+                Toggle("Auto-play Responses", isOn: $settings.autoPlayResponses)
+                Text("Automatically speak assistant responses when they arrive")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             Section(header: Text("System Prompt")) {
                 TextEditor(text: $settings.systemPrompt)
                     .frame(minHeight: 100, maxHeight: 200)

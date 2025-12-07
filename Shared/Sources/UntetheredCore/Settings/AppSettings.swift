@@ -65,6 +65,12 @@ public class AppSettings: ObservableObject {
         }
     }
 
+    @Published public var autoPlayResponses: Bool {
+        didSet {
+            UserDefaults.standard.set(autoPlayResponses, forKey: "autoPlayResponses")
+        }
+    }
+
     @Published public var systemPrompt: String
 
     public var fullServerURL: String {
@@ -247,6 +253,7 @@ public class AppSettings: ObservableObject {
         self.resourceStorageLocation = UserDefaults.standard.string(forKey: "resourceStorageLocation") ?? "~/Downloads"
         self.queueEnabled = UserDefaults.standard.object(forKey: "queueEnabled") as? Bool ?? false
         self.respectSilentMode = UserDefaults.standard.object(forKey: "respectSilentMode") as? Bool ?? true
+        self.autoPlayResponses = UserDefaults.standard.object(forKey: "autoPlayResponses") as? Bool ?? false
         self.systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? ""
 
         // Set up debounced publishers for text fields (serverURL and serverPort)
