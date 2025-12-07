@@ -67,19 +67,15 @@ struct UntetheredMacApp: App {
         }
         .defaultSize(width: 800, height: 600)
         .commands {
-            CommandGroup(after: .newItem) {
-                Button("Stop Speaking") {
-                    // Post notification that any view can observe
-                    NotificationCenter.default.post(name: .stopSpeaking, object: nil)
-                }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
-            }
+            SessionCommands()
+            VoiceCommands()
         }
+
+        #if os(macOS)
+        Settings {
+            SettingsWindow()
+                .environmentObject(settings)
+        }
+        #endif
     }
-}
-
-// MARK: - Notification Names
-
-extension Notification.Name {
-    static let stopSpeaking = Notification.Name("stopSpeaking")
 }

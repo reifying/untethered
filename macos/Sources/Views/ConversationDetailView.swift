@@ -18,6 +18,8 @@ struct ConversationDetailView: View {
     @State private var isSpaceBarPressed = false
     @State private var showPermissionAlert = false
     @State private var permissionAlertMessage = ""
+    @State private var conversationActionsImpl: ConversationActionsImpl?
+    @State private var showCommandMenu = false
 
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
@@ -177,6 +179,23 @@ struct ConversationDetailView: View {
         } message: {
             Text(permissionAlertMessage)
         }
+        .focusedValue(\.conversationActions, conversationActionsImpl)
+        .sheet(isPresented: $showCommandMenu) {
+            CommandMenuSheet(workingDirectory: session.workingDirectory ?? "")
+                .environmentObject(client)
+        }
+        .onAppear {
+            // Create actions implementation with closures
+            conversationActionsImpl = ConversationActionsImpl(
+                sendPrompt: { [self] in sendPrompt() },
+                stopTurn: { [self] in stopTurn() },
+                copySessionID: { [self] in copySessionID() },
+                toggleRecording: { [self] in toggleRecording() },
+                cancelInput: { [self] in cancelInput() },
+                compactSession: { [self] in compactSession() },
+                showCommandMenu: { [self] in showCommandMenu = true }
+            )
+        }
         // Keyboard shortcuts - Note: Space bar push-to-talk is a future enhancement
         // macOS SwiftUI doesn't support key down/up events easily
         // For now, users can click the mic button or use voice commands
@@ -244,6 +263,98 @@ struct ConversationDetailView: View {
 
     private func stopRecording() {
         voiceInputManager.stopRecording()
+    }
+
+    // MARK: - Menu Actions
+
+    fileprivate func copySessionID() {
+        let sessionId = session.id.uuidString.lowercased()
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(sessionId, forType: .string)
+    }
+
+    fileprivate func stopTurn() {
+        // TODO: Implement stop turn (Cmd+.)
+        // This will require backend support to interrupt Claude CLI execution
+        print("Stop turn requested (not yet implemented)")
+    }
+
+    fileprivate func cancelInput() {
+        if voiceInputManager.isRecording {
+            stopRecording()
+        }
+        promptText = ""
+    }
+
+    fileprivate func compactSession() {
+        let sessionId = session.id.uuidString.lowercased()
+        Task {
+            do {
+                _ = try await client.compactSession(sessionId: sessionId)
+                print("Session compacted successfully")
+            } catch {
+                print("Failed to compact session: \(error)")
+            }
+        }
+    }
+}
+
+// MARK: - Conversation Actions Implementation
+
+class ConversationActionsImpl: ConversationActions {
+    var sendPromptAction: () -> Void
+    var stopTurnAction: () -> Void
+    var copySessionIDAction: () -> Void
+    var toggleRecordingAction: () -> Void
+    var cancelInputAction: () -> Void
+    var compactSessionAction: () -> Void
+    var showCommandMenuAction: () -> Void
+
+    init(
+        sendPrompt: @escaping () -> Void,
+        stopTurn: @escaping () -> Void,
+        copySessionID: @escaping () -> Void,
+        toggleRecording: @escaping () -> Void,
+        cancelInput: @escaping () -> Void,
+        compactSession: @escaping () -> Void,
+        showCommandMenu: @escaping () -> Void
+    ) {
+        self.sendPromptAction = sendPrompt
+        self.stopTurnAction = stopTurn
+        self.copySessionIDAction = copySessionID
+        self.toggleRecordingAction = toggleRecording
+        self.cancelInputAction = cancelInput
+        self.compactSessionAction = compactSession
+        self.showCommandMenuAction = showCommandMenu
+    }
+
+    func sendPrompt() {
+        sendPromptAction()
+    }
+
+    func stopTurn() {
+        stopTurnAction()
+    }
+
+    func copySessionID() {
+        copySessionIDAction()
+    }
+
+    func toggleRecording() {
+        toggleRecordingAction()
+    }
+
+    func cancelInput() {
+        cancelInputAction()
+    }
+
+    func compactSession() {
+        compactSessionAction()
+    }
+
+    func showCommandMenu() {
+        showCommandMenuAction()
     }
 }
 
