@@ -75,6 +75,12 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.910labs.untethered.macTests
         GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+      configs:
+        Debug:
+          DEVELOPMENT_TEAM: REDACTED_TEAM_ID
+        Release:
+          DEVELOPMENT_TEAM: REDACTED_TEAM_ID
 
 schemes:
   UntetheredMac:

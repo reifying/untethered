@@ -11,7 +11,7 @@ BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
 .PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
-.PHONY: macos-generate macos-build macos-run macos-clean
+.PHONY: macos-generate macos-build macos-run macos-clean macos-test macos-test-unit macos-test-ui macos-test-class macos-test-method
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 
@@ -39,6 +39,11 @@ help:
 	@echo "  macos-build       - Build the macOS app"
 	@echo "  macos-run         - Build and launch the macOS app"
 	@echo "  macos-clean       - Clean macOS build artifacts"
+	@echo "  macos-test        - Run all macOS tests"
+	@echo "  macos-test-unit   - Run only macOS unit tests"
+	@echo "  macos-test-ui     - Run only macOS UI tests"
+	@echo "  macos-test-class  - Run specific test class (usage: make macos-test-class CLASS=AppSettingsTests)"
+	@echo "  macos-test-method - Run specific test method (usage: make macos-test-method CLASS=AppSettingsTests METHOD=test_method_name)"
 	@echo ""
 	@echo "Backend server management:"
 	@echo "  backend-run       - Start the backend server"
@@ -189,6 +194,35 @@ macos-run: macos-build
 macos-clean:
 	cd $(MACOS_DIR) && xcodebuild clean -scheme $(MACOS_SCHEME) || true
 	rm -rf ~/Library/Developer/Xcode/DerivedData/UntetheredMac-*
+
+# Run all macOS tests
+macos-test: macos-generate
+	$(WRAP) bash -c "cd $(MACOS_DIR) && xcodebuild test -scheme $(MACOS_SCHEME) -destination 'platform=macOS'"
+
+# Run only unit tests
+macos-test-unit: macos-generate
+	$(WRAP) bash -c "cd $(MACOS_DIR) && xcodebuild test -scheme $(MACOS_SCHEME) -destination 'platform=macOS' -only-testing:UntetheredMacTests"
+
+# Run only UI tests
+macos-test-ui: macos-generate
+	$(WRAP) bash -c "cd $(MACOS_DIR) && xcodebuild test -scheme $(MACOS_SCHEME) -destination 'platform=macOS' -only-testing:UntetheredMacUITests"
+
+# Run specific test class (usage: make macos-test-class CLASS=AppSettingsTests)
+macos-test-class: macos-generate
+ifndef CLASS
+	$(error CLASS is required. Usage: make macos-test-class CLASS=AppSettingsTests)
+endif
+	$(WRAP) bash -c "cd $(MACOS_DIR) && xcodebuild test -scheme $(MACOS_SCHEME) -destination 'platform=macOS' -only-testing:UntetheredMacTests/$(CLASS)"
+
+# Run specific test method (usage: make macos-test-method CLASS=AppSettingsTests METHOD=test_method_name)
+macos-test-method: macos-generate
+ifndef CLASS
+	$(error CLASS is required. Usage: make macos-test-method CLASS=AppSettingsTests METHOD=test_method_name)
+endif
+ifndef METHOD
+	$(error METHOD is required. Usage: make macos-test-method CLASS=AppSettingsTests METHOD=test_method_name)
+endif
+	$(WRAP) bash -c "cd $(MACOS_DIR) && xcodebuild test -scheme $(MACOS_SCHEME) -destination 'platform=macOS' -only-testing:UntetheredMacTests/$(CLASS)/$(METHOD)"
 
 # Backend targets
 
