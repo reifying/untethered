@@ -80,12 +80,12 @@ struct SettingsView: View {
         testingConnection = true
         testResult = nil
 
-        // Simple connection test - try to connect to WebSocket
-        // This is a placeholder - proper implementation would use VoiceCodeClient
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            testingConnection = false
-            testSuccess = true
-            testResult = "Connection successful"
+        settings.testConnection { success, message in
+            Task { @MainActor in
+                self.testingConnection = false
+                self.testSuccess = success
+                self.testResult = message
+            }
         }
     }
 }

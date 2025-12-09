@@ -27,8 +27,10 @@ public class VoiceInputManager: NSObject, ObservableObject {
     // MARK: - Authorization
 
     public func requestAuthorization(completion: @escaping @MainActor (Bool) -> Void) {
-        SFSpeechRecognizer.requestAuthorization { [weak self] status in
-            Task { @MainActor [weak self] in
+        SFSpeechRecognizer.requestAuthorization { status in
+            // SFSpeechRecognizer callback may run on background thread with strict queue assertions
+            // Dispatch to main queue first to avoid dispatch_assert_queue failures
+            DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.authorizationStatus = status
                 completion(status == .authorized)

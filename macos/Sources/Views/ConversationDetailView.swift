@@ -20,6 +20,8 @@ struct ConversationDetailView: View {
     @State private var permissionAlertMessage = ""
     @State private var conversationActionsImpl: ConversationActionsImpl?
     @State private var showCommandMenu = false
+    @State private var hasLoadedMessages = false
+    @State private var isLoading = false
 
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
@@ -102,14 +104,48 @@ struct ConversationDetailView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(messages) { message in
-                            MessageRowView(message: message, voiceOutputManager: voiceOutputManager)
-                                .id(message.id)
+                        if isLoading {
+                            // Loading state
+                            VStack(spacing: 16) {
+                                ProgressView()
+                                Text("Loading conversation...")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding()
+                        } else if messages.isEmpty && hasLoadedMessages {
+                            // Empty state
+                            VStack(spacing: 12) {
+                                Image(systemName: "text.bubble")
+                                    .font(.system(size: 48))
+                                    .foregroundColor(.secondary)
+                                Text("No messages yet")
+                                    .font(.title3)
+                                    .foregroundColor(.secondary)
+                                Text("Start a conversation by sending a prompt below")
+                                    .font(.body)
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding()
+                        } else {
+                            ForEach(messages) { message in
+                                MessageRowView(message: message, voiceOutputManager: voiceOutputManager)
+                                    .id(message.id)
+                            }
                         }
                     }
                     .padding()
                 }
                 .onChange(of: messages.count) { _ in
+                    // Hide loading indicator when messages arrive
+                    if isLoading && messages.count > 0 {
+                        print("📥 [ConversationDetailView] Messages arrived (\(messages.count)), hiding loading indicator")
+                        isLoading = false
+                    }
+
                     if let lastMessage = messages.last {
                         withAnimation {
                             proxy.scrollTo(lastMessage.id, anchor: .bottom)
@@ -164,6 +200,15 @@ struct ConversationDetailView: View {
                     }
                 }
             }
+
+            // Load session messages if not already loaded
+            loadSessionIfNeeded()
+        }
+        .onDisappear {
+            // Unsubscribe when leaving the conversation
+            let sessionId = session.id.uuidString.lowercased()
+            print("📕 [ConversationDetailView] Unsubscribing from session: \(sessionId)")
+            client.unsubscribe(sessionId: sessionId)
         }
         .onReceive(NotificationCenter.default.publisher(for: .stopSpeaking)) { _ in
             voiceOutputManager.stop()
@@ -263,6 +308,47 @@ struct ConversationDetailView: View {
 
     private func stopRecording() {
         voiceInputManager.stopRecording()
+    }
+
+    // MARK: - Session Loading
+
+    private func loadSessionIfNeeded() {
+        guard !hasLoadedMessages else { return }
+
+        let sessionId = session.id.uuidString.lowercased()
+        print("📚 [ConversationDetailView] Loading session: \(sessionId)")
+
+        hasLoadedMessages = true
+
+        // If messages already exist in CoreData, skip loading indicator
+        if !messages.isEmpty {
+            print("📚 [ConversationDetailView] Messages already cached (\(messages.count)), skipping loading indicator")
+            isLoading = false
+        } else {
+            isLoading = true
+        }
+
+        // Subscribe to the session to load full history
+        // Skip subscribe for new sessions (messageCount == 0) to avoid "session not found" error
+        // The session will be created when the first prompt is sent
+        if session.messageCount > 0 {
+            print("📥 [ConversationDetailView] Subscribing to session (messageCount: \(session.messageCount))")
+            client.subscribe(sessionId: sessionId)
+        } else {
+            print("📥 [ConversationDetailView] Skipping subscribe (new session)")
+            isLoading = false
+        }
+
+        // Fallback timeout to hide loading indicator if messages don't arrive
+        // Only needed when isLoading was set to true (no cached messages)
+        if isLoading {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                if self.isLoading {
+                    print("⏱️ [ConversationDetailView] Loading indicator hidden (5s timeout fallback)")
+                    self.isLoading = false
+                }
+            }
+        }
     }
 
     // MARK: - Menu Actions

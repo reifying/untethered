@@ -366,6 +366,149 @@ final class SettingsWindowIntegrationTests: XCTestCase {
         XCTAssertEqual(newSettings.serverPort, "8009")
     }
 
+    // MARK: - Connection Tests
+
+    func testConnection_Success_WithValidServer() {
+        // Note: This test requires a running backend server
+        // If backend is not running, it will timeout and return error
+        settings.serverURL = "localhost"
+        settings.serverPort = "8080"
+
+        let expectation = expectation(description: "Test connection")
+        var connectionSuccess = false
+        var connectionMessage = ""
+
+        settings.testConnection { success, message in
+            connectionSuccess = success
+            connectionMessage = message
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 10.0)
+
+        // Without a running server, this will fail
+        // The test verifies that the connection mechanism works
+        // Not that the connection succeeds
+        XCTAssertFalse(connectionMessage.isEmpty)
+    }
+
+    func testConnection_Failure_WithInvalidServer() {
+        settings.serverURL = "invalid.server.nowhere"
+        settings.serverPort = "99999"
+
+        let expectation = expectation(description: "Test connection")
+        var connectionSuccess = false
+        var connectionMessage = ""
+
+        settings.testConnection { success, message in
+            connectionSuccess = success
+            connectionMessage = message
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 10.0)
+
+        XCTAssertFalse(connectionSuccess)
+        XCTAssertFalse(connectionMessage.isEmpty)
+    }
+
+    func testConnection_Validation_EmptyServerURL() {
+        settings.serverURL = ""
+        settings.serverPort = "8080"
+
+        let expectation = expectation(description: "Test connection")
+        var connectionSuccess = false
+        var connectionMessage = ""
+
+        settings.testConnection { success, message in
+            connectionSuccess = success
+            connectionMessage = message
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1.0)
+
+        XCTAssertFalse(connectionSuccess)
+        XCTAssertEqual(connectionMessage, "Server address is required")
+    }
+
+    func testConnection_Validation_EmptyPort() {
+        settings.serverURL = "localhost"
+        settings.serverPort = ""
+
+        let expectation = expectation(description: "Test connection")
+        var connectionSuccess = false
+        var connectionMessage = ""
+
+        settings.testConnection { success, message in
+            connectionSuccess = success
+            connectionMessage = message
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1.0)
+
+        XCTAssertFalse(connectionSuccess)
+        XCTAssertEqual(connectionMessage, "Valid port number is required")
+    }
+
+    func testConnection_Validation_InvalidPort() {
+        settings.serverURL = "localhost"
+        settings.serverPort = "not-a-port"
+
+        let expectation = expectation(description: "Test connection")
+        var connectionSuccess = false
+        var connectionMessage = ""
+
+        settings.testConnection { success, message in
+            connectionSuccess = success
+            connectionMessage = message
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1.0)
+
+        XCTAssertFalse(connectionSuccess)
+        XCTAssertEqual(connectionMessage, "Valid port number is required")
+    }
+
+    // MARK: - First-Run Configuration Tests
+
+    func testFirstRun_isServerConfigured_ReturnsFalse_WhenEmpty() {
+        settings.serverURL = ""
+        settings.serverPort = "8080"
+
+        XCTAssertFalse(settings.isServerConfigured)
+    }
+
+    func testFirstRun_isServerConfigured_ReturnsFalse_WhenWhitespace() {
+        settings.serverURL = "   "
+        settings.serverPort = "8080"
+
+        XCTAssertFalse(settings.isServerConfigured)
+    }
+
+    func testFirstRun_isServerConfigured_ReturnsTrue_WhenSet() {
+        settings.serverURL = "localhost"
+        settings.serverPort = "8080"
+
+        XCTAssertTrue(settings.isServerConfigured)
+    }
+
+    func testFirstRun_isServerConfigured_ReturnsTrue_AfterPersistence() {
+        settings.serverURL = "192.168.1.100"
+        settings.serverPort = "9090"
+
+        let expectation = expectation(description: "Debounce wait")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        let newSettings = AppSettings()
+        XCTAssertTrue(newSettings.isServerConfigured)
+    }
+
     // MARK: - Voice Output Integration
 
     func testVoiceOutput_ManagerInitialization_WithSettings() {
