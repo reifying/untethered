@@ -30,12 +30,14 @@ struct DirectoryListView: View {
     @State private var createWorktree = false
     @State private var isRecentExpanded = true
     @State private var isQueueExpanded = true
+    @State private var isPriorityQueueExpanded = true
     @State private var showingCopyConfirmation = false
     @State private var copyConfirmationMessage = ""
 
     // Cached computed properties to prevent recomputation on every render
     @State private var cachedDirectories: [DirectoryInfo] = []
     @State private var cachedQueuedSessions: [CDBackendSession] = []
+    @State private var cachedPriorityQueueSessions: [CDBackendSession] = []
 
     // Background state tracking to suspend updates when not visible
     @Environment(\.scenePhase) private var scenePhase
@@ -43,10 +45,17 @@ struct DirectoryListView: View {
 
     // Debounce work item for queue updates
     @State private var queueUpdateWorkItem: DispatchWorkItem?
+    @State private var priorityQueueUpdateWorkItem: DispatchWorkItem?
 
     // Queue sessions filtered by lock state and sorted by position (FIFO)
     private var queuedSessions: [CDBackendSession] {
         cachedQueuedSessions
+    }
+
+    // Priority queue sessions filtered by lock state and sorted by three-level sort
+    // Sort: priority (ascending) → priorityOrder (ascending) → session ID (deterministic)
+    private var priorityQueueSessions: [CDBackendSession] {
+        cachedPriorityQueueSessions
     }
 
     init(
@@ -183,6 +192,27 @@ struct DirectoryListView: View {
                             }
                         } header: {
                             Text("Queue")
+                        }
+                    }
+
+                    // Priority Queue section
+                    if settings.priorityQueueEnabled && !priorityQueueSessions.isEmpty {
+                        Section(isExpanded: $isPriorityQueueExpanded) {
+                            ForEach(priorityQueueSessions) { session in
+                                NavigationLink(value: session.id) {
+                                    CDBackendSessionRowContent(session: session)
+                                }
+                                .id(session.id) // Stable view identity prevents motion vector recalculation
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        removeFromPriorityQueue(session)
+                                    } label: {
+                                        Label("Remove", systemImage: "xmark.circle")
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("Priority Queue")
                         }
                     }
 
@@ -325,13 +355,16 @@ struct DirectoryListView: View {
         .onAppear {
             updateCachedDirectories()
             updateCachedQueuedSessions()
+            updateCachedPriorityQueueSessions()
         }
         .onChange(of: sessions.count) { _ in
             updateCachedDirectories()
             updateCachedQueuedSessions()
+            updateCachedPriorityQueueSessions()
         }
         .onChange(of: viewModel.lockedSessions) { _ in
             updateCachedQueuedSessions()
+            updateCachedPriorityQueueSessions()
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             // Track app state to suspend layout updates in background
@@ -341,10 +374,12 @@ struct DirectoryListView: View {
                 logger.info("📱 App returned to foreground, refreshing caches")
                 updateCachedDirectories()
                 updateCachedQueuedSessions()
+                updateCachedPriorityQueueSessions()
             } else if newPhase == .background {
                 logger.info("📱 App entering background, suspending cache updates")
                 // Cancel any pending debounced updates
                 queueUpdateWorkItem?.cancel()
+                priorityQueueUpdateWorkItem?.cancel()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .sessionListDidUpdate)) { _ in
@@ -355,9 +390,18 @@ struct DirectoryListView: View {
                 sessions = try CDBackendSession.fetchActiveSessions(context: viewContext)
                 updateCachedDirectories()
                 updateCachedQueuedSessions()
+                updateCachedPriorityQueueSessions()
             } catch {
                 logger.error("❌ Failed to refetch sessions after update: \(error)")
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .priorityQueueChanged)) { notification in
+            // Update priority queue cache when changes occur in other views
+            logger.info("🔄 Priority queue changed notification received")
+            if let sessionId = notification.userInfo?["sessionId"] as? String {
+                logger.debug("   Session: \(sessionId)")
+            }
+            updateCachedPriorityQueueSessions()
         }
     }
 
@@ -426,6 +470,53 @@ struct DirectoryListView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
     }
 
+    private func updateCachedPriorityQueueSessions() {
+        // Skip updates when app is in background to prevent watchdog kills
+        guard isAppActive else {
+            logger.debug("⏸️ Skipping priority queue cache update (app in background)")
+            return
+        }
+
+        // Cancel any pending updates
+        priorityQueueUpdateWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [viewModel, sessions] in
+            // CRITICAL: Take snapshot to avoid triggering SwiftUI dependency tracking
+            let lockedSessionIds = viewModel.lockedSessions
+
+            let updatedSessions = sessions
+                .filter { $0.isInPriorityQueue }
+                .filter { session in
+                    let sessionId = session.id.uuidString.lowercased()
+                    return !lockedSessionIds.contains(sessionId)
+                }
+                .sorted { session1, session2 in
+                    // Three-level sort:
+                    // 1. Priority (ascending - lower number = higher priority)
+                    if session1.priority != session2.priority {
+                        return session1.priority < session2.priority
+                    }
+                    // 2. Priority order (ascending - lower order = added earlier)
+                    if session1.priorityOrder != session2.priorityOrder {
+                        return session1.priorityOrder < session2.priorityOrder
+                    }
+                    // 3. Session ID (deterministic tiebreaker)
+                    return session1.id.uuidString < session2.id.uuidString
+                }
+
+            // Update on main thread
+            DispatchQueue.main.async {
+                self.cachedPriorityQueueSessions = updatedSessions
+                logger.debug("🔄 Updated priority queue cache: \(updatedSessions.count) sessions")
+            }
+        }
+
+        priorityQueueUpdateWorkItem = workItem
+
+        // Debounce by 150ms to batch rapid updates
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
+    }
+
     // MARK: - Queue Management
 
     private func removeFromQueue(_ session: CDBackendSession) {
@@ -453,6 +544,35 @@ struct DirectoryListView: View {
         } catch {
             logger.error("❌ [Queue] Failed to remove session from queue: \(error)")
         }
+    }
+
+    // MARK: - Priority Queue Management
+
+    /// Helper: Save CoreData context with error handling
+    private func saveContext() {
+        do {
+            try viewContext.save()
+        } catch {
+            logger.error("❌ [PriorityQueue] CoreData save failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Add session to priority queue
+    private func addToPriorityQueue(_ session: CDBackendSession) {
+        CDBackendSession.addToPriorityQueue(session, context: viewContext)
+        updateCachedPriorityQueueSessions()
+    }
+
+    /// Remove session from priority queue
+    private func removeFromPriorityQueue(_ session: CDBackendSession) {
+        CDBackendSession.removeFromPriorityQueue(session, context: viewContext)
+        updateCachedPriorityQueueSessions()
+    }
+
+    /// Change session priority (only for sessions in priority queue)
+    private func changePriority(_ session: CDBackendSession, newPriority: Int32) {
+        CDBackendSession.changePriority(session, newPriority: newPriority, context: viewContext)
+        updateCachedPriorityQueueSessions()
     }
 
     private func copyToClipboard(_ text: String, message: String) {

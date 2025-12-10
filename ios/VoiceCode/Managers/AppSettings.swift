@@ -59,6 +59,12 @@ class AppSettings: ObservableObject {
         }
     }
 
+    @Published var priorityQueueEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(priorityQueueEnabled, forKey: "priorityQueueEnabled")
+        }
+    }
+
     @Published var respectSilentMode: Bool {
         didSet {
             UserDefaults.standard.set(respectSilentMode, forKey: "respectSilentMode")
@@ -246,6 +252,7 @@ class AppSettings: ObservableObject {
         self.notifyOnResponse = UserDefaults.standard.object(forKey: "notifyOnResponse") as? Bool ?? true
         self.resourceStorageLocation = UserDefaults.standard.string(forKey: "resourceStorageLocation") ?? "~/Downloads"
         self.queueEnabled = UserDefaults.standard.object(forKey: "queueEnabled") as? Bool ?? false
+        self.priorityQueueEnabled = UserDefaults.standard.object(forKey: "priorityQueueEnabled") as? Bool ?? false
         self.respectSilentMode = UserDefaults.standard.object(forKey: "respectSilentMode") as? Bool ?? true
         self.systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? ""
 

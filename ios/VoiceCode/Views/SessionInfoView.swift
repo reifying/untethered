@@ -6,6 +6,7 @@ import CoreData
 
 struct SessionInfoView: View {
     @ObservedObject var session: CDBackendSession
+    @ObservedObject var settings: AppSettings
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
 
@@ -65,6 +66,49 @@ struct SessionInfoView: View {
                 } footer: {
                     Text("Tap to copy any field")
                         .font(.caption)
+                }
+
+                // Priority Queue Section
+                if settings.priorityQueueEnabled && session.isInPriorityQueue {
+                    Section {
+                        // Priority Picker
+                        Picker("Priority", selection: Binding(
+                            get: { session.priority },
+                            set: { newPriority in
+                                changePriority(session, newPriority: newPriority)
+                            }
+                        )) {
+                            Text("High (1)").tag(Int32(1))
+                            Text("Medium (5)").tag(Int32(5))
+                            Text("Low (10)").tag(Int32(10))
+                        }
+                        .pickerStyle(.segmented)
+
+                        // Priority Order (read-only)
+                        HStack {
+                            Text("Order")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text(String(format: "%.1f", session.priorityOrder))
+                                .foregroundColor(.primary)
+                        }
+
+                        // Queued Timestamp (read-only)
+                        if let queuedAt = session.priorityQueuedAt {
+                            HStack {
+                                Text("Queued")
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text(queuedAt, style: .relative)
+                                    .foregroundColor(.primary)
+                            }
+                        }
+                    } header: {
+                        Text("Priority Queue")
+                    } footer: {
+                        Text("Change priority to adjust position in queue. Lower priority number = higher importance.")
+                            .font(.caption)
+                    }
                 }
 
                 // Actions Section
@@ -183,6 +227,13 @@ struct SessionInfoView: View {
                 showCopyConfirmation = false
             }
         }
+    }
+
+    // MARK: - Priority Queue Management
+
+    private func changePriority(_ session: CDBackendSession, newPriority: Int32) {
+        CDBackendSession.changePriority(session, newPriority: newPriority, context: viewContext)
+        showConfirmation("Priority changed to \(newPriority)")
     }
 }
 

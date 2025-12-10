@@ -20,6 +20,12 @@ public class CDBackendSession: NSManagedObject {
     @NSManaged public var isInQueue: Bool
     @NSManaged public var queuePosition: Int32
     @NSManaged public var queuedAt: Date?
+
+    // Priority queue management properties
+    @NSManaged public var isInPriorityQueue: Bool
+    @NSManaged public var priority: Int32
+    @NSManaged public var priorityOrder: Double
+    @NSManaged public var priorityQueuedAt: Date?
 }
 
 // MARK: - User Customization Enrichment

@@ -327,6 +327,27 @@ struct ConversationView: View {
                                 .foregroundColor(.orange)
                         }
                     }
+
+                    // Priority Queue buttons
+                    if settings.priorityQueueEnabled {
+                        if session.isInPriorityQueue {
+                            // Remove from Priority Queue button
+                            Button(action: {
+                                removeFromPriorityQueue(session)
+                            }) {
+                                Image(systemName: "star.slash.fill")
+                                    .foregroundColor(.purple)
+                            }
+                        } else {
+                            // Add to Priority Queue button
+                            Button(action: {
+                                addToPriorityQueue(session)
+                            }) {
+                                Image(systemName: "star.fill")
+                                    .foregroundColor(.purple)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -386,7 +407,7 @@ struct ConversationView: View {
             )
         }
         .sheet(isPresented: $showingSessionInfo) {
-            SessionInfoView(session: session)
+            SessionInfoView(session: session, settings: settings)
                 .environment(\.managedObjectContext, viewContext)
         }
         .task {
@@ -557,6 +578,11 @@ struct ConversationView: View {
         // Add to queue if enabled
         if settings.queueEnabled {
             addToQueue(session)
+        }
+
+        // Add to priority queue if enabled
+        if settings.priorityQueueEnabled {
+            addToPriorityQueue(session)
         }
 
         // Optimistically lock the session before sending
@@ -862,6 +888,23 @@ struct ConversationView: View {
         } catch {
             print("❌ [Queue] Failed to remove session from queue: \(error)")
         }
+    }
+
+    // MARK: - Priority Queue Management
+
+    /// Add session to priority queue (idempotent)
+    private func addToPriorityQueue(_ session: CDBackendSession) {
+        CDBackendSession.addToPriorityQueue(session, context: viewContext)
+    }
+
+    /// Remove session from priority queue (idempotent)
+    private func removeFromPriorityQueue(_ session: CDBackendSession) {
+        CDBackendSession.removeFromPriorityQueue(session, context: viewContext)
+    }
+
+    /// Change session priority (only for sessions in priority queue)
+    private func changePriority(_ session: CDBackendSession, newPriority: Int32) {
+        CDBackendSession.changePriority(session, newPriority: newPriority, context: viewContext)
     }
 }
 
