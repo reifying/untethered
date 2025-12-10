@@ -136,8 +136,7 @@
 
 (defn invoke-claude
   [prompt & {:keys [new-session-id resume-session-id model working-directory timeout system-prompt]
-             :or {model "sonnet"
-                  timeout 3600000}}]
+             :or {timeout 3600000}}]
   (let [cli-path (get-claude-cli-path)]
     (when-not cli-path
       (throw (ex-info "Claude CLI not found" {})))
@@ -150,8 +149,8 @@
           has-system-prompt? (and trimmed-system-prompt (not (clojure.string/blank? trimmed-system-prompt)))
           args (cond-> ["--dangerously-skip-permissions"
                         "--print"
-                        "--output-format" "json"
-                        "--model" model]
+                        "--output-format" "json"]
+                 model (concat ["--model" model])
                  new-session-id (concat ["--session-id" new-session-id])
                  resume-session-id (concat ["--resume" resume-session-id])
                  has-system-prompt? (concat ["--append-system-prompt" trimmed-system-prompt])
@@ -215,15 +214,14 @@
   - new-session-id: Optional Claude session ID for new session (uses --session-id)
   - resume-session-id: Optional Claude session ID for resuming (uses --resume)
   - working-directory: Optional working directory for Claude
-  - model: Model to use (default: sonnet)
+  - model: Optional model to use (uses Claude Code's default if not specified)
   - timeout-ms: Timeout in milliseconds (default: 86400000 = 24 hours)
   - system-prompt: Optional system prompt to append (uses --append-system-prompt)
 
   Returns immediately. Calls callback-fn when done or on timeout.
   Response map will have :success true/false and either :result or :error."
   [prompt callback-fn & {:keys [new-session-id resume-session-id working-directory model timeout-ms system-prompt]
-                         :or {model "sonnet"
-                              timeout-ms 86400000}}]
+                         :or {timeout-ms 86400000}}]
   (async/go
     (let [response-ch (async/thread
                         (try
