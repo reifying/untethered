@@ -69,45 +69,66 @@ struct SessionInfoView: View {
                 }
 
                 // Priority Queue Section
-                if settings.priorityQueueEnabled && session.isInPriorityQueue {
+                if settings.priorityQueueEnabled {
                     Section {
-                        // Priority Picker
-                        Picker("Priority", selection: Binding(
-                            get: { session.priority },
-                            set: { newPriority in
-                                changePriority(session, newPriority: newPriority)
+                        if session.isInPriorityQueue {
+                            // Priority Picker
+                            Picker("Priority", selection: Binding(
+                                get: { session.priority },
+                                set: { newPriority in
+                                    changePriority(session, newPriority: newPriority)
+                                }
+                            )) {
+                                Text("High (1)").tag(Int32(1))
+                                Text("Medium (5)").tag(Int32(5))
+                                Text("Low (10)").tag(Int32(10))
                             }
-                        )) {
-                            Text("High (1)").tag(Int32(1))
-                            Text("Medium (5)").tag(Int32(5))
-                            Text("Low (10)").tag(Int32(10))
-                        }
-                        .pickerStyle(.segmented)
+                            .pickerStyle(.segmented)
 
-                        // Priority Order (read-only)
-                        HStack {
-                            Text("Order")
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text(String(format: "%.1f", session.priorityOrder))
-                                .foregroundColor(.primary)
-                        }
-
-                        // Queued Timestamp (read-only)
-                        if let queuedAt = session.priorityQueuedAt {
+                            // Priority Order (read-only)
                             HStack {
-                                Text("Queued")
+                                Text("Order")
                                     .foregroundColor(.secondary)
                                 Spacer()
-                                Text(queuedAt, style: .relative)
+                                Text(String(format: "%.1f", session.priorityOrder))
                                     .foregroundColor(.primary)
+                            }
+
+                            // Queued Timestamp (read-only)
+                            if let queuedAt = session.priorityQueuedAt {
+                                HStack {
+                                    Text("Queued")
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                    Text(queuedAt, style: .relative)
+                                        .foregroundColor(.primary)
+                                }
+                            }
+
+                            // Remove from queue button
+                            Button(role: .destructive) {
+                                removeFromPriorityQueue(session)
+                            } label: {
+                                Label("Remove from Priority Queue", systemImage: "star.slash")
+                            }
+                        } else {
+                            // Add to queue button when not in queue
+                            Button {
+                                addToPriorityQueue(session)
+                            } label: {
+                                Label("Add to Priority Queue", systemImage: "star.fill")
                             }
                         }
                     } header: {
                         Text("Priority Queue")
                     } footer: {
-                        Text("Change priority to adjust position in queue. Lower priority number = higher importance.")
-                            .font(.caption)
+                        if session.isInPriorityQueue {
+                            Text("Change priority to adjust position in queue. Lower priority number = higher importance.")
+                                .font(.caption)
+                        } else {
+                            Text("Add to priority queue to track this session with custom priority ordering.")
+                                .font(.caption)
+                        }
                     }
                 }
 
@@ -230,6 +251,16 @@ struct SessionInfoView: View {
     }
 
     // MARK: - Priority Queue Management
+
+    private func addToPriorityQueue(_ session: CDBackendSession) {
+        CDBackendSession.addToPriorityQueue(session, context: viewContext)
+        showConfirmation("Added to Priority Queue")
+    }
+
+    private func removeFromPriorityQueue(_ session: CDBackendSession) {
+        CDBackendSession.removeFromPriorityQueue(session, context: viewContext)
+        showConfirmation("Removed from Priority Queue")
+    }
 
     private func changePriority(_ session: CDBackendSession, newPriority: Int32) {
         CDBackendSession.changePriority(session, newPriority: newPriority, context: viewContext)
