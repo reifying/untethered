@@ -892,9 +892,9 @@ final class PriorityQueueManagementTests: XCTestCase {
         NotificationCenter.default.removeObserver(observer)
     }
 
-    /// Test 36: addToPriorityQueue should NOT post notification when already in queue
-    func testAddToPriorityQueueNoNotificationWhenAlreadyInQueue() throws {
-        // Given: A session already in priority queue
+    /// Test 36: addToPriorityQueue should NOT post notification when session is already at end of priority level
+    func testAddToPriorityQueueNoNotificationWhenAlreadyAtEnd() throws {
+        // Given: A session already at end of its priority level (only session at that priority)
         let session = createTestSession(name: "Test Session")
         addToPriorityQueue(session)
 
@@ -909,10 +909,10 @@ final class PriorityQueueManagementTests: XCTestCase {
             expectation.fulfill()
         }
 
-        // When: Adding again (idempotent - should not post)
+        // When: Adding again (session is already at end, so no change needed)
         addToPriorityQueue(session)
 
-        // Then: No notification should be posted
+        // Then: No notification should be posted since session is already at end
         wait(for: [expectation], timeout: 0.5)
 
         NotificationCenter.default.removeObserver(observer)
@@ -2165,25 +2165,33 @@ final class PriorityQueueManagementTests: XCTestCase {
         XCTAssertNotNil(session.priorityQueuedAt)
     }
 
-    /// Test 95: Auto-add is idempotent (doesn't change if already in queue)
-    func testAutoAddIdempotent() throws {
-        // Given: Session already in queue with custom priority
-        let session = createTestSession(name: "Already Queued")
-        session.priority = 5
-        addToPriorityQueue(session)
-        let originalOrder = session.priorityOrder
-        let originalQueuedAt = session.priorityQueuedAt
+    /// Test 95: Auto-add moves session to end of priority level (queue rotation)
+    func testAutoAddMovesToEndOfPriorityLevel() throws {
+        // Given: Two sessions in queue at same priority
+        let session1 = createTestSession(name: "Session 1")
+        session1.priority = 5
+        let session2 = createTestSession(name: "Session 2")
+        session2.priority = 5
+        addToPriorityQueue(session1)  // order 1.0
+        addToPriorityQueue(session2)  // order 2.0
+
+        let originalQueuedAt = session1.priorityQueuedAt
 
         // Small delay
         Thread.sleep(forTimeInterval: 0.01)
 
-        // When: Auto-add is called again (simulating duplicate session_created)
-        addToPriorityQueue(session)
+        // When: Auto-add is called on first session (simulating assistant response)
+        addToPriorityQueue(session1)
 
-        // Then: Priority and order should be unchanged
-        XCTAssertEqual(session.priority, 5)  // Custom priority preserved
-        XCTAssertEqual(session.priorityOrder, originalOrder)
-        XCTAssertEqual(session.priorityQueuedAt, originalQueuedAt)
+        // Then: Session1 should move to end (after session2)
+        XCTAssertEqual(session1.priority, 5)  // Priority preserved
+        XCTAssertGreaterThan(session1.priorityOrder, session2.priorityOrder, "Session1 should now be after Session2")
+        XCTAssertEqual(session1.priorityQueuedAt, originalQueuedAt, "QueuedAt should not change on reorder")
+
+        // Verify order
+        let sorted = fetchSortedPriorityQueueSessions()
+        XCTAssertEqual(sorted[0].id, session2.id, "Session2 should be first")
+        XCTAssertEqual(sorted[1].id, session1.id, "Session1 should be second")
     }
 
     /// Test 96: Auto-add with multiple sessions assigns correct order
@@ -2312,22 +2320,31 @@ final class PriorityQueueManagementTests: XCTestCase {
         XCTAssertEqual(session.priority, 10, "Default priority should be 10")
     }
 
-    /// Test 102: Auto-add is idempotent - already queued sessions don't change
-    func testAutoAddIdempotentForExistingQueuedSessions() throws {
-        // Given: A session already in priority queue with custom priority
-        let session = createTestSession(name: "Already Queued")
-        addToPriorityQueue(session)
-        changePriorityProduction(session, newPriority: 1)
-        let originalOrder = session.priorityOrder
-        let originalQueuedAt = session.priorityQueuedAt
+    /// Test 102: Auto-add moves session to end when others exist at same priority
+    func testAutoAddMovesSessionToEndWhenOthersExist() throws {
+        // Given: Multiple sessions at priority 1
+        let session1 = createTestSession(name: "Session 1")
+        let session2 = createTestSession(name: "Session 2")
+        let session3 = createTestSession(name: "Session 3")
 
-        // When: Auto-add is called again (simulating turn_complete on existing queued session)
-        addToPriorityQueue(session)
+        addToPriorityQueue(session1)
+        addToPriorityQueue(session2)
+        addToPriorityQueue(session3)
 
-        // Then: Priority and order should be unchanged (idempotent)
-        XCTAssertEqual(session.priority, 1, "Priority should remain unchanged")
-        XCTAssertEqual(session.priorityOrder, originalOrder, "Order should remain unchanged")
-        XCTAssertEqual(session.priorityQueuedAt, originalQueuedAt, "QueuedAt should remain unchanged")
+        changePriorityProduction(session1, newPriority: 1)
+        changePriorityProduction(session2, newPriority: 1)
+        changePriorityProduction(session3, newPriority: 1)
+
+        let originalQueuedAt = session1.priorityQueuedAt
+
+        // When: Auto-add is called on session1 (simulating assistant response)
+        addToPriorityQueue(session1)
+
+        // Then: Session1 should move to end of priority 1
+        XCTAssertEqual(session1.priority, 1, "Priority should remain unchanged")
+        XCTAssertGreaterThan(session1.priorityOrder, session2.priorityOrder, "Session1 should be after Session2")
+        XCTAssertGreaterThan(session1.priorityOrder, session3.priorityOrder, "Session1 should be after Session3")
+        XCTAssertEqual(session1.priorityQueuedAt, originalQueuedAt, "QueuedAt should remain unchanged on reorder")
     }
 
     /// Test 103: Multiple frontend sessions created in sequence
@@ -2419,26 +2436,29 @@ final class PriorityQueueManagementTests: XCTestCase {
         XCTAssertFalse(existingSession.isInPriorityQueue, "Existing session should not be modified")
     }
 
-    /// Test 107: Auto-add via session_updated is idempotent (multiple calls don't duplicate)
-    /// This tests that multiple session_updated messages with assistant content don't cause duplicate additions
-    func testSessionUpdatedAutoAddIdempotent() throws {
-        // Given: Create session and add to priority queue once
-        let session = createTestSession(name: "Test Session")
+    /// Test 107: Auto-add via session_updated preserves queuedAt but updates order
+    /// This tests that session_updated moves session to end but preserves original queuedAt
+    func testSessionUpdatedAutoAddPreservesQueuedAt() throws {
+        // Given: Two sessions in queue
+        let session1 = createTestSession(name: "Test Session 1")
+        let session2 = createTestSession(name: "Test Session 2")
         try context.save()
 
-        CDBackendSession.addToPriorityQueue(session, context: context)
-        let initialOrder = session.priorityOrder
-        let initialQueuedAt = session.priorityQueuedAt
+        CDBackendSession.addToPriorityQueue(session1, context: context)
+        CDBackendSession.addToPriorityQueue(session2, context: context)
 
-        XCTAssertTrue(session.isInPriorityQueue, "Session should be in queue after first add")
+        let initialQueuedAt = session1.priorityQueuedAt
 
-        // When: Add to priority queue again (simulates multiple session_updated messages)
-        CDBackendSession.addToPriorityQueue(session, context: context)
+        XCTAssertTrue(session1.isInPriorityQueue, "Session should be in queue after first add")
+        XCTAssertLessThan(session1.priorityOrder, session2.priorityOrder, "Session1 should be before Session2")
 
-        // Then: Order and timestamp should remain unchanged (idempotent)
-        XCTAssertEqual(session.priorityOrder, initialOrder, "Order should not change on duplicate add")
-        XCTAssertEqual(session.priorityQueuedAt, initialQueuedAt, "QueuedAt should not change on duplicate add")
-        XCTAssertTrue(session.isInPriorityQueue, "Should still be in queue")
+        // When: Add to priority queue again (simulates session_updated with assistant response)
+        CDBackendSession.addToPriorityQueue(session1, context: context)
+
+        // Then: Order should change (moved to end), queuedAt should remain unchanged
+        XCTAssertGreaterThan(session1.priorityOrder, session2.priorityOrder, "Session1 should now be after Session2")
+        XCTAssertEqual(session1.priorityQueuedAt, initialQueuedAt, "QueuedAt should not change on reorder")
+        XCTAssertTrue(session1.isInPriorityQueue, "Should still be in queue")
     }
 
     // MARK: - Helper Methods for Phase 3 (Legacy - now using production method via changePriorityProduction)
