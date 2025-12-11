@@ -263,6 +263,12 @@ struct SessionsForDirectoryView: View {
             try viewContext.save()
             logger.info("📝 Created new session: \(sessionId.uuidString.lowercased()) in \(workingDirectory)")
 
+            // Auto-add to priority queue if enabled
+            if settings.priorityQueueEnabled {
+                addToPriorityQueue(session)
+                logger.info("📌 Auto-added new session to priority queue: \(sessionId.uuidString.lowercased())")
+            }
+
             // Navigate to the new session
             navigationPath.append(sessionId)
             logger.info("🔄 Navigating to new session: \(sessionId.uuidString.lowercased())")
@@ -316,6 +322,10 @@ struct SessionsForDirectoryView: View {
                 showingCopyConfirmation = false
             }
         }
+    }
+
+    private func addToPriorityQueue(_ session: CDBackendSession) {
+        CDBackendSession.addToPriorityQueue(session, context: viewContext)
     }
 
     private func deleteSession(_ session: CDBackendSession) {

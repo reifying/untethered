@@ -338,6 +338,8 @@ struct ConversationView: View {
                                 Image(systemName: "star.slash.fill")
                                     .foregroundColor(.purple)
                             }
+                            .accessibilityLabel("Remove from Priority Queue")
+                            .accessibilityHint("Removes this session from the priority queue")
                         } else {
                             // Add to Priority Queue button
                             Button(action: {
@@ -346,8 +348,13 @@ struct ConversationView: View {
                                 Image(systemName: "star.fill")
                                     .foregroundColor(.purple)
                             }
+                            .accessibilityLabel("Add to Priority Queue")
+                            .accessibilityHint("Adds this session to the priority queue for quick access")
                         }
                     }
+                }
+                .onAppear {
+                    logger.info("🔧 [Toolbar] priorityQueueEnabled=\(settings.priorityQueueEnabled), isInPriorityQueue=\(session.isInPriorityQueue)")
                 }
             }
         }
@@ -580,10 +587,8 @@ struct ConversationView: View {
             addToQueue(session)
         }
 
-        // Add to priority queue if enabled
-        if settings.priorityQueueEnabled {
-            addToPriorityQueue(session)
-        }
+        // Note: Priority queue auto-add now happens in VoiceCodeClient.turn_complete handler
+        // This ensures sessions are only added after successful response (no ghost sessions)
 
         // Optimistically lock the session before sending
         // Use session.id (iOS UUID) for locking since that's what backend echoes in turn_complete
