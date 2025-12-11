@@ -328,33 +328,6 @@ struct ConversationView: View {
                         }
                     }
 
-                    // Priority Queue buttons
-                    if settings.priorityQueueEnabled {
-                        if session.isInPriorityQueue {
-                            // Remove from Priority Queue button
-                            Button(action: {
-                                removeFromPriorityQueue(session)
-                            }) {
-                                Image(systemName: "star.slash.fill")
-                                    .foregroundColor(.purple)
-                            }
-                            .accessibilityLabel("Remove from Priority Queue")
-                            .accessibilityHint("Removes this session from the priority queue")
-                        } else {
-                            // Add to Priority Queue button
-                            Button(action: {
-                                addToPriorityQueue(session)
-                            }) {
-                                Image(systemName: "star.fill")
-                                    .foregroundColor(.purple)
-                            }
-                            .accessibilityLabel("Add to Priority Queue")
-                            .accessibilityHint("Adds this session to the priority queue for quick access")
-                        }
-                    }
-                }
-                .onAppear {
-                    logger.info("🔧 [Toolbar] priorityQueueEnabled=\(settings.priorityQueueEnabled), isInPriorityQueue=\(session.isInPriorityQueue)")
                 }
             }
         }
@@ -893,23 +866,6 @@ struct ConversationView: View {
         } catch {
             print("❌ [Queue] Failed to remove session from queue: \(error)")
         }
-    }
-
-    // MARK: - Priority Queue Management
-
-    /// Add session to priority queue (idempotent)
-    private func addToPriorityQueue(_ session: CDBackendSession) {
-        CDBackendSession.addToPriorityQueue(session, context: viewContext)
-    }
-
-    /// Remove session from priority queue (idempotent)
-    private func removeFromPriorityQueue(_ session: CDBackendSession) {
-        CDBackendSession.removeFromPriorityQueue(session, context: viewContext)
-    }
-
-    /// Change session priority (only for sessions in priority queue)
-    private func changePriority(_ session: CDBackendSession, newPriority: Int32) {
-        CDBackendSession.changePriority(session, newPriority: newPriority, context: viewContext)
     }
 }
 
