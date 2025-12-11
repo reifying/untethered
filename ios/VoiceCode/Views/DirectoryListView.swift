@@ -202,6 +202,7 @@ struct DirectoryListView: View {
                                 NavigationLink(value: session.id) {
                                     CDBackendSessionRowContent(session: session)
                                 }
+                                .listRowBackground(priorityTintColor(for: session.priority))
                                 .id(session.id) // Stable view identity prevents motion vector recalculation
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                     Button(role: .destructive) {
@@ -210,6 +211,9 @@ struct DirectoryListView: View {
                                         Label("Remove", systemImage: "xmark.circle")
                                     }
                                 }
+                            }
+                            .onMove { source, destination in
+                                reorderPriorityQueue(from: source, to: destination)
                             }
                         } header: {
                             Text("Priority Queue")
@@ -353,6 +357,7 @@ struct DirectoryListView: View {
             )
         }
         .onAppear {
+            logger.info("🔧 [DirectoryList] onAppear - priorityQueueEnabled=\(settings.priorityQueueEnabled)")
             updateCachedDirectories()
             updateCachedQueuedSessions()
             updateCachedPriorityQueueSessions()
@@ -507,7 +512,7 @@ struct DirectoryListView: View {
             // Update on main thread
             DispatchQueue.main.async {
                 self.cachedPriorityQueueSessions = updatedSessions
-                logger.debug("🔄 Updated priority queue cache: \(updatedSessions.count) sessions")
+                logger.info("🔄 [PriorityQueueCache] Updated: \(updatedSessions.count) sessions (from \(sessions.filter { $0.isInPriorityQueue }.count) in queue)")
             }
         }
 
@@ -557,6 +562,19 @@ struct DirectoryListView: View {
         }
     }
 
+    /// Returns a subtle background tint color based on priority level
+    /// Uses varying opacity so colorblind users can distinguish by shade (darker = higher priority)
+    private func priorityTintColor(for priority: Int32) -> Color {
+        switch priority {
+        case 1:  // High - darkest tint
+            return Color.blue.opacity(0.15)
+        case 5:  // Medium - medium tint
+            return Color.blue.opacity(0.08)
+        default: // Low (10) - lightest tint
+            return Color.blue.opacity(0.03)
+        }
+    }
+
     /// Add session to priority queue
     private func addToPriorityQueue(_ session: CDBackendSession) {
         CDBackendSession.addToPriorityQueue(session, context: viewContext)
@@ -572,6 +590,44 @@ struct DirectoryListView: View {
     /// Change session priority (only for sessions in priority queue)
     private func changePriority(_ session: CDBackendSession, newPriority: Int32) {
         CDBackendSession.changePriority(session, newPriority: newPriority, context: viewContext)
+        updateCachedPriorityQueueSessions()
+    }
+
+    /// Reorder priority queue based on drag source and destination indices
+    ///
+    /// SwiftUI's `onMove` provides:
+    /// - `source`: IndexSet containing the original index of the dragged item
+    /// - `destination`: The "insert before" index in the original (pre-move) array
+    ///
+    /// Example: Array [A, B, C, D] dragging B (index 1) to after C:
+    /// - source = {1}, destination = 3 (insert before index 3, which is D)
+    /// - Result: [A, C, B, D]
+    ///
+    /// Edge case: Moving down by 1 gives destination = sourceIndex + 2, not +1
+    /// because destination is where item goes BEFORE the move happens.
+    private func reorderPriorityQueue(from source: IndexSet, to destination: Int) {
+        guard let sourceIndex = source.first else { return }
+
+        // Handle edge case: moving to same position (no-op)
+        // SwiftUI destination is "insert before" index, so moving down by 1 gives destination = sourceIndex + 2
+        if destination == sourceIndex || destination == sourceIndex + 1 {
+            return
+        }
+
+        let movingSession = priorityQueueSessions[sourceIndex]
+
+        // Calculate neighbors at the destination slot
+        // SwiftUI destination means "insert before this index" in the original array
+        let above: CDBackendSession? = destination > 0 ? priorityQueueSessions[destination - 1] : nil
+        let below: CDBackendSession? = destination < priorityQueueSessions.count ? priorityQueueSessions[destination] : nil
+
+        // Exclude the moving session from neighbors (it may be adjacent to destination)
+        let finalAbove = above?.id == movingSession.id ? nil : above
+        let finalBelow = below?.id == movingSession.id ? nil : below
+
+        logger.info("🔄 [PriorityQueue] Reordering: source=\(sourceIndex) dest=\(destination) above=\(finalAbove?.id.uuidString.prefix(8) ?? "nil") below=\(finalBelow?.id.uuidString.prefix(8) ?? "nil")")
+
+        CDBackendSession.reorderSession(movingSession, between: finalAbove, and: finalBelow, context: viewContext)
         updateCachedPriorityQueueSessions()
     }
 
@@ -630,6 +686,12 @@ struct DirectoryListView: View {
         do {
             try viewContext.save()
             logger.info("📝 Created new session: \(sessionId.uuidString.lowercased())")
+
+            // Auto-add to priority queue if enabled
+            if settings.priorityQueueEnabled {
+                addToPriorityQueue(session)
+                logger.info("📌 Auto-added new session to priority queue: \(sessionId.uuidString.lowercased())")
+            }
 
             // Navigate to the new session
             navigationPath.append(sessionId)
