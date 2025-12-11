@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<model type="com.apple.IDECoreDataModeler.DataModel" documentVersion="1.0" lastSavedToolsVersion="22758" systemVersion="23F79" minimumToolsVersion="Automatic" sourceLanguage="Swift" userDefinedModelVersionIdentifier="">
+    <entity name="CDBackendSession" representedClassName="CDBackendSession" renamingIdentifier="CDSession" syncable="YES">
+        <attribute name="backendName" attributeType="String"/>
+        <attribute name="id" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="isInQueue" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="isLocallyCreated" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="lastModified" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="messageCount" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="preview" attributeType="String" defaultValueString=""/>
+        <attribute name="queuePosition" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="queuedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="unreadCount" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="workingDirectory" attributeType="String"/>
+        <attribute name="isInPriorityQueue" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="priority" attributeType="Integer 32" defaultValueString="10" usesScalarValueType="YES"/>
+        <attribute name="priorityOrder" attributeType="Double" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="priorityQueuedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <relationship name="messages" optional="YES" toMany="YES" deletionRule="Cascade" destinationEntity="CDMessage" inverseName="session" inverseEntity="CDMessage"/>
+        <uniquenessConstraints>
+            <uniquenessConstraint>
+                <constraint value="id"/>
+            </uniquenessConstraint>
+        </uniquenessConstraints>
+    </entity>
+    <entity name="CDUserSession" representedClassName="CDUserSession" syncable="YES">
+        <attribute name="customName" optional="YES" attributeType="String"/>
+        <attribute name="id" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="isUserDeleted" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="createdAt" attributeType="Date" usesScalarValueType="NO"/>
+        <uniquenessConstraints>
+            <uniquenessConstraint>
+                <constraint value="id"/>
+            </uniquenessConstraint>
+        </uniquenessConstraints>
+    </entity>
+    <entity name="CDMessage" representedClassName="CDMessage" syncable="YES">
+        <attribute name="id" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="role" attributeType="String"/>
+        <attribute name="serverTimestamp" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="sessionId" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="status" attributeType="String" defaultValueString="confirmed"/>
+        <attribute name="text" attributeType="String"/>
+        <attribute name="timestamp" attributeType="Date" usesScalarValueType="NO"/>
+        <relationship name="session" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="CDBackendSession" inverseName="messages" inverseEntity="CDBackendSession"/>
+        <uniquenessConstraints>
+            <uniquenessConstraint>
+                <constraint value="id"/>
+            </uniquenessConstraint>
+        </uniquenessConstraints>
+    </entity>
+</model>
