@@ -203,7 +203,9 @@ struct DirectoryListView: View {
                                     CDBackendSessionRowContent(session: session)
                                 }
                                 .listRowBackground(priorityTintColor(for: session.priority))
-                                .id(session.id) // Stable view identity prevents motion vector recalculation
+                                // Compound identity: session.id + priority ensures row rebuilds when priority changes
+                                // This forces SwiftUI to re-evaluate listRowBackground after drag reorder
+                                .id("\(session.id)-P\(session.priority)")
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                     Button(role: .destructive) {
                                         removeFromPriorityQueue(session)
@@ -567,11 +569,11 @@ struct DirectoryListView: View {
     private func priorityTintColor(for priority: Int32) -> Color {
         switch priority {
         case 1:  // High - darkest tint
-            return Color.blue.opacity(0.15)
+            return Color.blue.opacity(0.18)
         case 5:  // Medium - medium tint
-            return Color.blue.opacity(0.08)
-        default: // Low (10) - lightest tint
-            return Color.blue.opacity(0.03)
+            return Color.blue.opacity(0.10)
+        default: // Low (10) - no tint (default background)
+            return Color.clear
         }
     }
 
