@@ -327,6 +327,7 @@ struct ConversationView: View {
                                 .foregroundColor(.orange)
                         }
                     }
+
                 }
             }
         }
@@ -386,7 +387,7 @@ struct ConversationView: View {
             )
         }
         .sheet(isPresented: $showingSessionInfo) {
-            SessionInfoView(session: session)
+            SessionInfoView(session: session, settings: settings)
                 .environment(\.managedObjectContext, viewContext)
         }
         .task {
@@ -558,6 +559,9 @@ struct ConversationView: View {
         if settings.queueEnabled {
             addToQueue(session)
         }
+
+        // Note: Priority queue auto-add now happens in VoiceCodeClient.turn_complete handler
+        // This ensures sessions are only added after successful response (no ghost sessions)
 
         // Optimistically lock the session before sending
         // Use session.id (iOS UUID) for locking since that's what backend echoes in turn_complete

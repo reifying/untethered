@@ -115,6 +115,14 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
 
+                Section(header: Text("Priority Queue")) {
+                    Toggle("Enable Priority Queue", isOn: $settings.priorityQueueEnabled)
+
+                    Text("Track sessions in priority-based queue. Add sessions manually via toolbar button and adjust priorities to control sort order. Lower numbers = higher priority.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
                 Section(header: Text("Resources")) {
                     TextField("Storage Location", text: $settings.resourceStorageLocation)
                         .autocapitalization(.none)

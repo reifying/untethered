@@ -57,6 +57,11 @@ class PersistenceController {
 
         if inMemory {
             container.persistentStoreDescriptions.first?.url = URL(fileURLWithPath: "/dev/null")
+        } else {
+            // Enable automatic lightweight migration
+            let description = container.persistentStoreDescriptions.first
+            description?.shouldInferMappingModelAutomatically = true
+            description?.shouldMigrateStoreAutomatically = true
         }
 
         container.loadPersistentStores { description, error in
