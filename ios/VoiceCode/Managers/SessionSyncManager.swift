@@ -85,10 +85,12 @@ class SessionSyncManager {
     }
     
     // MARK: - Session Created Handling
-    
+
     /// Handle session_created message from backend
-    /// - Parameter sessionData: Session metadata dictionary
-    func handleSessionCreated(_ sessionData: [String: Any]) {
+    /// - Parameters:
+    ///   - sessionData: Session metadata dictionary
+    ///   - completion: Optional callback with session ID on successful save
+    func handleSessionCreated(_ sessionData: [String: Any], completion: ((String) -> Void)? = nil) {
         let sessionId = sessionData["session_id"] as? String ?? "unknown"
         let name = sessionData["name"] as? String ?? "unknown"
         let workingDir = sessionData["working_directory"] as? String ?? "unknown"
@@ -116,13 +118,20 @@ class SessionSyncManager {
 
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
-            
+
             self.upsertSession(sessionData, in: backgroundContext)
-            
+
             do {
                 if backgroundContext.hasChanges {
                     try backgroundContext.save()
                     logger.info("Created session: \(sessionId)")
+
+                    // Call completion on main thread after successful save
+                    if let completion = completion {
+                        DispatchQueue.main.async {
+                            completion(sessionId)
+                        }
+                    }
                 }
             } catch {
                 logger.error("Failed to save session_created: \(error.localizedDescription)")
@@ -324,14 +333,18 @@ class SessionSyncManager {
                 // Extract fields from raw .jsonl format
                 guard let role = self.extractRole(from: messageData),
                       let text = self.extractText(from: messageData) else {
-                    logger.warning("Failed to extract role or text from message")
+                    // Log details at debug level for diagnosing message format issues
+                    let messageType = messageData["type"] as? String ?? "nil"
+                    let hasMessage = messageData["message"] != nil
+                    logger.debug("Skipping message - type: \(messageType, privacy: .public), hasMessage: \(hasMessage, privacy: .public)")
                     continue
                 }
 
                 // Filter out internal Claude Code messages
                 // - "summary" messages are error summaries and internal state
                 // - "system" messages are local command notifications
-                if role == "summary" || role == "system" {
+                // - "queue-operation" messages are priority queue operations (no message content)
+                if role == "summary" || role == "system" || role == "queue-operation" {
                     logger.debug("Filtering out internal message type: \(role, privacy: .public)")
                     continue
                 }
@@ -344,17 +357,7 @@ class SessionSyncManager {
 
                 logger.info("🔍 Looking for optimistic message to reconcile: role=\(role) text_length=\(text.count) session=\(sessionId)")
 
-                var existingMessage = try? backgroundContext.fetch(fetchRequest).first
-
-                // If no exact match and backend sent queue-operation, try matching with user role
-                // (queue-operation messages from Claude CLI correspond to user prompts)
-                if existingMessage == nil && role == "queue-operation" {
-                    let userFetchRequest = CDMessage.fetchMessage(sessionId: sessionUUID, role: "user", text: text)
-                    existingMessage = try? backgroundContext.fetch(userFetchRequest).first
-                    if existingMessage != nil {
-                        logger.info("🔄 Matched queue-operation to optimistic user message")
-                    }
-                }
+                let existingMessage = try? backgroundContext.fetch(fetchRequest).first
 
                 if let existingMessage = existingMessage {
                     // Reconcile optimistic message
@@ -422,6 +425,20 @@ class SessionSyncManager {
             if let lastMessage = messages.last,
                let text = self.extractText(from: lastMessage) {
                 session.preview = String(text.prefix(100))
+            }
+
+            // Auto-add to priority queue if enabled and we received assistant messages
+            // This uses session_updated (broadcast to all clients) instead of turn_complete
+            // (channel-specific) for reliable delivery even after reconnection
+            // Note: Check setting and modify session BEFORE saving to batch the changes
+            if !assistantMessagesToSpeak.isEmpty {
+                // Read priorityQueueEnabled from UserDefaults (thread-safe for reads)
+                let priorityQueueEnabled = UserDefaults.standard.bool(forKey: "priorityQueueEnabled")
+                if priorityQueueEnabled {
+                    // Use the session object we already have in this background context
+                    CDBackendSession.addToPriorityQueue(session, context: backgroundContext)
+                    logger.info("📌 Auto-added session to priority queue after assistant response: \(sessionId)")
+                }
             }
 
             do {
