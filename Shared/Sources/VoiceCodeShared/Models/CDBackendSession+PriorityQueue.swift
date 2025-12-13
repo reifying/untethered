@@ -226,9 +226,3 @@ extension CDBackendSession {
         }
     }
 }
-
-// MARK: - NotificationCenter Names
-
-public extension Notification.Name {
-    static let priorityQueueChanged = Notification.Name("priorityQueueChanged")
-}

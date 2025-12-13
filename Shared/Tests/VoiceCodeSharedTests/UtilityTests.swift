@@ -99,4 +99,24 @@ final class UtilityTests: XCTestCase {
 
         sorter.clearMRU()
     }
+
+    // MARK: - UUID Extension Tests
+
+    func testUUIDLowercasedString() {
+        let uuid = UUID()
+        let lowercased = uuid.lowercasedString
+
+        // Should be lowercase
+        XCTAssertEqual(lowercased, lowercased.lowercased())
+        // Should match original when lowercased
+        XCTAssertEqual(lowercased, uuid.uuidString.lowercased())
+        // Should have correct format (36 chars with hyphens)
+        XCTAssertEqual(lowercased.count, 36)
+    }
+
+    func testUUIDLowercasedStringConsistency() {
+        // Known UUID to verify exact output
+        let uuid = UUID(uuidString: "A1B2C3D4-E5F6-7890-ABCD-EF1234567890")!
+        XCTAssertEqual(uuid.lowercasedString, "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+    }
 }

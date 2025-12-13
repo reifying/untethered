@@ -108,3 +108,11 @@ extension CDBackendSession {
 }
 
 extension CDBackendSession: Identifiable {}
+
+// MARK: - Backend Communication
+extension CDBackendSession {
+    /// Session ID in backend-compatible format (lowercase)
+    public var backendSessionId: String {
+        id.lowercasedString
+    }
+}
