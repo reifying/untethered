@@ -53,10 +53,18 @@ public final class SessionSyncManager: @unchecked Sendable {
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             nonisolated(unsafe) var didSaveChanges = false
+            nonisolated(unsafe) var continuationResumed = false
 
             persistenceController.performBackgroundTaskWithMergeCompletion(
                 { [weak self] backgroundContext in
-                    guard let self = self else { return false }
+                    guard let self = self else {
+                        // Self deallocated - resume continuation to avoid hanging
+                        if !continuationResumed {
+                            continuationResumed = true
+                            continuation.resume()
+                        }
+                        return false
+                    }
 
                     for sessionData in sessionsCopy {
                         self.upsertSession(sessionData, in: backgroundContext)
@@ -74,7 +82,10 @@ public final class SessionSyncManager: @unchecked Sendable {
                     }
 
                     // No changes to save - resume continuation immediately
-                    continuation.resume()
+                    if !continuationResumed {
+                        continuationResumed = true
+                        continuation.resume()
+                    }
                     return false
                 },
                 onMergeComplete: {
@@ -82,7 +93,11 @@ public final class SessionSyncManager: @unchecked Sendable {
                     if didSaveChanges {
                         NotificationCenter.default.post(name: .sessionListDidUpdate, object: nil)
                     }
-                    continuation.resume()
+                    // Only resume if not already resumed (changes were saved)
+                    if !continuationResumed {
+                        continuationResumed = true
+                        continuation.resume()
+                    }
                 }
             )
         }
