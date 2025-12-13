@@ -119,4 +119,40 @@ final class UtilityTests: XCTestCase {
         let uuid = UUID(uuidString: "A1B2C3D4-E5F6-7890-ABCD-EF1234567890")!
         XCTAssertEqual(uuid.lowercasedString, "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
     }
+
+    // MARK: - DateFormatters Tests
+
+    func testParseISO8601WithFractionalSeconds() {
+        let dateString = "2025-01-15T10:30:00.123Z"
+        let date = DateFormatters.parseISO8601(dateString)
+        XCTAssertNotNil(date)
+    }
+
+    func testParseISO8601WithoutFractionalSeconds() {
+        let dateString = "2025-01-15T10:30:00Z"
+        let date = DateFormatters.parseISO8601(dateString)
+        XCTAssertNotNil(date)
+    }
+
+    func testParseISO8601Invalid() {
+        let dateString = "not-a-date"
+        let date = DateFormatters.parseISO8601(dateString)
+        XCTAssertNil(date)
+    }
+
+    func testFormatISO8601() {
+        let date = Date(timeIntervalSince1970: 0)
+        let formatted = DateFormatters.formatISO8601(date)
+        XCTAssertTrue(formatted.contains("1970-01-01"))
+        XCTAssertTrue(formatted.hasSuffix("Z"))
+    }
+
+    func testISO8601RoundTrip() {
+        let original = Date()
+        let formatted = DateFormatters.formatISO8601(original)
+        let parsed = DateFormatters.parseISO8601(formatted)
+        XCTAssertNotNil(parsed)
+        // Allow 1ms difference due to fractional second precision
+        XCTAssertEqual(original.timeIntervalSince1970, parsed!.timeIntervalSince1970, accuracy: 0.001)
+    }
 }
