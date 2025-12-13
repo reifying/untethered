@@ -1,0 +1,109 @@
+name: VoiceCodeDesktop
+
+packages:
+  VoiceCodeShared:
+    path: ../Shared
+
+options:
+  bundleIdPrefix: dev.910labs
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: REDACTED_TEAM_ID_2
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: 1
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+  configs:
+    Debug:
+      BuildIndependentTargetsInParallel: true
+    Release:
+      BuildIndependentTargetsInParallel: true
+
+targets:
+  VoiceCodeDesktop:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    supportedDestinations:
+      - macOS
+    sources:
+      - path: VoiceCodeDesktop
+        excludes:
+          - "*.md"
+    resources:
+      - VoiceCodeDesktop/Resources/Assets.xcassets
+    info:
+      path: VoiceCodeDesktop/Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDisplayName: Untethered
+        CFBundleIconName: AppIcon
+        NSMicrophoneUsageDescription: Untethered needs microphone access for voice input to control Claude.
+        NSSpeechRecognitionUsageDescription: Untethered needs speech recognition to transcribe your voice commands.
+        NSLocalNetworkUsageDescription: Untethered needs to connect to your backend server on your local network to send voice commands and receive Claude Code responses.
+        LSMinimumSystemVersion: "14.0"
+    entitlements:
+      path: VoiceCodeDesktop/VoiceCodeDesktop.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.device.audio-input: true
+        com.apple.security.network.client: true
+        com.apple.security.files.user-selected.read-write: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code-desktop
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_FILE: VoiceCodeDesktop/Info.plist
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+      configs:
+        Debug:
+          DEVELOPMENT_TEAM: REDACTED_TEAM_ID
+        Release:
+          DEVELOPMENT_TEAM: REDACTED_TEAM_ID
+    preBuildScripts: []
+    postBuildScripts: []
+    dependencies:
+      - package: VoiceCodeShared
+        product: VoiceCodeShared
+
+  VoiceCodeDesktopTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - VoiceCodeDesktopTests
+    dependencies:
+      - target: VoiceCodeDesktop
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code-desktopTests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  VoiceCodeDesktop:
+    build:
+      targets:
+        VoiceCodeDesktop: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - name: VoiceCodeDesktopTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+      customArchiveName: VoiceCodeDesktop
+      revealArchiveInOrganizer: true
+      preActions: []
+      postActions: []
