@@ -2,6 +2,7 @@
 // View for displaying command history
 
 import SwiftUI
+import VoiceCodeShared
 
 struct CommandHistoryView: View {
     @ObservedObject var client: VoiceCodeClient

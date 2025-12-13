@@ -1,4 +1,5 @@
 import XCTest
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class VoiceCodeClientResourcesTests: XCTestCase {

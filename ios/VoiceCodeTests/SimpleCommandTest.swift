@@ -2,6 +2,7 @@
 // Minimal test to debug crash
 
 import XCTest
+import VoiceCodeShared
 @testable import VoiceCode
 
 class SimpleCommandTest: XCTestCase {

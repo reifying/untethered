@@ -2,6 +2,7 @@
 // Command execution menu with MRU sorting and hierarchical display
 
 import SwiftUI
+import VoiceCodeShared
 
 struct CommandMenuView: View {
     @ObservedObject var client: VoiceCodeClient

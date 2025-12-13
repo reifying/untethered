@@ -1,5 +1,7 @@
 import XCTest
+import VoiceCodeShared
 import Combine
+import VoiceCodeShared
 @testable import VoiceCode
 
 /// End-to-end integration tests for complete Resources feature flow.

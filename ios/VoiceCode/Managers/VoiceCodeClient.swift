@@ -5,6 +5,7 @@ import Foundation
 import Combine
 import UIKit
 import os.log
+import VoiceCodeShared
 
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "VoiceCodeClient")
 
@@ -37,6 +38,8 @@ class VoiceCodeClient: ObservableObject {
     private var sessionId: String?
     let sessionSyncManager: SessionSyncManager
     private var appSettings: AppSettings?
+    private weak var voiceOutputManager: VoiceOutputManager?
+    private var syncDelegate: VoiceCodeSyncDelegate?
 
     // Track active subscriptions for auto-restore on reconnection
     private var activeSubscriptions = Set<String>()
@@ -55,18 +58,26 @@ class VoiceCodeClient: ObservableObject {
     init(serverURL: String, voiceOutputManager: VoiceOutputManager? = nil, sessionSyncManager: SessionSyncManager? = nil, appSettings: AppSettings? = nil, setupObservers: Bool = true) {
         self.serverURL = serverURL
         self.appSettings = appSettings
+        self.voiceOutputManager = voiceOutputManager
 
-        // Create SessionSyncManager with VoiceOutputManager for auto-speak
-        // Voice selection is handled by VoiceOutputManager which has AppSettings
+        // Create SessionSyncManager with PersistenceController
         if let syncManager = sessionSyncManager {
             self.sessionSyncManager = syncManager
         } else {
-            self.sessionSyncManager = SessionSyncManager(voiceOutputManager: voiceOutputManager)
+            self.sessionSyncManager = SessionSyncManager(persistenceController: .shared)
         }
 
+        // Set up the delegate for platform-specific callbacks (voice output, notifications)
+        // Note: delegate is set after init since we need self reference
         if setupObservers {
             setupLifecycleObservers()
         }
+
+        // Create and assign delegate after super.init would be called
+        // Since this is a class (not struct), we can do this here
+        let delegate = VoiceCodeSyncDelegate(voiceOutputManager: voiceOutputManager, appSettings: appSettings)
+        self.syncDelegate = delegate
+        self.sessionSyncManager.delegate = delegate
     }
 
     private func setupLifecycleObservers() {
@@ -1138,5 +1149,49 @@ class VoiceCodeClient: ObservableObject {
     deinit {
         NotificationCenter.default.removeObserver(self)
         disconnect()
+    }
+}
+
+// MARK: - SessionSyncDelegate Implementation
+
+/// Bridge between SessionSyncManager and iOS-specific functionality
+final class VoiceCodeSyncDelegate: SessionSyncDelegate, @unchecked Sendable {
+    private weak var voiceOutputManager: VoiceOutputManager?
+    private weak var appSettings: AppSettings?
+
+    init(voiceOutputManager: VoiceOutputManager?, appSettings: AppSettings?) {
+        self.voiceOutputManager = voiceOutputManager
+        self.appSettings = appSettings
+    }
+
+    func isSessionActive(_ sessionId: UUID) -> Bool {
+        // Access MainActor-isolated singleton - safe for delegate called from SessionSyncManager
+        MainActor.assumeIsolated {
+            ActiveSessionManager.shared.isActive(sessionId)
+        }
+    }
+
+    func speakAssistantMessages(_ messages: [String], workingDirectory: String) {
+        guard let voiceOutput = voiceOutputManager else { return }
+
+        // Combine messages and speak (respect silent mode for auto-speak)
+        let combinedText = messages.joined(separator: " ")
+        if !combinedText.isEmpty {
+            voiceOutput.speak(combinedText, respectSilentMode: true, workingDirectory: workingDirectory)
+        }
+    }
+
+    func postNotification(text: String, sessionName: String, workingDirectory: String) {
+        Task {
+            await NotificationManager.shared.postResponseNotification(
+                text: text,
+                sessionName: sessionName,
+                workingDirectory: workingDirectory
+            )
+        }
+    }
+
+    var isPriorityQueueEnabled: Bool {
+        appSettings?.priorityQueueEnabled ?? false
     }
 }

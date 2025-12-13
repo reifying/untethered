@@ -2,6 +2,7 @@
 // Tests for VoiceCodeClient debouncing mechanism
 
 import XCTest
+import VoiceCodeShared
 @testable import VoiceCode
 
 class VoiceCodeClientDebounceTests: XCTestCase {

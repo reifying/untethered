@@ -2,8 +2,11 @@
 // Tests for ID-based navigation stability
 
 import XCTest
+import VoiceCodeShared
 import SwiftUI
+import VoiceCodeShared
 import CoreData
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class NavigationStabilityTests: XCTestCase {

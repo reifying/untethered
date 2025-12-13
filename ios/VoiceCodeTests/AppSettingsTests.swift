@@ -2,6 +2,7 @@
 // Unit tests for AppSettings
 
 import XCTest
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class AppSettingsTests: XCTestCase {

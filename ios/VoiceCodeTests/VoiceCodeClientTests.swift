@@ -2,6 +2,7 @@
 // Unit tests for VoiceCodeClient
 
 import XCTest
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class VoiceCodeClientTests: XCTestCase {

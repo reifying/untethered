@@ -2,6 +2,7 @@
 // Detail view for displaying full command output
 
 import SwiftUI
+import VoiceCodeShared
 
 struct CommandOutputDetailView: View {
     @ObservedObject var client: VoiceCodeClient

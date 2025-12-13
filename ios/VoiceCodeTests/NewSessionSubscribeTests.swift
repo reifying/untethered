@@ -2,7 +2,9 @@
 // Unit tests for new session subscribe behavior
 
 import XCTest
+import VoiceCodeShared
 import CoreData
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class NewSessionSubscribeTests: XCTestCase {

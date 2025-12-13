@@ -2,7 +2,9 @@
 // Tests for navigation titles and section headers in DirectoryListView
 
 import XCTest
+import VoiceCodeShared
 import CoreData
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class NavigationTitleTests: XCTestCase {

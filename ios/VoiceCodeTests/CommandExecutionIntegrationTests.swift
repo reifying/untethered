@@ -2,7 +2,9 @@
 // Comprehensive end-to-end integration tests for frontend-backend command execution
 
 import XCTest
+import VoiceCodeShared
 import Combine
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class CommandExecutionIntegrationTests: XCTestCase {

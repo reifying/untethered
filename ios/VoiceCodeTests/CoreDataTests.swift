@@ -2,7 +2,9 @@
 // Unit tests for CoreData entities and PersistenceController
 
 import XCTest
+import VoiceCodeShared
 import CoreData
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class CoreDataTests: XCTestCase {

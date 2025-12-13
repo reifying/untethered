@@ -3,6 +3,7 @@
 
 import SwiftUI
 import OSLog
+import VoiceCodeShared
 
 struct DebugLogsView: View {
     @State private var logs: String = "Loading logs..."

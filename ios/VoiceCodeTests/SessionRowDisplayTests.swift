@@ -2,8 +2,11 @@
 // Tests for CDSessionRowContent display logic
 
 import XCTest
+import VoiceCodeShared
 import CoreData
+import VoiceCodeShared
 import SwiftUI
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class SessionRowDisplayTests: XCTestCase {

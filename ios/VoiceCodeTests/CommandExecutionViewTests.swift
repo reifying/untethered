@@ -2,7 +2,9 @@
 // Tests for CommandExecutionView streaming behavior and concurrent command handling
 
 import XCTest
+import VoiceCodeShared
 import Combine
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class CommandExecutionViewTests: XCTestCase {

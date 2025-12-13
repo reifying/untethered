@@ -2,7 +2,9 @@
 // Comprehensive tests for command menu functionality
 
 import XCTest
+import VoiceCodeShared
 import SwiftUI
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class CommandMenuTests: XCTestCase {

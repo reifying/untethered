@@ -2,6 +2,7 @@
 // Tests for CommandHistoryView and related components
 
 import XCTest
+import VoiceCodeShared
 @testable import VoiceCode
 
 class CommandHistoryViewTests: XCTestCase {

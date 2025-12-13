@@ -2,6 +2,7 @@
 // Unit tests for Message model (DTO for WebSocket communication)
 
 import XCTest
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class ModelTests: XCTestCase {

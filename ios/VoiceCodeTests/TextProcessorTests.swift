@@ -2,6 +2,7 @@
 // Tests for text processing utilities
 
 import XCTest
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class TextProcessorTests: XCTestCase {

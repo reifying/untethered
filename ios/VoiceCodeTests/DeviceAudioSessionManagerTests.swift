@@ -2,7 +2,9 @@
 // Unit tests for DeviceAudioSessionManager
 
 import XCTest
+import VoiceCodeShared
 import AVFoundation
+import VoiceCodeShared
 @testable import VoiceCode
 
 @MainActor

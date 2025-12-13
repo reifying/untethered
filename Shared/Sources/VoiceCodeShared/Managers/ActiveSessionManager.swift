@@ -16,6 +16,11 @@ public enum ActiveSessionConfig {
 @MainActor
 public final class ActiveSessionManager: ObservableObject, Sendable {
 
+    // MARK: - Shared Instance
+
+    /// Shared singleton instance for global access
+    public static let shared = ActiveSessionManager()
+
     // MARK: - Published Properties
 
     /// The currently active session ID (if any)

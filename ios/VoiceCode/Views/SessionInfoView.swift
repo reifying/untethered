@@ -3,6 +3,7 @@
 
 import SwiftUI
 import CoreData
+import VoiceCodeShared
 
 struct SessionInfoView: View {
     @ObservedObject var session: CDBackendSession

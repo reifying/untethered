@@ -2,6 +2,7 @@
 // Tests for batch parsing of recent sessions from backend data
 
 import XCTest
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class RecentSessionBatchParsingTests: XCTestCase {

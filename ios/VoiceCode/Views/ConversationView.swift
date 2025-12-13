@@ -4,6 +4,7 @@
 import SwiftUI
 import CoreData
 import os.log
+import VoiceCodeShared
 
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "ConversationView")
 

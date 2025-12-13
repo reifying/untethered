@@ -9,7 +9,9 @@
 // - Unread message counting while scrolled up
 
 import XCTest
+import VoiceCodeShared
 import CoreData
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class AutoScrollTests: XCTestCase {

@@ -2,7 +2,9 @@
 // Unit tests for 3-tier directory navigation
 
 import XCTest
+import VoiceCodeShared
 import CoreData
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class DirectoryNavigationTests: XCTestCase {

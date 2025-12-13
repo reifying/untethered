@@ -6,9 +6,11 @@
 //
 
 import XCTest
+import VoiceCodeShared
 import CoreData
 @testable import VoiceCode
 
+@MainActor
 class SmartSpeakingTests: XCTestCase {
     var persistenceController: PersistenceController!
     var context: NSManagedObjectContext!
@@ -164,14 +166,12 @@ class SmartSpeakingTests: XCTestCase {
     // MARK: - Auto-Speak Tests
 
     func testActiveSessionTriggersAutoSpeak() throws {
-        // Create mock voice output manager
-        let mockVoiceOutput = MockVoiceOutputManager()
+        // Create mock delegate
+        let mockDelegate = MockSessionSyncDelegate()
 
-        // Create sync manager with voice output
-        let syncManagerWithVoice = SessionSyncManager(
-            persistenceController: persistenceController,
-            voiceOutputManager: mockVoiceOutput
-        )
+        // Create sync manager with delegate
+        let syncManagerWithDelegate = SessionSyncManager(persistenceController: persistenceController)
+        syncManagerWithDelegate.delegate = mockDelegate
 
         // Create session
         let sessionId = UUID()
@@ -188,6 +188,9 @@ class SmartSpeakingTests: XCTestCase {
 
         // Mark session as active
         ActiveSessionManager.shared.setActiveSession(sessionId)
+
+        // Configure delegate to report session as active
+        mockDelegate.activeSessionId = sessionId
 
         // Simulate backend sending assistant message to active session
         let testMessage = "This should be spoken aloud"
@@ -207,7 +210,7 @@ class SmartSpeakingTests: XCTestCase {
             ]
         ]
 
-        syncManagerWithVoice.handleSessionUpdated(sessionId: sessionId.uuidString, messages: messages)
+        syncManagerWithDelegate.handleSessionUpdated(sessionId: sessionId.uuidString, messages: messages)
 
         // Wait for async processing
         let expectation = XCTestExpectation(description: "Wait for auto-speak")
@@ -216,20 +219,18 @@ class SmartSpeakingTests: XCTestCase {
         }
         wait(for: [expectation], timeout: 1.0)
 
-        // Verify speak was called with the correct text
-        XCTAssertTrue(mockVoiceOutput.speakWasCalled, "speak() should have been called for active session")
-        XCTAssertEqual(mockVoiceOutput.lastSpokenText, testMessage, "speak() should have been called with the assistant's message")
+        // Verify speakAssistantMessages was called
+        XCTAssertTrue(mockDelegate.speakWasCalled, "speakAssistantMessages() should have been called for active session")
+        XCTAssertTrue(mockDelegate.lastSpokenMessages?.contains(testMessage) ?? false, "speakAssistantMessages() should have been called with the assistant's message")
     }
 
     func testInactiveSessionDoesNotTriggerAutoSpeak() throws {
-        // Create mock voice output manager
-        let mockVoiceOutput = MockVoiceOutputManager()
+        // Create mock delegate
+        let mockDelegate = MockSessionSyncDelegate()
 
-        // Create sync manager with voice output
-        let syncManagerWithVoice = SessionSyncManager(
-            persistenceController: persistenceController,
-            voiceOutputManager: mockVoiceOutput
-        )
+        // Create sync manager with delegate
+        let syncManagerWithDelegate = SessionSyncManager(persistenceController: persistenceController)
+        syncManagerWithDelegate.delegate = mockDelegate
 
         // Create session
         let sessionId = UUID()
@@ -245,6 +246,7 @@ class SmartSpeakingTests: XCTestCase {
         try context.save()
 
         // DO NOT mark session as active (it's in background)
+        // mockDelegate.activeSessionId is nil, so isSessionActive will return false
 
         // Simulate backend sending assistant message to inactive session
         let messages: [[String: Any]] = [
@@ -263,7 +265,7 @@ class SmartSpeakingTests: XCTestCase {
             ]
         ]
 
-        syncManagerWithVoice.handleSessionUpdated(sessionId: sessionId.uuidString, messages: messages)
+        syncManagerWithDelegate.handleSessionUpdated(sessionId: sessionId.uuidString, messages: messages)
 
         // Wait for async processing
         let expectation = XCTestExpectation(description: "Wait for processing")
@@ -272,22 +274,38 @@ class SmartSpeakingTests: XCTestCase {
         }
         wait(for: [expectation], timeout: 1.0)
 
-        // Verify speak was NOT called for background session
-        XCTAssertFalse(mockVoiceOutput.speakWasCalled, "speak() should NOT be called for background session")
+        // Verify speakAssistantMessages was NOT called for background session
+        XCTAssertFalse(mockDelegate.speakWasCalled, "speakAssistantMessages() should NOT be called for background session")
     }
 }
 
-// MARK: - Mock Voice Output Manager
+// MARK: - Mock Session Sync Delegate
 
-class MockVoiceOutputManager: VoiceOutputManager {
+class MockSessionSyncDelegate: SessionSyncDelegate {
+    var activeSessionId: UUID?
     var speakWasCalled = false
-    var lastSpokenText: String?
+    var lastSpokenMessages: [String]?
     var lastWorkingDirectory: String?
+    var notificationWasCalled = false
+    var priorityQueueEnabled = false
 
-    override func speak(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false, workingDirectory: String? = nil) {
+    func isSessionActive(_ sessionId: UUID) -> Bool {
+        return sessionId == activeSessionId
+    }
+
+    func speakAssistantMessages(_ messages: [String], workingDirectory: String) {
         speakWasCalled = true
-        lastSpokenText = text
+        lastSpokenMessages = messages
         lastWorkingDirectory = workingDirectory
-        print("🎤 [MockVoiceOutput] speak() called with text: \(text), workingDirectory: \(workingDirectory ?? "nil")")
+        print("🎤 [MockDelegate] speakAssistantMessages() called with messages: \(messages), workingDirectory: \(workingDirectory)")
+    }
+
+    func postNotification(text: String, sessionName: String, workingDirectory: String) {
+        notificationWasCalled = true
+        print("📬 [MockDelegate] postNotification() called")
+    }
+
+    var isPriorityQueueEnabled: Bool {
+        return priorityQueueEnabled
     }
 }

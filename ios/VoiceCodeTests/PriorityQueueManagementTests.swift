@@ -2,7 +2,9 @@
 // Unit tests for Priority Queue feature
 
 import XCTest
+import VoiceCodeShared
 import CoreData
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class PriorityQueueManagementTests: XCTestCase {

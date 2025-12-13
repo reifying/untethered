@@ -4,6 +4,7 @@
 import SwiftUI
 import OSLog
 import UserNotifications
+import VoiceCodeShared
 
 private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "RootView")
 

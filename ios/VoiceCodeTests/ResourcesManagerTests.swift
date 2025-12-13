@@ -1,5 +1,7 @@
 import XCTest
+import VoiceCodeShared
 import Combine
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class ResourcesManagerTests: XCTestCase {

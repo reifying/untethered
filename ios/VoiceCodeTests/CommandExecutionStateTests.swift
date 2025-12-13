@@ -2,7 +2,9 @@
 // Unit tests for CommandExecution model and VoiceCodeClient command state management
 
 import XCTest
+import VoiceCodeShared
 import Combine
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class CommandExecutionStateTests: XCTestCase {

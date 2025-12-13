@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import VoiceCodeShared
 
 /// Manages file resources uploaded via Share Extension and synced with backend
 class ResourcesManager: ObservableObject {

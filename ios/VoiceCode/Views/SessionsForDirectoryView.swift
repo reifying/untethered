@@ -4,6 +4,7 @@
 import SwiftUI
 import CoreData
 import OSLog
+import VoiceCodeShared
 
 private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "SessionsForDirectory")
 

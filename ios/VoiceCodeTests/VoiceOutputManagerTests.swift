@@ -2,7 +2,9 @@
 // Unit tests for VoiceOutputManager
 
 import XCTest
+import VoiceCodeShared
 import AVFoundation
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class VoiceOutputManagerTests: XCTestCase {

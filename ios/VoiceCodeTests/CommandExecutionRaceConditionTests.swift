@@ -2,7 +2,9 @@
 // Tests for the race condition fix when executing multiple commands rapidly
 
 import XCTest
+import VoiceCodeShared
 import Combine
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class CommandExecutionRaceConditionTests: XCTestCase {

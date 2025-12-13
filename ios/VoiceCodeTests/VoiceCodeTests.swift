@@ -6,6 +6,7 @@
 //
 
 import Testing
+import VoiceCodeShared
 @testable import VoiceCode
 
 struct VoiceCodeTests {

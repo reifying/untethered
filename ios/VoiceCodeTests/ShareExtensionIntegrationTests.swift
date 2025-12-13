@@ -1,4 +1,5 @@
 import XCTest
+import VoiceCodeShared
 @testable import VoiceCode
 
 /// Integration tests for Share Extension → App Group → ResourcesManager flow.

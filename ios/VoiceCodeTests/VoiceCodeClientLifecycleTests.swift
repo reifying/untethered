@@ -1,5 +1,7 @@
 import XCTest
+import VoiceCodeShared
 import SwiftUI
+import VoiceCodeShared
 @testable import VoiceCode
 
 /// Tests that VoiceCodeClient remains alive during SwiftUI view updates and copies.

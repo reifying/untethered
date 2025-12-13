@@ -1,5 +1,7 @@
 import XCTest
+import VoiceCodeShared
 import Combine
+import VoiceCodeShared
 @testable import VoiceCode
 
 /// Tests to verify ResourcesManager doesn't create retain cycles with VoiceCodeClient

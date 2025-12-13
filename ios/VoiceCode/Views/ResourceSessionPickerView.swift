@@ -3,6 +3,7 @@
 
 import SwiftUI
 import CoreData
+import VoiceCodeShared
 
 struct ResourceSessionPickerView: View {
     @FetchRequest(

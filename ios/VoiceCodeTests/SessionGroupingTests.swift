@@ -6,7 +6,9 @@
 //
 
 import XCTest
+import VoiceCodeShared
 import CoreData
+import VoiceCodeShared
 @testable import VoiceCode
 
 class SessionGroupingTests: XCTestCase {

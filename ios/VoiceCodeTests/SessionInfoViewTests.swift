@@ -2,8 +2,11 @@
 // Tests for SessionInfoView modal
 
 import XCTest
+import VoiceCodeShared
 import SwiftUI
+import VoiceCodeShared
 import CoreData
+import VoiceCodeShared
 @testable import VoiceCode
 
 class SessionInfoViewTests: XCTestCase {

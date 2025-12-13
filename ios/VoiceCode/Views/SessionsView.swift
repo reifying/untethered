@@ -3,6 +3,7 @@
 
 import SwiftUI
 import CoreData
+import VoiceCodeShared
 
 // MARK: - CoreData Session Row Content
 

@@ -2,7 +2,9 @@
 // Debug tests to verify Recent section parsing
 
 import XCTest
+import VoiceCodeShared
 import CoreData
+import VoiceCodeShared
 @testable import VoiceCode
 
 final class RecentSessionsDebugTests: XCTestCase {

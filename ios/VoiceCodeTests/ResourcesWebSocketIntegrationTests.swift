@@ -1,5 +1,7 @@
 import XCTest
+import VoiceCodeShared
 import Combine
+import VoiceCodeShared
 @testable import VoiceCode
 
 /// Integration tests for ResourcesManager → WebSocket message flow.
