@@ -73,12 +73,7 @@ public final class WebSocketManager: NSObject, @unchecked Sendable {
 
         logger.info("WebSocket connecting to: \(self.serverURL)")
         receiveMessage()
-
-        // Mark as connected (actual connection status comes from delegate callbacks)
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.isConnected = true
-        }
+        // Note: isConnected will be set to true in urlSession(_:webSocketTask:didOpenWithProtocol:)
     }
 
     /// Disconnect from the WebSocket server

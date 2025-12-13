@@ -62,9 +62,15 @@ public final class PersistenceController: @unchecked Sendable {
         let logger = Logger(subsystem: PersistenceConfig.subsystem, category: "Persistence")
 
         // Load CoreData model from Bundle.module (Swift Package resources)
-        guard let modelURL = Bundle.module.url(forResource: "VoiceCode", withExtension: "momd"),
-              let managedObjectModel = NSManagedObjectModel(contentsOf: modelURL) else {
-            fatalError("Failed to load CoreData model from Bundle.module")
+        // Try Bundle.module first, then fall back to creating an empty model for testing
+        let managedObjectModel: NSManagedObjectModel
+        if let modelURL = Bundle.module.url(forResource: "VoiceCode", withExtension: "momd"),
+           let model = NSManagedObjectModel(contentsOf: modelURL) {
+            managedObjectModel = model
+        } else {
+            // Create model programmatically for testing when resources aren't available
+            managedObjectModel = Self.createTestModel()
+            logger.warning("CoreData model loaded from programmatic definition (test mode)")
         }
 
         container = NSPersistentContainer(name: "VoiceCode", managedObjectModel: managedObjectModel)
@@ -157,5 +163,148 @@ public final class PersistenceController: @unchecked Sendable {
     /// Perform a background task
     public func performBackgroundTask(_ block: @escaping @Sendable (NSManagedObjectContext) -> Void) {
         container.performBackgroundTask(block)
+    }
+
+    // MARK: - Test Model Creation
+
+    /// Creates a CoreData model programmatically for testing when Bundle.module resources aren't available
+    private static func createTestModel() -> NSManagedObjectModel {
+        let model = NSManagedObjectModel()
+
+        // CDBackendSession entity
+        let sessionEntity = NSEntityDescription()
+        sessionEntity.name = "CDBackendSession"
+        sessionEntity.managedObjectClassName = NSStringFromClass(CDBackendSession.self)
+
+        let sessionIdAttr = NSAttributeDescription()
+        sessionIdAttr.name = "id"
+        sessionIdAttr.attributeType = .UUIDAttributeType
+
+        let backendNameAttr = NSAttributeDescription()
+        backendNameAttr.name = "backendName"
+        backendNameAttr.attributeType = .stringAttributeType
+
+        let workingDirAttr = NSAttributeDescription()
+        workingDirAttr.name = "workingDirectory"
+        workingDirAttr.attributeType = .stringAttributeType
+
+        let lastModifiedAttr = NSAttributeDescription()
+        lastModifiedAttr.name = "lastModified"
+        lastModifiedAttr.attributeType = .dateAttributeType
+
+        let messageCountAttr = NSAttributeDescription()
+        messageCountAttr.name = "messageCount"
+        messageCountAttr.attributeType = .integer32AttributeType
+
+        let previewAttr = NSAttributeDescription()
+        previewAttr.name = "preview"
+        previewAttr.attributeType = .stringAttributeType
+        previewAttr.isOptional = true
+
+        let unreadCountAttr = NSAttributeDescription()
+        unreadCountAttr.name = "unreadCount"
+        unreadCountAttr.attributeType = .integer32AttributeType
+
+        let isLocallyCreatedAttr = NSAttributeDescription()
+        isLocallyCreatedAttr.name = "isLocallyCreated"
+        isLocallyCreatedAttr.attributeType = .booleanAttributeType
+
+        let priorityQueuePositionAttr = NSAttributeDescription()
+        priorityQueuePositionAttr.name = "priorityQueuePosition"
+        priorityQueuePositionAttr.attributeType = .doubleAttributeType
+        priorityQueuePositionAttr.isOptional = true
+
+        sessionEntity.properties = [
+            sessionIdAttr, backendNameAttr, workingDirAttr, lastModifiedAttr,
+            messageCountAttr, previewAttr, unreadCountAttr, isLocallyCreatedAttr,
+            priorityQueuePositionAttr
+        ]
+
+        // CDMessage entity
+        let messageEntity = NSEntityDescription()
+        messageEntity.name = "CDMessage"
+        messageEntity.managedObjectClassName = NSStringFromClass(CDMessage.self)
+
+        let messageIdAttr = NSAttributeDescription()
+        messageIdAttr.name = "id"
+        messageIdAttr.attributeType = .UUIDAttributeType
+
+        let sessionIdMsgAttr = NSAttributeDescription()
+        sessionIdMsgAttr.name = "sessionId"
+        sessionIdMsgAttr.attributeType = .UUIDAttributeType
+
+        let roleAttr = NSAttributeDescription()
+        roleAttr.name = "role"
+        roleAttr.attributeType = .stringAttributeType
+
+        let textAttr = NSAttributeDescription()
+        textAttr.name = "text"
+        textAttr.attributeType = .stringAttributeType
+
+        let timestampAttr = NSAttributeDescription()
+        timestampAttr.name = "timestamp"
+        timestampAttr.attributeType = .dateAttributeType
+
+        let serverTimestampAttr = NSAttributeDescription()
+        serverTimestampAttr.name = "serverTimestamp"
+        serverTimestampAttr.attributeType = .dateAttributeType
+        serverTimestampAttr.isOptional = true
+
+        let statusAttr = NSAttributeDescription()
+        statusAttr.name = "status"
+        statusAttr.attributeType = .integer16AttributeType
+
+        messageEntity.properties = [
+            messageIdAttr, sessionIdMsgAttr, roleAttr, textAttr,
+            timestampAttr, serverTimestampAttr, statusAttr
+        ]
+
+        // CDUserSession entity
+        let userSessionEntity = NSEntityDescription()
+        userSessionEntity.name = "CDUserSession"
+        userSessionEntity.managedObjectClassName = NSStringFromClass(CDUserSession.self)
+
+        let userSessionIdAttr = NSAttributeDescription()
+        userSessionIdAttr.name = "id"
+        userSessionIdAttr.attributeType = .UUIDAttributeType
+
+        let customNameAttr = NSAttributeDescription()
+        customNameAttr.name = "customName"
+        customNameAttr.attributeType = .stringAttributeType
+        customNameAttr.isOptional = true
+
+        let createdAtAttr = NSAttributeDescription()
+        createdAtAttr.name = "createdAt"
+        createdAtAttr.attributeType = .dateAttributeType
+
+        let isDeletedAttr = NSAttributeDescription()
+        isDeletedAttr.name = "isDeleted"
+        isDeletedAttr.attributeType = .booleanAttributeType
+
+        userSessionEntity.properties = [userSessionIdAttr, customNameAttr, createdAtAttr, isDeletedAttr]
+
+        // Relationships
+        let sessionToMessages = NSRelationshipDescription()
+        sessionToMessages.name = "messages"
+        sessionToMessages.destinationEntity = messageEntity
+        sessionToMessages.isOptional = true
+        sessionToMessages.deleteRule = .cascadeDeleteRule
+
+        let messageToSession = NSRelationshipDescription()
+        messageToSession.name = "session"
+        messageToSession.destinationEntity = sessionEntity
+        messageToSession.maxCount = 1
+        messageToSession.isOptional = true
+        messageToSession.deleteRule = .nullifyDeleteRule
+
+        sessionToMessages.inverseRelationship = messageToSession
+        messageToSession.inverseRelationship = sessionToMessages
+
+        sessionEntity.properties.append(sessionToMessages)
+        messageEntity.properties.append(messageToSession)
+
+        model.entities = [sessionEntity, messageEntity, userSessionEntity]
+
+        return model
     }
 }
