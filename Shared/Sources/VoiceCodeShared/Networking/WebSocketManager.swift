@@ -27,7 +27,7 @@ public final class WebSocketManager: NSObject, @unchecked Sendable {
 
     private var webSocket: URLSessionWebSocketTask?
     private var urlSession: URLSession?
-    private let serverURL: String
+    private var serverURL: String
     private let delegateQueue = DispatchQueue(label: "com.voicecode.websocket.delegate")
 
     public weak var delegate: WebSocketManagerDelegate?
@@ -89,6 +89,13 @@ public final class WebSocketManager: NSObject, @unchecked Sendable {
             guard let self = self else { return }
             self.isConnected = false
         }
+    }
+
+    /// Update the server URL for future connections
+    /// - Parameter url: New server URL
+    public func updateServerURL(_ url: String) {
+        logger.info("Updating server URL to: \(url)")
+        serverURL = url
     }
 
     // MARK: - Message Handling
