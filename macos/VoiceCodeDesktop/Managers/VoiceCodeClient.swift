@@ -155,9 +155,13 @@ final class VoiceCodeSyncDelegate: SessionSyncDelegate {
 
     @MainActor
     func postNotification(text: String, sessionName: String, workingDirectory: String) {
-        // macOS notification implementation will be added later
-        // For now, log the notification
-        logger.info("Notification: \(sessionName) - \(text.prefix(50))")
+        Task {
+            await NotificationManager.shared.postResponseNotification(
+                text: text,
+                sessionName: sessionName,
+                workingDirectory: workingDirectory
+            )
+        }
     }
 
     @MainActor
