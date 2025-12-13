@@ -98,6 +98,11 @@ public final class SessionSyncManager: @unchecked Sendable {
                         }
                     } catch {
                         self.logger.error("Failed to save session_list: \(error.localizedDescription)")
+                        // Resume continuation on error to prevent hanging
+                        if resumeOnce.testAndSet() {
+                            continuation.resume()
+                        }
+                        return false
                     }
 
                     // No changes to save - resume continuation immediately
@@ -127,9 +132,7 @@ public final class SessionSyncManager: @unchecked Sendable {
     ///   - sessionData: Session metadata dictionary
     ///   - completion: Optional callback with session ID on successful save
     public func handleSessionCreated(_ sessionData: [String: Any], completion: (@Sendable (String) -> Void)? = nil) {
-        let sessionId = sessionData["session_id"] as? String ?? "unknown"
-
-        guard sessionData["session_id"] as? String != nil else {
+        guard let sessionId = sessionData["session_id"] as? String else {
             logger.warning("session_created missing session_id, dropping")
             return
         }
