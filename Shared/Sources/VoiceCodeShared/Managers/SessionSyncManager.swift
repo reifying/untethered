@@ -5,6 +5,25 @@ import Foundation
 import CoreData
 import OSLog
 
+/// Thread-safe flag for ensuring single execution across threads
+/// Uses os_unfair_lock for atomic test-and-set operation
+final class AtomicFlag: @unchecked Sendable {
+    private var _value: Bool = false
+    private var _lock = os_unfair_lock()
+
+    /// Atomically tests if the flag is false and sets it to true.
+    /// Returns true if the flag was successfully set (was false), false otherwise.
+    func testAndSet() -> Bool {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        if _value {
+            return false
+        }
+        _value = true
+        return true
+    }
+}
+
 /// Configuration for SessionSyncManager logging
 public enum SessionSyncConfig {
     /// The OSLog subsystem for session sync logging
@@ -53,14 +72,14 @@ public final class SessionSyncManager: @unchecked Sendable {
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             nonisolated(unsafe) var didSaveChanges = false
-            nonisolated(unsafe) var continuationResumed = false
+            // Thread-safe wrapper for single resume
+            let resumeOnce = AtomicFlag()
 
             persistenceController.performBackgroundTaskWithMergeCompletion(
                 { [weak self] backgroundContext in
                     guard let self = self else {
                         // Self deallocated - resume continuation to avoid hanging
-                        if !continuationResumed {
-                            continuationResumed = true
+                        if resumeOnce.testAndSet() {
                             continuation.resume()
                         }
                         return false
@@ -82,8 +101,7 @@ public final class SessionSyncManager: @unchecked Sendable {
                     }
 
                     // No changes to save - resume continuation immediately
-                    if !continuationResumed {
-                        continuationResumed = true
+                    if resumeOnce.testAndSet() {
                         continuation.resume()
                     }
                     return false
@@ -94,8 +112,7 @@ public final class SessionSyncManager: @unchecked Sendable {
                         NotificationCenter.default.post(name: .sessionListDidUpdate, object: nil)
                     }
                     // Only resume if not already resumed (changes were saved)
-                    if !continuationResumed {
-                        continuationResumed = true
+                    if resumeOnce.testAndSet() {
                         continuation.resume()
                     }
                 }
