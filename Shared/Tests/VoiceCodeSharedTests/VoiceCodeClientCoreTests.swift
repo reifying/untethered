@@ -16,6 +16,7 @@ final class VoiceCodeClientCoreTests: XCTestCase {
         )
 
         XCTAssertFalse(client.isConnected)
+        XCTAssertEqual(client.connectionState, .disconnected)
         XCTAssertTrue(client.lockedSessions.isEmpty)
         XCTAssertNil(client.currentError)
         XCTAssertFalse(client.isProcessing)
@@ -523,5 +524,108 @@ final class VoiceCodeClientCoreTests: XCTestCase {
         client.handleMessage("{\"data\":\"test\"}")
 
         XCTAssertFalse(client.isProcessing)
+    }
+}
+
+// MARK: - Connection State Machine Tests
+
+@MainActor
+final class ConnectionStateTests: XCTestCase {
+
+    func testConnectionStateEnum() {
+        // Verify all states exist
+        let allStates = ConnectionState.allCases
+        XCTAssertEqual(allStates.count, 6)
+        XCTAssertTrue(allStates.contains(.disconnected))
+        XCTAssertTrue(allStates.contains(.connecting))
+        XCTAssertTrue(allStates.contains(.authenticating))
+        XCTAssertTrue(allStates.contains(.connected))
+        XCTAssertTrue(allStates.contains(.reconnecting))
+        XCTAssertTrue(allStates.contains(.failed))
+    }
+
+    func testConnectionStateRawValues() {
+        XCTAssertEqual(ConnectionState.disconnected.rawValue, "disconnected")
+        XCTAssertEqual(ConnectionState.connecting.rawValue, "connecting")
+        XCTAssertEqual(ConnectionState.authenticating.rawValue, "authenticating")
+        XCTAssertEqual(ConnectionState.connected.rawValue, "connected")
+        XCTAssertEqual(ConnectionState.reconnecting.rawValue, "reconnecting")
+        XCTAssertEqual(ConnectionState.failed.rawValue, "failed")
+    }
+
+    func testInitialConnectionState() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        XCTAssertEqual(client.connectionState, .disconnected)
+    }
+
+    func testHelloMessageTransitionsToAuthenticating() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // Simulate receiving hello message
+        client.processMessage(type: "hello", json: ["type": "hello", "version": "1.0"])
+
+        XCTAssertEqual(client.connectionState, .authenticating)
+    }
+
+    func testConnectedMessageTransitionsToConnected() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // Simulate hello -> connected flow
+        client.processMessage(type: "hello", json: ["type": "hello", "version": "1.0"])
+        client.processMessage(type: "connected", json: ["type": "connected", "session_id": "test-123"])
+
+        XCTAssertEqual(client.connectionState, .connected)
+        XCTAssertTrue(client.isConnected)
+    }
+
+    func testDisconnectTransitionsToDisconnected() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // Get to connected state
+        client.processMessage(type: "hello", json: ["type": "hello", "version": "1.0"])
+        client.processMessage(type: "connected", json: ["type": "connected", "session_id": "test-123"])
+        XCTAssertEqual(client.connectionState, .connected)
+
+        // Disconnect
+        client.disconnect()
+
+        XCTAssertEqual(client.connectionState, .disconnected)
+        XCTAssertFalse(client.isConnected)
+    }
+
+    func testRetryConnectionOnlyWorksInFailedState() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // In disconnected state, retryConnection should do nothing
+        XCTAssertEqual(client.connectionState, .disconnected)
+        client.retryConnection()
+        // State unchanged since we're not in failed state
+        XCTAssertEqual(client.connectionState, .disconnected)
     }
 }

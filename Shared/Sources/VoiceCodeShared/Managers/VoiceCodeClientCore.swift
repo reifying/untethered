@@ -11,6 +11,27 @@ public enum VoiceCodeClientConfig {
     nonisolated(unsafe) public static var subsystem: String = "com.voicecode.shared"
 }
 
+/// Connection state machine states per Appendix V
+public enum ConnectionState: String, Sendable, CaseIterable {
+    /// No WebSocket connection, reconnectionAttempts = 0
+    case disconnected
+
+    /// WebSocket.resume() called, waiting for hello message
+    case connecting
+
+    /// Received hello, sending connect message
+    case authenticating
+
+    /// Fully connected, isConnected = true, subscriptions restored
+    case connected
+
+    /// Connection failed, waiting for backoff timer (if attempts < 20)
+    case reconnecting
+
+    /// Max reconnection attempts reached, manual retry available
+    case failed
+}
+
 /// Delegate adapter for WebSocket callbacks to MainActor-isolated class
 private final class WebSocketDelegateAdapter: WebSocketManagerDelegate, @unchecked Sendable {
     weak var client: VoiceCodeClientCore?
@@ -45,6 +66,7 @@ open class VoiceCodeClientCore: ObservableObject {
     // MARK: - Published Properties
 
     @Published public var isConnected = false
+    @Published public private(set) var connectionState: ConnectionState = .disconnected
     @Published public var currentError: String?
     @Published public var isProcessing = false
     @Published public var lockedSessions = Set<String>()
@@ -122,22 +144,89 @@ open class VoiceCodeClientCore: ObservableObject {
         // Override in subclass
     }
 
+    // MARK: - Connection State Machine
+
+    /// Transition to a new connection state
+    private func transitionTo(_ newState: ConnectionState) {
+        let oldState = connectionState
+        guard oldState != newState else { return }
+
+        connectionState = newState
+        logger.info("Connection state: \(oldState.rawValue) → \(newState.rawValue)")
+
+        // Update isConnected based on state
+        isConnected = (newState == .connected)
+
+        // Handle state-specific actions
+        switch newState {
+        case .disconnected:
+            reconnectionAttempts = 0
+            scheduleUpdate(key: "lockedSessions", value: Set<String>())
+            flushPendingUpdates()
+
+        case .connecting:
+            break // Waiting for hello
+
+        case .authenticating:
+            sendConnectMessage()
+
+        case .connected:
+            reconnectionAttempts = 0
+            restoreSubscriptions()
+
+        case .reconnecting:
+            // Backoff timer will trigger reconnection
+            break
+
+        case .failed:
+            currentError = "Unable to connect to server after \(maxReconnectionAttempts) attempts"
+        }
+    }
+
     // MARK: - WebSocket Delegate Handlers
 
     func handleConnectionStateChange(_ isConnected: Bool) {
-        self.isConnected = isConnected
+        if isConnected {
+            // WebSocket opened, wait for hello message
+            // State transition happens when hello is received
+            if connectionState == .disconnected || connectionState == .reconnecting {
+                transitionTo(.connecting)
+            }
+        } else {
+            // WebSocket closed
+            handleDisconnection()
+        }
+    }
 
-        if !isConnected {
-            scheduleUpdate(key: "lockedSessions", value: Set<String>())
-            flushPendingUpdates()
-            logger.info("Cleared locked sessions on disconnect")
+    /// Handle WebSocket disconnection with reconnection logic
+    private func handleDisconnection() {
+        logger.info("WebSocket disconnected")
+
+        // Clear locked sessions on any disconnect
+        scheduleUpdate(key: "lockedSessions", value: Set<String>())
+        flushPendingUpdates()
+
+        // If we were connected or connecting, attempt reconnection
+        if connectionState == .connected || connectionState == .connecting || connectionState == .authenticating {
+            if reconnectionAttempts < maxReconnectionAttempts {
+                transitionTo(.reconnecting)
+                scheduleReconnection()
+            } else {
+                transitionTo(.failed)
+            }
+        } else if connectionState != .failed {
+            transitionTo(.disconnected)
         }
     }
 
     func handleError(_ error: Error) {
-        scheduleUpdate(key: "currentError", value: error.localizedDescription as Any)
+        logger.error("WebSocket error: \(error.localizedDescription)")
+        currentError = error.localizedDescription
         scheduleUpdate(key: "lockedSessions", value: Set<String>())
         flushPendingUpdates()
+
+        // Trigger reconnection on error
+        handleDisconnection()
     }
 
     /// Handle incoming WebSocket message
@@ -235,8 +324,14 @@ open class VoiceCodeClientCore: ObservableObject {
         self.sessionId = sessionId
         LogManager.shared.log("Connecting to WebSocket", category: "VoiceCodeClientCore")
 
+        // Only connect if not already connecting/connected
+        guard connectionState == .disconnected || connectionState == .failed || connectionState == .reconnecting else {
+            logger.debug("Ignoring connect() - already in state: \(self.connectionState.rawValue)")
+            return
+        }
+
+        transitionTo(.connecting)
         webSocketManager.connect()
-        setupReconnection()
     }
 
     public func disconnect() {
@@ -245,10 +340,8 @@ open class VoiceCodeClientCore: ObservableObject {
 
         webSocketManager.disconnect()
 
-        logger.debug("Disconnected, clearing locked sessions")
-        isConnected = false
-        scheduleUpdate(key: "lockedSessions", value: Set<String>())
-        flushPendingUpdates()
+        logger.debug("Disconnected by user request")
+        transitionTo(.disconnected)
     }
 
     public func updateServerURL(_ url: String) {
@@ -258,11 +351,47 @@ open class VoiceCodeClientCore: ObservableObject {
         disconnect()
 
         webSocketManager.updateServerURL(url)
-
-        reconnectionAttempts = 0
         connect()
     }
 
+    /// Manually retry connection after failure
+    public func retryConnection() {
+        guard connectionState == .failed else {
+            logger.debug("Ignoring retryConnection() - not in failed state")
+            return
+        }
+
+        reconnectionAttempts = 0
+        currentError = nil
+        connect()
+    }
+
+    /// Schedule reconnection with exponential backoff
+    private func scheduleReconnection() {
+        reconnectionTimer?.cancel()
+
+        reconnectionAttempts += 1
+        let delay = min(pow(2.0, Double(reconnectionAttempts - 1)), maxReconnectionDelay)
+
+        logger.info("Scheduling reconnection attempt \(self.reconnectionAttempts)/\(self.maxReconnectionAttempts) in \(delay)s")
+
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+        timer.schedule(deadline: .now() + delay)
+        timer.setEventHandler { [weak self] in
+            Task { @MainActor in
+                guard let self = self else { return }
+
+                if self.connectionState == .reconnecting {
+                    self.transitionTo(.connecting)
+                    self.webSocketManager.connect()
+                }
+            }
+        }
+        timer.resume()
+        reconnectionTimer = timer
+    }
+
+    @available(*, deprecated, message: "Use scheduleReconnection() instead")
     private func setupReconnection() {
         reconnectionTimer?.cancel()
 
@@ -640,12 +769,13 @@ open class VoiceCodeClientCore: ObservableObject {
         switch type {
         case "hello":
             logger.info("Received hello from server")
-            sendConnectMessage()
+            // Transition to authenticating state (which sends connect message)
+            transitionTo(.authenticating)
 
         case "connected":
-            reconnectionAttempts = 0
             logger.info("Session registered")
-            restoreSubscriptions()
+            // Transition to connected state (which resets attempts and restores subscriptions)
+            transitionTo(.connected)
 
         case "replay":
             if let messageData = json["message"] as? [String: Any],
