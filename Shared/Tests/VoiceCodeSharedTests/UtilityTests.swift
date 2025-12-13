@@ -155,4 +155,72 @@ final class UtilityTests: XCTestCase {
         // Allow 1ms difference due to fractional second precision
         XCTAssertEqual(original.timeIntervalSince1970, parsed!.timeIntervalSince1970, accuracy: 0.001)
     }
+
+    // MARK: - LogManager Tests
+
+    func testLogManagerBasicLogging() {
+        let manager = LogManager.shared
+        manager.clearLogs()
+
+        manager.log("Test message", category: "Test")
+
+        let logs = manager.getAllLogs()
+        XCTAssertTrue(logs.contains("[Test]"))
+        XCTAssertTrue(logs.contains("Test message"))
+    }
+
+    func testLogManagerDefaultCategory() {
+        let manager = LogManager.shared
+        manager.clearLogs()
+
+        manager.log("General message")
+
+        let logs = manager.getAllLogs()
+        XCTAssertTrue(logs.contains("[General]"))
+        XCTAssertTrue(logs.contains("General message"))
+    }
+
+    func testLogManagerTimestampFormat() {
+        let manager = LogManager.shared
+        manager.clearLogs()
+
+        manager.log("Timestamped message")
+
+        let logs = manager.getAllLogs()
+        // Timestamp format: HH:mm:ss.SSS
+        let timestampPattern = "\\[\\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\]"
+        let regex = try! NSRegularExpression(pattern: timestampPattern)
+        let range = NSRange(logs.startIndex..., in: logs)
+        XCTAssertNotNil(regex.firstMatch(in: logs, range: range))
+    }
+
+    func testLogManagerGetRecentLogsUnderLimit() {
+        let manager = LogManager.shared
+        manager.clearLogs()
+
+        manager.log("Short message")
+
+        let logs = manager.getRecentLogs(maxBytes: 15_000)
+        XCTAssertTrue(logs.contains("Short message"))
+    }
+
+    func testLogManagerClearLogs() {
+        let manager = LogManager.shared
+        manager.log("Before clear")
+        manager.clearLogs()
+
+        // Wait a moment for async clear to complete
+        Thread.sleep(forTimeInterval: 0.1)
+
+        let logs = manager.getAllLogs()
+        XCTAssertTrue(logs.isEmpty)
+    }
+
+    func testLogManagerConfigSubsystem() {
+        // Test that subsystem can be configured
+        let originalSubsystem = LogManagerConfig.subsystem
+        LogManagerConfig.subsystem = "com.test.app"
+        XCTAssertEqual(LogManagerConfig.subsystem, "com.test.app")
+        LogManagerConfig.subsystem = originalSubsystem
+    }
 }
