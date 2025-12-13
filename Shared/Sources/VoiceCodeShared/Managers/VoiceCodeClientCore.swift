@@ -188,8 +188,8 @@ open class VoiceCodeClientCore: ObservableObject {
     func handleConnectionStateChange(_ isConnected: Bool) {
         if isConnected {
             // WebSocket opened, wait for hello message
-            // State transition happens when hello is received
-            if connectionState == .disconnected || connectionState == .reconnecting {
+            // Transition to connecting from any valid pre-connection state
+            if connectionState == .disconnected || connectionState == .reconnecting || connectionState == .failed {
                 transitionTo(.connecting)
             }
         } else {
@@ -330,7 +330,7 @@ open class VoiceCodeClientCore: ObservableObject {
             return
         }
 
-        transitionTo(.connecting)
+        // State transition to .connecting happens in handleConnectionStateChange when WebSocket opens
         webSocketManager.connect()
     }
 
@@ -388,38 +388,6 @@ open class VoiceCodeClientCore: ObservableObject {
             }
         }
         timer.resume()
-        reconnectionTimer = timer
-    }
-
-    @available(*, deprecated, message: "Use scheduleReconnection() instead")
-    private func setupReconnection() {
-        reconnectionTimer?.cancel()
-
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
-        let delay = min(pow(2.0, Double(reconnectionAttempts)), maxReconnectionDelay)
-
-        timer.schedule(deadline: .now() + delay, repeating: delay)
-        timer.setEventHandler { [weak self] in
-            Task { @MainActor in
-                guard let self = self else { return }
-
-                if !self.isConnected {
-                    if self.reconnectionAttempts >= self.maxReconnectionAttempts {
-                        self.logger.error("Max reconnection attempts reached")
-                        self.reconnectionTimer?.cancel()
-                        self.reconnectionTimer = nil
-                        self.currentError = "Unable to connect to server after \(self.maxReconnectionAttempts) attempts"
-                        return
-                    }
-
-                    self.reconnectionAttempts += 1
-                    self.logger.info("Reconnection attempt \(self.reconnectionAttempts)/\(self.maxReconnectionAttempts)")
-                    self.connect()
-                }
-            }
-        }
-        timer.resume()
-
         reconnectionTimer = timer
     }
 
