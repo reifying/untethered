@@ -26,7 +26,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     /// - Parameters:
     ///   - text: The text to speak
     ///   - respectSilentMode: Not used on macOS (no silent mode concept)
-    ///   - workingDirectory: Used for voice rotation based on directory
+    ///   - workingDirectory: Used for voice rotation when "All Premium Voices" is selected
     func speak(_ text: String, respectSilentMode: Bool = false, workingDirectory: String = "") {
         // Stop any current speech
         if synthesizer.isSpeaking {
@@ -35,8 +35,9 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
         let utterance = AVSpeechUtterance(string: text)
 
-        // Set voice if configured
-        if let voiceIdentifier = appSettings?.selectedVoiceIdentifier {
+        // Resolve voice identifier using voice rotation logic
+        let workingDir = workingDirectory.isEmpty ? nil : workingDirectory
+        if let voiceIdentifier = appSettings?.resolveVoiceIdentifier(forWorkingDirectory: workingDir) {
             utterance.voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier)
         }
 

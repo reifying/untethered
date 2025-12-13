@@ -140,9 +140,7 @@ final class VoiceCodeSyncDelegate: SessionSyncDelegate {
 
     @MainActor
     func isSessionActive(_ sessionId: UUID) -> Bool {
-        // For macOS, we'll implement ActiveSessionManager later
-        // For now, return false to indicate session isn't "active" in foreground sense
-        false
+        ActiveSessionManager.shared.isActive(sessionId)
     }
 
     @MainActor

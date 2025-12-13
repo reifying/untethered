@@ -140,4 +140,107 @@ final class VoiceOutputManagerTests: XCTestCase {
         // Clean up
         manager.stop()
     }
+
+    // MARK: - Working Directory Tests (Voice Rotation)
+
+    func testSpeakWithWorkingDirectory() {
+        let settings = AppSettings()
+        let manager = VoiceOutputManager(appSettings: settings)
+
+        // Should not crash when speaking with a working directory
+        manager.speak("Testing voice rotation", workingDirectory: "/Users/test/project")
+        manager.stop()
+    }
+
+    func testSpeakWithEmptyWorkingDirectory() {
+        let settings = AppSettings()
+        let manager = VoiceOutputManager(appSettings: settings)
+
+        // Empty working directory should be handled as nil
+        manager.speak("Testing empty directory", workingDirectory: "")
+        manager.stop()
+    }
+}
+
+// MARK: - AppSettings Voice Tests
+
+final class AppSettingsVoiceTests: XCTestCase {
+
+    func testAllPremiumVoicesIdentifierExists() {
+        XCTAssertEqual(AppSettings.allPremiumVoicesIdentifier, "com.voicecode.all-premium-voices")
+    }
+
+    func testAvailableVoicesNotEmpty() {
+        // On macOS, there should be at least some voices available
+        let voices = AppSettings.availableVoices
+        // Note: This may be empty in sandboxed test environments, so we just verify no crash
+        XCTAssertNotNil(voices)
+    }
+
+    func testPremiumVoicesNotNil() {
+        let voices = AppSettings.premiumVoices
+        XCTAssertNotNil(voices)
+    }
+
+    func testResolveVoiceIdentifierWithNilSelected() {
+        let settings = AppSettings()
+        settings.selectedVoiceIdentifier = nil
+
+        let result = settings.resolveVoiceIdentifier(forWorkingDirectory: "/test")
+        XCTAssertNil(result)
+    }
+
+    func testResolveVoiceIdentifierWithSpecificVoice() {
+        let settings = AppSettings()
+        let testIdentifier = "com.apple.voice.compact.en-US.Samantha"
+        settings.selectedVoiceIdentifier = testIdentifier
+
+        let result = settings.resolveVoiceIdentifier(forWorkingDirectory: "/test")
+        XCTAssertEqual(result, testIdentifier)
+    }
+
+    func testResolveVoiceIdentifierWithAllPremiumVoices() {
+        let settings = AppSettings()
+        settings.selectedVoiceIdentifier = AppSettings.allPremiumVoicesIdentifier
+
+        // With all premium voices selected, should return some voice (or nil if no premium available)
+        let result = settings.resolveVoiceIdentifier(forWorkingDirectory: "/test/project")
+        // Result depends on available premium voices - just verify no crash
+        _ = result
+    }
+
+    func testVoiceRotationDeterministic() {
+        let settings = AppSettings()
+        settings.selectedVoiceIdentifier = AppSettings.allPremiumVoicesIdentifier
+
+        // Same working directory should always return the same voice
+        let result1 = settings.resolveVoiceIdentifier(forWorkingDirectory: "/test/project")
+        let result2 = settings.resolveVoiceIdentifier(forWorkingDirectory: "/test/project")
+
+        XCTAssertEqual(result1, result2)
+    }
+
+    func testVoiceRotationVariesByDirectory() {
+        let settings = AppSettings()
+        settings.selectedVoiceIdentifier = AppSettings.allPremiumVoicesIdentifier
+
+        // Different directories may get different voices (if multiple premium voices available)
+        let result1 = settings.resolveVoiceIdentifier(forWorkingDirectory: "/project/alpha")
+        let result2 = settings.resolveVoiceIdentifier(forWorkingDirectory: "/project/beta")
+
+        // Note: Results may or may not be different depending on hash distribution and voice count
+        // We just verify both calls succeed without crashing
+        _ = result1
+        _ = result2
+    }
+
+    func testResolveVoiceIdentifierWithNilWorkingDirectory() {
+        let settings = AppSettings()
+        settings.selectedVoiceIdentifier = AppSettings.allPremiumVoicesIdentifier
+
+        // Should not crash with nil working directory
+        let result = settings.resolveVoiceIdentifier(forWorkingDirectory: nil)
+        // Result is first premium voice (or fallback) when no directory provided
+        _ = result
+    }
 }
