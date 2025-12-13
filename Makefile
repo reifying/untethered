@@ -1,5 +1,5 @@
 # Makefile for voice-code project
-# iOS and Backend targets
+# iOS, macOS, and Backend targets
 
 # iOS Configuration
 SCHEME := VoiceCode
@@ -10,13 +10,26 @@ IOS_DIR := ios
 BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
+# macOS Configuration
+MACOS_SCHEME := VoiceCodeDesktop
+MACOS_DIR := macos
+MACOS_DESTINATION := 'platform=macOS'
+
 .PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
+.PHONY: macos-generate macos-build macos-test macos-run macos-clean
 
 # Default target
 help:
 	@echo "Available targets:"
+	@echo ""
+	@echo "macOS targets:"
+	@echo "  macos-generate    - Generate Xcode project from project.yml (XcodeGen)"
+	@echo "  macos-build       - Build the macOS project"
+	@echo "  macos-test        - Run macOS unit tests"
+	@echo "  macos-run         - Build and run the macOS app"
+	@echo "  macos-clean       - Clean macOS build artifacts"
 	@echo ""
 	@echo "iOS targets:"
 	@echo "  generate-project  - Generate Xcode project from project.yml (XcodeGen)"
@@ -324,3 +337,34 @@ show-destinations: generate-project
 # Debug target to check SDK info
 check-sdk:
 	@xcodebuild -version -sdk iphoneos
+
+# =============================================================================
+# macOS Targets
+# =============================================================================
+
+# Generate macOS Xcode project from project.yml (XcodeGen)
+macos-generate:
+	@echo "Generating macOS Xcode project from project.yml..."
+	cd $(MACOS_DIR) && xcodegen generate
+	@echo "✅ macOS project generated successfully"
+
+# Build the macOS project
+macos-build: macos-generate
+	$(WRAP) bash -c "cd $(MACOS_DIR) && xcodebuild build -scheme $(MACOS_SCHEME) -destination $(MACOS_DESTINATION)"
+
+# Run macOS unit tests
+macos-test: macos-generate
+	$(WRAP) bash -c "cd $(MACOS_DIR) && xcodebuild test -scheme $(MACOS_SCHEME) -destination $(MACOS_DESTINATION)"
+
+# Build and run the macOS app
+macos-run: macos-generate
+	@echo "Building and running macOS app..."
+	$(WRAP) bash -c "cd $(MACOS_DIR) && xcodebuild build -scheme $(MACOS_SCHEME) -destination $(MACOS_DESTINATION) -derivedDataPath build"
+	@echo "Launching app..."
+	@open $(MACOS_DIR)/build/Build/Products/Debug/VoiceCodeDesktop.app
+
+# Clean macOS build artifacts
+macos-clean:
+	cd $(MACOS_DIR) && xcodebuild clean -scheme $(MACOS_SCHEME) 2>/dev/null || true
+	rm -rf $(MACOS_DIR)/build
+	rm -rf ~/Library/Developer/Xcode/DerivedData/VoiceCodeDesktop-*
