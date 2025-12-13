@@ -49,32 +49,39 @@ public final class SessionSyncManager: @unchecked Sendable {
         nonisolated(unsafe) let sessionsCopy = sessions
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            persistenceController.performBackgroundTask { [weak self] backgroundContext in
-                guard let self = self else {
-                    continuation.resume()
-                    return
-                }
+            nonisolated(unsafe) var didSaveChanges = false
 
-                for sessionData in sessionsCopy {
-                    self.upsertSession(sessionData, in: backgroundContext)
-                }
+            persistenceController.performBackgroundTaskWithMergeCompletion(
+                { [weak self] backgroundContext in
+                    guard let self = self else { return false }
 
-                do {
-                    if backgroundContext.hasChanges {
-                        try backgroundContext.save()
-                        self.logger.info("Saved \(sessionCount) sessions to CoreData")
-
-                        // Notify observers that session list was updated
-                        DispatchQueue.main.async {
-                            NotificationCenter.default.post(name: .sessionListDidUpdate, object: nil)
-                        }
+                    for sessionData in sessionsCopy {
+                        self.upsertSession(sessionData, in: backgroundContext)
                     }
-                } catch {
-                    self.logger.error("Failed to save session_list: \(error.localizedDescription)")
-                }
 
-                continuation.resume()
-            }
+                    do {
+                        if backgroundContext.hasChanges {
+                            try backgroundContext.save()
+                            self.logger.info("Saved \(sessionCount) sessions to CoreData")
+                            didSaveChanges = true
+                            return true
+                        }
+                    } catch {
+                        self.logger.error("Failed to save session_list: \(error.localizedDescription)")
+                    }
+
+                    // No changes to save - resume continuation immediately
+                    continuation.resume()
+                    return false
+                },
+                onMergeComplete: {
+                    // Notify observers AFTER changes are merged to view context
+                    if didSaveChanges {
+                        NotificationCenter.default.post(name: .sessionListDidUpdate, object: nil)
+                    }
+                    continuation.resume()
+                }
+            )
         }
     }
 

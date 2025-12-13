@@ -165,6 +165,67 @@ public final class PersistenceController: @unchecked Sendable {
         container.performBackgroundTask(block)
     }
 
+    // MARK: - Cross-Context Object Lookup
+
+    /// Look up an object in the view context by its objectID from another context
+    /// Use this when you have an objectID from a background context and need to access the object on the main thread
+    /// - Parameter objectID: The NSManagedObjectID from any context
+    /// - Returns: The object in the view context, or nil if not found
+    public func object<T: NSManagedObject>(for objectID: NSManagedObjectID) -> T? {
+        do {
+            return try container.viewContext.existingObject(with: objectID) as? T
+        } catch {
+            let logger = Logger(subsystem: PersistenceConfig.subsystem, category: "Persistence")
+            logger.error("Failed to fetch object for ID: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Look up an object in a specific context by its objectID
+    /// - Parameters:
+    ///   - objectID: The NSManagedObjectID from any context
+    ///   - context: The context to look up the object in
+    /// - Returns: The object in the specified context, or nil if not found
+    public func object<T: NSManagedObject>(for objectID: NSManagedObjectID, in context: NSManagedObjectContext) -> T? {
+        do {
+            return try context.existingObject(with: objectID) as? T
+        } catch {
+            let logger = Logger(subsystem: PersistenceConfig.subsystem, category: "Persistence")
+            logger.error("Failed to fetch object for ID in context: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Perform a background task with a completion handler called AFTER merge to view context
+    /// Use this when you need to post notifications after CoreData changes are visible on main thread
+    /// - Parameters:
+    ///   - block: The work to perform on the background context. Returns true if save was successful.
+    ///   - onMergeComplete: Called on main thread after changes have been merged to view context
+    public func performBackgroundTaskWithMergeCompletion(
+        _ block: @escaping @Sendable (NSManagedObjectContext) -> Bool,
+        onMergeComplete: @escaping @MainActor @Sendable () -> Void
+    ) {
+        container.performBackgroundTask { [weak self] context in
+            let didSave = block(context)
+
+            guard didSave else { return }
+
+            // Wait for merge to complete on main thread, then call completion
+            // The merge is triggered by NSManagedObjectContextDidSave notification
+            // which we observe in init() and handle with viewContext.perform {}
+            // We queue our completion after that by using DispatchQueue.main.async twice:
+            // - First async: lands in queue after the merge notification handler
+            // - Second async (via perform): ensures merge has completed
+            DispatchQueue.main.async { [weak self] in
+                self?.container.viewContext.perform {
+                    Task { @MainActor in
+                        onMergeComplete()
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Test Model Creation
 
     /// Creates a CoreData model programmatically for testing when Bundle.module resources aren't available
