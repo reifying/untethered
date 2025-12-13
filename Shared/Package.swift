@@ -16,9 +16,10 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "VoiceCodeShared"
-            // Resources will be added when CoreData model is moved:
-            // resources: [.process("CoreData/VoiceCode.xcdatamodeld")]
+            name: "VoiceCodeShared",
+            resources: [
+                .process("CoreData/VoiceCode.xcdatamodeld")
+            ]
         ),
         .testTarget(
             name: "VoiceCodeSharedTests",
