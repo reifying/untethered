@@ -13,12 +13,25 @@ public enum ActiveSessionConfig {
 
 /// Manages which session is currently active/visible to the user
 /// Used for smart speaking logic - only auto-speak responses for active session
+///
+/// ## Usage
+/// Use the `.shared` singleton for production code:
+/// ```swift
+/// ActiveSessionManager.shared.setActiveSession(sessionId)
+/// ```
+///
+/// The public `init()` is available for dependency injection in tests, but note that
+/// `SessionSyncDelegate` implementations typically access `.shared` directly.
+/// For testing delegate behavior, configure `.shared` state in your tests.
 @MainActor
 public final class ActiveSessionManager: ObservableObject, Sendable {
 
     // MARK: - Shared Instance
 
     /// Shared singleton instance for global access
+    ///
+    /// Use this instance in production code. The singleton ensures consistent
+    /// active session state across the app.
     public static let shared = ActiveSessionManager()
 
     // MARK: - Published Properties
@@ -32,6 +45,10 @@ public final class ActiveSessionManager: ObservableObject, Sendable {
 
     // MARK: - Initialization
 
+    /// Creates a new ActiveSessionManager instance.
+    ///
+    /// - Note: Prefer using `.shared` in production code. This initializer is
+    ///   public primarily for testing purposes.
     public init() {}
 
     // MARK: - Public Methods

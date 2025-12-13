@@ -1155,20 +1155,22 @@ class VoiceCodeClient: ObservableObject {
 // MARK: - SessionSyncDelegate Implementation
 
 /// Bridge between SessionSyncManager and iOS-specific functionality
-final class VoiceCodeSyncDelegate: SessionSyncDelegate, @unchecked Sendable {
-    private weak var voiceOutputManager: VoiceOutputManager?
-    private weak var appSettings: AppSettings?
+///
+/// Note: All methods are called on MainActor per the SessionSyncDelegate protocol.
+/// The class itself is not @MainActor to allow instantiation from any context,
+/// but all protocol methods run on MainActor as required by the protocol.
+final class VoiceCodeSyncDelegate: SessionSyncDelegate {
+    // Using nonisolated(unsafe) to allow access from any context while storing weak references
+    nonisolated(unsafe) private weak var voiceOutputManager: VoiceOutputManager?
+    nonisolated(unsafe) private weak var appSettings: AppSettings?
 
-    init(voiceOutputManager: VoiceOutputManager?, appSettings: AppSettings?) {
+    nonisolated init(voiceOutputManager: VoiceOutputManager?, appSettings: AppSettings?) {
         self.voiceOutputManager = voiceOutputManager
         self.appSettings = appSettings
     }
 
     func isSessionActive(_ sessionId: UUID) -> Bool {
-        // Access MainActor-isolated singleton - safe for delegate called from SessionSyncManager
-        MainActor.assumeIsolated {
-            ActiveSessionManager.shared.isActive(sessionId)
-        }
+        ActiveSessionManager.shared.isActive(sessionId)
     }
 
     func speakAssistantMessages(_ messages: [String], workingDirectory: String) {

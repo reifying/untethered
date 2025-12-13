@@ -12,6 +12,9 @@ public enum SessionSyncConfig {
 }
 
 /// Delegate for platform-specific session sync callbacks
+///
+/// Note: All delegate methods are called on MainActor to ensure safe access to UI state.
+@MainActor
 public protocol SessionSyncDelegate: AnyObject, Sendable {
     /// Called to check if a session is currently active (being viewed)
     func isSessionActive(_ sessionId: UUID) -> Bool
@@ -242,15 +245,48 @@ public final class SessionSyncManager: @unchecked Sendable {
     public func handleSessionUpdated(sessionId: String, messages: [[String: Any]]) {
         logger.info("Received session_updated for: \(sessionId) with \(messages.count) messages")
 
+        guard let sessionUUID = UUID(uuidString: sessionId) else {
+            logger.error("Invalid session ID format in handleSessionUpdated: \(sessionId)")
+            return
+        }
+
+        // Capture delegate and mark messages as sendable before Task
+        let delegate = self.delegate
         nonisolated(unsafe) let messagesCopy = messages
+
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+
+            // Query delegate state on MainActor
+            let isActiveSession = delegate?.isSessionActive(sessionUUID) ?? false
+            let isPriorityQueueEnabled = delegate?.isPriorityQueueEnabled ?? false
+
+            // Now perform background CoreData work with captured state
+            self.performSessionUpdate(
+                sessionId: sessionId,
+                sessionUUID: sessionUUID,
+                messages: messagesCopy,
+                isActiveSession: isActiveSession,
+                isPriorityQueueEnabled: isPriorityQueueEnabled,
+                delegate: delegate
+            )
+        }
+    }
+
+    /// Internal method to perform session update on background context
+    private func performSessionUpdate(
+        sessionId: String,
+        sessionUUID: UUID,
+        messages: [[String: Any]],
+        isActiveSession: Bool,
+        isPriorityQueueEnabled: Bool,
+        delegate: SessionSyncDelegate?
+    ) {
+        // Mark messages as safe for capture in @Sendable closure
+        nonisolated(unsafe) let safeMessages = messages
 
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
-
-            guard let sessionUUID = UUID(uuidString: sessionId) else {
-                self.logger.error("Invalid session ID format in handleSessionUpdated: \(sessionId)")
-                return
-            }
 
             let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionUUID)
 
@@ -267,12 +303,10 @@ public final class SessionSyncManager: @unchecked Sendable {
                 session.isLocallyCreated = false
             }
 
-            let isActiveSession = self.delegate?.isSessionActive(sessionUUID) ?? false
-
             var newMessageCount = 0
             var assistantMessagesToSpeak: [String] = []
 
-            for messageData in messagesCopy {
+            for messageData in safeMessages {
                 guard let role = self.extractRole(from: messageData),
                       let text = self.extractText(from: messageData) else {
                     continue
@@ -322,8 +356,8 @@ public final class SessionSyncManager: @unchecked Sendable {
 
                     if !assistantMessagesToSpeak.isEmpty {
                         let combinedText = assistantMessagesToSpeak.joined(separator: "\n\n")
-                        DispatchQueue.main.async { [weak self] in
-                            self?.delegate?.postNotification(
+                        Task { @MainActor in
+                            delegate?.postNotification(
                                 text: combinedText,
                                 sessionName: sessionName,
                                 workingDirectory: workingDirectory
@@ -333,14 +367,14 @@ public final class SessionSyncManager: @unchecked Sendable {
                 }
             }
 
-            if let lastMessage = messagesCopy.last,
+            if let lastMessage = safeMessages.last,
                let text = self.extractText(from: lastMessage) {
                 session.preview = String(text.prefix(100))
             }
 
             // Auto-add to priority queue
             if !assistantMessagesToSpeak.isEmpty {
-                if self.delegate?.isPriorityQueueEnabled ?? false {
+                if isPriorityQueueEnabled {
                     CDBackendSession.addToPriorityQueue(session, context: backgroundContext)
                     self.logger.info("Auto-added session to priority queue: \(sessionId)")
                 }
@@ -363,9 +397,9 @@ public final class SessionSyncManager: @unchecked Sendable {
 
                 // Speak messages for active session
                 if isActiveSession && !assistantMessagesToSpeak.isEmpty {
-                    DispatchQueue.main.async { [weak self] in
+                    Task { @MainActor in
                         let processedMessages = assistantMessagesToSpeak.map { TextProcessor.removeCodeBlocks(from: $0) }
-                        self?.delegate?.speakAssistantMessages(processedMessages, workingDirectory: workingDirectory)
+                        delegate?.speakAssistantMessages(processedMessages, workingDirectory: workingDirectory)
                     }
                 }
             } catch {

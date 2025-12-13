@@ -281,6 +281,7 @@ class SmartSpeakingTests: XCTestCase {
 
 // MARK: - Mock Session Sync Delegate
 
+@MainActor
 class MockSessionSyncDelegate: SessionSyncDelegate {
     var activeSessionId: UUID?
     var speakWasCalled = false
