@@ -996,6 +996,8 @@ open class VoiceCodeClientCore: ObservableObject {
     // MARK: - Cleanup
 
     deinit {
+        // Note: reconnectionTimer and debounceWorkItem are cleaned up automatically
+        // when object deallocates. Cannot cancel explicitly due to Swift 6 Sendable rules.
         NotificationCenter.default.removeObserver(self)
     }
 }

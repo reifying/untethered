@@ -57,9 +57,9 @@ public final class PersistenceController: @unchecked Sendable {
     }()
 
     public let container: NSPersistentContainer
+    private let logger = Logger(subsystem: PersistenceConfig.subsystem, category: "Persistence")
 
     public init(inMemory: Bool = false) {
-        let logger = Logger(subsystem: PersistenceConfig.subsystem, category: "Persistence")
 
         // Load CoreData model from Bundle.module (Swift Package resources)
         // Try Bundle.module first, then fall back to creating an empty model for testing
@@ -84,34 +84,34 @@ public final class PersistenceController: @unchecked Sendable {
             description?.shouldMigrateStoreAutomatically = true
         }
 
-        container.loadPersistentStores { description, error in
+        container.loadPersistentStores { [self] description, error in
             if let error = error {
-                logger.error("CoreData failed to load: \(error.localizedDescription)")
+                self.logger.error("CoreData failed to load: \(error.localizedDescription)")
 
                 // Attempt recovery by deleting and recreating the store
                 if let storeURL = self.container.persistentStoreDescriptions.first?.url {
-                    logger.warning("Attempting to recover by deleting corrupt store at: \(storeURL.path)")
+                    self.logger.warning("Attempting to recover by deleting corrupt store at: \(storeURL.path)")
 
                     do {
                         try FileManager.default.removeItem(at: storeURL)
-                        logger.info("Deleted corrupt store, reloading...")
+                        self.logger.info("Deleted corrupt store, reloading...")
 
                         // Attempt to reload after deletion
                         self.container.loadPersistentStores { recoveryDescription, recoveryError in
                             if let recoveryError = recoveryError {
-                                logger.error("Recovery failed: \(recoveryError.localizedDescription)")
+                                self.logger.error("Recovery failed: \(recoveryError.localizedDescription)")
                             } else {
-                                logger.info("Store recovered successfully: \(recoveryDescription.url?.path ?? "unknown")")
+                                self.logger.info("Store recovered successfully: \(recoveryDescription.url?.path ?? "unknown")")
                             }
                         }
                     } catch {
-                        logger.error("Failed to delete corrupt store: \(error.localizedDescription)")
+                        self.logger.error("Failed to delete corrupt store: \(error.localizedDescription)")
                     }
                 } else {
-                    logger.error("No store URL found for recovery")
+                    self.logger.error("No store URL found for recovery")
                 }
             } else {
-                logger.info("CoreData store loaded: \(description.url?.path ?? "unknown")")
+                self.logger.info("CoreData store loaded: \(description.url?.path ?? "unknown")")
             }
         }
 
@@ -152,10 +152,8 @@ public final class PersistenceController: @unchecked Sendable {
 
         do {
             try context.save()
-            let logger = Logger(subsystem: PersistenceConfig.subsystem, category: "Persistence")
             logger.debug("Context saved successfully")
         } catch {
-            let logger = Logger(subsystem: PersistenceConfig.subsystem, category: "Persistence")
             logger.error("Failed to save context: \(error.localizedDescription)")
         }
     }
@@ -175,7 +173,6 @@ public final class PersistenceController: @unchecked Sendable {
         do {
             return try container.viewContext.existingObject(with: objectID) as? T
         } catch {
-            let logger = Logger(subsystem: PersistenceConfig.subsystem, category: "Persistence")
             logger.error("Failed to fetch object for ID: \(error.localizedDescription)")
             return nil
         }
@@ -190,7 +187,6 @@ public final class PersistenceController: @unchecked Sendable {
         do {
             return try context.existingObject(with: objectID) as? T
         } catch {
-            let logger = Logger(subsystem: PersistenceConfig.subsystem, category: "Persistence")
             logger.error("Failed to fetch object for ID in context: \(error.localizedDescription)")
             return nil
         }
