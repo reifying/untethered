@@ -105,7 +105,8 @@ struct OnboardingView: View {
                 do {
                     try await Task.sleep(nanoseconds: pollInterval)
                 } catch {
-                    // Task was cancelled - clean up and return immediately
+                    // Task was cancelled or error occurred - clean up and return immediately
+                    // In practice, only CancellationError occurs with Task.sleep
                     testClient.disconnect()
                     return
                 }
@@ -284,13 +285,14 @@ struct TestConnectionStep: View {
                 }
                 .padding(.horizontal)
             } else {
-                // Initial state before test begins
+                // Fallback state: indicates test wasn't properly initialized
+                // Under normal circumstances, isLoading should be true when rendering this view
                 Spacer()
 
                 ProgressView()
                     .scaleEffect(1.5)
 
-                Text("Starting connection test...")
+                Text("Initializing...")
                     .foregroundColor(.secondary)
 
                 Spacer()
