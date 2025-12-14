@@ -1,5 +1,6 @@
 (ns voice-code.server-test
   (:require [clojure.test :refer :all]
+            [clojure.string :as str]
             [voice-code.server :as server]
             [cheshire.core :as json]
             [clojure.java.io :as io]))
@@ -601,4 +602,48 @@
         (server/send-recent-sessions! :test-channel 18)
         (is (= 18 @captured-limit)
             "send-recent-sessions! should use updated limit on subsequent calls")))))
+
+(deftest test-get-available-recipes
+  (testing "get_available_recipes message returns available recipes"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                               (swap! sent-messages conj msg))]
+        (server/handle-message :test-ch "{\"type\":\"get_available_recipes\"}")
+
+        ;; Verify message was sent
+        (is (= 1 (count @sent-messages)))
+
+        ;; Parse and verify content - use true for keyword keys
+        (let [msg (json/parse-string (first @sent-messages) true)]
+          ;; Type value is a string (values don't get converted to keywords)
+          (is (= "available_recipes" (:type msg)))
+          (is (vector? (:recipes msg)))
+          (is (pos? (count (:recipes msg))))
+
+          ;; Verify recipe structure has kebab-case keys (from snake_case JSON)
+          (let [recipe (first (:recipes msg))]
+            (is (contains? recipe :id))
+            (is (contains? recipe :label))
+            (is (contains? recipe :description)))))))
+
+  (testing "get_available_recipes uses correct JSON formatting with snake_case"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                               (swap! sent-messages conj msg))]
+        (server/handle-message :test-ch "{\"type\":\"get_available_recipes\"}")
+
+        ;; Verify snake_case in raw JSON
+        (let [json-str (first @sent-messages)]
+          (is (str/includes? json-str "\"type\":\"available_recipes\""))
+          (is (str/includes? json-str "\"recipes\""))
+          ;; Verify the recipe JSON keys are in snake_case (no hyphens)
+          (is (str/includes? json-str "\"id\""))
+          (is (str/includes? json-str "\"label\""))
+          (is (str/includes? json-str "\"description\"")))))))
+
+
+
+
 
