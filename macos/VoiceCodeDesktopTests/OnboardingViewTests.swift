@@ -185,6 +185,7 @@ final class OnboardingViewTests: XCTestCase {
             title: "Microphone",
             description: "Required for voice input",
             isGranted: true,
+            isRequesting: false,
             onRequest: {}
         )
         XCTAssertNotNil(view)
@@ -195,6 +196,7 @@ final class OnboardingViewTests: XCTestCase {
             title: "Microphone",
             description: "Required for voice input",
             isGranted: false,
+            isRequesting: false,
             onRequest: {}
         )
         XCTAssertNotNil(view)
@@ -206,6 +208,7 @@ final class OnboardingViewTests: XCTestCase {
             title: "Microphone",
             description: "Required for voice input",
             isGranted: false,
+            isRequesting: false,
             onRequest: { requestCalled = true }
         )
 

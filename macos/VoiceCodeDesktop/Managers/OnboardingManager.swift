@@ -16,8 +16,10 @@ final class OnboardingManager: ObservableObject {
 
         // Observe changes to serverURL and update isServerConfigured reactively
         // Use weak self to avoid retain cycle with the subscription
+        // removeDuplicates prevents unnecessary updates when isEmpty result doesn't change
         self.cancellable = appSettings.$serverURL
             .map { !$0.isEmpty }
+            .removeDuplicates()
             .sink { [weak self] isConfigured in
                 self?.isServerConfigured = isConfigured
             }

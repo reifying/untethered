@@ -62,12 +62,13 @@ struct OnboardingView: View {
     }
 
     private func testConnection() {
+        // Cancel any previous connection test task BEFORE updating state
+        // This prevents a race condition where user taps Retry before new Task is assigned
+        connectionTestTask?.cancel()
+
         isTestingConnection = true
         connectionError = nil
         step = .testConnection
-
-        // Cancel any previous connection test task
-        connectionTestTask?.cancel()
 
         // Create new connection test task
         connectionTestTask = Task {
@@ -101,7 +102,13 @@ struct OnboardingView: View {
 
                 // Check again after a short delay
                 // 100ms provides good UI responsiveness without excessive CPU usage
-                try? await Task.sleep(nanoseconds: pollInterval)
+                do {
+                    try await Task.sleep(nanoseconds: pollInterval)
+                } catch {
+                    // Task was cancelled - clean up and return immediately
+                    testClient.disconnect()
+                    return
+                }
             }
 
             // Timeout reached without successful connection - return to config screen
@@ -111,7 +118,7 @@ struct OnboardingView: View {
                 step = .serverConfig
                 testClient.disconnect()
             }
-        }
+        } as Task<Void, Never>
     }
 
     private func skipOnboarding() {
@@ -154,19 +161,67 @@ struct ServerConfigStep: View {
     let onTest: () -> Void
     let onSkip: () -> Void
 
+    @State private var urlError: String?
+    @State private var portError: String?
+
+    var isURLValid: Bool {
+        guard !serverURL.isEmpty else { return false }
+        return serverURL.contains("://")
+    }
+
+    var isPortValid: Bool {
+        guard !serverPort.isEmpty else { return true } // Port is optional
+        guard let port = Int(serverPort) else { return false }
+        return port >= 1 && port <= 65535
+    }
+
+    var isConfigurationValid: Bool {
+        isURLValid && isPortValid
+    }
+
     var body: some View {
         VStack(spacing: 20) {
             Text("Connect to Backend")
                 .font(.title)
 
             VStack(spacing: 12) {
-                TextField("Server URL", text: $serverURL)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(.horizontal)
+                VStack(alignment: .leading, spacing: 4) {
+                    TextField("Server URL", text: $serverURL)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: serverURL) { newValue in
+                            urlError = newValue.isEmpty ? nil : (!isURLValid ? "URL must contain '://' (e.g., ws://localhost)" : nil)
+                        }
 
-                TextField("Port", text: $serverPort)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(.horizontal)
+                    if let error = urlError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                }
+                .padding(.horizontal)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    TextField("Port (optional)", text: $serverPort)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: serverPort) { newValue in
+                            if !newValue.isEmpty {
+                                if let port = Int(newValue) {
+                                    portError = (port < 1 || port > 65535) ? "Port must be between 1 and 65535" : nil
+                                } else {
+                                    portError = "Port must be a number"
+                                }
+                            } else {
+                                portError = nil
+                            }
+                        }
+
+                    if let error = portError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                }
+                .padding(.horizontal)
             }
 
             Spacer()
@@ -179,6 +234,7 @@ struct ServerConfigStep: View {
 
                 Button("Test Connection") { onTest() }
                     .buttonStyle(.borderedProminent)
+                    .disabled(!isConfigurationValid)
             }
             .padding(.horizontal)
         }
@@ -227,6 +283,17 @@ struct TestConnectionStep: View {
                         .buttonStyle(.borderedProminent)
                 }
                 .padding(.horizontal)
+            } else {
+                // Initial state before test begins
+                Spacer()
+
+                ProgressView()
+                    .scaleEffect(1.5)
+
+                Text("Starting connection test...")
+                    .foregroundColor(.secondary)
+
+                Spacer()
             }
         }
         .padding(40)
@@ -239,6 +306,8 @@ struct VoicePermissionsStep: View {
 
     @State private var microphoneGranted = false
     @State private var speechGranted = false
+    @State private var isRequestingMicrophone = false
+    @State private var isRequestingSpeech = false
 
     var body: some View {
         VStack(spacing: 24) {
@@ -260,6 +329,7 @@ struct VoicePermissionsStep: View {
                     title: "Microphone",
                     description: "Required for voice input",
                     isGranted: microphoneGranted,
+                    isRequesting: isRequestingMicrophone,
                     onRequest: requestMicrophone
                 )
 
@@ -267,6 +337,7 @@ struct VoicePermissionsStep: View {
                     title: "Speech Recognition",
                     description: "Required for transcription",
                     isGranted: speechGranted,
+                    isRequesting: isRequestingSpeech,
                     onRequest: requestSpeechRecognition
                 )
             }
@@ -292,17 +363,21 @@ struct VoicePermissionsStep: View {
     }
 
     private func requestMicrophone() {
+        isRequestingMicrophone = true
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             DispatchQueue.main.async {
                 microphoneGranted = granted
+                isRequestingMicrophone = false
             }
         }
     }
 
     private func requestSpeechRecognition() {
+        isRequestingSpeech = true
         SFSpeechRecognizer.requestAuthorization { status in
             DispatchQueue.main.async {
                 speechGranted = (status == .authorized)
+                isRequestingSpeech = false
             }
         }
     }
@@ -312,6 +387,7 @@ struct PermissionRow: View {
     let title: String
     let description: String
     let isGranted: Bool
+    let isRequesting: Bool
     let onRequest: () -> Void
 
     var body: some View {
@@ -330,6 +406,8 @@ struct PermissionRow: View {
             if isGranted {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundColor(.green)
+            } else if isRequesting {
+                ProgressView()
             } else {
                 Button("Grant") { onRequest() }
                     .buttonStyle(.bordered)

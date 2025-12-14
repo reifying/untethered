@@ -10,7 +10,7 @@ struct MainWindowView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundColor(.orange)
 
-                    Text("Server not configured. Go to Settings to configure backend connection.")
+                    Text("Server not configured. Please configure backend connection in the Settings menu (Cmd+,).")
                         .font(.caption)
 
                     Spacer()
