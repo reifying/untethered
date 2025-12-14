@@ -643,6 +643,60 @@
           (is (str/includes? json-str "\"label\""))
           (is (str/includes? json-str "\"description\"")))))))
 
+(deftest test-get-available-recipes-full-integration
+  (testing "Full integration: iOS sends get_available_recipes, backend responds with available_recipes"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                               (swap! sent-messages conj msg))]
+        ;; iOS sends: {"type": "get_available_recipes"}
+        (let [ios-request "{\"type\": \"get_available_recipes\"}"]
+          (server/handle-message :test-ch ios-request)
+
+          ;; Verify backend sent exactly 1 response
+          (is (= 1 (count @sent-messages)) "Backend should send exactly 1 message")
+
+          (let [backend-response (first @sent-messages)]
+            ;; Parse response
+            (let [parsed (json/parse-string backend-response true)]
+              ;; Verify type field is exactly "available_recipes" (iOS case statement expects this)
+              (let [response-type (:type parsed)]
+                (is (= "available_recipes" response-type)
+                    (str "Backend must send type='available_recipes' but sent: " response-type)))
+
+              ;; Verify recipes field exists and contains valid recipes
+              (is (contains? parsed :recipes) "Response must contain recipes field")
+              (let [recipes (:recipes parsed)]
+                (is (vector? recipes) "Recipes must be an array")
+                (is (pos? (count recipes)) "Recipes array must not be empty")
+
+                ;; Verify first recipe has required fields that iOS expects
+                (let [recipe (first recipes)]
+                  (is (contains? recipe :id) "Recipe must have id field")
+                  (is (contains? recipe :label) "Recipe must have label field")
+                  (is (contains? recipe :description) "Recipe must have description field"))))))))))
+
+(deftest test-available-recipes-ios-message-type-matching
+  (testing "Backend response message type exactly matches iOS case statement"
+    ;; This test verifies the exact message type value that will be sent to iOS
+    ;; iOS switch statement at line 726: case "available_recipes":
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                               (swap! sent-messages conj msg))]
+        (server/handle-message :test-ch "{\"type\": \"get_available_recipes\"}")
+
+        ;; Get the exact JSON string that iOS will receive
+        (let [json-str (first @sent-messages)]
+          ;; Extract the type value from raw JSON
+          (let [type-regex (re-find #"\"type\":\"([^\"]+)\"" json-str)]
+            (is (some? type-regex) "Must have type field in JSON")
+            (let [extracted-type (second type-regex)]
+              ;; iOS switch statement looks for: case "available_recipes":
+              (is (= "available_recipes" extracted-type)
+                  (str "iOS expects 'available_recipes' but backend sends: '" extracted-type "'")))))))))
+
+
 
 
 
