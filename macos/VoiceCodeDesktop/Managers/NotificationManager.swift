@@ -26,6 +26,41 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
         super.init()
         UNUserNotificationCenter.current().delegate = self
         setupNotificationCategories()
+        setupNotificationCleanup()
+    }
+
+    private func setupNotificationCleanup() {
+        // Periodically check which notifications are still delivered
+        // This helps clean up pendingResponses for notifications dismissed outside the app
+        // We use a timer to check every 30 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            self?.cleanupRemovedNotifications()
+        }
+    }
+
+    private func cleanupRemovedNotifications() {
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+
+            // Get list of currently delivered notifications
+            let deliveredNotifications = await UNUserNotificationCenter.current().deliveredNotifications()
+            let deliveredIds = Set(deliveredNotifications.map { $0.request.identifier })
+
+            // Remove entries for notifications no longer in notification center
+            let obsoleteIds = Set(self.pendingResponses.keys).subtracting(deliveredIds)
+            for id in obsoleteIds {
+                self.pendingResponses.removeValue(forKey: id)
+            }
+
+            if !obsoleteIds.isEmpty {
+                logger.debug("Cleaned up \(obsoleteIds.count) obsolete pending responses")
+            }
+
+            // Schedule next cleanup in 30 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                self?.cleanupRemovedNotifications()
+            }
+        }
     }
 
     func setVoiceOutputManager(_ manager: VoiceOutputManager) {

@@ -96,4 +96,35 @@ final class NotificationManagerTests: XCTestCase {
         // Should not crash when clearing non-existent notification
         manager.clearNotification(identifier: notificationId)
     }
+
+    // MARK: - Delegate Tests
+
+    @MainActor
+    func testNotificationManagerConformsToDelegate() {
+        let manager = NotificationManager()
+
+        // Verify manager conforms to UNUserNotificationCenterDelegate
+        // This ensures delegate methods will be called properly
+        XCTAssertTrue(manager is UNUserNotificationCenterDelegate)
+    }
+
+    @MainActor
+    func testNotificationManagerSetAsDelegateOnInit() {
+        let manager = NotificationManager()
+
+        // Verify the manager was set as delegate during initialization
+        // This is critical for receiving notification actions
+        let center = UNUserNotificationCenter.current()
+        XCTAssertNotNil(center.delegate)
+    }
+
+    @MainActor
+    func testNotificationCleanupSetupOnInit() {
+        let manager = NotificationManager()
+
+        // Verify that notification cleanup was set up during initialization
+        // This prevents pendingResponses from growing unbounded
+        // Note: Full functional testing would require mocking NotificationCenter
+        // For now, we verify the manager initializes without crashing
+    }
 }

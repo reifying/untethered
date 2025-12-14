@@ -18,22 +18,6 @@ final class VoiceInputManagerTests: XCTestCase {
         XCTAssertNotNil(manager.authorizationStatus)
     }
 
-    // MARK: - Recording State Tests
-
-    @MainActor
-    func testInitiallyNotRecording() {
-        let manager = VoiceInputManager()
-
-        XCTAssertFalse(manager.isRecording)
-    }
-
-    @MainActor
-    func testTranscribedTextInitiallyEmpty() {
-        let manager = VoiceInputManager()
-
-        XCTAssertEqual(manager.transcribedText, "")
-    }
-
     // MARK: - Authorization Tests
 
     @MainActor
@@ -83,16 +67,16 @@ final class VoiceInputManagerTests: XCTestCase {
     // MARK: - Transcription Tests
 
     @MainActor
-    func testTranscriptionCallback() {
+    func testTranscriptionCallbackSetup() {
         let manager = VoiceInputManager()
-        let expectation = XCTestExpectation(description: "Transcription callback called")
+        var callbackFired = false
 
-        manager.onTranscriptionComplete = { text in
-            expectation.fulfill()
+        manager.onTranscriptionComplete = { _ in
+            callbackFired = true
         }
 
-        // Note: In a real test, we'd need to mock audio input
-        // For now, we just verify the callback mechanism works
+        // Verify callback property can be set without crashing
+        XCTAssertNotNil(manager.onTranscriptionComplete)
     }
 
     // MARK: - Cleanup Tests

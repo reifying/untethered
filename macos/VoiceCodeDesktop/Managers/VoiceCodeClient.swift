@@ -155,7 +155,7 @@ final class VoiceCodeSyncDelegate: SessionSyncDelegate {
 
     @MainActor
     func postNotification(text: String, sessionName: String, workingDirectory: String) {
-        Task {
+        Task { @MainActor in
             await NotificationManager.shared.postResponseNotification(
                 text: text,
                 sessionName: sessionName,
