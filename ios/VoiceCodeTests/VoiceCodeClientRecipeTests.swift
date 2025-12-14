@@ -394,14 +394,14 @@ class VoiceCodeClientRecipeTests: XCTestCase {
             .dropFirst()
             .sink { recipes in
                 updateCount += 1
-                // All 5 messages should batch into 1 update (100ms window)
+                // All 5 messages should batch into 1 update (100ms debounce window)
                 if recipes.count == 5 {
-                    XCTAssertEqual(updateCount, 1, "Should have received exactly 1 batched update")
+                    XCTAssertEqual(updateCount, 1, "Should have received exactly 1 batched update, not \(updateCount)")
                     expectation.fulfill()
                 }
             }
 
-        // Send 5 recipe_started messages in rapid succession (within 50ms)
+        // Send 5 recipe_started messages in rapid succession (no delays, rely on debouncing)
         for i in 1...5 {
             let json = """
             {
@@ -414,25 +414,17 @@ class VoiceCodeClientRecipeTests: XCTestCase {
             }
             """
             client.handleMessage(json)
-
-            // Small delay between messages (10ms)
-            if i < 5 {
-                Thread.sleep(forTimeInterval: 0.01)
-            }
         }
 
-        // Wait for debounce to complete
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            // All 5 should be in activeRecipes
-            guard let self = self else { return }
-            XCTAssertEqual(self.client.activeRecipes.count, 5, "Should have all 5 recipes")
-            for i in 1...5 {
-                XCTAssertNotNil(self.client.activeRecipes["session-\(i)"], "Session \(i) recipe should be active")
-            }
-        }
-
-        wait(for: [expectation], timeout: 1.0)
+        // Wait for debounce to complete (100ms debounce + buffer)
+        wait(for: [expectation], timeout: 0.5)
         cancellable.cancel()
+
+        // Verify all 5 recipes are in state
+        XCTAssertEqual(client.activeRecipes.count, 5, "Should have all 5 recipes after debounce")
+        for i in 1...5 {
+            XCTAssertNotNil(client.activeRecipes["session-\(i)"], "Session \(i) recipe should be active")
+        }
     }
 
     func testRapidStartAndExitSameSession() throws {
