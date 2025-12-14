@@ -9,6 +9,9 @@ struct RecipeMenuView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var isLoading = false
+    @State private var hasRequestedRecipes = false
+    @State private var errorMessage: String?
+    @State private var startingRecipeId: String?
 
     var body: some View {
         let _ = RenderTracker.count(Self.self)
@@ -22,6 +25,31 @@ struct RecipeMenuView: View {
                             Text("Loading recipes...")
                                 .font(.body)
                                 .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if let error = errorMessage {
+                        // Error state
+                        VStack(spacing: 16) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 64))
+                                .foregroundColor(.red)
+                            Text("Recipe Error")
+                                .font(.title2)
+                                .foregroundColor(.primary)
+                            Text(error)
+                                .font(.body)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 32)
+                            Button(action: { errorMessage = nil }) {
+                                Text("Dismiss")
+                                    .font(.body)
+                                    .padding(.horizontal, 20)
+                                    .padding(.vertical, 8)
+                                    .background(Color.blue)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(6)
+                            }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else if client.availableRecipes.isEmpty {
@@ -66,13 +94,17 @@ struct RecipeMenuView: View {
             }
         }
         .onAppear {
-            if client.availableRecipes.isEmpty {
+            if client.availableRecipes.isEmpty && !hasRequestedRecipes {
+                hasRequestedRecipes = true
                 isLoading = true
                 client.getAvailableRecipes()
 
                 // Timeout if recipes don't arrive
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    isLoading = false
+                    if isLoading {
+                        isLoading = false
+                        errorMessage = "Failed to load recipes. Please try again."
+                    }
                 }
             }
         }
@@ -80,8 +112,35 @@ struct RecipeMenuView: View {
 
     private func selectRecipe(recipeId: String) {
         print("📤 [RecipeMenuView] Selected recipe: \(recipeId) for session \(sessionId)")
+        startingRecipeId = recipeId
+        isLoading = true
+
         client.startRecipe(sessionId: sessionId, recipeId: recipeId)
-        dismiss()
+
+        // Wait for recipe_started confirmation
+        let startTime = Date()
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+            // Check if recipe_started arrived
+            if client.activeRecipes[sessionId] != nil {
+                Timer.scheduledTimer(withTimeInterval: 0.0, repeats: false) { _ in
+                    isLoading = false
+                    startingRecipeId = nil
+                    dismiss()
+                }
+            }
+
+            // Timeout after 3 seconds
+            if Date().timeIntervalSince(startTime) > 3.0 {
+                isLoading = false
+                startingRecipeId = nil
+                errorMessage = "Recipe start timeout. Please check your connection and try again."
+            }
+        }
+
+        // Keep timer alive until recipe_started arrives or timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.1) {
+            timer.invalidate()
+        }
     }
 }
 
