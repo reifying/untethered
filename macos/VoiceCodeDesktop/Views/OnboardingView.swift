@@ -8,6 +8,7 @@ struct OnboardingView: View {
     @State private var step: OnboardingStep = .welcome
     @State private var isTestingConnection = false
     @State private var connectionError: String?
+    @State private var connectionTestTask: Task<Void, Never>?
 
     enum OnboardingStep {
         case welcome
@@ -53,6 +54,11 @@ struct OnboardingView: View {
         }
         .frame(width: 500, height: 400)
         .interactiveDismissDisabled()
+        .onDisappear {
+            // Cancel any in-flight connection test when view is dismissed
+            connectionTestTask?.cancel()
+            connectionTestTask = nil
+        }
     }
 
     private func testConnection() {
@@ -60,17 +66,31 @@ struct OnboardingView: View {
         connectionError = nil
         step = .testConnection
 
-        Task {
+        // Cancel any previous connection test task
+        connectionTestTask?.cancel()
+
+        // Create new connection test task
+        connectionTestTask = Task {
             let testClient = VoiceCodeClient(serverURL: settings.fullServerURL)
             testClient.connect()
 
             // Wait for either successful connection or 5-second timeout
+            // - 5 second timeout is standard for connection attempts (matches iOS implementation)
+            // - 100ms polling interval balances responsiveness with CPU efficiency
+            // - Task.isCancelled check ensures clean cleanup if view is dismissed
             let startTime = Date()
             let timeoutInterval: TimeInterval = 5.0
+            let pollInterval: UInt64 = 100_000_000 // 100 milliseconds in nanoseconds
 
             while Date().timeIntervalSince(startTime) < timeoutInterval {
+                // Check if task was cancelled (e.g., view dismissed or user retried)
+                if Task.isCancelled {
+                    testClient.disconnect()
+                    return
+                }
+
                 if testClient.isConnected {
-                    // Connection succeeded
+                    // Connection succeeded - proceed to voice permissions
                     await MainActor.run {
                         isTestingConnection = false
                         step = .voicePermissions
@@ -80,10 +100,11 @@ struct OnboardingView: View {
                 }
 
                 // Check again after a short delay
-                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                // 100ms provides good UI responsiveness without excessive CPU usage
+                try? await Task.sleep(nanoseconds: pollInterval)
             }
 
-            // Timeout reached without successful connection
+            // Timeout reached without successful connection - return to config screen
             await MainActor.run {
                 isTestingConnection = false
                 connectionError = "Could not connect to server. Please check URL and port."
