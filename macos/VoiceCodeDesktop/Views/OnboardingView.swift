@@ -64,43 +64,31 @@ struct OnboardingView: View {
             let testClient = VoiceCodeClient(serverURL: settings.fullServerURL)
             testClient.connect()
 
-            // Set up timeout: if connection doesn't succeed within 5 seconds, fail
-            let timeoutTask = Task {
-                try await Task.sleep(nanoseconds: 5_000_000_000)
+            // Wait for either successful connection or 5-second timeout
+            let startTime = Date()
+            let timeoutInterval: TimeInterval = 5.0
+
+            while Date().timeIntervalSince(startTime) < timeoutInterval {
                 if testClient.isConnected {
+                    // Connection succeeded
+                    await MainActor.run {
+                        isTestingConnection = false
+                        step = .voicePermissions
+                        testClient.disconnect()
+                    }
                     return
                 }
 
-                await MainActor.run {
-                    if isTestingConnection {
-                        isTestingConnection = false
-                        connectionError = "Could not connect to server. Please check URL and port."
-                        step = .serverConfig
-                        testClient.disconnect()
-                    }
-                }
+                // Check again after a short delay
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
             }
 
-            // Observe connection state
-            var cancellable: Task<Void, Never>? = Task {
-                var lastState = testClient.isConnected
-
-                while !Task.isCancelled {
-                    if testClient.isConnected && !lastState {
-                        // Connection succeeded
-                        timeoutTask.cancel()
-
-                        await MainActor.run {
-                            isTestingConnection = false
-                            step = .voicePermissions
-                            testClient.disconnect()
-                        }
-                        return
-                    }
-
-                    lastState = testClient.isConnected
-                    try? await Task.sleep(nanoseconds: 100_000_000) // Check every 100ms
-                }
+            // Timeout reached without successful connection
+            await MainActor.run {
+                isTestingConnection = false
+                connectionError = "Could not connect to server. Please check URL and port."
+                step = .serverConfig
+                testClient.disconnect()
             }
         }
     }

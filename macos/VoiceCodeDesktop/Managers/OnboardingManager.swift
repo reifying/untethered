@@ -15,9 +15,12 @@ final class OnboardingManager: ObservableObject {
         isServerConfigured = !appSettings.serverURL.isEmpty
 
         // Observe changes to serverURL and update isServerConfigured reactively
+        // Use weak self to avoid retain cycle with the subscription
         self.cancellable = appSettings.$serverURL
             .map { !$0.isEmpty }
-            .assign(to: \.isServerConfigured, on: self)
+            .sink { [weak self] isConfigured in
+                self?.isServerConfigured = isConfigured
+            }
     }
 
     func completeOnboarding() {
