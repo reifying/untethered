@@ -37,14 +37,7 @@ struct VoiceCodeDesktopApp: App {
     }
 }
 
-// MARK: - Placeholder Views
-
-struct ContentView: View {
-    var body: some View {
-        Text("Untethered Desktop")
-            .frame(minWidth: 400, minHeight: 300)
-    }
-}
+// MARK: - Settings View
 
 struct SettingsView: View {
     var body: some View {

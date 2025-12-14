@@ -10,16 +10,10 @@ struct MainWindowView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundColor(.orange)
 
-                    Text("Server not configured")
+                    Text("Server not configured. Go to Settings to configure backend connection.")
                         .font(.caption)
 
                     Spacer()
-
-                    Button("Configure") {
-                        NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-                    }
-                    .buttonStyle(.plain)
-                    .font(.caption)
                 }
                 .padding(8)
                 .background(Color.orange.opacity(0.1))

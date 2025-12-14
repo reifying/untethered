@@ -64,17 +64,43 @@ struct OnboardingView: View {
             let testClient = VoiceCodeClient(serverURL: settings.fullServerURL)
             testClient.connect()
 
-            try await Task.sleep(nanoseconds: 5_000_000_000)
-
-            await MainActor.run {
-                isTestingConnection = false
+            // Set up timeout: if connection doesn't succeed within 5 seconds, fail
+            let timeoutTask = Task {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
                 if testClient.isConnected {
-                    step = .voicePermissions
-                } else {
-                    connectionError = "Could not connect to server. Please check URL and port."
-                    step = .serverConfig
+                    return
                 }
-                testClient.disconnect()
+
+                await MainActor.run {
+                    if isTestingConnection {
+                        isTestingConnection = false
+                        connectionError = "Could not connect to server. Please check URL and port."
+                        step = .serverConfig
+                        testClient.disconnect()
+                    }
+                }
+            }
+
+            // Observe connection state
+            var cancellable: Task<Void, Never>? = Task {
+                var lastState = testClient.isConnected
+
+                while !Task.isCancelled {
+                    if testClient.isConnected && !lastState {
+                        // Connection succeeded
+                        timeoutTask.cancel()
+
+                        await MainActor.run {
+                            isTestingConnection = false
+                            step = .voicePermissions
+                            testClient.disconnect()
+                        }
+                        return
+                    }
+
+                    lastState = testClient.isConnected
+                    try? await Task.sleep(nanoseconds: 100_000_000) // Check every 100ms
+                }
             }
         }
     }
