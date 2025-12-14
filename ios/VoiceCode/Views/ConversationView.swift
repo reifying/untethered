@@ -387,7 +387,7 @@ struct ConversationView: View {
             )
         }
         .sheet(isPresented: $showingSessionInfo) {
-            SessionInfoView(session: session, settings: settings)
+            SessionInfoView(session: session, settings: settings, client: client)
                 .environment(\.managedObjectContext, viewContext)
         }
         .task {

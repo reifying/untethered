@@ -12,7 +12,9 @@
             [voice-code.worktree :as worktree]
             [voice-code.commands :as commands]
             [voice-code.commands-history :as cmd-history]
-            [voice-code.resources :as resources])
+            [voice-code.resources :as resources]
+            [voice-code.recipes :as recipes]
+            [voice-code.orchestration :as orch])
   (:gen-class))
 
 ;; JSON key conversion utilities
@@ -98,6 +100,14 @@
   ;; Used to send session_ready to the correct client when file is detected
   (atom {}))
 
+(defonce session-orchestration-state
+  ;; Track orchestration state per Claude session: session-id -> {:recipe-id :step :iteration-count ...}
+  ;; Maps Claude session IDs to their active orchestration recipe state.
+  ;; Safe for concurrent WebSocket connections: each connection operates on independent session state.
+  ;; State is isolated per Claude session (not per iOS session), preventing conflicts.
+  ;; Cleanup via exit-recipe-for-session when recipe completes or user cancels.
+  (atom {}))
+
 (defn unregister-channel!
   "Remove WebSocket channel from connected clients"
   [channel]
@@ -176,7 +186,111 @@
   (swap! connected-clients update-in [channel :deleted-sessions] (fnil conj #{}) session-id)
   (log/debug "Marked session as deleted for client" {:session-id session-id}))
 
+;; Orchestration helper functions
+
+(defn get-session-recipe-state
+  "Get the current orchestration state for a session, or nil if not in recipe"
+  [session-id]
+  (get @session-orchestration-state session-id))
+
+(defn start-recipe-for-session
+  "Initialize orchestration state for a session"
+  [session-id recipe-id]
+  (if-let [state (orch/create-orchestration-state recipe-id)]
+    (do
+      (swap! session-orchestration-state assoc session-id state)
+      (orch/log-orchestration-event "recipe-started" session-id recipe-id (:current-step state) {})
+      state)
+    (do
+      (log/error "Recipe not found" {:recipe-id recipe-id :session-id session-id})
+      nil)))
+
+(defn exit-recipe-for-session
+  "Exit orchestration for a session"
+  [session-id reason]
+  (when-let [state (get-session-recipe-state session-id)]
+    (orch/log-orchestration-event "recipe-exited" session-id (:recipe-id state) (:current-step state) {:reason reason})
+    (swap! session-orchestration-state dissoc session-id)))
+
+(defn get-next-step-prompt
+  "Get the prompt for the next step in an active recipe"
+  [session-id orch-state recipe]
+  (let [current-step (:current-step orch-state)
+        step (orch/get-current-step recipe current-step)]
+    (if step
+      (let [expected-outcomes (:outcomes step)
+            base-prompt (:prompt step)]
+        (orch/append-outcome-requirements base-prompt current-step expected-outcomes))
+      nil)))
+
+(defn get-available-recipes-list
+  "Get list of available recipes with metadata for client"
+  []
+  [{:id "implement-and-review"
+    :label "Implement & Review"
+    :description "Implement task, review code, and fix issues in a loop"}])
+
+(defn process-orchestration-response
+  "Process Claude response when in an orchestration recipe.
+   Parses JSON outcome, validates against expected outcomes, and determines next action.
+   Handles max-iteration guardrails and sends client state updates.
+   Returns {:action :next-step/:exit :step-name/:reason ...}
+   
+   NOTE: Currently defined but not integrated. Will be used in Phase 3 when hooking
+   into filesystem watcher to parse outcomes from response text automatically."
+  [session-id orch-state recipe response-text channel]
+  (let [current-step (:current-step orch-state)
+        step (orch/get-current-step recipe current-step)
+        expected-outcomes (:outcomes step)
+        outcome-result (orch/extract-orchestration-outcome response-text expected-outcomes)]
+    (if (:success outcome-result)
+      (let [outcome (:outcome outcome-result)
+            next-action (orch/determine-next-action step outcome)]
+        (orch/log-orchestration-event "outcome-received" session-id (:recipe-id orch-state) current-step outcome)
+        (case (:action next-action)
+          :next-step
+          (let [new-step (:step-name next-action)
+                updated-state (assoc orch-state :current-step new-step)
+                new-recipe (recipes/get-recipe (:recipe-id orch-state))]
+            (if (orch/should-exit-recipe? updated-state new-recipe)
+              (do
+                (exit-recipe-for-session session-id "max-iterations")
+                (send-to-client! channel
+                                 {:type :recipe-exited
+                                  :session-id session-id
+                                  :reason "max-iterations"})
+                {:action :exit :reason "max-iterations"})
+              (do
+                (swap! session-orchestration-state assoc session-id
+                       (update updated-state :iteration-count inc))
+                (send-to-client! channel
+                                 {:type :recipe-step-transition
+                                  :session-id session-id
+                                  :from-step current-step
+                                  :to-step new-step})
+                {:action :next-step :step-name new-step})))
+
+          :exit
+          (do
+            (exit-recipe-for-session session-id (:reason next-action))
+            (send-to-client! channel
+                             {:type :recipe-exited
+                              :session-id session-id
+                              :reason (:reason next-action)})
+            next-action)))
+      (do
+        (orch/log-orchestration-event "outcome-parse-error" session-id (:recipe-id orch-state) current-step
+                                      {:error (:error outcome-result)})
+        (send-to-client! channel
+                         {:type :orchestration-error
+                          :session-id session-id
+                          :error "Invalid JSON outcome from agent"
+                          :details (:error outcome-result)})
+        {:action :exit :reason "orchestration-error"}))))
+
 ;; Filesystem watcher callbacks
+
+;; Removed duplicate comment here
 
 (defn on-session-created
   "Called when a new session file is detected"
@@ -463,7 +577,13 @@
                             :message "Cannot specify both new_session_id and resume_session_id"}))
 
               :else
-              (let [claude-session-id (or resume-session-id new-session-id)]
+              (let [claude-session-id (or resume-session-id new-session-id)
+                    orch-state (get-session-recipe-state claude-session-id)
+                    final-prompt-text (if orch-state
+                                        (if-let [recipe (recipes/get-recipe (:recipe-id orch-state))]
+                                          (or (get-next-step-prompt claude-session-id orch-state recipe) prompt-text)
+                                          prompt-text)
+                                        prompt-text)]
               ;; Try to acquire lock for this session
                 (if (repl/acquire-session-lock! claude-session-id)
                   (do
@@ -472,6 +592,7 @@
                                :new-session-id new-session-id
                                :resume-session-id resume-session-id
                                :working-directory working-dir
+                               :in-recipe (some? orch-state)
                                :session-locked false})
 
                   ;; Send immediate acknowledgment
@@ -490,7 +611,7 @@
                   ;; NEW ARCHITECTURE: Don't send response directly
                   ;; Filesystem watcher will detect changes and send session_updated
                     (claude/invoke-claude-async
-                     prompt-text
+                     final-prompt-text
                      (fn [response]
                      ;; Always release lock when done (success or failure)
                        (try
@@ -903,6 +1024,57 @@
                   (send-to-client! channel
                                    {:type :error
                                     :message (str "Failed to delete resource: " (ex-message e))})))))
+
+          "start_recipe"
+          (let [recipe-id (keyword (:recipe-id data))
+                session-id (:session-id data)
+                working-directory (:working-directory data)]
+            (cond
+              (not session-id)
+              (send-to-client! channel
+                               {:type :error
+                                :message "session_id required in start_recipe message"})
+
+              (not recipe-id)
+              (send-to-client! channel
+                               {:type :error
+                                :message "recipe_id required in start_recipe message"})
+
+              :else
+              (if-let [orch-state (start-recipe-for-session session-id recipe-id)]
+                (let [recipe (recipes/get-recipe recipe-id)]
+                  (log/info "Recipe started" {:recipe-id recipe-id :session-id session-id})
+                  (send-to-client! channel
+                                   {:type :recipe-started
+                                    :recipe-id recipe-id
+                                    :recipe-label (:label recipe)
+                                    :session-id session-id
+                                    :current-step (:current-step orch-state)
+                                    :iteration-count (:iteration-count orch-state)}))
+                (send-to-client! channel
+                                 {:type :error
+                                  :message (str "Recipe not found: " recipe-id)}))))
+
+          "exit_recipe"
+          (let [session-id (:session-id data)]
+            (if-not session-id
+              (send-to-client! channel
+                               {:type :error
+                                :message "session_id required in exit_recipe message"})
+              (do
+                (exit-recipe-for-session session-id "user-requested")
+                (log/info "Recipe exited" {:session-id session-id})
+                (send-to-client! channel
+                                 {:type :recipe-exited
+                                  :session-id session-id
+                                  :reason "user-requested"}))))
+
+          "get_available_recipes"
+          (do
+            (log/info "Sending available recipes")
+            (send-to-client! channel
+                             {:type :available-recipes
+                              :recipes (get-available-recipes-list)}))
 
         ;; Unknown message type
           (do

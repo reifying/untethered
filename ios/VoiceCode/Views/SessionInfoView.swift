@@ -7,6 +7,7 @@ import CoreData
 struct SessionInfoView: View {
     @ObservedObject var session: CDBackendSession
     @ObservedObject var settings: AppSettings
+    @ObservedObject var client: VoiceCodeClient
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
 
@@ -14,6 +15,11 @@ struct SessionInfoView: View {
     @State private var copyConfirmationMessage = ""
     @State private var gitBranch: String?
     @State private var isLoadingBranch = true
+    @State private var showingRecipeMenu = false
+
+    private var activeRecipe: ActiveRecipe? {
+        client.activeRecipes[session.id.uuidString.lowercased()]
+    }
 
     var body: some View {
         NavigationView {
@@ -132,6 +138,60 @@ struct SessionInfoView: View {
                     }
                 }
 
+                // Recipe Orchestration Section
+                Section {
+                    if let active = activeRecipe {
+                        // Show active recipe info
+                        HStack {
+                            Text("Active Recipe")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text(active.recipeLabel)
+                                .foregroundColor(.primary)
+                        }
+
+                        HStack {
+                            Text("Current Step")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text(active.currentStep)
+                                .foregroundColor(.primary)
+                        }
+
+                        HStack {
+                            Text("Iteration")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("\(active.iterationCount)")
+                                .foregroundColor(.primary)
+                        }
+
+                        // Exit recipe button
+                        Button(role: .destructive) {
+                            exitRecipe()
+                        } label: {
+                            Label("Exit Recipe", systemImage: "stop.circle")
+                        }
+                    } else {
+                        // No active recipe - show start button
+                        Button {
+                            showingRecipeMenu = true
+                        } label: {
+                            Label("Start Recipe", systemImage: "play.circle")
+                        }
+                    }
+                } header: {
+                    Text("Recipe Orchestration")
+                } footer: {
+                    if activeRecipe != nil {
+                        Text("Recipe is guiding this session through structured steps.")
+                            .font(.caption)
+                    } else {
+                        Text("Recipes automate multi-step workflows with code review loops.")
+                            .font(.caption)
+                    }
+                }
+
                 // Actions Section
                 Section(header: Text("Actions")) {
                     Button(action: {
@@ -166,6 +226,9 @@ struct SessionInfoView: View {
                         .padding(.top, 8)
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
+            }
+            .sheet(isPresented: $showingRecipeMenu) {
+                RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased())
             }
             .task {
                 await loadGitBranch()
@@ -265,6 +328,13 @@ struct SessionInfoView: View {
     private func changePriority(_ session: CDBackendSession, newPriority: Int32) {
         CDBackendSession.changePriority(session, newPriority: newPriority, context: viewContext)
         showConfirmation("Priority changed to \(newPriority)")
+    }
+
+    // MARK: - Recipe Orchestration
+
+    private func exitRecipe() {
+        client.exitRecipe(sessionId: session.id.uuidString.lowercased())
+        showConfirmation("Recipe exited")
     }
 }
 

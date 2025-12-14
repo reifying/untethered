@@ -19,6 +19,8 @@ class VoiceCodeClient: ObservableObject {
     @Published var commandOutputFull: CommandOutputFull?  // Full output for a command (single at a time)
     @Published var fileUploadResponse: (filename: String, success: Bool)?  // Latest file upload response
     @Published var resourcesList: [Resource] = []  // List of uploaded resources
+    @Published var availableRecipes: [Recipe] = []  // All recipes from backend
+    @Published var activeRecipes: [String: ActiveRecipe] = [:]  // session-id -> active recipe
 
     private var webSocket: URLSessionWebSocketTask?
     private var reconnectionTimer: DispatchSourceTimer?
@@ -157,6 +159,14 @@ class VoiceCodeClient: ObservableObject {
             case "resourcesList":
                 if let resources = value as? [Resource] {
                     self.resourcesList = resources
+                }
+            case "availableRecipes":
+                if let recipes = value as? [Recipe] {
+                    self.availableRecipes = recipes
+                }
+            case "activeRecipes":
+                if let recipes = value as? [String: ActiveRecipe] {
+                    self.activeRecipes = recipes
                 }
             case "isProcessing":
                 if let processing = value as? Bool {
@@ -713,6 +723,51 @@ class VoiceCodeClient: ObservableObject {
                     scheduleUpdate(key: "resourcesList", value: updatedResources)
                 }
 
+            case "available_recipes":
+                // Available recipes list from backend
+                print("📋 [VoiceCodeClient] Received available_recipes")
+                if let recipesArray = json["recipes"] as? [[String: Any]] {
+                    let recipes = recipesArray.compactMap { recipeJson -> Recipe? in
+                        guard let id = recipeJson["id"] as? String,
+                              let label = recipeJson["label"] as? String,
+                              let description = recipeJson["description"] as? String else {
+                            return nil
+                        }
+                        return Recipe(id: id, label: label, description: description)
+                    }
+                    scheduleUpdate(key: "availableRecipes", value: recipes)
+                    print("   Found \(recipes.count) recipes")
+                }
+
+            case "recipe_started":
+                // Recipe started for a session
+                if let sessionId = json["session_id"] as? String,
+                   let recipeId = json["recipe_id"] as? String,
+                   let recipeLabel = json["recipe_label"] as? String,
+                   let currentStep = json["current_step"] as? String,
+                   let iterationCount = json["iteration_count"] as? Int {
+                    print("🎯 [VoiceCodeClient] Recipe started: \(recipeLabel) for session \(sessionId)")
+                    let activeRecipe = ActiveRecipe(
+                        recipeId: recipeId,
+                        recipeLabel: recipeLabel,
+                        currentStep: currentStep,
+                        iterationCount: iterationCount
+                    )
+                    var updatedRecipes = getCurrentValue(for: "activeRecipes", current: self.activeRecipes)
+                    updatedRecipes[sessionId] = activeRecipe
+                    scheduleUpdate(key: "activeRecipes", value: updatedRecipes)
+                }
+
+            case "recipe_exited":
+                // Recipe exited for a session
+                if let sessionId = json["session_id"] as? String,
+                   let reason = json["reason"] as? String {
+                    print("🏁 [VoiceCodeClient] Recipe exited for session \(sessionId): \(reason)")
+                    var updatedRecipes = getCurrentValue(for: "activeRecipes", current: self.activeRecipes)
+                    updatedRecipes.removeValue(forKey: sessionId)
+                    scheduleUpdate(key: "activeRecipes", value: updatedRecipes)
+                }
+
             case "error":
                 // Check if this is a file upload error
                 if let message = json["message"] as? String,
@@ -1085,6 +1140,35 @@ class VoiceCodeClient: ObservableObject {
         let message: [String: Any] = [
             "type": "get_command_output",
             "command_session_id": commandSessionId
+        ]
+        sendMessage(message)
+    }
+
+    // MARK: - Recipe Orchestration
+
+    func getAvailableRecipes() {
+        print("📤 [VoiceCodeClient] Requesting available recipes")
+        let message: [String: Any] = [
+            "type": "get_available_recipes"
+        ]
+        sendMessage(message)
+    }
+
+    func startRecipe(sessionId: String, recipeId: String) {
+        print("📤 [VoiceCodeClient] Starting recipe \(recipeId) for session \(sessionId)")
+        let message: [String: Any] = [
+            "type": "start_recipe",
+            "session_id": sessionId,
+            "recipe_id": recipeId
+        ]
+        sendMessage(message)
+    }
+
+    func exitRecipe(sessionId: String) {
+        print("📤 [VoiceCodeClient] Exiting recipe for session \(sessionId)")
+        let message: [String: Any] = [
+            "type": "exit_recipe",
+            "session_id": sessionId
         ]
         sendMessage(message)
     }
