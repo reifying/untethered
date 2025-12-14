@@ -10,9 +10,22 @@ import VoiceCodeShared
 
 @main
 struct VoiceCodeDesktopApp: App {
+    @StateObject private var onboarding: OnboardingManager
+    @StateObject private var settings: AppSettings
+
+    init() {
+        let appSettings = AppSettings()
+        _settings = StateObject(wrappedValue: appSettings)
+        _onboarding = StateObject(wrappedValue: OnboardingManager(appSettings: appSettings))
+    }
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            if onboarding.needsOnboarding {
+                OnboardingView(onboarding: onboarding, settings: settings)
+            } else {
+                MainWindowView(settings: settings)
+            }
         }
         .commands {
             AppCommands()
