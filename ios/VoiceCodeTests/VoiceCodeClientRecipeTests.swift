@@ -236,7 +236,7 @@ class VoiceCodeClientRecipeTests: XCTestCase {
         client.handleMessage(startJson)
 
         // Wait for it to be added
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, expectation] in
             // Now exit the recipe
             let exitJson = """
             {
@@ -246,21 +246,22 @@ class VoiceCodeClientRecipeTests: XCTestCase {
             }
             """
 
-            let cancellable = self.client.$activeRecipes
+            let cancellable = self?.client.$activeRecipes
                 .dropFirst()
                 .sink { recipes in
                     XCTAssertEqual(recipes.count, 0, "Should have no active recipes")
                     expectation.fulfill()
                 }
 
-            self.client.handleMessage(exitJson)
+            self?.client.handleMessage(exitJson)
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                guard let self = self else { return }
                 XCTAssertNil(self.client.activeRecipes["test-session-456"])
             }
 
-            wait(for: [expectation], timeout: 1.0)
-            cancellable.cancel()
+            self?.wait(for: [expectation], timeout: 1.0)
+            cancellable?.cancel()
         }
     }
 
@@ -377,6 +378,102 @@ class VoiceCodeClientRecipeTests: XCTestCase {
             // Should not have received any update (missing reason)
             XCTAssertFalse(updateReceived, "Should not update with incomplete data")
             expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1.0)
+        cancellable.cancel()
+    }
+
+    // MARK: - Rapid Operations (Race Condition) Tests
+
+    func testRapidRecipeStartOperations() throws {
+        let expectation = XCTestExpectation(description: "Rapid recipe operations batched")
+        var updateCount = 0
+
+        let cancellable = client.$activeRecipes
+            .dropFirst()
+            .sink { recipes in
+                updateCount += 1
+                // All 5 messages should batch into 1 update (100ms window)
+                if recipes.count == 5 {
+                    XCTAssertEqual(updateCount, 1, "Should have received exactly 1 batched update")
+                    expectation.fulfill()
+                }
+            }
+
+        // Send 5 recipe_started messages in rapid succession (within 50ms)
+        for i in 1...5 {
+            let json = """
+            {
+                "type": "recipe_started",
+                "session_id": "session-\(i)",
+                "recipe_id": "implement-and-review",
+                "recipe_label": "Implement & Review",
+                "current_step": "implement",
+                "iteration_count": 1
+            }
+            """
+            client.handleMessage(json)
+
+            // Small delay between messages (10ms)
+            if i < 5 {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+
+        // Wait for debounce to complete
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            // All 5 should be in activeRecipes
+            guard let self = self else { return }
+            XCTAssertEqual(self.client.activeRecipes.count, 5, "Should have all 5 recipes")
+            for i in 1...5 {
+                XCTAssertNotNil(self.client.activeRecipes["session-\(i)"], "Session \(i) recipe should be active")
+            }
+        }
+
+        wait(for: [expectation], timeout: 1.0)
+        cancellable.cancel()
+    }
+
+    func testRapidStartAndExitSameSession() throws {
+        let expectation = XCTestExpectation(description: "Rapid start/exit same session handled")
+        var updateCount = 0
+
+        let cancellable = client.$activeRecipes
+            .dropFirst()
+            .sink { recipes in
+                updateCount += 1
+                if updateCount == 2 {
+                    // After start and exit, should be empty
+                    XCTAssertEqual(recipes.count, 0, "Should have no active recipes after exit")
+                    expectation.fulfill()
+                }
+            }
+
+        // Start recipe
+        let startJson = """
+        {
+            "type": "recipe_started",
+            "session_id": "test-session",
+            "recipe_id": "implement-and-review",
+            "recipe_label": "Implement & Review",
+            "current_step": "implement",
+            "iteration_count": 1
+        }
+        """
+
+        client.handleMessage(startJson)
+
+        // Wait 100ms (debounce window), then exit
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            let exitJson = """
+            {
+                "type": "recipe_exited",
+                "session_id": "test-session",
+                "reason": "user-requested"
+            }
+            """
+            self?.client.handleMessage(exitJson)
         }
 
         wait(for: [expectation], timeout: 1.0)
