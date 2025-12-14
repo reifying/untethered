@@ -741,32 +741,50 @@ class VoiceCodeClient: ObservableObject {
 
             case "recipe_started":
                 // Recipe started for a session
-                if let sessionId = json["session_id"] as? String,
-                   let recipeId = json["recipe_id"] as? String,
-                   let recipeLabel = json["recipe_label"] as? String,
-                   let currentStep = json["current_step"] as? String,
-                   let iterationCount = json["iteration_count"] as? Int {
-                    print("🎯 [VoiceCodeClient] Recipe started: \(recipeLabel) for session \(sessionId)")
-                    let activeRecipe = ActiveRecipe(
-                        recipeId: recipeId,
-                        recipeLabel: recipeLabel,
-                        currentStep: currentStep,
-                        iterationCount: iterationCount
-                    )
-                    var updatedRecipes = getCurrentValue(for: "activeRecipes", current: self.activeRecipes)
-                    updatedRecipes[sessionId] = activeRecipe
-                    scheduleUpdate(key: "activeRecipes", value: updatedRecipes)
+                guard let sessionId = json["session_id"] as? String, !sessionId.isEmpty else {
+                    LogManager.shared.log("Received recipe_started with missing/empty session_id: \(json)", category: "VoiceCodeClient")
+                    return
                 }
+                guard let recipeId = json["recipe_id"] as? String, !recipeId.isEmpty else {
+                    LogManager.shared.log("Received recipe_started with missing/empty recipe_id for session \(sessionId): \(json)", category: "VoiceCodeClient")
+                    return
+                }
+                guard let recipeLabel = json["recipe_label"] as? String, !recipeLabel.isEmpty else {
+                    LogManager.shared.log("Received recipe_started with missing/empty recipe_label for session \(sessionId): \(json)", category: "VoiceCodeClient")
+                    return
+                }
+                guard let currentStep = json["current_step"] as? String, !currentStep.isEmpty else {
+                    LogManager.shared.log("Received recipe_started with missing/empty current_step for session \(sessionId): \(json)", category: "VoiceCodeClient")
+                    return
+                }
+                guard let iterationCount = json["iteration_count"] as? Int, iterationCount >= 1 else {
+                    let count = json["iteration_count"] ?? "nil"
+                    LogManager.shared.log("Received recipe_started with invalid iteration_count: \(count) for session \(sessionId)", category: "VoiceCodeClient")
+                    return
+                }
+
+                print("🎯 [VoiceCodeClient] Recipe started: \(recipeLabel) for session \(sessionId) (step: \(currentStep), iteration: \(iterationCount))")
+                let activeRecipe = ActiveRecipe(
+                    recipeId: recipeId,
+                    recipeLabel: recipeLabel,
+                    currentStep: currentStep,
+                    iterationCount: iterationCount
+                )
+                var updatedRecipes = getCurrentValue(for: "activeRecipes", current: self.activeRecipes)
+                updatedRecipes[sessionId] = activeRecipe
+                scheduleUpdate(key: "activeRecipes", value: updatedRecipes)
 
             case "recipe_exited":
                 // Recipe exited for a session
-                if let sessionId = json["session_id"] as? String,
-                   let reason = json["reason"] as? String {
-                    print("🏁 [VoiceCodeClient] Recipe exited for session \(sessionId): \(reason)")
-                    var updatedRecipes = getCurrentValue(for: "activeRecipes", current: self.activeRecipes)
-                    updatedRecipes.removeValue(forKey: sessionId)
-                    scheduleUpdate(key: "activeRecipes", value: updatedRecipes)
+                guard let sessionId = json["session_id"] as? String, !sessionId.isEmpty else {
+                    LogManager.shared.log("Received recipe_exited with missing/empty session_id: \(json)", category: "VoiceCodeClient")
+                    return
                 }
+                let reason = json["reason"] as? String ?? "unknown"
+                print("🏁 [VoiceCodeClient] Recipe exited for session \(sessionId): \(reason)")
+                var updatedRecipes = getCurrentValue(for: "activeRecipes", current: self.activeRecipes)
+                updatedRecipes.removeValue(forKey: sessionId)
+                scheduleUpdate(key: "activeRecipes", value: updatedRecipes)
 
             case "error":
                 // Check if this is a file upload error

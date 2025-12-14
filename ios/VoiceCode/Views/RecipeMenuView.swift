@@ -2,6 +2,7 @@
 // Recipe selection menu for orchestration
 
 import SwiftUI
+import Combine
 
 struct RecipeMenuView: View {
     @ObservedObject var client: VoiceCodeClient
@@ -11,7 +12,7 @@ struct RecipeMenuView: View {
     @State private var isLoading = false
     @State private var hasRequestedRecipes = false
     @State private var errorMessage: String?
-    @State private var startingRecipeId: String?
+    @State private var cancellables = Set<AnyCancellable>()
 
     var body: some View {
         let _ = RenderTracker.count(Self.self)
@@ -99,48 +100,51 @@ struct RecipeMenuView: View {
                 isLoading = true
                 client.getAvailableRecipes()
 
-                // Timeout if recipes don't arrive
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    if isLoading {
-                        isLoading = false
-                        errorMessage = "Failed to load recipes. Please try again."
-                    }
+                // Timeout if recipes don't arrive (10 second timeout)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
+                    // Capture self normally - SwiftUI manages the lifecycle
+                    self.handleRecipeLoadTimeout()
                 }
             }
         }
     }
 
+    private func handleRecipeLoadTimeout() {
+        if isLoading {
+            isLoading = false
+            hasRequestedRecipes = false  // Reset so user can retry
+            errorMessage = "Failed to load recipes. Please try again."
+        }
+    }
+
     private func selectRecipe(recipeId: String) {
         print("📤 [RecipeMenuView] Selected recipe: \(recipeId) for session \(sessionId)")
-        startingRecipeId = recipeId
         isLoading = true
+        errorMessage = nil
 
         client.startRecipe(sessionId: sessionId, recipeId: recipeId)
 
-        // Wait for recipe_started confirmation
-        let startTime = Date()
-        let timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
-            // Check if recipe_started arrived
-            if client.activeRecipes[sessionId] != nil {
-                Timer.scheduledTimer(withTimeInterval: 0.0, repeats: false) { _ in
-                    isLoading = false
-                    startingRecipeId = nil
+        // Wait for recipe_started confirmation (15 second timeout)
+        // Use a wrapper since we can't use weak self on value types
+        let dismiss = self.dismiss  // Capture dismiss function
+        var isLoadingBinding = $isLoading
+        var errorMessageBinding = $errorMessage
+
+        client.$activeRecipes
+            .first { $0[sessionId] != nil }
+            .timeout(.seconds(15), scheduler: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { completion in
+                    if case .failure = completion {
+                        isLoadingBinding.wrappedValue = false
+                        errorMessageBinding.wrappedValue = "Recipe start timeout. Please check your connection and try again."
+                    }
+                },
+                receiveValue: { _ in
                     dismiss()
                 }
-            }
-
-            // Timeout after 3 seconds
-            if Date().timeIntervalSince(startTime) > 3.0 {
-                isLoading = false
-                startingRecipeId = nil
-                errorMessage = "Recipe start timeout. Please check your connection and try again."
-            }
-        }
-
-        // Keep timer alive until recipe_started arrives or timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.1) {
-            timer.invalidate()
-        }
+            )
+            .store(in: &cancellables)
     }
 }
 
