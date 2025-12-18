@@ -344,7 +344,8 @@ class SessionSyncManager {
                 // - "summary" messages are error summaries and internal state
                 // - "system" messages are local command notifications
                 // - "queue-operation" messages are priority queue operations (no message content)
-                if role == "summary" || role == "system" || role == "queue-operation" {
+                // - "tool_result" messages are tool outputs (type=user but no user text)
+                if role == "summary" || role == "system" || role == "queue-operation" || role == "tool_result" {
                     logger.debug("Filtering out internal message type: \(role, privacy: .public)")
                     continue
                 }
@@ -641,8 +642,31 @@ class SessionSyncManager {
     /// Extract role from Claude Code message format
     /// - Parameter messageData: Raw .jsonl message data
     /// - Returns: Role string ("user" or "assistant"), or nil if extraction fails
+    ///
+    /// Note: Tool result messages have `type: "user"` because they're sent back to Claude
+    /// as part of the user turn, but they're not user-authored content. We detect these
+    /// by checking if the content array contains only tool_result blocks (no text).
     internal func extractRole(from messageData: [String: Any]) -> String? {
-        return messageData["type"] as? String
+        guard let type = messageData["type"] as? String else {
+            return nil
+        }
+
+        // For "user" type, check if it's actually a tool result (not user-authored)
+        if type == "user",
+           let message = messageData["message"] as? [String: Any],
+           let contentArray = message["content"] as? [[String: Any]] {
+            // If content is an array (not a string), check for user-authored text
+            let hasUserText = contentArray.contains { block in
+                block["type"] as? String == "text"
+            }
+            // If no text blocks, this is a tool result message - return "tool_result"
+            // which will be filtered out by the caller
+            if !hasUserText {
+                return "tool_result"
+            }
+        }
+
+        return type
     }
 
     /// Extract timestamp from Claude Code message format
