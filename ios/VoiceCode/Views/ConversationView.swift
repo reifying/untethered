@@ -59,6 +59,7 @@ struct ConversationView: View {
     @State private var compactSuccessMessage: String?
     @State private var showingKillConfirmation = false
     @State private var showingSessionInfo = false
+    @State private var showingRecipeMenu = false
 
     // Compaction feedback state
     @State private var wasRecentlyCompacted: Bool = false
@@ -92,6 +93,11 @@ struct ConversationView: View {
     private var isSessionLocked: Bool {
         let claudeSessionId = session.id.uuidString.lowercased()
         return client.lockedSessions.contains(claudeSessionId)
+    }
+
+    // Active recipe for this session
+    private var activeRecipe: ActiveRecipe? {
+        client.activeRecipes[session.id.uuidString.lowercased()]
     }
 
     // Manual unlock function
@@ -280,6 +286,31 @@ struct ConversationView: View {
                         }
                     }
 
+                    // Recipe button - shows active recipe or opens menu
+                    if let active = activeRecipe {
+                        // Show active recipe with exit option
+                        Menu {
+                            Text("\(active.recipeLabel) - Step \(active.stepCount)")
+                            Text("Current: \(active.currentStep)")
+                            Divider()
+                            Button(role: .destructive) {
+                                exitRecipe()
+                            } label: {
+                                Label("Exit Recipe", systemImage: "stop.circle")
+                            }
+                        } label: {
+                            Image(systemName: "list.bullet.clipboard.fill")
+                                .foregroundColor(.green)
+                        }
+                    } else {
+                        // Show button to start a recipe
+                        Button(action: {
+                            showingRecipeMenu = true
+                        }) {
+                            Image(systemName: "list.bullet.clipboard")
+                        }
+                    }
+
                     // Session info button
                     Button(action: {
                         showingSessionInfo = true
@@ -389,6 +420,9 @@ struct ConversationView: View {
         .sheet(isPresented: $showingSessionInfo) {
             SessionInfoView(session: session, settings: settings, client: client)
                 .environment(\.managedObjectContext, viewContext)
+        }
+        .sheet(isPresented: $showingRecipeMenu) {
+            RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased(), workingDirectory: session.workingDirectory)
         }
         .task {
             // Defer state initialization to after view is fully mounted
@@ -788,6 +822,25 @@ struct ConversationView: View {
                 proxy.scrollTo("bottom", anchor: .bottom)
             } else {
                 print("🔘 [AutoScroll] No scroll proxy available")
+            }
+        }
+    }
+
+    // MARK: - Recipe Orchestration
+
+    private func exitRecipe() {
+        client.exitRecipe(sessionId: session.id.uuidString.lowercased())
+
+        // Show confirmation
+        compactSuccessMessage = "Recipe exited"
+        withAnimation {
+            showingCopyConfirmation = true
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation {
+                showingCopyConfirmation = false
+                compactSuccessMessage = nil
             }
         }
     }
