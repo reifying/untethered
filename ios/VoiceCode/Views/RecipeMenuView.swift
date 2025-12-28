@@ -107,6 +107,12 @@ struct RecipeMenuView: View {
                 }
             }
         }
+        .onReceive(client.$availableRecipes) { recipes in
+            // Stop loading when recipes arrive
+            if !recipes.isEmpty && isLoading {
+                isLoading = false
+            }
+        }
     }
 
     private func handleRecipeLoadTimeout() {
