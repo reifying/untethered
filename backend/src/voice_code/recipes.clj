@@ -435,18 +435,19 @@ After fixing:
       :other {:action :exit :reason "user-provided-other"}}}
 
     :commit
-    {:prompt "Update the beads task and commit the changes.
+    {:prompt "Update the beads task, commit, and push the changes.
 
 ## Update Beads Task
 Before committing, update the task status:
 1. Run `bd ready` to get the current task ID
-2. Run `bd done <task-id>` to mark the task as complete
+2. Run `bd close <task-id>` to mark the task as complete
 3. If partially complete, use `bd update <task-id> --status in-progress` with notes
 
-## Commit Requirements
+## Commit and Push
 - Use the beads task ID in the commit message
-- Include beads changes (`beads/*`) in your commit
+- Include beads changes (`.beads/*`) in your commit
 - Write a clear commit message describing what was implemented
+- Push to the remote repository after committing
 
 Example: 'Implement user input validation (task-abc123)'"
      :model "haiku"
