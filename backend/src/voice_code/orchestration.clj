@@ -91,6 +91,21 @@
          "{\"outcome\": \"other\", \"otherDescription\": \"<brief description>\"}\n\n"
          "Your possible outcomes for this step: " outcomes-list)))
 
+(defn get-outcome-reminder-prompt
+  "Generate a reminder prompt when agent fails to produce JSON outcome.
+   This is sent as a follow-up to give the agent another chance."
+  [step-name expected-outcomes error-details]
+  (let [outcomes-list (str/join ", " (map name (sort expected-outcomes)))]
+    (str "Your previous response did not include the required JSON outcome block. "
+         "Please respond now with ONLY the JSON outcome on a single line.\n\n"
+         "Error: " error-details "\n\n"
+         "Required format:\n"
+         "{\"outcome\": \"<outcome>\"}\n\n"
+         "Valid outcomes for this step (" (name step-name) "): " outcomes-list "\n\n"
+         "If none of the standard outcomes apply, use:\n"
+         "{\"outcome\": \"other\", \"otherDescription\": \"<brief description>\"}\n\n"
+         "Respond with ONLY the JSON block, nothing else.")))
+
 (defn append-outcome-requirements
   "Append JSON outcome requirements to the end of a prompt."
   [prompt step-name expected-outcomes]
@@ -119,7 +134,8 @@
 
 (defn create-orchestration-state
   "Create initial orchestration state for a session.
-   Returns {:recipe-id recipe-id :current-step initial-step :step-count 1 :step-visit-counts {...}}"
+   Returns {:recipe-id recipe-id :current-step initial-step :step-count 1 
+            :step-visit-counts {...} :step-retry-counts {}}"
   [recipe-id]
   (let [recipe (recipes/get-recipe recipe-id)]
     (if (nil? recipe)
@@ -129,6 +145,7 @@
          :current-step initial-step
          :step-count 1
          :step-visit-counts {initial-step 1}
+         :step-retry-counts {}
          :start-time (System/currentTimeMillis)}))))
 
 (defn should-exit-recipe?

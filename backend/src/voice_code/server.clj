@@ -234,15 +234,22 @@
   "Process Claude response when in an orchestration recipe.
    Parses JSON outcome, validates against expected outcomes, and determines next action.
    Handles guardrails (max-step-visits, max-total-steps) and sends client state updates.
-   Returns {:action :next-step/:exit :step-name/:reason ...}"
+   
+   Returns one of:
+   - {:action :next-step :step-name keyword} - transition to next step
+   - {:action :exit :reason string} - exit recipe
+   - {:action :retry :prompt string} - retry with reminder prompt (first failure only)"
   [session-id orch-state recipe response-text channel]
   (let [current-step (:current-step orch-state)
         step (orch/get-current-step recipe current-step)
         expected-outcomes (:outcomes step)
         outcome-result (orch/extract-orchestration-outcome response-text expected-outcomes)]
     (if (:success outcome-result)
+      ;; Success - clear any retry count for this step and process outcome
       (let [outcome (:outcome outcome-result)
             next-action (orch/determine-next-action step outcome)]
+        ;; Clear retry count on success
+        (swap! session-orchestration-state update-in [session-id :step-retry-counts] dissoc current-step)
         (orch/log-orchestration-event "outcome-received" session-id (:recipe-id orch-state) current-step outcome)
         (case (:action next-action)
           :next-step
@@ -280,17 +287,34 @@
                               :session-id session-id
                               :reason (:reason next-action)})
             next-action)))
-      ;; Failed to parse outcome - exit recipe and notify client
-      (do
-        (orch/log-orchestration-event "outcome-parse-error" session-id (:recipe-id orch-state) current-step
-                                      {:error (:error outcome-result)})
-        (exit-recipe-for-session session-id "orchestration-error")
-        (send-to-client! channel
-                         {:type :recipe-exited
-                          :session-id session-id
-                          :reason "orchestration-error"
-                          :error (:error outcome-result)})
-        {:action :exit :reason "orchestration-error"}))))
+      ;; Failed to parse outcome - check if we should retry or exit
+      (let [retry-count (get-in orch-state [:step-retry-counts current-step] 0)
+            error-msg (:error outcome-result)]
+        (if (zero? retry-count)
+          ;; First failure - retry with reminder prompt
+          (do
+            (orch/log-orchestration-event "outcome-parse-retry" session-id (:recipe-id orch-state) current-step
+                                          {:error error-msg :retry-attempt 1})
+            ;; Increment retry count in state
+            (swap! session-orchestration-state update-in [session-id :step-retry-counts current-step] (fnil inc 0))
+            (send-to-client! channel
+                             {:type :orchestration-retry
+                              :session-id session-id
+                              :step current-step
+                              :error error-msg})
+            {:action :retry
+             :prompt (orch/get-outcome-reminder-prompt current-step expected-outcomes error-msg)})
+          ;; Already retried - exit recipe
+          (do
+            (orch/log-orchestration-event "outcome-parse-error" session-id (:recipe-id orch-state) current-step
+                                          {:error error-msg :retry-attempts (inc retry-count)})
+            (exit-recipe-for-session session-id "orchestration-error")
+            (send-to-client! channel
+                             {:type :recipe-exited
+                              :session-id session-id
+                              :reason "orchestration-error"
+                              :error (str "Agent failed to produce valid JSON outcome after retry. " error-msg)})
+            {:action :exit :reason "orchestration-error"}))))))
 
 (declare execute-recipe-step)
 
@@ -300,101 +324,121 @@
    1. Send the step prompt to Claude
    2. Parse the outcome from the response
    3. If next step: update state and recursively continue
-   4. If exit: send recipe_exited message
+   4. If retry: send reminder prompt and try again (once per step)
+   5. If exit: send recipe_exited message
    
    Parameters:
    - channel: WebSocket channel to send messages to
    - session-id: Claude session ID
    - working-dir: Working directory for Claude
    - orch-state: Current orchestration state
-   - recipe: Recipe definition"
-  [channel session-id working-dir orch-state recipe]
-  (let [step-prompt (get-next-step-prompt session-id orch-state recipe)
-        current-step (:current-step orch-state)]
-    (when step-prompt
-      (log/info "Executing recipe step"
-                {:session-id session-id
-                 :recipe-id (:recipe-id orch-state)
-                 :step current-step
-                 :step-count (:step-count orch-state)})
+   - recipe: Recipe definition
+   - prompt-override: Optional prompt to use instead of step prompt (for retries)"
+  ([channel session-id working-dir orch-state recipe]
+   (execute-recipe-step channel session-id working-dir orch-state recipe nil))
+  ([channel session-id working-dir orch-state recipe prompt-override]
+   (let [step-prompt (or prompt-override (get-next-step-prompt session-id orch-state recipe))
+         current-step (:current-step orch-state)]
+     (when step-prompt
+       (log/info "Executing recipe step"
+                 {:session-id session-id
+                  :recipe-id (:recipe-id orch-state)
+                  :step current-step
+                  :step-count (:step-count orch-state)
+                  :is-retry (some? prompt-override)})
 
-      ;; Send step transition notification
-      (send-to-client! channel
-                       {:type :recipe-step-started
-                        :session-id session-id
-                        :step current-step
-                        :step-count (:step-count orch-state)})
+       ;; Send step transition notification (only for non-retry)
+       (when-not prompt-override
+         (send-to-client! channel
+                          {:type :recipe-step-started
+                           :session-id session-id
+                           :step current-step
+                           :step-count (:step-count orch-state)}))
 
-      (claude/invoke-claude-async
-       step-prompt
-       (fn [response]
-         (try
-           (if (:success response)
-             (let [response-text (:result response)
-                   ;; Process the orchestration response
-                   result (process-orchestration-response
-                           session-id orch-state recipe response-text channel)]
-               (log/info "Recipe step response processed"
-                         {:session-id session-id
-                          :step current-step
-                          :action (:action result)
-                          :next-step (:step-name result)
-                          :reason (:reason result)})
+       (claude/invoke-claude-async
+        step-prompt
+        (fn [response]
+          (try
+            (if (:success response)
+              (let [response-text (:result response)
+                    ;; Get fresh state in case retry count was updated
+                    current-orch-state (get-session-recipe-state session-id)
+                    ;; Process the orchestration response
+                    result (process-orchestration-response
+                            session-id current-orch-state recipe response-text channel)]
+                (log/info "Recipe step response processed"
+                          {:session-id session-id
+                           :step current-step
+                           :action (:action result)
+                           :next-step (:step-name result)
+                           :reason (:reason result)})
 
-               (case (:action result)
-                 :next-step
-                 ;; Continue to next step - get updated state and continue loop
-                 (let [updated-orch-state (get-session-recipe-state session-id)
-                       updated-recipe (recipes/get-recipe (:recipe-id updated-orch-state))]
-                   (if updated-orch-state
-                     ;; Recursively execute the next step
-                     (execute-recipe-step channel session-id working-dir
-                                          updated-orch-state updated-recipe)
-                     ;; State was cleared (shouldn't happen), exit
-                     (do
-                       (log/warn "Orchestration state missing after step transition"
-                                 {:session-id session-id})
-                       (send-to-client! channel
-                                        {:type :turn-complete
-                                         :session-id session-id}))))
+                (case (:action result)
+                  :next-step
+                  ;; Continue to next step - get updated state and continue loop
+                  (let [updated-orch-state (get-session-recipe-state session-id)
+                        updated-recipe (recipes/get-recipe (:recipe-id updated-orch-state))]
+                    (if updated-orch-state
+                      ;; Recursively execute the next step
+                      (execute-recipe-step channel session-id working-dir
+                                           updated-orch-state updated-recipe)
+                      ;; State was cleared (shouldn't happen), exit
+                      (do
+                        (log/warn "Orchestration state missing after step transition"
+                                  {:session-id session-id})
+                        (send-to-client! channel
+                                         {:type :turn-complete
+                                          :session-id session-id}))))
 
-                 :exit
-                 ;; Recipe finished, send turn_complete
-                 (do
-                   (log/info "Recipe exited"
-                             {:session-id session-id
-                              :reason (:reason result)})
-                   (send-to-client! channel
-                                    {:type :turn-complete
-                                     :session-id session-id}))
+                  :retry
+                  ;; Retry with reminder prompt - don't release lock yet
+                  (let [updated-orch-state (get-session-recipe-state session-id)]
+                    (log/info "Retrying step with reminder prompt"
+                              {:session-id session-id
+                               :step current-step})
+                    ;; Recursively call with the retry prompt (don't release lock)
+                    (execute-recipe-step channel session-id working-dir
+                                         updated-orch-state recipe (:prompt result)))
 
-                 ;; Default - unexpected action
-                 (do
-                   (log/error "Unexpected orchestration action"
-                              {:action (:action result)})
-                   (send-to-client! channel
-                                    {:type :turn-complete
-                                     :session-id session-id}))))
+                  :exit
+                  ;; Recipe finished, send turn_complete
+                  (do
+                    (log/info "Recipe exited"
+                              {:session-id session-id
+                               :reason (:reason result)})
+                    (send-to-client! channel
+                                     {:type :turn-complete
+                                      :session-id session-id}))
 
-             ;; Claude invocation failed
-             (do
-               (log/error "Recipe step failed"
-                          {:error (:error response) :session-id session-id})
-               (exit-recipe-for-session session-id "error")
-               (send-to-client! channel
-                                {:type :recipe-exited
-                                 :session-id session-id
-                                 :reason "error"
-                                 :error (:error response)})
-               (send-to-client! channel
-                                {:type :error
-                                 :message (:error response)
-                                 :session-id session-id})))
-           (finally
-             (repl/release-session-lock! session-id))))
-       :resume-session-id session-id
-       :working-directory working-dir
-       :timeout-ms 86400000))))
+                  ;; Default - unexpected action
+                  (do
+                    (log/error "Unexpected orchestration action"
+                               {:action (:action result)})
+                    (send-to-client! channel
+                                     {:type :turn-complete
+                                      :session-id session-id}))))
+
+              ;; Claude invocation failed
+              (do
+                (log/error "Recipe step failed"
+                           {:error (:error response) :session-id session-id})
+                (exit-recipe-for-session session-id "error")
+                (send-to-client! channel
+                                 {:type :recipe-exited
+                                  :session-id session-id
+                                  :reason "error"
+                                  :error (:error response)})
+                (send-to-client! channel
+                                 {:type :error
+                                  :message (:error response)
+                                  :session-id session-id})))
+            (finally
+              ;; Only release lock if we're not retrying
+              ;; (retry case recurses before reaching finally)
+              (repl/release-session-lock! session-id))))
+        :resume-session-id session-id
+        :working-directory working-dir
+        :timeout-ms 86400000)))))
 
 ;; Filesystem watcher callbacks
 
