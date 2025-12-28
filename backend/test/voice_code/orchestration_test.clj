@@ -164,9 +164,9 @@
   (testing "detects when max total steps exceeded"
     (let [recipe (recipes/get-recipe :implement-and-review)
           state {:recipe-id :implement-and-review
-                 :step-count 20
-                 :step-visit-counts {:implement 5 :code-review 8 :fix 7}}]
-      ;; step-count is 20, max-total-steps is 20
+                 :step-count 100
+                 :step-visit-counts {:implement 25 :code-review 40 :fix 35}}]
+      ;; step-count is 100, max-total-steps is 100
       (is (some? (orch/should-exit-recipe? state recipe :implement)))))
 
   (testing "allows execution when below limits"
@@ -186,7 +186,7 @@
   (testing "returns reason string for max-total-steps"
     (let [recipe (recipes/get-recipe :implement-and-review)
           state {:recipe-id :implement-and-review
-                 :step-count 20
+                 :step-count 100
                  :step-visit-counts {:implement 1}}]
       (is (= "max-total-steps" (orch/should-exit-recipe? state recipe :implement))))))
 
@@ -216,7 +216,7 @@
     (let [recipe (recipes/get-recipe :implement-and-review)
           step (orch/get-current-step recipe :implement)]
       (is (not (nil? step)))
-      (is (= #{:complete :other} (:outcomes step)))))
+      (is (= #{:complete :no-tasks :blocked :other} (:outcomes step)))))
 
   (testing "returns nil for missing step"
     (let [recipe (recipes/get-recipe :implement-and-review)
