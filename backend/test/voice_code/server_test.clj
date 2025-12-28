@@ -938,6 +938,84 @@
       ;; Lock should be released
       (is (not (voice-code.replication/is-session-locked? session-id))))))
 
+(deftest test-lock-released-on-nil-step-prompt
+  (testing "Lock is released when step-prompt is nil (prevents lock leak)"
+    (let [session-id "test-nil-prompt"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      ;; Setup
+      (reset! server/session-orchestration-state {})
+      (reset! voice-code.replication/session-locks #{})
+
+      ;; Create orchestration state pointing to a non-existent step
+      ;; This simulates a scenario where get-next-step-prompt returns nil
+      (swap! server/session-orchestration-state assoc session-id
+             {:recipe-id :implement-and-review
+              :current-step :nonexistent-step ;; This step doesn't exist
+              :step-count 1
+              :step-visit-counts {:nonexistent-step 1}
+              :step-retry-counts {}})
+
+      ;; Acquire lock (simulating what start_recipe does before calling execute-recipe-step)
+      (voice-code.replication/acquire-session-lock! session-id)
+      (is (voice-code.replication/is-session-locked? session-id)
+          "Lock should be held initially")
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    voice-code.claude/invoke-claude-async (fn [& _] (throw (Exception. "Should not be called")))]
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)]
+          ;; Call execute-recipe-step with an orch-state that will result in nil step-prompt
+          (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
+
+          ;; Lock should be released even though step-prompt was nil
+          (is (not (voice-code.replication/is-session-locked? session-id))
+              "Lock should be released when step-prompt is nil")
+
+          ;; Should have sent recipe-exited and turn-complete messages
+          (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
+                message-types (set (map :type parsed-messages))]
+            (is (contains? message-types "recipe_exited")
+                "Should send recipe_exited message")
+            (is (contains? message-types "turn_complete")
+                "Should send turn_complete message")))))))
+
+(deftest test-recipe-state-cleaned-on-lock-failure
+  (testing "Recipe state is cleaned up when lock acquisition fails in start_recipe"
+    (let [session-id "test-lock-fail-cleanup"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      ;; Setup
+      (reset! server/session-orchestration-state {})
+      (reset! voice-code.replication/session-locks #{})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      ;; Pre-lock the session to simulate another operation holding the lock
+      (voice-code.replication/acquire-session-lock! session-id)
+      (is (voice-code.replication/is-session-locked? session-id)
+          "Session should be locked by another operation")
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    voice-code.replication/get-session-metadata (fn [_] {:working-directory "/tmp"})]
+        ;; Handle start_recipe message when session is already locked
+        (server/handle-message mock-channel
+                               (json/generate-string {:type "start_recipe"
+                                                      :recipe_id "implement-and-review"
+                                                      :session_id session-id}))
+
+        ;; Recipe state should NOT exist (cleaned up because lock failed)
+        (is (nil? (server/get-session-recipe-state session-id))
+            "Recipe state should be cleaned up when lock acquisition fails")
+
+        ;; Should have sent session_locked message
+        (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
+              message-types (set (map :type parsed-messages))]
+          (is (contains? message-types "session_locked")
+              "Should send session_locked message")))
+
+      ;; Cleanup
+      (voice-code.replication/release-session-lock! session-id))))
+
 
 
 
