@@ -32,6 +32,13 @@ extension FocusedValues {
     }
 }
 
+// Note: Additional focused value keys are defined in Commands/AppCommands.swift:
+// - messageInput: Binding<String>? - for message input text
+// - sendMessageAction: (() -> Void)? - for triggering message send
+// - showSessionInfoAction: (() -> Void)? - for showing session info
+// - sessionsList: [CDBackendSession]? - for session navigation
+// - selectedSessionBinding: Binding<CDBackendSession?>? - for session selection
+
 @main
 struct VoiceCodeDesktopApp: App {
     @StateObject private var onboarding: OnboardingManager
@@ -52,7 +59,7 @@ struct VoiceCodeDesktopApp: App {
             }
         }
         .commands {
-            SessionCommands()
+            AppCommands()
         }
 
         Settings {
@@ -70,47 +77,6 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Session Commands
-
-struct SessionCommands: Commands {
-    @FocusedValue(\.selectedSession) var selectedSession
-    @FocusedValue(\.voiceCodeClient) var client
-
-    var body: some Commands {
-        CommandMenu("Session") {
-            Button("Refresh Session") {
-                guard let session = selectedSession, let client = client else { return }
-                client.requestSessionRefresh(sessionId: session.backendSessionId)
-            }
-            .keyboardShortcut("r", modifiers: .command)
-            .disabled(selectedSession == nil || client == nil)
-
-            Button("Compact Session...") {
-                guard let session = selectedSession, let client = client else { return }
-                // Compaction is handled via notification to show confirmation dialog
-                NotificationCenter.default.post(
-                    name: .requestSessionCompaction,
-                    object: nil,
-                    userInfo: ["sessionId": session.backendSessionId]
-                )
-            }
-            .keyboardShortcut("c", modifiers: [.command, .shift])
-            .disabled(selectedSession == nil || client == nil)
-
-            Divider()
-
-            Button("Kill Session") {
-                guard let session = selectedSession, let client = client else { return }
-                NotificationCenter.default.post(
-                    name: .requestSessionKill,
-                    object: nil,
-                    userInfo: ["sessionId": session.backendSessionId]
-                )
-            }
-            .disabled(selectedSession == nil || client == nil)
-        }
-    }
-}
 
 // MARK: - Notification Names for Session Commands
 

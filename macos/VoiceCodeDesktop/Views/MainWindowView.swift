@@ -17,6 +17,7 @@ struct MainWindowView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var recentSessions: [RecentSession] = []
     @State private var showingNewSession = false
+    @State private var allSessions: [CDBackendSession] = []
 
     @Environment(\.managedObjectContext) private var viewContext
 
@@ -110,6 +111,40 @@ struct MainWindowView: View {
                 selectedDirectory = nil
                 selectedSession = session
             }
+        }
+        // Provide focused values for AppCommands
+        .focusedSceneValue(\.selectedSession, selectedSession)
+        .focusedSceneValue(\.voiceCodeClient, client)
+        .focusedSceneValue(\.sessionsList, allSessions)
+        .focusedSceneValue(\.selectedSessionBinding, $selectedSession)
+        // Handle command notifications
+        .onReceive(NotificationCenter.default.publisher(for: .requestNewSession)) { _ in
+            showingNewSession = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .requestNewWindow)) { _ in
+            // Open a new window - for WindowGroup-based apps this can be done
+            // by using the NSApp.sendAction to trigger window creation
+            // Note: In SwiftUI with WindowGroup, this opens a new instance
+            if let window = NSApp.windows.first(where: { $0.isVisible }) {
+                // Create a new window by using the standard macOS new window action
+                NSApp.sendAction(Selector(("newWindowForTab:")), to: nil, from: nil)
+            }
+        }
+        .task {
+            // Load all sessions for command navigation
+            loadAllSessions()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .sessionListDidUpdate)) { _ in
+            loadAllSessions()
+        }
+    }
+
+    private func loadAllSessions() {
+        do {
+            allSessions = try CDBackendSession.fetchActiveSessions(context: viewContext)
+        } catch {
+            logger.error("❌ Failed to fetch all sessions for navigation: \(error)")
+            allSessions = []
         }
     }
 
