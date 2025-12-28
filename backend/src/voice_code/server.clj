@@ -288,11 +288,15 @@
                                   :reason exit-reason})
                 {:action :exit :reason exit-reason})
               ;; Update state with new step and increment counters
-              (let [updated-state (-> orch-state
-                                      (assoc :current-step new-step)
-                                      (update :step-count inc)
-                                      (update-in [:step-visit-counts new-step] (fnil inc 0)))]
-                (swap! session-orchestration-state assoc session-id updated-state)
+              ;; IMPORTANT: Use swap! with update function to preserve fields set by other code
+              ;; (like :session-created? set by execute-recipe-step)
+              (do
+                (swap! session-orchestration-state update session-id
+                       (fn [current-state]
+                         (-> current-state
+                             (assoc :current-step new-step)
+                             (update :step-count inc)
+                             (update-in [:step-visit-counts new-step] (fnil inc 0)))))
                 (send-to-client! channel
                                  {:type :recipe-step-transition
                                   :session-id session-id

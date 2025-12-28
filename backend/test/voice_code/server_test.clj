@@ -860,6 +860,36 @@
                           (str/includes? % "max-step-visits"))
                     @sent-messages)))))))
 
+(deftest test-process-orchestration-response-preserves-session-created-flag
+  (testing "Step transition preserves session-created? flag"
+    (let [session-id "test-session-preserve-flag"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      ;; Setup: start recipe for session with is-new-session?=false (existing session)
+      ;; This means session-created? will be true
+      (reset! server/session-orchestration-state {})
+      (server/start-recipe-for-session session-id :implement-and-review false)
+
+      ;; Verify session-created? is true initially (existing session)
+      (is (true? (:session-created? (server/get-session-recipe-state session-id))))
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)
+              ;; Simulate Claude response with valid JSON outcome
+              response-text "I completed the implementation.\n\n{\"outcome\": \"complete\"}"
+              result (server/process-orchestration-response
+                      session-id orch-state recipe response-text mock-channel)]
+
+          ;; Should transition to next step
+          (is (= :next-step (:action result)))
+          (is (= :code-review (:step-name result)))
+
+          ;; CRITICAL: session-created? flag should be preserved after transition
+          (let [updated-state (server/get-session-recipe-state session-id)]
+            (is (true? (:session-created? updated-state))
+                "session-created? flag should be preserved during step transition")))))))
+
 (deftest test-lock-held-during-recipe-execution
   (testing "Session lock is held throughout recipe execution and released on exit"
     (let [session-id "test-session-lock"
