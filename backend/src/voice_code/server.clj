@@ -1261,7 +1261,8 @@
           "start_recipe"
           (let [recipe-id (keyword (:recipe-id data))
                 session-id (:session-id data)
-                working-directory (:working-directory data)]
+                working-directory (:working-directory data)
+                is-new-session? (not (session-exists? session-id))]
             (cond
               (not session-id)
               (send-to-client! channel
@@ -1273,10 +1274,18 @@
                                {:type :error
                                 :message "recipe_id required in start_recipe message"})
 
+              ;; New validation: working_directory required for new sessions
+              (and is-new-session? (str/blank? working-directory))
+              (do
+                (log/warn "New session recipe start rejected: missing working_directory"
+                          {:session-id session-id :recipe-id recipe-id})
+                (send-to-client! channel
+                                 {:type :error
+                                  :message "working_directory required for new session"
+                                  :session-id session-id}))
+
               :else
-              ;; TODO: task yy9 will add proper is-new-session? detection
-              ;; For now, assume existing sessions (false) to maintain current behavior
-              (if-let [orch-state (start-recipe-for-session session-id recipe-id false)]
+              (if-let [orch-state (start-recipe-for-session session-id recipe-id is-new-session?)]
                 (let [recipe (recipes/get-recipe recipe-id)]
                   (log/info "Recipe started" {:recipe-id recipe-id :session-id session-id})
                   (send-to-client! channel

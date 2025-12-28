@@ -1141,6 +1141,105 @@
     (with-redefs [repl/get-session-metadata (constantly nil)]
       (is (false? (server/session-exists? nil))))))
 
+(deftest test-start-recipe-new-session-requires-working-directory
+  (testing "New session without working_directory returns error"
+    (let [session-id "new-session-no-dir"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      ;; Setup
+      (reset! server/session-orchestration-state {})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    ;; Session doesn't exist (new session)
+                    repl/get-session-metadata (constantly nil)]
+        ;; Handle start_recipe message for new session WITHOUT working_directory
+        (server/handle-message mock-channel
+                               (json/generate-string {:type "start_recipe"
+                                                      :recipe_id "implement-and-review"
+                                                      :session_id session-id}))
+
+        ;; Should have sent error message
+        (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
+              error-msg (first (filter #(= "error" (:type %)) parsed-messages))]
+          (is (some? error-msg) "Should send error message")
+          (is (= "working_directory required for new session" (:message error-msg)))
+          (is (= session-id (:session_id error-msg)) "Error should include session_id")))))
+
+  (testing "New session with working_directory succeeds"
+    (let [session-id "new-session-with-dir"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      ;; Setup
+      (reset! server/session-orchestration-state {})
+      (reset! repl/session-locks #{})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    ;; Session doesn't exist (new session)
+                    repl/get-session-metadata (constantly nil)
+                    ;; Mock execute-recipe-step to prevent actual execution
+                    server/execute-recipe-step (fn [& _] nil)]
+        ;; Handle start_recipe message for new session WITH working_directory
+        (server/handle-message mock-channel
+                               (json/generate-string {:type "start_recipe"
+                                                      :recipe_id "implement-and-review"
+                                                      :session_id session-id
+                                                      :working_directory "/test/project"}))
+
+        ;; Should have sent recipe_started message (not error)
+        (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
+              message-types (set (map :type parsed-messages))]
+          (is (contains? message-types "recipe_started")
+              "Should send recipe_started message")
+          (is (not (some #(and (= "error" (:type %))
+                               (= "working_directory required for new session" (:message %)))
+                         parsed-messages))
+              "Should NOT send working_directory error"))
+
+        ;; Verify recipe state was created with :session-created? = false (new session)
+        (let [state (server/get-session-recipe-state session-id)]
+          (is (some? state) "Recipe state should exist")
+          (is (false? (:session-created? state))
+              "New session should have :session-created? = false")))))
+
+  (testing "Existing session works without working_directory"
+    (let [session-id "existing-session"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      ;; Setup
+      (reset! server/session-orchestration-state {})
+      (reset! repl/session-locks #{})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    ;; Session exists (existing session)
+                    repl/get-session-metadata (constantly {:session-id session-id
+                                                           :working-directory "/existing/project"})
+                    ;; Mock execute-recipe-step to prevent actual execution
+                    server/execute-recipe-step (fn [& _] nil)]
+        ;; Handle start_recipe message for existing session WITHOUT working_directory
+        (server/handle-message mock-channel
+                               (json/generate-string {:type "start_recipe"
+                                                      :recipe_id "implement-and-review"
+                                                      :session_id session-id}))
+
+        ;; Should have sent recipe_started message (not error)
+        (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
+              message-types (set (map :type parsed-messages))]
+          (is (contains? message-types "recipe_started")
+              "Should send recipe_started message for existing session")
+          (is (not (some #(and (= "error" (:type %))
+                               (str/includes? (or (:message %) "") "working_directory"))
+                         parsed-messages))
+              "Should NOT send working_directory error for existing session"))
+
+        ;; Verify recipe state was created with :session-created? = true (existing session)
+        (let [state (server/get-session-recipe-state session-id)]
+          (is (some? state) "Recipe state should exist")
+          (is (true? (:session-created? state))
+              "Existing session should have :session-created? = true"))))))
+
 
 
 
