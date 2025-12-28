@@ -412,6 +412,10 @@ Before marking complete:
 - [ ] Implementation matches the design document
 - [ ] No scope creep beyond task requirements
 
+### Beads Task Status
+- [ ] Task will be properly updated to reflect completion (run `bd ready` to verify task ID)
+- [ ] Any blockers or issues are documented in the task
+
 Report any issues found. Do not make changes yet."
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
@@ -431,7 +435,13 @@ After fixing:
       :other {:action :exit :reason "user-provided-other"}}}
 
     :commit
-    {:prompt "Commit and push the changes for this task.
+    {:prompt "Update the beads task and commit the changes.
+
+## Update Beads Task
+Before committing, update the task status:
+1. Run `bd ready` to get the current task ID
+2. Run `bd done <task-id>` to mark the task as complete
+3. If partially complete, use `bd update <task-id> --status in-progress` with notes
 
 ## Commit Requirements
 - Use the beads task ID in the commit message
