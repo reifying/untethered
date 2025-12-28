@@ -15,14 +15,14 @@
    :initial-step :implement
    :steps
    {:implement
-    {:prompt "Run bd ready and implement the task."
+    {:prompt "Run bd ready and implement the task. Review the relevant design documentation, code standards, etc. Familiarize yourself with the code base and context of the change before starting the work. Include verification steps as applicable (e.g., test pyramid strategy)."
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :code-review}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :code-review
-    {:prompt "Perform a code review on the task that you just completed."
+    {:prompt "Perform a code review on the task that you just completed. Do not perform any updates for gaps or issues found. Focus on a thorough review."
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
      {:no-issues {:next-step :commit}
@@ -37,7 +37,7 @@
       :other {:action :exit :reason "user-provided-other"}}}
 
     :commit
-    {:prompt "Commit and push the changes you made for this task. Use the beads task ID in the commit message."
+    {:prompt "Commit and push the changes you made for this task. Use the beads task ID in the commit message. Include the beads changes (e.g., `beads/*`) in your commits."
      :model "haiku"
      :outcomes #{:committed :nothing-to-commit :other}
      :on-outcome
