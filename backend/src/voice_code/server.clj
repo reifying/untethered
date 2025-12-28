@@ -223,6 +223,12 @@
         (orch/append-outcome-requirements base-prompt current-step expected-outcomes))
       nil)))
 
+(defn get-step-model
+  "Get model for a step. Resolution order: step :model > recipe :model > nil"
+  [recipe step-name]
+  (or (get-in recipe [:steps step-name :model])
+      (:model recipe)))
+
 (defn get-available-recipes-list
   "Get list of available recipes with metadata for client"
   []
@@ -349,6 +355,7 @@
                    {:session-id session-id
                     :recipe-id (:recipe-id orch-state)
                     :step current-step
+                    :model (get-step-model recipe current-step)
                     :step-count (:step-count orch-state)
                     :is-retry (some? prompt-override)})
 
@@ -479,6 +486,7 @@
                                   :session-id session-id}))))
           :resume-session-id session-id
           :working-directory working-dir
+          :model (get-step-model recipe current-step)
           :timeout-ms 86400000))
        ;; No step prompt available - this shouldn't happen in normal operation
        ;; but we must release the lock if it does

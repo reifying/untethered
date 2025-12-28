@@ -1,13 +1,17 @@
 (ns voice-code.recipes
   (:require [clojure.spec.alpha :as s]))
 
+(def valid-models
+  "Valid model values for recipe steps"
+  #{"haiku" "sonnet" "opus"})
+
 (defn implement-and-review-recipe
   "Returns the implement-and-review recipe definition.
-   This recipe implements a task, reviews the code, and iteratively fixes issues."
+   This recipe implements a task, reviews the code, iteratively fixes issues, and commits."
   []
   {:id :implement-and-review
    :label "Implement & Review"
-   :description "Implement task, review code, and fix issues in a loop"
+   :description "Implement task, review code, fix issues, and commit"
    :initial-step :implement
    :steps
    {:implement
@@ -21,7 +25,7 @@
     {:prompt "Perform a code review on the task that you just completed."
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
-     {:no-issues {:action :exit :reason "code-review-passed"}
+     {:no-issues {:next-step :commit}
       :issues-found {:next-step :fix}
       :other {:action :exit :reason "user-provided-other"}}}
 
@@ -30,6 +34,15 @@
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :code-review}
+      :other {:action :exit :reason "user-provided-other"}}}
+
+    :commit
+    {:prompt "Commit and push the changes you made for this task. Use the beads task ID in the commit message."
+     :model "haiku"
+     :outcomes #{:committed :nothing-to-commit :other}
+     :on-outcome
+     {:committed {:action :exit :reason "task-committed"}
+      :nothing-to-commit {:action :exit :reason "no-changes-to-commit"}
       :other {:action :exit :reason "user-provided-other"}}}}
 
    :guardrails
@@ -50,7 +63,8 @@
   "Validate recipe structure. Returns validation result or nil if valid."
   [recipe]
   (let [step-names (set (keys (:steps recipe)))
-        initial-step (:initial-step recipe)]
+        initial-step (:initial-step recipe)
+        recipe-model (:model recipe)]
     (cond
       (nil? initial-step)
       {:error "Recipe must have :initial-step"}
@@ -58,30 +72,39 @@
       (not (contains? step-names initial-step))
       {:error (str "Initial step not found in steps: " initial-step)}
 
+      (and recipe-model (not (contains? valid-models recipe-model)))
+      {:error (str "Invalid recipe-level model '" recipe-model "'. Valid models: " valid-models)}
+
       :else
       (let [validation-errors
             (mapcat
              (fn [[step-name step-def]]
                (let [step-outcomes (:outcomes step-def)
-                     on-outcome (:on-outcome step-def)]
-                 (mapcat
-                  (fn [[outcome transition]]
-                    (cond
-                      (not (contains? step-outcomes outcome))
-                      [{:error (str "Outcome " outcome " at step " step-name " not in :outcomes")}]
+                     on-outcome (:on-outcome step-def)
+                     step-model (:model step-def)]
+                 (concat
+                  ;; Validate step-level model
+                  (when (and step-model (not (contains? valid-models step-model)))
+                    [{:error (str "Invalid model '" step-model "' at step " step-name ". Valid models: " valid-models)}])
+                  ;; Validate transitions
+                  (mapcat
+                   (fn [[outcome transition]]
+                     (cond
+                       (not (contains? step-outcomes outcome))
+                       [{:error (str "Outcome " outcome " at step " step-name " not in :outcomes")}]
 
-                      (and (= outcome :other) (not (:reason transition)))
-                      [{:error (str "Transition for 'other' outcome must have :reason")}]
+                       (and (= outcome :other) (not (:reason transition)))
+                       [{:error (str "Transition for 'other' outcome must have :reason")}]
 
-                      (and (= (:action transition) :exit) (not (:reason transition)))
-                      [{:error (str "Exit action must have :reason")}]
+                       (and (= (:action transition) :exit) (not (:reason transition)))
+                       [{:error (str "Exit action must have :reason")}]
 
-                      (and (:next-step transition)
-                           (not (contains? step-names (:next-step transition))))
-                      [{:error (str "Next step " (:next-step transition) " not found in steps")}]
+                       (and (:next-step transition)
+                            (not (contains? step-names (:next-step transition))))
+                       [{:error (str "Next step " (:next-step transition) " not found in steps")}]
 
-                      :else []))
-                  on-outcome)))
+                       :else []))
+                   on-outcome))))
              (:steps recipe))]
         (if (empty? validation-errors)
           nil
@@ -100,8 +123,11 @@
 (s/def ::on-outcome
   (s/map-of keyword? ::transition))
 
+(s/def ::model valid-models)
+
 (s/def ::step-def
-  (s/keys :req-un [::prompt ::outcomes ::on-outcome]))
+  (s/keys :req-un [::prompt ::outcomes ::on-outcome]
+          :opt-un [::model]))
 
 (s/def ::steps
   (s/map-of keyword? ::step-def))
@@ -111,4 +137,4 @@
 
 (s/def ::recipe
   (s/keys :req-un [::id ::description ::initial-step ::steps]
-          :opt-un [::guardrails]))
+          :opt-un [::guardrails ::model]))

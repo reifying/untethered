@@ -900,12 +900,24 @@
             (is (voice-code.replication/is-session-locked? session-id)
                 "Lock should remain held during retry"))
 
-          ;; Process exit response (code-review step has no-issues -> exit)
+          ;; Process no-issues response (code-review step has no-issues -> commit step)
           (let [updated-state2 (server/get-session-recipe-state session-id)
                 response3 "{\"outcome\": \"no-issues\"}"
                 result3 (server/process-orchestration-response
                          session-id updated-state2 recipe response3 mock-channel)]
-            (is (= :exit (:action result3)))
+            (is (= :next-step (:action result3)))
+            (is (= :commit (:step-name result3)))
+            ;; Lock should STILL be held after transition to commit
+            (is (voice-code.replication/is-session-locked? session-id)
+                "Lock should remain held during transition to commit"))
+
+          ;; Process committed response (commit step has committed -> exit)
+          (let [updated-state3 (server/get-session-recipe-state session-id)
+                response4 "{\"outcome\": \"committed\"}"
+                result4 (server/process-orchestration-response
+                         session-id updated-state3 recipe response4 mock-channel)]
+            (is (= :exit (:action result4)))
+            (is (= "task-committed" (:reason result4)))
             ;; Note: process-orchestration-response doesn't release lock,
             ;; execute-recipe-step does. But we verify the action is correct.
             ))))))
@@ -979,6 +991,104 @@
                 "Should send recipe_exited message")
             (is (contains? message-types "turn_complete")
                 "Should send turn_complete message")))))))
+
+(deftest test-get-step-model
+  (testing "returns step-level model when present"
+    (let [recipe {:steps {:commit {:model "haiku"
+                                   :prompt "test"
+                                   :outcomes #{:done}
+                                   :on-outcome {}}}}]
+      (is (= "haiku" (server/get-step-model recipe :commit)))))
+
+  (testing "returns recipe-level model when step has no model"
+    (let [recipe {:model "sonnet"
+                  :steps {:implement {:prompt "test"
+                                      :outcomes #{:done}
+                                      :on-outcome {}}}}]
+      (is (= "sonnet" (server/get-step-model recipe :implement)))))
+
+  (testing "step-level model overrides recipe-level model"
+    (let [recipe {:model "sonnet"
+                  :steps {:commit {:model "haiku"
+                                   :prompt "test"
+                                   :outcomes #{:done}
+                                   :on-outcome {}}}}]
+      (is (= "haiku" (server/get-step-model recipe :commit)))))
+
+  (testing "returns nil when neither step nor recipe has model"
+    (let [recipe {:steps {:implement {:prompt "test"
+                                      :outcomes #{:done}
+                                      :on-outcome {}}}}]
+      (is (nil? (server/get-step-model recipe :implement)))))
+
+  (testing "works with implement-and-review recipe"
+    (let [recipe (recipes/get-recipe :implement-and-review)]
+      ;; :commit step has "haiku" model
+      (is (= "haiku" (server/get-step-model recipe :commit)))
+      ;; :implement step has no model
+      (is (nil? (server/get-step-model recipe :implement)))
+      ;; :code-review step has no model
+      (is (nil? (server/get-step-model recipe :code-review)))
+      ;; :fix step has no model
+      (is (nil? (server/get-step-model recipe :fix))))))
+
+(deftest test-execute-recipe-step-passes-model
+  (testing "execute-recipe-step passes model to invoke-claude-async"
+    (let [session-id "test-model-pass"
+          sent-messages (atom [])
+          captured-model (atom nil)
+          mock-channel :test-ch]
+      ;; Setup
+      (reset! server/session-orchestration-state {})
+      (reset! voice-code.replication/session-locks #{})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      ;; Start recipe at commit step (which has model "haiku")
+      (server/start-recipe-for-session session-id :implement-and-review)
+      (swap! server/session-orchestration-state assoc-in [session-id :current-step] :commit)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & {:keys [model]}]
+                      (reset! captured-model model)
+                      ;; Call callback with success
+                      (callback {:success true :result "{\"outcome\": \"committed\"}"}))]
+
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)]
+          (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
+
+          ;; Verify model was passed correctly
+          (is (= "haiku" @captured-model)
+              "Commit step should use haiku model")))))
+
+  (testing "execute-recipe-step passes nil model for steps without model"
+    (let [session-id "test-no-model"
+          sent-messages (atom [])
+          captured-model (atom :not-called)
+          mock-channel :test-ch]
+      ;; Setup
+      (reset! server/session-orchestration-state {})
+      (reset! voice-code.replication/session-locks #{})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      ;; Start recipe at implement step (which has no model)
+      (server/start-recipe-for-session session-id :implement-and-review)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & {:keys [model]}]
+                      (reset! captured-model model)
+                      ;; Call callback with success to exit
+                      (callback {:success true :result "{\"outcome\": \"complete\"}"}))]
+
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)]
+          (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
+
+          ;; Verify model was nil (no model for implement step)
+          (is (nil? @captured-model)
+              "Implement step should have nil model"))))))
 
 (deftest test-recipe-state-cleaned-on-lock-failure
   (testing "Recipe state is cleaned up when lock acquisition fails in start_recipe"

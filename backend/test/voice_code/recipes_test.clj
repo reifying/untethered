@@ -21,7 +21,8 @@
           steps (:steps recipe)]
       (is (contains? steps :implement))
       (is (contains? steps :code-review))
-      (is (contains? steps :fix))))
+      (is (contains? steps :fix))
+      (is (contains? steps :commit))))
 
   (testing "implement step has correct outcomes"
     (let [recipe (recipes/get-recipe :implement-and-review)
@@ -54,11 +55,10 @@
           transition (get-in recipe [:steps :implement :on-outcome :complete])]
       (is (= :code-review (:next-step transition)))))
 
-  (testing "code-review no-issues exits with code-review-passed"
+  (testing "code-review no-issues transitions to commit"
     (let [recipe (recipes/get-recipe :implement-and-review)
           transition (get-in recipe [:steps :code-review :on-outcome :no-issues])]
-      (is (= :exit (:action transition)))
-      (is (= "code-review-passed" (:reason transition)))))
+      (is (= :commit (:next-step transition)))))
 
   (testing "code-review issues-found transitions to fix"
     (let [recipe (recipes/get-recipe :implement-and-review)
@@ -74,7 +74,8 @@
     (let [recipe (recipes/get-recipe :implement-and-review)]
       (is (= :exit (get-in recipe [:steps :implement :on-outcome :other :action])))
       (is (= :exit (get-in recipe [:steps :code-review :on-outcome :other :action])))
-      (is (= :exit (get-in recipe [:steps :fix :on-outcome :other :action]))))))
+      (is (= :exit (get-in recipe [:steps :fix :on-outcome :other :action])))
+      (is (= :exit (get-in recipe [:steps :commit :on-outcome :other :action]))))))
 
 (deftest validate-recipe-test
   (testing "valid recipe returns nil"
@@ -100,3 +101,73 @@
                                     [:steps :implement :on-outcome :complete :next-step]
                                     (constantly :nonexistent-step))]
       (is (some? (recipes/validate-recipe invalid-recipe))))))
+
+(deftest valid-models-test
+  (testing "valid-models contains expected values"
+    (is (= #{"haiku" "sonnet" "opus"} recipes/valid-models))))
+
+(deftest model-validation-test
+  (testing "valid recipe-level model passes validation"
+    (let [recipe (assoc (recipes/implement-and-review-recipe) :model "sonnet")]
+      (is (nil? (recipes/validate-recipe recipe)))))
+
+  (testing "invalid recipe-level model fails validation"
+    (let [recipe (assoc (recipes/implement-and-review-recipe) :model "gpt-4")]
+      (let [result (recipes/validate-recipe recipe)]
+        (is (some? result))
+        (is (re-find #"Invalid recipe-level model" (:error result))))))
+
+  (testing "valid step-level model passes validation"
+    (let [recipe (recipes/implement-and-review-recipe)]
+      ;; commit step has :model "haiku" - should pass
+      (is (nil? (recipes/validate-recipe recipe)))))
+
+  (testing "invalid step-level model fails validation"
+    (let [recipe (assoc-in (recipes/implement-and-review-recipe)
+                           [:steps :commit :model] "invalid-model")]
+      (let [result (recipes/validate-recipe recipe)]
+        (is (some? result))
+        (is (some #(re-find #"Invalid model 'invalid-model' at step :commit" (:error %)) result)))))
+
+  (testing "nil model values are allowed"
+    (let [recipe (recipes/implement-and-review-recipe)]
+      ;; implement step has no :model - should pass
+      (is (nil? (recipes/validate-recipe recipe))))))
+
+(deftest commit-step-test
+  (testing "commit step exists in recipe"
+    (let [recipe (recipes/get-recipe :implement-and-review)
+          steps (:steps recipe)]
+      (is (contains? steps :commit))))
+
+  (testing "commit step has correct outcomes"
+    (let [recipe (recipes/get-recipe :implement-and-review)
+          outcomes (get-in recipe [:steps :commit :outcomes])]
+      (is (= #{:committed :nothing-to-commit :other} outcomes))))
+
+  (testing "commit step uses haiku model"
+    (let [recipe (recipes/get-recipe :implement-and-review)
+          model (get-in recipe [:steps :commit :model])]
+      (is (= "haiku" model))))
+
+  (testing "commit step has push in prompt"
+    (let [recipe (recipes/get-recipe :implement-and-review)
+          prompt (get-in recipe [:steps :commit :prompt])]
+      (is (re-find #"push" prompt))))
+
+  (testing "committed outcome exits with task-committed reason"
+    (let [recipe (recipes/get-recipe :implement-and-review)
+          transition (get-in recipe [:steps :commit :on-outcome :committed])]
+      (is (= :exit (:action transition)))
+      (is (= "task-committed" (:reason transition)))))
+
+  (testing "nothing-to-commit outcome exits with no-changes-to-commit reason"
+    (let [recipe (recipes/get-recipe :implement-and-review)
+          transition (get-in recipe [:steps :commit :on-outcome :nothing-to-commit])]
+      (is (= :exit (:action transition)))
+      (is (= "no-changes-to-commit" (:reason transition)))))
+
+  (testing "code-review no-issues transitions to commit"
+    (let [recipe (recipes/get-recipe :implement-and-review)
+          transition (get-in recipe [:steps :code-review :on-outcome :no-issues])]
+      (is (= :commit (:next-step transition))))))
