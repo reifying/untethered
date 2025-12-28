@@ -629,3 +629,184 @@ final class ConnectionStateTests: XCTestCase {
         XCTAssertEqual(client.connectionState, .disconnected)
     }
 }
+
+// MARK: - Debounce Flush Tests (Appendix M)
+
+@MainActor
+final class DebounceFlushTests: XCTestCase {
+
+    /// Per Appendix M: Session unlock should flush immediately
+    func testUnlockSessionFlushesImmediately() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // Lock a session first
+        client.lockedSessions = Set(["test-session"])
+
+        // Unlock it - should flush immediately (no 100ms delay)
+        client.unlockSession("test-session", reason: "test")
+
+        // Verify immediately applied without calling flushPendingUpdates
+        XCTAssertFalse(client.lockedSessions.contains("test-session"))
+    }
+
+    /// Per Appendix M: session_locked message should flush immediately
+    func testSessionLockedFlushesImmediately() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // Process session_locked - should flush immediately
+        client.processMessage(type: "session_locked", json: ["type": "session_locked", "session_id": "test-session"])
+
+        // Verify immediately applied without calling flushPendingUpdates
+        XCTAssertTrue(client.lockedSessions.contains("test-session"))
+    }
+
+    /// Per Appendix M: turn_complete should unlock and flush immediately
+    func testTurnCompleteFlushesImmediately() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // Lock a session first
+        client.lockedSessions = Set(["test-session"])
+
+        // Process turn_complete - should flush immediately
+        client.processMessage(type: "turn_complete", json: ["type": "turn_complete", "session_id": "test-session"])
+
+        // Verify immediately applied without calling flushPendingUpdates
+        XCTAssertFalse(client.lockedSessions.contains("test-session"))
+    }
+
+    /// Per Appendix M: Error messages should flush immediately
+    func testErrorMessageFlushesImmediately() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // Process error - should flush immediately
+        client.processMessage(type: "error", json: ["type": "error", "message": "Test error"])
+
+        // Verify immediately applied without calling flushPendingUpdates
+        XCTAssertEqual(client.currentError, "Test error")
+    }
+
+    /// Per Appendix M: Error in response should flush immediately
+    func testResponseErrorFlushesImmediately() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // Process failed response - should flush immediately
+        client.processMessage(type: "response", json: [
+            "type": "response",
+            "success": false,
+            "error": "Response error"
+        ])
+
+        // Verify immediately applied without calling flushPendingUpdates
+        XCTAssertEqual(client.currentError, "Response error")
+    }
+
+    /// Per Appendix M: session_killed should unlock and flush immediately
+    func testSessionKilledFlushesImmediately() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // Lock a session first
+        client.lockedSessions = Set(["test-session"])
+
+        // Process session_killed - should flush immediately
+        client.processMessage(type: "session_killed", json: ["type": "session_killed", "session_id": "test-session"])
+
+        // Verify immediately applied without calling flushPendingUpdates
+        XCTAssertFalse(client.lockedSessions.contains("test-session"))
+    }
+
+    /// Per Appendix M: compaction_complete should unlock and flush immediately
+    func testCompactionCompleteFlushesImmediately() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // Lock a session first
+        client.lockedSessions = Set(["test-session"])
+
+        // Process compaction_complete - should flush immediately
+        client.processMessage(type: "compaction_complete", json: ["type": "compaction_complete", "session_id": "test-session"])
+
+        // Verify immediately applied without calling flushPendingUpdates
+        XCTAssertFalse(client.lockedSessions.contains("test-session"))
+    }
+
+    /// Per Appendix M: compaction_error should unlock and flush immediately
+    func testCompactionErrorFlushesImmediately() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // Lock a session first
+        client.lockedSessions = Set(["test-session"])
+
+        // Process compaction_error - should flush immediately
+        client.processMessage(type: "compaction_error", json: [
+            "type": "compaction_error",
+            "session_id": "test-session",
+            "error": "Compaction failed"
+        ])
+
+        // Verify immediately applied without calling flushPendingUpdates
+        XCTAssertFalse(client.lockedSessions.contains("test-session"))
+    }
+
+    /// Non-critical operations should still be debounced (not flushed immediately)
+    func testNonCriticalOperationsAreDebounced() async throws {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // ack message is not critical - should be debounced
+        client.processMessage(type: "ack", json: ["type": "ack"])
+
+        // Before debounce delay, value should NOT be applied
+        // Note: isProcessing starts as false, scheduleUpdate sets pending, but doesn't apply yet
+        // The pending update is in the debounce queue
+        XCTAssertFalse(client.isProcessing, "isProcessing should not be immediately applied for non-critical ops")
+
+        // Wait for debounce delay (100ms) + buffer
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        // After debounce, value should be applied
+        XCTAssertTrue(client.isProcessing)
+    }
+}

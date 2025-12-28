@@ -720,12 +720,14 @@ open class VoiceCodeClientCore: ObservableObject {
     }
 
     /// Unlock a session by removing it from locked sessions
+    /// Flushes immediately per Appendix M - users need immediate feedback when they can type
     internal func unlockSession(_ sessionId: String, reason: String) {
         let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
         if currentSessions.contains(sessionId) {
             var updatedSessions = currentSessions
             updatedSessions.remove(sessionId)
             scheduleUpdate(key: "lockedSessions", value: updatedSessions)
+            flushPendingUpdates()
             logger.info("Unlocked session: \(sessionId) (\(reason))")
         }
     }
@@ -784,6 +786,7 @@ open class VoiceCodeClientCore: ObservableObject {
             } else {
                 let error = json["error"] as? String ?? "Unknown error"
                 scheduleUpdate(key: "currentError", value: error)
+                flushPendingUpdates()  // Errors must not be delayed per Appendix M
             }
 
         case "error":
@@ -793,6 +796,8 @@ open class VoiceCodeClientCore: ObservableObject {
 
             if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
                 unlockSession(sessionId, reason: "error received")
+            } else {
+                flushPendingUpdates()  // Errors must not be delayed per Appendix M
             }
 
         case "pong":
@@ -892,6 +897,7 @@ open class VoiceCodeClientCore: ObservableObject {
                 var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
                 updatedSessions.insert(sessionId)
                 scheduleUpdate(key: "lockedSessions", value: updatedSessions)
+                flushPendingUpdates()  // UI must reflect lock immediately per Appendix M
             }
 
         case "session_killed":
