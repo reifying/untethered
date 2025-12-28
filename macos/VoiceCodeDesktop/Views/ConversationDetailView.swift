@@ -1,0 +1,405 @@
+// ConversationDetailView.swift
+// Message list and input area per Section 11.6
+
+import SwiftUI
+import CoreData
+import OSLog
+import VoiceCodeShared
+
+private let logger = Logger(subsystem: "dev.910labs.voice-code-desktop", category: "ConversationDetailView")
+
+// MARK: - ConversationDetailView
+
+/// Main conversation view with message list and input area
+struct ConversationDetailView: View {
+    @ObservedObject var session: CDBackendSession
+    @ObservedObject var client: VoiceCodeClient
+    let settings: AppSettings
+
+    @Environment(\.managedObjectContext) private var viewContext
+
+    // Messages fetched via CoreData @FetchRequest
+    @FetchRequest private var messages: FetchedResults<CDMessage>
+
+    // Input state
+    @State private var draftText: String = ""
+
+    // Auto-scroll state
+    @State private var autoScrollEnabled = true
+
+    // Track if sending to disable input
+    // Session is locked if the session's backend ID is in the locked set
+    private var isSessionLocked: Bool {
+        client.lockedSessions.contains(session.backendSessionId)
+    }
+
+    init(session: CDBackendSession, client: VoiceCodeClient, settings: AppSettings) {
+        self.session = session
+        self.client = client
+        self.settings = settings
+
+        // Initialize fetch request for messages
+        _messages = FetchRequest(
+            fetchRequest: CDMessage.fetchMessages(sessionId: session.id),
+            animation: nil  // Prevent animation-related layout issues
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Message list with ScrollViewReader for auto-scroll
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(messages) { message in
+                            MessageRowView(message: message)
+                                .id(message.id)
+                        }
+                    }
+                    .padding()
+                }
+                .onChange(of: messages.count) { oldCount, newCount in
+                    guard newCount > oldCount, autoScrollEnabled else { return }
+
+                    // Capture target ID before async delay (per Appendix R)
+                    guard let targetId = messages.last?.id else { return }
+
+                    // Debounce scroll to avoid layout thrashing (300ms per spec)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        guard self.autoScrollEnabled else { return }
+                        // Verify message still exists (may have been pruned)
+                        guard messages.contains(where: { $0.id == targetId }) else { return }
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(targetId, anchor: .bottom)
+                        }
+                    }
+                }
+                .onAppear {
+                    // Scroll to last message on appear
+                    if let lastId = messages.last?.id {
+                        proxy.scrollTo(lastId, anchor: .bottom)
+                    }
+                }
+            }
+
+            Divider()
+
+            // Input area
+            MessageInputView(
+                text: $draftText,
+                isLocked: isSessionLocked,
+                onSend: sendMessage
+            )
+        }
+        .navigationTitle(session.displayName(context: viewContext))
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                // Auto-scroll toggle
+                Button(action: {
+                    autoScrollEnabled.toggle()
+                }) {
+                    Image(systemName: autoScrollEnabled ? "arrow.down.circle.fill" : "arrow.down.circle")
+                }
+                .help(autoScrollEnabled ? "Disable auto-scroll" : "Enable auto-scroll")
+                .keyboardShortcut(.downArrow, modifiers: .command)
+                .accessibilityLabel(autoScrollEnabled ? "Disable auto-scroll" : "Enable auto-scroll")
+            }
+        }
+        .onAppear {
+            loadDraft()
+            // Mark session as active for TTS routing
+            ActiveSessionManager.shared.setActiveSession(session.id)
+        }
+        .onDisappear {
+            saveDraft()
+            ActiveSessionManager.shared.clearActiveSession()
+        }
+        .onChange(of: draftText) {
+            // Debounced save handled by MessageInputView
+        }
+    }
+
+    // MARK: - Actions
+
+    private func sendMessage() {
+        let trimmedText = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return }
+
+        // Clear draft before sending
+        draftText = ""
+        clearDraft()
+
+        // Re-enable auto-scroll on user message
+        autoScrollEnabled = true
+
+        // Create optimistic message
+        let optimisticMessage = CDMessage(context: viewContext)
+        optimisticMessage.id = UUID()
+        optimisticMessage.sessionId = session.id
+        optimisticMessage.role = "user"
+        optimisticMessage.text = trimmedText
+        optimisticMessage.timestamp = Date()
+        optimisticMessage.messageStatus = .sending
+
+        // Update session's last modified and message count
+        session.lastModified = Date()
+        session.messageCount += 1
+
+        // Save optimistic message
+        do {
+            try viewContext.save()
+        } catch {
+            logger.error("❌ Failed to save optimistic message: \(error)")
+        }
+
+        // Send to backend
+        // Use backendSessionId as both iosSessionId and sessionId
+        client.sendPrompt(
+            trimmedText,
+            iosSessionId: session.backendSessionId,
+            sessionId: session.backendSessionId,
+            workingDirectory: session.workingDirectory,
+            systemPrompt: settings.systemPrompt.isEmpty ? nil : settings.systemPrompt
+        )
+
+        logger.info("📤 Sent prompt for session \(session.id.uuidString.prefix(8))")
+    }
+
+    // MARK: - Draft Persistence
+
+    private var draftKey: String {
+        "draft_\(session.id.uuidString.lowercased())"
+    }
+
+    private func loadDraft() {
+        draftText = UserDefaults.standard.string(forKey: draftKey) ?? ""
+    }
+
+    private func saveDraft() {
+        if draftText.isEmpty {
+            UserDefaults.standard.removeObject(forKey: draftKey)
+        } else {
+            UserDefaults.standard.set(draftText, forKey: draftKey)
+        }
+    }
+
+    private func clearDraft() {
+        UserDefaults.standard.removeObject(forKey: draftKey)
+    }
+}
+
+// MARK: - MessageRowView
+
+/// Individual message row with role-based styling
+struct MessageRowView: View {
+    @ObservedObject var message: CDMessage
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            // Role indicator
+            roleIcon
+                .frame(width: 24, height: 24)
+
+            VStack(alignment: .leading, spacing: 4) {
+                // Role label with timestamp
+                HStack {
+                    Text(roleLabel)
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(roleColor)
+
+                    Text(message.timestamp.formatted(date: .omitted, time: .shortened))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+
+                    // Status indicator for sending/error states
+                    if message.messageStatus == .sending {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else if message.messageStatus == .error {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .foregroundColor(.red)
+                            .font(.caption)
+                    }
+
+                    Spacer()
+                }
+
+                // Message text (using displayText for truncation)
+                Text(message.displayText)
+                    .font(.body)
+                    .textSelection(.enabled)
+                    .foregroundColor(.primary)
+
+                // Truncation indicator
+                if message.isTruncated {
+                    Text("Message truncated for display")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .italic()
+                }
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(messageBackground)
+        .cornerRadius(8)
+        .contextMenu {
+            Button("Copy") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(message.text, forType: .string)
+            }
+
+            if message.isTruncated {
+                Button("Copy Full Message") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(message.text, forType: .string)
+                }
+            }
+        }
+    }
+
+    private var roleIcon: some View {
+        Group {
+            if message.role == "user" {
+                Image(systemName: "person.circle.fill")
+                    .foregroundColor(.blue)
+            } else {
+                Image(systemName: "sparkles")
+                    .foregroundColor(.purple)
+            }
+        }
+        .font(.title3)
+    }
+
+    private var roleLabel: String {
+        message.role == "user" ? "You" : "Claude"
+    }
+
+    private var roleColor: Color {
+        message.role == "user" ? .blue : .purple
+    }
+
+    private var messageBackground: Color {
+        if message.role == "user" {
+            return Color.blue.opacity(0.1)
+        } else {
+            return Color.secondary.opacity(0.1)
+        }
+    }
+}
+
+// MARK: - MessageInputView
+
+/// Multi-line text input with Cmd+Enter to send
+struct MessageInputView: View {
+    @Binding var text: String
+    let isLocked: Bool
+    let onSend: () -> Void
+
+    // Focus state for text editor
+    @FocusState private var isTextEditorFocused: Bool
+
+    // Debounced draft save
+    @State private var saveTask: Task<Void, Never>?
+
+    var body: some View {
+        VStack(spacing: 8) {
+            // Lock indicator
+            if isLocked {
+                HStack {
+                    Image(systemName: "lock.fill")
+                        .foregroundColor(.orange)
+                    Text("Session is processing...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal)
+                .padding(.top, 8)
+            }
+
+            HStack(alignment: .bottom, spacing: 12) {
+                // Text editor for multi-line input
+                TextEditor(text: $text)
+                    .font(.body)
+                    .frame(minHeight: 36, maxHeight: 120)
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                    )
+                    .focused($isTextEditorFocused)
+                    .disabled(isLocked)
+                    .accessibilityLabel("Message input")
+                    .accessibilityHint("Press Command+Return to send")
+
+                // Send button
+                Button(action: onSend) {
+                    Image(systemName: "paperplane.fill")
+                        .font(.title2)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isLocked || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.return, modifiers: .command)
+                .help("Send message (⌘⏎)")
+                .accessibilityLabel("Send message")
+            }
+            .padding()
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
+        .onChange(of: text) {
+            // Debounced draft save (0.5s)
+            saveTask?.cancel()
+            saveTask = Task {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard !Task.isCancelled else { return }
+                // Draft is saved by parent view's onDisappear
+            }
+        }
+    }
+}
+
+// MARK: - Preview
+
+#Preview {
+    let controller = PersistenceController(inMemory: true)
+    let context = controller.container.viewContext
+
+    // Create a test session
+    let session = CDBackendSession(context: context)
+    session.id = UUID()
+    session.workingDirectory = "/Users/test/project"
+    session.backendName = session.id.uuidString.lowercased()
+    session.lastModified = Date()
+
+    // Create test messages
+    let userMessage = CDMessage(context: context)
+    userMessage.id = UUID()
+    userMessage.sessionId = session.id
+    userMessage.role = "user"
+    userMessage.text = "Hello, Claude!"
+    userMessage.timestamp = Date().addingTimeInterval(-60)
+    userMessage.messageStatus = .confirmed
+
+    let assistantMessage = CDMessage(context: context)
+    assistantMessage.id = UUID()
+    assistantMessage.sessionId = session.id
+    assistantMessage.role = "assistant"
+    assistantMessage.text = "Hello! How can I help you today?"
+    assistantMessage.timestamp = Date()
+    assistantMessage.messageStatus = .confirmed
+
+    try? context.save()
+
+    return ConversationDetailView(
+        session: session,
+        client: VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false),
+        settings: AppSettings()
+    )
+    .environment(\.managedObjectContext, context)
+    .frame(width: 600, height: 400)
+}

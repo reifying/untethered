@@ -14,6 +14,21 @@ public enum PersistenceConfig {
 public final class PersistenceController: @unchecked Sendable {
     public static let shared = PersistenceController()
 
+    /// Cached managed object model to prevent multiple entity description registrations
+    /// CoreData binds entity descriptions to managed object subclasses at the class level.
+    /// Creating multiple NSManagedObjectModel instances causes "Multiple NSEntityDescriptions
+    /// claim the NSManagedObject subclass" warnings and test failures.
+    /// Note: Safe to share because NSManagedObjectModel is thread-safe after initial creation.
+    nonisolated(unsafe) private static let cachedModel: NSManagedObjectModel = {
+        if let modelURL = Bundle.module.url(forResource: "VoiceCode", withExtension: "momd"),
+           let model = NSManagedObjectModel(contentsOf: modelURL) {
+            return model
+        } else {
+            // Create model programmatically for testing when resources aren't available
+            return createTestModel()
+        }
+    }()
+
     /// Preview instance for SwiftUI previews
     public static let preview: PersistenceController = {
         let controller = PersistenceController(inMemory: true)
@@ -60,20 +75,8 @@ public final class PersistenceController: @unchecked Sendable {
     private let logger = Logger(subsystem: PersistenceConfig.subsystem, category: "Persistence")
 
     public init(inMemory: Bool = false) {
-
-        // Load CoreData model from Bundle.module (Swift Package resources)
-        // Try Bundle.module first, then fall back to creating an empty model for testing
-        let managedObjectModel: NSManagedObjectModel
-        if let modelURL = Bundle.module.url(forResource: "VoiceCode", withExtension: "momd"),
-           let model = NSManagedObjectModel(contentsOf: modelURL) {
-            managedObjectModel = model
-        } else {
-            // Create model programmatically for testing when resources aren't available
-            managedObjectModel = Self.createTestModel()
-            logger.warning("CoreData model loaded from programmatic definition (test mode)")
-        }
-
-        container = NSPersistentContainer(name: "VoiceCode", managedObjectModel: managedObjectModel)
+        // Use cached model to prevent multiple entity description registrations
+        container = NSPersistentContainer(name: "VoiceCode", managedObjectModel: Self.cachedModel)
 
         if inMemory {
             container.persistentStoreDescriptions.first?.url = URL(fileURLWithPath: "/dev/null")
