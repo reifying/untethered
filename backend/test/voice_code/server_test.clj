@@ -768,8 +768,12 @@
           (is (= :exit (:action result)))
           (is (= "orchestration-error" (:reason result)))
 
-          ;; Should have sent orchestration-error message
-          (is (some #(str/includes? % "orchestration_error") @sent-messages)))))))
+          ;; Should have sent recipe_exited message with orchestration-error reason
+          (is (some #(str/includes? % "recipe_exited") @sent-messages))
+          (is (some #(str/includes? % "orchestration-error") @sent-messages))
+
+          ;; Recipe state should be cleared
+          (is (nil? (server/get-session-recipe-state session-id))))))))
 
 (deftest test-process-orchestration-response-issues-found
   (testing "issues-found outcome transitions to fix step"

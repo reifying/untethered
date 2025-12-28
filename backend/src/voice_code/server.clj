@@ -280,14 +280,16 @@
                               :session-id session-id
                               :reason (:reason next-action)})
             next-action)))
+      ;; Failed to parse outcome - exit recipe and notify client
       (do
         (orch/log-orchestration-event "outcome-parse-error" session-id (:recipe-id orch-state) current-step
                                       {:error (:error outcome-result)})
+        (exit-recipe-for-session session-id "orchestration-error")
         (send-to-client! channel
-                         {:type :orchestration-error
+                         {:type :recipe-exited
                           :session-id session-id
-                          :error "Invalid JSON outcome from agent"
-                          :details (:error outcome-result)})
+                          :reason "orchestration-error"
+                          :error (:error outcome-result)})
         {:action :exit :reason "orchestration-error"}))))
 
 (declare execute-recipe-step)
