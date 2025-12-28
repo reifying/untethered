@@ -27,7 +27,7 @@
   (testing "implement step has correct outcomes"
     (let [recipe (recipes/get-recipe :implement-and-review)
           outcomes (get-in recipe [:steps :implement :outcomes])]
-      (is (= #{:complete :other} outcomes))))
+      (is (= #{:complete :blocked :other} outcomes))))
 
   (testing "code-review step has correct outcomes"
     (let [recipe (recipes/get-recipe :implement-and-review)
