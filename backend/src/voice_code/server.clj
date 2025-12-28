@@ -363,7 +363,8 @@
    (execute-recipe-step channel session-id working-dir orch-state recipe nil))
   ([channel session-id working-dir orch-state recipe prompt-override]
    (let [step-prompt (or prompt-override (get-next-step-prompt session-id orch-state recipe))
-         current-step (:current-step orch-state)]
+         current-step (:current-step orch-state)
+         session-created? (:session-created? orch-state)]
      (if step-prompt
        (do
          (log/info "Executing recipe step"
@@ -372,6 +373,7 @@
                     :step current-step
                     :model (get-step-model recipe current-step)
                     :step-count (:step-count orch-state)
+                    :session-created? session-created?
                     :is-retry (some? prompt-override)})
 
          ;; Send step transition notification (only for non-retry)
@@ -390,6 +392,13 @@
                 (let [response-text (:result response)
                       ;; Get fresh state in case retry count was updated or user exited
                       current-orch-state (get-session-recipe-state session-id)]
+                  ;; Mark session as created after first successful invocation
+                  (when (and current-orch-state (not session-created?))
+                    (log/info "Marking session as created after first successful invocation"
+                              {:session-id session-id})
+                    (swap! session-orchestration-state
+                           update session-id
+                           assoc :session-created? true))
                   ;; Check if recipe was exited by user while we were waiting for Claude
                   (if (nil? current-orch-state)
                     (do
@@ -499,7 +508,10 @@
                                  {:type :error
                                   :message (str "Internal error: " (ex-message e))
                                   :session-id session-id}))))
-          :resume-session-id session-id
+          ;; Conditionally use new-session-id or resume-session-id based on session-created?
+          ;; For new sessions (session-created? = false), use :new-session-id (--session-id flag)
+          ;; For existing sessions (session-created? = true), use :resume-session-id (--resume flag)
+          (if session-created? :resume-session-id :new-session-id) session-id
           :working-directory working-dir
           :model (get-step-model recipe current-step)
           :timeout-ms 86400000))

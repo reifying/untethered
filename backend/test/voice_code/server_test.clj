@@ -1091,6 +1091,113 @@
           (is (nil? @captured-model)
               "Implement step should have nil model"))))))
 
+(deftest test-execute-recipe-step-conditional-session-id
+  (testing "uses new-session-id when session-created? is false"
+    (let [session-id "test-new-session"
+          captured-args (atom nil)
+          mock-channel :test-ch]
+      ;; Setup
+      (reset! server/session-orchestration-state {})
+      (reset! repl/session-locks #{})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      ;; Start recipe with is-new-session?=true (sets :session-created? to false)
+      (server/start-recipe-for-session session-id :implement-and-review true)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & opts]
+                      (reset! captured-args (apply hash-map opts))
+                      ;; Don't call callback to avoid recursive execution
+                      nil)]
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)]
+          ;; Verify initial state
+          (is (false? (:session-created? orch-state))
+              "New session should have :session-created? false")
+
+          (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
+
+          ;; Verify :new-session-id was passed (not :resume-session-id)
+          (is (contains? @captured-args :new-session-id)
+              "Should pass :new-session-id for new session")
+          (is (= session-id (:new-session-id @captured-args)))
+          (is (not (contains? @captured-args :resume-session-id))
+              "Should NOT pass :resume-session-id for new session")))))
+
+  (testing "uses resume-session-id when session-created? is true"
+    (let [session-id "test-existing-session"
+          captured-args (atom nil)
+          mock-channel :test-ch]
+      ;; Setup
+      (reset! server/session-orchestration-state {})
+      (reset! repl/session-locks #{})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      ;; Start recipe with is-new-session?=false (sets :session-created? to true)
+      (server/start-recipe-for-session session-id :implement-and-review false)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & opts]
+                      (reset! captured-args (apply hash-map opts))
+                      nil)]
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)]
+          ;; Verify initial state
+          (is (true? (:session-created? orch-state))
+              "Existing session should have :session-created? true")
+
+          (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
+
+          ;; Verify :resume-session-id was passed (not :new-session-id)
+          (is (contains? @captured-args :resume-session-id)
+              "Should pass :resume-session-id for existing session")
+          (is (= session-id (:resume-session-id @captured-args)))
+          (is (not (contains? @captured-args :new-session-id))
+              "Should NOT pass :new-session-id for existing session")))))
+
+  (testing "state transitions to session-created? true after successful invocation"
+    (let [session-id "test-state-transition"
+          state-after-transition (atom nil)
+          mock-channel :test-ch]
+      ;; Setup
+      (reset! server/session-orchestration-state {})
+      (reset! repl/session-locks #{})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      ;; Start recipe with is-new-session?=true (sets :session-created? to false)
+      (server/start-recipe-for-session session-id :implement-and-review true)
+
+      ;; Verify initial state
+      (is (false? (:session-created? (server/get-session-recipe-state session-id)))
+          "Should start with :session-created? false")
+
+      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & opts]
+                      ;; Simulate successful response - callback updates state
+                      (callback {:success true :result "{\"outcome\": \"complete\"}"})
+                      ;; Capture state immediately after callback (before recipe exit cleans up)
+                      ;; Note: By this point the state transition has already happened
+                      nil)
+                    ;; Prevent recursive execution by mocking execute-recipe-step for next-step
+                    server/process-orchestration-response
+                    (fn [session-id orch-state recipe response-text channel]
+                      ;; Capture state after the transition has happened
+                      (reset! state-after-transition (server/get-session-recipe-state session-id))
+                      ;; Return :exit to stop recursion
+                      {:action :exit :reason "test-complete"})]
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)]
+          (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
+
+          ;; Verify state was updated to :session-created? true
+          (is (some? @state-after-transition)
+              "State should exist after transition")
+          (is (true? (:session-created? @state-after-transition))
+              "State should transition to :session-created? true after success"))))))
+
 (deftest test-recipe-state-cleaned-on-lock-failure
   (testing "Recipe state is cleaned up when lock acquisition fails in start_recipe"
     (let [session-id "test-lock-fail-cleanup"
