@@ -705,7 +705,7 @@
           mock-channel :test-ch]
       ;; Setup: start recipe for session
       (reset! server/session-orchestration-state {})
-      (server/start-recipe-for-session session-id :implement-and-review)
+      (server/start-recipe-for-session session-id :implement-and-review false)
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
         (let [orch-state (server/get-session-recipe-state session-id)
@@ -729,7 +729,7 @@
           mock-channel :test-ch]
       ;; Setup: start recipe at code-review step
       (reset! server/session-orchestration-state {})
-      (server/start-recipe-for-session session-id :implement-and-review)
+      (server/start-recipe-for-session session-id :implement-and-review false)
       ;; Manually set to code-review step
       (swap! server/session-orchestration-state assoc-in [session-id :current-step] :code-review)
 
@@ -755,7 +755,7 @@
           mock-channel :test-ch]
       ;; Setup
       (reset! server/session-orchestration-state {})
-      (server/start-recipe-for-session session-id :implement-and-review)
+      (server/start-recipe-for-session session-id :implement-and-review false)
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
         (let [orch-state (server/get-session-recipe-state session-id)
@@ -787,7 +787,7 @@
           mock-channel :test-ch]
       ;; Setup with retry count already at 1
       (reset! server/session-orchestration-state {})
-      (server/start-recipe-for-session session-id :implement-and-review)
+      (server/start-recipe-for-session session-id :implement-and-review false)
       (swap! server/session-orchestration-state assoc-in [session-id :step-retry-counts :implement] 1)
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
@@ -816,7 +816,7 @@
           mock-channel :test-ch]
       ;; Setup: start at code-review step
       (reset! server/session-orchestration-state {})
-      (server/start-recipe-for-session session-id :implement-and-review)
+      (server/start-recipe-for-session session-id :implement-and-review false)
       (swap! server/session-orchestration-state assoc-in [session-id :current-step] :code-review)
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
@@ -838,7 +838,7 @@
       ;; Setup: start recipe and set step visit count to max for code-review
       ;; We start at implement step but code-review already has 3 visits
       (reset! server/session-orchestration-state {})
-      (server/start-recipe-for-session session-id :implement-and-review)
+      (server/start-recipe-for-session session-id :implement-and-review false)
       ;; Set code-review visits to 3 (max-step-visits is 3)
       (swap! server/session-orchestration-state assoc-in [session-id :step-visit-counts :code-review] 3)
 
@@ -868,7 +868,7 @@
       ;; Setup
       (reset! server/session-orchestration-state {})
       (reset! voice-code.replication/session-locks #{})
-      (server/start-recipe-for-session session-id :implement-and-review)
+      (server/start-recipe-for-session session-id :implement-and-review false)
 
       ;; Acquire lock (simulating what start_recipe does)
       (voice-code.replication/acquire-session-lock! session-id)
@@ -939,7 +939,7 @@
       (reset! voice-code.replication/session-locks #{})
 
       ;; Simulate the recipe lifecycle
-      (server/start-recipe-for-session session-id :implement-and-review)
+      (server/start-recipe-for-session session-id :implement-and-review false)
       (voice-code.replication/acquire-session-lock! session-id)
 
       ;; Lock should be held
@@ -1045,7 +1045,7 @@
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
 
       ;; Start recipe at commit step (which has model "haiku")
-      (server/start-recipe-for-session session-id :implement-and-review)
+      (server/start-recipe-for-session session-id :implement-and-review false)
       (swap! server/session-orchestration-state assoc-in [session-id :current-step] :commit)
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
@@ -1074,7 +1074,7 @@
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
 
       ;; Start recipe at implement step (which has no model)
-      (server/start-recipe-for-session session-id :implement-and-review)
+      (server/start-recipe-for-session session-id :implement-and-review false)
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
                     voice-code.claude/invoke-claude-async

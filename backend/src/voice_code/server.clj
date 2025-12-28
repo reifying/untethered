@@ -200,13 +200,16 @@
   (some? (repl/get-session-metadata session-id)))
 
 (defn start-recipe-for-session
-  "Initialize orchestration state for a session"
-  [session-id recipe-id]
+  "Initialize orchestration state for a session.
+   is-new-session? indicates whether this is a brand new session with no Claude history."
+  [session-id recipe-id is-new-session?]
   (if-let [state (orch/create-orchestration-state recipe-id)]
-    (do
-      (swap! session-orchestration-state assoc session-id state)
-      (orch/log-orchestration-event "recipe-started" session-id recipe-id (:current-step state) {})
-      state)
+    (let [state-with-session-flag (assoc state :session-created? (not is-new-session?))]
+      (swap! session-orchestration-state assoc session-id state-with-session-flag)
+      (orch/log-orchestration-event "recipe-started" session-id recipe-id
+                                    (:current-step state)
+                                    {:is-new-session is-new-session?})
+      state-with-session-flag)
     (do
       (log/error "Recipe not found" {:recipe-id recipe-id :session-id session-id})
       nil)))
@@ -1271,7 +1274,9 @@
                                 :message "recipe_id required in start_recipe message"})
 
               :else
-              (if-let [orch-state (start-recipe-for-session session-id recipe-id)]
+              ;; TODO: task yy9 will add proper is-new-session? detection
+              ;; For now, assume existing sessions (false) to maintain current behavior
+              (if-let [orch-state (start-recipe-for-session session-id recipe-id false)]
                 (let [recipe (recipes/get-recipe recipe-id)]
                   (log/info "Recipe started" {:recipe-id recipe-id :session-id session-id})
                   (send-to-client! channel
