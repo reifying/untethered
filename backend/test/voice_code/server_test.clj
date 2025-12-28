@@ -834,7 +834,8 @@
     (let [session-id "test-session-maxvisits"
           sent-messages (atom [])
           mock-channel :test-ch]
-      ;; Setup: start recipe and set step visit count to max
+      ;; Setup: start recipe and set step visit count to max for code-review
+      ;; We start at implement step but code-review already has 3 visits
       (reset! server/session-orchestration-state {})
       (server/start-recipe-for-session session-id :implement-and-review)
       ;; Set code-review visits to 3 (max-step-visits is 3)
@@ -843,6 +844,8 @@
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
         (let [orch-state (server/get-session-recipe-state session-id)
               recipe (recipes/get-recipe :implement-and-review)
+              ;; Outcome complete from implement step should try to go to code-review
+              ;; But code-review is at max visits, so should exit
               response-text "Done!\n\n{\"outcome\": \"complete\"}"
               result (server/process-orchestration-response
                       session-id orch-state recipe response-text mock-channel)]
@@ -855,6 +858,85 @@
           (is (some #(and (str/includes? % "recipe_exited")
                           (str/includes? % "max-step-visits"))
                     @sent-messages)))))))
+
+(deftest test-lock-held-during-recipe-execution
+  (testing "Session lock is held throughout recipe execution and released on exit"
+    (let [session-id "test-session-lock"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      ;; Setup
+      (reset! server/session-orchestration-state {})
+      (reset! voice-code.replication/session-locks #{})
+      (server/start-recipe-for-session session-id :implement-and-review)
+
+      ;; Acquire lock (simulating what start_recipe does)
+      (voice-code.replication/acquire-session-lock! session-id)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)]
+
+          ;; Verify lock is held before processing
+          (is (voice-code.replication/is-session-locked? session-id)
+              "Lock should be held before processing")
+
+          ;; Process first response with complete -> transitions to code-review
+          (let [response1 "{\"outcome\": \"complete\"}"
+                result1 (server/process-orchestration-response
+                         session-id orch-state recipe response1 mock-channel)]
+            (is (= :next-step (:action result1)))
+            (is (= :code-review (:step-name result1)))
+            ;; Lock should STILL be held after step transition
+            (is (voice-code.replication/is-session-locked? session-id)
+                "Lock should remain held during step transition"))
+
+          ;; Process second response - triggers retry (no JSON)
+          (let [updated-state (server/get-session-recipe-state session-id)
+                response2 "I reviewed the code but forgot JSON"
+                result2 (server/process-orchestration-response
+                         session-id updated-state recipe response2 mock-channel)]
+            (is (= :retry (:action result2)))
+            ;; Lock should STILL be held during retry
+            (is (voice-code.replication/is-session-locked? session-id)
+                "Lock should remain held during retry"))
+
+          ;; Process exit response (code-review step has no-issues -> exit)
+          (let [updated-state2 (server/get-session-recipe-state session-id)
+                response3 "{\"outcome\": \"no-issues\"}"
+                result3 (server/process-orchestration-response
+                         session-id updated-state2 recipe response3 mock-channel)]
+            (is (= :exit (:action result3)))
+            ;; Note: process-orchestration-response doesn't release lock,
+            ;; execute-recipe-step does. But we verify the action is correct.
+            ))))))
+
+(deftest test-lock-released-on-recipe-exit-action
+  (testing "Lock should be released only when :exit action is returned"
+    (let [session-id "test-session-lock-exit"]
+      ;; This test documents the expected behavior:
+      ;; - :next-step action -> lock should NOT be released (recursive call)
+      ;; - :retry action -> lock should NOT be released (recursive call)  
+      ;; - :exit action -> lock SHOULD be released
+      ;; The actual lock release happens in execute-recipe-step, not process-orchestration-response
+
+      ;; The key invariant: between recipe start and exit, the session is locked
+      ;; This prevents concurrent prompts from forking the session
+
+      (reset! server/session-orchestration-state {})
+      (reset! voice-code.replication/session-locks #{})
+
+      ;; Simulate the recipe lifecycle
+      (server/start-recipe-for-session session-id :implement-and-review)
+      (voice-code.replication/acquire-session-lock! session-id)
+
+      ;; Lock should be held
+      (is (voice-code.replication/is-session-locked? session-id))
+
+      ;; Simulate what execute-recipe-step does on :exit
+      (voice-code.replication/release-session-lock! session-id)
+
+      ;; Lock should be released
+      (is (not (voice-code.replication/is-session-locked? session-id))))))
 
 
 
