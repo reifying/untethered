@@ -357,6 +357,9 @@ Example: 'Add implementation tasks for user authentication (epic-abc123)'"
 3. Review relevant code standards (@STANDARDS.md, @CLAUDE.md)
 4. Familiarize yourself with the codebase context
 
+## No Tasks Available
+If `bd ready` indicates there are no tasks ready for implementation, select the `no-tasks` outcome. This is a normal situation—the recipe will exit gracefully.
+
 ## Implementation Requirements
 - Follow the technical approach specified in the task
 - Implement all requirements listed in the task
@@ -370,9 +373,10 @@ Before marking complete:
 - [ ] Integration tests written (if specified in task)
 - [ ] Code follows project conventions
 - [ ] No unrelated changes included"
-     :outcomes #{:complete :blocked :other}
+     :outcomes #{:complete :no-tasks :blocked :other}
      :on-outcome
      {:complete {:next-step :code-review}
+      :no-tasks {:action :exit :reason "no-tasks-available"}
       :blocked {:action :exit :reason "implementation-blocked"}
       :other {:action :exit :reason "user-provided-other"}}}
 

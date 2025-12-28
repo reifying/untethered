@@ -1,6 +1,7 @@
 (ns voice-code.recipes-test
   (:require [clojure.test :refer :all]
-            [voice-code.recipes :as recipes]))
+            [voice-code.recipes :as recipes]
+            [voice-code.orchestration :as orch]))
 
 (deftest get-recipe-test
   (testing "retrieves implement-and-review recipe"
@@ -27,7 +28,7 @@
   (testing "implement step has correct outcomes"
     (let [recipe (recipes/get-recipe :implement-and-review)
           outcomes (get-in recipe [:steps :implement :outcomes])]
-      (is (= #{:complete :blocked :other} outcomes))))
+      (is (= #{:complete :no-tasks :blocked :other} outcomes))))
 
   (testing "code-review step has correct outcomes"
     (let [recipe (recipes/get-recipe :implement-and-review)
@@ -47,7 +48,7 @@
   (testing "has valid max-total-steps guardrail"
     (let [recipe (recipes/get-recipe :implement-and-review)
           max-steps (get-in recipe [:guardrails :max-total-steps])]
-      (is (= 20 max-steps)))))
+      (is (= 100 max-steps)))))
 
 (deftest recipe-transitions
   (testing "implement complete transitions to code-review"
@@ -171,3 +172,28 @@
     (let [recipe (recipes/get-recipe :implement-and-review)
           transition (get-in recipe [:steps :code-review :on-outcome :no-issues])]
       (is (= :commit (:next-step transition))))))
+
+(deftest implement-step-no-tasks-outcome-test
+  (testing "no-tasks outcome is valid in implement step"
+    (let [recipe (recipes/implement-and-review-recipe)
+          implement-step (get-in recipe [:steps :implement])]
+      (is (contains? (:outcomes implement-step) :no-tasks))
+      (is (= {:action :exit :reason "no-tasks-available"}
+             (get-in implement-step [:on-outcome :no-tasks])))))
+
+  (testing "no-tasks outcome produces exit action via determine-next-action"
+    (let [recipe (recipes/implement-and-review-recipe)
+          implement-step (get-in recipe [:steps :implement])
+          action (orch/determine-next-action implement-step :no-tasks)]
+      (is (= :exit (:action action)))
+      (is (= "no-tasks-available" (:reason action)))))
+
+  (testing "recipe validation passes with no-tasks outcome"
+    (let [recipe (recipes/implement-and-review-recipe)]
+      (is (nil? (recipes/validate-recipe recipe)))))
+
+  (testing "implement step prompt includes no-tasks guidance"
+    (let [recipe (recipes/implement-and-review-recipe)
+          prompt (get-in recipe [:steps :implement :prompt])]
+      (is (re-find #"No Tasks Available" prompt))
+      (is (re-find #"no-tasks" prompt)))))
