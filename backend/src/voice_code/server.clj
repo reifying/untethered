@@ -325,7 +325,11 @@
    2. Parse the outcome from the response
    3. If next step: update state and recursively continue
    4. If retry: send reminder prompt and try again (once per step)
-   5. If exit: send recipe_exited message
+   5. If exit: send recipe_exited message and release lock
+   
+   Lock management: The session lock is acquired BEFORE the first call to this function.
+   The lock is only released when the recipe exits (success, error, or guardrail).
+   Recursive calls (:next-step, :retry) keep the lock held.
    
    Parameters:
    - channel: WebSocket channel to send messages to
@@ -358,84 +362,84 @@
        (claude/invoke-claude-async
         step-prompt
         (fn [response]
-          (try
-            (if (:success response)
-              (let [response-text (:result response)
-                    ;; Get fresh state in case retry count was updated
-                    current-orch-state (get-session-recipe-state session-id)
-                    ;; Process the orchestration response
-                    result (process-orchestration-response
-                            session-id current-orch-state recipe response-text channel)]
-                (log/info "Recipe step response processed"
-                          {:session-id session-id
-                           :step current-step
-                           :action (:action result)
-                           :next-step (:step-name result)
-                           :reason (:reason result)})
+          (if (:success response)
+            (let [response-text (:result response)
+                  ;; Get fresh state in case retry count was updated
+                  current-orch-state (get-session-recipe-state session-id)
+                  ;; Process the orchestration response
+                  result (process-orchestration-response
+                          session-id current-orch-state recipe response-text channel)]
+              (log/info "Recipe step response processed"
+                        {:session-id session-id
+                         :step current-step
+                         :action (:action result)
+                         :next-step (:step-name result)
+                         :reason (:reason result)})
 
-                (case (:action result)
-                  :next-step
-                  ;; Continue to next step - get updated state and continue loop
-                  (let [updated-orch-state (get-session-recipe-state session-id)
-                        updated-recipe (recipes/get-recipe (:recipe-id updated-orch-state))]
-                    (if updated-orch-state
-                      ;; Recursively execute the next step
-                      (execute-recipe-step channel session-id working-dir
-                                           updated-orch-state updated-recipe)
-                      ;; State was cleared (shouldn't happen), exit
-                      (do
-                        (log/warn "Orchestration state missing after step transition"
-                                  {:session-id session-id})
-                        (send-to-client! channel
-                                         {:type :turn-complete
-                                          :session-id session-id}))))
-
-                  :retry
-                  ;; Retry with reminder prompt - don't release lock yet
-                  (let [updated-orch-state (get-session-recipe-state session-id)]
-                    (log/info "Retrying step with reminder prompt"
-                              {:session-id session-id
-                               :step current-step})
-                    ;; Recursively call with the retry prompt (don't release lock)
+              (case (:action result)
+                :next-step
+                ;; Continue to next step - get updated state and continue loop
+                ;; Lock remains held for the recursive call
+                (let [updated-orch-state (get-session-recipe-state session-id)
+                      updated-recipe (recipes/get-recipe (:recipe-id updated-orch-state))]
+                  (if updated-orch-state
+                    ;; Recursively execute the next step (lock stays held)
                     (execute-recipe-step channel session-id working-dir
-                                         updated-orch-state recipe (:prompt result)))
+                                         updated-orch-state updated-recipe)
+                    ;; State was cleared (shouldn't happen), release lock and exit
+                    (do
+                      (log/warn "Orchestration state missing after step transition"
+                                {:session-id session-id})
+                      (repl/release-session-lock! session-id)
+                      (send-to-client! channel
+                                       {:type :turn-complete
+                                        :session-id session-id}))))
 
-                  :exit
-                  ;; Recipe finished, send turn_complete
-                  (do
-                    (log/info "Recipe exited"
-                              {:session-id session-id
-                               :reason (:reason result)})
-                    (send-to-client! channel
-                                     {:type :turn-complete
-                                      :session-id session-id}))
+                :retry
+                ;; Retry with reminder prompt - lock remains held for the recursive call
+                (let [updated-orch-state (get-session-recipe-state session-id)]
+                  (log/info "Retrying step with reminder prompt"
+                            {:session-id session-id
+                             :step current-step})
+                  ;; Recursively call with the retry prompt (lock stays held)
+                  (execute-recipe-step channel session-id working-dir
+                                       updated-orch-state recipe (:prompt result)))
 
-                  ;; Default - unexpected action
-                  (do
-                    (log/error "Unexpected orchestration action"
-                               {:action (:action result)})
-                    (send-to-client! channel
-                                     {:type :turn-complete
-                                      :session-id session-id}))))
+                :exit
+                ;; Recipe finished - release lock and send turn_complete
+                (do
+                  (log/info "Recipe exited"
+                            {:session-id session-id
+                             :reason (:reason result)})
+                  (repl/release-session-lock! session-id)
+                  (send-to-client! channel
+                                   {:type :turn-complete
+                                    :session-id session-id}))
 
-              ;; Claude invocation failed
-              (do
-                (log/error "Recipe step failed"
-                           {:error (:error response) :session-id session-id})
-                (exit-recipe-for-session session-id "error")
-                (send-to-client! channel
-                                 {:type :recipe-exited
-                                  :session-id session-id
-                                  :reason "error"
-                                  :error (:error response)})
-                (send-to-client! channel
-                                 {:type :error
-                                  :message (:error response)
-                                  :session-id session-id})))
-            (finally
-              ;; Only release lock if we're not retrying
-              ;; (retry case recurses before reaching finally)
-              (repl/release-session-lock! session-id))))
+                ;; Default - unexpected action, release lock and exit
+                (do
+                  (log/error "Unexpected orchestration action"
+                             {:action (:action result)})
+                  (repl/release-session-lock! session-id)
+                  (send-to-client! channel
+                                   {:type :turn-complete
+                                    :session-id session-id}))))
+
+            ;; Claude invocation failed - release lock and exit
+            (do
+              (log/error "Recipe step failed"
+                         {:error (:error response) :session-id session-id})
+              (exit-recipe-for-session session-id "error")
+              (repl/release-session-lock! session-id)
+              (send-to-client! channel
+                               {:type :recipe-exited
+                                :session-id session-id
+                                :reason "error"
+                                :error (:error response)})
+              (send-to-client! channel
+                               {:type :error
+                                :message (:error response)
+                                :session-id session-id}))))
         :resume-session-id session-id
         :working-directory working-dir
         :timeout-ms 86400000)))))
