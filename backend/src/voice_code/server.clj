@@ -230,11 +230,17 @@
       (:model recipe)))
 
 (defn get-available-recipes-list
-  "Get list of available recipes with metadata for client"
+  "Get list of available recipes with metadata for client.
+   Dynamically reads from recipes/all-recipes."
   []
-  [{:id "implement-and-review"
-    :label "Implement & Review"
-    :description "Implement task, review code, and fix issues in a loop"}])
+  (->> recipes/all-recipes
+       vals
+       (map (fn [recipe]
+              {:id (name (:id recipe))
+               :label (:label recipe)
+               :description (:description recipe)}))
+       (sort-by :label)
+       vec))
 
 (defn process-orchestration-response
   "Process Claude response when in an orchestration recipe.
