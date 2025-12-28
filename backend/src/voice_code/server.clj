@@ -307,6 +307,12 @@
               (swap! connected-clients assoc channel {:deleted-sessions #{}
                                                       :recent-sessions-limit limit}))
 
+          ;; Send connected confirmation (required by protocol - client waits for this)
+            (http/send! channel
+                        (generate-json
+                         {:type :connected
+                          :message "Session registered"}))
+
           ;; Send session list (limit to 50 most recent, lightweight fields only)
             (let [all-sessions (repl/get-all-sessions)
                 ;; Filter out sessions with 0 messages (after internal message filtering)

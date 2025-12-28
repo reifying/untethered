@@ -8,12 +8,12 @@ struct OnboardingView: View {
     @State private var step: OnboardingStep = .welcome
     @State private var isTestingConnection = false
     @State private var connectionError: String?
+    @State private var connectionSuccess = false
     @State private var connectionTestTask: Task<Void, Never>?
 
     enum OnboardingStep {
         case welcome
         case serverConfig
-        case testConnection
         case voicePermissions
         case success
     }
@@ -28,16 +28,13 @@ struct OnboardingView: View {
                 ServerConfigStep(
                     serverURL: $settings.serverURL,
                     serverPort: $settings.serverPort,
+                    isTesting: isTestingConnection,
+                    connectionError: connectionError,
+                    connectionSuccess: connectionSuccess,
                     onTest: testConnection,
-                    onSkip: skipOnboarding
-                )
-
-            case .testConnection:
-                TestConnectionStep(
-                    isLoading: isTestingConnection,
-                    error: connectionError,
-                    onRetry: testConnection,
-                    onSkip: skipOnboarding
+                    onContinue: { step = .voicePermissions },
+                    onSkip: skipOnboarding,
+                    onClearStatus: clearConnectionStatus
                 )
 
             case .voicePermissions:
@@ -61,6 +58,11 @@ struct OnboardingView: View {
         }
     }
 
+    private func clearConnectionStatus() {
+        connectionError = nil
+        connectionSuccess = false
+    }
+
     private func testConnection() {
         // Cancel any previous connection test task BEFORE updating state
         // This prevents a race condition where user taps Retry before new Task is assigned
@@ -68,7 +70,7 @@ struct OnboardingView: View {
 
         isTestingConnection = true
         connectionError = nil
-        step = .testConnection
+        connectionSuccess = false
 
         // Create new connection test task
         connectionTestTask = Task {
@@ -91,10 +93,10 @@ struct OnboardingView: View {
                 }
 
                 if testClient.isConnected {
-                    // Connection succeeded - proceed to voice permissions
+                    // Connection succeeded - show success state with Continue button
                     await MainActor.run {
                         isTestingConnection = false
-                        step = .voicePermissions
+                        connectionSuccess = true
                         testClient.disconnect()
                     }
                     return
@@ -112,11 +114,10 @@ struct OnboardingView: View {
                 }
             }
 
-            // Timeout reached without successful connection - return to config screen
+            // Timeout reached - show error on same screen with retry option
             await MainActor.run {
                 isTestingConnection = false
-                connectionError = "Could not connect to server. Please check URL and port."
-                step = .serverConfig
+                connectionError = "Could not connect to server at \(settings.serverURL):\(settings.serverPort). Please check the address and ensure the backend is running."
                 testClient.disconnect()
             }
         } as Task<Void, Never>
@@ -159,19 +160,28 @@ struct WelcomeStep: View {
 struct ServerConfigStep: View {
     @Binding var serverURL: String
     @Binding var serverPort: String
+    let isTesting: Bool
+    let connectionError: String?
+    let connectionSuccess: Bool
     let onTest: () -> Void
+    let onContinue: () -> Void
     let onSkip: () -> Void
+    let onClearStatus: () -> Void
 
     @State private var urlError: String?
     @State private var portError: String?
 
     var isURLValid: Bool {
-        guard !serverURL.isEmpty else { return false }
-        return serverURL.contains("://")
+        // Accept hostname only (e.g., "localhost", "192.168.1.100")
+        // The app prepends ws:// automatically via fullServerURL
+        let trimmed = serverURL.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+        // Basic hostname validation: no spaces, has some content
+        return !trimmed.contains(" ")
     }
 
     var isPortValid: Bool {
-        guard !serverPort.isEmpty else { return true } // Port is optional
+        guard !serverPort.isEmpty else { return true } // Port is optional (defaults to 8080)
         guard let port = Int(serverPort) else { return false }
         return port >= 1 && port <= 65535
     }
@@ -185,12 +195,19 @@ struct ServerConfigStep: View {
             Text("Connect to Backend")
                 .font(.title)
 
+            Text("Enter your voice-code backend server address")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+
             VStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    TextField("Server URL", text: $serverURL)
+                    TextField("Server Address (e.g., localhost)", text: $serverURL)
                         .textFieldStyle(.roundedBorder)
-                        .onChange(of: serverURL) { newValue in
-                            urlError = newValue.isEmpty ? nil : (!isURLValid ? "URL must contain '://' (e.g., ws://localhost)" : nil)
+                        .disabled(isTesting)
+                        .onChange(of: serverURL) { _, newValue in
+                            let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+                            urlError = trimmed.isEmpty ? nil : (!isURLValid ? "Enter a valid hostname" : nil)
+                            onClearStatus()
                         }
 
                     if let error = urlError {
@@ -202,9 +219,10 @@ struct ServerConfigStep: View {
                 .padding(.horizontal)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    TextField("Port (optional)", text: $serverPort)
+                    TextField("Port (default: 8080)", text: $serverPort)
                         .textFieldStyle(.roundedBorder)
-                        .onChange(of: serverPort) { newValue in
+                        .disabled(isTesting)
+                        .onChange(of: serverPort) { _, newValue in
                             if !newValue.isEmpty {
                                 if let port = Int(newValue) {
                                     portError = (port < 1 || port > 65535) ? "Port must be between 1 and 65535" : nil
@@ -214,6 +232,7 @@ struct ServerConfigStep: View {
                             } else {
                                 portError = nil
                             }
+                            onClearStatus()
                         }
 
                     if let error = portError {
@@ -225,17 +244,57 @@ struct ServerConfigStep: View {
                 .padding(.horizontal)
             }
 
+            // Inline test status
+            if isTesting {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                    Text("Testing connection...")
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 8)
+            } else if connectionSuccess {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                    Text("Connection successful!")
+                        .foregroundColor(.green)
+                }
+                .padding(.vertical, 8)
+            } else if let error = connectionError {
+                VStack(spacing: 4) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.red)
+                        Text("Connection failed")
+                            .foregroundColor(.red)
+                    }
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                }
+                .padding(.vertical, 8)
+            }
+
             Spacer()
 
             HStack {
                 Button("Skip") { onSkip() }
                     .buttonStyle(.plain)
+                    .disabled(isTesting)
 
                 Spacer()
 
-                Button("Test Connection") { onTest() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!isConfigurationValid)
+                if connectionSuccess {
+                    Button("Continue") { onContinue() }
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    Button(isTesting ? "Testing..." : "Test Connection") { onTest() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!isConfigurationValid || isTesting)
+                }
             }
             .padding(.horizontal)
         }
@@ -246,7 +305,9 @@ struct ServerConfigStep: View {
 struct TestConnectionStep: View {
     let isLoading: Bool
     let error: String?
+    let success: Bool
     let onRetry: () -> Void
+    let onContinue: () -> Void
     let onSkip: () -> Void
 
     var body: some View {
@@ -261,16 +322,42 @@ struct TestConnectionStep: View {
                     .foregroundColor(.secondary)
 
                 Spacer()
-            } else if let error = error {
+            } else if success {
+                // Success state
                 Spacer()
 
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 48))
-                    .foregroundColor(.orange)
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 64))
+                    .foregroundColor(.green)
+
+                Text("Connection Successful!")
+                    .font(.title2)
+                    .foregroundColor(.primary)
+
+                Text("Your backend server is reachable.")
+                    .foregroundColor(.secondary)
+
+                Spacer()
+
+                Button("Continue") { onContinue() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+            } else if let error = error {
+                // Error state
+                Spacer()
+
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 64))
+                    .foregroundColor(.red)
+
+                Text("Connection Failed")
+                    .font(.title2)
+                    .foregroundColor(.primary)
 
                 Text(error)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
+                    .padding(.horizontal)
 
                 Spacer()
 
@@ -285,8 +372,7 @@ struct TestConnectionStep: View {
                 }
                 .padding(.horizontal)
             } else {
-                // Fallback state: indicates test wasn't properly initialized
-                // Under normal circumstances, isLoading should be true when rendering this view
+                // Fallback/initial state
                 Spacer()
 
                 ProgressView()

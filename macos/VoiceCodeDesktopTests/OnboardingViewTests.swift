@@ -62,12 +62,16 @@ final class OnboardingViewTests: XCTestCase {
     // MARK: - ServerConfigStep Tests
 
     func testServerConfigStepInitialState() {
-        let appSettings = AppSettings()
         let view = ServerConfigStep(
             serverURL: .constant(""),
             serverPort: .constant(""),
+            isTesting: false,
+            connectionError: nil,
+            connectionSuccess: false,
             onTest: {},
-            onSkip: {}
+            onContinue: {},
+            onSkip: {},
+            onClearStatus: {}
         )
         XCTAssertNotNil(view)
     }
@@ -77,8 +81,13 @@ final class OnboardingViewTests: XCTestCase {
         let view = ServerConfigStep(
             serverURL: .constant(""),
             serverPort: .constant(""),
+            isTesting: false,
+            connectionError: nil,
+            connectionSuccess: false,
             onTest: {},
-            onSkip: { skipCalled = true }
+            onContinue: {},
+            onSkip: { skipCalled = true },
+            onClearStatus: {}
         )
 
         view.onSkip()
@@ -88,14 +97,85 @@ final class OnboardingViewTests: XCTestCase {
     func testServerConfigStepCanTestConnection() {
         var testCalled = false
         let view = ServerConfigStep(
-            serverURL: .constant("ws://localhost"),
+            serverURL: .constant("localhost"),
             serverPort: .constant("8080"),
+            isTesting: false,
+            connectionError: nil,
+            connectionSuccess: false,
             onTest: { testCalled = true },
-            onSkip: {}
+            onContinue: {},
+            onSkip: {},
+            onClearStatus: {}
         )
 
         view.onTest()
         XCTAssertTrue(testCalled)
+    }
+
+    func testServerConfigStepShowsTestingState() {
+        let view = ServerConfigStep(
+            serverURL: .constant("localhost"),
+            serverPort: .constant("8080"),
+            isTesting: true,
+            connectionError: nil,
+            connectionSuccess: false,
+            onTest: {},
+            onContinue: {},
+            onSkip: {},
+            onClearStatus: {}
+        )
+        XCTAssertNotNil(view)
+    }
+
+    func testServerConfigStepShowsSuccessState() {
+        var continueCalled = false
+        let view = ServerConfigStep(
+            serverURL: .constant("localhost"),
+            serverPort: .constant("8080"),
+            isTesting: false,
+            connectionError: nil,
+            connectionSuccess: true,
+            onTest: {},
+            onContinue: { continueCalled = true },
+            onSkip: {},
+            onClearStatus: {}
+        )
+        XCTAssertNotNil(view)
+        view.onContinue()
+        XCTAssertTrue(continueCalled)
+    }
+
+    func testServerConfigStepShowsErrorState() {
+        let view = ServerConfigStep(
+            serverURL: .constant("localhost"),
+            serverPort: .constant("8080"),
+            isTesting: false,
+            connectionError: "Connection failed",
+            connectionSuccess: false,
+            onTest: {},
+            onContinue: {},
+            onSkip: {},
+            onClearStatus: {}
+        )
+        XCTAssertNotNil(view)
+    }
+
+    func testServerConfigStepClearsStatus() {
+        var clearStatusCalled = false
+        let view = ServerConfigStep(
+            serverURL: .constant("localhost"),
+            serverPort: .constant("8080"),
+            isTesting: false,
+            connectionError: nil,
+            connectionSuccess: false,
+            onTest: {},
+            onContinue: {},
+            onSkip: {},
+            onClearStatus: { clearStatusCalled = true }
+        )
+
+        view.onClearStatus()
+        XCTAssertTrue(clearStatusCalled)
     }
 
     // MARK: - TestConnectionStep Tests
@@ -104,7 +184,9 @@ final class OnboardingViewTests: XCTestCase {
         let view = TestConnectionStep(
             isLoading: true,
             error: nil,
+            success: false,
             onRetry: {},
+            onContinue: {},
             onSkip: {}
         )
         XCTAssertNotNil(view)
@@ -115,10 +197,27 @@ final class OnboardingViewTests: XCTestCase {
         let view = TestConnectionStep(
             isLoading: false,
             error: errorMessage,
+            success: false,
             onRetry: {},
+            onContinue: {},
             onSkip: {}
         )
         XCTAssertNotNil(view)
+    }
+
+    func testTestConnectionStepSuccessState() {
+        var continueCalled = false
+        let view = TestConnectionStep(
+            isLoading: false,
+            error: nil,
+            success: true,
+            onRetry: {},
+            onContinue: { continueCalled = true },
+            onSkip: {}
+        )
+        XCTAssertNotNil(view)
+        view.onContinue()
+        XCTAssertTrue(continueCalled)
     }
 
     func testTestConnectionStepCanRetry() {
@@ -126,7 +225,9 @@ final class OnboardingViewTests: XCTestCase {
         let view = TestConnectionStep(
             isLoading: false,
             error: "Test error",
+            success: false,
             onRetry: { retryCalled = true },
+            onContinue: {},
             onSkip: {}
         )
 
