@@ -151,10 +151,11 @@
           model (get-in recipe [:steps :commit :model])]
       (is (= "haiku" model))))
 
-  (testing "commit step has push in prompt"
+  (testing "commit step mentions beads task update"
     (let [recipe (recipes/get-recipe :implement-and-review)
           prompt (get-in recipe [:steps :commit :prompt])]
-      (is (re-find #"push" prompt))))
+      (is (re-find #"beads" prompt))
+      (is (re-find #"bd done" prompt))))
 
   (testing "committed outcome exits with task-committed reason"
     (let [recipe (recipes/get-recipe :implement-and-review)
