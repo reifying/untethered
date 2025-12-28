@@ -8,6 +8,30 @@
 import SwiftUI
 import VoiceCodeShared
 
+// MARK: - Focused Values for Session Commands
+
+/// Focused value key for the currently selected session
+struct SelectedSessionKey: FocusedValueKey {
+    typealias Value = CDBackendSession
+}
+
+/// Focused value key for the VoiceCodeClient
+struct VoiceCodeClientKey: FocusedValueKey {
+    typealias Value = VoiceCodeClient
+}
+
+extension FocusedValues {
+    var selectedSession: CDBackendSession? {
+        get { self[SelectedSessionKey.self] }
+        set { self[SelectedSessionKey.self] = newValue }
+    }
+
+    var voiceCodeClient: VoiceCodeClient? {
+        get { self[VoiceCodeClientKey.self] }
+        set { self[VoiceCodeClientKey.self] = newValue }
+    }
+}
+
 @main
 struct VoiceCodeDesktopApp: App {
     @StateObject private var onboarding: OnboardingManager
@@ -28,7 +52,7 @@ struct VoiceCodeDesktopApp: App {
             }
         }
         .commands {
-            AppCommands()
+            SessionCommands()
         }
 
         Settings {
@@ -46,11 +70,51 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - App Commands
+// MARK: - Session Commands
 
-struct AppCommands: Commands {
+struct SessionCommands: Commands {
+    @FocusedValue(\.selectedSession) var selectedSession
+    @FocusedValue(\.voiceCodeClient) var client
+
     var body: some Commands {
-        // Add custom menu commands here
-        EmptyCommands()
+        CommandMenu("Session") {
+            Button("Refresh Session") {
+                guard let session = selectedSession, let client = client else { return }
+                client.requestSessionRefresh(sessionId: session.backendSessionId)
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(selectedSession == nil || client == nil)
+
+            Button("Compact Session...") {
+                guard let session = selectedSession, let client = client else { return }
+                // Compaction is handled via notification to show confirmation dialog
+                NotificationCenter.default.post(
+                    name: .requestSessionCompaction,
+                    object: nil,
+                    userInfo: ["sessionId": session.backendSessionId]
+                )
+            }
+            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .disabled(selectedSession == nil || client == nil)
+
+            Divider()
+
+            Button("Kill Session") {
+                guard let session = selectedSession, let client = client else { return }
+                NotificationCenter.default.post(
+                    name: .requestSessionKill,
+                    object: nil,
+                    userInfo: ["sessionId": session.backendSessionId]
+                )
+            }
+            .disabled(selectedSession == nil || client == nil)
+        }
     }
+}
+
+// MARK: - Notification Names for Session Commands
+
+extension Notification.Name {
+    static let requestSessionCompaction = Notification.Name("requestSessionCompaction")
+    static let requestSessionKill = Notification.Name("requestSessionKill")
 }

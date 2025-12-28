@@ -27,6 +27,19 @@ struct ConversationDetailView: View {
     // Auto-scroll state
     @State private var autoScrollEnabled = true
 
+    // Compaction state
+    @State private var showingCompactConfirmation = false
+    @State private var showingAlreadyCompactedAlert = false
+    @State private var isCompacting = false
+    @State private var compactSuccessMessage: String?
+    @State private var showingSuccessMessage = false
+    @State private var wasRecentlyCompacted = false
+    @State private var compactionTimestamp: Date?
+    @State private var isErrorMessage = false  // Distinguish success from error in overlay
+
+    // Kill confirmation state
+    @State private var showingKillConfirmation = false
+
     // Track if sending to disable input
     // Session is locked if the session's backend ID is in the locked set
     private var isSessionLocked: Bool {
@@ -94,6 +107,45 @@ struct ConversationDetailView: View {
         .navigationTitle(session.displayName(context: viewContext))
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                // Kill session button (only visible when session is locked)
+                if isSessionLocked {
+                    Button(action: {
+                        showingKillConfirmation = true
+                    }) {
+                        Image(systemName: "stop.circle.fill")
+                            .foregroundColor(.red)
+                    }
+                    .help("Kill session process")
+                    .accessibilityLabel("Kill session")
+                }
+
+                // Compact button
+                Button(action: {
+                    if wasRecentlyCompacted {
+                        showingAlreadyCompactedAlert = true
+                    } else {
+                        showingCompactConfirmation = true
+                    }
+                }) {
+                    if isCompacting {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "rectangle.compress.vertical")
+                            .foregroundColor(wasRecentlyCompacted ? .green : nil)
+                    }
+                }
+                .help("Compact session (⌘⇧C)")
+                .disabled(isCompacting || isSessionLocked)
+                .accessibilityLabel("Compact session")
+
+                // Refresh button
+                Button(action: refreshSession) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Refresh session (⌘R)")
+                .accessibilityLabel("Refresh session")
+
                 // Auto-scroll toggle
                 Button(action: {
                     autoScrollEnabled.toggle()
@@ -105,10 +157,79 @@ struct ConversationDetailView: View {
                 .accessibilityLabel(autoScrollEnabled ? "Disable auto-scroll" : "Enable auto-scroll")
             }
         }
+        // Success/error message overlay
+        .overlay(alignment: .top) {
+            if showingSuccessMessage, let message = compactSuccessMessage {
+                Text(message)
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(isErrorMessage ? Color.red.opacity(0.9) : Color.green.opacity(0.9))
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        // Compact confirmation alert
+        .alert("Compact Session?", isPresented: $showingCompactConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Compact", role: .destructive) {
+                compactSession()
+            }
+        } message: {
+            Text("This will summarize the conversation history to reduce context size. This cannot be undone.")
+        }
+        // Already compacted alert
+        .alert("Session Already Compacted", isPresented: $showingAlreadyCompactedAlert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Compact Again", role: .destructive) {
+                showingCompactConfirmation = true
+            }
+        } message: {
+            if let timestamp = compactionTimestamp {
+                Text("This session was compacted \(timestamp.relativeFormatted()).\n\nCompact again?")
+            } else {
+                Text("This session was recently compacted.\n\nCompact again?")
+            }
+        }
+        // Kill confirmation alert
+        .alert("Kill Session?", isPresented: $showingKillConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Kill", role: .destructive) {
+                killSession()
+            }
+        } message: {
+            Text("This will terminate the current Claude process. The session will be unlocked and you can send a new prompt.")
+        }
+        // Set focused values for menu commands
+        .focusedSceneValue(\.selectedSession, session)
+        .focusedSceneValue(\.voiceCodeClient, client)
+        // Handle menu command notifications
+        .onReceive(NotificationCenter.default.publisher(for: .requestSessionCompaction)) { notification in
+            guard let sessionId = notification.userInfo?["sessionId"] as? String,
+                  sessionId == session.backendSessionId else { return }
+            if wasRecentlyCompacted {
+                showingAlreadyCompactedAlert = true
+            } else {
+                showingCompactConfirmation = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .requestSessionKill)) { notification in
+            guard let sessionId = notification.userInfo?["sessionId"] as? String,
+                  sessionId == session.backendSessionId else { return }
+            showingKillConfirmation = true
+        }
         .onAppear {
             loadDraft()
             // Mark session as active for TTS routing
             ActiveSessionManager.shared.setActiveSession(session.id)
+            // Reset compaction state when view appears (handles session switching)
+            wasRecentlyCompacted = false
+            compactionTimestamp = nil
+            isCompacting = false
+            showingSuccessMessage = false
+            compactSuccessMessage = nil
         }
         .onDisappear {
             saveDraft()
@@ -117,6 +238,71 @@ struct ConversationDetailView: View {
         .onChange(of: draftText) {
             // Debounced save handled by MessageInputView
         }
+    }
+
+    // MARK: - Session Actions
+
+    private func refreshSession() {
+        logger.info("🔄 Refreshing session: \(session.backendSessionId)")
+        client.requestSessionRefresh(sessionId: session.backendSessionId)
+    }
+
+    private func compactSession() {
+        isCompacting = true
+        logger.info("📦 Compacting session: \(session.backendSessionId)")
+
+        Task {
+            do {
+                _ = try await client.compactSession(sessionId: session.backendSessionId)
+
+                await MainActor.run {
+                    isCompacting = false
+                    wasRecentlyCompacted = true
+                    compactionTimestamp = Date()
+
+                    // Show success message
+                    isErrorMessage = false
+                    compactSuccessMessage = "Session compacted"
+                    withAnimation {
+                        showingSuccessMessage = true
+                    }
+
+                    logger.info("✅ Session compacted successfully")
+
+                    // Hide success message after 3 seconds
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        withAnimation {
+                            showingSuccessMessage = false
+                            compactSuccessMessage = nil
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isCompacting = false
+                    logger.error("❌ Compaction failed: \(error.localizedDescription)")
+                    // Show error message
+                    isErrorMessage = true
+                    compactSuccessMessage = "Compaction failed: \(error.localizedDescription)"
+                    withAnimation {
+                        showingSuccessMessage = true
+                    }
+
+                    // Hide error message after 5 seconds
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                        withAnimation {
+                            showingSuccessMessage = false
+                            compactSuccessMessage = nil
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func killSession() {
+        logger.info("🛑 Killing session: \(session.backendSessionId)")
+        client.killSession(sessionId: session.backendSessionId)
     }
 
     // MARK: - Actions
