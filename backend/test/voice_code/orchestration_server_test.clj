@@ -6,23 +6,34 @@
             [voice-code.orchestration :as orch]))
 
 (deftest start-recipe-for-session-test
-  (testing "initializes orchestration state for session"
+  (testing "initializes orchestration state for existing session (is-new-session?=false)"
     (let [session-id "test-session-123"
-          state (server/start-recipe-for-session session-id :implement-and-review)]
+          state (server/start-recipe-for-session session-id :implement-and-review false)]
       (is (not (nil? state)))
       (is (= :implement-and-review (:recipe-id state)))
       (is (= :implement (:current-step state)))
       (is (= 1 (:step-count state)))
-      (is (= {:implement 1} (:step-visit-counts state)))))
+      (is (= {:implement 1} (:step-visit-counts state)))
+      ;; Existing session should have :session-created? = true
+      (is (true? (:session-created? state)))))
+
+  (testing "initializes orchestration state for new session (is-new-session?=true)"
+    (let [session-id "test-session-new"
+          state (server/start-recipe-for-session session-id :implement-and-review true)]
+      (is (not (nil? state)))
+      (is (= :implement-and-review (:recipe-id state)))
+      (is (= :implement (:current-step state)))
+      ;; New session should have :session-created? = false
+      (is (false? (:session-created? state)))))
 
   (testing "returns nil for unknown recipe"
     (let [session-id "test-session-456"
-          state (server/start-recipe-for-session session-id :unknown)]
+          state (server/start-recipe-for-session session-id :unknown false)]
       (is (nil? state))))
 
   (testing "stores state in session-orchestration-state atom"
     (let [session-id "test-session-789"]
-      (server/start-recipe-for-session session-id :implement-and-review)
+      (server/start-recipe-for-session session-id :implement-and-review false)
       (is (not (nil? (server/get-session-recipe-state session-id)))))))
 
 (deftest get-session-recipe-state-test
@@ -32,7 +43,7 @@
 
   (testing "returns state for active recipe"
     (let [session-id "active-test-session"
-          _ (server/start-recipe-for-session session-id :implement-and-review)
+          _ (server/start-recipe-for-session session-id :implement-and-review false)
           state (server/get-session-recipe-state session-id)]
       (is (not (nil? state)))
       (is (= :implement-and-review (:recipe-id state))))))
@@ -40,7 +51,7 @@
 (deftest exit-recipe-for-session-test
   (testing "removes session from orchestration state"
     (let [session-id "exit-test-session"
-          _ (server/start-recipe-for-session session-id :implement-and-review)
+          _ (server/start-recipe-for-session session-id :implement-and-review false)
           _ (server/exit-recipe-for-session session-id "test-reason")]
       (is (nil? (server/get-session-recipe-state session-id)))))
 
