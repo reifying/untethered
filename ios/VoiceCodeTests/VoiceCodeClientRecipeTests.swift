@@ -139,7 +139,7 @@ class VoiceCodeClientRecipeTests: XCTestCase {
                     XCTAssertEqual(active.recipeId, "implement-and-review")
                     XCTAssertEqual(active.recipeLabel, "Implement & Review")
                     XCTAssertEqual(active.currentStep, "implement")
-                    XCTAssertEqual(active.iterationCount, 1)
+                    XCTAssertEqual(active.stepCount, 1)
                     expectation.fulfill()
                 } else {
                     XCTFail("Recipe not found in active recipes")
@@ -153,7 +153,7 @@ class VoiceCodeClientRecipeTests: XCTestCase {
             "recipe_id": "implement-and-review",
             "recipe_label": "Implement & Review",
             "current_step": "implement",
-            "iteration_count": 1
+            "step_count": 1
         }
         """
 
@@ -191,7 +191,7 @@ class VoiceCodeClientRecipeTests: XCTestCase {
             "recipe_id": "implement-and-review",
             "recipe_label": "Implement & Review",
             "current_step": "implement",
-            "iteration_count": 1
+            "step_count": 1
         }
         """
 
@@ -206,7 +206,7 @@ class VoiceCodeClientRecipeTests: XCTestCase {
                 "recipe_id": "implement-and-review",
                 "recipe_label": "Implement & Review",
                 "current_step": "code-review",
-                "iteration_count": 2
+                "step_count": 2
             }
             """
             self.client.handleMessage(json2)
@@ -229,7 +229,7 @@ class VoiceCodeClientRecipeTests: XCTestCase {
             "recipe_id": "implement-and-review",
             "recipe_label": "Implement & Review",
             "current_step": "implement",
-            "iteration_count": 1
+            "step_count": 1
         }
         """
 
@@ -290,7 +290,7 @@ class VoiceCodeClientRecipeTests: XCTestCase {
                 "recipe_id": "implement-and-review",
                 "recipe_label": "Implement & Review",
                 "current_step": "implement",
-                "iteration_count": 1
+                "step_count": 1
             }
             """)
 
@@ -302,7 +302,7 @@ class VoiceCodeClientRecipeTests: XCTestCase {
                     "recipe_id": "implement-and-review",
                     "recipe_label": "Implement & Review",
                     "current_step": "code-review",
-                    "iteration_count": 1
+                    "step_count": 1
                 }
                 """)
         }
@@ -410,7 +410,7 @@ class VoiceCodeClientRecipeTests: XCTestCase {
                 "recipe_id": "implement-and-review",
                 "recipe_label": "Implement & Review",
                 "current_step": "implement",
-                "iteration_count": 1
+                "step_count": 1
             }
             """
             client.handleMessage(json)
@@ -450,7 +450,7 @@ class VoiceCodeClientRecipeTests: XCTestCase {
             "recipe_id": "implement-and-review",
             "recipe_label": "Implement & Review",
             "current_step": "implement",
-            "iteration_count": 1
+            "step_count": 1
         }
         """
 

@@ -101,7 +101,7 @@
   (atom {}))
 
 (defonce session-orchestration-state
-  ;; Track orchestration state per Claude session: session-id -> {:recipe-id :step :iteration-count ...}
+  ;; Track orchestration state per Claude session: session-id -> {:recipe-id :step :step-count :step-visit-counts ...}
   ;; Maps Claude session IDs to their active orchestration recipe state.
   ;; Safe for concurrent WebSocket connections: each connection operates on independent session state.
   ;; State is isolated per Claude session (not per iOS session), preventing conflicts.
@@ -233,11 +233,8 @@
 (defn process-orchestration-response
   "Process Claude response when in an orchestration recipe.
    Parses JSON outcome, validates against expected outcomes, and determines next action.
-   Handles max-iteration guardrails and sends client state updates.
-   Returns {:action :next-step/:exit :step-name/:reason ...}
-   
-   NOTE: Currently defined but not integrated. Will be used in Phase 3 when hooking
-   into filesystem watcher to parse outcomes from response text automatically."
+   Handles guardrails (max-step-visits, max-total-steps) and sends client state updates.
+   Returns {:action :next-step/:exit :step-name/:reason ...}"
   [session-id orch-state recipe response-text channel]
   (let [current-step (:current-step orch-state)
         step (orch/get-current-step recipe current-step)
@@ -250,19 +247,24 @@
         (case (:action next-action)
           :next-step
           (let [new-step (:step-name next-action)
-                updated-state (assoc orch-state :current-step new-step)
-                new-recipe (recipes/get-recipe (:recipe-id orch-state))]
-            (if (orch/should-exit-recipe? updated-state new-recipe)
+                ;; Check guardrails BEFORE transitioning
+                exit-reason (orch/should-exit-recipe? orch-state recipe new-step)]
+            (if exit-reason
               (do
-                (exit-recipe-for-session session-id "max-iterations")
+                (orch/log-orchestration-event "recipe-exited" session-id (:recipe-id orch-state) current-step
+                                              {:reason exit-reason})
+                (exit-recipe-for-session session-id exit-reason)
                 (send-to-client! channel
                                  {:type :recipe-exited
                                   :session-id session-id
-                                  :reason "max-iterations"})
-                {:action :exit :reason "max-iterations"})
-              (do
-                (swap! session-orchestration-state assoc session-id
-                       (update updated-state :iteration-count inc))
+                                  :reason exit-reason})
+                {:action :exit :reason exit-reason})
+              ;; Update state with new step and increment counters
+              (let [updated-state (-> orch-state
+                                      (assoc :current-step new-step)
+                                      (update :step-count inc)
+                                      (update-in [:step-visit-counts new-step] (fnil inc 0)))]
+                (swap! session-orchestration-state assoc session-id updated-state)
                 (send-to-client! channel
                                  {:type :recipe-step-transition
                                   :session-id session-id
@@ -287,6 +289,110 @@
                           :error "Invalid JSON outcome from agent"
                           :details (:error outcome-result)})
         {:action :exit :reason "orchestration-error"}))))
+
+(declare execute-recipe-step)
+
+(defn execute-recipe-step
+  "Execute a single step of a recipe and handle the response.
+   This function handles the full orchestration loop:
+   1. Send the step prompt to Claude
+   2. Parse the outcome from the response
+   3. If next step: update state and recursively continue
+   4. If exit: send recipe_exited message
+   
+   Parameters:
+   - channel: WebSocket channel to send messages to
+   - session-id: Claude session ID
+   - working-dir: Working directory for Claude
+   - orch-state: Current orchestration state
+   - recipe: Recipe definition"
+  [channel session-id working-dir orch-state recipe]
+  (let [step-prompt (get-next-step-prompt session-id orch-state recipe)
+        current-step (:current-step orch-state)]
+    (when step-prompt
+      (log/info "Executing recipe step"
+                {:session-id session-id
+                 :recipe-id (:recipe-id orch-state)
+                 :step current-step
+                 :step-count (:step-count orch-state)})
+
+      ;; Send step transition notification
+      (send-to-client! channel
+                       {:type :recipe-step-started
+                        :session-id session-id
+                        :step current-step
+                        :step-count (:step-count orch-state)})
+
+      (claude/invoke-claude-async
+       step-prompt
+       (fn [response]
+         (try
+           (if (:success response)
+             (let [response-text (:result response)
+                   ;; Process the orchestration response
+                   result (process-orchestration-response
+                           session-id orch-state recipe response-text channel)]
+               (log/info "Recipe step response processed"
+                         {:session-id session-id
+                          :step current-step
+                          :action (:action result)
+                          :next-step (:step-name result)
+                          :reason (:reason result)})
+
+               (case (:action result)
+                 :next-step
+                 ;; Continue to next step - get updated state and continue loop
+                 (let [updated-orch-state (get-session-recipe-state session-id)
+                       updated-recipe (recipes/get-recipe (:recipe-id updated-orch-state))]
+                   (if updated-orch-state
+                     ;; Recursively execute the next step
+                     (execute-recipe-step channel session-id working-dir
+                                          updated-orch-state updated-recipe)
+                     ;; State was cleared (shouldn't happen), exit
+                     (do
+                       (log/warn "Orchestration state missing after step transition"
+                                 {:session-id session-id})
+                       (send-to-client! channel
+                                        {:type :turn-complete
+                                         :session-id session-id}))))
+
+                 :exit
+                 ;; Recipe finished, send turn_complete
+                 (do
+                   (log/info "Recipe exited"
+                             {:session-id session-id
+                              :reason (:reason result)})
+                   (send-to-client! channel
+                                    {:type :turn-complete
+                                     :session-id session-id}))
+
+                 ;; Default - unexpected action
+                 (do
+                   (log/error "Unexpected orchestration action"
+                              {:action (:action result)})
+                   (send-to-client! channel
+                                    {:type :turn-complete
+                                     :session-id session-id}))))
+
+             ;; Claude invocation failed
+             (do
+               (log/error "Recipe step failed"
+                          {:error (:error response) :session-id session-id})
+               (exit-recipe-for-session session-id "error")
+               (send-to-client! channel
+                                {:type :recipe-exited
+                                 :session-id session-id
+                                 :reason "error"
+                                 :error (:error response)})
+               (send-to-client! channel
+                                {:type :error
+                                 :message (:error response)
+                                 :session-id session-id})))
+           (finally
+             (repl/release-session-lock! session-id))))
+       :resume-session-id session-id
+       :working-directory working-dir
+       :timeout-ms 86400000))))
 
 ;; Filesystem watcher callbacks
 
@@ -1050,7 +1156,31 @@
                                     :recipe-label (:label recipe)
                                     :session-id session-id
                                     :current-step (:current-step orch-state)
-                                    :iteration-count (:iteration-count orch-state)}))
+                                    :step-count (:step-count orch-state)})
+
+;; Automatically start the orchestration loop
+                  (let [session-metadata (repl/get-session-metadata session-id)
+                        working-dir (or working-directory
+                                        (:working-directory session-metadata))]
+                    (log/info "Starting recipe orchestration loop"
+                              {:session-id session-id
+                               :recipe-id recipe-id
+                               :step (:current-step orch-state)
+                               :working-directory working-dir})
+                    ;; Try to acquire lock and start orchestration loop
+                    (if (repl/acquire-session-lock! session-id)
+                      (do
+                        (send-to-client! channel
+                                         {:type :ack
+                                          :message "Starting recipe..."})
+                        ;; Execute the first step - this will recursively continue
+                        ;; through all steps until recipe exits
+                        (execute-recipe-step channel session-id working-dir
+                                             orch-state recipe))
+                      (do
+                        (log/warn "Session locked, cannot start recipe"
+                                  {:session-id session-id})
+                        (send-session-locked! channel session-id)))))
                 (send-to-client! channel
                                  {:type :error
                                   :message (str "Recipe not found: " recipe-id)}))))

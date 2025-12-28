@@ -24,12 +24,12 @@ struct ActiveRecipe: Equatable {
     let recipeId: String
     let recipeLabel: String
     let currentStep: String
-    let iterationCount: Int
+    let stepCount: Int
 
-    init(recipeId: String, recipeLabel: String, currentStep: String, iterationCount: Int) {
+    init(recipeId: String, recipeLabel: String, currentStep: String, stepCount: Int) {
         self.recipeId = recipeId
         self.recipeLabel = recipeLabel
         self.currentStep = currentStep
-        self.iterationCount = iterationCount
+        self.stepCount = stepCount
     }
 }

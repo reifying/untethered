@@ -2,6 +2,7 @@
   (:require [clojure.test :refer :all]
             [clojure.string :as str]
             [voice-code.server :as server]
+            [voice-code.recipes :as recipes]
             [cheshire.core :as json]
             [clojure.java.io :as io]))
 
@@ -695,6 +696,128 @@
               ;; iOS switch statement looks for: case "available_recipes":
               (is (= "available_recipes" extracted-type)
                   (str "iOS expects 'available_recipes' but backend sends: '" extracted-type "'")))))))))
+
+(deftest test-process-orchestration-response-valid-outcome
+  (testing "Valid outcome triggers next step transition"
+    (let [session-id "test-session-123"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      ;; Setup: start recipe for session
+      (reset! server/session-orchestration-state {})
+      (server/start-recipe-for-session session-id :implement-and-review)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)
+              ;; Simulate Claude response with valid JSON outcome
+              response-text "I completed the implementation.\n\n{\"outcome\": \"complete\"}"
+              result (server/process-orchestration-response
+                      session-id orch-state recipe response-text mock-channel)]
+
+          ;; Should transition to next step
+          (is (= :next-step (:action result)))
+          (is (= :code-review (:step-name result)))
+
+          ;; Should have sent recipe-step-transition message
+          (is (some #(str/includes? % "recipe_step_transition") @sent-messages)))))))
+
+(deftest test-process-orchestration-response-exit-outcome
+  (testing "Other outcome exits recipe"
+    (let [session-id "test-session-456"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      ;; Setup: start recipe at code-review step
+      (reset! server/session-orchestration-state {})
+      (server/start-recipe-for-session session-id :implement-and-review)
+      ;; Manually set to code-review step
+      (swap! server/session-orchestration-state assoc-in [session-id :current-step] :code-review)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)
+              ;; Simulate Claude response with 'other' outcome (exits recipe per design)
+              response-text "I need user input on this.\n\n{\"outcome\": \"other\", \"otherDescription\": \"Need clarification\"}"
+              result (server/process-orchestration-response
+                      session-id orch-state recipe response-text mock-channel)]
+
+          ;; Should exit recipe
+          (is (= :exit (:action result)))
+          (is (= "user-provided-other" (:reason result)))
+
+          ;; Should have sent recipe-exited message
+          (is (some #(str/includes? % "recipe_exited") @sent-messages)))))))
+
+(deftest test-process-orchestration-response-invalid-json
+  (testing "Invalid JSON outcome sends error and exits"
+    (let [session-id "test-session-789"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      ;; Setup
+      (reset! server/session-orchestration-state {})
+      (server/start-recipe-for-session session-id :implement-and-review)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)
+              ;; Simulate Claude response with no JSON
+              response-text "I did the work but forgot the JSON outcome."
+              result (server/process-orchestration-response
+                      session-id orch-state recipe response-text mock-channel)]
+
+          ;; Should exit with error
+          (is (= :exit (:action result)))
+          (is (= "orchestration-error" (:reason result)))
+
+          ;; Should have sent orchestration-error message
+          (is (some #(str/includes? % "orchestration_error") @sent-messages)))))))
+
+(deftest test-process-orchestration-response-issues-found
+  (testing "issues-found outcome transitions to fix step"
+    (let [session-id "test-session-issues"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      ;; Setup: start at code-review step
+      (reset! server/session-orchestration-state {})
+      (server/start-recipe-for-session session-id :implement-and-review)
+      (swap! server/session-orchestration-state assoc-in [session-id :current-step] :code-review)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)
+              response-text "Found some issues:\n- Missing error handling\n\n{\"outcome\": \"issues-found\"}"
+              result (server/process-orchestration-response
+                      session-id orch-state recipe response-text mock-channel)]
+
+          ;; Should transition to fix step
+          (is (= :next-step (:action result)))
+          (is (= :fix (:step-name result))))))))
+
+(deftest test-process-orchestration-response-max-step-visits
+  (testing "Max step visits triggers exit"
+    (let [session-id "test-session-maxvisits"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      ;; Setup: start recipe and set step visit count to max
+      (reset! server/session-orchestration-state {})
+      (server/start-recipe-for-session session-id :implement-and-review)
+      ;; Set code-review visits to 3 (max-step-visits is 3)
+      (swap! server/session-orchestration-state assoc-in [session-id :step-visit-counts :code-review] 3)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)
+              response-text "Done!\n\n{\"outcome\": \"complete\"}"
+              result (server/process-orchestration-response
+                      session-id orch-state recipe response-text mock-channel)]
+
+          ;; Should exit due to max step visits for code-review
+          (is (= :exit (:action result)))
+          (is (= "max-step-visits-exceeded:code-review" (:reason result)))
+
+          ;; Should have sent recipe-exited message
+          (is (some #(and (str/includes? % "recipe_exited")
+                          (str/includes? % "max-step-visits"))
+                    @sent-messages)))))))
 
 
 

@@ -159,10 +159,10 @@ struct SessionInfoView: View {
                         }
 
                         HStack {
-                            Text("Iteration")
+                            Text("Step")
                                 .foregroundColor(.secondary)
                             Spacer()
-                            Text("\(active.iterationCount)")
+                            Text("\(active.stepCount)")
                                 .foregroundColor(.primary)
                         }
 

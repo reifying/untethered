@@ -139,7 +139,8 @@
       (is (not (nil? state)))
       (is (= :implement-and-review (:recipe-id state)))
       (is (= :implement (:current-step state)))
-      (is (= 1 (:iteration-count state)))))
+      (is (= 1 (:step-count state)))
+      (is (= {:implement 1} (:step-visit-counts state)))))
 
   (testing "returns nil for unknown recipe"
     (let [state (orch/create-orchestration-state :unknown)]
@@ -152,15 +153,42 @@
       (is (> start-time 0)))))
 
 (deftest guardrail-test
-  (testing "detects when max iterations reached"
+  (testing "detects when max step visits exceeded"
     (let [recipe (recipes/get-recipe :implement-and-review)
-          state {:recipe-id :implement-and-review :iteration-count 5}]
-      (is (true? (orch/should-exit-recipe? state recipe)))))
+          state {:recipe-id :implement-and-review
+                 :step-count 5
+                 :step-visit-counts {:implement 2 :code-review 3}}]
+      ;; code-review has been visited 3 times, max-step-visits is 3
+      (is (some? (orch/should-exit-recipe? state recipe :code-review)))))
 
-  (testing "allows execution when below max iterations"
+  (testing "detects when max total steps exceeded"
     (let [recipe (recipes/get-recipe :implement-and-review)
-          state {:recipe-id :implement-and-review :iteration-count 3}]
-      (is (false? (orch/should-exit-recipe? state recipe))))))
+          state {:recipe-id :implement-and-review
+                 :step-count 20
+                 :step-visit-counts {:implement 5 :code-review 8 :fix 7}}]
+      ;; step-count is 20, max-total-steps is 20
+      (is (some? (orch/should-exit-recipe? state recipe :implement)))))
+
+  (testing "allows execution when below limits"
+    (let [recipe (recipes/get-recipe :implement-and-review)
+          state {:recipe-id :implement-and-review
+                 :step-count 3
+                 :step-visit-counts {:implement 1 :code-review 1 :fix 1}}]
+      (is (nil? (orch/should-exit-recipe? state recipe :code-review)))))
+
+  (testing "returns reason string for max-step-visits"
+    (let [recipe (recipes/get-recipe :implement-and-review)
+          state {:recipe-id :implement-and-review
+                 :step-count 5
+                 :step-visit-counts {:fix 3}}]
+      (is (= "max-step-visits-exceeded:fix" (orch/should-exit-recipe? state recipe :fix)))))
+
+  (testing "returns reason string for max-total-steps"
+    (let [recipe (recipes/get-recipe :implement-and-review)
+          state {:recipe-id :implement-and-review
+                 :step-count 20
+                 :step-visit-counts {:implement 1}}]
+      (is (= "max-total-steps" (orch/should-exit-recipe? state recipe :implement))))))
 
 (deftest determine-next-action-test
   (testing "transitions to next step"

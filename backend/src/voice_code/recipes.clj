@@ -21,7 +21,7 @@
     {:prompt "Perform a code review on the task that you just completed."
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
-     {:no-issues {:next-step :implement}
+     {:no-issues {:action :exit :reason "code-review-passed"}
       :issues-found {:next-step :fix}
       :other {:action :exit :reason "user-provided-other"}}}
 
@@ -33,7 +33,8 @@
       :other {:action :exit :reason "user-provided-other"}}}}
 
    :guardrails
-   {:max-iterations 5
+   {:max-step-visits 3
+    :max-total-steps 20
     :exit-on-other true}})
 
 (def all-recipes

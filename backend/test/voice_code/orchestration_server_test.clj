@@ -12,13 +12,14 @@
       (is (not (nil? state)))
       (is (= :implement-and-review (:recipe-id state)))
       (is (= :implement (:current-step state)))
-      (is (= 1 (:iteration-count state)))))
-  
+      (is (= 1 (:step-count state)))
+      (is (= {:implement 1} (:step-visit-counts state)))))
+
   (testing "returns nil for unknown recipe"
     (let [session-id "test-session-456"
           state (server/start-recipe-for-session session-id :unknown)]
       (is (nil? state))))
-  
+
   (testing "stores state in session-orchestration-state atom"
     (let [session-id "test-session-789"]
       (server/start-recipe-for-session session-id :implement-and-review)
@@ -28,7 +29,7 @@
   (testing "returns nil for session not in recipe"
     (let [state (server/get-session-recipe-state "nonexistent-session")]
       (is (nil? state))))
-  
+
   (testing "returns state for active recipe"
     (let [session-id "active-test-session"
           _ (server/start-recipe-for-session session-id :implement-and-review)
@@ -42,7 +43,7 @@
           _ (server/start-recipe-for-session session-id :implement-and-review)
           _ (server/exit-recipe-for-session session-id "test-reason")]
       (is (nil? (server/get-session-recipe-state session-id)))))
-  
+
   (testing "handles exit for session not in recipe"
     (let [session-id "not-in-recipe"]
       (server/exit-recipe-for-session session-id "test-reason"))))
@@ -56,14 +57,14 @@
       (is (str/includes? prompt "Run bd ready and implement the task."))
       (is (str/includes? prompt "outcome"))
       (is (str/includes? prompt "complete"))))
-  
+
   (testing "includes all expected outcomes in prompt"
     (let [recipe (recipes/get-recipe :implement-and-review)
           orch-state {:recipe-id :implement-and-review :current-step :code-review}
           prompt (server/get-next-step-prompt "test-session" orch-state recipe)]
       (is (str/includes? prompt "no-issues"))
       (is (str/includes? prompt "issues-found"))))
-  
+
   (testing "returns nil for invalid step"
     (let [recipe (recipes/get-recipe :implement-and-review)
           orch-state {:recipe-id :implement-and-review :current-step :nonexistent}

@@ -38,10 +38,15 @@
           outcomes (get-in recipe [:steps :fix :outcomes])]
       (is (= #{:complete :other} outcomes))))
 
-  (testing "has valid max-iterations guardrail"
+  (testing "has valid max-step-visits guardrail"
     (let [recipe (recipes/get-recipe :implement-and-review)
-          max-iter (get-in recipe [:guardrails :max-iterations])]
-      (is (= 5 max-iter)))))
+          max-visits (get-in recipe [:guardrails :max-step-visits])]
+      (is (= 3 max-visits))))
+
+  (testing "has valid max-total-steps guardrail"
+    (let [recipe (recipes/get-recipe :implement-and-review)
+          max-steps (get-in recipe [:guardrails :max-total-steps])]
+      (is (= 20 max-steps)))))
 
 (deftest recipe-transitions
   (testing "implement complete transitions to code-review"
@@ -49,10 +54,11 @@
           transition (get-in recipe [:steps :implement :on-outcome :complete])]
       (is (= :code-review (:next-step transition)))))
 
-  (testing "code-review no-issues transitions back to implement"
+  (testing "code-review no-issues exits with code-review-passed"
     (let [recipe (recipes/get-recipe :implement-and-review)
           transition (get-in recipe [:steps :code-review :on-outcome :no-issues])]
-      (is (= :implement (:next-step transition)))))
+      (is (= :exit (:action transition)))
+      (is (= "code-review-passed" (:reason transition)))))
 
   (testing "code-review issues-found transitions to fix"
     (let [recipe (recipes/get-recipe :implement-and-review)

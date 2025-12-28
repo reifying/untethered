@@ -757,18 +757,18 @@ class VoiceCodeClient: ObservableObject {
                     LogManager.shared.log("Received recipe_started with missing/empty current_step for session \(sessionId): \(json)", category: "VoiceCodeClient")
                     return
                 }
-                guard let iterationCount = json["iteration_count"] as? Int, iterationCount >= 1 else {
-                    let count = json["iteration_count"] ?? "nil"
-                    LogManager.shared.log("Received recipe_started with invalid iteration_count: \(count) for session \(sessionId)", category: "VoiceCodeClient")
+                guard let stepCount = json["step_count"] as? Int, stepCount >= 1 else {
+                    let count = json["step_count"] ?? "nil"
+                    LogManager.shared.log("Received recipe_started with invalid step_count: \(count) for session \(sessionId): \(json)", category: "VoiceCodeClient")
                     return
                 }
 
-                print("🎯 [VoiceCodeClient] Recipe started: \(recipeLabel) for session \(sessionId) (step: \(currentStep), iteration: \(iterationCount))")
+                print("🎯 [VoiceCodeClient] Recipe started: \(recipeLabel) for session \(sessionId) (step: \(currentStep), stepCount: \(stepCount))")
                 let activeRecipe = ActiveRecipe(
                     recipeId: recipeId,
                     recipeLabel: recipeLabel,
                     currentStep: currentStep,
-                    iterationCount: iterationCount
+                    stepCount: stepCount
                 )
                 var updatedRecipes = getCurrentValue(for: "activeRecipes", current: self.activeRecipes)
                 updatedRecipes[sessionId] = activeRecipe

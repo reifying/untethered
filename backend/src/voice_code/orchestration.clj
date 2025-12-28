@@ -119,22 +119,36 @@
 
 (defn create-orchestration-state
   "Create initial orchestration state for a session.
-   Returns {:recipe-id recipe-id :current-step initial-step :iteration-count 1}"
+   Returns {:recipe-id recipe-id :current-step initial-step :step-count 1 :step-visit-counts {...}}"
   [recipe-id]
   (let [recipe (recipes/get-recipe recipe-id)]
     (if (nil? recipe)
       nil
-      {:recipe-id recipe-id
-       :current-step (:initial-step recipe)
-       :iteration-count 1
-       :start-time (System/currentTimeMillis)})))
+      (let [initial-step (:initial-step recipe)]
+        {:recipe-id recipe-id
+         :current-step initial-step
+         :step-count 1
+         :step-visit-counts {initial-step 1}
+         :start-time (System/currentTimeMillis)}))))
 
 (defn should-exit-recipe?
-  "Check if recipe should exit based on guardrails."
-  [orchestration-state recipe]
-  (let [max-iterations (get-in recipe [:guardrails :max-iterations])
-        current-count (:iteration-count orchestration-state)]
-    (and max-iterations (>= current-count max-iterations))))
+  "Check if recipe should exit based on guardrails.
+   Checks both per-step visit limits and total step count.
+   Returns nil if recipe should continue, or a reason string if it should exit."
+  [orchestration-state recipe next-step]
+  (let [{:keys [max-step-visits max-total-steps]} (:guardrails recipe)
+        current-visits (get-in orchestration-state [:step-visit-counts next-step] 0)
+        total-steps (:step-count orchestration-state)]
+    (cond
+      ;; Check if next step would exceed max visits for that step
+      (and max-step-visits (>= current-visits max-step-visits))
+      (str "max-step-visits-exceeded:" (name next-step))
+
+      ;; Check total step count as hard safety limit
+      (and max-total-steps (>= total-steps max-total-steps))
+      "max-total-steps"
+
+      :else nil)))
 
 (defn determine-next-action
   "Determine next action based on outcome.
