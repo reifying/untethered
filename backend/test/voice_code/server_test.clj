@@ -747,9 +747,9 @@
           ;; Should have sent recipe-exited message
           (is (some #(str/includes? % "recipe_exited") @sent-messages)))))))
 
-(deftest test-process-orchestration-response-invalid-json
-  (testing "Invalid JSON outcome sends error and exits"
-    (let [session-id "test-session-789"
+(deftest test-process-orchestration-response-invalid-json-retry
+  (testing "First invalid JSON triggers retry with reminder prompt"
+    (let [session-id "test-session-retry"
           sent-messages (atom [])
           mock-channel :test-ch]
       ;; Setup
@@ -764,11 +764,44 @@
               result (server/process-orchestration-response
                       session-id orch-state recipe response-text mock-channel)]
 
-          ;; Should exit with error
+          ;; Should return retry action with reminder prompt
+          (is (= :retry (:action result)))
+          (is (string? (:prompt result)))
+          (is (str/includes? (:prompt result) "JSON outcome"))
+
+          ;; Should have sent orchestration-retry message
+          (is (some #(str/includes? % "orchestration_retry") @sent-messages))
+
+          ;; Recipe state should still exist (not cleared)
+          (is (some? (server/get-session-recipe-state session-id)))
+
+          ;; Retry count should be incremented
+          (let [updated-state (server/get-session-recipe-state session-id)]
+            (is (= 1 (get-in updated-state [:step-retry-counts :implement])))))))))
+
+(deftest test-process-orchestration-response-invalid-json-exit-after-retry
+  (testing "Second invalid JSON exits recipe after retry failed"
+    (let [session-id "test-session-exit"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      ;; Setup with retry count already at 1
+      (reset! server/session-orchestration-state {})
+      (server/start-recipe-for-session session-id :implement-and-review)
+      (swap! server/session-orchestration-state assoc-in [session-id :step-retry-counts :implement] 1)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)
+              ;; Simulate Claude response with no JSON (second failure)
+              response-text "Still no JSON here."
+              result (server/process-orchestration-response
+                      session-id orch-state recipe response-text mock-channel)]
+
+          ;; Should exit with error after retry exhausted
           (is (= :exit (:action result)))
           (is (= "orchestration-error" (:reason result)))
 
-          ;; Should have sent recipe_exited message with orchestration-error reason
+          ;; Should have sent recipe_exited message
           (is (some #(str/includes? % "recipe_exited") @sent-messages))
           (is (some #(str/includes? % "orchestration-error") @sent-messages))
 
