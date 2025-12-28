@@ -2,6 +2,7 @@
   (:require [clojure.test :refer :all]
             [clojure.string :as str]
             [voice-code.server :as server]
+            [voice-code.replication :as repl]
             [voice-code.recipes :as recipes]
             [cheshire.core :as json]
             [clojure.java.io :as io]))
@@ -1125,6 +1126,20 @@
 
       ;; Cleanup
       (voice-code.replication/release-session-lock! session-id))))
+
+(deftest test-session-exists?
+  (testing "returns false when get-session-metadata returns nil"
+    (with-redefs [repl/get-session-metadata (constantly nil)]
+      (is (false? (server/session-exists? "unknown-session-id")))))
+
+  (testing "returns true when get-session-metadata returns data"
+    (with-redefs [repl/get-session-metadata (constantly {:session-id "known-session"
+                                                         :working-directory "/test/path"})]
+      (is (true? (server/session-exists? "known-session-id")))))
+
+  (testing "handles nil session-id gracefully"
+    (with-redefs [repl/get-session-metadata (constantly nil)]
+      (is (false? (server/session-exists? nil))))))
 
 
 

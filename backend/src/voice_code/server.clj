@@ -193,6 +193,12 @@
   [session-id]
   (get @session-orchestration-state session-id))
 
+(defn session-exists?
+  "Check if a Claude session file exists for the given session ID.
+   Returns true if session metadata exists (implying .jsonl file exists)."
+  [session-id]
+  (some? (repl/get-session-metadata session-id)))
+
 (defn start-recipe-for-session
   "Initialize orchestration state for a session"
   [session-id recipe-id]
