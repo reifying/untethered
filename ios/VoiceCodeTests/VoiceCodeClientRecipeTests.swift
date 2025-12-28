@@ -481,7 +481,7 @@ class VoiceCodeClientRecipeTests: XCTestCase {
 
     func testStartRecipeMethod() throws {
         // This test verifies the method doesn't crash
-        XCTAssertNoThrow(client.startRecipe(sessionId: "test-123", recipeId: "implement-and-review"))
+        XCTAssertNoThrow(client.startRecipe(sessionId: "test-123", recipeId: "implement-and-review", workingDirectory: "/Users/test/project"))
     }
 
     func testExitRecipeMethod() throws {

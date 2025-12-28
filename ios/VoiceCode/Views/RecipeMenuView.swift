@@ -7,6 +7,7 @@ import Combine
 struct RecipeMenuView: View {
     @ObservedObject var client: VoiceCodeClient
     let sessionId: String
+    let workingDirectory: String
     @Environment(\.dismiss) private var dismiss
 
     @State private var isLoading = false
@@ -124,11 +125,11 @@ struct RecipeMenuView: View {
     }
 
     private func selectRecipe(recipeId: String) {
-        print("📤 [RecipeMenuView] Selected recipe: \(recipeId) for session \(sessionId)")
+        print("📤 [RecipeMenuView] Selected recipe: \(recipeId) for session \(sessionId) in \(workingDirectory)")
         isLoading = true
         errorMessage = nil
 
-        client.startRecipe(sessionId: sessionId, recipeId: recipeId)
+        client.startRecipe(sessionId: sessionId, recipeId: recipeId, workingDirectory: workingDirectory)
 
         // Wait for recipe_started confirmation (15 second timeout)
         // Use a wrapper since we can't use weak self on value types
@@ -194,7 +195,8 @@ struct RecipeMenuView_Previews: PreviewProvider {
 
         return RecipeMenuView(
             client: client,
-            sessionId: "test-session-123"
+            sessionId: "test-session-123",
+            workingDirectory: "/Users/test/project"
         )
     }
 }
