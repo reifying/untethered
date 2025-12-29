@@ -1637,5 +1637,380 @@
             (is (= 1 (count (:workstreams ws-list-msg))))
             (is (= "ws-connect-test" (:workstream_id (first (:workstreams ws-list-msg)))))))))))
 
+;; ============================================================================
+;; Workstream Prompt Handler Tests (task 74t.5)
+;; ============================================================================
 
+(deftest test-handle-prompt-with-workstream-creates-new-session
+  (testing "Prompt with workstream_id creates new Claude session when none linked"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (reset! repl/session-locks #{})
+    (let [sent-messages (atom [])
+          claude-invoked (atom nil)]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    ws/save-workstream-index! (fn [] nil)
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & {:keys [new-session-id resume-session-id working-directory]}]
+                      (reset! claude-invoked {:new-session-id new-session-id
+                                              :resume-session-id resume-session-id
+                                              :working-directory working-directory
+                                              :prompt prompt})
+                      ;; Simulate success
+                      (callback {:success true :session-id "claude-new-123"}))]
+
+        ;; Create workstream without active session
+        (ws/create-workstream! {:id "ws-prompt-new"
+                                :name "Prompt Test"
+                                :working-directory "/test/project"})
+
+        ;; Verify no active session
+        (is (nil? (:active-claude-session-id (ws/get-workstream "ws-prompt-new"))))
+
+        ;; Send prompt with workstream_id
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "Hello Claude"
+                                 :workstream_id "ws-prompt-new"}))
+
+        ;; Verify Claude was invoked with new-session-id (not resume)
+        (is (some? @claude-invoked))
+        (is (some? (:new-session-id @claude-invoked)))
+        (is (nil? (:resume-session-id @claude-invoked)))
+        (is (= "Hello Claude" (:prompt @claude-invoked)))
+        (is (= "/test/project" (:working-directory @claude-invoked)))
+
+        ;; Verify workstream now has active session linked
+        (is (some? (:active-claude-session-id (ws/get-workstream "ws-prompt-new"))))
+
+        ;; Verify turn_complete was sent
+        (let [message-types (set (map :type @sent-messages))]
+          (is (contains? message-types "ack"))
+          (is (contains? message-types "workstream_updated"))
+          (is (contains? message-types "turn_complete")))))))
+
+(deftest test-handle-prompt-with-workstream-resumes-existing-session
+  (testing "Prompt with workstream_id resumes existing Claude session"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (reset! repl/session-locks #{})
+    (let [sent-messages (atom [])
+          claude-invoked (atom nil)]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    ws/save-workstream-index! (fn [] nil)
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & {:keys [new-session-id resume-session-id working-directory]}]
+                      (reset! claude-invoked {:new-session-id new-session-id
+                                              :resume-session-id resume-session-id
+                                              :working-directory working-directory})
+                      (callback {:success true :session-id "claude-existing-456"}))]
+
+        ;; Create workstream WITH active session
+        (ws/create-workstream! {:id "ws-prompt-resume"
+                                :name "Resume Test"
+                                :working-directory "/test/existing"})
+        (ws/link-claude-session! "ws-prompt-resume" "claude-existing-456")
+
+        ;; Send prompt with workstream_id
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "Continue work"
+                                 :workstream_id "ws-prompt-resume"}))
+
+        ;; Verify Claude was invoked with resume-session-id (not new)
+        (is (some? @claude-invoked))
+        (is (nil? (:new-session-id @claude-invoked)))
+        (is (= "claude-existing-456" (:resume-session-id @claude-invoked)))))))
+
+(deftest test-handle-prompt-legacy-new-session-creates-workstream
+  (testing "Prompt with legacy new_session_id auto-creates workstream"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (reset! repl/session-locks #{})
+    (let [sent-messages (atom [])
+          workstream-count-before (count (ws/get-all-workstreams))]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    ws/save-workstream-index! (fn [] nil)
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & opts]
+                      (callback {:success true :session-id "legacy-new-123"}))]
+
+        ;; Send prompt with legacy new_session_id
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "Legacy new session"
+                                 :new_session_id "legacy-new-123"
+                                 :working_directory "/legacy/path"}))
+
+        ;; Verify workstream was created
+        (is (= (inc workstream-count-before) (count (ws/get-all-workstreams))))
+
+        ;; Find the created workstream
+        (let [created-ws (first (filter #(= "legacy-new-123" (:active-claude-session-id %))
+                                        (ws/get-all-workstreams)))]
+          (is (some? created-ws))
+          (is (= "New Session" (:name created-ws)))
+          (is (= "/legacy/path" (:working-directory created-ws))))))))
+
+(deftest test-handle-prompt-legacy-resume-finds-existing-workstream
+  (testing "Prompt with legacy resume_session_id finds existing workstream"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (reset! repl/session-locks #{})
+    (let [sent-messages (atom [])
+          claude-invoked (atom nil)]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    ws/save-workstream-index! (fn [] nil)
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & {:keys [resume-session-id]}]
+                      (reset! claude-invoked {:resume-session-id resume-session-id})
+                      (callback {:success true :session-id "claude-resume-789"}))]
+
+        ;; Create workstream with linked session
+        (ws/create-workstream! {:id "ws-existing"
+                                :name "Existing Workstream"
+                                :working-directory "/existing/path"})
+        (ws/link-claude-session! "ws-existing" "claude-resume-789")
+
+        (let [workstream-count-before (count (ws/get-all-workstreams))]
+          ;; Send prompt with legacy resume_session_id
+          (server/handle-message :test-ch
+                                 (json/generate-string
+                                  {:type "prompt"
+                                   :text "Resume legacy"
+                                   :resume_session_id "claude-resume-789"}))
+
+          ;; Should NOT create a new workstream (found existing)
+          (is (= workstream-count-before (count (ws/get-all-workstreams))))
+
+          ;; Should resume the session
+          (is (= "claude-resume-789" (:resume-session-id @claude-invoked))))))))
+
+(deftest test-handle-prompt-legacy-resume-creates-workstream-for-orphan
+  (testing "Prompt with legacy resume_session_id creates workstream for orphaned session"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (reset! repl/session-locks #{})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    ws/save-workstream-index! (fn [] nil)
+                    voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      {:session-id session-id
+                       :name "Orphan Session Name"
+                       :working-directory "/orphan/path"})
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & opts]
+                      (callback {:success true :session-id "orphan-session-999"}))]
+
+        ;; No workstreams exist
+        (is (empty? (ws/get-all-workstreams)))
+
+        ;; Send prompt with legacy resume_session_id for orphaned session
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "Resume orphan"
+                                 :resume_session_id "orphan-session-999"}))
+
+        ;; Should create workstream wrapper
+        (is (= 1 (count (ws/get-all-workstreams))))
+
+        ;; Verify created workstream has correct metadata
+        (let [created-ws (first (ws/get-all-workstreams))]
+          (is (= "Orphan Session Name" (:name created-ws)))
+          (is (= "/orphan/path" (:working-directory created-ws)))
+          (is (= "orphan-session-999" (:active-claude-session-id created-ws))))))))
+
+(deftest test-handle-prompt-session-lock-acquired
+  (testing "Session lock is acquired before Claude invocation"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (reset! repl/session-locks #{})
+    (let [lock-state-during-invoke (atom nil)]
+      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)
+                    ws/save-workstream-index! (fn [] nil)
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & {:keys [new-session-id resume-session-id]}]
+                      ;; Capture lock state during invocation
+                      (let [session-id (or new-session-id resume-session-id)]
+                        (reset! lock-state-during-invoke
+                                (repl/is-session-locked? session-id)))
+                      (callback {:success true :session-id "lock-test-123"}))]
+
+        ;; Create workstream
+        (ws/create-workstream! {:id "ws-lock-test"
+                                :name "Lock Test"
+                                :working-directory "/test"})
+
+        ;; Send prompt
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "Test lock"
+                                 :workstream_id "ws-lock-test"}))
+
+        ;; Verify lock was held during invocation
+        (is (true? @lock-state-during-invoke)
+            "Session should be locked during Claude invocation")
+
+        ;; Lock should be released after completion
+        (is (not (repl/is-session-locked? (:active-claude-session-id
+                                            (ws/get-workstream "ws-lock-test"))))
+            "Session should be unlocked after completion")))))
+
+(deftest test-handle-prompt-workstream-not-found
+  (testing "Prompt with unknown workstream_id returns error"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))]
+
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "Test"
+                                 :workstream_id "nonexistent-ws"}))
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (str/includes? (:message response) "Workstream not found")))))))
+
+(deftest test-handle-prompt-missing-text
+  (testing "Prompt without text returns error"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    ws/save-workstream-index! (fn [] nil)]
+
+        (ws/create-workstream! {:id "ws-no-text" :working-directory "/test"})
+
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :workstream_id "ws-no-text"}))
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (str/includes? (:message response) "text required")))))))
+
+(deftest test-handle-prompt-unified-routing
+  (testing "handle-prompt routes to workstream handler when workstream_id present"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (reset! repl/session-locks #{})
+    (let [workstream-handler-called (atom false)
+          legacy-handler-called (atom false)]
+      (with-redefs [server/handle-prompt-with-workstream
+                    (fn [_ data]
+                      (reset! workstream-handler-called true))
+                    server/handle-prompt-legacy
+                    (fn [_ data]
+                      (reset! legacy-handler-called true))]
+
+        ;; Call with workstream_id
+        (server/handle-prompt :test-ch {:workstream-id "ws-123" :text "test"})
+
+        (is (true? @workstream-handler-called))
+        (is (false? @legacy-handler-called)))))
+
+  (testing "handle-prompt routes to legacy handler when workstream_id absent"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (reset! repl/session-locks #{})
+    (let [workstream-handler-called (atom false)
+          legacy-handler-called (atom false)]
+      (with-redefs [server/handle-prompt-with-workstream
+                    (fn [_ data]
+                      (reset! workstream-handler-called true))
+                    server/handle-prompt-legacy
+                    (fn [_ data]
+                      (reset! legacy-handler-called true))]
+
+        ;; Call with legacy session_id
+        (server/handle-prompt :test-ch {:new-session-id "legacy-123" :text "test"})
+
+        (is (false? @workstream-handler-called))
+        (is (true? @legacy-handler-called))))))
+
+(deftest test-send-workstream-updated
+  (testing "send-workstream-updated! sends correct message format"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    ws/save-workstream-index! (fn [] nil)]
+
+        ;; Create workstream
+        (ws/create-workstream! {:id "ws-update-test"
+                                :name "Update Test"
+                                :working-directory "/test"})
+
+        ;; Call send-workstream-updated!
+        (server/send-workstream-updated! :test-ch "ws-update-test" "claude-session-xyz")
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "workstream_updated" (:type response)))
+          (is (= "ws-update-test" (:workstream_id response)))
+          (is (= "claude-session-xyz" (:active_claude_session_id response)))
+          (is (some? (:last_modified response)))
+          (is (some? (:message_count response))))))))
+
+(deftest test-get-or-create-workstream-for-session
+  (testing "Returns existing workstream when session is already linked"
+    (reset! ws/workstream-index {})
+    (with-redefs [ws/save-workstream-index! (fn [] nil)]
+      ;; Create workstream with linked session
+      (ws/create-workstream! {:id "ws-existing-link"
+                              :name "Existing Link"
+                              :working-directory "/existing"})
+      (ws/link-claude-session! "ws-existing-link" "session-already-linked")
+
+      (let [workstream-count-before (count (ws/get-all-workstreams))
+            result (server/get-or-create-workstream-for-session!
+                    "session-already-linked"
+                    "/some/path")]
+        ;; Should return existing workstream
+        (is (= "ws-existing-link" (:id result)))
+        ;; Should NOT create new workstream
+        (is (= workstream-count-before (count (ws/get-all-workstreams)))))))
+
+  (testing "Creates new workstream for orphaned session"
+    (reset! ws/workstream-index {})
+    (with-redefs [ws/save-workstream-index! (fn [] nil)
+                  repl/get-session-metadata (fn [_]
+                                              {:name "Orphan Name"
+                                               :working-directory "/orphan/dir"})]
+      (let [result (server/get-or-create-workstream-for-session!
+                    "orphan-session-id"
+                    nil)]
+        ;; Should create new workstream
+        (is (= 1 (count (ws/get-all-workstreams))))
+        ;; Should inherit name from session metadata
+        (is (= "Orphan Name" (:name result)))
+        ;; Should have session linked
+        (is (= "orphan-session-id" (:active-claude-session-id result)))))))
 

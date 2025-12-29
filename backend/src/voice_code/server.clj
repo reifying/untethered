@@ -254,6 +254,259 @@
                           :workstream-id workstream-id
                           :previous-claude-session-id previous-session-id})))))
 
+(defn send-workstream-updated!
+  "Send workstream_updated message to client after successful prompt.
+  Includes updated active session ID, last modified timestamp, and preview."
+  [channel workstream-id claude-session-id]
+  (when-let [workstream (ws/get-workstream workstream-id)]
+    (let [preview nil  ; TODO: Get from Claude response or session metadata
+          message-count 0]  ; TODO: Get from Claude session if linked
+      (send-to-client! channel
+                       {:type :workstream-updated
+                        :workstream-id workstream-id
+                        :active-claude-session-id claude-session-id
+                        :last-modified (ws/format-timestamp (:last-modified workstream))
+                        :message-count message-count
+                        :preview preview}))))
+
+;; ============================================================================
+;; Prompt Handlers (Workstream Abstraction)
+;; ============================================================================
+
+(declare handle-prompt-legacy)
+
+(defn handle-prompt-with-workstream
+  "Handle prompt message using workstream abstraction.
+
+  When workstream has active_claude_session_id:
+    - Resume that Claude session (use --resume)
+  When workstream has no active Claude session:
+    - Generate new UUID
+    - Link it to workstream
+    - Create new session (use --session-id)
+
+  Parameters in data:
+    :workstream-id - Required workstream UUID
+    :text - Required prompt text
+    :working-directory - Optional override
+    :system-prompt - Optional system prompt
+    :force-new-session - Optional flag from legacy handler (use --session-id even if session linked)"
+  [channel data]
+  (let [workstream-id (:workstream-id data)
+        text (:text data)
+        working-directory (:working-directory data)
+        system-prompt (:system-prompt data)
+        force-new-session? (:force-new-session data)]
+    (cond
+      (not workstream-id)
+      (send-to-client! channel {:type :error :message "workstream_id required in prompt"})
+
+      (not text)
+      (send-to-client! channel {:type :error :message "text required in prompt"})
+
+      (not (ws/get-workstream workstream-id))
+      (send-to-client! channel {:type :error :message (str "Workstream not found: " workstream-id)})
+
+      :else
+      (let [workstream (ws/get-workstream workstream-id)
+            active-session-id (:active-claude-session-id workstream)
+            ;; New session if: no active session OR force-new-session flag is set
+            is-new-session? (or (nil? active-session-id) force-new-session?)
+            claude-session-id (or active-session-id (str (java.util.UUID/randomUUID)))
+            effective-working-dir (or working-directory (:working-directory workstream))]
+
+        ;; Try to acquire lock
+        (if (repl/acquire-session-lock! claude-session-id)
+          (do
+            ;; If new session (and not already linked), link it to workstream BEFORE invoking Claude
+            (when (and is-new-session? (nil? active-session-id))
+              (log/info "Linking new Claude session to workstream"
+                        {:workstream-id workstream-id
+                         :claude-session-id claude-session-id})
+              (ws/link-claude-session! workstream-id claude-session-id))
+
+            ;; Send ack
+            (send-to-client! channel {:type :ack :message "Processing prompt..."})
+
+            ;; Register for session_ready if new session
+            (when is-new-session?
+              (log/info "New session via workstream, registering for session_ready"
+                        {:session-id claude-session-id})
+              (swap! pending-new-sessions assoc claude-session-id channel))
+
+            (log/info "Invoking Claude via workstream"
+                      {:workstream-id workstream-id
+                       :claude-session-id claude-session-id
+                       :is-new-session is-new-session?
+                       :force-new-session force-new-session?
+                       :working-directory effective-working-dir})
+
+            ;; Invoke Claude asynchronously
+            (claude/invoke-claude-async
+             text
+             (fn [response]
+               (try
+                 (if (:success response)
+                   (do
+                     (log/info "Prompt completed successfully via workstream"
+                               {:workstream-id workstream-id
+                                :claude-session-id claude-session-id})
+                     ;; Send workstream_updated notification
+                     (send-workstream-updated! channel workstream-id claude-session-id)
+                     ;; Send turn_complete
+                     (send-to-client! channel
+                                      {:type :turn-complete
+                                       :session-id claude-session-id}))
+                   (do
+                     (log/error "Prompt failed via workstream"
+                                {:workstream-id workstream-id
+                                 :error (:error response)})
+                     (send-to-client! channel
+                                      {:type :error
+                                       :message (:error response)
+                                       :session-id claude-session-id})))
+                 (finally
+                   (repl/release-session-lock! claude-session-id))))
+             (if is-new-session? :new-session-id :resume-session-id) claude-session-id
+             :working-directory effective-working-dir
+             :timeout-ms 86400000
+             :system-prompt system-prompt))
+
+          ;; Session locked
+          (do
+            (log/info "Session locked, rejecting prompt via workstream"
+                      {:workstream-id workstream-id
+                       :claude-session-id claude-session-id})
+            (send-session-locked! channel claude-session-id)))))))
+
+(defn get-or-create-workstream-for-session!
+  "Get existing workstream for a Claude session, or create one if none exists.
+  Used for backward compatibility with legacy session_id prompts.
+
+  Returns the workstream map."
+  [claude-session-id working-directory]
+  ;; Check if any workstream already has this Claude session linked
+  (if-let [existing-ws (first (filter #(= claude-session-id (:active-claude-session-id %))
+                                       (ws/get-all-workstreams)))]
+    (do
+      (log/debug "Found existing workstream for Claude session"
+                 {:workstream-id (:id existing-ws)
+                  :claude-session-id claude-session-id})
+      existing-ws)
+    ;; Create new workstream wrapper
+    (let [ws-id (str (java.util.UUID/randomUUID))
+          session-metadata (repl/get-session-metadata claude-session-id)
+          session-name (or (:name session-metadata) "Migrated Session")
+          ws-working-dir (or working-directory
+                             (:working-directory session-metadata)
+                             (System/getProperty "user.dir"))]
+      (ws/create-workstream!
+       {:id ws-id
+        :name session-name
+        :working-directory ws-working-dir})
+      ;; Link Claude session to workstream
+      (ws/link-claude-session! ws-id claude-session-id)
+      (log/info "Created workstream wrapper for legacy session"
+                {:workstream-id ws-id
+                 :claude-session-id claude-session-id
+                 :name session-name})
+      ;; Return the updated workstream (with session linked)
+      (ws/get-workstream ws-id))))
+
+(defn resolve-working-directory
+  "Resolve working directory for prompts, handling placeholder conversion."
+  [ios-working-dir resume-session-id]
+  (if resume-session-id
+    ;; Resuming session: prefer stored working dir from session metadata
+    (let [session-metadata (repl/get-session-metadata resume-session-id)]
+      (if session-metadata
+        (do
+          (log/info "Using stored working directory for resumed session"
+                    {:session-id resume-session-id
+                     :stored-dir (:working-directory session-metadata)
+                     :ios-sent-dir ios-working-dir})
+          (:working-directory session-metadata))
+        (do
+          (log/warn "Session not found in metadata, using iOS working dir"
+                    {:session-id resume-session-id})
+          ios-working-dir)))
+    ;; New session: use iOS dir, apply fallback if placeholder
+    (if (and ios-working-dir (str/starts-with? ios-working-dir "[from project:"))
+      (let [project-name (second (re-find #"\[from project: ([^\]]+)\]" ios-working-dir))]
+        (log/info "Converting placeholder to real path for new session"
+                  {:placeholder ios-working-dir
+                   :project-name project-name})
+        (repl/project-name->working-dir project-name))
+      ios-working-dir)))
+
+(defn handle-prompt-legacy
+  "Handle prompt message with legacy session_id fields.
+  Auto-creates workstream wrapper for backward compatibility.
+
+  Supports:
+  - new-session-id: Create new Claude session (creates new workstream)
+  - resume-session-id: Resume existing Claude session (finds/creates workstream)
+
+  After handling, delegates to handle-prompt-with-workstream."
+  [channel data]
+  (let [new-session-id (:new-session-id data)
+        resume-session-id (:resume-session-id data)
+        ios-working-dir (:working-directory data)
+        ;; Resolve working directory using existing logic
+        working-directory (resolve-working-directory ios-working-dir resume-session-id)]
+    (cond
+      ;; Both specified - error
+      (and new-session-id resume-session-id)
+      (send-to-client! channel
+                       {:type :error
+                        :message "Cannot specify both new_session_id and resume_session_id"})
+
+      ;; New session: create workstream + pre-link Claude session
+      ;; Pass :force-new-session flag so workstream handler uses --session-id
+      new-session-id
+      (let [ws-id (str (java.util.UUID/randomUUID))
+            workstream (ws/create-workstream!
+                        {:id ws-id
+                         :name "New Session"
+                         :working-directory (or working-directory
+                                                (System/getProperty "user.dir"))})]
+        ;; Pre-link the Claude session so workstream handler uses it
+        (ws/link-claude-session! ws-id new-session-id)
+        (log/info "Legacy new-session-id: created workstream with pre-linked session"
+                  {:workstream-id ws-id
+                   :claude-session-id new-session-id})
+        ;; Delegate to workstream handler with force-new-session flag
+        (handle-prompt-with-workstream channel
+                                       (-> data
+                                           (assoc :workstream-id ws-id)
+                                           (assoc :working-directory working-directory)
+                                           (assoc :force-new-session true))))
+
+      ;; Resume session: find/create workstream, then delegate
+      resume-session-id
+      (let [workstream (get-or-create-workstream-for-session! resume-session-id working-directory)]
+        (log/info "Legacy resume-session-id: using workstream"
+                  {:workstream-id (:id workstream)
+                   :claude-session-id resume-session-id})
+        (handle-prompt-with-workstream channel
+                                       (-> data
+                                           (assoc :workstream-id (:id workstream))
+                                           (assoc :working-directory working-directory))))
+
+      ;; Neither field present - error
+      :else
+      (send-to-client! channel
+                       {:type :error
+                        :message "Either workstream_id, new_session_id, or resume_session_id required"}))))
+
+(defn handle-prompt
+  "Unified prompt handler supporting both workstream_id and legacy session_id fields.
+  Prefers workstream_id if present, falls back to legacy handling."
+  [channel data]
+  (if (:workstream-id data)
+    (handle-prompt-with-workstream channel data)
+    (handle-prompt-legacy channel data)))
+
 (defn is-session-deleted-for-client?
   "Check if a client has deleted a session locally"
   [channel session-id]
@@ -854,127 +1107,13 @@
               (repl/unsubscribe-from-session! session-id)))
 
           "prompt"
-        ;; Updated to use new_session_id vs resume_session_id
-        ;; In new architecture: NO direct response - rely on filesystem watcher + subscription
-          (let [new-session-id (:new-session-id data)
-                resume-session-id (:resume-session-id data)
-                prompt-text (:text data)
-                ios-working-dir (:working-directory data)
-                system-prompt (:system-prompt data)
-                _ (log/info "🔍 System prompt received from iOS" {:value system-prompt :has-value? (some? system-prompt)})
-              ;; Determine actual working directory to use:
-              ;; - For resumed sessions: Use stored working dir from session metadata (extracted from .jsonl cwd)
-              ;; - For new sessions: Use iOS-provided dir, with fallback if placeholder
-                working-dir (if resume-session-id
-                              (let [session-metadata (repl/get-session-metadata resume-session-id)]
-                                (if session-metadata
-                                  (do
-                                    (log/info "Using stored working directory for resumed session"
-                                              {:session-id resume-session-id
-                                               :stored-dir (:working-directory session-metadata)
-                                               :ios-sent-dir ios-working-dir})
-                                    (:working-directory session-metadata))
-                                  (do
-                                    (log/warn "Session not found in metadata, using iOS working dir"
-                                              {:session-id resume-session-id})
-                                    ios-working-dir)))
-                            ;; New session: use iOS dir, apply fallback if placeholder
-                              (if (and ios-working-dir (str/starts-with? ios-working-dir "[from project:"))
-                                (let [project-name (second (re-find #"\[from project: ([^\]]+)\]" ios-working-dir))]
-                                  (log/info "Converting placeholder to real path for new session"
-                                            {:placeholder ios-working-dir
-                                             :project-name project-name})
-                                  (repl/project-name->working-dir project-name))
-                                ios-working-dir))]
-
-            (cond
-            ;; Check if client has connected first
-              (not (contains? @connected-clients channel))
-              (http/send! channel
-                          (generate-json
-                           {:type :error
-                            :message "Must send connect message first"}))
-
-              (not prompt-text)
-              (http/send! channel
-                          (generate-json
-                           {:type :error
-                            :message "text required in prompt message"}))
-
-              (and new-session-id resume-session-id)
-              (http/send! channel
-                          (generate-json
-                           {:type :error
-                            :message "Cannot specify both new_session_id and resume_session_id"}))
-
-              :else
-              (let [claude-session-id (or resume-session-id new-session-id)
-                    orch-state (get-session-recipe-state claude-session-id)
-                    final-prompt-text (if orch-state
-                                        (if-let [recipe (recipes/get-recipe (:recipe-id orch-state))]
-                                          (or (get-next-step-prompt claude-session-id orch-state recipe) prompt-text)
-                                          prompt-text)
-                                        prompt-text)]
-              ;; Try to acquire lock for this session
-                (if (repl/acquire-session-lock! claude-session-id)
-                  (do
-                    (log/info "Received prompt"
-                              {:text (subs prompt-text 0 (min 50 (count prompt-text)))
-                               :new-session-id new-session-id
-                               :resume-session-id resume-session-id
-                               :working-directory working-dir
-                               :in-recipe (some? orch-state)
-                               :session-locked false})
-
-                  ;; Send immediate acknowledgment
-                    (http/send! channel
-                                (generate-json
-                                 {:type :ack
-                                  :message "Processing prompt..."}))
-
-;; For new sessions: register channel so we can send session_ready when file is created
-                  ;; Filesystem watcher will send session_ready once Claude CLI creates the file
-                    (when new-session-id
-                      (log/info "New session detected, registering for session_ready" {:session-id new-session-id})
-                      (swap! pending-new-sessions assoc new-session-id channel))
-
-                  ;; Invoke Claude asynchronously
-                  ;; NEW ARCHITECTURE: Don't send response directly
-                  ;; Filesystem watcher will detect changes and send session_updated
-                    (claude/invoke-claude-async
-                     final-prompt-text
-                     (fn [response]
-                     ;; Always release lock when done (success or failure)
-                       (try
-                       ;; Just log completion - let filesystem watcher handle updates
-                         (if (:success response)
-                           (do
-                             (log/info "Prompt completed successfully"
-                                       {:session-id (:session-id response)})
-                           ;; Send turn_complete message so iOS can unlock
-                             (send-to-client! channel
-                                              {:type :turn-complete
-                                               :session-id claude-session-id}))
-                           (do
-                             (log/error "Prompt failed" {:error (:error response) :session-id claude-session-id})
-                           ;; Still send error responses directly - include session-id so iOS can unlock
-                             (send-to-client! channel
-                                              {:type :error
-                                               :message (:error response)
-                                               :session-id claude-session-id})))
-                         (finally
-                           (repl/release-session-lock! claude-session-id))))
-                     :new-session-id new-session-id
-                     :resume-session-id resume-session-id
-                     :working-directory working-dir
-                     :timeout-ms 86400000
-                     :system-prompt system-prompt))
-                  (do
-                  ;; Session is locked, send session_locked message
-                    (log/info "Session locked, rejecting prompt"
-                              {:session-id claude-session-id
-                               :text (subs prompt-text 0 (min 50 (count prompt-text)))})
-                    (send-session-locked! channel claude-session-id))))))
+          ;; Route to unified prompt handler (supports workstream_id and legacy session_id)
+          (if (contains? @connected-clients channel)
+            (handle-prompt channel data)
+            (http/send! channel
+                        (generate-json
+                         {:type :error
+                          :message "Must send connect message first"})))
 
           "set_directory"
           (let [path (:path data)]
