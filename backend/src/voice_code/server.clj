@@ -370,8 +370,12 @@
                         file (io/file file-path)
                         current-size (.length file)
                         all-messages (repl/parse-jsonl-file file-path)
-                      ;; Filter internal messages (sidechain, summary, system), then limit to most recent 20
-                        messages (vec (take-last 20 (repl/filter-internal-messages all-messages)))]
+                      ;; Filter internal messages (sidechain, summary, system)
+                      ;; Send recent messages to ensure iOS has complete/fresh state
+                      ;; Limit to 200 for performance while providing sufficient context
+                      ;; (iOS prunes to 50 anyway, but backend retains full history)
+                        filtered (repl/filter-internal-messages all-messages)
+                        messages (vec (take-last 200 filtered))]
                   ;; Update file position to current size so incremental parsing starts fresh
                   ;; This ensures we only get NEW messages after this subscription
                     (repl/reset-file-position! file-path)

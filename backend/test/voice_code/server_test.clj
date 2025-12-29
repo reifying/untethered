@@ -602,3 +602,97 @@
         (is (= 18 @captured-limit)
             "send-recent-sessions! should use updated limit on subsequent calls")))))
 
+;; Session Subscribe Tests - verifies all messages are sent, not just 20
+
+(deftest test-subscribe-sends-recent-messages-with-limit
+  (testing "Subscribe sends recent 200 filtered messages (not unlimited, not limited to 20)"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (let [sent-messages (atom [])
+          ;; Create 250 mock messages to test the 200 limit
+          mock-messages (vec (for [i (range 250)]
+                               {:type (if (even? i) "user" "assistant")
+                                :text (str "Message " i)
+                                :message {:role (if (even? i) "user" "assistant")
+                                          :content (str "Message " i)}}))]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    voice-code.replication/subscribe-to-session! (fn [_] nil)
+                    voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      {:session-id session-id
+                       :file "/tmp/test-session.jsonl"
+                       :message-count 250})
+                    voice-code.replication/parse-jsonl-file
+                    (fn [_] mock-messages)
+                    voice-code.replication/filter-internal-messages
+                    (fn [msgs] msgs) ;; No filtering for this test
+                    voice-code.replication/reset-file-position! (fn [_] nil)
+                    voice-code.replication/file-positions (atom {})
+                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
+                                                      (length [] 1000)
+                                                      (exists [] true)))]
+
+        (server/handle-message :test-ch "{\"type\":\"subscribe\",\"session_id\":\"test-session-123\"}")
+
+        ;; Verify session_history message was sent with last 200 messages
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "session_history" (:type response)))
+          (is (= "test-session-123" (:session_id response)))
+          (is (= 200 (count (:messages response)))
+              "Should send last 200 messages (performance limit)")
+          (is (= 250 (:total_count response))
+              "total_count should reflect all messages in file")
+          ;; Verify we got the LAST 200 messages (indices 50-249)
+          (is (= "Message 50" (-> response :messages first :text))
+              "First message should be index 50 (start of last 200)")
+          (is (= "Message 249" (-> response :messages last :text))
+              "Last message should be index 249"))))))
+
+(deftest test-subscribe-filters-internal-messages
+  (testing "Subscribe filters out internal messages (sidechain, summary, system)"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (let [sent-messages (atom [])
+          ;; Create mock messages including internal ones
+          mock-messages [{:type "user" :text "Real message 1" :message {:role "user" :content "Real message 1"}}
+                         {:type "summary" :summary "Error summary"}
+                         {:type "assistant" :text "Real message 2" :message {:role "assistant" :content "Real message 2"}}
+                         {:type "system" :content "System notification"}
+                         {:type "user" :text "Real message 3" :isSidechain true}
+                         {:type "user" :text "Real message 4" :message {:role "user" :content "Real message 4"}}]]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    voice-code.replication/subscribe-to-session! (fn [_] nil)
+                    voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      {:session-id session-id
+                       :file "/tmp/test-session.jsonl"
+                       :message-count 6})
+                    voice-code.replication/parse-jsonl-file
+                    (fn [_] mock-messages)
+                    voice-code.replication/filter-internal-messages
+                    ;; Use actual filtering logic
+                    (fn [msgs]
+                      (remove #(or (:isSidechain %)
+                                   (= "summary" (:type %))
+                                   (= "system" (:type %)))
+                              msgs))
+                    voice-code.replication/reset-file-position! (fn [_] nil)
+                    voice-code.replication/file-positions (atom {})
+                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
+                                                      (length [] 1000)
+                                                      (exists [] true)))]
+
+        (server/handle-message :test-ch "{\"type\":\"subscribe\",\"session_id\":\"test-session-456\"}")
+
+        ;; Verify only non-internal messages are sent
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "session_history" (:type response)))
+          (is (= 3 (count (:messages response)))
+              "Should only send 3 real messages, filtering out summary, system, and sidechain")
+          ;; Total count reflects ALL messages in file
+          (is (= 6 (:total_count response))))))))
+
