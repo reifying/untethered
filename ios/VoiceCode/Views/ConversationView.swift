@@ -46,7 +46,7 @@ struct ConversationView: View {
     @EnvironmentObject var draftManager: DraftManager
 
     @State private var isLoading = false
-    @State private var hasLoadedMessages = false
+    @State private var hasSubscribedThisAppear = false  // Tracks if we've already subscribed this onAppear cycle
     @State private var promptText = ""
     @State private var isVoiceMode = true
     @State private var showingRenameSheet = false
@@ -127,7 +127,7 @@ struct ConversationView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.top, 100)
-                } else if messages.isEmpty && hasLoadedMessages {
+                } else if messages.isEmpty && hasSubscribedThisAppear {
                     VStack(spacing: 16) {
                         Image(systemName: "message")
                             .font(.system(size: 64))
@@ -161,6 +161,15 @@ struct ConversationView: View {
                         .scrollContentBackground(.hidden)
                         .onAppear {
                             scrollProxy = proxy
+                            // Perform initial scroll when ScrollViewReader appears with cached messages
+                            // This handles the case where messages are already loaded from CoreData
+                            if !hasPerformedInitialScroll && !messages.isEmpty {
+                                hasPerformedInitialScroll = true
+                                if let lastMessage = messages.last {
+                                    logger.debug("📨 Initial scroll on ScrollViewReader appear")
+                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                }
+                            }
                         }
                         .onChange(of: messages.count) { oldCount, newCount in
                             // Hide loading indicator when messages arrive
@@ -424,34 +433,30 @@ struct ConversationView: View {
         .sheet(isPresented: $showingRecipeMenu) {
             RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased(), workingDirectory: session.workingDirectory)
         }
-        .task {
-            // Defer state initialization to after view is fully mounted
-            // This prevents AttributeGraph crashes from state mutations during onAppear
-            await MainActor.run {
-                // Reset scroll flags when view appears (handles navigation back to session)
-                print("👁️ [AutoScroll] View appeared, resetting state")
-                hasPerformedInitialScroll = false
-                autoScrollEnabled = true  // Re-enable auto-scroll on view appear
-                print("👁️ [AutoScroll] Auto-scroll enabled on view appear")
+        .onAppear {
+            // Reset scroll flags when view appears (handles navigation back to session)
+            print("👁️ [AutoScroll] View appeared, resetting state")
+            hasPerformedInitialScroll = false
+            autoScrollEnabled = true  // Re-enable auto-scroll on view appear
+            print("👁️ [AutoScroll] Auto-scroll enabled on view appear")
 
-                loadSessionIfNeeded()
-                setupVoiceInput()
+            loadSessionIfNeeded()
+            setupVoiceInput()
 
-                // Restore draft text for this session
-                let sessionID = session.id.uuidString.lowercased()
-                let draftText = draftManager.getDraft(sessionID: sessionID)
+            // Restore draft text for this session
+            let sessionID = session.id.uuidString.lowercased()
+            let draftText = draftManager.getDraft(sessionID: sessionID)
 
-                // Only set if there's actual draft text to avoid triggering onChange unnecessarily
-                if !draftText.isEmpty {
-                    promptText = draftText
-                }
+            // Only set if there's actual draft text to avoid triggering onChange unnecessarily
+            if !draftText.isEmpty {
+                promptText = draftText
+            }
 
-                // Restore compaction state for this session
-                if compactionTimestamps[session.id] != nil {
-                    wasRecentlyCompacted = true
-                } else {
-                    wasRecentlyCompacted = false
-                }
+            // Restore compaction state for this session
+            if compactionTimestamps[session.id] != nil {
+                wasRecentlyCompacted = true
+            } else {
+                wasRecentlyCompacted = false
             }
         }
         .onChange(of: promptText) { oldValue, newValue in
@@ -468,6 +473,10 @@ struct ConversationView: View {
 
             // Unsubscribe when leaving the conversation
             client.unsubscribe(sessionId: session.id.uuidString.lowercased())
+
+            // Reset flag so next onAppear triggers a fresh subscribe
+            // This ensures messages are refreshed when navigating back to session
+            hasSubscribedThisAppear = false
         }
     }
     
@@ -480,25 +489,25 @@ struct ConversationView: View {
     }
 
     private func loadSessionIfNeeded() {
-        guard !hasLoadedMessages else { return }
+        // Guard against redundant subscribes within the same onAppear cycle
+        // This prevents duplicate subscriptions when SwiftUI re-renders
+        guard !hasSubscribedThisAppear else {
+            logger.debug("⏱️ loadSessionIfNeeded SKIPPED - already subscribed this appear cycle")
+            return
+        }
 
         let loadStart = Date()
+
         logger.info("⏱️ loadSessionIfNeeded START - session: \(self.session.id.uuidString.lowercased().prefix(8))... (existing messages: \(self.messages.count))")
 
-        hasLoadedMessages = true
+        hasSubscribedThisAppear = true
 
-        // If messages already exist in CoreData, skip loading indicator and scroll immediately
+        // If messages already exist in CoreData, skip loading indicator
+        // Initial scroll is handled by ScrollViewReader's .onAppear handler
         if !messages.isEmpty {
             let elapsedMs = Int(Date().timeIntervalSince(loadStart) * 1000)
             logger.info("⏱️ +\(elapsedMs)ms - messages already cached (\(self.messages.count)), skipping loading indicator")
             isLoading = false
-            // Scroll to bottom on next run loop (after view is laid out)
-            DispatchQueue.main.async {
-                if !self.hasPerformedInitialScroll {
-                    self.hasPerformedInitialScroll = true
-                    self.scrollProxy?.scrollTo("bottom", anchor: .bottom)
-                }
-            }
         } else {
             isLoading = true
         }
@@ -532,6 +541,8 @@ struct ConversationView: View {
         // Subscribe to the session to load full history
         // Skip subscribe for new sessions (messageCount == 0) to avoid "session not found" error
         // The session will be created when the first prompt is sent
+        // Subscribe on every onAppear to ensure fresh messages (no staleness)
+        // Backend sends ALL filtered messages on subscribe (no 20-message limit)
         let subscribeMs = Int(Date().timeIntervalSince(loadStart) * 1000)
         if session.messageCount > 0 {
             logger.info("⏱️ +\(subscribeMs)ms - subscribing to session (messageCount: \(self.session.messageCount))")
@@ -816,12 +827,12 @@ struct ConversationView: View {
             print("🔘 [AutoScroll] Re-enabling via manual toggle and jumping to bottom")
             autoScrollEnabled = true
 
-            if let proxy = scrollProxy {
-                print("🔘 [AutoScroll] Scrolling to bottom anchor")
+            if let proxy = scrollProxy, let lastMessage = messages.last {
+                print("🔘 [AutoScroll] Scrolling to last message")
                 // Note: Removed withAnimation wrapper to prevent multiple layout passes
-                proxy.scrollTo("bottom", anchor: .bottom)
+                proxy.scrollTo(lastMessage.id, anchor: .bottom)
             } else {
-                print("🔘 [AutoScroll] No scroll proxy available")
+                print("🔘 [AutoScroll] No scroll proxy or messages available")
             }
         }
     }
