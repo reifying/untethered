@@ -112,7 +112,7 @@ public struct CommandExecution: Identifiable, Equatable, Sendable {
 }
 
 // CommandHistorySession represents a single command execution from history
-public struct CommandHistorySession: Identifiable, Codable, Equatable, Sendable {
+public struct CommandHistorySession: Identifiable, Codable, Equatable, Hashable, Sendable {
     public let commandSessionId: String
     public let commandId: String
     public let shellCommand: String
