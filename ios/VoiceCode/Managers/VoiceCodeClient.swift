@@ -38,6 +38,7 @@ class VoiceCodeClient: ObservableObject {
 
     private var sessionId: String?
     let sessionSyncManager: SessionSyncManager
+    let workstreamSyncManager: WorkstreamSyncManager
     private var appSettings: AppSettings?
 
     // Track active subscriptions for auto-restore on reconnection
@@ -54,7 +55,7 @@ class VoiceCodeClient: ObservableObject {
     private var debounceWorkItem: DispatchWorkItem?
     private let debounceDelay: TimeInterval = 0.1  // 100ms
 
-    init(serverURL: String, voiceOutputManager: VoiceOutputManager? = nil, sessionSyncManager: SessionSyncManager? = nil, appSettings: AppSettings? = nil, setupObservers: Bool = true) {
+    init(serverURL: String, voiceOutputManager: VoiceOutputManager? = nil, sessionSyncManager: SessionSyncManager? = nil, workstreamSyncManager: WorkstreamSyncManager? = nil, appSettings: AppSettings? = nil, setupObservers: Bool = true) {
         self.serverURL = serverURL
         self.appSettings = appSettings
 
@@ -64,6 +65,13 @@ class VoiceCodeClient: ObservableObject {
             self.sessionSyncManager = syncManager
         } else {
             self.sessionSyncManager = SessionSyncManager(voiceOutputManager: voiceOutputManager)
+        }
+
+        // Create WorkstreamSyncManager for workstream-based UI
+        if let wsManager = workstreamSyncManager {
+            self.workstreamSyncManager = wsManager
+        } else {
+            self.workstreamSyncManager = WorkstreamSyncManager()
         }
 
         if setupObservers {
@@ -786,6 +794,54 @@ class VoiceCodeClient: ObservableObject {
                 updatedRecipes.removeValue(forKey: sessionId)
                 scheduleUpdate(key: "activeRecipes", value: updatedRecipes)
 
+            // MARK: - Workstream Messages
+
+            case "workstream_list":
+                // List of workstreams received after connection
+                if let workstreams = json["workstreams"] as? [[String: Any]] {
+                    print("📋 [VoiceCodeClient] Received workstream_list with \(workstreams.count) workstreams")
+                    Task {
+                        await self.workstreamSyncManager.handleWorkstreamList(workstreams)
+                    }
+                }
+
+            case "workstream_created":
+                // Backend confirms workstream creation
+                print("✨ [VoiceCodeClient] Received workstream_created")
+                if let data = json as? [String: Any] {
+                    Task {
+                        await self.workstreamSyncManager.handleWorkstreamUpdated(data)
+                    }
+                }
+
+            case "workstream_updated":
+                // Workstream metadata updated
+                print("🔄 [VoiceCodeClient] Received workstream_updated")
+                if let data = json as? [String: Any] {
+                    Task {
+                        await self.workstreamSyncManager.handleWorkstreamUpdated(data)
+                    }
+                }
+
+            case "context_cleared":
+                // Context cleared for a workstream
+                if let idString = json["workstream_id"] as? String,
+                   let id = UUID(uuidString: idString) {
+                    print("🧹 [VoiceCodeClient] Received context_cleared for workstream: \(idString.prefix(8))...")
+                    let previousSessionId: UUID?
+                    if let prevIdString = json["previous_claude_session_id"] as? String {
+                        previousSessionId = UUID(uuidString: prevIdString)
+                    } else {
+                        previousSessionId = nil
+                    }
+                    Task {
+                        await self.workstreamSyncManager.handleContextCleared(
+                            workstreamId: id,
+                            previousClaudeSessionId: previousSessionId
+                        )
+                    }
+                }
+
             case "error":
                 // Check if this is a file upload error
                 if let message = json["message"] as? String,
@@ -1189,6 +1245,59 @@ class VoiceCodeClient: ObservableObject {
             "type": "exit_recipe",
             "session_id": sessionId
         ]
+        sendMessage(message)
+    }
+
+    // MARK: - Workstream Management
+
+    /// Create a new workstream on the backend
+    /// - Parameters:
+    ///   - id: The workstream UUID (iOS-generated)
+    ///   - name: Optional display name for the workstream
+    ///   - workingDirectory: The working directory path
+    func createWorkstream(id: UUID, name: String?, workingDirectory: String) {
+        var message: [String: Any] = [
+            "type": "create_workstream",
+            "workstream_id": id.uuidString.lowercased(),
+            "working_directory": workingDirectory
+        ]
+        if let name = name {
+            message["name"] = name
+        }
+        print("📤 [VoiceCodeClient] Creating workstream: \(id.uuidString.lowercased().prefix(8))...")
+        sendMessage(message)
+    }
+
+    /// Clear the context (active Claude session) from a workstream
+    /// - Parameter workstreamId: The workstream UUID
+    func clearContext(workstreamId: UUID) {
+        let message: [String: Any] = [
+            "type": "clear_context",
+            "workstream_id": workstreamId.uuidString.lowercased()
+        ]
+        print("📤 [VoiceCodeClient] Clearing context for workstream: \(workstreamId.uuidString.lowercased().prefix(8))...")
+        sendMessage(message)
+    }
+
+    /// Send a prompt using workstream-based routing
+    /// - Parameters:
+    ///   - text: The prompt text
+    ///   - workstreamId: The workstream UUID
+    ///   - workingDirectory: Optional working directory override
+    ///   - systemPrompt: Optional system prompt to append
+    func sendPrompt(text: String, workstreamId: UUID, workingDirectory: String? = nil, systemPrompt: String? = nil) {
+        var message: [String: Any] = [
+            "type": "prompt",
+            "text": text,
+            "workstream_id": workstreamId.uuidString.lowercased()
+        ]
+        if let dir = workingDirectory {
+            message["working_directory"] = dir
+        }
+        if let systemPrompt = systemPrompt, !systemPrompt.trimmingCharacters(in: .whitespaces).isEmpty {
+            message["system_prompt"] = systemPrompt
+        }
+        print("📤 [VoiceCodeClient] Sending prompt to workstream: \(workstreamId.uuidString.lowercased().prefix(8))...")
         sendMessage(message)
     }
 
