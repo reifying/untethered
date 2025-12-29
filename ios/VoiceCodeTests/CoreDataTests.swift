@@ -700,4 +700,325 @@ final class CoreDataTests: XCTestCase {
         try context.save()
         XCTAssertTrue(CDMessage.needsPruning(sessionId: session.id, in: context))
     }
+
+    // MARK: - CDWorkstream Tests
+
+    func testCDWorkstreamCreation() throws {
+        let workstream = CDWorkstream(context: context)
+        workstream.id = UUID()
+        workstream.name = "Test Workstream"
+        workstream.workingDirectory = "/Users/test/code/project"
+        workstream.queuePriority = "normal"
+        workstream.priorityOrder = 0.0
+        workstream.createdAt = Date()
+        workstream.lastModified = Date()
+        workstream.messageCount = 0
+        workstream.unreadCount = 0
+        workstream.isInPriorityQueue = false
+
+        try context.save()
+
+        XCTAssertNotNil(workstream.id)
+        XCTAssertEqual(workstream.name, "Test Workstream")
+        XCTAssertEqual(workstream.workingDirectory, "/Users/test/code/project")
+        XCTAssertEqual(workstream.queuePriority, "normal")
+        XCTAssertNil(workstream.activeClaudeSessionId)
+        XCTAssertFalse(workstream.isInPriorityQueue)
+    }
+
+    func testCDWorkstreamComputedProperties() throws {
+        let workstream = CDWorkstream(context: context)
+        workstream.id = UUID()
+        workstream.name = "Test"
+        workstream.workingDirectory = "/test"
+        workstream.queuePriority = "normal"
+        workstream.priorityOrder = 0.0
+        workstream.createdAt = Date()
+        workstream.lastModified = Date()
+        workstream.messageCount = 0
+        workstream.unreadCount = 0
+        workstream.isInPriorityQueue = false
+
+        try context.save()
+
+        // Initially no active session - should be cleared
+        XCTAssertTrue(workstream.isCleared)
+        XCTAssertFalse(workstream.hasActiveSession)
+
+        // Link a Claude session
+        workstream.activeClaudeSessionId = UUID()
+        try context.save()
+
+        // Now has active session - not cleared
+        XCTAssertFalse(workstream.isCleared)
+        XCTAssertTrue(workstream.hasActiveSession)
+
+        // Clear context (unlink session)
+        workstream.activeClaudeSessionId = nil
+        try context.save()
+
+        // Back to cleared state
+        XCTAssertTrue(workstream.isCleared)
+        XCTAssertFalse(workstream.hasActiveSession)
+    }
+
+    func testCDWorkstreamFetchAllWorkstreams() throws {
+        // Create workstreams with different lastModified dates
+        for i in 0..<3 {
+            let workstream = CDWorkstream(context: context)
+            workstream.id = UUID()
+            workstream.name = "Workstream \(i)"
+            workstream.workingDirectory = "/test"
+            workstream.queuePriority = "normal"
+            workstream.priorityOrder = 0.0
+            workstream.createdAt = Date()
+            workstream.lastModified = Date().addingTimeInterval(TimeInterval(i * 100))
+            workstream.messageCount = 0
+            workstream.unreadCount = 0
+            workstream.isInPriorityQueue = false
+        }
+
+        try context.save()
+
+        let fetchRequest = CDWorkstream.fetchAllWorkstreams()
+        let workstreams = try context.fetch(fetchRequest)
+
+        XCTAssertEqual(workstreams.count, 3)
+        // Should be sorted by lastModified descending (newest first)
+        XCTAssertEqual(workstreams.first?.name, "Workstream 2")
+        XCTAssertEqual(workstreams.last?.name, "Workstream 0")
+    }
+
+    func testCDWorkstreamFetchByWorkingDirectory() throws {
+        // Create workstreams in different directories
+        let workstream1 = CDWorkstream(context: context)
+        workstream1.id = UUID()
+        workstream1.name = "Project A"
+        workstream1.workingDirectory = "/projects/a"
+        workstream1.queuePriority = "normal"
+        workstream1.priorityOrder = 0.0
+        workstream1.createdAt = Date()
+        workstream1.lastModified = Date()
+        workstream1.messageCount = 0
+        workstream1.unreadCount = 0
+        workstream1.isInPriorityQueue = false
+
+        let workstream2 = CDWorkstream(context: context)
+        workstream2.id = UUID()
+        workstream2.name = "Project A Feature"
+        workstream2.workingDirectory = "/projects/a"
+        workstream2.queuePriority = "normal"
+        workstream2.priorityOrder = 0.0
+        workstream2.createdAt = Date()
+        workstream2.lastModified = Date().addingTimeInterval(100)
+        workstream2.messageCount = 0
+        workstream2.unreadCount = 0
+        workstream2.isInPriorityQueue = false
+
+        let workstream3 = CDWorkstream(context: context)
+        workstream3.id = UUID()
+        workstream3.name = "Project B"
+        workstream3.workingDirectory = "/projects/b"
+        workstream3.queuePriority = "normal"
+        workstream3.priorityOrder = 0.0
+        workstream3.createdAt = Date()
+        workstream3.lastModified = Date()
+        workstream3.messageCount = 0
+        workstream3.unreadCount = 0
+        workstream3.isInPriorityQueue = false
+
+        try context.save()
+
+        // Fetch workstreams for /projects/a
+        let fetchRequest = CDWorkstream.fetchWorkstreams(workingDirectory: "/projects/a")
+        let workstreams = try context.fetch(fetchRequest)
+
+        XCTAssertEqual(workstreams.count, 2)
+        // Should be sorted by lastModified descending
+        XCTAssertEqual(workstreams.first?.name, "Project A Feature")
+    }
+
+    func testCDWorkstreamFetchById() throws {
+        let workstreamId = UUID()
+
+        let workstream = CDWorkstream(context: context)
+        workstream.id = workstreamId
+        workstream.name = "Test Workstream"
+        workstream.workingDirectory = "/test"
+        workstream.queuePriority = "normal"
+        workstream.priorityOrder = 0.0
+        workstream.createdAt = Date()
+        workstream.lastModified = Date()
+        workstream.messageCount = 0
+        workstream.unreadCount = 0
+        workstream.isInPriorityQueue = false
+
+        try context.save()
+
+        let fetchRequest = CDWorkstream.fetchWorkstream(id: workstreamId)
+        let fetched = try context.fetch(fetchRequest).first
+
+        XCTAssertNotNil(fetched)
+        XCTAssertEqual(fetched?.id, workstreamId)
+        XCTAssertEqual(fetched?.name, "Test Workstream")
+    }
+
+    func testCDWorkstreamFetchQueuedWorkstreams() throws {
+        // Create workstreams with different queue statuses
+        let normalWorkstream = CDWorkstream(context: context)
+        normalWorkstream.id = UUID()
+        normalWorkstream.name = "Normal"
+        normalWorkstream.workingDirectory = "/test"
+        normalWorkstream.queuePriority = "normal"
+        normalWorkstream.priorityOrder = 2.0
+        normalWorkstream.createdAt = Date()
+        normalWorkstream.lastModified = Date()
+        normalWorkstream.messageCount = 0
+        normalWorkstream.unreadCount = 0
+        normalWorkstream.isInPriorityQueue = true
+        normalWorkstream.priorityQueuedAt = Date()
+
+        let highWorkstream = CDWorkstream(context: context)
+        highWorkstream.id = UUID()
+        highWorkstream.name = "High Priority"
+        highWorkstream.workingDirectory = "/test"
+        highWorkstream.queuePriority = "high"
+        highWorkstream.priorityOrder = 1.0
+        highWorkstream.createdAt = Date()
+        highWorkstream.lastModified = Date()
+        highWorkstream.messageCount = 0
+        highWorkstream.unreadCount = 0
+        highWorkstream.isInPriorityQueue = true
+        highWorkstream.priorityQueuedAt = Date()
+
+        let notQueuedWorkstream = CDWorkstream(context: context)
+        notQueuedWorkstream.id = UUID()
+        notQueuedWorkstream.name = "Not Queued"
+        notQueuedWorkstream.workingDirectory = "/test"
+        notQueuedWorkstream.queuePriority = "normal"
+        notQueuedWorkstream.priorityOrder = 0.0
+        notQueuedWorkstream.createdAt = Date()
+        notQueuedWorkstream.lastModified = Date()
+        notQueuedWorkstream.messageCount = 0
+        notQueuedWorkstream.unreadCount = 0
+        notQueuedWorkstream.isInPriorityQueue = false
+
+        try context.save()
+
+        let fetchRequest = CDWorkstream.fetchQueuedWorkstreams()
+        let workstreams = try context.fetch(fetchRequest)
+
+        // Should only fetch queued workstreams
+        XCTAssertEqual(workstreams.count, 2)
+
+        // Verify "Not Queued" is excluded
+        let names = workstreams.map { $0.name }
+        XCTAssertFalse(names.contains("Not Queued"))
+        XCTAssertTrue(names.contains("High Priority"))
+        XCTAssertTrue(names.contains("Normal"))
+
+        // Sorted by queuePriority then priorityOrder
+        // "high" < "normal" alphabetically, so high priority first
+        XCTAssertEqual(workstreams.first?.name, "High Priority")
+    }
+
+    func testCDWorkstreamWithActiveSession() throws {
+        let claudeSessionId = UUID()
+
+        let workstream = CDWorkstream(context: context)
+        workstream.id = UUID()
+        workstream.name = "Active Workstream"
+        workstream.workingDirectory = "/test"
+        workstream.activeClaudeSessionId = claudeSessionId
+        workstream.queuePriority = "normal"
+        workstream.priorityOrder = 0.0
+        workstream.createdAt = Date()
+        workstream.lastModified = Date()
+        workstream.messageCount = 10
+        workstream.preview = "Last message preview..."
+        workstream.unreadCount = 2
+        workstream.isInPriorityQueue = false
+
+        try context.save()
+
+        // Fetch and verify
+        let fetchRequest = CDWorkstream.fetchWorkstream(id: workstream.id)
+        let fetched = try context.fetch(fetchRequest).first
+
+        XCTAssertNotNil(fetched)
+        XCTAssertEqual(fetched?.activeClaudeSessionId, claudeSessionId)
+        XCTAssertEqual(fetched?.messageCount, 10)
+        XCTAssertEqual(fetched?.preview, "Last message preview...")
+        XCTAssertEqual(fetched?.unreadCount, 2)
+        XCTAssertTrue(fetched?.hasActiveSession ?? false)
+        XCTAssertFalse(fetched?.isCleared ?? true)
+    }
+
+    func testCDWorkstreamUniquenessConstraint() throws {
+        let workstreamId = UUID()
+
+        // Create first workstream
+        let workstream1 = CDWorkstream(context: context)
+        workstream1.id = workstreamId
+        workstream1.name = "First"
+        workstream1.workingDirectory = "/test"
+        workstream1.queuePriority = "normal"
+        workstream1.priorityOrder = 0.0
+        workstream1.createdAt = Date()
+        workstream1.lastModified = Date()
+        workstream1.messageCount = 0
+        workstream1.unreadCount = 0
+        workstream1.isInPriorityQueue = false
+
+        try context.save()
+
+        // Create second workstream with same ID - merge policy should handle
+        let workstream2 = CDWorkstream(context: context)
+        workstream2.id = workstreamId
+        workstream2.name = "Updated"
+        workstream2.workingDirectory = "/test"
+        workstream2.queuePriority = "high"
+        workstream2.priorityOrder = 1.0
+        workstream2.createdAt = Date()
+        workstream2.lastModified = Date()
+        workstream2.messageCount = 5
+        workstream2.unreadCount = 0
+        workstream2.isInPriorityQueue = false
+
+        try context.save()
+
+        // Should have only one workstream due to uniqueness constraint + merge policy
+        let fetchRequest = CDWorkstream.fetchRequest()
+        let allWorkstreams = try context.fetch(fetchRequest)
+
+        XCTAssertEqual(allWorkstreams.count, 1)
+        // With mergeByPropertyObjectTrump, the new values should win
+        XCTAssertEqual(allWorkstreams.first?.name, "Updated")
+        XCTAssertEqual(allWorkstreams.first?.queuePriority, "high")
+        XCTAssertEqual(allWorkstreams.first?.messageCount, 5)
+    }
+
+    func testCDWorkstreamIdentifiable() throws {
+        let workstream = CDWorkstream(context: context)
+        workstream.id = UUID()
+        workstream.name = "Test"
+        workstream.workingDirectory = "/test"
+        workstream.queuePriority = "normal"
+        workstream.priorityOrder = 0.0
+        workstream.createdAt = Date()
+        workstream.lastModified = Date()
+        workstream.messageCount = 0
+        workstream.unreadCount = 0
+        workstream.isInPriorityQueue = false
+
+        try context.save()
+
+        // Verify Identifiable conformance
+        let id = workstream.id
+        XCTAssertNotNil(id)
+
+        // Can use in SwiftUI List/ForEach
+        let workstreams = [workstream]
+        XCTAssertEqual(workstreams.map(\.id).count, 1)
+    }
 }
