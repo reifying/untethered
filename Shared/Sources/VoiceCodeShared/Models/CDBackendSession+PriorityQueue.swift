@@ -225,4 +225,84 @@ extension CDBackendSession {
             return 0.0
         }
     }
+
+    // MARK: - Renormalization
+
+    /// Minimum gap between priorityOrder values before triggering renormalization
+    public static let minPriorityOrderGap: Double = 0.001
+
+    /// Check if priority queue needs renormalization
+    /// Returns true if any consecutive sessions within the same priority level have a gap smaller than minPriorityOrderGap
+    public static func needsRenormalization(context: NSManagedObjectContext) -> Bool {
+        let request: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
+        request.predicate = NSPredicate(format: "isInPriorityQueue == YES")
+        request.sortDescriptors = [
+            NSSortDescriptor(keyPath: \CDBackendSession.priority, ascending: true),
+            NSSortDescriptor(keyPath: \CDBackendSession.priorityOrder, ascending: true)
+        ]
+
+        guard let sessions = try? context.fetch(request), sessions.count > 1 else {
+            return false
+        }
+
+        // Check gaps within each priority level
+        var currentPriority: Int32 = -1
+        var lastOrder: Double = 0.0
+
+        for session in sessions {
+            if session.priority != currentPriority {
+                currentPriority = session.priority
+                lastOrder = session.priorityOrder
+            } else {
+                let gap = session.priorityOrder - lastOrder
+                if gap < minPriorityOrderGap && gap > 0 {
+                    Logger.priorityQueue.debug("📍 [Renormalization] Gap below threshold detected: \(gap) < \(minPriorityOrderGap)")
+                    return true
+                }
+                lastOrder = session.priorityOrder
+            }
+        }
+
+        return false
+    }
+
+    /// Renormalize priority order values to integers within each priority level
+    /// This resets priorityOrder values to 1.0, 2.0, 3.0, etc. within each priority group
+    public static func renormalizePriorityQueue(context: NSManagedObjectContext) {
+        let request: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
+        request.predicate = NSPredicate(format: "isInPriorityQueue == YES")
+        request.sortDescriptors = [
+            NSSortDescriptor(keyPath: \CDBackendSession.priority, ascending: true),
+            NSSortDescriptor(keyPath: \CDBackendSession.priorityOrder, ascending: true)
+        ]
+
+        guard let sessions = try? context.fetch(request) else { return }
+
+        var currentPriority: Int32 = -1
+        var orderCounter: Double = 1.0
+
+        for session in sessions {
+            if session.priority != currentPriority {
+                currentPriority = session.priority
+                orderCounter = 1.0
+            }
+
+            session.priorityOrder = orderCounter
+            orderCounter += 1.0
+        }
+
+        do {
+            try context.save()
+            Logger.priorityQueue.info("✅ Renormalized priority queue - all orders reset to integers (\(sessions.count) sessions)")
+
+            // Post notification for cross-view synchronization
+            NotificationCenter.default.post(
+                name: .priorityQueueChanged,
+                object: nil,
+                userInfo: ["renormalized": true]
+            )
+        } catch {
+            Logger.priorityQueue.error("❌ [PriorityQueue] Failed to save renormalization: \(error.localizedDescription)")
+        }
+    }
 }

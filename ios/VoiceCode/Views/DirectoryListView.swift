@@ -364,6 +364,12 @@ struct DirectoryListView: View {
             updateCachedDirectories()
             updateCachedQueuedSessions()
             updateCachedPriorityQueueSessions()
+
+            // Check and renormalize priority queue on app launch if needed
+            if CDBackendSession.needsRenormalization(context: viewContext) {
+                logger.info("📍 [PriorityQueue] Renormalization needed on app launch")
+                CDBackendSession.renormalizePriorityQueue(context: viewContext)
+            }
         }
         .onChange(of: sessions.count) { _ in
             updateCachedDirectories()
@@ -631,6 +637,12 @@ struct DirectoryListView: View {
         logger.info("🔄 [PriorityQueue] Reordering: source=\(sourceIndex) dest=\(destination) above=\(finalAbove?.id.uuidString.prefix(8) ?? "nil") below=\(finalBelow?.id.uuidString.prefix(8) ?? "nil")")
 
         CDBackendSession.reorderSession(movingSession, between: finalAbove, and: finalBelow, context: viewContext)
+
+        // Check if renormalization is needed after reorder
+        if CDBackendSession.needsRenormalization(context: viewContext) {
+            CDBackendSession.renormalizePriorityQueue(context: viewContext)
+        }
+
         updateCachedPriorityQueueSessions()
     }
 

@@ -133,6 +133,12 @@ struct MainWindowView: View {
         .task {
             // Load all sessions for command navigation
             loadAllSessions()
+
+            // Check and renormalize priority queue on app launch if needed
+            if CDBackendSession.needsRenormalization(context: viewContext) {
+                logger.info("📍 [PriorityQueue] Renormalization needed on app launch")
+                CDBackendSession.renormalizePriorityQueue(context: viewContext)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .sessionListDidUpdate)) { _ in
             loadAllSessions()
@@ -297,6 +303,9 @@ struct SidebarView: View {
                                     .tag(session)
                                     .listRowBackground(priorityTintColor(for: session.priority))
                             }
+                            .onMove { source, destination in
+                                reorderPriorityQueue(from: source, to: destination)
+                            }
                         } header: {
                             Text("Priority Queue")
                         }
@@ -392,6 +401,45 @@ struct SidebarView: View {
             return Color.blue.opacity(0.10)
         default: // Low (10) - no tint
             return Color.clear
+        }
+    }
+
+    /// Reorder sessions in priority queue based on drag destination
+    /// Uses midpoint calculation for priorityOrder to maintain order stability
+    private func reorderPriorityQueue(from source: IndexSet, to destination: Int) {
+        guard let sourceIndex = source.first else { return }
+
+        // Handle edge case: moving to same position (no-op)
+        // SwiftUI destination is "insert before" index, so moving down by 1 gives destination = sourceIndex + 2
+        if destination == sourceIndex || destination == sourceIndex + 1 {
+            return
+        }
+
+        let movingSession = priorityQueueSessions[sourceIndex]
+
+        // Calculate neighbors at the destination slot
+        // SwiftUI destination means "insert before this index" in the original array
+        let above: CDBackendSession? = destination > 0 ? priorityQueueSessions[destination - 1] : nil
+        let below: CDBackendSession? = destination < priorityQueueSessions.count ? priorityQueueSessions[destination] : nil
+
+        // Exclude the moving session from neighbors (it may be adjacent to destination)
+        let finalAbove = above?.id == movingSession.id ? nil : above
+        let finalBelow = below?.id == movingSession.id ? nil : below
+
+        logger.info("🔄 [PriorityQueue] Reordering: source=\(sourceIndex) dest=\(destination) above=\(finalAbove?.id.uuidString.prefix(8) ?? "nil") below=\(finalBelow?.id.uuidString.prefix(8) ?? "nil")")
+
+        CDBackendSession.reorderSession(movingSession, between: finalAbove, and: finalBelow, context: viewContext)
+
+        // Check if renormalization is needed after reorder
+        if CDBackendSession.needsRenormalization(context: viewContext) {
+            CDBackendSession.renormalizePriorityQueue(context: viewContext)
+        }
+
+        // Refresh sessions to reflect new order
+        do {
+            sessions = try CDBackendSession.fetchActiveSessions(context: viewContext)
+        } catch {
+            logger.error("❌ Failed to refresh sessions after reorder: \(error)")
         }
     }
 }

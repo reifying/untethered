@@ -2463,6 +2463,259 @@ final class PriorityQueueManagementTests: XCTestCase {
         XCTAssertTrue(session1.isInPriorityQueue, "Should still be in queue")
     }
 
+    // MARK: - Renormalization Tests (Phase 5)
+
+    /// Test 108: needsRenormalization returns false for empty queue
+    func testNeedsRenormalizationEmptyQueue() throws {
+        // Given: Empty priority queue
+        let sorted = fetchSortedPriorityQueueSessions()
+        XCTAssertTrue(sorted.isEmpty)
+
+        // When: Checking renormalization need
+        let needsRenorm = CDBackendSession.needsRenormalization(context: context)
+
+        // Then: Should not need renormalization
+        XCTAssertFalse(needsRenorm)
+    }
+
+    /// Test 109: needsRenormalization returns false for single session
+    func testNeedsRenormalizationSingleSession() throws {
+        // Given: Single session in queue
+        let session = createTestSession(name: "Single Session")
+        addToPriorityQueue(session)
+
+        // When: Checking renormalization need
+        let needsRenorm = CDBackendSession.needsRenormalization(context: context)
+
+        // Then: Should not need renormalization (only one session)
+        XCTAssertFalse(needsRenorm)
+    }
+
+    /// Test 110: needsRenormalization returns false for well-spaced sessions
+    func testNeedsRenormalizationWellSpacedSessions() throws {
+        // Given: Sessions with large gaps
+        let s1 = createTestSession(name: "Session 1")
+        let s2 = createTestSession(name: "Session 2")
+        let s3 = createTestSession(name: "Session 3")
+
+        addToPriorityQueue(s1)  // order 1.0
+        addToPriorityQueue(s2)  // order 2.0
+        addToPriorityQueue(s3)  // order 3.0
+
+        // When: Checking renormalization need
+        let needsRenorm = CDBackendSession.needsRenormalization(context: context)
+
+        // Then: Should not need renormalization
+        XCTAssertFalse(needsRenorm)
+    }
+
+    /// Test 111: needsRenormalization returns true for sessions with tiny gaps
+    func testNeedsRenormalizationTinyGaps() throws {
+        // Given: Sessions with gaps below threshold
+        let s1 = createTestSession(name: "Session 1")
+        let s2 = createTestSession(name: "Session 2")
+        let s3 = createTestSession(name: "Session 3")
+
+        addToPriorityQueue(s1)
+        addToPriorityQueue(s2)
+        addToPriorityQueue(s3)
+
+        // Manually set tiny gaps (below 0.001 threshold)
+        s1.priorityOrder = 1.5
+        s2.priorityOrder = 1.5005  // Gap of 0.0005 < 0.001
+        s3.priorityOrder = 1.501
+        try context.save()
+
+        // When: Checking renormalization need
+        let needsRenorm = CDBackendSession.needsRenormalization(context: context)
+
+        // Then: Should need renormalization
+        XCTAssertTrue(needsRenorm)
+    }
+
+    /// Test 112: renormalizePriorityQueue resets orders to integers
+    func testRenormalizePriorityQueueResetsOrders() throws {
+        // Given: Sessions with tiny gaps
+        let s1 = createTestSession(name: "Session 1")
+        let s2 = createTestSession(name: "Session 2")
+        let s3 = createTestSession(name: "Session 3")
+
+        addToPriorityQueue(s1)
+        addToPriorityQueue(s2)
+        addToPriorityQueue(s3)
+
+        // Set tiny gaps
+        s1.priorityOrder = 1.5
+        s2.priorityOrder = 1.5001
+        s3.priorityOrder = 1.50015
+        try context.save()
+
+        // When: Renormalizing
+        CDBackendSession.renormalizePriorityQueue(context: context)
+
+        // Then: Orders should be reset to integers
+        let sorted = fetchSortedPriorityQueueSessions()
+        XCTAssertEqual(sorted[0].priorityOrder, 1.0)
+        XCTAssertEqual(sorted[1].priorityOrder, 2.0)
+        XCTAssertEqual(sorted[2].priorityOrder, 3.0)
+    }
+
+    /// Test 113: renormalizePriorityQueue preserves sort order
+    func testRenormalizePriorityQueuePreservesSortOrder() throws {
+        // Given: Sessions with complex ordering
+        let s1 = createTestSession(name: "Session 1")
+        let s2 = createTestSession(name: "Session 2")
+        let s3 = createTestSession(name: "Session 3")
+
+        addToPriorityQueue(s1)
+        addToPriorityQueue(s2)
+        addToPriorityQueue(s3)
+
+        // Move s3 to first position (order = 0.5)
+        CDBackendSession.reorderSession(s3, between: nil, and: s1, context: context)
+
+        // Record order before renormalization
+        let sortedBefore = fetchSortedPriorityQueueSessions()
+        let orderBefore = sortedBefore.map { $0.backendName }
+        XCTAssertEqual(orderBefore, ["Session 3", "Session 1", "Session 2"])
+
+        // When: Renormalizing
+        CDBackendSession.renormalizePriorityQueue(context: context)
+
+        // Then: Order should be preserved
+        let sortedAfter = fetchSortedPriorityQueueSessions()
+        let orderAfter = sortedAfter.map { $0.backendName }
+        XCTAssertEqual(orderAfter, ["Session 3", "Session 1", "Session 2"])
+
+        // And orders should be integers
+        XCTAssertEqual(sortedAfter[0].priorityOrder, 1.0)
+        XCTAssertEqual(sortedAfter[1].priorityOrder, 2.0)
+        XCTAssertEqual(sortedAfter[2].priorityOrder, 3.0)
+    }
+
+    /// Test 114: renormalizePriorityQueue handles multiple priority levels
+    func testRenormalizePriorityQueueMultiplePriorityLevels() throws {
+        // Given: Sessions across priority levels
+        let p1s1 = createTestSession(name: "P1 Session 1")
+        let p1s2 = createTestSession(name: "P1 Session 2")
+        let p5s1 = createTestSession(name: "P5 Session 1")
+        let p10s1 = createTestSession(name: "P10 Session 1")
+
+        // Add to queue first (assigns default priority 10 and order)
+        addToPriorityQueue(p1s1)
+        addToPriorityQueue(p1s2)
+        addToPriorityQueue(p5s1)
+        addToPriorityQueue(p10s1)
+
+        // Set priorities after addToPriorityQueue
+        p1s1.priority = 1
+        p1s1.priorityOrder = 1.5
+        p1s2.priority = 1
+        p1s2.priorityOrder = 1.5001
+        p5s1.priority = 5
+        p5s1.priorityOrder = 1.0
+        p10s1.priority = 10
+        p10s1.priorityOrder = 1.0
+        try context.save()
+
+        // When: Renormalizing
+        CDBackendSession.renormalizePriorityQueue(context: context)
+
+        // Then: Each priority level should have its own sequence starting at 1.0
+        let sorted = fetchSortedPriorityQueueSessions()
+
+        // P1 sessions
+        let p1Sessions = sorted.filter { $0.priority == 1 }.sorted { $0.priorityOrder < $1.priorityOrder }
+        XCTAssertEqual(p1Sessions.count, 2)
+        XCTAssertEqual(p1Sessions[0].priorityOrder, 1.0)
+        XCTAssertEqual(p1Sessions[1].priorityOrder, 2.0)
+
+        // P5 sessions
+        let p5Sessions = sorted.filter { $0.priority == 5 }
+        XCTAssertEqual(p5Sessions.count, 1)
+        XCTAssertEqual(p5Sessions[0].priorityOrder, 1.0)
+
+        // P10 sessions
+        let p10Sessions = sorted.filter { $0.priority == 10 }
+        XCTAssertEqual(p10Sessions.count, 1)
+        XCTAssertEqual(p10Sessions[0].priorityOrder, 1.0)
+    }
+
+    /// Test 115: Repeated reorders maintain unique orders after renormalization
+    func testRepeatedReordersWithRenormalization() throws {
+        // Given: Two sessions
+        let s1 = createTestSession(name: "Session 1")
+        let s2 = createTestSession(name: "Session 2")
+        addToPriorityQueue(s1)
+        addToPriorityQueue(s2)
+
+        // When: Repeatedly inserting between them (creates midpoints)
+        for i in 3...20 {
+            let newSession = createTestSession(name: "Session \(i)")
+            addToPriorityQueue(newSession)
+
+            // Always insert between first two
+            let sorted = fetchSortedPriorityQueueSessions()
+            CDBackendSession.reorderSession(newSession, between: sorted[0], and: sorted[1], context: context)
+
+            // Check and renormalize if needed
+            if CDBackendSession.needsRenormalization(context: context) {
+                CDBackendSession.renormalizePriorityQueue(context: context)
+            }
+        }
+
+        // Then: All orders should still be unique after final state
+        let sorted = fetchSortedPriorityQueueSessions()
+        let orders = sorted.map { $0.priorityOrder }
+        let uniqueOrders = Set(orders)
+        XCTAssertEqual(orders.count, uniqueOrders.count, "All orders should be unique")
+    }
+
+    /// Test 116: needsRenormalization ignores gaps between different priority levels
+    func testNeedsRenormalizationIgnoresCrossPriorityGaps() throws {
+        // Given: Sessions in different priority levels with same order values
+        let p1Session = createTestSession(name: "P1 Session")
+        let p5Session = createTestSession(name: "P5 Session")
+
+        addToPriorityQueue(p1Session)
+        addToPriorityQueue(p5Session)
+
+        // Set both to same order value but different priorities
+        p1Session.priority = 1
+        p1Session.priorityOrder = 1.5
+        p5Session.priority = 5
+        p5Session.priorityOrder = 1.5
+        try context.save()
+
+        // When: Checking renormalization need
+        let needsRenorm = CDBackendSession.needsRenormalization(context: context)
+
+        // Then: Should not need renormalization (gaps only checked within same priority)
+        XCTAssertFalse(needsRenorm)
+    }
+
+    /// Test 117: renormalizePriorityQueue posts notification
+    func testRenormalizePriorityQueuePostsNotification() throws {
+        // Given: Sessions in queue
+        let s1 = createTestSession(name: "Session 1")
+        let s2 = createTestSession(name: "Session 2")
+        addToPriorityQueue(s1)
+        addToPriorityQueue(s2)
+
+        var receivedRenormalized: Bool?
+        let expectation = expectation(forNotification: .priorityQueueChanged, object: nil) { notification in
+            receivedRenormalized = notification.userInfo?["renormalized"] as? Bool
+            return receivedRenormalized == true
+        }
+
+        // When: Renormalizing
+        CDBackendSession.renormalizePriorityQueue(context: context)
+
+        // Then: Notification should include renormalized flag
+        wait(for: [expectation], timeout: 1.0)
+        XCTAssertEqual(receivedRenormalized, true)
+    }
+
     // MARK: - Helper Methods for Phase 3 (Legacy - now using production method via changePriorityProduction)
 
     private func changePriority(_ session: CDBackendSession, newPriority: Int32) {
