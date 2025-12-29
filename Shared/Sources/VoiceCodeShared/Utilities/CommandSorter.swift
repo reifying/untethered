@@ -83,4 +83,26 @@ public class CommandSorter {
     public func clearMRU() {
         userDefaults.removeObject(forKey: mruKey)
     }
+
+    /// Check if a command has been used (exists in MRU)
+    public func isCommandUsed(commandId: String) -> Bool {
+        let mru = getMRU()
+        return mru[commandId] != nil
+    }
+
+    /// Get set of all used command IDs
+    public func getUsedCommandIds() -> Set<String> {
+        let mru = getMRU()
+        return Set(mru.keys)
+    }
+
+    /// Mark a command as used with a specific timestamp (for testing)
+    /// - Parameters:
+    ///   - commandId: The command ID to mark as used
+    ///   - timestamp: The timestamp to use (timeIntervalSince1970)
+    public func markCommandUsed(commandId: String, timestamp: Double) {
+        var mru = getMRU()
+        mru[commandId] = timestamp
+        setMRU(mru)
+    }
 }
