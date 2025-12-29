@@ -352,13 +352,13 @@ Example: 'Add implementation tasks for user authentication (epic-abc123)'"
     {:prompt "Implement the current task from beads.
 
 ## Prerequisites
-1. Run `bd ready` to see the task details
+1. Run `bd ready --limit 1` to see the task details. If multiple tasks are
 2. Read the design document referenced in the task
 3. Review relevant code standards (@STANDARDS.md, @CLAUDE.md)
 4. Familiarize yourself with the codebase context
 
 ## No Tasks Available
-If `bd ready` indicates there are no tasks ready for implementation, select the `no-tasks` outcome. This is a normal situation—the recipe will exit gracefully.
+If `bd ready --limit 1` indicates there are no tasks ready for implementation, select the `no-tasks` outcome. This is a normal situation—the recipe will exit gracefully.
 
 ## Implementation Requirements
 - Follow the technical approach specified in the task
@@ -413,7 +413,7 @@ Before marking complete:
 - [ ] No scope creep beyond task requirements
 
 ### Beads Task Status
-- [ ] Task will be properly updated to reflect completion (run `bd ready` to verify task ID)
+- [ ] Task will be properly updated to reflect completion
 - [ ] Any blockers or issues are documented in the task
 
 Report any issues found. Do not make changes yet."
@@ -439,9 +439,8 @@ After fixing:
 
 ## Update Beads Task
 Before committing, update the task status:
-1. Run `bd ready` to get the current task ID
-2. Run `bd close <task-id>` to mark the task as complete
-3. If partially complete, use `bd update <task-id> --status in-progress` with notes
+1. Run `bd close <task-id>` to mark the task as complete
+2. If partially complete, use `bd update <task-id> --status in-progress` with notes
 
 ## Commit and Push
 - Use the beads task ID in the commit message
