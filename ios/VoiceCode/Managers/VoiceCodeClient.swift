@@ -1183,7 +1183,9 @@ final class VoiceCodeSyncDelegate: SessionSyncDelegate {
         }
     }
 
-    func postNotification(text: String, sessionName: String, workingDirectory: String) {
+    func postNotification(text: String, sessionId: String, sessionName: String, workingDirectory: String) {
+        // Note: iOS NotificationManager doesn't use sessionId for grouping (different UX)
+        // but we accept it to satisfy the shared protocol
         Task {
             await NotificationManager.shared.postResponseNotification(
                 text: text,

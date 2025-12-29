@@ -42,7 +42,7 @@ public protocol SessionSyncDelegate: AnyObject, Sendable {
     func speakAssistantMessages(_ messages: [String], workingDirectory: String)
 
     /// Called when a notification should be posted for background session updates
-    func postNotification(text: String, sessionName: String, workingDirectory: String)
+    func postNotification(text: String, sessionId: String, sessionName: String, workingDirectory: String)
 
     /// Check if priority queue is enabled
     var isPriorityQueueEnabled: Bool { get }
@@ -394,6 +394,7 @@ public final class SessionSyncManager: @unchecked Sendable {
                         Task { @MainActor in
                             delegate?.postNotification(
                                 text: combinedText,
+                                sessionId: sessionId,
                                 sessionName: sessionName,
                                 workingDirectory: workingDirectory
                             )

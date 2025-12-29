@@ -301,9 +301,9 @@ class MockSessionSyncDelegate: SessionSyncDelegate {
         print("🎤 [MockDelegate] speakAssistantMessages() called with messages: \(messages), workingDirectory: \(workingDirectory)")
     }
 
-    func postNotification(text: String, sessionName: String, workingDirectory: String) {
+    func postNotification(text: String, sessionId: String, sessionName: String, workingDirectory: String) {
         notificationWasCalled = true
-        print("📬 [MockDelegate] postNotification() called")
+        print("📬 [MockDelegate] postNotification() called for session: \(sessionId)")
     }
 
     var isPriorityQueueEnabled: Bool {

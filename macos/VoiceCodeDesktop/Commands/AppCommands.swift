@@ -366,4 +366,8 @@ extension Notification.Name {
 
     /// Toggle priority queue section visibility
     static let togglePriorityQueueVisibility = Notification.Name("togglePriorityQueueVisibility")
+
+    /// Open a specific session (from notification tap)
+    /// userInfo contains "sessionId" key
+    static let openSession = Notification.Name("openSession")
 }

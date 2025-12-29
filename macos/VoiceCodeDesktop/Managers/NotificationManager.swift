@@ -3,6 +3,7 @@
 
 import Foundation
 import UserNotifications
+import AppKit
 import OSLog
 
 private let logger = Logger(subsystem: "dev.910labs.voice-code-desktop", category: "NotificationManager")
@@ -11,16 +12,17 @@ private let logger = Logger(subsystem: "dev.910labs.voice-code-desktop", categor
 class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationManager()
 
-    // Notification action identifiers
-    private let readAloudActionIdentifier = "READ_ALOUD_ACTION"
+    // Notification action identifiers (macOS-specific per design doc)
+    private let openActionIdentifier = "OPEN_ACTION"
+    private let markReadActionIdentifier = "MARK_READ_ACTION"
     private let dismissActionIdentifier = "DISMISS_ACTION"
     private let categoryIdentifier = "CLAUDE_RESPONSE_CATEGORY"
 
-    // Reference to VoiceOutputManager for TTS playback
-    private weak var voiceOutputManager: VoiceOutputManager?
-
     // Store response text keyed by notification identifier for action handling
     private var pendingResponses: [String: String] = [:]
+
+    // Current badge count for dock icon
+    @Published private(set) var badgeCount: Int = 0
 
     override init() {
         super.init()
@@ -63,18 +65,21 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
         }
     }
 
-    func setVoiceOutputManager(_ manager: VoiceOutputManager) {
-        self.voiceOutputManager = manager
-    }
-
     // MARK: - Setup
 
     private func setupNotificationCategories() {
-        // Create 'Read Aloud' action
-        let readAloudAction = UNNotificationAction(
-            identifier: readAloudActionIdentifier,
-            title: "Read Aloud",
-            options: [.foreground] // Brings app to foreground for audio playback
+        // Create 'Open' action (brings app to foreground and shows session)
+        let openAction = UNNotificationAction(
+            identifier: openActionIdentifier,
+            title: "Open",
+            options: [.foreground]
+        )
+
+        // Create 'Mark Read' action (clears unread badge, no foreground)
+        let markReadAction = UNNotificationAction(
+            identifier: markReadActionIdentifier,
+            title: "Mark Read",
+            options: []
         )
 
         // Create 'Dismiss' action
@@ -84,10 +89,10 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
             options: []
         )
 
-        // Create category with actions
+        // Create category with actions (macOS-specific: Open, Mark Read, Dismiss)
         let category = UNNotificationCategory(
             identifier: categoryIdentifier,
-            actions: [readAloudAction, dismissAction],
+            actions: [openAction, markReadAction, dismissAction],
             intentIdentifiers: [],
             options: [.customDismissAction]
         )
@@ -120,9 +125,15 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     /// Post a notification when Claude response arrives
     /// - Parameters:
     ///   - text: The Claude response text
+    ///   - sessionId: Session ID for notification grouping (threadIdentifier)
     ///   - sessionName: Optional session name for context
     ///   - workingDirectory: Optional working directory for voice rotation
-    func postResponseNotification(text: String, sessionName: String = "", workingDirectory: String = "") async {
+    func postResponseNotification(
+        text: String,
+        sessionId: String = "",
+        sessionName: String = "",
+        workingDirectory: String = ""
+    ) async {
         // Check authorization status
         let status = await checkAuthorizationStatus()
 
@@ -145,6 +156,11 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
         content.sound = .default
         content.categoryIdentifier = categoryIdentifier
 
+        // Group notifications by session using threadIdentifier
+        if !sessionId.isEmpty {
+            content.threadIdentifier = sessionId
+        }
+
         // Generate unique identifier for this notification
         let notificationId = UUID().uuidString
 
@@ -156,6 +172,9 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
             "responseText": text,
             "notificationId": notificationId
         ]
+        if !sessionId.isEmpty {
+            userInfo["sessionId"] = sessionId
+        }
         if !workingDirectory.isEmpty {
             userInfo["workingDirectory"] = workingDirectory
         }
@@ -171,15 +190,54 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
         // Post notification
         do {
             try await UNUserNotificationCenter.current().add(request)
-            logger.info("Posted notification for Claude response (ID: \(notificationId))")
+            // Increment badge count
+            incrementBadgeCount()
+            logger.info("Posted notification for Claude response (ID: \(notificationId), session: \(sessionId))")
         } catch {
             logger.error("Failed to post notification: \(error.localizedDescription)")
         }
     }
 
+    // MARK: - Dock Badge Management
+
+    /// Set the dock badge count
+    /// - Parameter count: Number to display on dock icon (0 clears badge)
+    func setBadgeCount(_ count: Int) {
+        badgeCount = max(0, count)
+        updateDockBadge()
+    }
+
+    /// Increment the dock badge count by 1
+    func incrementBadgeCount() {
+        badgeCount += 1
+        updateDockBadge()
+    }
+
+    /// Decrement the dock badge count by 1
+    func decrementBadgeCount() {
+        badgeCount = max(0, badgeCount - 1)
+        updateDockBadge()
+    }
+
+    /// Clear the dock badge
+    func clearBadge() {
+        badgeCount = 0
+        updateDockBadge()
+    }
+
+    /// Update the dock tile badge label
+    private func updateDockBadge() {
+        if badgeCount > 0 {
+            NSApplication.shared.dockTile.badgeLabel = "\(badgeCount)"
+        } else {
+            NSApplication.shared.dockTile.badgeLabel = nil
+        }
+        logger.debug("Dock badge updated to: \(self.badgeCount)")
+    }
+
     // MARK: - UNUserNotificationCenterDelegate
 
-    /// Handle notification actions (Read Aloud button tap)
+    /// Handle notification actions (Open, Mark Read, Dismiss)
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
@@ -187,30 +245,47 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     ) {
         let actionIdentifier = response.actionIdentifier
         let userInfo = response.notification.request.content.userInfo
+        let notificationId = userInfo["notificationId"] as? String
+        let sessionId = userInfo["sessionId"] as? String
 
-        if actionIdentifier == readAloudActionIdentifier {
-            // Extract response text from userInfo
-            if let text = userInfo["responseText"] as? String {
-                logger.info("Reading response aloud (\(text.count) characters)")
+        switch actionIdentifier {
+        case openActionIdentifier, UNNotificationDefaultActionIdentifier:
+            // User tapped notification or "Open" action - bring app to foreground
+            logger.info("Opening notification for session: \(sessionId ?? "unknown")")
 
-                // Trigger TTS playback via VoiceOutputManager
-                let workingDirectory = userInfo["workingDirectory"] as? String ?? ""
-                voiceOutputManager?.speak(text, workingDirectory: workingDirectory)
-            } else {
-                logger.error("No response text found in notification userInfo")
-            }
-
-            // Clean up stored response
-            if let notificationId = userInfo["notificationId"] as? String {
+            // Decrement badge and clean up
+            decrementBadgeCount()
+            if let notificationId = notificationId {
                 pendingResponses.removeValue(forKey: notificationId)
             }
-        } else if actionIdentifier == dismissActionIdentifier {
+
+            // Post notification to open the session (handled by app)
+            if let sessionId = sessionId {
+                NotificationCenter.default.post(
+                    name: .openSession,
+                    object: nil,
+                    userInfo: ["sessionId": sessionId]
+                )
+            }
+
+        case markReadActionIdentifier:
+            // Mark as read - decrement badge but don't bring app to foreground
+            logger.info("Marking notification as read for session: \(sessionId ?? "unknown")")
+            decrementBadgeCount()
+            if let notificationId = notificationId {
+                pendingResponses.removeValue(forKey: notificationId)
+            }
+
+        case dismissActionIdentifier, UNNotificationDismissActionIdentifier:
+            // User dismissed notification
             logger.info("User dismissed notification")
-
-            // Clean up stored response
-            if let notificationId = userInfo["notificationId"] as? String {
+            decrementBadgeCount()
+            if let notificationId = notificationId {
                 pendingResponses.removeValue(forKey: notificationId)
             }
+
+        default:
+            logger.debug("Unhandled notification action: \(actionIdentifier)")
         }
 
         completionHandler()
@@ -232,6 +307,7 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     func clearAllNotifications() {
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         pendingResponses.removeAll()
+        clearBadge()
     }
 
     func clearNotification(identifier: String) {

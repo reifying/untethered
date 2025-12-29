@@ -28,17 +28,6 @@ final class NotificationManagerTests: XCTestCase {
         XCTAssertNotNil(status)
     }
 
-    // MARK: - Voice Output Manager Setup
-
-    @MainActor
-    func testSetVoiceOutputManager() {
-        let manager = NotificationManager()
-        let voiceManager = VoiceOutputManager()
-
-        // Should not crash when setting voice output manager
-        manager.setVoiceOutputManager(voiceManager)
-    }
-
     // MARK: - Notification Posting Tests
 
     @MainActor
@@ -48,6 +37,7 @@ final class NotificationManagerTests: XCTestCase {
         // Should not crash when posting notification
         await manager.postResponseNotification(
             text: "Test response text",
+            sessionId: "test-session-123",
             sessionName: "Test Session",
             workingDirectory: "/test/path"
         )
@@ -60,6 +50,7 @@ final class NotificationManagerTests: XCTestCase {
         // Should handle empty strings gracefully
         await manager.postResponseNotification(
             text: "Test",
+            sessionId: "",
             sessionName: "",
             workingDirectory: ""
         )
@@ -73,9 +64,84 @@ final class NotificationManagerTests: XCTestCase {
         // Should handle long text (will be truncated in notification body)
         await manager.postResponseNotification(
             text: longText,
+            sessionId: "session-456",
             sessionName: "Session",
             workingDirectory: "/path"
         )
+    }
+
+    // MARK: - Dock Badge Tests
+
+    @MainActor
+    func testInitialBadgeCountIsZero() {
+        let manager = NotificationManager()
+
+        XCTAssertEqual(manager.badgeCount, 0)
+    }
+
+    @MainActor
+    func testSetBadgeCount() {
+        let manager = NotificationManager()
+
+        manager.setBadgeCount(5)
+        XCTAssertEqual(manager.badgeCount, 5)
+
+        manager.setBadgeCount(0)
+        XCTAssertEqual(manager.badgeCount, 0)
+    }
+
+    @MainActor
+    func testSetBadgeCountNegativeClampedToZero() {
+        let manager = NotificationManager()
+
+        manager.setBadgeCount(-5)
+        XCTAssertEqual(manager.badgeCount, 0)
+    }
+
+    @MainActor
+    func testIncrementBadgeCount() {
+        let manager = NotificationManager()
+
+        manager.incrementBadgeCount()
+        XCTAssertEqual(manager.badgeCount, 1)
+
+        manager.incrementBadgeCount()
+        XCTAssertEqual(manager.badgeCount, 2)
+    }
+
+    @MainActor
+    func testDecrementBadgeCount() {
+        let manager = NotificationManager()
+
+        manager.setBadgeCount(3)
+        manager.decrementBadgeCount()
+        XCTAssertEqual(manager.badgeCount, 2)
+
+        manager.decrementBadgeCount()
+        XCTAssertEqual(manager.badgeCount, 1)
+
+        manager.decrementBadgeCount()
+        XCTAssertEqual(manager.badgeCount, 0)
+    }
+
+    @MainActor
+    func testDecrementBadgeCountDoesNotGoNegative() {
+        let manager = NotificationManager()
+
+        XCTAssertEqual(manager.badgeCount, 0)
+        manager.decrementBadgeCount()
+        XCTAssertEqual(manager.badgeCount, 0)
+    }
+
+    @MainActor
+    func testClearBadge() {
+        let manager = NotificationManager()
+
+        manager.setBadgeCount(10)
+        XCTAssertEqual(manager.badgeCount, 10)
+
+        manager.clearBadge()
+        XCTAssertEqual(manager.badgeCount, 0)
     }
 
     // MARK: - Cleanup Tests
@@ -86,6 +152,19 @@ final class NotificationManagerTests: XCTestCase {
 
         // Should not crash
         manager.clearAllNotifications()
+    }
+
+    @MainActor
+    func testClearAllNotificationsAlsoClearsBadge() {
+        let manager = NotificationManager()
+
+        // Set badge count
+        manager.setBadgeCount(5)
+        XCTAssertEqual(manager.badgeCount, 5)
+
+        // Clear all notifications should also clear badge
+        manager.clearAllNotifications()
+        XCTAssertEqual(manager.badgeCount, 0)
     }
 
     @MainActor
@@ -120,11 +199,35 @@ final class NotificationManagerTests: XCTestCase {
 
     @MainActor
     func testNotificationCleanupSetupOnInit() {
-        let manager = NotificationManager()
+        let _ = NotificationManager()
 
         // Verify that notification cleanup was set up during initialization
         // This prevents pendingResponses from growing unbounded
         // Note: Full functional testing would require mocking NotificationCenter
         // For now, we verify the manager initializes without crashing
+    }
+
+    // MARK: - Notification Grouping Tests
+
+    @MainActor
+    func testPostNotificationWithSessionIdForGrouping() async {
+        let manager = NotificationManager()
+        let sessionId = "abc123de-4567-89ab-cdef-0123456789ab"
+
+        // Should not crash - grouping uses threadIdentifier internally
+        await manager.postResponseNotification(
+            text: "Test message",
+            sessionId: sessionId,
+            sessionName: "Test Session"
+        )
+    }
+
+    // MARK: - openSession Notification Tests
+
+    @MainActor
+    func testOpenSessionNotificationExists() {
+        // Verify the openSession notification name exists
+        let notificationName = Notification.Name.openSession
+        XCTAssertEqual(notificationName.rawValue, "openSession")
     }
 }
