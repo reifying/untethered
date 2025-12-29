@@ -63,17 +63,8 @@ struct VoiceCodeDesktopApp: App {
         }
 
         Settings {
-            SettingsView()
+            SettingsView(settings: settings)
         }
-    }
-}
-
-// MARK: - Settings View
-
-struct SettingsView: View {
-    var body: some View {
-        Text("Settings")
-            .frame(width: 400, height: 300)
     }
 }
 

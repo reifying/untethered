@@ -59,6 +59,58 @@ class AppSettings: ObservableObject {
 
     @Published var systemPrompt: String
 
+    // MARK: - General Settings
+    @Published var autoConnectOnLaunch: Bool {
+        didSet {
+            UserDefaults.standard.set(autoConnectOnLaunch, forKey: "autoConnectOnLaunch")
+        }
+    }
+
+    @Published var showInMenuBar: Bool {
+        didSet {
+            UserDefaults.standard.set(showInMenuBar, forKey: "showInMenuBar")
+        }
+    }
+
+    // MARK: - Voice Settings
+    @Published var speechRate: Float {
+        didSet {
+            UserDefaults.standard.set(speechRate, forKey: "speechRate")
+        }
+    }
+
+    @Published var pushToTalkHotkey: String {
+        didSet {
+            UserDefaults.standard.set(pushToTalkHotkey, forKey: "pushToTalkHotkey")
+        }
+    }
+
+    // MARK: - Session Settings
+    @Published var defaultWorkingDirectory: String {
+        didSet {
+            UserDefaults.standard.set(defaultWorkingDirectory, forKey: "defaultWorkingDirectory")
+        }
+    }
+
+    @Published var autoAddToQueue: Bool {
+        didSet {
+            UserDefaults.standard.set(autoAddToQueue, forKey: "autoAddToQueue")
+        }
+    }
+
+    @Published var sessionRetentionDays: Int {
+        didSet {
+            UserDefaults.standard.set(sessionRetentionDays, forKey: "sessionRetentionDays")
+        }
+    }
+
+    // MARK: - Advanced Settings
+    @Published var debugLoggingEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(debugLoggingEnabled, forKey: "debugLoggingEnabled")
+        }
+    }
+
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
         let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
@@ -82,6 +134,22 @@ class AppSettings: ObservableObject {
         priorityQueueEnabled = UserDefaults.standard.object(forKey: "priorityQueueEnabled") as? Bool ?? false
         systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? ""
 
+        // General settings
+        autoConnectOnLaunch = UserDefaults.standard.object(forKey: "autoConnectOnLaunch") as? Bool ?? true
+        showInMenuBar = UserDefaults.standard.object(forKey: "showInMenuBar") as? Bool ?? true
+
+        // Voice settings
+        speechRate = UserDefaults.standard.object(forKey: "speechRate") as? Float ?? 0.5
+        pushToTalkHotkey = UserDefaults.standard.string(forKey: "pushToTalkHotkey") ?? "⌃⌥V"
+
+        // Session settings
+        defaultWorkingDirectory = UserDefaults.standard.string(forKey: "defaultWorkingDirectory") ?? ""
+        autoAddToQueue = UserDefaults.standard.object(forKey: "autoAddToQueue") as? Bool ?? false
+        sessionRetentionDays = UserDefaults.standard.object(forKey: "sessionRetentionDays") as? Int ?? 30
+
+        // Advanced settings
+        debugLoggingEnabled = UserDefaults.standard.object(forKey: "debugLoggingEnabled") as? Bool ?? false
+
         // Set up observers to persist changes
         setupPersistence()
     }
@@ -101,6 +169,52 @@ class AppSettings: ObservableObject {
             .dropFirst()
             .sink { UserDefaults.standard.set($0, forKey: "systemPrompt") }
             .store(in: &cancellables)
+
+        $defaultWorkingDirectory
+            .dropFirst()
+            .sink { UserDefaults.standard.set($0, forKey: "defaultWorkingDirectory") }
+            .store(in: &cancellables)
+
+        $pushToTalkHotkey
+            .dropFirst()
+            .sink { UserDefaults.standard.set($0, forKey: "pushToTalkHotkey") }
+            .store(in: &cancellables)
+    }
+
+    // MARK: - Cache Management
+
+    /// Log file location (read-only)
+    var logFileLocation: URL {
+        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Logs")
+            .appendingPathComponent("VoiceCode")
+    }
+
+    /// Clear cached data (voice caches, etc.)
+    func clearCache() {
+        Self.cachedAvailableVoices = nil
+        Self.cachedPremiumVoices = nil
+    }
+
+    /// Reset all settings to their default values
+    func resetToDefaults() {
+        serverURL = ""
+        serverPort = "8080"
+        selectedVoiceIdentifier = nil
+        recentSessionsLimit = 10
+        notifyOnResponse = true
+        resourceStorageLocation = ""
+        queueEnabled = false
+        priorityQueueEnabled = false
+        systemPrompt = ""
+        autoConnectOnLaunch = true
+        showInMenuBar = true
+        speechRate = 0.5
+        pushToTalkHotkey = "⌃⌥V"
+        defaultWorkingDirectory = ""
+        autoAddToQueue = false
+        sessionRetentionDays = 30
+        debugLoggingEnabled = false
     }
 
     // MARK: - Voice Selection
