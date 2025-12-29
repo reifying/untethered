@@ -14,7 +14,8 @@
             [voice-code.commands-history :as cmd-history]
             [voice-code.resources :as resources]
             [voice-code.recipes :as recipes]
-            [voice-code.orchestration :as orch])
+            [voice-code.orchestration :as orch]
+            [voice-code.workstream :as ws])
   (:gen-class))
 
 ;; JSON key conversion utilities
@@ -173,6 +174,85 @@
                    {:type :session-locked
                     :message "Session is currently processing a prompt. Please wait."
                     :session-id session-id}))
+
+;; ============================================================================
+;; Workstream Helper Functions
+;; ============================================================================
+
+(defn send-workstream-list!
+  "Send the workstream list to a connected client.
+  Includes all workstreams with metadata for display."
+  [channel]
+  (let [workstreams (ws/get-all-workstreams)
+        workstreams-formatted (mapv
+                               (fn [workstream]
+                                 {:workstream-id (:id workstream)
+                                  :name (:name workstream)
+                                  :working-directory (:working-directory workstream)
+                                  :active-claude-session-id (:active-claude-session-id workstream)
+                                  :queue-priority (name (:queue-priority workstream))
+                                  :priority-order (:priority-order workstream)
+                                  :created-at (ws/format-timestamp (:created-at workstream))
+                                  :last-modified (ws/format-timestamp (:last-modified workstream))
+                                  :message-count 0  ; TODO: get from Claude session if linked
+                                  :preview nil})    ; TODO: get from Claude session if linked
+                               workstreams)]
+    (log/info "Sending workstream list" {:count (count workstreams-formatted)})
+    (send-to-client! channel
+                     {:type :workstream-list
+                      :workstreams workstreams-formatted})))
+
+(defn handle-create-workstream
+  "Handle create_workstream message.
+  Creates a new workstream and sends workstream_created confirmation."
+  [channel data]
+  (let [workstream-id (:workstream-id data)
+        name (:name data)
+        working-directory (:working-directory data)]
+    (cond
+      (not workstream-id)
+      (send-to-client! channel {:type :error :message "workstream_id required"})
+
+      (not working-directory)
+      (send-to-client! channel {:type :error :message "working_directory required"})
+
+      :else
+      (let [workstream (ws/create-workstream!
+                        {:id workstream-id
+                         :name name
+                         :working-directory working-directory})]
+        (log/info "Workstream created via WebSocket"
+                  {:workstream-id workstream-id
+                   :name (:name workstream)
+                   :working-directory working-directory})
+        (send-to-client! channel
+                         {:type :workstream-created
+                          :workstream-id workstream-id
+                          :name (:name workstream)
+                          :working-directory working-directory
+                          :created-at (ws/format-timestamp (:created-at workstream))})))))
+
+(defn handle-clear-context
+  "Handle clear_context message.
+  Unlinks the active Claude session from a workstream."
+  [channel data]
+  (let [workstream-id (:workstream-id data)]
+    (cond
+      (not workstream-id)
+      (send-to-client! channel {:type :error :message "workstream_id required"})
+
+      (not (ws/get-workstream workstream-id))
+      (send-to-client! channel {:type :error :message (str "Workstream not found: " workstream-id)})
+
+      :else
+      (let [previous-session-id (ws/unlink-claude-session! workstream-id)]
+        (log/info "Context cleared for workstream"
+                  {:workstream-id workstream-id
+                   :previous-session-id previous-session-id})
+        (send-to-client! channel
+                         {:type :context-cleared
+                          :workstream-id workstream-id
+                          :previous-claude-session-id previous-session-id})))))
 
 (defn is-session-deleted-for-client?
   "Check if a client has deleted a session locally"
@@ -710,7 +790,9 @@
                                                    {:id "git.push"
                                                     :label "Git Push"
                                                     :description "Push commits to remote repository"
-                                                    :type :command}]})))
+                                                    :type :command}]})
+            ;; Send workstream list
+              (send-workstream-list! channel)))
 
           "subscribe"
         ;; Client requests full history for a session
@@ -1361,6 +1443,12 @@
             (send-to-client! channel
                              {:type :available-recipes
                               :recipes (get-available-recipes-list)}))
+
+          "create_workstream"
+          (handle-create-workstream channel data)
+
+          "clear_context"
+          (handle-clear-context channel data)
 
         ;; Unknown message type
           (do

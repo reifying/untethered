@@ -4,6 +4,7 @@
             [voice-code.server :as server]
             [voice-code.replication :as repl]
             [voice-code.recipes :as recipes]
+            [voice-code.workstream :as ws]
             [cheshire.core :as json]
             [clojure.java.io :as io]))
 
@@ -252,6 +253,7 @@
                   (fn [] [{:session-id "s1" :name "Session 1" :last-modified 1000 :message-count 5 :ios-notified true :working-directory "/path1"}
                           {:session-id "s2" :name "Session 2" :last-modified 2000 :message-count 10 :ios-notified true :working-directory "/path2"}])]
       (reset! server/connected-clients {})
+      (reset! ws/workstream-index {})
       (let [sent-messages (atom [])]
         (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                  (swap! sent-messages conj msg))]
@@ -260,8 +262,8 @@
           ;; Verify client registered
           (is (contains? @server/connected-clients :test-ch))
 
-          ;; Verify three messages sent: session_list, recent_sessions, available_commands
-          (is (= 3 (count @sent-messages)))
+          ;; Verify four messages sent: session_list, recent_sessions, available_commands, workstream_list
+          (is (= 4 (count @sent-messages)))
 
           ;; First message should be session_list
           (let [msg1 (json/parse-string (first @sent-messages) true)]
@@ -274,7 +276,12 @@
           (let [msg2 (json/parse-string (second @sent-messages) true)]
             (is (= "recent_sessions" (:type msg2)))
             (is (= 5 (:limit msg2))) ;; Default limit is 5
-            (is (vector? (:sessions msg2)))))))))
+            (is (vector? (:sessions msg2))))
+
+          ;; Fourth message should be workstream_list
+          (let [msg4 (json/parse-string (nth @sent-messages 3) true)]
+            (is (= "workstream_list" (:type msg4)))
+            (is (vector? (:workstreams msg4)))))))))
 
 (deftest test-prompt-session-id-distinction
   (testing "Prompt with new_session_id uses --session-id flag"
@@ -1377,8 +1384,258 @@
           (is (true? (:session-created? state))
               "Existing session should have :session-created? = true"))))))
 
+;; ============================================================================
+;; Workstream WebSocket Handler Tests
+;; ============================================================================
 
+(deftest test-handle-create-workstream-missing-workstream-id
+  (testing "create_workstream message without workstream_id returns error"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))]
 
+        (server/handle-message :test-ch "{\"type\":\"create_workstream\",\"working_directory\":\"/test\"}")
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (= "workstream_id required" (:message response))))))))
+
+(deftest test-handle-create-workstream-missing-working-directory
+  (testing "create_workstream message without working_directory returns error"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))]
+
+        (server/handle-message :test-ch "{\"type\":\"create_workstream\",\"workstream_id\":\"ws-123\"}")
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (= "working_directory required" (:message response))))))))
+
+(deftest test-handle-create-workstream-success
+  (testing "create_workstream message creates workstream and returns confirmation"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    ;; Prevent actual file writes
+                    ws/save-workstream-index! (fn [] nil)]
+
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "create_workstream"
+                                 :workstream_id "ws-test-123"
+                                 :name "Test Workstream"
+                                 :working_directory "/test/path"}))
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "workstream_created" (:type response)))
+          (is (= "ws-test-123" (:workstream_id response)))
+          (is (= "Test Workstream" (:name response)))
+          (is (= "/test/path" (:working_directory response)))
+          (is (some? (:created_at response))))
+
+        ;; Verify workstream was actually created in the index
+        (is (some? (ws/get-workstream "ws-test-123")))
+        (is (= "Test Workstream" (:name (ws/get-workstream "ws-test-123"))))))))
+
+(deftest test-handle-create-workstream-default-name
+  (testing "create_workstream without name uses default"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    ws/save-workstream-index! (fn [] nil)]
+
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "create_workstream"
+                                 :workstream_id "ws-noname"
+                                 :working_directory "/test"}))
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "workstream_created" (:type response)))
+          (is (= "New Workstream" (:name response))))))))
+
+(deftest test-handle-clear-context-missing-workstream-id
+  (testing "clear_context message without workstream_id returns error"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))]
+
+        (server/handle-message :test-ch "{\"type\":\"clear_context\"}")
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (= "workstream_id required" (:message response))))))))
+
+(deftest test-handle-clear-context-workstream-not-found
+  (testing "clear_context message with unknown workstream_id returns error"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))]
+
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "clear_context"
+                                 :workstream_id "ws-nonexistent"}))
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (str/includes? (:message response) "Workstream not found")))))))
+
+(deftest test-handle-clear-context-success-with-session
+  (testing "clear_context message unlinks session and returns previous session id"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    ws/save-workstream-index! (fn [] nil)]
+
+        ;; Create workstream and link a session
+        (ws/create-workstream! {:id "ws-clear-test"
+                                :name "Clear Test"
+                                :working-directory "/test"})
+        (ws/link-claude-session! "ws-clear-test" "claude-session-abc")
+
+        ;; Verify session is linked
+        (is (= "claude-session-abc"
+               (:active-claude-session-id (ws/get-workstream "ws-clear-test"))))
+
+        ;; Send clear_context
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "clear_context"
+                                 :workstream_id "ws-clear-test"}))
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "context_cleared" (:type response)))
+          (is (= "ws-clear-test" (:workstream_id response)))
+          (is (= "claude-session-abc" (:previous_claude_session_id response))))
+
+        ;; Verify session is now unlinked
+        (is (nil? (:active-claude-session-id (ws/get-workstream "ws-clear-test"))))))))
+
+(deftest test-handle-clear-context-success-no-session
+  (testing "clear_context message with no active session returns null previous id"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    ws/save-workstream-index! (fn [] nil)]
+
+        ;; Create workstream without linking a session
+        (ws/create-workstream! {:id "ws-empty-test"
+                                :name "Empty Test"
+                                :working-directory "/test"})
+
+        ;; Send clear_context
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "clear_context"
+                                 :workstream_id "ws-empty-test"}))
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "context_cleared" (:type response)))
+          (is (= "ws-empty-test" (:workstream_id response)))
+          ;; previous_claude_session_id should be null (not an error per spec)
+          (is (nil? (:previous_claude_session_id response))))))))
+
+(deftest test-send-workstream-list
+  (testing "send-workstream-list! sends all workstreams formatted correctly"
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! ws/workstream-index {})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    ws/save-workstream-index! (fn [] nil)]
+
+        ;; Create some workstreams
+        (ws/create-workstream! {:id "ws-1" :name "First" :working-directory "/path1"})
+        (ws/create-workstream! {:id "ws-2" :name "Second" :working-directory "/path2"})
+        (ws/link-claude-session! "ws-2" "claude-session-xyz")
+
+        ;; Send workstream list
+        (server/send-workstream-list! :test-ch)
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "workstream_list" (:type response)))
+          (is (= 2 (count (:workstreams response))))
+
+          ;; Verify fields present
+          (let [ws1 (first (filter #(= "ws-1" (:workstream_id %)) (:workstreams response)))
+                ws2 (first (filter #(= "ws-2" (:workstream_id %)) (:workstreams response)))]
+            (is (some? ws1))
+            (is (= "First" (:name ws1)))
+            (is (= "/path1" (:working_directory ws1)))
+            (is (nil? (:active_claude_session_id ws1)))
+            (is (= "normal" (:queue_priority ws1)))
+            (is (some? (:created_at ws1)))
+            (is (some? (:last_modified ws1)))
+
+            (is (some? ws2))
+            (is (= "Second" (:name ws2)))
+            (is (= "claude-session-xyz" (:active_claude_session_id ws2)))))))))
+
+(deftest test-connect-sends-workstream-list
+  (testing "connect message sends workstream_list along with other messages"
+    (reset! server/connected-clients {})
+    (reset! ws/workstream-index {})
+    (with-redefs [voice-code.replication/get-all-sessions (fn [] [])
+                  voice-code.replication/get-recent-sessions (fn [_] [])
+                  ws/save-workstream-index! (fn [] nil)]
+
+      ;; Create a workstream to verify it's sent
+      (ws/create-workstream! {:id "ws-connect-test" :name "Connect Test" :working-directory "/test"})
+
+      (let [sent-messages (atom [])]
+        (with-redefs [org.httpkit.server/send!
+                      (fn [ch msg]
+                        (swap! sent-messages conj (json/parse-string msg true)))]
+
+          (server/handle-message :test-ch "{\"type\":\"connect\"}")
+
+          ;; Should have received: session_list, recent_sessions, available_commands, workstream_list
+          (let [message-types (set (map :type @sent-messages))]
+            (is (contains? message-types "session_list"))
+            (is (contains? message-types "recent_sessions"))
+            (is (contains? message-types "available_commands"))
+            (is (contains? message-types "workstream_list")))
+
+          ;; Verify workstream_list contains our test workstream
+          (let [ws-list-msg (first (filter #(= "workstream_list" (:type %)) @sent-messages))]
+            (is (some? ws-list-msg))
+            (is (= 1 (count (:workstreams ws-list-msg))))
+            (is (= "ws-connect-test" (:workstream_id (first (:workstreams ws-list-msg)))))))))))
 
 
 
