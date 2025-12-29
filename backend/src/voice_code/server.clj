@@ -870,9 +870,385 @@
                           {:type :turn-complete
                            :session-id session-id}))))))
 
-;; Filesystem watcher callbacks
+;; ============================================================================
+;; Workstream-based Recipe Execution
+;; ============================================================================
 
-;; Removed duplicate comment here
+(defn get-step-fresh-context?
+  "Check if a step requires fresh context. Returns true if step has :fresh-context true."
+  [recipe step-name]
+  (get-in recipe [:steps step-name :fresh-context] false))
+
+(declare execute-recipe-step-for-workstream)
+
+(defn execute-recipe-step-with-fresh-context
+  "Execute recipe step after clearing context for clean context window.
+
+   This function:
+   1. Unlinks the current Claude session from the workstream
+   2. Sends context_cleared notification to client
+   3. Continues recipe execution (next prompt will create new Claude session)
+
+   The workstream ID remains constant throughout - only the Claude session changes."
+  [channel workstream-id working-dir orch-state recipe]
+  (let [workstream (ws/get-workstream workstream-id)
+        previous-session (:active-claude-session-id workstream)]
+    (log/info "Clearing context for fresh recipe step"
+              {:workstream-id workstream-id
+               :previous-session previous-session
+               :current-step (:current-step orch-state)})
+
+    ;; Unlink the Claude session from workstream
+    (ws/unlink-claude-session! workstream-id)
+
+    ;; Notify client of context cleared
+    (send-to-client! channel
+                     {:type :context-cleared
+                      :workstream-id workstream-id
+                      :previous-claude-session-id previous-session})
+
+    ;; Mark that we need to create a new session for the next invocation
+    ;; by updating the orchestration state's :session-created? flag to false
+    (swap! session-orchestration-state update workstream-id
+           assoc :session-created? false)
+
+    ;; Continue with normal step execution - will create new Claude session
+    (execute-recipe-step-for-workstream channel workstream-id working-dir
+                                        (get-session-recipe-state workstream-id) recipe)))
+
+(defn execute-recipe-step-for-workstream
+  "Execute a single step of a recipe using workstream abstraction.
+
+   Similar to execute-recipe-step but:
+   - Uses workstream-id instead of claude-session-id for state tracking
+   - Handles :fresh-context steps by clearing and continuing
+   - Links new Claude sessions to the workstream automatically
+
+   Lock management is tied to the Claude session, not the workstream.
+   When fresh context is requested, the old session lock is released and
+   a new session is created (and locked) automatically."
+  ([channel workstream-id working-dir orch-state recipe]
+   (execute-recipe-step-for-workstream channel workstream-id working-dir orch-state recipe nil))
+  ([channel workstream-id working-dir orch-state recipe prompt-override]
+   (let [current-step (:current-step orch-state)
+         step-requires-fresh-context? (and (not prompt-override)  ; Don't clear on retries
+                                           (get-step-fresh-context? recipe current-step))
+         workstream (ws/get-workstream workstream-id)
+         active-claude-session (:active-claude-session-id workstream)
+         session-created? (:session-created? orch-state)]
+
+     ;; Check if this step requires fresh context
+     (if (and step-requires-fresh-context? active-claude-session)
+       ;; Clear context and continue
+       (do
+         (log/info "Step requires fresh context, clearing"
+                   {:workstream-id workstream-id
+                    :step current-step
+                    :active-session active-claude-session})
+         ;; Release lock on current session before clearing
+         (when active-claude-session
+           (repl/release-session-lock! active-claude-session))
+         (execute-recipe-step-with-fresh-context channel workstream-id working-dir
+                                                 orch-state recipe))
+
+       ;; Normal execution
+       (let [step-prompt (or prompt-override (get-next-step-prompt workstream-id orch-state recipe))
+             ;; Determine the Claude session to use
+             claude-session-id (or active-claude-session (str (java.util.UUID/randomUUID)))
+             is-new-claude-session? (nil? active-claude-session)]
+
+         (if step-prompt
+           (do
+             (log/info "Executing recipe step for workstream"
+                       {:workstream-id workstream-id
+                        :claude-session-id claude-session-id
+                        :recipe-id (:recipe-id orch-state)
+                        :step current-step
+                        :model (get-step-model recipe current-step)
+                        :step-count (:step-count orch-state)
+                        :session-created? session-created?
+                        :is-new-claude-session? is-new-claude-session?
+                        :is-retry (some? prompt-override)})
+
+             ;; Link new Claude session to workstream if needed
+             (when is-new-claude-session?
+               (log/info "Linking new Claude session to workstream"
+                         {:workstream-id workstream-id
+                          :claude-session-id claude-session-id})
+               (ws/link-claude-session! workstream-id claude-session-id)
+               ;; Acquire lock for new session
+               (repl/acquire-session-lock! claude-session-id))
+
+             ;; Send step transition notification (only for non-retry)
+             (when-not prompt-override
+               (send-to-client! channel
+                                {:type :recipe-step-started
+                                 :session-id claude-session-id
+                                 :workstream-id workstream-id
+                                 :step current-step
+                                 :step-count (:step-count orch-state)}))
+
+             (claude/invoke-claude-async
+              step-prompt
+              (fn [response]
+                (try
+                  (if (:success response)
+                    (let [response-text (:result response)
+                          ;; Get fresh state using workstream-id as key
+                          current-orch-state (get-session-recipe-state workstream-id)]
+                      ;; Mark session as created after first successful invocation
+                      (when (and current-orch-state (not session-created?))
+                        (log/info "Marking session as created after first successful invocation"
+                                  {:workstream-id workstream-id
+                                   :claude-session-id claude-session-id})
+                        (swap! session-orchestration-state
+                               update workstream-id
+                               assoc :session-created? true))
+                      ;; Check if recipe was exited by user while we were waiting for Claude
+                      (if (nil? current-orch-state)
+                        (do
+                          (log/info "Recipe was exited while waiting for Claude response"
+                                    {:workstream-id workstream-id})
+                          ;; Recipe already exited, just release lock and send turn_complete
+                          (repl/release-session-lock! claude-session-id)
+                          (send-to-client! channel
+                                           {:type :turn-complete
+                                            :session-id claude-session-id
+                                            :workstream-id workstream-id}))
+                        ;; Process the orchestration response normally
+                        ;; NOTE: We use workstream-id for state tracking but need to handle
+                        ;; the response processing with the actual claude-session-id
+                        (let [result (process-orchestration-response
+                                      workstream-id current-orch-state recipe response-text channel)]
+                          (log/info "Recipe step response processed (workstream)"
+                                    {:workstream-id workstream-id
+                                     :claude-session-id claude-session-id
+                                     :step current-step
+                                     :action (:action result)
+                                     :next-step (:step-name result)
+                                     :reason (:reason result)})
+
+                          (case (:action result)
+                            :next-step
+                            ;; Continue to next step - get updated state and continue loop
+                            (let [updated-orch-state (get-session-recipe-state workstream-id)
+                                  updated-recipe (recipes/get-recipe (:recipe-id updated-orch-state))]
+                              (if updated-orch-state
+                                ;; Recursively execute the next step (lock stays held)
+                                (execute-recipe-step-for-workstream
+                                 channel workstream-id working-dir
+                                 updated-orch-state updated-recipe)
+                                ;; State was cleared (user exited), release lock and exit
+                                (do
+                                  (log/warn "Orchestration state missing after step transition"
+                                            {:workstream-id workstream-id})
+                                  (repl/release-session-lock! claude-session-id)
+                                  (send-to-client! channel
+                                                   {:type :turn-complete
+                                                    :session-id claude-session-id
+                                                    :workstream-id workstream-id}))))
+
+                            :retry
+                            ;; Retry with reminder prompt - lock remains held
+                            (let [updated-orch-state (get-session-recipe-state workstream-id)]
+                              (if updated-orch-state
+                                (do
+                                  (log/info "Retrying step with reminder prompt"
+                                            {:workstream-id workstream-id
+                                             :step current-step})
+                                  ;; Recursively call with the retry prompt (lock stays held)
+                                  (execute-recipe-step-for-workstream
+                                   channel workstream-id working-dir
+                                   updated-orch-state recipe (:prompt result)))
+                                ;; State was cleared (user exited), release lock and exit
+                                (do
+                                  (log/warn "Orchestration state missing before retry"
+                                            {:workstream-id workstream-id})
+                                  (repl/release-session-lock! claude-session-id)
+                                  (send-to-client! channel
+                                                   {:type :turn-complete
+                                                    :session-id claude-session-id
+                                                    :workstream-id workstream-id}))))
+
+                            :exit
+                            ;; Recipe finished - release lock and send turn_complete
+                            (do
+                              (log/info "Recipe exited (workstream)"
+                                        {:workstream-id workstream-id
+                                         :reason (:reason result)})
+                              (repl/release-session-lock! claude-session-id)
+                              ;; Send workstream_updated with final state
+                              (send-workstream-updated! channel workstream-id claude-session-id)
+                              (send-to-client! channel
+                                               {:type :turn-complete
+                                                :session-id claude-session-id
+                                                :workstream-id workstream-id}))
+
+                            ;; Default - unexpected action, release lock and exit
+                            (do
+                              (log/error "Unexpected orchestration action"
+                                         {:action (:action result)})
+                              (repl/release-session-lock! claude-session-id)
+                              (send-to-client! channel
+                                               {:type :turn-complete
+                                                :session-id claude-session-id
+                                                :workstream-id workstream-id}))))))
+
+                    ;; Claude invocation failed - release lock and exit
+                    (do
+                      (log/error "Recipe step failed (workstream)"
+                                 {:error (:error response) :workstream-id workstream-id})
+                      (exit-recipe-for-session workstream-id "error")
+                      (repl/release-session-lock! claude-session-id)
+                      (send-to-client! channel
+                                       {:type :recipe-exited
+                                        :session-id claude-session-id
+                                        :workstream-id workstream-id
+                                        :reason "error"
+                                        :error (:error response)})
+                      (send-to-client! channel
+                                       {:type :error
+                                        :message (:error response)
+                                        :session-id claude-session-id
+                                        :workstream-id workstream-id})))
+                  (catch Exception e
+                    ;; Catch any exception to ensure lock is always released
+                    (log/error e "Unexpected error in recipe step callback (workstream)"
+                               {:workstream-id workstream-id :step current-step})
+                    (exit-recipe-for-session workstream-id "internal-error")
+                    (repl/release-session-lock! claude-session-id)
+                    (send-to-client! channel
+                                     {:type :recipe-exited
+                                      :session-id claude-session-id
+                                      :workstream-id workstream-id
+                                      :reason "internal-error"
+                                      :error (str "Internal error: " (ex-message e))})
+                    (send-to-client! channel
+                                     {:type :error
+                                      :message (str "Internal error: " (ex-message e))
+                                      :session-id claude-session-id
+                                      :workstream-id workstream-id}))))
+              ;; Conditionally use new-session-id or resume-session-id
+              (if (or is-new-claude-session? (not session-created?))
+                :new-session-id
+                :resume-session-id) claude-session-id
+              :working-directory working-dir
+              :model (get-step-model recipe current-step)
+              :timeout-ms 86400000))
+           ;; No step prompt available
+           (do
+             (log/error "No step prompt available for recipe step (workstream)"
+                        {:workstream-id workstream-id
+                         :recipe-id (:recipe-id orch-state)
+                         :step current-step})
+             (exit-recipe-for-session workstream-id "no-prompt")
+             (when active-claude-session
+               (repl/release-session-lock! active-claude-session))
+             (send-to-client! channel
+                              {:type :recipe-exited
+                               :session-id active-claude-session
+                               :workstream-id workstream-id
+                               :reason "no-prompt"
+                               :error "No step prompt available"})
+             (send-to-client! channel
+                              {:type :turn-complete
+                               :session-id active-claude-session
+                               :workstream-id workstream-id}))))))))
+
+(defn handle-start-recipe-with-workstream
+  "Handle start_recipe message using workstream abstraction.
+
+   When starting a recipe with workstream_id:
+   1. Look up the workstream
+   2. Use active_claude_session_id if present (resume)
+   3. If no active session, create new Claude session ID and link it
+   4. Use workstream-id as the key for orchestration state (not claude-session-id)
+
+   This allows fresh context within the same workstream during recipe execution."
+  [channel data]
+  (let [workstream-id (:workstream-id data)
+        recipe-id (:recipe-id data)
+        working-directory (:working-directory data)]
+    (cond
+      (not workstream-id)
+      (send-to-client! channel {:type :error :message "workstream_id required"})
+
+      (not recipe-id)
+      (send-to-client! channel {:type :error :message "recipe_id required"})
+
+      (not (ws/get-workstream workstream-id))
+      (send-to-client! channel {:type :error :message (str "Workstream not found: " workstream-id)})
+
+      :else
+      (let [workstream (ws/get-workstream workstream-id)
+            active-claude-session (:active-claude-session-id workstream)
+            ;; Is this a new Claude session? (no active session linked to workstream)
+            is-new-claude-session? (nil? active-claude-session)
+            working-dir (or working-directory (:working-directory workstream))]
+
+        ;; Validate working directory for new sessions
+        (if (and is-new-claude-session? (str/blank? working-dir))
+          (do
+            (log/warn "New session recipe start rejected: missing working_directory"
+                      {:workstream-id workstream-id :recipe-id recipe-id})
+            (send-to-client! channel
+                             {:type :error
+                              :message "working_directory required for new session"
+                              :workstream-id workstream-id}))
+
+          ;; Initialize orchestration state using workstream-id as key (not claude-session-id)
+          ;; This allows us to track recipe state independently of Claude session changes
+          (if-let [orch-state (start-recipe-for-session workstream-id recipe-id (not is-new-claude-session?))]
+            (let [recipe (recipes/get-recipe recipe-id)
+                  ;; Generate or use existing Claude session ID
+                  claude-session-id (or active-claude-session (str (java.util.UUID/randomUUID)))]
+              (log/info "Recipe started with workstream"
+                        {:workstream-id workstream-id
+                         :recipe-id recipe-id
+                         :claude-session-id claude-session-id
+                         :is-new-claude-session? is-new-claude-session?})
+
+              ;; Link new Claude session to workstream if needed
+              (when is-new-claude-session?
+                (ws/link-claude-session! workstream-id claude-session-id))
+
+              (send-to-client! channel
+                               {:type :recipe-started
+                                :recipe-id recipe-id
+                                :recipe-label (:label recipe)
+                                :session-id claude-session-id
+                                :workstream-id workstream-id
+                                :current-step (:current-step orch-state)
+                                :step-count (:step-count orch-state)})
+
+              (log/info "Starting recipe orchestration loop (workstream)"
+                        {:workstream-id workstream-id
+                         :claude-session-id claude-session-id
+                         :recipe-id recipe-id
+                         :step (:current-step orch-state)
+                         :working-directory working-dir})
+
+              ;; Try to acquire lock and start orchestration loop
+              (if (repl/acquire-session-lock! claude-session-id)
+                (do
+                  (send-to-client! channel
+                                   {:type :ack
+                                    :message "Starting recipe..."})
+                  ;; Execute the first step using workstream-based execution
+                  (execute-recipe-step-for-workstream channel workstream-id working-dir
+                                                      orch-state recipe))
+                (do
+                  ;; Session is locked, clean up the recipe state we just created
+                  (log/warn "Session locked, cannot start recipe (workstream)"
+                            {:workstream-id workstream-id
+                             :claude-session-id claude-session-id})
+                  (exit-recipe-for-session workstream-id "session-locked")
+                  (send-session-locked! channel claude-session-id))))
+            (send-to-client! channel
+                             {:type :error
+                              :message (str "Recipe not found: " recipe-id)})))))))
+
+;; Filesystem watcher callbacks
 
 (defn on-session-created
   "Called when a new session file is detected"
@@ -1497,70 +1873,80 @@
 
           "start_recipe"
           (let [recipe-id (keyword (:recipe-id data))
-                session-id (:session-id data)
-                working-directory (:working-directory data)
-                is-new-session? (not (session-exists? session-id))]
+                workstream-id (:workstream-id data)
+                session-id (:session-id data) ;; Legacy support
+                working-directory (:working-directory data)]
             (cond
-              (not session-id)
+              ;; Prefer workstream_id, fall back to session_id for legacy
+              (and (not workstream-id) (not session-id))
               (send-to-client! channel
                                {:type :error
-                                :message "session_id required in start_recipe message"})
+                                :message "workstream_id (or legacy session_id) required in start_recipe message"})
 
               (not recipe-id)
               (send-to-client! channel
                                {:type :error
                                 :message "recipe_id required in start_recipe message"})
 
-              ;; New validation: working_directory required for new sessions
-              (and is-new-session? (str/blank? working-directory))
-              (do
-                (log/warn "New session recipe start rejected: missing working_directory"
-                          {:session-id session-id :recipe-id recipe-id})
-                (send-to-client! channel
-                                 {:type :error
-                                  :message "working_directory required for new session"
-                                  :session-id session-id}))
+              ;; Route to workstream-based start_recipe handler
+              workstream-id
+              (handle-start-recipe-with-workstream channel
+                                                    {:workstream-id workstream-id
+                                                     :recipe-id recipe-id
+                                                     :working-directory working-directory})
 
+              ;; Legacy: session_id provided, use original behavior
               :else
-              (if-let [orch-state (start-recipe-for-session session-id recipe-id is-new-session?)]
-                (let [recipe (recipes/get-recipe recipe-id)]
-                  (log/info "Recipe started" {:recipe-id recipe-id :session-id session-id})
-                  (send-to-client! channel
-                                   {:type :recipe-started
-                                    :recipe-id recipe-id
-                                    :recipe-label (:label recipe)
-                                    :session-id session-id
-                                    :current-step (:current-step orch-state)
-                                    :step-count (:step-count orch-state)})
+              (let [is-new-session? (not (session-exists? session-id))]
+                ;; Validation: working_directory required for new sessions
+                (if (and is-new-session? (str/blank? working-directory))
+                  (do
+                    (log/warn "New session recipe start rejected: missing working_directory"
+                              {:session-id session-id :recipe-id recipe-id})
+                    (send-to-client! channel
+                                     {:type :error
+                                      :message "working_directory required for new session"
+                                      :session-id session-id}))
+                  (if-let [orch-state (start-recipe-for-session session-id recipe-id is-new-session?)]
+                    (let [recipe (recipes/get-recipe recipe-id)]
+                      (log/info "Recipe started (legacy session_id)"
+                                {:recipe-id recipe-id :session-id session-id})
+                      (send-to-client! channel
+                                       {:type :recipe-started
+                                        :recipe-id recipe-id
+                                        :recipe-label (:label recipe)
+                                        :session-id session-id
+                                        :current-step (:current-step orch-state)
+                                        :step-count (:step-count orch-state)})
 
-;; Automatically start the orchestration loop
-                  (let [session-metadata (repl/get-session-metadata session-id)
-                        working-dir (or working-directory
-                                        (:working-directory session-metadata))]
-                    (log/info "Starting recipe orchestration loop"
-                              {:session-id session-id
-                               :recipe-id recipe-id
-                               :step (:current-step orch-state)
-                               :working-directory working-dir})
-                    ;; Try to acquire lock and start orchestration loop
-                    (if (repl/acquire-session-lock! session-id)
-                      (do
-                        (send-to-client! channel
-                                         {:type :ack
-                                          :message "Starting recipe..."})
-                        ;; Execute the first step - this will recursively continue
-                        ;; through all steps until recipe exits
-                        (execute-recipe-step channel session-id working-dir
-                                             orch-state recipe))
-                      (do
-                        ;; Session is locked, clean up the recipe state we just created
-                        (log/warn "Session locked, cannot start recipe"
-                                  {:session-id session-id})
-                        (exit-recipe-for-session session-id "session-locked")
-                        (send-session-locked! channel session-id)))))
-                (send-to-client! channel
-                                 {:type :error
-                                  :message (str "Recipe not found: " recipe-id)}))))
+                      ;; Automatically start the orchestration loop
+                      (let [session-metadata (repl/get-session-metadata session-id)
+                            working-dir (or working-directory
+                                            (:working-directory session-metadata))]
+                        (log/info "Starting recipe orchestration loop"
+                                  {:session-id session-id
+                                   :recipe-id recipe-id
+                                   :step (:current-step orch-state)
+                                   :working-directory working-dir})
+                        ;; Try to acquire lock and start orchestration loop
+                        (if (repl/acquire-session-lock! session-id)
+                          (do
+                            (send-to-client! channel
+                                             {:type :ack
+                                              :message "Starting recipe..."})
+                            ;; Execute the first step - this will recursively continue
+                            ;; through all steps until recipe exits
+                            (execute-recipe-step channel session-id working-dir
+                                                 orch-state recipe))
+                          (do
+                            ;; Session is locked, clean up the recipe state we just created
+                            (log/warn "Session locked, cannot start recipe"
+                                      {:session-id session-id})
+                            (exit-recipe-for-session session-id "session-locked")
+                            (send-session-locked! channel session-id)))))
+                    (send-to-client! channel
+                                     {:type :error
+                                      :message (str "Recipe not found: " recipe-id)}))))))
 
           "exit_recipe"
           (let [session-id (:session-id data)]

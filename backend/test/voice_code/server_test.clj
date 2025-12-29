@@ -2014,3 +2014,342 @@
         ;; Should have session linked
         (is (= "orphan-session-id" (:active-claude-session-id result)))))))
 
+;; ============================================================================
+;; Workstream Recipe Tests
+;; ============================================================================
+
+(deftest test-get-step-fresh-context?
+  (testing "Returns false when step has no :fresh-context"
+    (let [recipe {:steps {:implement {:prompt "test" :outcomes #{:complete}}}}]
+      (is (false? (server/get-step-fresh-context? recipe :implement)))))
+
+  (testing "Returns false when step has :fresh-context false"
+    (let [recipe {:steps {:implement {:prompt "test" :outcomes #{:complete} :fresh-context false}}}]
+      (is (false? (server/get-step-fresh-context? recipe :implement)))))
+
+  (testing "Returns true when step has :fresh-context true"
+    (let [recipe {:steps {:implement {:prompt "test" :outcomes #{:complete} :fresh-context true}}}]
+      (is (true? (server/get-step-fresh-context? recipe :implement)))))
+
+  (testing "Returns false for non-existent step"
+    (let [recipe {:steps {:implement {:prompt "test"}}}]
+      (is (false? (server/get-step-fresh-context? recipe :non-existent))))))
+
+(deftest test-start-recipe-with-workstream-id
+  (testing "Accepts workstream_id in start_recipe message"
+    (let [workstream-id "test-ws-recipe"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      ;; Setup
+      (reset! server/session-orchestration-state {})
+      (reset! repl/session-locks #{})
+      (reset! ws/workstream-index {})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      ;; Create workstream
+      (ws/create-workstream! {:id workstream-id
+                              :name "Test Workstream"
+                              :working-directory "/test/path"})
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    ws/save-workstream-index! (fn [] nil)
+                    server/execute-recipe-step-for-workstream (fn [& _] nil)]
+        ;; Handle start_recipe message with workstream_id
+        (server/handle-message mock-channel
+                               (json/generate-string {:type "start_recipe"
+                                                      :recipe_id "implement-and-review"
+                                                      :workstream_id workstream-id}))
+
+        ;; Should have sent recipe_started message
+        (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
+              recipe-started (first (filter #(= "recipe_started" (:type %)) parsed-messages))]
+          (is (some? recipe-started) "Should send recipe_started message")
+          (is (= workstream-id (:workstream_id recipe-started))
+              "Should include workstream_id")
+          (is (some? (:session_id recipe-started))
+              "Should include claude session_id")))))
+
+  (testing "Returns error for non-existent workstream"
+    (let [sent-messages (atom [])
+          mock-channel :test-ch]
+      (reset! server/session-orchestration-state {})
+      (reset! ws/workstream-index {})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
+        (server/handle-message mock-channel
+                               (json/generate-string {:type "start_recipe"
+                                                      :recipe_id "implement-and-review"
+                                                      :workstream_id "non-existent-ws"}))
+
+        (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
+              error-msg (first (filter #(= "error" (:type %)) parsed-messages))]
+          (is (some? error-msg) "Should send error message")
+          (is (str/includes? (:message error-msg) "Workstream not found"))))))
+
+  (testing "Prefers workstream_id over session_id"
+    (let [workstream-id "ws-preferred"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      (reset! server/session-orchestration-state {})
+      (reset! repl/session-locks #{})
+      (reset! ws/workstream-index {})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      (ws/create-workstream! {:id workstream-id
+                              :working-directory "/test/path"})
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    ws/save-workstream-index! (fn [] nil)
+                    server/execute-recipe-step-for-workstream (fn [& _] nil)]
+        ;; Include BOTH workstream_id and session_id
+        (server/handle-message mock-channel
+                               (json/generate-string {:type "start_recipe"
+                                                      :recipe_id "implement-and-review"
+                                                      :workstream_id workstream-id
+                                                      :session_id "legacy-session-id"}))
+
+        (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
+              recipe-started (first (filter #(= "recipe_started" (:type %)) parsed-messages))]
+          (is (some? recipe-started))
+          ;; workstream_id should be used
+          (is (= workstream-id (:workstream_id recipe-started))))))))
+
+(deftest test-start-recipe-with-workstream-links-claude-session
+  (testing "Links newly created Claude session to workstream"
+    (let [workstream-id "ws-session-link"
+          sent-messages (atom [])
+          mock-channel :test-ch
+          linked-session-id (atom nil)]
+      (reset! server/session-orchestration-state {})
+      (reset! repl/session-locks #{})
+      (reset! ws/workstream-index {})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      ;; Create workstream without active claude session
+      (ws/create-workstream! {:id workstream-id
+                              :working-directory "/test/path"})
+      (is (nil? (:active-claude-session-id (ws/get-workstream workstream-id)))
+          "Workstream should have no active session initially")
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    ws/save-workstream-index! (fn [] nil)
+                    server/execute-recipe-step-for-workstream
+                    (fn [_ ws-id _ _ _]
+                      (let [ws (ws/get-workstream ws-id)]
+                        (reset! linked-session-id (:active-claude-session-id ws))))]
+        (server/handle-message mock-channel
+                               (json/generate-string {:type "start_recipe"
+                                                      :recipe_id "implement-and-review"
+                                                      :workstream_id workstream-id}))
+
+        ;; Session should now be linked
+        (is (some? @linked-session-id)
+            "Claude session should be linked to workstream")
+
+        (let [ws (ws/get-workstream workstream-id)]
+          (is (some? (:active-claude-session-id ws))
+              "Workstream should have active-claude-session-id")))))
+
+  (testing "Resumes existing Claude session if already linked"
+    (let [workstream-id "ws-existing-session"
+          existing-session "existing-claude-session"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      (reset! server/session-orchestration-state {})
+      (reset! repl/session-locks #{})
+      (reset! ws/workstream-index {})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      ;; Create workstream WITH existing claude session
+      (ws/create-workstream! {:id workstream-id
+                              :working-directory "/test/path"})
+      (ws/link-claude-session! workstream-id existing-session)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    ws/save-workstream-index! (fn [] nil)
+                    server/execute-recipe-step-for-workstream (fn [& _] nil)]
+        (server/handle-message mock-channel
+                               (json/generate-string {:type "start_recipe"
+                                                      :recipe_id "implement-and-review"
+                                                      :workstream_id workstream-id}))
+
+        (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
+              recipe-started (first (filter #(= "recipe_started" (:type %)) parsed-messages))]
+          ;; Should use existing session ID
+          (is (= existing-session (:session_id recipe-started))
+              "Should resume existing Claude session"))))))
+
+(deftest test-execute-recipe-step-with-fresh-context-clears-session
+  (testing "Fresh context step unlinks Claude session and notifies client"
+    (let [workstream-id "ws-fresh-context"
+          old-session "old-claude-session"
+          sent-messages (atom [])
+          mock-channel :test-ch
+          recipe {:id :test-fresh-context
+                  :initial-step :step1
+                  :steps {:step1 {:prompt "Step 1"
+                                  :outcomes #{:complete}
+                                  :on-outcome {:complete {:next-step :step2}}}
+                          :step2 {:prompt "Step 2"
+                                  :fresh-context true
+                                  :outcomes #{:complete}
+                                  :on-outcome {:complete {:action :exit :reason "done"}}}}}
+          orch-state {:recipe-id :test-fresh-context
+                      :current-step :step2
+                      :step-count 2
+                      :session-created? true}]
+
+      (reset! server/session-orchestration-state {workstream-id orch-state})
+      (reset! repl/session-locks #{})
+      (reset! ws/workstream-index {})
+
+      ;; Create workstream with linked session
+      (ws/create-workstream! {:id workstream-id
+                              :working-directory "/test/path"})
+      (ws/link-claude-session! workstream-id old-session)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    ws/save-workstream-index! (fn [] nil)
+                    ;; Stop at execute-recipe-step-for-workstream to check state
+                    server/execute-recipe-step-for-workstream
+                    (fn [ch ws-id working-dir state _recipe]
+                      ;; After clearing, session should be nil
+                      (let [ws (ws/get-workstream ws-id)]
+                        (is (nil? (:active-claude-session-id ws))
+                            "Session should be unlinked after context clear")))]
+
+        ;; Call the fresh context handler directly
+        (server/execute-recipe-step-with-fresh-context
+         mock-channel workstream-id "/test/path" orch-state recipe)
+
+        ;; Should send context_cleared notification
+        (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
+              context-cleared (first (filter #(= "context_cleared" (:type %)) parsed-messages))]
+          (is (some? context-cleared) "Should send context_cleared message")
+          (is (= workstream-id (:workstream_id context-cleared)))
+          (is (= old-session (:previous_claude_session_id context-cleared))))))))
+
+(deftest test-fresh-context-step-triggers-context-clear
+  (testing "Step with :fresh-context true triggers context clearing"
+    (let [workstream-id "ws-fresh-trigger"
+          old-session "session-to-clear"
+          sent-messages (atom [])
+          mock-channel :test-ch
+          context-cleared? (atom false)
+          recipe {:id :test-trigger
+                  :initial-step :step1
+                  :steps {:step1 {:prompt "Step 1"
+                                  :fresh-context true
+                                  :outcomes #{:complete}
+                                  :on-outcome {:complete {:action :exit :reason "done"}}}}}
+          orch-state {:recipe-id :test-trigger
+                      :current-step :step1
+                      :step-count 1
+                      :session-created? true}]
+
+      (reset! server/session-orchestration-state {workstream-id orch-state})
+      (reset! repl/session-locks #{old-session})
+      (reset! ws/workstream-index {})
+
+      (ws/create-workstream! {:id workstream-id
+                              :working-directory "/test/path"})
+      (ws/link-claude-session! workstream-id old-session)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    ws/save-workstream-index! (fn [] nil)
+                    server/execute-recipe-step-with-fresh-context
+                    (fn [_ _ _ _ _]
+                      (reset! context-cleared? true))]
+
+        ;; Execute recipe step - should detect fresh-context and call clear function
+        (server/execute-recipe-step-for-workstream
+         mock-channel workstream-id "/test/path" orch-state recipe)
+
+        (is @context-cleared?
+            "Should call execute-recipe-step-with-fresh-context for fresh-context step")))))
+
+(deftest test-fresh-context-not-triggered-for-retries
+  (testing "Fresh context is not cleared on retry (prompt-override)"
+    (let [workstream-id "ws-no-clear-retry"
+          old-session "session-keep"
+          fresh-context-called? (atom false)
+          mock-channel :test-ch
+          recipe {:id :test-no-retry-clear
+                  :steps {:step1 {:prompt "Step 1"
+                                  :fresh-context true
+                                  :outcomes #{:complete}}}}
+          orch-state {:recipe-id :test-no-retry-clear
+                      :current-step :step1
+                      :step-count 1}]
+
+      (reset! ws/workstream-index {})
+      (ws/create-workstream! {:id workstream-id
+                              :working-directory "/test/path"})
+      (ws/link-claude-session! workstream-id old-session)
+
+      (with-redefs [ws/save-workstream-index! (fn [] nil)
+                    org.httpkit.server/send! (fn [_ _] nil)
+                    server/execute-recipe-step-with-fresh-context
+                    (fn [_ _ _ _ _]
+                      (reset! fresh-context-called? true))
+                    voice-code.claude/invoke-claude-async
+                    (fn [& _] nil)]
+
+        ;; Execute with prompt-override (retry case)
+        (server/execute-recipe-step-for-workstream
+         mock-channel workstream-id "/test/path" orch-state recipe
+         "This is a retry prompt")
+
+        (is (false? @fresh-context-called?)
+            "Fresh context should NOT be cleared on retry")))))
+
+(deftest test-legacy-session-id-still-works
+  (testing "Legacy session_id path continues to work"
+    (let [session-id "legacy-only-session"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      (reset! server/session-orchestration-state {})
+      (reset! repl/session-locks #{})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    repl/get-session-metadata (constantly {:working-directory "/existing/path"})
+                    server/execute-recipe-step (fn [& _] nil)]
+        ;; Only session_id, no workstream_id
+        (server/handle-message mock-channel
+                               (json/generate-string {:type "start_recipe"
+                                                      :recipe_id "implement-and-review"
+                                                      :session_id session-id}))
+
+        (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
+              recipe-started (first (filter #(= "recipe_started" (:type %)) parsed-messages))]
+          (is (some? recipe-started) "Should send recipe_started for legacy path")
+          (is (= session-id (:session_id recipe-started))
+              "Should use legacy session_id"))))))
+
+(deftest test-workstream-recipe-uses-workstream-id-for-state
+  (testing "Orchestration state is keyed by workstream_id not claude_session_id"
+    (let [workstream-id "ws-state-key"
+          sent-messages (atom [])
+          mock-channel :test-ch]
+      (reset! server/session-orchestration-state {})
+      (reset! repl/session-locks #{})
+      (reset! ws/workstream-index {})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+
+      (ws/create-workstream! {:id workstream-id
+                              :working-directory "/test/path"})
+
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    ws/save-workstream-index! (fn [] nil)
+                    server/execute-recipe-step-for-workstream (fn [& _] nil)]
+        (server/handle-message mock-channel
+                               (json/generate-string {:type "start_recipe"
+                                                      :recipe_id "implement-and-review"
+                                                      :workstream_id workstream-id}))
+
+        ;; State should be keyed by workstream-id
+        (is (some? (server/get-session-recipe-state workstream-id))
+            "Orchestration state should be keyed by workstream-id")))))
+

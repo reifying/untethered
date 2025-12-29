@@ -539,9 +539,11 @@ Example: 'Implement user input validation (task-abc123)'"
 
 (s/def ::model valid-models)
 
+(s/def ::fresh-context boolean?)
+
 (s/def ::step-def
   (s/keys :req-un [::prompt ::outcomes ::on-outcome]
-          :opt-un [::model]))
+          :opt-un [::model ::fresh-context]))
 
 (s/def ::steps
   (s/map-of keyword? ::step-def))
