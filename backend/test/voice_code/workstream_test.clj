@@ -253,3 +253,180 @@
       (is (= "Updated" (:name ws)))
       (is (= "/test" (:working-directory ws)))
       (is (= "session-123" (:active-claude-session-id ws))))))
+
+;; ============================================================================
+;; Migration Tests
+;; ============================================================================
+
+(deftest test-find-workstream-for-session
+  (testing "Finds workstream with matching active session"
+    (ws/create-workstream! {:id "ws-find-1" :working-directory "/test"})
+    (ws/link-claude-session! "ws-find-1" "claude-session-abc")
+
+    (let [found (ws/find-workstream-for-session "claude-session-abc")]
+      (is (some? found))
+      (is (= "ws-find-1" (:id found)))))
+
+  (testing "Returns nil when no workstream has the session"
+    (ws/create-workstream! {:id "ws-find-2" :working-directory "/test"})
+    (is (nil? (ws/find-workstream-for-session "non-existent-session"))))
+
+  (testing "Returns nil when searching in empty index"
+    (is (nil? (ws/find-workstream-for-session "any-session")))))
+
+(deftest test-migrate-orphaned-session
+  (testing "Migration creates workstream for orphaned session"
+    (let [session-index (atom {"session-1" {:session-id "session-1"
+                                             :name "Test Session"
+                                             :working-directory "/test/path"
+                                             :created-at 1735689600000
+                                             :last-modified 1735689700000}})
+          save-called? (atom false)
+          save-fn (fn [_] (reset! save-called? true))]
+
+      (let [stats (ws/migrate-sessions-to-workstreams! session-index save-fn)]
+        (is (= 1 (:migrated stats)))
+        (is (= 0 (:already-linked stats)))
+        (is (= 1 (:total stats)))
+
+        ;; Workstream should be created
+        (is (= 1 (count @ws/workstream-index)))
+
+        ;; Session should now have workstream-id
+        (is (some? (get-in @session-index ["session-1" :workstream-id])))
+
+        ;; Workstream should have correct properties
+        (let [ws-id (get-in @session-index ["session-1" :workstream-id])
+              ws (ws/get-workstream ws-id)]
+          (is (= "Test Session" (:name ws)))
+          (is (= "/test/path" (:working-directory ws)))
+          (is (= "session-1" (:active-claude-session-id ws)))
+          (is (= 1735689600000 (:created-at ws)))
+          (is (= 1735689700000 (:last-modified ws))))
+
+        ;; Save should have been called
+        (is @save-called?)))))
+
+(deftest test-migrate-session-already-with-workstream-id
+  (testing "Migration skips session with existing workstream-id"
+    (let [session-index (atom {"session-2" {:session-id "session-2"
+                                             :name "Already Linked"
+                                             :working-directory "/test"
+                                             :workstream-id "existing-ws-id"}})
+          save-fn (fn [_] nil)]
+
+      (let [stats (ws/migrate-sessions-to-workstreams! session-index save-fn)]
+        (is (= 0 (:migrated stats)))
+        (is (= 1 (:already-linked stats)))
+        (is (= 1 (:total stats)))
+
+        ;; No new workstreams should be created
+        (is (= 0 (count @ws/workstream-index)))))))
+
+(deftest test-migrate-session-already-linked-to-workstream
+  (testing "Migration links back session already referenced by workstream"
+    ;; Create a workstream that already has this session linked
+    (ws/create-workstream! {:id "existing-ws" :working-directory "/test"})
+    (ws/link-claude-session! "existing-ws" "session-3")
+
+    (let [session-index (atom {"session-3" {:session-id "session-3"
+                                             :name "Session Three"
+                                             :working-directory "/test"}})
+          save-fn (fn [_] nil)]
+
+      (let [stats (ws/migrate-sessions-to-workstreams! session-index save-fn)]
+        (is (= 0 (:migrated stats)))
+        (is (= 1 (:already-linked stats)))
+        (is (= 1 (:total stats)))
+
+        ;; Session should now have workstream-id reference
+        (is (= "existing-ws" (get-in @session-index ["session-3" :workstream-id])))
+
+        ;; No additional workstreams should be created
+        (is (= 1 (count @ws/workstream-index)))))))
+
+(deftest test-migrate-is-idempotent
+  (testing "Running migration twice creates no duplicates"
+    (let [session-index (atom {"session-idem" {:session-id "session-idem"
+                                                :name "Idempotent Test"
+                                                :working-directory "/test"}})
+          save-count (atom 0)
+          save-fn (fn [_] (swap! save-count inc))]
+
+      ;; First migration
+      (let [stats1 (ws/migrate-sessions-to-workstreams! session-index save-fn)]
+        (is (= 1 (:migrated stats1)))
+        (is (= 1 (count @ws/workstream-index))))
+
+      ;; Second migration (should be no-op)
+      (let [stats2 (ws/migrate-sessions-to-workstreams! session-index save-fn)]
+        (is (= 0 (:migrated stats2)))
+        (is (= 1 (:already-linked stats2)))
+        (is (= 1 (count @ws/workstream-index))))
+
+      ;; Third migration (still no-op)
+      (let [stats3 (ws/migrate-sessions-to-workstreams! session-index save-fn)]
+        (is (= 0 (:migrated stats3)))
+        (is (= 1 (:already-linked stats3)))))))
+
+(deftest test-migrate-preserves-session-metadata
+  (testing "Migration preserves session name and working directory"
+    (let [session-index (atom {"session-meta" {:session-id "session-meta"
+                                                :name "Important Session"
+                                                :working-directory "/projects/important"
+                                                :created-at 1700000000000
+                                                :last-modified 1700000500000}})
+          save-fn (fn [_] nil)]
+
+      (ws/migrate-sessions-to-workstreams! session-index save-fn)
+
+      (let [ws-id (get-in @session-index ["session-meta" :workstream-id])
+            ws (ws/get-workstream ws-id)]
+        (is (= "Important Session" (:name ws)))
+        (is (= "/projects/important" (:working-directory ws)))
+        (is (= 1700000000000 (:created-at ws)))
+        (is (= 1700000500000 (:last-modified ws)))))))
+
+(deftest test-migrate-multiple-sessions
+  (testing "Migration handles multiple sessions correctly"
+    (let [session-index (atom {"s1" {:session-id "s1" :name "Session 1" :working-directory "/p1"}
+                               "s2" {:session-id "s2" :name "Session 2" :working-directory "/p2"}
+                               "s3" {:session-id "s3" :name "Session 3" :working-directory "/p3"
+                                     :workstream-id "already-has-ws"}})
+          save-fn (fn [_] nil)]
+
+      (let [stats (ws/migrate-sessions-to-workstreams! session-index save-fn)]
+        (is (= 2 (:migrated stats)))
+        (is (= 1 (:already-linked stats)))
+        (is (= 3 (:total stats)))
+        (is (= 2 (count @ws/workstream-index)))))))
+
+(deftest test-migrate-empty-session-index
+  (testing "Migration handles empty session index"
+    (let [session-index (atom {})
+          save-called? (atom false)
+          save-fn (fn [_] (reset! save-called? true))]
+
+      (let [stats (ws/migrate-sessions-to-workstreams! session-index save-fn)]
+        (is (= 0 (:migrated stats)))
+        (is (= 0 (:already-linked stats)))
+        (is (= 0 (:total stats)))
+        (is (= 0 (count @ws/workstream-index)))
+        ;; Save should NOT be called when nothing was migrated
+        (is (not @save-called?))))))
+
+(deftest test-migrate-session-with-nil-values
+  (testing "Migration handles session with nil name/working-directory"
+    (let [session-index (atom {"session-nil" {:session-id "session-nil"
+                                               :name nil
+                                               :working-directory nil}})
+          save-fn (fn [_] nil)]
+
+      (let [stats (ws/migrate-sessions-to-workstreams! session-index save-fn)]
+        (is (= 1 (:migrated stats)))
+
+        (let [ws-id (get-in @session-index ["session-nil" :workstream-id])
+              ws (ws/get-workstream ws-id)]
+          ;; Should use defaults
+          (is (= "Migrated Session" (:name ws)))
+          (is (some? (:working-directory ws))))))))

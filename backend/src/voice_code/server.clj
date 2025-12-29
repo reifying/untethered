@@ -1731,6 +1731,14 @@
     (log/info "Initializing session replication system")
     (repl/initialize-index!)
 
+    ;; Load workstream index
+    (log/info "Loading workstream index")
+    (ws/load-workstream-index!)
+
+    ;; Migrate orphaned sessions to workstreams
+    (log/info "Running session-to-workstream migration")
+    (ws/migrate-sessions-to-workstreams! repl/session-index repl/save-index!)
+
     ;; Start filesystem watcher
     (try
       (repl/start-watcher!

@@ -156,3 +156,96 @@
     (log/info "Unlinked Claude session from workstream"
               {:workstream-id workstream-id :previous-session-id previous-id})
     previous-id))
+
+;; ============================================================================
+;; Migration
+;; ============================================================================
+
+(defn find-workstream-for-session
+  "Find workstream that has the given Claude session ID as its active session.
+  Returns the workstream map or nil if not found."
+  [claude-session-id]
+  (first (filter #(= claude-session-id (:active-claude-session-id %))
+                 (vals @workstream-index))))
+
+(defn migrate-sessions-to-workstreams!
+  "Create workstream wrappers for orphaned Claude sessions.
+
+  This function scans all sessions and creates a workstream for any session
+  that doesn't already have one linked. This ensures backward compatibility
+  when upgrading from session-based to workstream-based architecture.
+
+  The function is idempotent - running it multiple times won't create duplicates.
+
+  Parameters:
+    session-index-atom - Atom containing session-id -> metadata map
+    save-session-index-fn! - Function to persist session index after updates
+
+  Returns a map with migration statistics:
+    :migrated - Number of sessions that got new workstreams
+    :already-linked - Number of sessions that already had workstreams
+    :total - Total number of sessions processed"
+  [session-index-atom save-session-index-fn!]
+  (let [sessions (vals @session-index-atom)
+        stats (atom {:migrated 0 :already-linked 0 :total 0})]
+
+    (doseq [session sessions]
+      (let [claude-session-id (:session-id session)]
+        (swap! stats update :total inc)
+
+        (cond
+          ;; Session already has workstream-id in its metadata
+          (:workstream-id session)
+          (do
+            (log/debug "Session already has workstream-id"
+                       {:session-id claude-session-id
+                        :workstream-id (:workstream-id session)})
+            (swap! stats update :already-linked inc))
+
+          ;; Check if any workstream already has this session linked
+          (find-workstream-for-session claude-session-id)
+          (let [existing-ws (find-workstream-for-session claude-session-id)]
+            (log/debug "Session already linked to workstream"
+                       {:session-id claude-session-id
+                        :workstream-id (:id existing-ws)})
+            ;; Update session metadata with workstream-id reference
+            (swap! session-index-atom assoc-in [claude-session-id :workstream-id] (:id existing-ws))
+            (swap! stats update :already-linked inc))
+
+          ;; No workstream exists - create one
+          :else
+          (let [ws-id (str (java.util.UUID/randomUUID))
+                session-name (or (:name session) "Migrated Session")
+                session-working-dir (or (:working-directory session)
+                                        (System/getProperty "user.dir"))
+                ;; Use session timestamps if available
+                created-at (or (:created-at session) (System/currentTimeMillis))
+                last-modified (or (:last-modified session) (System/currentTimeMillis))
+                workstream {:id ws-id
+                            :name session-name
+                            :working-directory session-working-dir
+                            :active-claude-session-id claude-session-id
+                            :queue-priority :normal
+                            :priority-order 0.0
+                            :created-at created-at
+                            :last-modified last-modified}]
+            ;; Add workstream to index (without saving yet - we batch save at the end)
+            (swap! workstream-index assoc ws-id workstream)
+            ;; Update session metadata with workstream-id reference
+            (swap! session-index-atom assoc-in [claude-session-id :workstream-id] ws-id)
+            (log/info "Migrated session to workstream"
+                      {:session-id claude-session-id
+                       :workstream-id ws-id
+                       :name session-name})
+            (swap! stats update :migrated inc)))))
+
+    ;; Save both indices after processing all sessions
+    (when (pos? (:migrated @stats))
+      (save-workstream-index!)
+      (save-session-index-fn! @session-index-atom)
+      (log/info "Migration complete - indices saved"
+                {:workstream-count (count @workstream-index)
+                 :session-count (count @session-index-atom)}))
+
+    (log/info "Session-to-workstream migration statistics" @stats)
+    @stats))
