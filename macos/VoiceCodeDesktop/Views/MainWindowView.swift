@@ -14,6 +14,7 @@ struct MainWindowView: View {
     @StateObject private var client: VoiceCodeClient
     @StateObject private var resourcesManager: ResourcesManager
     @StateObject private var selectionManager = SessionSelectionManager()
+    @ObservedObject private var windowRegistry = WindowSessionRegistry.shared
     @State private var showingSettings = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var recentSessions: [RecentSession] = []
@@ -21,6 +22,7 @@ struct MainWindowView: View {
     @State private var allSessions: [CDBackendSession] = []
     @State private var sessionToDelete: CDBackendSession?
     @State private var showingDeleteConfirmation = false
+    @State private var currentWindow: NSWindow?
 
     @Environment(\.managedObjectContext) private var viewContext
 
@@ -43,12 +45,31 @@ struct MainWindowView: View {
         return allSessions.first { $0.id == id }
     }
 
-    /// Binding to selected session for child views
+    /// Binding to selected session for child views.
+    /// Uses WindowSessionRegistry to ensure sessions are only open in one window at a time.
     private var selectedSessionBinding: Binding<CDBackendSession?> {
         Binding(
             get: { selectedSession },
             set: { session in
-                selectionManager.selectedSessionId = session?.id
+                // Unregister old session from this window
+                if let oldId = selectionManager.selectedSessionId {
+                    windowRegistry.unregisterWindow(for: oldId)
+                }
+
+                guard let newSession = session else {
+                    selectionManager.selectedSessionId = nil
+                    return
+                }
+
+                // Try to select the new session
+                // If it's already open in another window, that window will be focused
+                if windowRegistry.trySelectSession(newSession.id, from: currentWindow) {
+                    selectionManager.selectedSessionId = newSession.id
+                    if let window = currentWindow {
+                        windowRegistry.registerWindow(window, for: newSession.id)
+                    }
+                }
+                // If trySelectSession returns false, selection is blocked and other window is focused
             }
         )
     }
@@ -125,11 +146,26 @@ struct MainWindowView: View {
             }
         }
         .frame(minWidth: 900, minHeight: 600)
+        .background(WindowAccessor { window in
+            if let window = window {
+                currentWindow = window
+                // Set as main window if it's the first one
+                if windowRegistry.allRegisteredSessions().isEmpty {
+                    windowRegistry.setMainWindow(window)
+                }
+            }
+        })
         .onAppear {
             setupRecentSessionsCallback()
             setupStatusBarController()
             if settings.isServerConfigured {
                 client.connect()
+            }
+        }
+        .onDisappear {
+            // Unregister all sessions from this window when it closes
+            if let window = currentWindow {
+                windowRegistry.unregisterAllSessions(for: window)
             }
         }
         .onChange(of: settings.serverURL) {
@@ -591,14 +627,30 @@ struct RecentSessionRowView: View {
 
 struct SessionRowView: View {
     @ObservedObject var session: CDBackendSession
+    @ObservedObject private var windowRegistry = WindowSessionRegistry.shared
     @Environment(\.managedObjectContext) private var viewContext
+
+    /// Whether this session is open in a detached (non-main) window
+    private var isInDetachedWindow: Bool {
+        windowRegistry.sessionsInDetachedWindows.contains(session.id)
+    }
 
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.displayName(context: viewContext))
-                    .font(.headline)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(session.displayName(context: viewContext))
+                        .font(.headline)
+                        .lineLimit(1)
+
+                    // Detached window indicator
+                    if isInDetachedWindow {
+                        Image(systemName: "square.on.square")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .help("Open in another window")
+                    }
+                }
 
                 Text(URL(fileURLWithPath: session.workingDirectory).lastPathComponent)
                     .font(.caption)
@@ -737,15 +789,31 @@ struct SessionListView: View {
 /// Row view for sessions in SessionListView
 struct SessionListRowView: View {
     @ObservedObject var session: CDBackendSession
+    @ObservedObject private var windowRegistry = WindowSessionRegistry.shared
     @Environment(\.managedObjectContext) private var viewContext
+
+    /// Whether this session is open in a detached (non-main) window
+    private var isInDetachedWindow: Bool {
+        windowRegistry.sessionsInDetachedWindows.contains(session.id)
+    }
 
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                // Line 1: Session name
-                Text(session.displayName(context: viewContext))
-                    .font(.headline)
-                    .lineLimit(1)
+                // Line 1: Session name with optional detached window indicator
+                HStack(spacing: 4) {
+                    Text(session.displayName(context: viewContext))
+                        .font(.headline)
+                        .lineLimit(1)
+
+                    // Detached window indicator
+                    if isInDetachedWindow {
+                        Image(systemName: "square.on.square")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .help("Open in another window")
+                    }
+                }
 
                 // Line 2: Session ID prefix + last modified
                 HStack(spacing: 4) {
@@ -1044,6 +1112,27 @@ extension Date {
         }
 
         return dateFormatter.string(from: self)
+    }
+}
+
+// MARK: - WindowAccessor
+
+/// NSViewRepresentable to access the hosting NSWindow from SwiftUI
+struct WindowAccessor: NSViewRepresentable {
+    let onWindowChange: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            onWindowChange(view.window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            onWindowChange(nsView.window)
+        }
     }
 }
 

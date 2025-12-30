@@ -301,6 +301,202 @@ final class WindowManagementTests: XCTestCase {
         XCTAssertTrue(true) // Compile-time check passed
     }
 
+    // MARK: - WindowSessionRegistry Tests
+
+    func testWindowSessionRegistryIsSharedSingleton() {
+        let registry1 = WindowSessionRegistry.shared
+        let registry2 = WindowSessionRegistry.shared
+        XCTAssertTrue(registry1 === registry2, "WindowSessionRegistry.shared should return the same instance")
+    }
+
+    func testWindowSessionRegistryRegisterAndQuery() {
+        let registry = WindowSessionRegistry.shared
+        let sessionId = UUID()
+        let window = NSWindow()
+
+        // Initially not registered
+        XCTAssertFalse(registry.isSessionInWindow(sessionId))
+        XCTAssertNil(registry.windowForSession(sessionId))
+
+        // Register the session
+        registry.registerWindow(window, for: sessionId)
+
+        // Now it should be registered
+        XCTAssertTrue(registry.isSessionInWindow(sessionId))
+        XCTAssertTrue(registry.windowForSession(sessionId) === window)
+
+        // Clean up
+        registry.unregisterWindow(for: sessionId)
+        XCTAssertFalse(registry.isSessionInWindow(sessionId))
+    }
+
+    func testWindowSessionRegistryUnregisterWindow() {
+        let registry = WindowSessionRegistry.shared
+        let sessionId = UUID()
+        let window = NSWindow()
+
+        registry.registerWindow(window, for: sessionId)
+        XCTAssertTrue(registry.isSessionInWindow(sessionId))
+
+        registry.unregisterWindow(for: sessionId)
+        XCTAssertFalse(registry.isSessionInWindow(sessionId))
+        XCTAssertNil(registry.windowForSession(sessionId))
+    }
+
+    func testWindowSessionRegistryUnregisterAllSessionsForWindow() {
+        let registry = WindowSessionRegistry.shared
+        let sessionId1 = UUID()
+        let sessionId2 = UUID()
+        let sessionId3 = UUID()
+        let window1 = NSWindow()
+        let window2 = NSWindow()
+
+        // Register sessions to different windows
+        registry.registerWindow(window1, for: sessionId1)
+        registry.registerWindow(window1, for: sessionId2)
+        registry.registerWindow(window2, for: sessionId3)
+
+        // All should be registered
+        XCTAssertTrue(registry.isSessionInWindow(sessionId1))
+        XCTAssertTrue(registry.isSessionInWindow(sessionId2))
+        XCTAssertTrue(registry.isSessionInWindow(sessionId3))
+
+        // Unregister all sessions for window1
+        registry.unregisterAllSessions(for: window1)
+
+        // Sessions in window1 should be unregistered
+        XCTAssertFalse(registry.isSessionInWindow(sessionId1))
+        XCTAssertFalse(registry.isSessionInWindow(sessionId2))
+
+        // Session in window2 should still be registered
+        XCTAssertTrue(registry.isSessionInWindow(sessionId3))
+
+        // Clean up
+        registry.unregisterWindow(for: sessionId3)
+    }
+
+    func testWindowSessionRegistryTrySelectSessionFromSameWindow() {
+        let registry = WindowSessionRegistry.shared
+        let sessionId = UUID()
+        let window = NSWindow()
+
+        registry.registerWindow(window, for: sessionId)
+
+        // Selecting from the same window should succeed
+        XCTAssertTrue(registry.trySelectSession(sessionId, from: window))
+
+        // Clean up
+        registry.unregisterWindow(for: sessionId)
+    }
+
+    func testWindowSessionRegistryTrySelectSessionFromDifferentWindow() {
+        let registry = WindowSessionRegistry.shared
+        let sessionId = UUID()
+        let window1 = NSWindow()
+        let window2 = NSWindow()
+
+        registry.registerWindow(window1, for: sessionId)
+
+        // Selecting from a different window should fail (window1 will be focused instead)
+        // Note: In tests, makeKeyAndOrderFront may not work as expected, but the return value should be false
+        XCTAssertFalse(registry.trySelectSession(sessionId, from: window2))
+
+        // Clean up
+        registry.unregisterWindow(for: sessionId)
+    }
+
+    func testWindowSessionRegistryTrySelectUnregisteredSession() {
+        let registry = WindowSessionRegistry.shared
+        let sessionId = UUID()
+        let window = NSWindow()
+
+        // Session not registered, should succeed (will be registered by caller)
+        XCTAssertTrue(registry.trySelectSession(sessionId, from: window))
+    }
+
+    func testWindowSessionRegistryAllRegisteredSessions() {
+        let registry = WindowSessionRegistry.shared
+        let sessionId1 = UUID()
+        let sessionId2 = UUID()
+        let window = NSWindow()
+
+        // Initially may have sessions from other tests, so just verify our additions
+        let initialCount = registry.allRegisteredSessions().count
+
+        registry.registerWindow(window, for: sessionId1)
+        registry.registerWindow(window, for: sessionId2)
+
+        let allSessions = registry.allRegisteredSessions()
+        XCTAssertEqual(allSessions.count, initialCount + 2)
+        XCTAssertTrue(allSessions.contains(sessionId1))
+        XCTAssertTrue(allSessions.contains(sessionId2))
+
+        // Clean up
+        registry.unregisterWindow(for: sessionId1)
+        registry.unregisterWindow(for: sessionId2)
+    }
+
+    func testWindowSessionRegistryDetachedWindowTracking() async {
+        let registry = WindowSessionRegistry.shared
+        let sessionId = UUID()
+        let mainWindow = NSWindow()
+        let detachedWindow = NSWindow()
+
+        // Set main window
+        registry.setMainWindow(mainWindow)
+
+        // Register session in detached window
+        registry.registerWindow(detachedWindow, for: sessionId)
+
+        // Wait for async update
+        try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+
+        // Session should be in detached window
+        XCTAssertTrue(registry.isSessionInDetachedWindow(sessionId))
+        XCTAssertTrue(registry.sessionsInDetachedWindows.contains(sessionId))
+
+        // Clean up
+        registry.unregisterWindow(for: sessionId)
+    }
+
+    func testWindowSessionRegistryMainWindowSessionNotDetached() async {
+        let registry = WindowSessionRegistry.shared
+        let sessionId = UUID()
+        let mainWindow = NSWindow()
+
+        // Set main window and register session in it
+        registry.setMainWindow(mainWindow)
+        registry.registerWindow(mainWindow, for: sessionId)
+
+        // Wait for async update
+        try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+
+        // Session should NOT be in detached window
+        XCTAssertFalse(registry.isSessionInDetachedWindow(sessionId))
+        XCTAssertFalse(registry.sessionsInDetachedWindows.contains(sessionId))
+
+        // Clean up
+        registry.unregisterWindow(for: sessionId)
+    }
+
+    func testWindowSessionRegistryReplacesExistingRegistration() {
+        let registry = WindowSessionRegistry.shared
+        let sessionId = UUID()
+        let window1 = NSWindow()
+        let window2 = NSWindow()
+
+        // Register in window1
+        registry.registerWindow(window1, for: sessionId)
+        XCTAssertTrue(registry.windowForSession(sessionId) === window1)
+
+        // Re-register in window2 (should replace)
+        registry.registerWindow(window2, for: sessionId)
+        XCTAssertTrue(registry.windowForSession(sessionId) === window2)
+
+        // Clean up
+        registry.unregisterWindow(for: sessionId)
+    }
+
     // MARK: - Helper Methods
 
     private func createTestSession() -> CDBackendSession {
