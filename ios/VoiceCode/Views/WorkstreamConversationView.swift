@@ -32,6 +32,8 @@ struct WorkstreamConversationView: View {
     @State private var showingKillConfirmation = false
     @State private var showingWorkstreamInfo = false
     @State private var showingRecipeMenu = false
+    @State private var showingClearContextConfirmation = false
+    @State private var isClearingContext = false
 
     // Compaction feedback state
     @State private var wasRecentlyCompacted: Bool = false
@@ -291,6 +293,21 @@ struct WorkstreamConversationView: View {
                             .foregroundColor(autoScrollEnabled ? .blue : .gray)
                     }
 
+                    // Clear context button (only if there's an active session)
+                    if workstream.activeClaudeSessionId != nil {
+                        Button(action: {
+                            showingClearContextConfirmation = true
+                        }) {
+                            if isClearingContext {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "trash")
+                                    .foregroundColor(.orange)
+                            }
+                        }
+                        .disabled(isClearingContext || isWorkstreamLocked)
+                    }
+
                     // Compact button (only if there's an active session)
                     if workstream.activeClaudeSessionId != nil {
                         Button(action: {
@@ -350,6 +367,15 @@ struct WorkstreamConversationView: View {
             }
         } message: {
             Text("This will terminate the current Claude process. The workstream will be unlocked and you can send a new prompt.")
+        }
+        // Clear context confirmation
+        .alert("Clear Context?", isPresented: $showingClearContextConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Clear", role: .destructive) {
+                clearContext()
+            }
+        } message: {
+            Text("This will clear the conversation history and start fresh. The workstream name and queue position will be preserved.")
         }
         // Compact confirmation
         .alert("Compact Session?", isPresented: $showingCompactConfirmation) {
@@ -640,6 +666,41 @@ struct WorkstreamConversationView: View {
                 await MainActor.run {
                     isCompacting = false
                     logger.error("❌ Compaction failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func clearContext() {
+        isClearingContext = true
+
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.warning)
+
+        // Call the VoiceCodeClient method to send clear_context message
+        client.clearContext(workstreamId: workstream.id)
+
+        logger.info("🧹 Clearing context for workstream: \(workstream.id.uuidString.lowercased().prefix(8))...")
+
+        // Reset compaction state since we're starting fresh
+        wasRecentlyCompacted = false
+        compactionTimestamps.removeValue(forKey: workstream.id)
+
+        // Show confirmation
+        compactSuccessMessage = "Context cleared"
+        withAnimation {
+            showingCopyConfirmation = true
+        }
+
+        // The actual clearing will happen when we receive context_cleared from the backend
+        // via WorkstreamSyncManager.handleContextCleared
+        // For now, just reset the loading state after a brief delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            isClearingContext = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                withAnimation {
+                    showingCopyConfirmation = false
+                    compactSuccessMessage = nil
                 }
             }
         }
