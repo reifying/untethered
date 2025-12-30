@@ -70,12 +70,15 @@
    (let [start-time (System/currentTimeMillis)]
      (loop []
        (let [remaining (- timeout-ms (- (System/currentTimeMillis) start-time))]
-         (when (pos? remaining)
+         (if (pos? remaining)
            (let [msg (receive-ws client remaining)]
              (cond
                (= msg :timeout) :timeout
                (= (:type msg) (name expected-type)) msg
-               :else (recur)))))))))
+               :else (do
+                       (log/debug "Skipping message of type" (:type msg) "waiting for" (name expected-type))
+                       (recur))))
+           :timeout))))))
 
 (defn close-ws!
   "Close WebSocket connection."

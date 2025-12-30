@@ -2,7 +2,7 @@
   "Test 4: WebSocket Protocol (connect, subscribe, ping)
 
   Verifies:
-  - Connect without session_id returns session-list message
+  - Connect without session_id returns workstream-list message
   - Subscribe returns session-history
   - Ping returns pong
 
@@ -27,8 +27,8 @@
         (finally
           (fixtures/close-ws! client))))))
 
-(deftest test-connect-returns-session-list
-  (testing "Connect message returns session-list (new protocol)"
+(deftest test-connect-returns-workstream-list
+  (testing "Connect message returns workstream-list (workstream protocol)"
     (let [client (-> (fixtures/create-ws-client "ws://localhost:18080")
                      fixtures/connect-ws!)]
       (try
@@ -38,18 +38,19 @@
         ;; Send connect
         (fixtures/send-ws! client {:type "connect"})
 
-        ;; Expect session-list
-        (let [response (fixtures/receive-ws-type client :session-list)]
-          (is (not= response :timeout) "Should receive session-list")
-          (fixtures/assert-session-list response)
+        ;; Expect workstream-list
+        (let [response (fixtures/receive-ws-type client :workstream-list)]
+          (is (not= response :timeout) "Should receive workstream-list")
+          (is (= "workstream_list" (:type response)) "Type should be workstream_list")
+          (is (vector? (:workstreams response)) "Should have workstreams vector")
 
-          (log/info "Received session list with" (count (:sessions response)) "sessions"
-                    "total:" (:total-count response))
+          (log/info "Received workstream list with" (count (:workstreams response)) "workstreams")
 
-          ;; Verify session metadata format
-          (when (seq (:sessions response))
-            (let [first-session (first (:sessions response))]
-              (fixtures/assert-session-metadata first-session))))
+          ;; Verify workstream metadata format
+          (when (seq (:workstreams response))
+            (let [first-ws (first (:workstreams response))]
+              (is (:workstream-id first-ws) "Workstream should have workstream-id")
+              (is (:working-directory first-ws) "Workstream should have working-directory"))))
         (finally
           (fixtures/close-ws! client))))))
 
@@ -61,9 +62,11 @@
         ;; Consume hello
         (fixtures/receive-ws-type client :hello)
 
-        ;; Send connect to get session list
+        ;; Send connect to get session list (which includes sessions for subscribe)
         (fixtures/send-ws! client {:type "connect"})
-        (let [session-list (fixtures/receive-ws-type client :session-list)]
+        ;; Wait a bit for all connect responses
+        (Thread/sleep 1000)
+        (let [session-list (fixtures/receive-ws-type client :session-list 10000)]
           (is (not= session-list :timeout) "Should receive session-list")
 
           ;; Pick first session to subscribe to
@@ -122,9 +125,10 @@
         ;; Consume hello
         (fixtures/receive-ws-type client :hello)
 
-        ;; Get a session ID
+        ;; Get a session ID from session list
         (fixtures/send-ws! client {:type "connect"})
-        (let [session-list (fixtures/receive-ws-type client :session-list)
+        (Thread/sleep 1000)
+        (let [session-list (fixtures/receive-ws-type client :session-list 10000)
               session-id (-> session-list :sessions first :session-id)]
 
           (when session-id
@@ -162,8 +166,8 @@
             (gniazdo.core/send-msg raw-client "{\"type\":\"connect\"}")
             (Thread/sleep 1000)
 
-            ;; Verify we got at least 2 messages (hello + session-list)
-            (is (>= (count @raw-messages) 2) "Should receive hello and session-list")
+            ;; Verify we got at least 2 messages (hello + workstream-list)
+            (is (>= (count @raw-messages) 2) "Should receive hello and workstream-list")
 
             ;; Check each raw message for proper JSON format
             (doseq [raw-msg @raw-messages]
@@ -180,13 +184,11 @@
                   (is (not (clojure.string/includes? raw-msg "\"session-id\""))
                       "JSON should not contain kebab-case keys like 'session-id'"))
 
-                (when (= "session_list" (:type parsed))
-                  (is (clojure.string/includes? raw-msg "\"session_list\"")
-                      "JSON should contain snake_case type 'session_list'")
-                  (is (clojure.string/includes? raw-msg "\"total_count\"")
-                      "JSON should contain snake_case key 'total_count'")
-                  (is (not (clojure.string/includes? raw-msg "\"total-count\""))
-                      "JSON should not contain kebab-case 'total-count'"))))
+                (when (= "workstream_list" (:type parsed))
+                  (is (clojure.string/includes? raw-msg "\"workstream_list\"")
+                      "JSON should contain snake_case type 'workstream_list'")
+                  (is (not (clojure.string/includes? raw-msg "\"workstream-list\""))
+                      "JSON should not contain kebab-case 'workstream-list'"))))
 
             (finally
               (gniazdo.core/close raw-client)))
