@@ -22,6 +22,9 @@ struct MainWindowView: View {
     @State private var allSessions: [CDBackendSession] = []
     @State private var sessionToDelete: CDBackendSession?
     @State private var showingDeleteConfirmation = false
+    @State private var sessionToRename: CDBackendSession?
+    @State private var showingRenameSheet = false
+    @State private var renameText = ""
     @State private var currentWindow: NSWindow?
 
     @Environment(\.managedObjectContext) private var viewContext
@@ -251,6 +254,32 @@ struct MainWindowView: View {
         } message: { session in
             Text("Are you sure you want to delete \"\(session.displayName(context: viewContext))\"? This will hide the session from the list. The session data is preserved and can be recovered.")
         }
+        .onReceive(NotificationCenter.default.publisher(for: .requestSessionRename)) { notification in
+            if let sessionId = notification.userInfo?["sessionId"] as? UUID,
+               let session = allSessions.first(where: { $0.id == sessionId }) {
+                sessionToRename = session
+                renameText = session.displayName(context: viewContext)
+                showingRenameSheet = true
+            }
+        }
+        .sheet(isPresented: $showingRenameSheet) {
+            SessionRenameSheet(
+                sessionName: $renameText,
+                onRename: {
+                    if let session = sessionToRename {
+                        renameSession(session, to: renameText)
+                    }
+                    showingRenameSheet = false
+                    sessionToRename = nil
+                    renameText = ""
+                },
+                onCancel: {
+                    showingRenameSheet = false
+                    sessionToRename = nil
+                    renameText = ""
+                }
+            )
+        }
     }
 
     private func loadAllSessions() {
@@ -283,6 +312,31 @@ struct MainWindowView: View {
 
     private func deleteSession(_ session: CDBackendSession) {
         CDBackendSession.softDeleteSession(session, context: viewContext)
+    }
+
+    private func renameSession(_ session: CDBackendSession, to newName: String) {
+        let trimmedName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+
+        // Create or update CDUserSession with custom name
+        let fetchRequest = CDUserSession.fetchUserSession(id: session.id)
+        let userSession: CDUserSession
+        if let existing = try? viewContext.fetch(fetchRequest).first {
+            userSession = existing
+        } else {
+            userSession = CDUserSession(context: viewContext)
+            userSession.id = session.id
+            userSession.createdAt = Date()
+        }
+        userSession.customName = trimmedName
+
+        do {
+            try viewContext.save()
+            logger.info("📝 Renamed session \(session.id.uuidString.prefix(8)) to: \(trimmedName)")
+            loadAllSessions()
+        } catch {
+            logger.error("❌ Failed to rename session: \(error)")
+        }
     }
 
     private func setupStatusBarController() {
@@ -1163,6 +1217,18 @@ struct SessionContextMenu: View {
 
             Divider()
 
+            Button {
+                NotificationCenter.default.post(
+                    name: .requestSessionRename,
+                    object: nil,
+                    userInfo: ["sessionId": session.id]
+                )
+            } label: {
+                Label("Rename...", systemImage: "pencil")
+            }
+
+            Divider()
+
             Button(role: .destructive) {
                 NotificationCenter.default.post(
                     name: .requestSessionDeletion,
@@ -1173,6 +1239,43 @@ struct SessionContextMenu: View {
                 Label("Delete Session...", systemImage: "trash")
             }
         }
+    }
+}
+
+// MARK: - SessionRenameSheet
+
+/// Sheet for renaming a session
+struct SessionRenameSheet: View {
+    @Binding var sessionName: String
+    let onRename: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Rename Session")
+                .font(.headline)
+
+            TextField("Session name", text: $sessionName)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 280)
+                .onSubmit {
+                    if !sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        onRename()
+                    }
+                }
+
+            HStack(spacing: 12) {
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.escape)
+
+                Button("Rename", action: onRename)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 320)
     }
 }
 

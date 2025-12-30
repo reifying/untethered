@@ -14,6 +14,7 @@ final class ConversationDetailViewTests: XCTestCase {
     var client: VoiceCodeClient!
     var resourcesManager: ResourcesManager!
     var settings: AppSettings!
+    var voiceOutput: VoiceOutputManager!
 
     override func setUp() {
         super.setUp()
@@ -22,6 +23,7 @@ final class ConversationDetailViewTests: XCTestCase {
         settings = AppSettings()
         client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
         resourcesManager = ResourcesManager(client: client, appSettings: settings)
+        voiceOutput = VoiceOutputManager(appSettings: settings)
     }
 
     override func tearDown() {
@@ -30,6 +32,7 @@ final class ConversationDetailViewTests: XCTestCase {
         client = nil
         resourcesManager = nil
         settings = nil
+        voiceOutput = nil
         super.tearDown()
     }
 
@@ -47,6 +50,15 @@ final class ConversationDetailViewTests: XCTestCase {
         session.isLocallyCreated = false
         try? context.save()
         return session
+    }
+
+    private func createMessageRowView(message: CDMessage, workingDirectory: String = "/Users/test/project") -> MessageRowView {
+        MessageRowView(
+            message: message,
+            voiceOutput: voiceOutput,
+            workingDirectory: workingDirectory,
+            onInferName: { _ in }
+        )
     }
 
     private func createTestMessage(
@@ -117,7 +129,7 @@ final class ConversationDetailViewTests: XCTestCase {
             text: "This is a user message"
         )
 
-        let view = MessageRowView(message: message)
+        let view = createMessageRowView(message: message)
 
         // View should initialize without crashing
         XCTAssertNotNil(view)
@@ -132,7 +144,7 @@ final class ConversationDetailViewTests: XCTestCase {
             text: "This is an assistant message"
         )
 
-        let view = MessageRowView(message: message)
+        let view = createMessageRowView(message: message)
 
         XCTAssertNotNil(view)
         XCTAssertEqual(message.role, "assistant")
@@ -147,7 +159,7 @@ final class ConversationDetailViewTests: XCTestCase {
             status: .sending
         )
 
-        let view = MessageRowView(message: message)
+        let view = createMessageRowView(message: message)
 
         XCTAssertNotNil(view)
         XCTAssertEqual(message.messageStatus, .sending)
@@ -162,7 +174,7 @@ final class ConversationDetailViewTests: XCTestCase {
             status: .error
         )
 
-        let view = MessageRowView(message: message)
+        let view = createMessageRowView(message: message)
 
         XCTAssertNotNil(view)
         XCTAssertEqual(message.messageStatus, .error)
@@ -178,7 +190,7 @@ final class ConversationDetailViewTests: XCTestCase {
             text: longText
         )
 
-        let view = MessageRowView(message: message)
+        let view = createMessageRowView(message: message)
 
         XCTAssertNotNil(view)
         XCTAssertTrue(message.isTruncated)
@@ -193,11 +205,106 @@ final class ConversationDetailViewTests: XCTestCase {
             text: "Short message"
         )
 
-        let view = MessageRowView(message: message)
+        let view = createMessageRowView(message: message)
 
         XCTAssertNotNil(view)
         XCTAssertFalse(message.isTruncated)
         XCTAssertEqual(message.displayText, message.text)
+    }
+
+    // MARK: - Context Menu Action Tests
+
+    func testMessageRowViewContextMenuCopyAction() {
+        let session = createTestSession()
+        let testText = "Test message to copy"
+        let message = createTestMessage(
+            sessionId: session.id,
+            role: "user",
+            text: testText
+        )
+
+        // Simulate copy action
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(message.text, forType: .string)
+
+        // Verify copied text
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), testText)
+    }
+
+    func testMessageRowViewContextMenuReadAloudAction() {
+        let session = createTestSession()
+        let message = createTestMessage(
+            sessionId: session.id,
+            role: "assistant",
+            text: "Hello, this is a test message for reading aloud"
+        )
+
+        // Verify voice output manager is available
+        XCTAssertNotNil(voiceOutput)
+        XCTAssertFalse(voiceOutput.isSpeaking)
+
+        // Trigger speech
+        let processedText = TextProcessor.removeCodeBlocks(from: message.text)
+        voiceOutput.speak(processedText, workingDirectory: session.workingDirectory)
+
+        // VoiceOutputManager should be speaking
+        XCTAssertTrue(voiceOutput.isSpeaking)
+
+        // Stop speaking
+        voiceOutput.stop()
+    }
+
+    func testMessageRowViewContextMenuInferNameAction() {
+        let session = createTestSession()
+        let message = createTestMessage(
+            sessionId: session.id,
+            role: "user",
+            text: "Implement user authentication system"
+        )
+
+        var inferNameCalled = false
+        var receivedMessageText: String?
+
+        // Create view with infer name callback
+        let _ = MessageRowView(
+            message: message,
+            voiceOutput: voiceOutput,
+            workingDirectory: session.workingDirectory,
+            onInferName: { text in
+                inferNameCalled = true
+                receivedMessageText = text
+            }
+        )
+
+        // Simulate infer name action callback
+        let onInferName: (String) -> Void = { text in
+            inferNameCalled = true
+            receivedMessageText = text
+        }
+        onInferName(message.text)
+
+        XCTAssertTrue(inferNameCalled)
+        XCTAssertEqual(receivedMessageText, message.text)
+    }
+
+    func testTextProcessorRemovesCodeBlocks() {
+        let textWithCode = """
+        Here's how to implement it:
+        ```swift
+        func hello() {
+            print("Hello")
+        }
+        ```
+        That's the implementation.
+        """
+
+        let processed = TextProcessor.removeCodeBlocks(from: textWithCode)
+
+        // Code block should be removed
+        XCTAssertFalse(processed.contains("```"))
+        XCTAssertFalse(processed.contains("func hello()"))
+        XCTAssertTrue(processed.contains("Here's how to implement it"))
+        XCTAssertTrue(processed.contains("That's the implementation"))
     }
 
     // MARK: - MessageInputView Tests

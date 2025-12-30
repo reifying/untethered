@@ -387,4 +387,8 @@ extension Notification.Name {
     /// Request to delete a session (soft delete with confirmation)
     /// userInfo contains "sessionId" key (UUID)
     static let requestSessionDeletion = Notification.Name("requestSessionDeletion")
+
+    /// Request to rename a session
+    /// userInfo contains "sessionId" key (UUID)
+    static let requestSessionRename = Notification.Name("requestSessionRename")
 }

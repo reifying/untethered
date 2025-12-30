@@ -20,6 +20,9 @@ struct ConversationDetailView: View {
 
     @Environment(\.managedObjectContext) private var viewContext
 
+    // Voice output for TTS
+    @StateObject private var voiceOutput: VoiceOutputManager
+
     // Messages fetched via CoreData @FetchRequest
     @FetchRequest private var messages: FetchedResults<CDMessage>
 
@@ -60,6 +63,9 @@ struct ConversationDetailView: View {
         self.resourcesManager = resourcesManager
         self.settings = settings
 
+        // Initialize voice output manager
+        _voiceOutput = StateObject(wrappedValue: VoiceOutputManager(appSettings: settings))
+
         // Initialize fetch request for messages
         _messages = FetchRequest(
             fetchRequest: CDMessage.fetchMessages(sessionId: session.id),
@@ -75,8 +81,18 @@ struct ConversationDetailView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 12) {
                             ForEach(messages) { message in
-                                MessageRowView(message: message)
-                                    .id(message.id)
+                                MessageRowView(
+                                    message: message,
+                                    voiceOutput: voiceOutput,
+                                    workingDirectory: session.workingDirectory,
+                                    onInferName: { messageText in
+                                        client.requestInferredName(
+                                            sessionId: session.backendSessionId,
+                                            messageText: messageText
+                                        )
+                                    }
+                                )
+                                .id(message.id)
                             }
                         }
                         .padding()
@@ -476,6 +492,9 @@ struct ConversationDragOverlayView: View {
 /// Individual message row with role-based styling
 struct MessageRowView: View {
     @ObservedObject var message: CDMessage
+    @ObservedObject var voiceOutput: VoiceOutputManager
+    let workingDirectory: String
+    let onInferName: (String) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -528,16 +547,46 @@ struct MessageRowView: View {
         .background(messageBackground)
         .cornerRadius(8)
         .contextMenu {
-            Button("Copy") {
+            Button {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(message.text, forType: .string)
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
             }
 
             if message.isTruncated {
-                Button("Copy Full Message") {
+                Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(message.text, forType: .string)
+                } label: {
+                    Label("Copy Full Message", systemImage: "doc.on.doc.fill")
                 }
+            }
+
+            Divider()
+
+            Button {
+                // Remove code blocks for better TTS experience
+                let processedText = TextProcessor.removeCodeBlocks(from: message.text)
+                voiceOutput.speak(processedText, workingDirectory: workingDirectory)
+            } label: {
+                Label("Read Aloud", systemImage: "speaker.wave.2")
+            }
+
+            if voiceOutput.isSpeaking {
+                Button {
+                    voiceOutput.stop()
+                } label: {
+                    Label("Stop Speaking", systemImage: "speaker.slash")
+                }
+            }
+
+            Divider()
+
+            Button {
+                onInferName(message.text)
+            } label: {
+                Label("Infer Session Name", systemImage: "sparkles.rectangle.stack")
             }
         }
     }

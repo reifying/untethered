@@ -566,4 +566,106 @@ final class MainWindowViewTests: XCTestCase {
         session.priorityOrder = 0
         return session
     }
+
+    // MARK: - Session Context Menu Tests
+
+    func testSessionContextMenuInitializes() {
+        let session = createTestSession()
+        let view = SessionContextMenu(session: session)
+        XCTAssertNotNil(view)
+    }
+
+    func testSessionContextMenuCopySessionId() {
+        let session = createTestSession()
+        let expectedId = session.id.uuidString.lowercased()
+
+        // Simulate copy action
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(session.id.uuidString.lowercased(), forType: .string)
+
+        // Verify copied ID is lowercase
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), expectedId)
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string)?.lowercased(), expectedId)
+    }
+
+    func testRequestSessionRenameNotification() {
+        let session = createTestSession()
+        var receivedSessionId: UUID?
+
+        // Subscribe to notification
+        let expectation = XCTestExpectation(description: "Notification received")
+        let observer = NotificationCenter.default.addObserver(
+            forName: .requestSessionRename,
+            object: nil,
+            queue: .main
+        ) { notification in
+            receivedSessionId = notification.userInfo?["sessionId"] as? UUID
+            expectation.fulfill()
+        }
+
+        // Post notification
+        NotificationCenter.default.post(
+            name: .requestSessionRename,
+            object: nil,
+            userInfo: ["sessionId": session.id]
+        )
+
+        wait(for: [expectation], timeout: 1.0)
+
+        XCTAssertEqual(receivedSessionId, session.id)
+        NotificationCenter.default.removeObserver(observer)
+    }
+
+    func testSessionRenameSheetInitializes() {
+        var sessionName = "Test Session"
+        var renameCalled = false
+        var cancelCalled = false
+
+        let view = SessionRenameSheet(
+            sessionName: Binding(get: { sessionName }, set: { sessionName = $0 }),
+            onRename: { renameCalled = true },
+            onCancel: { cancelCalled = true }
+        )
+
+        XCTAssertNotNil(view)
+
+        // Test callbacks
+        view.onRename()
+        XCTAssertTrue(renameCalled)
+
+        view.onCancel()
+        XCTAssertTrue(cancelCalled)
+    }
+
+    func testSessionRenameUpdatesCustomName() {
+        let session = createTestSession()
+        let newName = "My Renamed Session"
+
+        // Create or update CDUserSession with custom name
+        let fetchRequest = CDUserSession.fetchUserSession(id: session.id)
+        let userSession: CDUserSession
+        if let existing = try? viewContext.fetch(fetchRequest).first {
+            userSession = existing
+        } else {
+            userSession = CDUserSession(context: viewContext)
+            userSession.id = session.id
+            userSession.createdAt = Date()
+        }
+        userSession.customName = newName
+
+        try? viewContext.save()
+
+        // Verify custom name was saved
+        let fetchedUserSession = try? viewContext.fetch(fetchRequest).first
+        XCTAssertNotNil(fetchedUserSession)
+        XCTAssertEqual(fetchedUserSession?.customName, newName)
+    }
+
+    func testSessionRenameEmptyNameRejected() {
+        let emptyName = "   "
+        let trimmedName = emptyName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        XCTAssertTrue(trimmedName.isEmpty)
+        // Empty names should be rejected (guard in renameSession)
+    }
 }

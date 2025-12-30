@@ -19,18 +19,21 @@ final class DragAndDropTests: XCTestCase {
     var persistenceController: PersistenceController!
     var viewContext: NSManagedObjectContext!
     var settings: AppSettings!
+    var voiceOutput: VoiceOutputManager!
 
     override func setUp() {
         super.setUp()
         persistenceController = PersistenceController(inMemory: true)
         viewContext = persistenceController.container.viewContext
         settings = AppSettings()
+        voiceOutput = VoiceOutputManager(appSettings: settings)
     }
 
     override func tearDown() {
         persistenceController = nil
         viewContext = nil
         settings = nil
+        voiceOutput = nil
         super.tearDown()
     }
 
@@ -329,7 +332,12 @@ final class DragAndDropTests: XCTestCase {
 
         try viewContext.save()
 
-        let view = MessageRowView(message: message)
+        let view = MessageRowView(
+            message: message,
+            voiceOutput: voiceOutput,
+            workingDirectory: session.workingDirectory,
+            onInferName: { _ in }
+        )
         XCTAssertNotNil(view)
 
         // The context menu provides Copy functionality
