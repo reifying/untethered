@@ -152,7 +152,7 @@ struct EditMenuCommands: Commands {
 
 // MARK: - Session Menu Commands
 
-/// Session menu: Send, Refresh, Compact, Kill, Info, Copy ID
+/// Session menu: Send, Refresh, Compact, Kill, Delete, Info, Copy ID
 struct SessionMenuCommands: Commands {
     let selectedSession: CDBackendSession?
     let client: VoiceCodeClient?
@@ -206,6 +206,19 @@ struct SessionMenuCommands: Commands {
                 )
             }
             .disabled(!hasSession)
+
+            Divider()
+
+            Button("Delete Session...", role: .destructive) {
+                guard let session = selectedSession else { return }
+                NotificationCenter.default.post(
+                    name: .requestSessionDeletion,
+                    object: nil,
+                    userInfo: ["sessionId": session.id]
+                )
+            }
+            .keyboardShortcut(.delete, modifiers: .command)
+            .disabled(selectedSession == nil)
 
             Divider()
 
@@ -370,4 +383,8 @@ extension Notification.Name {
     /// Open a specific session (from notification tap)
     /// userInfo contains "sessionId" key
     static let openSession = Notification.Name("openSession")
+
+    /// Request to delete a session (soft delete with confirmation)
+    /// userInfo contains "sessionId" key (UUID)
+    static let requestSessionDeletion = Notification.Name("requestSessionDeletion")
 }

@@ -19,6 +19,8 @@ struct MainWindowView: View {
     @State private var recentSessions: [RecentSession] = []
     @State private var showingNewSession = false
     @State private var allSessions: [CDBackendSession] = []
+    @State private var sessionToDelete: CDBackendSession?
+    @State private var showingDeleteConfirmation = false
 
     @Environment(\.managedObjectContext) private var viewContext
 
@@ -185,6 +187,34 @@ struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: .statusBarDisconnectRequested)) { _ in
             client.disconnect()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .requestSessionDeletion)) { notification in
+            if let sessionId = notification.userInfo?["sessionId"] as? UUID,
+               let session = allSessions.first(where: { $0.id == sessionId }) {
+                sessionToDelete = session
+                showingDeleteConfirmation = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .sessionDeleted)) { notification in
+            // Clear selection if the deleted session was selected
+            if let sessionIdString = notification.userInfo?["sessionId"] as? String,
+               let selectedId = selectionManager.selectedSessionId,
+               selectedId.uuidString.lowercased() == sessionIdString {
+                selectionManager.selectedSessionId = nil
+            }
+            // Refresh session list
+            loadAllSessions()
+        }
+        .alert("Delete Session", isPresented: $showingDeleteConfirmation, presenting: sessionToDelete) { session in
+            Button("Cancel", role: .cancel) {
+                sessionToDelete = nil
+            }
+            Button("Delete", role: .destructive) {
+                deleteSession(session)
+                sessionToDelete = nil
+            }
+        } message: { session in
+            Text("Are you sure you want to delete \"\(session.displayName(context: viewContext))\"? This will hide the session from the list. The session data is preserved and can be recovered.")
+        }
     }
 
     private func loadAllSessions() {
@@ -213,6 +243,10 @@ struct MainWindowView: View {
                 self.recentSessions = sessions
             }
         }
+    }
+
+    private func deleteSession(_ session: CDBackendSession) {
+        CDBackendSession.softDeleteSession(session, context: viewContext)
     }
 
     private func setupStatusBarController() {
@@ -593,6 +627,9 @@ struct SessionRowView: View {
             }
         }
         .padding(.vertical, 4)
+        .contextMenu {
+            SessionContextMenu(session: session)
+        }
     }
 }
 
@@ -761,6 +798,9 @@ struct SessionListRowView: View {
             }
         }
         .padding(.vertical, 4)
+        .contextMenu {
+            SessionContextMenu(session: session)
+        }
     }
 }
 
@@ -1004,6 +1044,46 @@ extension Date {
         }
 
         return dateFormatter.string(from: self)
+    }
+}
+
+// MARK: - SessionContextMenu
+
+/// Reusable context menu for session rows
+struct SessionContextMenu: View {
+    let session: CDBackendSession
+
+    var body: some View {
+        Group {
+            Button {
+                // Copy session ID
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(session.id.uuidString.lowercased(), forType: .string)
+            } label: {
+                Label("Copy Session ID", systemImage: "doc.on.doc")
+            }
+
+            Button {
+                // Show in Finder
+                let url = URL(fileURLWithPath: session.workingDirectory)
+                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: url.path)
+            } label: {
+                Label("Show in Finder", systemImage: "folder")
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                NotificationCenter.default.post(
+                    name: .requestSessionDeletion,
+                    object: nil,
+                    userInfo: ["sessionId": session.id]
+                )
+            } label: {
+                Label("Delete Session...", systemImage: "trash")
+            }
+        }
     }
 }
 

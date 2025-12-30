@@ -7,6 +7,7 @@ public extension Notification.Name {
     // Session updates
     static let sessionListDidUpdate = Notification.Name("sessionListDidUpdate")
     static let priorityQueueChanged = Notification.Name("priorityQueueChanged")
+    static let sessionDeleted = Notification.Name("sessionDeleted")
 
     // Connection state
     static let connectionRestored = Notification.Name("connectionRestored")

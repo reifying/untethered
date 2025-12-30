@@ -243,6 +243,13 @@ struct SessionInfoView: View {
                                 Label("Show in Finder", systemImage: "folder")
                             }
                             .buttonStyle(.borderless)
+
+                            Divider()
+
+                            Button(role: .destructive, action: deleteSession) {
+                                Label("Delete Session...", systemImage: "trash")
+                            }
+                            .buttonStyle(.borderless)
                         }
                         .padding(.vertical, 4)
                     } label: {
@@ -360,6 +367,16 @@ struct SessionInfoView: View {
     private func openInFinder() {
         let url = URL(fileURLWithPath: session.workingDirectory)
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: url.path)
+    }
+
+    private func deleteSession() {
+        dismiss()
+        // Post notification to trigger confirmation dialog in MainWindowView
+        NotificationCenter.default.post(
+            name: .requestSessionDeletion,
+            object: nil,
+            userInfo: ["sessionId": session.id]
+        )
     }
 
     private func showConfirmation(_ message: String) {
