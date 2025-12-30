@@ -1,5 +1,5 @@
 // SessionsForDirectoryView.swift
-// Shows sessions for a specific working directory
+// Shows workstreams for a specific working directory
 
 import SwiftUI
 import CoreData
@@ -18,8 +18,8 @@ struct SessionsForDirectoryView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @EnvironmentObject var draftManager: DraftManager
 
-    // Fetch sessions filtered by working directory
-    @FetchRequest private var sessions: FetchedResults<CDBackendSession>
+    // Fetch workstreams filtered by working directory
+    @FetchRequest private var workstreams: FetchedResults<CDWorkstream>
 
     @State private var showingNewSession = false
     @State private var newSessionName = ""
@@ -36,9 +36,9 @@ struct SessionsForDirectoryView: View {
         self._showingSettings = showingSettings
         self._navigationPath = navigationPath
 
-        // Initialize FetchRequest with predicate filtering by directory
-        _sessions = FetchRequest<CDBackendSession>(
-            sortDescriptors: [NSSortDescriptor(keyPath: \CDBackendSession.lastModified, ascending: false)],
+        // Initialize FetchRequest with predicate filtering by directory (using CDWorkstream)
+        _workstreams = FetchRequest<CDWorkstream>(
+            sortDescriptors: [NSSortDescriptor(keyPath: \CDWorkstream.lastModified, ascending: false)],
             predicate: NSPredicate(format: "workingDirectory == %@", workingDirectory),
             animation: .default
         )
@@ -50,16 +50,16 @@ struct SessionsForDirectoryView: View {
 
     var body: some View {
         Group {
-            if sessions.isEmpty {
-                // Empty state: no sessions in this directory
+            if workstreams.isEmpty {
+                // Empty state: no workstreams in this directory
                 VStack(spacing: 16) {
                     Image(systemName: "tray")
                         .font(.system(size: 64))
                         .foregroundColor(.secondary)
-                    Text("No sessions in \(directoryName)")
+                    Text("No workstreams in \(directoryName)")
                         .font(.title2)
                         .foregroundColor(.secondary)
-                    Text("Create a new session with the + button to get started.")
+                    Text("Create a new workstream with the + button to get started.")
                         .font(.body)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -68,20 +68,20 @@ struct SessionsForDirectoryView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
-                    ForEach(sessions) { session in
-                        NavigationLink(value: session.id) {
-                            CDBackendSessionRowContent(session: session)
+                    ForEach(workstreams) { workstream in
+                        NavigationLink(value: workstream.id) {
+                            CDWorkstreamRowContent(workstream: workstream)
                         }
                         .contextMenu {
                             Button(action: {
-                                copySessionID(session)
+                                copyWorkstreamID(workstream)
                             }) {
-                                Label("Copy Session ID", systemImage: "doc.on.clipboard")
+                                Label("Copy Workstream ID", systemImage: "doc.on.clipboard")
                             }
                         }
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
-                                deleteSession(session)
+                                deleteWorkstream(workstream)
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
@@ -89,7 +89,7 @@ struct SessionsForDirectoryView: View {
                     }
                 }
                 .refreshable {
-                    logger.info("Pull-to-refresh triggered - requesting session list")
+                    logger.info("Pull-to-refresh triggered - requesting workstream list")
                     await client.requestSessionList()
                 }
             }
@@ -98,7 +98,7 @@ struct SessionsForDirectoryView: View {
         .navigationBarTitleDisplayMode(.large)
         .overlay(alignment: .top) {
             if showingCopyConfirmation {
-                Text("Session ID copied to clipboard")
+                Text("Workstream ID copied to clipboard")
                     .font(.caption)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
@@ -232,13 +232,28 @@ struct SessionsForDirectoryView: View {
     }
 
     private func createNewSession(name: String) {
-        // Generate new UUID for session
-        let sessionId = UUID()
+        // Generate new UUID for workstream
+        let workstreamId = UUID()
 
-        // Create CDBackendSession in CoreData
+        // Create CDWorkstream in CoreData
+        let workstream = CDWorkstream(context: viewContext)
+        workstream.id = workstreamId
+        workstream.name = name
+        workstream.workingDirectory = workingDirectory
+        workstream.queuePriority = "normal"
+        workstream.priorityOrder = 0
+        workstream.createdAt = Date()
+        workstream.lastModified = Date()
+        workstream.messageCount = 0
+        workstream.unreadCount = 0
+        workstream.isInPriorityQueue = false
+        // activeClaudeSessionId is nil initially (cleared state)
+
+        // Also create CDBackendSession for navigation compatibility
+        // (ConversationView still requires CDBackendSession during migration)
         let session = CDBackendSession(context: viewContext)
-        session.id = sessionId
-        session.backendName = sessionId.uuidString.lowercased()  // Backend ID = iOS UUID for new sessions
+        session.id = workstreamId
+        session.backendName = workstreamId.uuidString.lowercased()
         session.workingDirectory = workingDirectory
         session.lastModified = Date()
         session.messageCount = 0
@@ -247,36 +262,31 @@ struct SessionsForDirectoryView: View {
         session.isLocallyCreated = true
 
         // Create CDUserSession with custom name
-        let fetchRequest = CDUserSession.fetchUserSession(id: sessionId)
-        let userSession: CDUserSession
-        if let existing = try? viewContext.fetch(fetchRequest).first {
-            userSession = existing
-        } else {
-            userSession = CDUserSession(context: viewContext)
-            userSession.id = sessionId
-            userSession.createdAt = Date()
-        }
+        let userSession = CDUserSession(context: viewContext)
+        userSession.id = workstreamId
         userSession.customName = name
+        userSession.createdAt = Date()
 
         // Save to CoreData
         do {
             try viewContext.save()
-            logger.info("📝 Created new session: \(sessionId.uuidString.lowercased()) in \(workingDirectory)")
+            logger.info("📝 Created new workstream: \(workstreamId.uuidString.lowercased()) in \(workingDirectory)")
 
             // Auto-add to priority queue if enabled
             if settings.priorityQueueEnabled {
-                addToPriorityQueue(session)
-                logger.info("📌 Auto-added new session to priority queue: \(sessionId.uuidString.lowercased())")
+                addToPriorityQueue(workstream)
+                logger.info("📌 Auto-added new workstream to priority queue: \(workstreamId.uuidString.lowercased())")
             }
 
-            // Navigate to the new session
-            navigationPath.append(sessionId)
-            logger.info("🔄 Navigating to new session: \(sessionId.uuidString.lowercased())")
+            // Navigate to the new workstream
+            navigationPath.append(workstreamId)
+            logger.info("🔄 Navigating to new workstream: \(workstreamId.uuidString.lowercased())")
 
-            // Note: ConversationView will handle subscription when it appears (lazy loading)
+            // Send create_workstream message to backend
+            client.createWorkstream(id: workstreamId, name: name, workingDirectory: workingDirectory)
 
         } catch {
-            logger.error("❌ Failed to create session: \(error)")
+            logger.error("❌ Failed to create workstream: \(error)")
         }
     }
 
@@ -303,66 +313,90 @@ struct SessionsForDirectoryView: View {
         logger.info("📋 Copied directory path to clipboard: \(self.workingDirectory)")
     }
     
-    private func copySessionID(_ session: CDBackendSession) {
-        // Copy session ID to clipboard
-        UIPasteboard.general.string = session.id.uuidString.lowercased()
-        
+    private func copyWorkstreamID(_ workstream: CDWorkstream) {
+        // Copy workstream ID to clipboard
+        let workstreamID = workstream.id.uuidString.lowercased()
+        UIPasteboard.general.string = workstreamID
+
         // Trigger haptic feedback
         let generator = UINotificationFeedbackGenerator()
         generator.notificationOccurred(.success)
-        
+
         // Show confirmation banner
         withAnimation {
             showingCopyConfirmation = true
         }
-        
+
         // Hide confirmation after 2 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             withAnimation {
                 showingCopyConfirmation = false
             }
         }
+
+        logger.info("📋 Copied workstream ID to clipboard: \(workstreamID)")
     }
 
-    private func addToPriorityQueue(_ session: CDBackendSession) {
-        CDBackendSession.addToPriorityQueue(session, context: viewContext)
-    }
+    private func addToPriorityQueue(_ workstream: CDWorkstream) {
+        // Add workstream to priority queue
+        workstream.isInPriorityQueue = true
+        workstream.priorityQueuedAt = Date()
 
-    private func deleteSession(_ session: CDBackendSession) {
-        // Create or update CDUserSession to mark as deleted
-        let fetchRequest: NSFetchRequest<CDUserSession> = CDUserSession.fetchRequest()
-        fetchRequest.predicate = NSPredicate(format: "id == %@", session.id as CVarArg)
-
-        let userSession: CDUserSession
-        if let existing = try? viewContext.fetch(fetchRequest).first {
-            userSession = existing
-        } else {
-            userSession = CDUserSession(context: viewContext)
-            userSession.id = session.id
+        // Calculate next priority order (append at end)
+        let fetchRequest = CDWorkstream.fetchQueuedWorkstreams()
+        if let existingWorkstreams = try? viewContext.fetch(fetchRequest) {
+            let maxOrder = existingWorkstreams.map { $0.priorityOrder }.max() ?? 0
+            workstream.priorityOrder = maxOrder + 1
         }
 
-        userSession.isUserDeleted = true
+        do {
+            try viewContext.save()
+            logger.info("✅ Added workstream to priority queue: \(workstream.id.uuidString.lowercased())")
+        } catch {
+            logger.error("❌ Failed to add workstream to priority queue: \(error)")
+        }
+    }
 
-        // Clean up draft for this session
-        let sessionID = session.id.uuidString.lowercased()
-        draftManager.cleanupDraft(sessionID: sessionID)
+    private func deleteWorkstream(_ workstream: CDWorkstream) {
+        // Clean up draft for this workstream
+        let workstreamID = workstream.id.uuidString.lowercased()
+        draftManager.cleanupDraft(sessionID: workstreamID)
+
+        // Delete associated CDBackendSession (for navigation compatibility during migration)
+        let sessionFetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
+        sessionFetchRequest.predicate = NSPredicate(format: "id == %@", workstream.id as CVarArg)
+        if let sessions = try? viewContext.fetch(sessionFetchRequest) {
+            for session in sessions {
+                viewContext.delete(session)
+            }
+        }
+
+        // Delete associated CDUserSession (for custom name storage)
+        let userSessionFetchRequest: NSFetchRequest<CDUserSession> = CDUserSession.fetchRequest()
+        userSessionFetchRequest.predicate = NSPredicate(format: "id == %@", workstream.id as CVarArg)
+        if let userSessions = try? viewContext.fetch(userSessionFetchRequest) {
+            for userSession in userSessions {
+                viewContext.delete(userSession)
+            }
+        }
+
+        // Delete the workstream from CoreData
+        viewContext.delete(workstream)
 
         // Save context
         do {
             try viewContext.save()
+            logger.info("✅ Deleted workstream: \(workstreamID)")
 
-            // Unsubscribe from session
-            client.unsubscribe(sessionId: session.id.uuidString.lowercased())
-
-            // Send session_deleted message to backend
+            // Send workstream_deleted message to backend
             let message: [String: Any] = [
-                "type": "session_deleted",
-                "session_id": session.id.uuidString.lowercased()
+                "type": "workstream_deleted",
+                "workstream_id": workstreamID
             ]
             client.sendMessage(message)
 
         } catch {
-            logger.error("Failed to delete session: \(error)")
+            logger.error("❌ Failed to delete workstream: \(error)")
         }
     }
 }

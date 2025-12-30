@@ -4,7 +4,7 @@
 import SwiftUI
 import CoreData
 
-// MARK: - CoreData Session Row Content
+// MARK: - CoreData Session Row Content (Legacy - for CDBackendSession)
 
 struct CDSessionRowContent: View {
     @ObservedObject var session: CDBackendSession
@@ -46,6 +46,77 @@ struct CDSessionRowContent: View {
             // Show unread badge if there are unread messages
             if session.unreadCount > 0 {
                 Text("\(session.unreadCount)")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.red)
+                    .clipShape(Capsule())
+            }
+        }
+    }
+}
+
+// MARK: - CoreData Workstream Row Content
+
+struct CDWorkstreamRowContent: View {
+    @ObservedObject var workstream: CDWorkstream
+
+    var body: some View {
+        let _ = RenderTracker.count(Self.self)
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                // Line 1: Workstream name
+                Text(workstream.name)
+                    .font(.headline)
+
+                // Line 2: Working directory (last component)
+                HStack(spacing: 8) {
+                    Text(URL(fileURLWithPath: workstream.workingDirectory).lastPathComponent)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+
+                // Line 3: Message count and preview (or cleared state)
+                HStack(spacing: 8) {
+                    if workstream.isCleared {
+                        // Cleared workstream: no active Claude session
+                        Text("Ready to start")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                            .italic()
+                    } else {
+                        Text("\(workstream.messageCount) messages")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+
+                        if let preview = workstream.preview, !preview.isEmpty {
+                            Text("•")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            Text(preview)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+
+            Spacer()
+
+            // Visual indicator for cleared state
+            if workstream.isCleared {
+                Image(systemName: "circle.dashed")
+                    .foregroundColor(.orange)
+                    .imageScale(.small)
+            }
+
+            // Show unread badge if there are unread messages
+            if workstream.unreadCount > 0 {
+                Text("\(workstream.unreadCount)")
                     .font(.caption)
                     .fontWeight(.bold)
                     .foregroundColor(.white)
