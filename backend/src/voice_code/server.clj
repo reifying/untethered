@@ -186,16 +186,19 @@
   (let [workstreams (ws/get-all-workstreams)
         workstreams-formatted (mapv
                                (fn [workstream]
-                                 {:workstream-id (:id workstream)
-                                  :name (:name workstream)
-                                  :working-directory (:working-directory workstream)
-                                  :active-claude-session-id (:active-claude-session-id workstream)
-                                  :queue-priority (name (:queue-priority workstream))
-                                  :priority-order (:priority-order workstream)
-                                  :created-at (ws/format-timestamp (:created-at workstream))
-                                  :last-modified (ws/format-timestamp (:last-modified workstream))
-                                  :message-count 0  ; TODO: get from Claude session if linked
-                                  :preview nil})    ; TODO: get from Claude session if linked
+                                 (let [claude-session-id (:active-claude-session-id workstream)
+                                       session-metadata (when claude-session-id
+                                                          (repl/get-session-metadata claude-session-id))]
+                                   {:workstream-id (:id workstream)
+                                    :name (:name workstream)
+                                    :working-directory (:working-directory workstream)
+                                    :active-claude-session-id claude-session-id
+                                    :queue-priority (name (:queue-priority workstream))
+                                    :priority-order (:priority-order workstream)
+                                    :created-at (ws/format-timestamp (:created-at workstream))
+                                    :last-modified (ws/format-timestamp (:last-modified workstream))
+                                    :message-count (or (:message-count session-metadata) 0)
+                                    :preview (:preview session-metadata)}))
                                workstreams)]
     (log/info "Sending workstream list" {:count (count workstreams-formatted)})
     (send-to-client! channel
@@ -259,8 +262,10 @@
   Includes updated active session ID, last modified timestamp, and preview."
   [channel workstream-id claude-session-id]
   (when-let [workstream (ws/get-workstream workstream-id)]
-    (let [preview nil  ; TODO: Get from Claude response or session metadata
-          message-count 0]  ; TODO: Get from Claude session if linked
+    (let [session-metadata (when claude-session-id
+                             (repl/get-session-metadata claude-session-id))
+          message-count (or (:message-count session-metadata) 0)
+          preview (:preview session-metadata)]
       (send-to-client! channel
                        {:type :workstream-updated
                         :workstream-id workstream-id
