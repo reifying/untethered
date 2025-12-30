@@ -11,6 +11,15 @@
   {:code-review
    {:prompt "Perform a thorough code review on the changes.
 
+## Review Process
+
+1. Run `git diff` to see exactly what changed
+2. Read each modified file to understand the changes in context
+3. Evaluate against the checklist below
+4. Report your findings
+
+**Important:** List the files you read and summarize what you checked in each.
+
 ## Review Checklist
 
 ### Correctness
@@ -453,7 +462,9 @@ Before marking complete:
 - [ ] Unit tests written and passing
 - [ ] Integration tests written (if specified in task)
 - [ ] Code follows project conventions
-- [ ] No unrelated changes included"
+- [ ] No unrelated changes included
+
+**Do not commit yet.** Code review happens next."
    :outcomes #{:complete :no-tasks :blocked :other}
    :on-outcome
    {:complete {:next-step :code-review}
