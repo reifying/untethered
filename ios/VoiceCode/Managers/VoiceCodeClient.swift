@@ -22,6 +22,11 @@ class VoiceCodeClient: ObservableObject {
     @Published var availableRecipes: [Recipe] = []  // All recipes from backend
     @Published var activeRecipes: [String: ActiveRecipe] = [:]  // session-id -> active recipe
 
+    // Mapping from Claude session ID to workstream ID for proper lock management.
+    // When locking by workstream ID, we need to also unlock by workstream ID when
+    // turn_complete arrives (which includes Claude session ID, not workstream ID).
+    private var claudeSessionToWorkstream: [String: String] = [:]
+
     private var webSocket: URLSessionWebSocketTask?
     private var reconnectionTimer: DispatchSourceTimer?
     private var serverURL: String
@@ -531,14 +536,30 @@ class VoiceCodeClient: ObservableObject {
                         self.subscribe(sessionId: sessionId)
                     }
 
-                    let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
+                    var currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
+                    var unlocked = false
+
+                    // Unlock Claude session ID if locked
                     if currentSessions.contains(sessionId) {
-                        var updatedSessions = currentSessions
-                        updatedSessions.remove(sessionId)
-                        scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (turn complete, remaining locks: \(updatedSessions.count))")
-                        if !updatedSessions.isEmpty {
-                            print("   Still locked: \(Array(updatedSessions))")
+                        currentSessions.remove(sessionId)
+                        unlocked = true
+                        print("🔓 [VoiceCodeClient] Unlocked Claude session: \(sessionId)")
+                    }
+
+                    // Also unlock corresponding workstream ID if locked (workstream-based locking)
+                    if let workstreamId = self.claudeSessionToWorkstream[sessionId] {
+                        if currentSessions.contains(workstreamId) {
+                            currentSessions.remove(workstreamId)
+                            unlocked = true
+                            print("🔓 [VoiceCodeClient] Unlocked workstream: \(workstreamId.prefix(8))...")
+                        }
+                    }
+
+                    if unlocked {
+                        scheduleUpdate(key: "lockedSessions", value: currentSessions)
+                        print("🔓 [VoiceCodeClient] Turn complete, remaining locks: \(currentSessions.count)")
+                        if !currentSessions.isEmpty {
+                            print("   Still locked: \(Array(currentSessions))")
                         }
                     }
                 }
@@ -614,12 +635,28 @@ class VoiceCodeClient: ObservableObject {
                 // Session process was terminated
                 if let sessionId = json["session_id"] as? String {
                     print("🛑 [VoiceCodeClient] Session killed: \(sessionId)")
-                    let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
+                    var currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
+                    var unlocked = false
+
+                    // Unlock Claude session ID if locked
                     if currentSessions.contains(sessionId) {
-                        var updatedSessions = currentSessions
-                        updatedSessions.remove(sessionId)
-                        scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (killed, remaining locks: \(updatedSessions.count))")
+                        currentSessions.remove(sessionId)
+                        unlocked = true
+                        print("🔓 [VoiceCodeClient] Unlocked Claude session: \(sessionId)")
+                    }
+
+                    // Also unlock corresponding workstream ID if locked (workstream-based locking)
+                    if let workstreamId = self.claudeSessionToWorkstream[sessionId] {
+                        if currentSessions.contains(workstreamId) {
+                            currentSessions.remove(workstreamId)
+                            unlocked = true
+                            print("🔓 [VoiceCodeClient] Unlocked workstream: \(workstreamId.prefix(8))...")
+                        }
+                    }
+
+                    if unlocked {
+                        scheduleUpdate(key: "lockedSessions", value: currentSessions)
+                        print("🔓 [VoiceCodeClient] Session killed, remaining locks: \(currentSessions.count)")
                     }
                 }
 
@@ -818,6 +855,12 @@ class VoiceCodeClient: ObservableObject {
                 // Workstream metadata updated
                 print("🔄 [VoiceCodeClient] Received workstream_updated")
                 if let data = json as? [String: Any] {
+                    // Track Claude session ID -> workstream ID mapping for lock management
+                    if let workstreamId = data["workstream_id"] as? String,
+                       let claudeSessionId = data["active_claude_session_id"] as? String {
+                        self.claudeSessionToWorkstream[claudeSessionId] = workstreamId
+                        print("📝 [VoiceCodeClient] Mapped Claude session \(claudeSessionId.prefix(8))... to workstream \(workstreamId.prefix(8))...")
+                    }
                     Task {
                         await self.workstreamSyncManager.handleWorkstreamUpdated(data)
                     }

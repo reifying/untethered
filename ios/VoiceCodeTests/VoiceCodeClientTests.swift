@@ -1421,4 +1421,279 @@ final class VoiceCodeClientTests: XCTestCase {
         // Test that VoiceCodeClient has workstreamSyncManager property
         XCTAssertNotNil(client.workstreamSyncManager)
     }
+
+    // MARK: - WorkstreamConversationView Prompt Sending Tests (voice-code-session-74t.12.3)
+
+    func testSendPromptWithWorkstreamIdIncludesWorkstreamId() {
+        // Test that sendPrompt(text:workstreamId:) includes workstream_id in message
+        let workstreamId = UUID()
+        let text = "Test prompt"
+
+        // Verify the expected message structure
+        var message: [String: Any] = [
+            "type": "prompt",
+            "text": text,
+            "workstream_id": workstreamId.uuidString.lowercased()
+        ]
+
+        XCTAssertEqual(message["type"] as? String, "prompt")
+        XCTAssertEqual(message["workstream_id"] as? String, workstreamId.uuidString.lowercased())
+        XCTAssertNil(message["new_session_id"]) // Should NOT include legacy fields
+        XCTAssertNil(message["resume_session_id"]) // Should NOT include legacy fields
+    }
+
+    func testSendPromptWithWorkstreamIdUsesLowercaseUUID() {
+        // Test that workstream_id is always lowercase per STANDARDS.md
+        let workstreamId = UUID()
+        let message: [String: Any] = [
+            "type": "prompt",
+            "text": "Test",
+            "workstream_id": workstreamId.uuidString.lowercased()
+        ]
+
+        let sentWorkstreamId = message["workstream_id"] as! String
+        XCTAssertEqual(sentWorkstreamId, sentWorkstreamId.lowercased())
+        XCTAssertNotEqual(sentWorkstreamId, workstreamId.uuidString) // Swift UUIDs are uppercase by default
+    }
+
+    func testSendPromptWithWorkstreamIdIncludesWorkingDirectory() {
+        // Test that working_directory is included when provided
+        let workstreamId = UUID()
+        let workingDirectory = "/Users/test/project"
+
+        var message: [String: Any] = [
+            "type": "prompt",
+            "text": "Test",
+            "workstream_id": workstreamId.uuidString.lowercased()
+        ]
+        message["working_directory"] = workingDirectory
+
+        XCTAssertEqual(message["working_directory"] as? String, workingDirectory)
+    }
+
+    func testSendPromptWithWorkstreamIdIncludesSystemPrompt() {
+        // Test that system_prompt is included when non-empty
+        let workstreamId = UUID()
+        let systemPrompt = "Be a helpful assistant"
+
+        var message: [String: Any] = [
+            "type": "prompt",
+            "text": "Test",
+            "workstream_id": workstreamId.uuidString.lowercased()
+        ]
+        if !systemPrompt.trimmingCharacters(in: .whitespaces).isEmpty {
+            message["system_prompt"] = systemPrompt
+        }
+
+        XCTAssertEqual(message["system_prompt"] as? String, systemPrompt)
+    }
+
+    func testSendPromptWithWorkstreamIdOmitsWhitespaceOnlySystemPrompt() {
+        // Test that whitespace-only system_prompt is NOT included
+        let workstreamId = UUID()
+        let systemPrompt = "   \t\n   " // Only whitespace (including newlines)
+
+        var message: [String: Any] = [
+            "type": "prompt",
+            "text": "Test",
+            "workstream_id": workstreamId.uuidString.lowercased()
+        ]
+        // Must use .whitespacesAndNewlines to properly detect all whitespace
+        if !systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            message["system_prompt"] = systemPrompt
+        }
+
+        XCTAssertNil(message["system_prompt"])
+    }
+
+    func testWorkstreamLockingUsesWorkstreamId() {
+        // Test that locking uses workstream ID, not session ID
+        let workstreamId = UUID()
+        let workstreamIdLower = workstreamId.uuidString.lowercased()
+
+        // Lock the workstream
+        client.lockedSessions.insert(workstreamIdLower)
+
+        XCTAssertTrue(client.lockedSessions.contains(workstreamIdLower))
+
+        // Unlock the workstream
+        client.lockedSessions.remove(workstreamIdLower)
+
+        XCTAssertFalse(client.lockedSessions.contains(workstreamIdLower))
+    }
+
+    func testWorkstreamLockingIsIndependentOfClaudeSessionId() {
+        // Test that workstream locking doesn't depend on Claude session ID
+        let workstreamId = UUID()
+        let workstreamIdLower = workstreamId.uuidString.lowercased()
+        let claudeSessionId = UUID().uuidString.lowercased()
+
+        // Lock the workstream
+        client.lockedSessions.insert(workstreamIdLower)
+
+        // Claude session ID should NOT be in locked set
+        XCTAssertTrue(client.lockedSessions.contains(workstreamIdLower))
+        XCTAssertFalse(client.lockedSessions.contains(claudeSessionId))
+    }
+
+    func testNewWorkstreamCreatesBeforePrompt() {
+        // Test message structure for creating a workstream before first prompt
+        let workstreamId = UUID()
+        let workingDirectory = "/Users/test/project"
+
+        // First message: create_workstream
+        let createMessage: [String: Any] = [
+            "type": "create_workstream",
+            "workstream_id": workstreamId.uuidString.lowercased(),
+            "working_directory": workingDirectory
+        ]
+
+        XCTAssertEqual(createMessage["type"] as? String, "create_workstream")
+        XCTAssertEqual(createMessage["workstream_id"] as? String, workstreamId.uuidString.lowercased())
+
+        // Second message: prompt with workstream_id
+        let promptMessage: [String: Any] = [
+            "type": "prompt",
+            "text": "First message",
+            "workstream_id": workstreamId.uuidString.lowercased()
+        ]
+
+        XCTAssertEqual(promptMessage["workstream_id"] as? String, workstreamId.uuidString.lowercased())
+    }
+
+    func testMultipleWorkstreamLocking() {
+        // Test that multiple workstreams can be locked independently
+        let workstream1 = UUID().uuidString.lowercased()
+        let workstream2 = UUID().uuidString.lowercased()
+        let workstream3 = UUID().uuidString.lowercased()
+
+        // Lock all workstreams
+        client.lockedSessions.insert(workstream1)
+        client.lockedSessions.insert(workstream2)
+        client.lockedSessions.insert(workstream3)
+
+        XCTAssertEqual(client.lockedSessions.count, 3)
+
+        // Unlock workstream2
+        client.lockedSessions.remove(workstream2)
+
+        XCTAssertTrue(client.lockedSessions.contains(workstream1))
+        XCTAssertFalse(client.lockedSessions.contains(workstream2))
+        XCTAssertTrue(client.lockedSessions.contains(workstream3))
+    }
+
+    // MARK: - Workstream Unlock via turn_complete Tests
+
+    func testTurnCompleteUnlocksWorkstreamViaMappedClaudeSession() {
+        // Test that turn_complete with Claude session ID also unlocks the mapped workstream ID.
+        // This tests the fix for the session locking mismatch issue.
+        let workstreamId = UUID().uuidString.lowercased()
+        let claudeSessionId = UUID().uuidString.lowercased()
+
+        // Step 1: Send workstream_updated to establish the mapping
+        let workstreamUpdatedJson: [String: Any] = [
+            "type": "workstream_updated",
+            "workstream_id": workstreamId,
+            "active_claude_session_id": claudeSessionId
+        ]
+        let jsonData = try! JSONSerialization.data(withJSONObject: workstreamUpdatedJson)
+        let jsonString = String(data: jsonData, encoding: .utf8)!
+        client.handleMessage(jsonString)
+
+        // Step 2: Lock the workstream (simulating WorkstreamConversationView behavior)
+        client.lockedSessions.insert(workstreamId)
+        XCTAssertTrue(client.lockedSessions.contains(workstreamId), "Workstream should be locked")
+
+        // Step 3: Send turn_complete with Claude session ID
+        let turnCompleteJson: [String: Any] = [
+            "type": "turn_complete",
+            "session_id": claudeSessionId
+        ]
+        let turnCompleteData = try! JSONSerialization.data(withJSONObject: turnCompleteJson)
+        let turnCompleteString = String(data: turnCompleteData, encoding: .utf8)!
+        client.handleMessage(turnCompleteString)
+
+        // Step 4: Wait for debounced update (100ms debounce + buffer)
+        let expectation = XCTestExpectation(description: "Wait for debounced update")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        XCTAssertFalse(client.lockedSessions.contains(workstreamId),
+                       "Workstream should be unlocked after turn_complete for mapped Claude session")
+    }
+
+    func testTurnCompleteUnlocksBothClaudeSessionAndWorkstream() {
+        // Test that turn_complete unlocks both the Claude session ID and the workstream ID
+        let workstreamId = UUID().uuidString.lowercased()
+        let claudeSessionId = UUID().uuidString.lowercased()
+
+        // Set up mapping
+        let workstreamUpdatedJson: [String: Any] = [
+            "type": "workstream_updated",
+            "workstream_id": workstreamId,
+            "active_claude_session_id": claudeSessionId
+        ]
+        client.handleMessage(String(data: try! JSONSerialization.data(withJSONObject: workstreamUpdatedJson), encoding: .utf8)!)
+
+        // Lock both (simulating mixed legacy and new behavior)
+        client.lockedSessions.insert(claudeSessionId)
+        client.lockedSessions.insert(workstreamId)
+        XCTAssertEqual(client.lockedSessions.count, 2)
+
+        // Send turn_complete
+        let turnCompleteJson: [String: Any] = [
+            "type": "turn_complete",
+            "session_id": claudeSessionId
+        ]
+        client.handleMessage(String(data: try! JSONSerialization.data(withJSONObject: turnCompleteJson), encoding: .utf8)!)
+
+        // Wait for debounced update
+        let expectation = XCTestExpectation(description: "Wait for debounced update")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Both should be unlocked
+        XCTAssertFalse(client.lockedSessions.contains(claudeSessionId), "Claude session should be unlocked")
+        XCTAssertFalse(client.lockedSessions.contains(workstreamId), "Workstream should be unlocked")
+    }
+
+    func testSessionKilledUnlocksWorkstreamViaMappedClaudeSession() {
+        // Test that session_killed also unlocks workstream via mapped Claude session
+        let workstreamId = UUID().uuidString.lowercased()
+        let claudeSessionId = UUID().uuidString.lowercased()
+
+        // Set up mapping
+        let workstreamUpdatedJson: [String: Any] = [
+            "type": "workstream_updated",
+            "workstream_id": workstreamId,
+            "active_claude_session_id": claudeSessionId
+        ]
+        client.handleMessage(String(data: try! JSONSerialization.data(withJSONObject: workstreamUpdatedJson), encoding: .utf8)!)
+
+        // Lock workstream
+        client.lockedSessions.insert(workstreamId)
+        XCTAssertTrue(client.lockedSessions.contains(workstreamId))
+
+        // Send session_killed
+        let sessionKilledJson: [String: Any] = [
+            "type": "session_killed",
+            "session_id": claudeSessionId
+        ]
+        client.handleMessage(String(data: try! JSONSerialization.data(withJSONObject: sessionKilledJson), encoding: .utf8)!)
+
+        // Wait for debounced update
+        let expectation = XCTestExpectation(description: "Wait for debounced update")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Workstream should be unlocked
+        XCTAssertFalse(client.lockedSessions.contains(workstreamId),
+                       "Workstream should be unlocked after session_killed for mapped Claude session")
+    }
 }

@@ -81,9 +81,9 @@ struct RootView: View {
                         navigationPath: $navigationPath
                     )
                 }
-                .navigationDestination(for: UUID.self) { sessionId in
-                    SessionLookupView(
-                        sessionId: sessionId,
+                .navigationDestination(for: UUID.self) { workstreamId in
+                    WorkstreamLookupView(
+                        workstreamId: workstreamId,
                         client: client,
                         voiceOutput: voiceOutput,
                         settings: settings
