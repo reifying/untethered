@@ -3,6 +3,112 @@
             [voice-code.recipes :as recipes]
             [voice-code.orchestration :as orch]))
 
+;; ============================================================================
+;; Shared Steps Tests
+;; ============================================================================
+
+(deftest review-commit-steps-test
+  (testing "review-commit-steps contains expected steps"
+    (is (contains? recipes/review-commit-steps :code-review))
+    (is (contains? recipes/review-commit-steps :fix))
+    (is (contains? recipes/review-commit-steps :commit)))
+
+  (testing "code-review step has correct structure"
+    (let [step (:code-review recipes/review-commit-steps)]
+      (is (string? (:prompt step)))
+      (is (= #{:no-issues :issues-found :other} (:outcomes step)))
+      (is (= :commit (get-in step [:on-outcome :no-issues :next-step])))
+      (is (= :fix (get-in step [:on-outcome :issues-found :next-step])))))
+
+  (testing "fix step loops back to code-review"
+    (let [step (:fix recipes/review-commit-steps)]
+      (is (= :code-review (get-in step [:on-outcome :complete :next-step])))))
+
+  (testing "commit step exits on completion"
+    (let [step (:commit recipes/review-commit-steps)]
+      (is (= :exit (get-in step [:on-outcome :committed :action])))
+      (is (= "haiku" (:model step))))))
+
+;; ============================================================================
+;; Review & Commit Recipe Tests
+;; ============================================================================
+
+(deftest review-and-commit-recipe-test
+  (testing "retrieves review-and-commit recipe"
+    (let [recipe (recipes/get-recipe :review-and-commit)]
+      (is (not (nil? recipe)))
+      (is (= :review-and-commit (:id recipe)))))
+
+  (testing "has correct initial step"
+    (let [recipe (recipes/get-recipe :review-and-commit)]
+      (is (= :code-review (:initial-step recipe)))))
+
+  (testing "has all required steps"
+    (let [recipe (recipes/get-recipe :review-and-commit)
+          steps (:steps recipe)]
+      (is (contains? steps :code-review))
+      (is (contains? steps :fix))
+      (is (contains? steps :commit))
+      (is (not (contains? steps :implement)))))
+
+  (testing "uses shared review-commit-steps"
+    (let [recipe (recipes/get-recipe :review-and-commit)]
+      (is (= recipes/review-commit-steps (:steps recipe)))))
+
+  (testing "has valid guardrails"
+    (let [recipe (recipes/get-recipe :review-and-commit)]
+      (is (= 3 (get-in recipe [:guardrails :max-step-visits])))
+      (is (= 100 (get-in recipe [:guardrails :max-total-steps])))))
+
+  (testing "passes validation"
+    (let [recipe (recipes/review-and-commit-recipe)]
+      (is (nil? (recipes/validate-recipe recipe))))))
+
+(deftest review-and-commit-transitions-test
+  (testing "code-review no-issues transitions to commit"
+    (let [recipe (recipes/get-recipe :review-and-commit)
+          transition (get-in recipe [:steps :code-review :on-outcome :no-issues])]
+      (is (= :commit (:next-step transition)))))
+
+  (testing "code-review issues-found transitions to fix"
+    (let [recipe (recipes/get-recipe :review-and-commit)
+          transition (get-in recipe [:steps :code-review :on-outcome :issues-found])]
+      (is (= :fix (:next-step transition)))))
+
+  (testing "fix complete transitions back to code-review"
+    (let [recipe (recipes/get-recipe :review-and-commit)
+          transition (get-in recipe [:steps :fix :on-outcome :complete])]
+      (is (= :code-review (:next-step transition)))))
+
+  (testing "commit exits with changes-committed reason"
+    (let [recipe (recipes/get-recipe :review-and-commit)
+          transition (get-in recipe [:steps :commit :on-outcome :committed])]
+      (is (= :exit (:action transition)))
+      (is (= "changes-committed" (:reason transition))))))
+
+;; ============================================================================
+;; DRY Verification Tests
+;; ============================================================================
+
+(deftest shared-steps-dry-test
+  (testing "implement-and-review shares code-review step with review-and-commit"
+    (let [impl-recipe (recipes/get-recipe :implement-and-review)
+          review-recipe (recipes/get-recipe :review-and-commit)]
+      (is (= (get-in impl-recipe [:steps :code-review])
+             (get-in review-recipe [:steps :code-review])))))
+
+  (testing "implement-and-review shares fix step with review-and-commit"
+    (let [impl-recipe (recipes/get-recipe :implement-and-review)
+          review-recipe (recipes/get-recipe :review-and-commit)]
+      (is (= (get-in impl-recipe [:steps :fix])
+             (get-in review-recipe [:steps :fix])))))
+
+  (testing "implement-and-review shares commit step with review-and-commit"
+    (let [impl-recipe (recipes/get-recipe :implement-and-review)
+          review-recipe (recipes/get-recipe :review-and-commit)]
+      (is (= (get-in impl-recipe [:steps :commit])
+             (get-in review-recipe [:steps :commit]))))))
+
 (deftest get-recipe-test
   (testing "retrieves implement-and-review recipe"
     (let [recipe (recipes/get-recipe :implement-and-review)]
@@ -158,11 +264,11 @@
       (is (re-find #"bd close" prompt))
       (is (re-find #"[Pp]ush" prompt))))
 
-  (testing "committed outcome exits with task-committed reason"
+  (testing "committed outcome exits with changes-committed reason"
     (let [recipe (recipes/get-recipe :implement-and-review)
           transition (get-in recipe [:steps :commit :on-outcome :committed])]
       (is (= :exit (:action transition)))
-      (is (= "task-committed" (:reason transition)))))
+      (is (= "changes-committed" (:reason transition)))))
 
   (testing "nothing-to-commit outcome exits with no-changes-to-commit reason"
     (let [recipe (recipes/get-recipe :implement-and-review)

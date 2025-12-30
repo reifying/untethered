@@ -5,6 +5,95 @@
   "Valid model values for recipe steps"
   #{"haiku" "sonnet" "opus"})
 
+(def review-commit-steps
+  "Shared steps for the review → fix → commit loop.
+   Used by both review-and-commit and implement-and-review recipes."
+  {:code-review
+   {:prompt "Perform a thorough code review on the changes.
+
+## Review Checklist
+
+### Correctness
+- [ ] Logic correctly implements the requirements
+- [ ] Edge cases are handled
+- [ ] Error handling is appropriate
+- [ ] No regressions introduced
+
+### Code Quality
+- [ ] Follows project naming conventions
+- [ ] Functions are appropriately sized
+- [ ] No code duplication
+- [ ] Comments explain 'why' not 'what' (where needed)
+
+### Testing
+- [ ] Tests cover happy path
+- [ ] Tests cover error cases
+- [ ] Tests are readable and maintainable
+- [ ] All tests pass
+
+### Security & Performance
+- [ ] No hardcoded secrets or credentials
+- [ ] No obvious performance issues
+- [ ] Input validation where needed
+
+### Design Alignment
+- [ ] Implementation matches requirements
+- [ ] No scope creep beyond task requirements
+
+Report any issues found. Do not make changes yet."
+    :outcomes #{:no-issues :issues-found :other}
+    :on-outcome
+    {:no-issues {:next-step :commit}
+     :issues-found {:next-step :fix}
+     :other {:action :exit :reason "user-provided-other"}}}
+
+   :fix
+   {:prompt "Address the issues found in the code review.
+
+After fixing:
+- Run tests to ensure they still pass
+- Verify the fix doesn't introduce new issues"
+    :outcomes #{:complete :other}
+    :on-outcome
+    {:complete {:next-step :code-review}
+     :other {:action :exit :reason "user-provided-other"}}}
+
+   :commit
+   {:prompt "Commit and push the changes.
+
+## Pre-Commit Steps
+If working on a beads task, update its status first:
+- Run `bd close <task-id>` to mark the task as complete
+- If partially complete, use `bd update <task-id> --status in-progress` with notes
+
+## Commit and Push
+- Write a clear commit message describing what was implemented
+- If working on a beads task, include the task ID in the commit message
+- Push to the remote repository after committing"
+    :model "haiku"
+    :outcomes #{:committed :nothing-to-commit :other}
+    :on-outcome
+    {:committed {:action :exit :reason "changes-committed"}
+     :nothing-to-commit {:action :exit :reason "no-changes-to-commit"}
+     :other {:action :exit :reason "user-provided-other"}}}})
+
+(def default-guardrails
+  "Default guardrails for recipes"
+  {:max-step-visits 3
+   :max-total-steps 100
+   :exit-on-other true})
+
+(defn review-and-commit-recipe
+  "Returns the review-and-commit recipe definition.
+   This recipe reviews existing changes, fixes issues, and commits."
+  []
+  {:id :review-and-commit
+   :label "Review & Commit"
+   :description "Review existing changes, fix issues, and commit"
+   :initial-step :code-review
+   :steps review-commit-steps
+   :guardrails default-guardrails})
+
 (defn document-design-recipe
   "Returns the document-design recipe definition.
    This recipe creates a detailed design document with code examples and verification steps."
@@ -339,20 +428,12 @@ Example: 'Add implementation tasks for user authentication (epic-abc123)'"
     :max-total-steps 100
     :exit-on-other true}})
 
-(defn implement-and-review-recipe
-  "Returns the implement-and-review recipe definition.
-   This recipe implements a task, reviews the code, iteratively fixes issues, and commits."
-  []
-  {:id :implement-and-review
-   :label "Implement & Review"
-   :description "Implement task, review code, fix issues, and commit"
-   :initial-step :implement
-   :steps
-   {:implement
-    {:prompt "Implement the current task from beads.
+(def implement-step
+  "The implement step for implement-and-review recipe."
+  {:prompt "Implement the current task from beads.
 
 ## Prerequisites
-1. Run `bd ready --limit 1` to see the task details. If multiple tasks are
+1. Run `bd ready --limit 1` to see the task details
 2. Read the design document referenced in the task
 3. Review relevant code standards (@STANDARDS.md, @CLAUDE.md)
 4. Familiarize yourself with the codebase context
@@ -373,98 +454,29 @@ Before marking complete:
 - [ ] Integration tests written (if specified in task)
 - [ ] Code follows project conventions
 - [ ] No unrelated changes included"
-     :outcomes #{:complete :no-tasks :blocked :other}
-     :on-outcome
-     {:complete {:next-step :code-review}
-      :no-tasks {:action :exit :reason "no-tasks-available"}
-      :blocked {:action :exit :reason "implementation-blocked"}
-      :other {:action :exit :reason "user-provided-other"}}}
+   :outcomes #{:complete :no-tasks :blocked :other}
+   :on-outcome
+   {:complete {:next-step :code-review}
+    :no-tasks {:action :exit :reason "no-tasks-available"}
+    :blocked {:action :exit :reason "implementation-blocked"}
+    :other {:action :exit :reason "user-provided-other"}}})
 
-    :code-review
-    {:prompt "Perform a thorough code review on the changes you just made.
-
-## Review Checklist
-
-### Correctness
-- [ ] Logic correctly implements the requirements
-- [ ] Edge cases are handled
-- [ ] Error handling is appropriate
-- [ ] No regressions introduced
-
-### Code Quality
-- [ ] Follows project naming conventions
-- [ ] Functions are appropriately sized
-- [ ] No code duplication
-- [ ] Comments explain 'why' not 'what' (where needed)
-
-### Testing
-- [ ] Tests cover happy path
-- [ ] Tests cover error cases
-- [ ] Tests are readable and maintainable
-- [ ] All tests pass
-
-### Security & Performance
-- [ ] No hardcoded secrets or credentials
-- [ ] No obvious performance issues
-- [ ] Input validation where needed
-
-### Design Alignment
-- [ ] Implementation matches the design document
-- [ ] No scope creep beyond task requirements
-
-### Beads Task Status
-- [ ] Task will be properly updated to reflect completion
-- [ ] Any blockers or issues are documented in the task
-
-Report any issues found. Do not make changes yet."
-     :outcomes #{:no-issues :issues-found :other}
-     :on-outcome
-     {:no-issues {:next-step :commit}
-      :issues-found {:next-step :fix}
-      :other {:action :exit :reason "user-provided-other"}}}
-
-    :fix
-    {:prompt "Address the issues found in the code review.
-
-After fixing:
-- Run tests to ensure they still pass
-- Verify the fix doesn't introduce new issues"
-     :outcomes #{:complete :other}
-     :on-outcome
-     {:complete {:next-step :code-review}
-      :other {:action :exit :reason "user-provided-other"}}}
-
-    :commit
-    {:prompt "Update the beads task, commit, and push the changes.
-
-## Update Beads Task
-Before committing, update the task status:
-1. Run `bd close <task-id>` to mark the task as complete
-2. If partially complete, use `bd update <task-id> --status in-progress` with notes
-
-## Commit and Push
-- Use the beads task ID in the commit message
-- Include beads changes (`.beads/*`) in your commit
-- Write a clear commit message describing what was implemented
-- Push to the remote repository after committing
-
-Example: 'Implement user input validation (task-abc123)'"
-     :model "haiku"
-     :outcomes #{:committed :nothing-to-commit :other}
-     :on-outcome
-     {:committed {:action :exit :reason "task-committed"}
-      :nothing-to-commit {:action :exit :reason "no-changes-to-commit"}
-      :other {:action :exit :reason "user-provided-other"}}}}
-
-   :guardrails
-   {:max-step-visits 3
-    :max-total-steps 100
-    :exit-on-other true}})
+(defn implement-and-review-recipe
+  "Returns the implement-and-review recipe definition.
+   This recipe implements a task, reviews the code, iteratively fixes issues, and commits."
+  []
+  {:id :implement-and-review
+   :label "Implement & Review"
+   :description "Implement task, review code, fix issues, and commit"
+   :initial-step :implement
+   :steps (assoc review-commit-steps :implement implement-step)
+   :guardrails default-guardrails})
 
 (def all-recipes
   "Registry of all available recipes"
   {:document-design (document-design-recipe)
    :break-down-tasks (break-down-tasks-recipe)
+   :review-and-commit (review-and-commit-recipe)
    :implement-and-review (implement-and-review-recipe)})
 
 (defn get-recipe

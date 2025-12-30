@@ -948,7 +948,7 @@
                 result4 (server/process-orchestration-response
                          session-id updated-state3 recipe response4 mock-channel)]
             (is (= :exit (:action result4)))
-            (is (= "task-committed" (:reason result4)))
+            (is (= "changes-committed" (:reason result4)))
             ;; Note: process-orchestration-response doesn't release lock,
             ;; execute-recipe-step does. But we verify the action is correct.
             ))))))
