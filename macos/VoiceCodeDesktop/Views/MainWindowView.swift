@@ -12,8 +12,7 @@ struct MainWindowView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var statusBarController: StatusBarController
     @StateObject private var client: VoiceCodeClient
-    @State private var selectedDirectory: String?
-    @State private var selectedSession: CDBackendSession?
+    @StateObject private var selectionManager = SessionSelectionManager()
     @State private var showingSettings = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var recentSessions: [RecentSession] = []
@@ -21,6 +20,35 @@ struct MainWindowView: View {
     @State private var allSessions: [CDBackendSession] = []
 
     @Environment(\.managedObjectContext) private var viewContext
+
+    /// Selected directory (synced with selectionManager)
+    private var selectedDirectory: String? {
+        get { selectionManager.selectedDirectory }
+    }
+
+    /// Binding to selected directory for child views
+    private var selectedDirectoryBinding: Binding<String?> {
+        Binding(
+            get: { selectionManager.selectedDirectory },
+            set: { selectionManager.selectedDirectory = $0 }
+        )
+    }
+
+    /// Selected session resolved from ID via allSessions
+    private var selectedSession: CDBackendSession? {
+        guard let id = selectionManager.selectedSessionId else { return nil }
+        return allSessions.first { $0.id == id }
+    }
+
+    /// Binding to selected session for child views
+    private var selectedSessionBinding: Binding<CDBackendSession?> {
+        Binding(
+            get: { selectedSession },
+            set: { session in
+                selectionManager.selectedSessionId = session?.id
+            }
+        )
+    }
 
     init(settings: AppSettings, statusBarController: StatusBarController) {
         self.settings = settings
@@ -36,8 +64,8 @@ struct MainWindowView: View {
             // Sidebar: Session list with sections
             SidebarView(
                 recentSessions: recentSessions,
-                selectedDirectory: $selectedDirectory,
-                selectedSession: $selectedSession,
+                selectedDirectory: selectedDirectoryBinding,
+                selectedSession: selectedSessionBinding,
                 connectionState: client.connectionState,
                 settings: settings,
                 serverURL: settings.serverURL,
@@ -52,7 +80,7 @@ struct MainWindowView: View {
             if let directory = selectedDirectory {
                 SessionListView(
                     workingDirectory: directory,
-                    selectedSession: $selectedSession
+                    selectedSession: selectedSessionBinding
                 )
                 .navigationSplitViewColumnWidth(min: 280, ideal: 350)
             } else if let session = selectedSession {
@@ -111,15 +139,15 @@ struct MainWindowView: View {
         .sheet(isPresented: $showingNewSession) {
             NewSessionView { session in
                 // Select the newly created session
-                selectedDirectory = nil
-                selectedSession = session
+                selectionManager.selectedDirectory = nil
+                selectionManager.selectedSessionId = session.id
             }
         }
         // Provide focused values for AppCommands
         .focusedSceneValue(\.selectedSession, selectedSession)
         .focusedSceneValue(\.voiceCodeClient, client)
         .focusedSceneValue(\.sessionsList, allSessions)
-        .focusedSceneValue(\.selectedSessionBinding, $selectedSession)
+        .focusedSceneValue(\.selectedSessionBinding, selectedSessionBinding)
         // Handle command notifications
         .onReceive(NotificationCenter.default.publisher(for: .requestNewSession)) { _ in
             showingNewSession = true
@@ -154,6 +182,9 @@ struct MainWindowView: View {
     private func loadAllSessions() {
         do {
             allSessions = try CDBackendSession.fetchActiveSessions(context: viewContext)
+            // Validate selection after loading sessions
+            selectionManager.validateSelection(against: allSessions)
+            selectionManager.validateDirectorySelection(against: allSessions)
         } catch {
             logger.error("❌ Failed to fetch all sessions for navigation: \(error)")
             allSessions = []
