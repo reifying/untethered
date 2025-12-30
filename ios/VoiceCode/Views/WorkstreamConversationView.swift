@@ -447,7 +447,9 @@ struct WorkstreamConversationView: View {
         }
         .onDisappear {
             ActiveSessionManager.shared.clearActiveSession()
-            client.unsubscribe(sessionId: workstream.id.uuidString.lowercased())
+            if let activeSessionId = workstream.activeClaudeSessionId {
+                client.unsubscribe(sessionId: activeSessionId.uuidString.lowercased())
+            }
         }
     }
 
@@ -503,11 +505,11 @@ struct WorkstreamConversationView: View {
             }
         }
 
-        // Subscribe to the workstream to load full history
+        // Subscribe to the Claude session to load full history
         // Skip subscribe for cleared workstreams (no active session)
-        if workstream.activeClaudeSessionId != nil {
-            logger.info("⏱️ Subscribing to workstream (has active session)")
-            client.subscribe(sessionId: workstream.id.uuidString.lowercased())
+        if let activeSessionId = workstream.activeClaudeSessionId {
+            logger.info("⏱️ Subscribing to Claude session (workstream has active session)")
+            client.subscribe(sessionId: activeSessionId.uuidString.lowercased())
         } else {
             logger.info("⏱️ Skipping subscribe (cleared workstream, no active session)")
         }
