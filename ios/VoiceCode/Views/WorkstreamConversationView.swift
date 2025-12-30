@@ -455,6 +455,18 @@ struct WorkstreamConversationView: View {
             if let newId = newSessionId {
                 logger.info("🔄 activeClaudeSessionId changed, subscribing to new: \(newId.uuidString.lowercased().prefix(8))...")
                 client.subscribe(sessionId: newId.uuidString.lowercased())
+                // Update active session for smart speaking
+                ActiveSessionManager.shared.setActiveSession(newId)
+            } else {
+                // Session cleared
+                ActiveSessionManager.shared.clearActiveSession()
+            }
+        }
+        .onAppear {
+            // Re-set active session on every appear (not just first load)
+            // This handles the case where user navigates away and back
+            if let activeSessionId = workstream.activeClaudeSessionId {
+                ActiveSessionManager.shared.setActiveSession(activeSessionId)
             }
         }
         .onDisappear {
@@ -497,8 +509,15 @@ struct WorkstreamConversationView: View {
             isLoading = workstream.activeClaudeSessionId != nil
         }
 
-        // Mark workstream as active for smart speaking
-        ActiveSessionManager.shared.setActiveSession(workstream.id)
+        // Mark Claude session as active for smart speaking
+        // Must use activeClaudeSessionId (not workstream.id) because SessionSyncManager
+        // checks isActive(claudeSessionId) when deciding whether to speak messages
+        if let activeSessionId = workstream.activeClaudeSessionId {
+            ActiveSessionManager.shared.setActiveSession(activeSessionId)
+        } else {
+            // Cleared workstream - no active Claude session yet
+            ActiveSessionManager.shared.clearActiveSession()
+        }
 
         // Clear unread count
         workstream.unreadCount = 0
