@@ -40,6 +40,9 @@ struct ConversationDetailView: View {
     // Kill confirmation state
     @State private var showingKillConfirmation = false
 
+    // Session info inspector state
+    @State private var showingSessionInfo = false
+
     // Track if sending to disable input
     // Session is locked if the session's backend ID is in the locked set
     private var isSessionLocked: Bool {
@@ -155,6 +158,16 @@ struct ConversationDetailView: View {
                 .help(autoScrollEnabled ? "Disable auto-scroll" : "Enable auto-scroll")
                 .keyboardShortcut(.downArrow, modifiers: .command)
                 .accessibilityLabel(autoScrollEnabled ? "Disable auto-scroll" : "Enable auto-scroll")
+
+                // Session info button
+                Button(action: {
+                    showingSessionInfo = true
+                }) {
+                    Image(systemName: "info.circle")
+                }
+                .help("Session Info (⌘I)")
+                .keyboardShortcut("i")
+                .accessibilityLabel("Session info")
             }
         }
         // Success/error message overlay
@@ -202,9 +215,16 @@ struct ConversationDetailView: View {
         } message: {
             Text("This will terminate the current Claude process. The session will be unlocked and you can send a new prompt.")
         }
+        // Session info inspector sheet
+        .sheet(isPresented: $showingSessionInfo) {
+            SessionInfoView(session: session, settings: settings)
+        }
         // Set focused values for menu commands
         .focusedSceneValue(\.selectedSession, session)
         .focusedSceneValue(\.voiceCodeClient, client)
+        .focusedSceneValue(\.showSessionInfoAction) {
+            showingSessionInfo = true
+        }
         // Handle menu command notifications
         .onReceive(NotificationCenter.default.publisher(for: .requestSessionCompaction)) { notification in
             guard let sessionId = notification.userInfo?["sessionId"] as? String,
