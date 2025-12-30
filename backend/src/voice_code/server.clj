@@ -328,7 +328,9 @@
               (log/info "Linking new Claude session to workstream"
                         {:workstream-id workstream-id
                          :claude-session-id claude-session-id})
-              (ws/link-claude-session! workstream-id claude-session-id))
+              (ws/link-claude-session! workstream-id claude-session-id)
+              ;; Send workstream_updated immediately so iOS can subscribe before Claude responds
+              (send-workstream-updated! channel workstream-id claude-session-id))
 
             ;; Send ack
             (send-to-client! channel {:type :ack :message "Processing prompt..."})
