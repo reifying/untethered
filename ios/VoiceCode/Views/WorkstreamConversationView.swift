@@ -445,6 +445,18 @@ struct WorkstreamConversationView: View {
             let workstreamID = workstream.id.uuidString.lowercased()
             draftManager.saveDraft(sessionID: workstreamID, text: newValue)
         }
+        .onChange(of: workstream.activeClaudeSessionId) { oldSessionId, newSessionId in
+            // When activeClaudeSessionId changes (e.g., first prompt on cleared workstream),
+            // subscribe to the new Claude session to receive messages
+            if let oldId = oldSessionId {
+                logger.info("🔄 activeClaudeSessionId changed, unsubscribing from old: \(oldId.uuidString.lowercased().prefix(8))...")
+                client.unsubscribe(sessionId: oldId.uuidString.lowercased())
+            }
+            if let newId = newSessionId {
+                logger.info("🔄 activeClaudeSessionId changed, subscribing to new: \(newId.uuidString.lowercased().prefix(8))...")
+                client.subscribe(sessionId: newId.uuidString.lowercased())
+            }
+        }
         .onDisappear {
             ActiveSessionManager.shared.clearActiveSession()
             if let activeSessionId = workstream.activeClaudeSessionId {
