@@ -20,6 +20,11 @@ struct VoiceCodeClientKey: FocusedValueKey {
     typealias Value = VoiceCodeClient
 }
 
+/// Focused value key for the StatusBarController
+struct StatusBarControllerKey: FocusedValueKey {
+    typealias Value = StatusBarController
+}
+
 extension FocusedValues {
     var selectedSession: CDBackendSession? {
         get { self[SelectedSessionKey.self] }
@@ -29,6 +34,11 @@ extension FocusedValues {
     var voiceCodeClient: VoiceCodeClient? {
         get { self[VoiceCodeClientKey.self] }
         set { self[VoiceCodeClientKey.self] = newValue }
+    }
+
+    var statusBarController: StatusBarController? {
+        get { self[StatusBarControllerKey.self] }
+        set { self[StatusBarControllerKey.self] = newValue }
     }
 }
 
@@ -43,11 +53,13 @@ extension FocusedValues {
 struct VoiceCodeDesktopApp: App {
     @StateObject private var onboarding: OnboardingManager
     @StateObject private var settings: AppSettings
+    @StateObject private var statusBarController: StatusBarController
 
     init() {
         let appSettings = AppSettings()
         _settings = StateObject(wrappedValue: appSettings)
         _onboarding = StateObject(wrappedValue: OnboardingManager(appSettings: appSettings))
+        _statusBarController = StateObject(wrappedValue: StatusBarController(appSettings: appSettings))
     }
 
     var body: some Scene {
@@ -55,7 +67,7 @@ struct VoiceCodeDesktopApp: App {
             if onboarding.needsOnboarding {
                 OnboardingView(onboarding: onboarding, settings: settings)
             } else {
-                MainWindowView(settings: settings)
+                MainWindowView(settings: settings, statusBarController: statusBarController)
             }
         }
         .commands {

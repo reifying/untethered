@@ -10,6 +10,7 @@ private let logger = Logger(subsystem: "dev.910labs.voice-code-desktop", categor
 
 struct MainWindowView: View {
     @ObservedObject var settings: AppSettings
+    @ObservedObject var statusBarController: StatusBarController
     @StateObject private var client: VoiceCodeClient
     @State private var selectedDirectory: String?
     @State private var selectedSession: CDBackendSession?
@@ -21,8 +22,9 @@ struct MainWindowView: View {
 
     @Environment(\.managedObjectContext) private var viewContext
 
-    init(settings: AppSettings) {
+    init(settings: AppSettings, statusBarController: StatusBarController) {
         self.settings = settings
+        self.statusBarController = statusBarController
         _client = StateObject(wrappedValue: VoiceCodeClient(
             serverURL: settings.fullServerURL,
             appSettings: settings
@@ -87,6 +89,7 @@ struct MainWindowView: View {
         .frame(minWidth: 800, minHeight: 500)
         .onAppear {
             setupRecentSessionsCallback()
+            setupStatusBarController()
             if settings.isServerConfigured {
                 client.connect()
             }
@@ -143,6 +146,9 @@ struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: .sessionListDidUpdate)) { _ in
             loadAllSessions()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .statusBarDisconnectRequested)) { _ in
+            client.disconnect()
+        }
     }
 
     private func loadAllSessions() {
@@ -167,6 +173,32 @@ struct MainWindowView: View {
             DispatchQueue.main.async {
                 self.recentSessions = sessions
             }
+        }
+    }
+
+    private func setupStatusBarController() {
+        // Set up the status bar
+        statusBarController.setup()
+
+        // Observe connection state from client
+        statusBarController.observeConnectionState(from: client)
+
+        // Set up callbacks
+        statusBarController.onRetryConnection = { [weak client] in
+            client?.retryConnection()
+        }
+
+        statusBarController.onShowMainWindow = {
+            // Activate app and bring window to front
+            NSApp.activate(ignoringOtherApps: true)
+            if let window = NSApp.windows.first(where: { $0.isVisible }) {
+                window.makeKeyAndOrderFront(nil)
+            }
+        }
+
+        statusBarController.onOpenPreferences = {
+            // Open Settings window via standard macOS action
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         }
     }
 }
@@ -937,6 +969,7 @@ extension Date {
 }
 
 #Preview {
-    MainWindowView(settings: AppSettings())
+    let settings = AppSettings()
+    return MainWindowView(settings: settings, statusBarController: StatusBarController(appSettings: settings))
         .environment(\.managedObjectContext, PersistenceController(inMemory: true).container.viewContext)
 }

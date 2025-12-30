@@ -367,18 +367,24 @@ final class OnboardingViewTests: XCTestCase {
     func testMainWindowViewShowsBannerWhenServerNotConfigured() {
         let appSettings = AppSettings()
         appSettings.serverURL = ""
+        let statusBar = StatusBarController(appSettings: appSettings)
 
-        let view = MainWindowView(settings: appSettings)
+        let view = MainWindowView(settings: appSettings, statusBarController: statusBar)
         XCTAssertNotNil(view)
         XCTAssertFalse(appSettings.isServerConfigured)
+
+        statusBar.teardown()
     }
 
     func testMainWindowViewHidesBannerWhenServerConfigured() {
         let appSettings = AppSettings()
         appSettings.serverURL = "ws://localhost:8080"
+        let statusBar = StatusBarController(appSettings: appSettings)
 
-        let view = MainWindowView(settings: appSettings)
+        let view = MainWindowView(settings: appSettings, statusBarController: statusBar)
         XCTAssertNotNil(view)
         XCTAssertTrue(appSettings.isServerConfigured)
+
+        statusBar.teardown()
     }
 }

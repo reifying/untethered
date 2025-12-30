@@ -9,37 +9,43 @@ final class MainWindowViewTests: XCTestCase {
     var persistenceController: PersistenceController!
     var viewContext: NSManagedObjectContext!
     var settings: AppSettings!
+    var statusBarController: StatusBarController!
 
     override func setUp() {
         super.setUp()
         persistenceController = PersistenceController(inMemory: true)
         viewContext = persistenceController.container.viewContext
         settings = AppSettings()
+        statusBarController = StatusBarController(appSettings: settings)
 
         // Clear UserDefaults before each test
         UserDefaults.standard.removeObject(forKey: "serverURL")
         UserDefaults.standard.removeObject(forKey: "serverPort")
         UserDefaults.standard.removeObject(forKey: "queueEnabled")
         UserDefaults.standard.removeObject(forKey: "priorityQueueEnabled")
+        UserDefaults.standard.removeObject(forKey: "showInMenuBar")
     }
 
     override func tearDown() {
+        statusBarController?.teardown()
         persistenceController = nil
         viewContext = nil
         settings = nil
+        statusBarController = nil
 
         // Clean up after each test
         UserDefaults.standard.removeObject(forKey: "serverURL")
         UserDefaults.standard.removeObject(forKey: "serverPort")
         UserDefaults.standard.removeObject(forKey: "queueEnabled")
         UserDefaults.standard.removeObject(forKey: "priorityQueueEnabled")
+        UserDefaults.standard.removeObject(forKey: "showInMenuBar")
         super.tearDown()
     }
 
     // MARK: - MainWindowView Tests
 
     func testMainWindowViewInitializes() {
-        let view = MainWindowView(settings: settings)
+        let view = MainWindowView(settings: settings, statusBarController: statusBarController)
         XCTAssertNotNil(view)
     }
 
@@ -47,7 +53,7 @@ final class MainWindowViewTests: XCTestCase {
         settings.serverURL = "localhost"
         settings.serverPort = "8080"
 
-        let view = MainWindowView(settings: settings)
+        let view = MainWindowView(settings: settings, statusBarController: statusBarController)
         XCTAssertNotNil(view)
     }
 
