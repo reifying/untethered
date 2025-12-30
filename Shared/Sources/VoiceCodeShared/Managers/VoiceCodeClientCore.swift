@@ -171,8 +171,9 @@ open class VoiceCodeClientCore: ObservableObject {
             sendConnectMessage()
 
         case .connected:
+            let wasReconnecting = (oldState == .reconnecting || oldState == .connecting)
             reconnectionAttempts = 0
-            restoreSubscriptions()
+            handleConnectionRecovery(wasReconnection: wasReconnecting)
 
         case .reconnecting:
             // Backoff timer will trigger reconnection
@@ -716,6 +717,30 @@ open class VoiceCodeClientCore: ObservableObject {
                 ]
                 sendMessage(message)
             }
+        }
+    }
+
+    /// Handle connection recovery per Appendix Z.6
+    /// Clears stale state, restores subscriptions, and notifies UI
+    /// - Parameter wasReconnection: true if this was a reconnection (vs initial connection)
+    internal func handleConnectionRecovery(wasReconnection: Bool) {
+        // 1. Clear stale state
+        scheduleUpdate(key: "lockedSessions", value: Set<String>())
+        var updatedCommands = getCurrentValue(for: "runningCommands", current: self.runningCommands)
+        updatedCommands.removeAll()
+        scheduleUpdate(key: "runningCommands", value: updatedCommands)
+        flushPendingUpdates()
+
+        // 2. Restore subscriptions
+        restoreSubscriptions()
+
+        // 3. Notify UI of restored connection (only on reconnection)
+        if wasReconnection {
+            NotificationCenter.default.post(
+                name: .connectionRestored,
+                object: nil,
+                userInfo: ["restoredSubscriptions": activeSubscriptions.count]
+            )
         }
     }
 

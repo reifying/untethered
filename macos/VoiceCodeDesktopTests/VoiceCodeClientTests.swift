@@ -213,3 +213,128 @@ final class VoiceCodeClientLifecycleTests: XCTestCase {
         XCTAssertFalse(client.isConnected)
     }
 }
+
+// MARK: - Error Recovery Tests (Appendix Z.4)
+
+@MainActor
+final class VoiceCodeClientErrorRecoveryTests: XCTestCase {
+
+    func testRecoverableErrorFromNotConnectedToInternet() {
+        let appSettings = AppSettings()
+        appSettings.serverURL = "localhost"
+        appSettings.serverPort = "8080"
+
+        let client = VoiceCodeClient(
+            serverURL: appSettings.fullServerURL,
+            appSettings: appSettings,
+            setupObservers: false
+        )
+
+        let error = URLError(.notConnectedToInternet)
+        let recoverable = client.recoverableError(from: error)
+
+        XCTAssertNotNil(recoverable)
+        XCTAssertEqual(recoverable?.title, "No Internet Connection")
+        XCTAssertEqual(recoverable?.recoveryAction?.label, "Retry")
+    }
+
+    func testRecoverableErrorFromCannotFindHost() {
+        let appSettings = AppSettings()
+        appSettings.serverURL = "test-server"
+        appSettings.serverPort = "3000"
+
+        let client = VoiceCodeClient(
+            serverURL: appSettings.fullServerURL,
+            appSettings: appSettings,
+            setupObservers: false
+        )
+
+        let error = URLError(.cannotFindHost)
+        let recoverable = client.recoverableError(from: error)
+
+        XCTAssertNotNil(recoverable)
+        XCTAssertEqual(recoverable?.title, "Server Not Found")
+        // Message should contain server URL info
+        XCTAssertTrue(recoverable?.message.contains("test-server:3000") ?? false)
+        XCTAssertEqual(recoverable?.recoveryAction?.label, "Open Settings")
+    }
+
+    func testRecoverableErrorFromSessionLock() {
+        let client = VoiceCodeClient(
+            serverURL: "ws://localhost:8080",
+            setupObservers: false
+        )
+
+        let error = SessionLockError(sessionId: "test-session-123")
+        let recoverable = client.recoverableError(from: error)
+
+        XCTAssertNotNil(recoverable)
+        XCTAssertEqual(recoverable?.title, "Session Busy")
+        // Session lock errors don't have a recovery action (auto-clear)
+        XCTAssertNil(recoverable?.recoveryAction)
+    }
+
+    func testRecoverableErrorFromUnknownError() {
+        let client = VoiceCodeClient(
+            serverURL: "ws://localhost:8080",
+            setupObservers: false
+        )
+
+        struct CustomError: Error {}
+        let error = CustomError()
+        let recoverable = client.recoverableError(from: error)
+
+        // Unknown errors should return nil
+        XCTAssertNil(recoverable)
+    }
+
+    func testRecoverableErrorWithoutAppSettings() {
+        // Create client without appSettings
+        let client = VoiceCodeClient(
+            serverURL: "ws://localhost:8080",
+            appSettings: nil,
+            setupObservers: false
+        )
+
+        let error = URLError(.cannotFindHost)
+        let recoverable = client.recoverableError(from: error)
+
+        XCTAssertNotNil(recoverable)
+        XCTAssertEqual(recoverable?.title, "Server Not Found")
+        // Without appSettings, server URL info shouldn't be included
+        XCTAssertFalse(recoverable?.message.contains("localhost:8080") ?? true)
+    }
+
+    func testRecoverableErrorFromConnectionRefused() {
+        let appSettings = AppSettings()
+        appSettings.serverURL = "localhost"
+        appSettings.serverPort = "9999"
+
+        let client = VoiceCodeClient(
+            serverURL: appSettings.fullServerURL,
+            appSettings: appSettings,
+            setupObservers: false
+        )
+
+        let error = URLError(.cannotConnectToHost)
+        let recoverable = client.recoverableError(from: error)
+
+        XCTAssertNotNil(recoverable)
+        XCTAssertEqual(recoverable?.title, "Connection Refused")
+        XCTAssertEqual(recoverable?.recoveryAction?.label, "Retry")
+    }
+
+    func testRecoverableErrorFromTimeout() {
+        let client = VoiceCodeClient(
+            serverURL: "ws://localhost:8080",
+            setupObservers: false
+        )
+
+        let error = URLError(.timedOut)
+        let recoverable = client.recoverableError(from: error)
+
+        XCTAssertNotNil(recoverable)
+        XCTAssertEqual(recoverable?.title, "Connection Timed Out")
+        XCTAssertEqual(recoverable?.recoveryAction?.label, "Retry")
+    }
+}

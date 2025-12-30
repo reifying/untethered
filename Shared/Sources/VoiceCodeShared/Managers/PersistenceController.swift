@@ -91,25 +91,9 @@ public final class PersistenceController: @unchecked Sendable {
             if let error = error {
                 self.logger.error("CoreData failed to load: \(error.localizedDescription)")
 
-                // Attempt recovery by deleting and recreating the store
+                // Attempt recovery per Appendix Z.5
                 if let storeURL = self.container.persistentStoreDescriptions.first?.url {
-                    self.logger.warning("Attempting to recover by deleting corrupt store at: \(storeURL.path)")
-
-                    do {
-                        try FileManager.default.removeItem(at: storeURL)
-                        self.logger.info("Deleted corrupt store, reloading...")
-
-                        // Attempt to reload after deletion
-                        self.container.loadPersistentStores { recoveryDescription, recoveryError in
-                            if let recoveryError = recoveryError {
-                                self.logger.error("Recovery failed: \(recoveryError.localizedDescription)")
-                            } else {
-                                self.logger.info("Store recovered successfully: \(recoveryDescription.url?.path ?? "unknown")")
-                            }
-                        }
-                    } catch {
-                        self.logger.error("Failed to delete corrupt store: \(error.localizedDescription)")
-                    }
+                    self.recoverFromCorruption(storeURL: storeURL)
                 } else {
                     self.logger.error("No store URL found for recovery")
                 }
@@ -164,6 +148,72 @@ public final class PersistenceController: @unchecked Sendable {
     /// Perform a background task
     public func performBackgroundTask(_ block: @escaping @Sendable (NSManagedObjectContext) -> Void) {
         container.performBackgroundTask(block)
+    }
+
+    // MARK: - Corruption Recovery (Appendix Z.5)
+
+    /// Recover from CoreData store corruption by backing up and recreating the store
+    /// - Parameter storeURL: The URL of the corrupt store
+    private func recoverFromCorruption(storeURL: URL) {
+        logger.error("CoreData store corruption detected at: \(storeURL.path)")
+
+        // 1. Backup corrupted store
+        let timestamp = Date().timeIntervalSince1970
+        let backupURL = storeURL.deletingLastPathComponent()
+            .appendingPathComponent("VoiceCode_backup_\(Int(timestamp)).sqlite")
+
+        do {
+            try FileManager.default.copyItem(at: storeURL, to: backupURL)
+            logger.info("Backed up corrupted store to: \(backupURL.path)")
+        } catch {
+            logger.error("Failed to backup corrupted store: \(error.localizedDescription)")
+            // Continue with recovery even if backup fails
+        }
+
+        // 2. Delete corrupted store and associated files
+        do {
+            try FileManager.default.removeItem(at: storeURL)
+
+            // Also remove -wal and -shm files if present
+            let walURL = URL(fileURLWithPath: storeURL.path + "-wal")
+            let shmURL = URL(fileURLWithPath: storeURL.path + "-shm")
+            try? FileManager.default.removeItem(at: walURL)
+            try? FileManager.default.removeItem(at: shmURL)
+
+            logger.info("Deleted corrupt store files")
+        } catch {
+            logger.error("Failed to delete corrupt store: \(error.localizedDescription)")
+            return
+        }
+
+        // 3. Reload with fresh store
+        container.loadPersistentStores { [weak self] description, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                self.logger.error("Recovery failed - could not load fresh store: \(error.localizedDescription)")
+            } else {
+                self.logger.info("Recovery successful - store recreated at: \(description.url?.path ?? "unknown")")
+
+                // 4. Trigger sync from backend to repopulate data
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: .requestFullSync, object: nil)
+                }
+            }
+        }
+    }
+
+    /// Manually trigger corruption recovery (for testing or user-initiated recovery)
+    /// - Returns: true if recovery was initiated, false if no store URL found
+    @discardableResult
+    public func attemptRecovery() -> Bool {
+        guard let storeURL = container.persistentStoreDescriptions.first?.url else {
+            logger.error("Cannot attempt recovery: no store URL found")
+            return false
+        }
+
+        recoverFromCorruption(storeURL: storeURL)
+        return true
     }
 
     // MARK: - Cross-Context Object Lookup

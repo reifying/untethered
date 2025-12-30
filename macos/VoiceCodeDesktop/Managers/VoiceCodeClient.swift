@@ -124,6 +124,24 @@ final class VoiceCodeClient: VoiceCodeClientCore {
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
+
+    // MARK: - Error Recovery (Z.4)
+
+    /// Maps a raw error to a user-friendly UserRecoverableError
+    /// Returns nil if the error is not user-recoverable
+    func recoverableError(from error: Error) -> UserRecoverableError? {
+        mapToUserRecoverableError(
+            error,
+            serverURL: appSettings?.fullServerURL,
+            onReconnect: { [weak self] in
+                self?.retryConnection()
+            },
+            onOpenSettings: {
+                // Open Settings window via standard macOS action
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+        )
+    }
 }
 
 // MARK: - VoiceCodeSyncDelegate
