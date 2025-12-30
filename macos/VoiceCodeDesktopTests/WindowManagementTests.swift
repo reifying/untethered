@@ -98,10 +98,12 @@ final class WindowManagementTests: XCTestCase {
         // Test ConversationDetailView column width constraints (min: 400, ideal: 600)
         let session = createTestSession()
         let client = VoiceCodeClient(serverURL: "ws://localhost:8080", appSettings: settings)
+        let resourcesManager = ResourcesManager(client: client, appSettings: settings)
 
         let view = ConversationDetailView(
             session: session,
             client: client,
+            resourcesManager: resourcesManager,
             settings: settings
         )
         XCTAssertNotNil(view)

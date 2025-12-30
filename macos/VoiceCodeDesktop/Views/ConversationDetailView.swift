@@ -4,6 +4,7 @@
 import SwiftUI
 import CoreData
 import OSLog
+import UniformTypeIdentifiers
 import VoiceCodeShared
 
 private let logger = Logger(subsystem: "dev.910labs.voice-code-desktop", category: "ConversationDetailView")
@@ -14,6 +15,7 @@ private let logger = Logger(subsystem: "dev.910labs.voice-code-desktop", categor
 struct ConversationDetailView: View {
     @ObservedObject var session: CDBackendSession
     @ObservedObject var client: VoiceCodeClient
+    @ObservedObject var resourcesManager: ResourcesManager
     let settings: AppSettings
 
     @Environment(\.managedObjectContext) private var viewContext
@@ -43,15 +45,19 @@ struct ConversationDetailView: View {
     // Session info inspector state
     @State private var showingSessionInfo = false
 
+    // Drag-and-drop state
+    @State private var isDragOver = false
+
     // Track if sending to disable input
     // Session is locked if the session's backend ID is in the locked set
     private var isSessionLocked: Bool {
         client.lockedSessions.contains(session.backendSessionId)
     }
 
-    init(session: CDBackendSession, client: VoiceCodeClient, settings: AppSettings) {
+    init(session: CDBackendSession, client: VoiceCodeClient, resourcesManager: ResourcesManager, settings: AppSettings) {
         self.session = session
         self.client = client
+        self.resourcesManager = resourcesManager
         self.settings = settings
 
         // Initialize fetch request for messages
@@ -62,50 +68,60 @@ struct ConversationDetailView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Message list with ScrollViewReader for auto-scroll
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(messages) { message in
-                            MessageRowView(message: message)
-                                .id(message.id)
+        ZStack {
+            VStack(spacing: 0) {
+                // Message list with ScrollViewReader for auto-scroll
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(messages) { message in
+                                MessageRowView(message: message)
+                                    .id(message.id)
+                            }
+                        }
+                        .padding()
+                    }
+                    .onChange(of: messages.count) { oldCount, newCount in
+                        guard newCount > oldCount, autoScrollEnabled else { return }
+
+                        // Capture target ID before async delay (per Appendix R)
+                        guard let targetId = messages.last?.id else { return }
+
+                        // Debounce scroll to avoid layout thrashing (300ms per spec)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            guard self.autoScrollEnabled else { return }
+                            // Verify message still exists (may have been pruned)
+                            guard messages.contains(where: { $0.id == targetId }) else { return }
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo(targetId, anchor: .bottom)
+                            }
                         }
                     }
-                    .padding()
-                }
-                .onChange(of: messages.count) { oldCount, newCount in
-                    guard newCount > oldCount, autoScrollEnabled else { return }
-
-                    // Capture target ID before async delay (per Appendix R)
-                    guard let targetId = messages.last?.id else { return }
-
-                    // Debounce scroll to avoid layout thrashing (300ms per spec)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        guard self.autoScrollEnabled else { return }
-                        // Verify message still exists (may have been pruned)
-                        guard messages.contains(where: { $0.id == targetId }) else { return }
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            proxy.scrollTo(targetId, anchor: .bottom)
+                    .onAppear {
+                        // Scroll to last message on appear
+                        if let lastId = messages.last?.id {
+                            proxy.scrollTo(lastId, anchor: .bottom)
                         }
                     }
                 }
-                .onAppear {
-                    // Scroll to last message on appear
-                    if let lastId = messages.last?.id {
-                        proxy.scrollTo(lastId, anchor: .bottom)
-                    }
-                }
+
+                Divider()
+
+                // Input area
+                MessageInputView(
+                    text: $draftText,
+                    isLocked: isSessionLocked,
+                    onSend: sendMessage
+                )
             }
 
-            Divider()
-
-            // Input area
-            MessageInputView(
-                text: $draftText,
-                isLocked: isSessionLocked,
-                onSend: sendMessage
-            )
+            // Drag-and-drop overlay
+            if isDragOver {
+                ConversationDragOverlayView()
+            }
+        }
+        .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
+            handleDrop(providers: providers)
         }
         .navigationTitle(session.displayName(context: viewContext))
         .toolbar {
@@ -392,6 +408,64 @@ struct ConversationDetailView: View {
     private func clearDraft() {
         UserDefaults.standard.removeObject(forKey: draftKey)
     }
+
+    // MARK: - Drop Handling
+
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        var urls: [URL] = []
+
+        let group = DispatchGroup()
+
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                group.enter()
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
+                    defer { group.leave() }
+
+                    if let data = item as? Data,
+                       let url = URL(dataRepresentation: data, relativeTo: nil) {
+                        urls.append(url)
+                    } else if let url = item as? URL {
+                        urls.append(url)
+                    }
+                }
+            }
+        }
+
+        group.notify(queue: .main) {
+            if !urls.isEmpty {
+                logger.info("📥 Dropped \(urls.count) file(s) onto conversation view")
+                resourcesManager.uploadFiles(urls)
+            }
+        }
+
+        return true
+    }
+}
+
+// MARK: - ConversationDragOverlayView
+
+/// Overlay shown when dragging files over the conversation view
+struct ConversationDragOverlayView: View {
+    var body: some View {
+        ZStack {
+            Color.accentColor.opacity(0.1)
+
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8]))
+                .padding(16)
+
+            VStack(spacing: 8) {
+                Image(systemName: "arrow.down.doc.fill")
+                    .font(.system(size: 40))
+                    .foregroundColor(.accentColor)
+
+                Text("Drop files to upload")
+                    .font(.headline)
+                    .foregroundColor(.accentColor)
+            }
+        }
+    }
 }
 
 // MARK: - MessageRowView
@@ -601,10 +675,15 @@ struct MessageInputView: View {
 
     try? context.save()
 
+    let settings = AppSettings()
+    let client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
+    let resourcesManager = ResourcesManager(client: client, appSettings: settings)
+
     return ConversationDetailView(
         session: session,
-        client: VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false),
-        settings: AppSettings()
+        client: client,
+        resourcesManager: resourcesManager,
+        settings: settings
     )
     .environment(\.managedObjectContext, context)
     .frame(width: 600, height: 400)

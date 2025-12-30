@@ -12,20 +12,23 @@ final class ConversationDetailViewTests: XCTestCase {
     var persistenceController: PersistenceController!
     var context: NSManagedObjectContext!
     var client: VoiceCodeClient!
+    var resourcesManager: ResourcesManager!
     var settings: AppSettings!
 
     override func setUp() {
         super.setUp()
         persistenceController = PersistenceController(inMemory: true)
         context = persistenceController.container.viewContext
-        client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
         settings = AppSettings()
+        client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
+        resourcesManager = ResourcesManager(client: client, appSettings: settings)
     }
 
     override func tearDown() {
         persistenceController = nil
         context = nil
         client = nil
+        resourcesManager = nil
         settings = nil
         super.tearDown()
     }
@@ -72,6 +75,7 @@ final class ConversationDetailViewTests: XCTestCase {
         let view = ConversationDetailView(
             session: session,
             client: client,
+            resourcesManager: resourcesManager,
             settings: settings
         )
 
@@ -95,6 +99,7 @@ final class ConversationDetailViewTests: XCTestCase {
         let view = ConversationDetailView(
             session: session,
             client: client,
+            resourcesManager: resourcesManager,
             settings: settings
         )
         .environment(\.managedObjectContext, context)
@@ -298,6 +303,7 @@ final class ConversationDetailViewTests: XCTestCase {
         let view = ConversationDetailView(
             session: session,
             client: client,
+            resourcesManager: resourcesManager,
             settings: settings
         )
 
@@ -521,5 +527,49 @@ final class ConversationDetailViewTests: XCTestCase {
         // Test that VoiceCodeClientKey type is correctly defined
         // The focused value should accept VoiceCodeClient
         XCTAssertNotNil(client)
+    }
+
+    // MARK: - Drag-and-Drop Tests
+
+    func testConversationDragOverlayViewInitialization() {
+        // Verify drag overlay view initializes correctly
+        let view = ConversationDragOverlayView()
+        XCTAssertNotNil(view)
+    }
+
+    func testConversationDetailViewWithResourcesManager() {
+        let session = createTestSession()
+
+        // Verify view initializes with resources manager
+        let view = ConversationDetailView(
+            session: session,
+            client: client,
+            resourcesManager: resourcesManager,
+            settings: settings
+        )
+
+        XCTAssertNotNil(view)
+        XCTAssertNotNil(resourcesManager)
+    }
+
+    func testResourcesManagerUploadFilesEmptyArray() {
+        // Uploading empty array should not crash
+        resourcesManager.uploadFiles([])
+
+        // No uploads should be in progress
+        XCTAssertTrue(resourcesManager.uploadProgress.isEmpty)
+    }
+
+    func testResourcesManagerConnectionRequired() {
+        // When not connected, uploadFiles should set error message
+        let testURL = URL(fileURLWithPath: "/tmp/test.txt")
+
+        // Client is not connected by default in tests
+        XCTAssertFalse(client.isConnected)
+
+        resourcesManager.uploadFiles([testURL])
+
+        // Error should be set (no connection)
+        XCTAssertEqual(resourcesManager.lastError, "Not connected to server")
     }
 }

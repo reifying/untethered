@@ -12,6 +12,7 @@ struct MainWindowView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var statusBarController: StatusBarController
     @StateObject private var client: VoiceCodeClient
+    @StateObject private var resourcesManager: ResourcesManager
     @StateObject private var selectionManager = SessionSelectionManager()
     @State private var showingSettings = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -53,8 +54,13 @@ struct MainWindowView: View {
     init(settings: AppSettings, statusBarController: StatusBarController) {
         self.settings = settings
         self.statusBarController = statusBarController
-        _client = StateObject(wrappedValue: VoiceCodeClient(
+        let voiceCodeClient = VoiceCodeClient(
             serverURL: settings.fullServerURL,
+            appSettings: settings
+        )
+        _client = StateObject(wrappedValue: voiceCodeClient)
+        _resourcesManager = StateObject(wrappedValue: ResourcesManager(
+            client: voiceCodeClient,
             appSettings: settings
         ))
     }
@@ -88,6 +94,7 @@ struct MainWindowView: View {
                 ConversationDetailView(
                     session: session,
                     client: client,
+                    resourcesManager: resourcesManager,
                     settings: settings
                 )
                 .navigationSplitViewColumnWidth(min: 400, ideal: 600)
@@ -103,6 +110,7 @@ struct MainWindowView: View {
                     ConversationDetailView(
                         session: session,
                         client: client,
+                        resourcesManager: resourcesManager,
                         settings: settings
                     )
                 } else {
