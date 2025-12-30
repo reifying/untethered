@@ -489,6 +489,57 @@ final class MainWindowViewTests: XCTestCase {
         XCTAssertNotNil(view)
     }
 
+    // MARK: - SessionNotFoundView Tests
+
+    func testSessionNotFoundViewInitializes() {
+        let sessionId = UUID()
+        let view = SessionNotFoundView(
+            sessionId: sessionId,
+            onDismiss: {},
+            onRefresh: {}
+        )
+        XCTAssertNotNil(view)
+    }
+
+    func testSessionNotFoundViewCallsOnDismiss() {
+        var dismissCalled = false
+        let sessionId = UUID()
+
+        let view = SessionNotFoundView(
+            sessionId: sessionId,
+            onDismiss: { dismissCalled = true },
+            onRefresh: {}
+        )
+
+        view.onDismiss()
+        XCTAssertTrue(dismissCalled)
+    }
+
+    func testSessionNotFoundViewCallsOnRefresh() {
+        var refreshCalled = false
+        let sessionId = UUID()
+
+        let view = SessionNotFoundView(
+            sessionId: sessionId,
+            onDismiss: {},
+            onRefresh: { refreshCalled = true }
+        )
+
+        view.onRefresh()
+        XCTAssertTrue(refreshCalled)
+    }
+
+    func testSessionNotFoundViewStoresSessionId() {
+        let sessionId = UUID()
+        let view = SessionNotFoundView(
+            sessionId: sessionId,
+            onDismiss: {},
+            onRefresh: {}
+        )
+
+        XCTAssertEqual(view.sessionId, sessionId)
+    }
+
     // MARK: - MacSettingsView Tests
 
     func testMacSettingsViewInitializes() {

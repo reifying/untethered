@@ -124,6 +124,14 @@ struct MainWindowView: View {
                     settings: settings
                 )
                 .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 400)
+            } else if let sessionId = selectionManager.selectedSessionId {
+                // Session ID selected but session not found
+                SessionNotFoundView(
+                    sessionId: sessionId,
+                    onDismiss: { selectionManager.selectedSessionId = nil },
+                    onRefresh: { loadAllSessions() }
+                )
+                .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 400)
             } else {
                 EmptySelectionView()
                     .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 400)
@@ -143,6 +151,13 @@ struct MainWindowView: View {
                     // When session is selected directly, show session info
                     DetailPlaceholderView(session: session)
                 }
+            } else if let sessionId = selectionManager.selectedSessionId {
+                // Session ID selected but session not found - show in detail pane too
+                SessionNotFoundView(
+                    sessionId: sessionId,
+                    onDismiss: { selectionManager.selectedSessionId = nil },
+                    onRefresh: { loadAllSessions() }
+                )
             } else {
                 Text("Select a session")
                     .foregroundColor(.secondary)
@@ -1082,6 +1097,43 @@ struct EmptySelectionView: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - SessionNotFoundView
+
+/// Displayed when a selected session cannot be found (deleted or unavailable)
+struct SessionNotFoundView: View {
+    let sessionId: UUID
+    let onDismiss: () -> Void
+    let onRefresh: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 48))
+                .foregroundColor(.orange)
+
+            Text("Session Not Found")
+                .font(.title2)
+
+            Text("This session may have been deleted or is no longer available.")
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+
+            Text("Session ID: \(sessionId.uuidString.lowercased().prefix(8))...")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fontDesign(.monospaced)
+
+            HStack(spacing: 12) {
+                Button("Refresh") { onRefresh() }
+                Button("Close") { onDismiss() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
