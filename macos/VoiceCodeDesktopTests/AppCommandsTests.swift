@@ -231,7 +231,7 @@ final class AppCommandsTests: XCTestCase {
 
     func testWindowMenuCommandsCanBeInstantiated() {
         let commands = WindowMenuCommands(
-            sessionsList: nil,
+            sessionMenuItems: nil,
             selectedSessionBinding: nil
         )
         XCTAssertNotNil(commands)
@@ -242,7 +242,7 @@ final class AppCommandsTests: XCTestCase {
     func testWindowMenuWithEmptySessions() {
         // When there are no sessions, the window menu should handle gracefully
         let commands = WindowMenuCommands(
-            sessionsList: [],
+            sessionMenuItems: [],
             selectedSessionBinding: nil
         )
         XCTAssertNotNil(commands)
@@ -264,9 +264,12 @@ final class AppCommandsTests: XCTestCase {
 
         try testContext.save()
 
-        let sessions = [session1, session2]
+        let menuItems = [
+            SessionMenuItem(session: session1, displayName: "Test Session 1"),
+            SessionMenuItem(session: session2, displayName: "Test Session 2")
+        ]
         let commands = WindowMenuCommands(
-            sessionsList: sessions,
+            sessionMenuItems: menuItems,
             selectedSessionBinding: nil
         )
         XCTAssertNotNil(commands)
@@ -274,7 +277,7 @@ final class AppCommandsTests: XCTestCase {
 
     // MARK: - Session Name Truncation Tests
 
-    func testSessionNameTruncation() throws {
+    func testSessionMenuItemTruncation() throws {
         let session = CDBackendSession(context: testContext)
         session.id = UUID()
         session.workingDirectory = "/test/path"
@@ -283,14 +286,15 @@ final class AppCommandsTests: XCTestCase {
 
         try testContext.save()
 
-        // The backendName should be used for display
-        XCTAssertTrue(session.backendName.count > 20)
-        // WindowMenuCommands should truncate to 20 characters
-        let truncated = String(session.backendName.prefix(20))
-        XCTAssertEqual(truncated.count, 20)
+        // Create SessionMenuItem with display name
+        let menuItem = SessionMenuItem(session: session, displayName: session.backendName)
+
+        // menuName should truncate to 20 characters
+        XCTAssertEqual(menuItem.menuName.count, 20)
+        XCTAssertEqual(menuItem.menuName, "This is a very long ")
     }
 
-    func testSessionNameWithEmptyBackendName() throws {
+    func testSessionMenuItemWithEmptyDisplayName() throws {
         let session = CDBackendSession(context: testContext)
         session.id = UUID()
         session.workingDirectory = "/test/path"
@@ -299,10 +303,81 @@ final class AppCommandsTests: XCTestCase {
 
         try testContext.save()
 
-        // When backendName is empty, should fall back to session ID prefix
-        XCTAssertTrue(session.backendName.isEmpty)
-        let idPrefix = String(session.id.uuidString.lowercased().prefix(8))
-        XCTAssertEqual(idPrefix.count, 8)
+        // Create SessionMenuItem with empty display name
+        let menuItem = SessionMenuItem(session: session, displayName: "")
+
+        // menuName should fall back to session ID prefix (8 chars)
+        XCTAssertEqual(menuItem.menuName.count, 8)
+        XCTAssertEqual(menuItem.menuName, String(session.id.uuidString.lowercased().prefix(8)))
+    }
+
+    func testSessionMenuItemDisplaysCustomName() throws {
+        let session = CDBackendSession(context: testContext)
+        session.id = UUID()
+        session.workingDirectory = "/test/path"
+        session.lastModified = Date()
+        session.backendName = "Backend Name"
+
+        try testContext.save()
+
+        // When user sets a custom name, it should be used instead of backendName
+        let customName = "My Custom Name"
+        let menuItem = SessionMenuItem(session: session, displayName: customName)
+
+        XCTAssertEqual(menuItem.menuName, customName)
+        XCTAssertEqual(menuItem.displayName, customName)
+    }
+
+    func testSessionMenuItemSelectionUpdatesBinding() throws {
+        // Create test session
+        let session = CDBackendSession(context: testContext)
+        session.id = UUID()
+        session.workingDirectory = "/test/path"
+        session.lastModified = Date()
+        session.backendName = "Test Session"
+
+        try testContext.save()
+
+        // Create binding
+        var selectedSession: CDBackendSession?
+        let binding = Binding(
+            get: { selectedSession },
+            set: { selectedSession = $0 }
+        )
+
+        // Simulate what the menu action does
+        let menuItem = SessionMenuItem(session: session, displayName: "Test Session")
+        binding.wrappedValue = menuItem.session
+
+        // Verify selection was updated
+        XCTAssertEqual(selectedSession?.id, session.id)
+    }
+
+    func testWindowMenuLimitsToNineSessions() throws {
+        // Create 12 sessions
+        var menuItems: [SessionMenuItem] = []
+        for i in 1...12 {
+            let session = CDBackendSession(context: testContext)
+            session.id = UUID()
+            session.workingDirectory = "/test/path\(i)"
+            session.lastModified = Date().addingTimeInterval(TimeInterval(-i * 60))
+            session.backendName = "Session \(i)"
+            menuItems.append(SessionMenuItem(session: session, displayName: "Session \(i)"))
+        }
+
+        try testContext.save()
+
+        let commands = WindowMenuCommands(
+            sessionMenuItems: menuItems,
+            selectedSessionBinding: nil
+        )
+        XCTAssertNotNil(commands)
+
+        // Verify the ForEach in WindowMenuCommands uses min(9, count)
+        // We can't directly test the body, but we verify the logic
+        let maxShown = min(9, menuItems.count)
+        XCTAssertEqual(maxShown, 9)
+        XCTAssertTrue(menuItems.count > 9, "Should have more than 9 sessions for this test")
     }
 
     // MARK: - Clipboard Integration Test

@@ -9,6 +9,32 @@ import SwiftUI
 import VoiceCodeShared
 import AppKit
 
+// MARK: - Session Menu Item
+
+/// Pre-computed session info for menu display
+/// Holds display name computed from customName > backendName priority per Section 11.5
+public struct SessionMenuItem: Identifiable, Equatable {
+    public let id: UUID
+    public let displayName: String
+    public let lastModified: Date
+    public let session: CDBackendSession
+
+    public init(session: CDBackendSession, displayName: String) {
+        self.id = session.id
+        self.displayName = displayName
+        self.lastModified = session.lastModified
+        self.session = session
+    }
+
+    /// Truncated name for menu display (max 20 characters)
+    public var menuName: String {
+        if displayName.isEmpty {
+            return String(id.uuidString.lowercased().prefix(8))
+        }
+        return String(displayName.prefix(20))
+    }
+}
+
 // MARK: - Focused Value Keys
 
 /// Focused value key for message input text
@@ -29,6 +55,11 @@ struct ShowSessionInfoKey: FocusedValueKey {
 /// Focused value key for sessions list (for navigation)
 struct SessionsListKey: FocusedValueKey {
     typealias Value = [CDBackendSession]
+}
+
+/// Focused value key for session menu items (with pre-computed display names)
+struct SessionMenuItemsKey: FocusedValueKey {
+    typealias Value = [SessionMenuItem]
 }
 
 /// Focused value key for session selection binding
@@ -57,6 +88,11 @@ extension FocusedValues {
         set { self[SessionsListKey.self] = newValue }
     }
 
+    var sessionMenuItems: [SessionMenuItem]? {
+        get { self[SessionMenuItemsKey.self] }
+        set { self[SessionMenuItemsKey.self] = newValue }
+    }
+
     var selectedSessionBinding: Binding<CDBackendSession?>? {
         get { self[SelectedSessionBindingKey.self] }
         set { self[SelectedSessionBindingKey.self] = newValue }
@@ -74,6 +110,7 @@ struct AppCommands: Commands {
     @FocusedValue(\.sendMessageAction) var sendMessageAction
     @FocusedValue(\.showSessionInfoAction) var showSessionInfoAction
     @FocusedValue(\.sessionsList) var sessionsList
+    @FocusedValue(\.sessionMenuItems) var sessionMenuItems
     @FocusedValue(\.selectedSessionBinding) var selectedSessionBinding
 
     var body: some Commands {
@@ -100,7 +137,7 @@ struct AppCommands: Commands {
 
         // Window menu - session 1-9 shortcuts
         WindowMenuCommands(
-            sessionsList: sessionsList,
+            sessionMenuItems: sessionMenuItems,
             selectedSessionBinding: selectedSessionBinding
         )
     }
@@ -324,41 +361,34 @@ struct ViewMenuCommands: Commands {
 // MARK: - Window Menu Commands
 
 /// Window menu: Session 1-9 shortcuts
+/// Uses SessionMenuItem for pre-computed display names (customName > backendName per Section 11.5)
 struct WindowMenuCommands: Commands {
-    let sessionsList: [CDBackendSession]?
+    let sessionMenuItems: [SessionMenuItem]?
     let selectedSessionBinding: Binding<CDBackendSession?>?
 
-    private var sessions: [CDBackendSession] {
-        sessionsList ?? []
+    private var menuItems: [SessionMenuItem] {
+        sessionMenuItems ?? []
     }
 
     var body: some Commands {
         CommandGroup(before: .windowList) {
-            // Session 1-9 shortcuts
-            ForEach(0..<min(9, sessions.count), id: \.self) { index in
-                let session = sortedSessions[index]
-                Button("Session \(index + 1): \(sessionName(session))") {
-                    selectedSessionBinding?.wrappedValue = session
+            // Session 1-9 shortcuts (sorted by last modified, most recent first)
+            ForEach(0..<min(9, sortedMenuItems.count), id: \.self) { index in
+                let item = sortedMenuItems[index]
+                Button("Session \(index + 1): \(item.menuName)") {
+                    selectedSessionBinding?.wrappedValue = item.session
                 }
                 .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
             }
 
-            if !sessions.isEmpty {
+            if !menuItems.isEmpty {
                 Divider()
             }
         }
     }
 
-    private var sortedSessions: [CDBackendSession] {
-        sessions.sorted { $0.lastModified > $1.lastModified }
-    }
-
-    private func sessionName(_ session: CDBackendSession) -> String {
-        // Use backend name or truncated ID
-        if !session.backendName.isEmpty {
-            return String(session.backendName.prefix(20))
-        }
-        return String(session.id.uuidString.lowercased().prefix(8))
+    private var sortedMenuItems: [SessionMenuItem] {
+        menuItems.sorted { $0.lastModified > $1.lastModified }
     }
 }
 

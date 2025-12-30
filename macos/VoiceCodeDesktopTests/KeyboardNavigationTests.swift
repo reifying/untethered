@@ -234,25 +234,25 @@ final class KeyboardNavigationTests: XCTestCase {
 
     func testWindowMenuWithNoSessions() {
         let commands = WindowMenuCommands(
-            sessionsList: [],
+            sessionMenuItems: [],
             selectedSessionBinding: nil
         )
         XCTAssertNotNil(commands)
     }
 
     func testWindowMenuWithMultipleSessions() {
-        let sessions = (1...5).map { index -> CDBackendSession in
+        let menuItems = (1...5).map { index -> SessionMenuItem in
             let session = createTestSession()
             session.backendName = "Session \(index)"
             session.lastModified = Date().addingTimeInterval(TimeInterval(-index * 60))
-            return session
+            return SessionMenuItem(session: session, displayName: "Session \(index)")
         }
 
         var selectedSession: CDBackendSession?
         let binding = Binding(get: { selectedSession }, set: { selectedSession = $0 })
 
         let commands = WindowMenuCommands(
-            sessionsList: sessions,
+            sessionMenuItems: menuItems,
             selectedSessionBinding: binding
         )
         XCTAssertNotNil(commands)
@@ -260,21 +260,23 @@ final class KeyboardNavigationTests: XCTestCase {
 
     func testWindowMenuSessionNameTruncation() {
         let session = createTestSession()
-        session.backendName = "This is a very long session name that exceeds twenty characters"
+        let longName = "This is a very long session name that exceeds twenty characters"
+        session.backendName = longName
 
-        // WindowMenuCommands truncates to 20 characters
-        let truncated = String(session.backendName.prefix(20))
-        XCTAssertEqual(truncated.count, 20)
-        XCTAssertEqual(truncated, "This is a very long ")
+        // SessionMenuItem.menuName truncates to 20 characters
+        let menuItem = SessionMenuItem(session: session, displayName: longName)
+        XCTAssertEqual(menuItem.menuName.count, 20)
+        XCTAssertEqual(menuItem.menuName, "This is a very long ")
     }
 
     func testWindowMenuSessionNameFallbackToId() {
         let session = createTestSession()
         session.backendName = ""
 
-        // Should fall back to first 8 chars of UUID
-        let idPrefix = String(session.id.uuidString.lowercased().prefix(8))
-        XCTAssertEqual(idPrefix.count, 8)
+        // SessionMenuItem.menuName falls back to first 8 chars of UUID
+        let menuItem = SessionMenuItem(session: session, displayName: "")
+        XCTAssertEqual(menuItem.menuName.count, 8)
+        XCTAssertEqual(menuItem.menuName, String(session.id.uuidString.lowercased().prefix(8)))
     }
 
     // MARK: - Session Navigation Tests (⌘[, ⌘])

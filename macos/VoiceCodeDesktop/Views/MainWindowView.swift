@@ -20,6 +20,7 @@ struct MainWindowView: View {
     @State private var recentSessions: [RecentSession] = []
     @State private var showingNewSession = false
     @State private var allSessions: [CDBackendSession] = []
+    @State private var sessionMenuItems: [SessionMenuItem] = []
     @State private var sessionToDelete: CDBackendSession?
     @State private var showingDeleteConfirmation = false
     @State private var sessionToRename: CDBackendSession?
@@ -211,6 +212,7 @@ struct MainWindowView: View {
         .focusedSceneValue(\.selectedSession, selectedSession)
         .focusedSceneValue(\.voiceCodeClient, client)
         .focusedSceneValue(\.sessionsList, allSessions)
+        .focusedSceneValue(\.sessionMenuItems, sessionMenuItems)
         .focusedSceneValue(\.selectedSessionBinding, selectedSessionBinding)
         // Handle command notifications
         .onReceive(NotificationCenter.default.publisher(for: .requestNewSession)) { _ in
@@ -300,12 +302,20 @@ struct MainWindowView: View {
     private func loadAllSessions() {
         do {
             allSessions = try CDBackendSession.fetchActiveSessions(context: viewContext)
+            // Build session menu items with pre-computed display names (customName > backendName)
+            sessionMenuItems = allSessions.map { session in
+                SessionMenuItem(
+                    session: session,
+                    displayName: session.displayName(context: viewContext)
+                )
+            }
             // Validate selection after loading sessions
             selectionManager.validateSelection(against: allSessions)
             selectionManager.validateDirectorySelection(against: allSessions)
         } catch {
             logger.error("❌ Failed to fetch all sessions for navigation: \(error)")
             allSessions = []
+            sessionMenuItems = []
         }
     }
 
