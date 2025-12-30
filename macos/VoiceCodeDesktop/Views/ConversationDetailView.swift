@@ -274,6 +274,11 @@ struct ConversationDetailView: View {
             loadDraft()
             // Mark session as active for TTS routing
             ActiveSessionManager.shared.setActiveSession(session.id)
+            // Clear unread count when viewing session
+            if session.unreadCount > 0 {
+                session.unreadCount = 0
+                try? viewContext.save()
+            }
             // Reset compaction state when view appears (handles session switching)
             wasRecentlyCompacted = false
             compactionTimestamp = nil

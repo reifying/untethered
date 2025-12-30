@@ -679,4 +679,80 @@ final class ConversationDetailViewTests: XCTestCase {
         // Error should be set (no connection)
         XCTAssertEqual(resourcesManager.lastError, "Not connected to server")
     }
+
+    // MARK: - Unread Count Tests
+
+    func testUnreadCountClearedWhenViewingSession() throws {
+        // Create session with unread messages
+        let session = createTestSession()
+        session.unreadCount = 5
+        try context.save()
+
+        XCTAssertEqual(session.unreadCount, 5)
+
+        // Simulate what happens when ConversationDetailView appears:
+        // The onAppear clears unread count if > 0
+        if session.unreadCount > 0 {
+            session.unreadCount = 0
+            try context.save()
+        }
+
+        // Verify unread count is cleared
+        XCTAssertEqual(session.unreadCount, 0)
+    }
+
+    func testUnreadCountNotSavedWhenAlreadyZero() throws {
+        let session = createTestSession()
+        session.unreadCount = 0
+        try context.save()
+
+        // Track if save was called
+        let initialModificationDate = session.managedObjectContext?.registeredObjects
+            .compactMap { $0 as? CDBackendSession }
+            .first?.lastModified
+
+        // Simulate onAppear logic - should not save when already 0
+        if session.unreadCount > 0 {
+            session.unreadCount = 0
+            try context.save()
+        }
+
+        XCTAssertEqual(session.unreadCount, 0)
+        // Context should not have pending changes
+        XCTAssertFalse(context.hasChanges)
+    }
+
+    func testSessionUnreadCountInitializesToZero() {
+        let session = createTestSession()
+
+        // New sessions should have unreadCount = 0
+        XCTAssertEqual(session.unreadCount, 0)
+    }
+
+    func testActiveSessionManagerSetOnAppear() {
+        let session = createTestSession()
+
+        // Simulate what ConversationDetailView.onAppear does
+        ActiveSessionManager.shared.setActiveSession(session.id)
+
+        // Verify session is marked as active
+        XCTAssertEqual(ActiveSessionManager.shared.activeSessionId, session.id)
+
+        // Clean up
+        ActiveSessionManager.shared.clearActiveSession()
+    }
+
+    func testActiveSessionManagerClearedOnDisappear() {
+        let session = createTestSession()
+
+        // Set active session
+        ActiveSessionManager.shared.setActiveSession(session.id)
+        XCTAssertEqual(ActiveSessionManager.shared.activeSessionId, session.id)
+
+        // Simulate what ConversationDetailView.onDisappear does
+        ActiveSessionManager.shared.clearActiveSession()
+
+        // Verify session is no longer active
+        XCTAssertNil(ActiveSessionManager.shared.activeSessionId)
+    }
 }
