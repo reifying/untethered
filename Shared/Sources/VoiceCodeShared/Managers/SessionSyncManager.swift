@@ -271,6 +271,68 @@ public final class SessionSyncManager: @unchecked Sendable {
         }
     }
 
+    /// Mark the most recent sending message as error for a session
+    /// - Parameters:
+    ///   - sessionId: Session UUID string (backend session ID)
+    ///   - error: Optional error message to log
+    public func markSendingMessageAsError(sessionId: String, error: String? = nil) {
+        guard let sessionUUID = UUID(uuidString: sessionId) else {
+            logger.error("Invalid session ID format in markSendingMessageAsError: \(sessionId)")
+            return
+        }
+
+        let errorMessage = error ?? "Unknown error"
+        logger.info("Marking sending message as error for session: \(sessionId), error: \(errorMessage)")
+
+        persistenceController.performBackgroundTask { [weak self] backgroundContext in
+            guard let self = self else { return }
+
+            // First find the session by backendSessionId (which matches the session ID from backend)
+            let sessionFetchRequest = CDBackendSession.fetchRequest()
+            sessionFetchRequest.predicate = NSPredicate(format: "backendName == %@", sessionId)
+            sessionFetchRequest.fetchLimit = 1
+
+            guard let session = try? backgroundContext.fetch(sessionFetchRequest).first else {
+                // Fall back to matching by session ID directly
+                self.markSendingMessageAsErrorBySessionUUID(sessionUUID, in: backgroundContext)
+                return
+            }
+
+            // Now find the most recent sending message for this session's UUID
+            self.markSendingMessageAsErrorBySessionUUID(session.id, in: backgroundContext)
+        }
+    }
+
+    /// Internal helper to mark the most recent sending message as error
+    private func markSendingMessageAsErrorBySessionUUID(_ sessionUUID: UUID, in context: NSManagedObjectContext) {
+        let messageFetchRequest = CDMessage.fetchRequest()
+        // Find messages with status "sending" for this session
+        messageFetchRequest.predicate = NSPredicate(
+            format: "sessionId == %@ AND status == %@",
+            sessionUUID as CVarArg,
+            MessageStatus.sending.rawValue
+        )
+        // Get the most recent one
+        messageFetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: false)]
+        messageFetchRequest.fetchLimit = 1
+
+        guard let message = try? context.fetch(messageFetchRequest).first else {
+            logger.info("No sending message found to mark as error for session: \(sessionUUID.lowercasedString)")
+            return
+        }
+
+        message.messageStatus = .error
+        logger.info("Marked message \(message.id) as error")
+
+        do {
+            if context.hasChanges {
+                try context.save()
+            }
+        } catch {
+            logger.error("Failed to save error status: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Session Updated Handling
 
     /// Handle session_updated message from backend

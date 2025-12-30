@@ -787,6 +787,11 @@ open class VoiceCodeClientCore: ObservableObject {
                 let error = json["error"] as? String ?? "Unknown error"
                 scheduleUpdate(key: "currentError", value: error)
                 flushPendingUpdates()  // Errors must not be delayed per Appendix M
+
+                // Mark the sending message as error
+                if let sessionId = (json["ios_session_id"] as? String) ?? (json["ios-session-id"] as? String) ?? (json["session_id"] as? String) ?? (json["session-id"] as? String) {
+                    sessionSyncManager.markSendingMessageAsError(sessionId: sessionId, error: error)
+                }
             }
 
         case "error":
@@ -796,6 +801,8 @@ open class VoiceCodeClientCore: ObservableObject {
 
             if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
                 unlockSession(sessionId, reason: "error received")
+                // Mark the sending message as error
+                sessionSyncManager.markSendingMessageAsError(sessionId: sessionId, error: error)
             } else {
                 flushPendingUpdates()  // Errors must not be delayed per Appendix M
             }

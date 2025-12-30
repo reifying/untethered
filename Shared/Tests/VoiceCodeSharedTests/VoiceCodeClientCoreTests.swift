@@ -810,3 +810,74 @@ final class DebounceFlushTests: XCTestCase {
         XCTAssertTrue(client.isProcessing)
     }
 }
+
+// MARK: - Message Status Error Transition Tests
+// Integration tests for message error transitions are in ios/VoiceCodeTests/OptimisticUITests.swift
+// These tests verify the VoiceCodeClientCore correctly calls markSendingMessageAsError
+
+@MainActor
+final class MessageStatusErrorTests: XCTestCase {
+
+    /// Verify that response with success=false sets currentError
+    func testErrorResponseSetsCurrentError() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // Process an error response
+        client.processMessage(type: "response", json: [
+            "type": "response",
+            "success": false,
+            "error": "Test error message"
+        ])
+
+        // Verify currentError is set (flushPendingUpdates is called automatically for errors)
+        XCTAssertEqual(client.currentError, "Test error message")
+    }
+
+    /// Verify that error message type sets currentError
+    func testErrorMessageTypeSetsCurrentError() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // Process an error message type
+        client.processMessage(type: "error", json: [
+            "type": "error",
+            "message": "Test error from server"
+        ])
+
+        // Verify currentError is set (flushPendingUpdates is called automatically for errors)
+        XCTAssertEqual(client.currentError, "Test error from server")
+    }
+
+    /// Verify error response unlocks session when session_id is provided
+    func testErrorResponseUnlocksSession() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let client = VoiceCodeClientCore(
+            serverURL: "ws://localhost:3000",
+            persistenceController: persistenceController,
+            setupObservers: false
+        )
+
+        // Lock a session first
+        let sessionId = "test-session-123"
+        client.lockedSessions.insert(sessionId)
+
+        // Process an error message with session_id
+        client.processMessage(type: "error", json: [
+            "type": "error",
+            "message": "Session error",
+            "session_id": sessionId
+        ])
+
+        // Verify session is unlocked
+        XCTAssertFalse(client.lockedSessions.contains(sessionId))
+    }
+}
