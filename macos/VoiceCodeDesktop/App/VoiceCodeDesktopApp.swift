@@ -70,6 +70,7 @@ struct VoiceCodeDesktopApp: App {
                 MainWindowView(settings: settings, statusBarController: statusBarController)
             }
         }
+        .defaultSize(width: 1200, height: 800)
         .commands {
             AppCommands()
         }

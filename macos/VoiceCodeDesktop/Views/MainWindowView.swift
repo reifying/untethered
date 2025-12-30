@@ -82,7 +82,7 @@ struct MainWindowView: View {
                 onShowSettings: { showingSettings = true },
                 onNewSession: { showingNewSession = true }
             )
-            .navigationSplitViewColumnWidth(min: 200, ideal: 250, max: 350)
+            .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 300)
         } content: {
             // Content: Sessions for selected directory OR conversation for selected session
             if let directory = selectedDirectory {
@@ -90,7 +90,7 @@ struct MainWindowView: View {
                     workingDirectory: directory,
                     selectedSession: selectedSessionBinding
                 )
-                .navigationSplitViewColumnWidth(min: 280, ideal: 350)
+                .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 400)
             } else if let session = selectedSession {
                 // Session selected from Recent/Queue - show conversation
                 ConversationDetailView(
@@ -99,10 +99,10 @@ struct MainWindowView: View {
                     resourcesManager: resourcesManager,
                     settings: settings
                 )
-                .navigationSplitViewColumnWidth(min: 400, ideal: 600)
+                .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 400)
             } else {
                 EmptySelectionView()
-                    .navigationSplitViewColumnWidth(min: 300, ideal: 450)
+                    .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 400)
             }
         } detail: {
             // Detail: Session info / resources
@@ -124,7 +124,7 @@ struct MainWindowView: View {
                     .foregroundColor(.secondary)
             }
         }
-        .frame(minWidth: 800, minHeight: 500)
+        .frame(minWidth: 900, minHeight: 600)
         .onAppear {
             setupRecentSessionsCallback()
             setupStatusBarController()

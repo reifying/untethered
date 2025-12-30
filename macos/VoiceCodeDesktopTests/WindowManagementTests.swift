@@ -61,15 +61,15 @@ final class WindowManagementTests: XCTestCase {
     }
 
     func testNavigationSplitViewMinimumWindowSize() {
-        // MainWindowView sets .frame(minWidth: 800, minHeight: 500)
+        // MainWindowView sets .frame(minWidth: 900, minHeight: 600) per Appendix J.1
         // Verify the view enforces minimum dimensions
         let view = MainWindowView(settings: settings, statusBarController: statusBarController)
         XCTAssertNotNil(view)
-        // The minimum window size is set to 800x500 per the design
+        // The minimum window size is set to 900x600 per Appendix J.1
     }
 
     func testSidebarColumnWidthConstraints() {
-        // Test SidebarView column width constraints (min: 200, ideal: 250, max: 350)
+        // Test SidebarView column width constraints (min: 220, ideal: 260, max: 300) per Appendix J.1
         let view = SidebarView(
             recentSessions: [],
             selectedDirectory: .constant(nil),
@@ -86,7 +86,7 @@ final class WindowManagementTests: XCTestCase {
     }
 
     func testContentColumnWidthWithDirectory() {
-        // Test SessionListView column width constraints (min: 280, ideal: 350)
+        // Test SessionListView column width constraints (min: 280, ideal: 340, max: 400) per Appendix J.1
         let view = SessionListView(
             workingDirectory: "/Users/test/project",
             selectedSession: .constant(nil)
@@ -95,7 +95,7 @@ final class WindowManagementTests: XCTestCase {
     }
 
     func testContentColumnWidthWithSession() {
-        // Test ConversationDetailView column width constraints (min: 400, ideal: 600)
+        // Test ConversationDetailView column width constraints (min: 280, ideal: 340, max: 400) per Appendix J.1
         let session = createTestSession()
         let client = VoiceCodeClient(serverURL: "ws://localhost:8080", appSettings: settings)
         let resourcesManager = ResourcesManager(client: client, appSettings: settings)
