@@ -238,9 +238,7 @@ struct ConversationDetailView: View {
         // Set focused values for menu commands
         .focusedSceneValue(\.selectedSession, session)
         .focusedSceneValue(\.voiceCodeClient, client)
-        .focusedSceneValue(\.showSessionInfoAction) {
-            showingSessionInfo = true
-        }
+        .focusedSceneValue(\.showSessionInfoAction, showSessionInfo)
         // Handle menu command notifications
         .onReceive(NotificationCenter.default.publisher(for: .requestSessionCompaction)) { notification in
             guard let sessionId = notification.userInfo?["sessionId"] as? String,
@@ -277,6 +275,11 @@ struct ConversationDetailView: View {
     }
 
     // MARK: - Session Actions
+
+    /// Show session info - exposed for focused value
+    private var showSessionInfo: () -> Void {
+        { [self] in showingSessionInfo = true }
+    }
 
     private func refreshSession() {
         logger.info("🔄 Refreshing session: \(session.backendSessionId)")
