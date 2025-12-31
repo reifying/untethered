@@ -622,10 +622,10 @@ struct MessageRowView: View {
         Group {
             if message.role == "user" {
                 Image(systemName: "person.circle.fill")
-                    .foregroundColor(.blue)
+                    .foregroundColor(.userRole)
             } else {
                 Image(systemName: "sparkles")
-                    .foregroundColor(.purple)
+                    .foregroundColor(.assistantRole)
             }
         }
         .font(.title3)
@@ -636,14 +636,14 @@ struct MessageRowView: View {
     }
 
     private var roleColor: Color {
-        message.role == "user" ? .blue : .purple
+        message.role == "user" ? .userRole : .assistantRole
     }
 
     private var messageBackground: Color {
         if message.role == "user" {
-            return Color.blue.opacity(0.1)
+            return Color.messageBubbleUser
         } else {
-            return Color.secondary.opacity(0.1)
+            return Color.messageBubbleAssistant
         }
     }
 }
@@ -668,7 +668,7 @@ struct MessageInputView: View {
             if isLocked {
                 HStack {
                     Image(systemName: "lock.fill")
-                        .foregroundColor(.orange)
+                        .foregroundColor(.connectionStatusOrange)
                     Text("Session is processing...")
                         .font(.caption)
                         .foregroundColor(.secondary)

@@ -59,11 +59,11 @@ struct ConnectionStatusIndicator: View {
     private var iconColor: Color {
         switch connectionState {
         case .connected:
-            return .green
+            return .connectionStatusGreen
         case .connecting, .authenticating, .reconnecting:
-            return .orange
+            return .connectionStatusOrange
         case .disconnected, .failed:
-            return .red
+            return .connectionStatusRed
         }
     }
 
@@ -118,11 +118,11 @@ struct ConnectionStatusDot: View {
     private var dotColor: Color {
         switch connectionState {
         case .connected:
-            return .green
+            return .connectionStatusGreen
         case .connecting, .authenticating, .reconnecting:
-            return .orange
+            return .connectionStatusOrange
         case .disconnected, .failed:
-            return .red
+            return .connectionStatusRed
         }
     }
 

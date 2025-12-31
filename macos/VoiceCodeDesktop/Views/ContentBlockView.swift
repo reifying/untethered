@@ -60,11 +60,11 @@ struct ContentBlockView: View {
     private var iconColor: Color {
         switch block.type {
         case .toolUse:
-            return .blue
+            return .toolUse
         case .toolResult:
-            return block.isError == true ? .red : .green
+            return block.isError == true ? .toolResultError : .toolResultSuccess
         case .thinking:
-            return .purple
+            return .thinking
         case .text:
             return .primary
         case .unknown:
