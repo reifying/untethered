@@ -104,6 +104,9 @@ struct RootView: View {
                 onServerChange: { newURL in
                     client.updateServerURL(newURL)
                 },
+                onMaxMessageSizeChange: { sizeKB in
+                    client.sendMaxMessageSize(sizeKB)
+                },
                 voiceOutputManager: voiceOutput
             )
         }

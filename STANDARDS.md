@@ -178,6 +178,21 @@ iOS → Backend: {
 
 Triggers compaction of the specified session. The `session_id` must be the iOS session UUID that was registered with the backend via a `connect` message. The session summarizes conversation history to reduce file size and token usage. This operation cannot be undone.
 
+**Set Max Message Size**
+```json
+{
+  "type": "set_max_message_size",
+  "size_kb": 200
+}
+```
+
+Configures the maximum WebSocket message size in kilobytes for this client connection. iOS `URLSessionWebSocketTask` has a 256 KB message limit, so values should be kept below that threshold (default: 200 KB). When a response message exceeds this limit, the backend truncates the `text` field using middle truncation (keeping first N and last N characters with a marker showing truncated size).
+
+**Fields:**
+- `size_kb` (required): Maximum message size in kilobytes (positive integer, recommended range: 50-250)
+
+iOS sends this message after receiving `connected` confirmation and whenever the setting changes.
+
 #### Backend → Client
 
 **Acknowledgment (Prompt Received)**

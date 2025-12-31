@@ -15,6 +15,7 @@ struct SettingsView: View {
     @State private var localSystemPrompt: String = ""
 
     let onServerChange: (String) -> Void
+    let onMaxMessageSizeChange: ((Int) -> Void)?
     let voiceOutputManager: VoiceOutputManager?
 
     var body: some View {
@@ -133,6 +134,17 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
 
+                Section(header: Text("Message Size Limit")) {
+                    Stepper("\(settings.maxMessageSizeKB) KB", value: $settings.maxMessageSizeKB, in: 50...250, step: 10)
+                        .onChange(of: settings.maxMessageSizeKB) { newValue in
+                            onMaxMessageSizeChange?(newValue)
+                        }
+
+                    Text("Maximum WebSocket message size. Large responses will be truncated to fit. iOS has a 256 KB limit.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
                 Section(header: Text("System Prompt")) {
                     TextField("Custom System Prompt", text: $localSystemPrompt, axis: .vertical)
                         .lineLimit(3...6)
@@ -246,6 +258,7 @@ struct SettingsView_Previews: PreviewProvider {
         SettingsView(
             settings: AppSettings(),
             onServerChange: { _ in },
+            onMaxMessageSizeChange: nil,
             voiceOutputManager: nil
         )
     }

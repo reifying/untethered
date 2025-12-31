@@ -363,6 +363,11 @@ class VoiceCodeClient: ObservableObject {
                     LogManager.shared.log("Backend confirmed session: \(sessionId)", category: "VoiceCodeClient")
                 }
 
+                // Send max message size setting to backend
+                if let maxSize = self.appSettings?.maxMessageSizeKB {
+                    self.sendMaxMessageSize(maxSize)
+                }
+
                 // Restore subscriptions after reconnection
                 if !self.activeSubscriptions.isEmpty {
                     print("🔄 [VoiceCodeClient] Restoring \(self.activeSubscriptions.count) subscription(s) after reconnection")
@@ -848,6 +853,15 @@ class VoiceCodeClient: ObservableObject {
             "type": "set_directory",
             "path": path
         ]
+        sendMessage(message)
+    }
+
+    func sendMaxMessageSize(_ sizeKB: Int) {
+        let message: [String: Any] = [
+            "type": "set_max_message_size",
+            "size_kb": sizeKB
+        ]
+        print("📤 [VoiceCodeClient] Setting max message size: \(sizeKB) KB")
         sendMessage(message)
     }
 

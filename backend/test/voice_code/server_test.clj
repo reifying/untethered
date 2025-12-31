@@ -1471,4 +1471,142 @@
           ;; Total count reflects ALL messages in file
           (is (= 6 (:total_count response))))))))
 
+;; Message Size Truncation Tests
+
+(deftest test-truncate-text-middle-under-limit
+  (testing "Text under limit is returned unchanged"
+    (let [text "Hello, this is a short message."
+          result (server/truncate-text-middle text 1000)]
+      (is (= text result)))))
+
+(deftest test-truncate-text-middle-at-limit
+  (testing "Text exactly at limit is returned unchanged"
+    (let [text "12345678901234567890" ;; 20 bytes
+          result (server/truncate-text-middle text 20)]
+      (is (= text result)))))
+
+(deftest test-truncate-text-middle-over-limit
+  (testing "Text over limit is truncated with marker"
+    (let [;; Create a 1000 byte string
+          text (apply str (repeat 1000 "x"))
+          ;; Limit to 500 bytes
+          result (server/truncate-text-middle text 500)]
+      ;; Result should be smaller than original
+      (is (< (count (.getBytes result "UTF-8")) (count (.getBytes text "UTF-8"))))
+      ;; Result should contain truncation marker
+      (is (clojure.string/includes? result "[truncated"))
+      ;; Result should contain "KB" in marker
+      (is (clojure.string/includes? result "KB]")))))
+
+(deftest test-truncate-text-middle-preserves-ends
+  (testing "Truncation preserves content from both ends"
+    (let [;; Create text with distinct start and end
+          start-marker "<<<START>>>"
+          end-marker "<<<END>>>"
+          middle (apply str (repeat 10000 "m"))
+          text (str start-marker middle end-marker)
+          ;; Allow enough space for start and end markers plus truncation marker
+          result (server/truncate-text-middle text 500)]
+      ;; Should preserve start
+      (is (clojure.string/starts-with? result "<<<START"))
+      ;; Should preserve end
+      (is (clojure.string/ends-with? result "END>>>")))))
+
+(deftest test-truncate-text-middle-marker-shows-correct-size
+  (testing "Truncation marker shows approximately correct truncated size"
+    (let [;; Create a ~200KB string
+          text (apply str (repeat (* 200 1024) "x"))
+          ;; Truncate to 50KB
+          result (server/truncate-text-middle text (* 50 1024))]
+      ;; Marker should show approximately 150 KB truncated
+      (is (re-find #"truncated ~1[45]\d KB" result)
+          "Should show approximately 145-159 KB truncated"))))
+
+(deftest test-truncate-response-text-no-text-field
+  (testing "Messages without text field are passed through unchanged"
+    (let [msg {:type :ack :message "Processing..."}
+          result (server/truncate-response-text msg 1000)]
+      (is (= msg result)))))
+
+(deftest test-truncate-response-text-under-limit
+  (testing "Response with text under limit is unchanged"
+    (let [msg {:type :response :success true :text "Short response" :session-id "abc123"}
+          result (server/truncate-response-text msg 10000)]
+      (is (= msg result)))))
+
+(deftest test-truncate-response-text-over-limit
+  (testing "Response with text over limit has text truncated"
+    (let [large-text (apply str (repeat 100000 "x"))
+          msg {:type :response :success true :text large-text :session-id "abc123"}
+          ;; Limit to 50KB
+          result (server/truncate-response-text msg (* 50 1024))]
+      ;; Text should be truncated
+      (is (< (count (:text result)) (count large-text)))
+      ;; Should contain truncation marker
+      (is (clojure.string/includes? (:text result) "[truncated"))
+      ;; Other fields should be preserved
+      (is (= :response (:type result)))
+      (is (= true (:success result)))
+      (is (= "abc123" (:session-id result))))))
+
+(deftest test-get-client-max-message-size-bytes
+  (let [original-clients @server/connected-clients]
+    (try
+      (testing "Returns default when client has no setting"
+        (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+        (let [result (server/get-client-max-message-size-bytes :test-ch)]
+          (is (= (* server/default-max-message-size-kb 1024) result))))
+
+      (testing "Returns client-specific setting when configured"
+        (reset! server/connected-clients {:test-ch {:deleted-sessions #{}
+                                                     :max-message-size-kb 150}})
+        (let [result (server/get-client-max-message-size-bytes :test-ch)]
+          (is (= (* 150 1024) result))))
+      (finally
+        (reset! server/connected-clients original-clients)))))
+
+(deftest test-handle-set-max-message-size
+  (let [original-clients @server/connected-clients]
+    (try
+      (testing "set_max_message_size stores size in client state"
+        (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [ch msg]
+                                                   (swap! sent-messages conj (json/parse-string msg true)))]
+            (server/handle-message :test-ch "{\"type\":\"set_max_message_size\",\"size_kb\":175}")
+
+            ;; Verify size was stored
+            (is (= 175 (get-in @server/connected-clients [:test-ch :max-message-size-kb])))
+
+            ;; Verify ack was sent
+            (is (= 1 (count @sent-messages)))
+            (let [response (first @sent-messages)]
+              (is (= "ack" (:type response)))
+              (is (clojure.string/includes? (:message response) "175"))))))
+
+      (testing "set_max_message_size rejects invalid size"
+        (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [ch msg]
+                                                   (swap! sent-messages conj (json/parse-string msg true)))]
+            (server/handle-message :test-ch "{\"type\":\"set_max_message_size\",\"size_kb\":-100}")
+
+            ;; Verify error was sent
+            (is (= 1 (count @sent-messages)))
+            (let [response (first @sent-messages)]
+              (is (= "error" (:type response)))))))
+
+      (testing "set_max_message_size rejects missing size"
+        (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [ch msg]
+                                                   (swap! sent-messages conj (json/parse-string msg true)))]
+            (server/handle-message :test-ch "{\"type\":\"set_max_message_size\"}")
+
+            ;; Verify error was sent
+            (is (= 1 (count @sent-messages)))
+            (let [response (first @sent-messages)]
+              (is (= "error" (:type response)))))))
+      (finally
+        (reset! server/connected-clients original-clients)))))
 

@@ -92,8 +92,205 @@
 ;; Persistent session data comes from the replication system (filesystem-based)
 
 (defonce connected-clients
-  ;; Track all connected WebSocket clients: channel -> {:deleted-sessions #{} :recent-sessions-limit 5}
+  ;; Track all connected WebSocket clients: channel -> {:deleted-sessions #{} :recent-sessions-limit 5 :max-message-size-kb 200}
   (atom {}))
+
+;; Default max message size in KB (conservative default well below iOS 256KB limit)
+;; Lower default ensures older clients without set_max_message_size still work
+(def default-max-message-size-kb 100)
+
+(defn truncate-text-middle
+  "Truncate text to fit within max-bytes by keeping first and last portions.
+   Inserts a marker showing how much was truncated.
+   Returns the original text if it fits within the limit."
+  [text max-bytes]
+  (let [text-bytes (.getBytes text "UTF-8")
+        text-size (count text-bytes)]
+    (if (<= text-size max-bytes)
+      text
+      ;; Need to truncate
+      (let [marker-template "\n\n... [truncated ~%d KB] ...\n\n"
+            ;; Estimate marker size (will recalculate)
+            truncated-kb (int (/ (- text-size max-bytes) 1024))
+            marker (format marker-template truncated-kb)
+            marker-bytes (count (.getBytes marker "UTF-8"))
+            ;; Available space for content (half for each side)
+            available-bytes (- max-bytes marker-bytes)
+            half-bytes (int (/ available-bytes 2))
+            ;; We need to be careful with UTF-8 multi-byte characters
+            ;; Take characters until we exceed byte limit
+            first-part (loop [chars (seq text)
+                              result []
+                              bytes 0]
+                         (if (or (empty? chars) (>= bytes half-bytes))
+                           (apply str result)
+                           (let [ch (first chars)
+                                 ch-bytes (count (.getBytes (str ch) "UTF-8"))
+                                 new-bytes (+ bytes ch-bytes)]
+                             (if (> new-bytes half-bytes)
+                               (apply str result)
+                               (recur (rest chars) (conj result ch) new-bytes)))))
+            ;; Take from end
+            last-part (loop [chars (reverse (seq text))
+                             result []
+                             bytes 0]
+                        (if (or (empty? chars) (>= bytes half-bytes))
+                          (apply str (reverse result))
+                          (let [ch (first chars)
+                                ch-bytes (count (.getBytes (str ch) "UTF-8"))
+                                new-bytes (+ bytes ch-bytes)]
+                            (if (> new-bytes half-bytes)
+                              (apply str (reverse result))
+                              (recur (rest chars) (conj result ch) new-bytes)))))]
+        (str first-part marker last-part)))))
+
+(defn get-client-max-message-size-bytes
+  "Get the max message size in bytes for a client channel."
+  [channel]
+  (let [client-info (get @connected-clients channel)
+        size-kb (or (:max-message-size-kb client-info) default-max-message-size-kb)]
+    (* size-kb 1024)))
+
+(defn truncate-content-block
+  "Truncate a single content block (text, tool_result, etc.) if it exceeds max bytes."
+  [block max-text-bytes]
+  (cond
+    ;; Text block: {:type "text", :text "..."}
+    (and (map? block)
+         (= "text" (:type block))
+         (string? (:text block)))
+    (let [text (:text block)
+          text-bytes (count (.getBytes text "UTF-8"))]
+      (if (<= text-bytes max-text-bytes)
+        block
+        (assoc block :text (truncate-text-middle text max-text-bytes))))
+
+    ;; Tool result with string content: {:type "tool_result", :content "..."}
+    (and (map? block)
+         (= "tool_result" (:type block))
+         (string? (:content block)))
+    (let [content (:content block)
+          content-bytes (count (.getBytes content "UTF-8"))]
+      (if (<= content-bytes max-text-bytes)
+        block
+        (assoc block :content (truncate-text-middle content max-text-bytes))))
+
+    ;; Tool result with array content: {:type "tool_result", :content [{:type "text", :text "..."}]}
+    (and (map? block)
+         (= "tool_result" (:type block))
+         (sequential? (:content block)))
+    (update block :content #(mapv (fn [inner] (truncate-content-block inner max-text-bytes)) %))
+
+    :else block))
+
+(defn truncate-message-text
+  "Truncate text content within a single message object (from :messages array).
+   Handles both simple {:text ...} and complex nested structures with :message {:content [...]}."
+  [msg max-text-bytes]
+  (let [;; First truncate :toolUseResult if present (top-level field in JSONL)
+        msg (if (and (contains? msg :toolUseResult)
+                     (sequential? (:toolUseResult msg)))
+              (update msg :toolUseResult #(mapv (fn [block] (truncate-content-block block max-text-bytes)) %))
+              msg)]
+    (cond
+      ;; Simple text field
+      (and (contains? msg :text) (string? (:text msg)))
+      (let [text (:text msg)
+            text-bytes (count (.getBytes text "UTF-8"))]
+        (if (<= text-bytes max-text-bytes)
+          msg
+          (assoc msg :text (truncate-text-middle text max-text-bytes))))
+
+      ;; Content array directly on message (Claude message format)
+      (and (contains? msg :content) (sequential? (:content msg)))
+      (update msg :content #(mapv (fn [block] (truncate-content-block block max-text-bytes)) %))
+
+      ;; Nested :message with :content (JSONL format from Claude sessions)
+      (and (contains? msg :message)
+           (map? (:message msg))
+           (contains? (:message msg) :content)
+           (sequential? (get-in msg [:message :content])))
+      (update-in msg [:message :content] #(mapv (fn [block] (truncate-content-block block max-text-bytes)) %))
+
+      :else msg)))
+
+(defn truncate-messages-array
+  "Truncate text within messages array to fit within size budget.
+   Uses iterative approach, halving per-message budget until under limit."
+  [messages max-total-bytes]
+  (let [json-str (generate-json messages)
+        current-bytes (count (.getBytes json-str "UTF-8"))]
+    (if (<= current-bytes max-total-bytes)
+      messages
+      ;; Need to truncate - iterate with decreasing budget until we fit
+      (let [msg-count (max 1 (count messages))]
+        (loop [max-text-per-msg (int (/ max-total-bytes msg-count 2)) ;; Start with half of equal split
+               iteration 0]
+          (if (< iteration 10) ;; Max 10 iterations to prevent infinite loop
+            (let [truncated (mapv #(truncate-message-text % max-text-per-msg) messages)
+                  truncated-json (generate-json truncated)
+                  truncated-bytes (count (.getBytes truncated-json "UTF-8"))]
+              (if (<= truncated-bytes max-total-bytes)
+                (do
+                  (log/info "Truncated messages array"
+                            {:message-count msg-count
+                             :original-bytes current-bytes
+                             :final-bytes truncated-bytes
+                             :max-bytes max-total-bytes
+                             :max-text-per-msg max-text-per-msg
+                             :iterations (inc iteration)})
+                  truncated)
+                ;; Still too big, halve the budget and try again
+                (recur (max 500 (int (/ max-text-per-msg 2))) (inc iteration))))
+            ;; Hit max iterations, return what we have
+            (do
+              (log/warn "Max truncation iterations reached"
+                        {:message-count msg-count
+                         :original-bytes current-bytes
+                         :max-bytes max-total-bytes})
+              (mapv #(truncate-message-text % 500) messages))))))))
+
+(defn truncate-response-text
+  "Truncate the :text field of a response message if the total JSON would exceed max size.
+   Also handles :messages arrays (for session-updated messages).
+   Returns the modified message data with truncated content if needed."
+  [message-data max-bytes]
+  (let [;; First, generate JSON to see actual size
+        json-str (generate-json message-data)
+        json-bytes (count (.getBytes json-str "UTF-8"))]
+    (if (<= json-bytes max-bytes)
+      message-data
+      ;; Need to truncate - determine which field to truncate
+      (cond
+        ;; Direct :text field (response messages)
+        (and (contains? message-data :text) (string? (:text message-data)))
+        (let [text (:text message-data)
+              overhead (- json-bytes (count (.getBytes text "UTF-8")))
+              max-text-bytes (- max-bytes overhead 100)
+              truncated-text (truncate-text-middle text max-text-bytes)
+              original-kb (int (/ (count (.getBytes text "UTF-8")) 1024))
+              session-id (or (:session-id message-data) "unknown")]
+          (log/info "Truncating large response text"
+                    {:session-id session-id
+                     :original-size-kb original-kb
+                     :max-size-kb (int (/ max-bytes 1024))})
+          (assoc message-data :text truncated-text))
+
+        ;; :messages array (session-updated messages)
+        (and (contains? message-data :messages) (sequential? (:messages message-data)))
+        (let [messages (:messages message-data)
+              overhead (- json-bytes (count (.getBytes (generate-json messages) "UTF-8")))
+              max-messages-bytes (- max-bytes overhead 100)
+              session-id (or (:session-id message-data) "unknown")]
+          (log/info "Truncating large messages array"
+                    {:session-id session-id
+                     :message-count (count messages)
+                     :original-size-kb (int (/ json-bytes 1024))
+                     :max-size-kb (int (/ max-bytes 1024))})
+          (assoc message-data :messages (truncate-messages-array messages max-messages-bytes)))
+
+        ;; No known truncatable field
+        :else message-data))))
 
 (defonce pending-new-sessions
   ;; Track new sessions awaiting creation: session-id -> channel
@@ -128,13 +325,17 @@
         (log/warn e "Failed to broadcast to client")))))
 
 (defn send-to-client!
-  "Send message to a specific channel if it's connected"
+  "Send message to a specific channel if it's connected.
+   Applies truncation for messages with :text or :messages fields if needed."
   [channel message-data]
   (if (contains? @connected-clients channel)
     (do
       (log/info "Sending message to client" {:type (:type message-data)})
-      (let [json-str (generate-json message-data)]
-        (log/info "JSON payload" {:json json-str}) ; ADD THIS LINE
+      (let [;; Apply truncation for messages that might have large content
+            max-bytes (get-client-max-message-size-bytes channel)
+            final-data (truncate-response-text message-data max-bytes)
+            json-str (generate-json final-data)]
+        (log/debug "JSON payload" {:size (count json-str)})
         (try
           (http/send! channel json-str)
           (log/info "Message sent successfully" {:type (:type message-data)})
@@ -747,12 +948,11 @@
                                                          :message-count (count messages)
                                                          :total (count all-messages)
                                                          :file-position current-size})
-                    (http/send! channel
-                                (generate-json
-                                 {:type :session-history
-                                  :session-id session-id
-                                  :messages messages
-                                  :total-count (count all-messages)})))
+                    (send-to-client! channel
+                                     {:type :session-history
+                                      :session-id session-id
+                                      :messages messages
+                                      :total-count (count all-messages)}))
                   (do
                     (log/warn "Session not found" {:session-id session-id})
                     (http/send! channel
@@ -924,6 +1124,18 @@
                                     :working-directory path
                                     :project-commands project-commands
                                     :general-commands general-commands})))))
+
+          "set_max_message_size"
+          (let [size-kb (:size-kb data)]
+            (if-not (and size-kb (pos-int? size-kb))
+              (http/send! channel
+                          (generate-json
+                           {:type :error
+                            :message "size_kb (positive integer) required in set_max_message_size message"}))
+              (do
+                (log/info "Max message size set" {:size-kb size-kb})
+                (swap! connected-clients update channel assoc :max-message-size-kb size-kb)
+                (send-to-client! channel {:type :ack :message (str "Max message size set to " size-kb " KB")}))))
 
           "message-ack"
           (let [message-id (:message-id data)]

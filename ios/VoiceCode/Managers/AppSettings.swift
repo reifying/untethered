@@ -73,6 +73,12 @@ class AppSettings: ObservableObject {
 
     @Published var systemPrompt: String
 
+    @Published var maxMessageSizeKB: Int {
+        didSet {
+            UserDefaults.standard.set(maxMessageSizeKB, forKey: "maxMessageSizeKB")
+        }
+    }
+
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
         let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
@@ -255,6 +261,7 @@ class AppSettings: ObservableObject {
         self.priorityQueueEnabled = UserDefaults.standard.object(forKey: "priorityQueueEnabled") as? Bool ?? false
         self.respectSilentMode = UserDefaults.standard.object(forKey: "respectSilentMode") as? Bool ?? true
         self.systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? ""
+        self.maxMessageSizeKB = UserDefaults.standard.object(forKey: "maxMessageSizeKB") as? Int ?? 200
 
         // Set up debounced publishers for text fields (serverURL and serverPort)
         // dropFirst() skips the initial value to avoid writing on init
