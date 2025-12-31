@@ -193,6 +193,21 @@ Configures the maximum WebSocket message size in kilobytes for this client conne
 
 iOS sends this message after receiving `connected` confirmation and whenever the setting changes.
 
+**Subscribe to Session**
+```json
+{
+  "type": "subscribe",
+  "session_id": "<claude-session-id>",
+  "last_message_id": "<uuid-of-newest-message-ios-has>"  // Optional: for delta sync
+}
+```
+
+Subscribes to session history and real-time updates. Supports delta sync for efficient reconnections.
+
+**Fields:**
+- `session_id` (required): Claude session ID to subscribe to
+- `last_message_id` (optional): UUID of the newest message iOS already has. If provided, backend returns only messages newer than this ID. If omitted or not found, backend returns all messages (backward compatible).
+
 #### Backend → Client
 
 **Acknowledgment (Prompt Received)**
@@ -280,6 +295,35 @@ Sent when Claude CLI finishes processing a prompt successfully (turn is complete
   }
 }
 ```
+
+**Session History (Response to Subscribe)**
+```json
+{
+  "type": "session_history",
+  "session_id": "<claude-session-id>",
+  "messages": [...],
+  "total_count": 150,
+  "oldest_message_id": "<uuid-of-oldest-returned>",
+  "newest_message_id": "<uuid-of-newest-returned>",
+  "is_complete": true
+}
+```
+
+Sent in response to a `subscribe` message. Contains session conversation history.
+
+**Fields:**
+- `session_id` (required): Claude session ID
+- `messages` (required): Array of message objects in chronological order (oldest first)
+- `total_count` (required): Total number of messages in the session (including those not returned)
+- `oldest_message_id` (optional): UUID of the oldest message in the response. Nil if no messages returned.
+- `newest_message_id` (optional): UUID of the newest message in the response. Nil if no messages returned.
+- `is_complete` (required): True if all requested messages were included. False if truncation occurred due to size limits.
+
+**Delta Sync Behavior:**
+- When `last_message_id` was provided in subscribe request: returns only messages newer than that ID
+- When `last_message_id` was omitted or not found: returns all messages (up to size limit)
+- Large individual messages (>20KB) are truncated with middle truncation to preserve start and end
+- Prioritizes newest messages when size budget is exhausted
 
 **Compaction Complete**
 ```json
