@@ -264,6 +264,22 @@ final class OnboardingViewTests: XCTestCase {
         XCTAssertTrue(skipCalled)
     }
 
+    // MARK: - PermissionStatus Tests
+
+    func testPermissionStatusValues() {
+        // Verify all permission status cases exist
+        let unknown: VoicePermissionsStep.PermissionStatus = .unknown
+        let requesting: VoicePermissionsStep.PermissionStatus = .requesting
+        let granted: VoicePermissionsStep.PermissionStatus = .granted
+        let denied: VoicePermissionsStep.PermissionStatus = .denied
+
+        // These assertions verify the enum cases are distinct
+        XCTAssertTrue(unknown != granted)
+        XCTAssertTrue(requesting != granted)
+        XCTAssertTrue(denied != granted)
+        XCTAssertTrue(unknown != denied)
+    }
+
     // MARK: - SuccessStep Tests
 
     func testSuccessStepCallsOnFinish() {
@@ -285,19 +301,41 @@ final class OnboardingViewTests: XCTestCase {
         let view = PermissionRow(
             title: "Microphone",
             description: "Required for voice input",
-            isGranted: true,
-            isRequesting: false,
+            status: .granted,
+            permissionType: .microphone,
             onRequest: {}
         )
         XCTAssertNotNil(view)
     }
 
-    func testPermissionRowNotGrantedState() {
+    func testPermissionRowUnknownState() {
         let view = PermissionRow(
             title: "Microphone",
             description: "Required for voice input",
-            isGranted: false,
-            isRequesting: false,
+            status: .unknown,
+            permissionType: .microphone,
+            onRequest: {}
+        )
+        XCTAssertNotNil(view)
+    }
+
+    func testPermissionRowDeniedState() {
+        let view = PermissionRow(
+            title: "Microphone",
+            description: "Required for voice input",
+            status: .denied,
+            permissionType: .microphone,
+            onRequest: {}
+        )
+        XCTAssertNotNil(view)
+    }
+
+    func testPermissionRowRequestingState() {
+        let view = PermissionRow(
+            title: "Microphone",
+            description: "Required for voice input",
+            status: .requesting,
+            permissionType: .microphone,
             onRequest: {}
         )
         XCTAssertNotNil(view)
@@ -308,13 +346,38 @@ final class OnboardingViewTests: XCTestCase {
         let view = PermissionRow(
             title: "Microphone",
             description: "Required for voice input",
-            isGranted: false,
-            isRequesting: false,
+            status: .unknown,
+            permissionType: .microphone,
             onRequest: { requestCalled = true }
         )
 
         view.onRequest()
         XCTAssertTrue(requestCalled)
+    }
+
+    func testPermissionRowSpeechRecognitionType() {
+        let view = PermissionRow(
+            title: "Speech Recognition",
+            description: "Required for transcription",
+            status: .denied,
+            permissionType: .speechRecognition,
+            onRequest: {}
+        )
+        XCTAssertNotNil(view)
+    }
+
+    // MARK: - PermissionType Tests
+
+    func testPermissionTypeMicrophoneSettingsURL() {
+        let url = VoicePermissionsStep.PermissionType.microphone.settingsURL
+        XCTAssertNotNil(url)
+        XCTAssertTrue(url?.absoluteString.contains("Privacy_Microphone") == true)
+    }
+
+    func testPermissionTypeSpeechRecognitionSettingsURL() {
+        let url = VoicePermissionsStep.PermissionType.speechRecognition.settingsURL
+        XCTAssertNotNil(url)
+        XCTAssertTrue(url?.absoluteString.contains("Privacy_SpeechRecognition") == true)
     }
 
     // MARK: - Integration Tests

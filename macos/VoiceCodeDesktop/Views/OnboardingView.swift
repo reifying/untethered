@@ -392,10 +392,29 @@ struct VoicePermissionsStep: View {
     let onContinue: () -> Void
     let onSkip: () -> Void
 
-    @State private var microphoneGranted = false
-    @State private var speechGranted = false
-    @State private var isRequestingMicrophone = false
-    @State private var isRequestingSpeech = false
+    @State private var microphoneStatus: PermissionStatus = .unknown
+    @State private var speechStatus: PermissionStatus = .unknown
+
+    enum PermissionStatus {
+        case unknown
+        case requesting
+        case granted
+        case denied
+    }
+
+    enum PermissionType {
+        case microphone
+        case speechRecognition
+
+        var settingsURL: URL? {
+            switch self {
+            case .microphone:
+                return URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+            case .speechRecognition:
+                return URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition")
+            }
+        }
+    }
 
     var body: some View {
         VStack(spacing: 24) {
@@ -416,16 +435,16 @@ struct VoicePermissionsStep: View {
                 PermissionRow(
                     title: "Microphone",
                     description: "Required for voice input",
-                    isGranted: microphoneGranted,
-                    isRequesting: isRequestingMicrophone,
+                    status: microphoneStatus,
+                    permissionType: .microphone,
                     onRequest: requestMicrophone
                 )
 
                 PermissionRow(
                     title: "Speech Recognition",
                     description: "Required for transcription",
-                    isGranted: speechGranted,
-                    isRequesting: isRequestingSpeech,
+                    status: speechStatus,
+                    permissionType: .speechRecognition,
                     onRequest: requestSpeechRecognition
                 )
             }
@@ -448,24 +467,51 @@ struct VoicePermissionsStep: View {
             .padding(.horizontal)
         }
         .padding(40)
+        .onAppear {
+            checkCurrentPermissions()
+        }
+    }
+
+    private func checkCurrentPermissions() {
+        // Check microphone permission status
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            microphoneStatus = .granted
+        case .denied, .restricted:
+            microphoneStatus = .denied
+        case .notDetermined:
+            microphoneStatus = .unknown
+        @unknown default:
+            microphoneStatus = .unknown
+        }
+
+        // Check speech recognition permission status
+        switch SFSpeechRecognizer.authorizationStatus() {
+        case .authorized:
+            speechStatus = .granted
+        case .denied, .restricted:
+            speechStatus = .denied
+        case .notDetermined:
+            speechStatus = .unknown
+        @unknown default:
+            speechStatus = .unknown
+        }
     }
 
     private func requestMicrophone() {
-        isRequestingMicrophone = true
+        microphoneStatus = .requesting
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             DispatchQueue.main.async {
-                microphoneGranted = granted
-                isRequestingMicrophone = false
+                microphoneStatus = granted ? .granted : .denied
             }
         }
     }
 
     private func requestSpeechRecognition() {
-        isRequestingSpeech = true
+        speechStatus = .requesting
         SFSpeechRecognizer.requestAuthorization { status in
             DispatchQueue.main.async {
-                speechGranted = (status == .authorized)
-                isRequestingSpeech = false
+                speechStatus = (status == .authorized) ? .granted : .denied
             }
         }
     }
@@ -474,8 +520,8 @@ struct VoicePermissionsStep: View {
 struct PermissionRow: View {
     let title: String
     let description: String
-    let isGranted: Bool
-    let isRequesting: Bool
+    let status: VoicePermissionsStep.PermissionStatus
+    let permissionType: VoicePermissionsStep.PermissionType
     let onRequest: () -> Void
 
     var body: some View {
@@ -491,12 +537,20 @@ struct PermissionRow: View {
 
             Spacer()
 
-            if isGranted {
+            switch status {
+            case .granted:
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundColor(.green)
-            } else if isRequesting {
+            case .denied:
+                Button("Open Settings") {
+                    if let url = permissionType.settingsURL {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .buttonStyle(.bordered)
+            case .requesting:
                 ProgressView()
-            } else {
+            case .unknown:
                 Button("Grant") { onRequest() }
                     .buttonStyle(.bordered)
             }

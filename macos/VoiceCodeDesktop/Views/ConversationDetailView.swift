@@ -216,6 +216,23 @@ struct ConversationDetailView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        // Recoverable error display (per Appendix Z.3)
+        .overlay(alignment: .top) {
+            if let error = client.currentRecoverableError {
+                RecoverableErrorView(
+                    error: error,
+                    onRetry: {
+                        error.recoveryAction?.perform()
+                    },
+                    onDismiss: {
+                        client.currentRecoverableError = nil
+                    }
+                )
+                .padding(.horizontal, 16)
+                .padding(.top, showingSuccessMessage ? 50 : 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         // Compact confirmation alert
         .alert("Compact Session?", isPresented: $showingCompactConfirmation) {
             Button("Cancel", role: .cancel) { }

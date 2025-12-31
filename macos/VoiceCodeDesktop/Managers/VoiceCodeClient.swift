@@ -19,6 +19,9 @@ final class VoiceCodeClient: VoiceCodeClientCore {
     private var voiceOutputManager: VoiceOutputManager?
     private var syncDelegate: VoiceCodeSyncDelegate?
 
+    /// Current recoverable error for UI display (per Appendix Z.3)
+    @Published var currentRecoverableError: UserRecoverableError?
+
     // MARK: - Initialization
 
     init(
@@ -141,6 +144,17 @@ final class VoiceCodeClient: VoiceCodeClientCore {
                 NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
             }
         )
+    }
+
+    /// Shows a recoverable error from an Error object
+    /// Sets currentRecoverableError if the error can be recovered from user action
+    func showRecoverableError(from error: Error) {
+        currentRecoverableError = recoverableError(from: error)
+    }
+
+    /// Clears the current recoverable error
+    func clearRecoverableError() {
+        currentRecoverableError = nil
     }
 }
 
