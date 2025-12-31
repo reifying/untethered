@@ -198,4 +198,175 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(MessageStatus.confirmed.rawValue, "confirmed")
         XCTAssertEqual(MessageStatus.error.rawValue, "error")
     }
+
+    // MARK: - ContentBlock Tests
+
+    func testContentBlockToolUse() {
+        let block = ContentBlock(
+            type: .toolUse,
+            toolName: "Read",
+            toolInput: ["file_path": AnyCodable("/path/to/file.swift")]
+        )
+
+        XCTAssertEqual(block.type, .toolUse)
+        XCTAssertEqual(block.toolName, "Read")
+        XCTAssertEqual(block.summary, "Using tool: Read")
+        XCTAssertEqual(block.icon, "wrench.and.screwdriver")
+        XCTAssertTrue(block.collapsedByDefault)
+    }
+
+    func testContentBlockToolResultSuccess() {
+        let block = ContentBlock(
+            type: .toolResult,
+            isError: false,
+            content: "File contents here..."
+        )
+
+        XCTAssertEqual(block.type, .toolResult)
+        XCTAssertEqual(block.isError, false)
+        XCTAssertEqual(block.summary, "Tool result")
+        XCTAssertEqual(block.icon, "checkmark.circle.fill")
+        XCTAssertTrue(block.collapsedByDefault)
+    }
+
+    func testContentBlockToolResultError() {
+        let block = ContentBlock(
+            type: .toolResult,
+            isError: true,
+            content: "Error: File not found"
+        )
+
+        XCTAssertEqual(block.type, .toolResult)
+        XCTAssertEqual(block.isError, true)
+        XCTAssertEqual(block.summary, "Tool error")
+        XCTAssertEqual(block.icon, "xmark.circle.fill")
+    }
+
+    func testContentBlockThinking() {
+        let block = ContentBlock(
+            type: .thinking,
+            thinking: "Let me analyze this code structure."
+        )
+
+        XCTAssertEqual(block.type, .thinking)
+        XCTAssertEqual(block.summary, "Thinking...")
+        XCTAssertEqual(block.icon, "brain.head.profile")
+        XCTAssertTrue(block.collapsedByDefault)
+        XCTAssertEqual(block.fullContent, "Let me analyze this code structure.")
+    }
+
+    func testContentBlockText() {
+        let block = ContentBlock(
+            type: .text,
+            text: "Here is my response to your question."
+        )
+
+        XCTAssertEqual(block.type, .text)
+        XCTAssertEqual(block.text, "Here is my response to your question.")
+        XCTAssertFalse(block.collapsedByDefault)
+    }
+
+    func testContentBlockTextTruncation() {
+        let longText = String(repeating: "a", count: 150)
+        let block = ContentBlock(
+            type: .text,
+            text: longText
+        )
+
+        // Summary should be truncated to 100 chars
+        XCTAssertEqual(block.summary.count, 103) // 100 chars + "..."
+        XCTAssertTrue(block.summary.hasSuffix("..."))
+    }
+
+    func testContentBlockParsing() {
+        let contentArray: [[String: Any]] = [
+            ["type": "thinking", "thinking": "Analyzing..."],
+            ["type": "tool_use", "name": "Read", "input": ["file_path": "/test.swift"]],
+            ["type": "tool_result", "is_error": false, "content": "File contents"],
+            ["type": "text", "text": "Here's what I found."]
+        ]
+
+        let blocks = ContentBlock.parse(from: contentArray)
+
+        XCTAssertEqual(blocks.count, 4)
+        XCTAssertEqual(blocks[0].type, .thinking)
+        XCTAssertEqual(blocks[1].type, .toolUse)
+        XCTAssertEqual(blocks[1].toolName, "Read")
+        XCTAssertEqual(blocks[2].type, .toolResult)
+        XCTAssertEqual(blocks[2].isError, false)
+        XCTAssertEqual(blocks[3].type, .text)
+        XCTAssertEqual(blocks[3].text, "Here's what I found.")
+    }
+
+    func testContentBlockEncodeDecode() {
+        let blocks = [
+            ContentBlock(type: .toolUse, toolName: "Read", toolInput: ["path": AnyCodable("/test.swift")]),
+            ContentBlock(type: .toolResult, isError: false, content: "Success"),
+            ContentBlock(type: .text, text: "Response text")
+        ]
+
+        // Encode
+        let json = ContentBlock.encode(blocks)
+        XCTAssertNotNil(json)
+
+        // Decode
+        let decoded = ContentBlock.decode(from: json!)
+        XCTAssertNotNil(decoded)
+        XCTAssertEqual(decoded?.count, 3)
+        XCTAssertEqual(decoded?[0].type, .toolUse)
+        XCTAssertEqual(decoded?[0].toolName, "Read")
+        XCTAssertEqual(decoded?[1].type, .toolResult)
+        XCTAssertEqual(decoded?[2].type, .text)
+    }
+
+    func testContentBlockTypeUnknown() {
+        let contentArray: [[String: Any]] = [
+            ["type": "some_new_type", "data": "value"]
+        ]
+
+        let blocks = ContentBlock.parse(from: contentArray)
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(blocks[0].type, .unknown)
+        XCTAssertEqual(blocks[0].summary, "[unknown block]")
+    }
+
+    func testContentBlockFullContentToolUse() {
+        let block = ContentBlock(
+            type: .toolUse,
+            toolName: "Write",
+            toolInput: [
+                "file_path": AnyCodable("/path/to/file.swift"),
+                "content": AnyCodable("print(\"Hello\")")
+            ]
+        )
+
+        let fullContent = block.fullContent
+        XCTAssertTrue(fullContent.contains("Tool: Write"))
+        XCTAssertTrue(fullContent.contains("Input:"))
+        XCTAssertTrue(fullContent.contains("file_path"))
+    }
+
+    func testAnyCodableTypes() throws {
+        // Test various types
+        let dict: [String: AnyCodable] = [
+            "string": AnyCodable("hello"),
+            "int": AnyCodable(42),
+            "double": AnyCodable(3.14),
+            "bool": AnyCodable(true),
+            "array": AnyCodable([1, 2, 3]),
+            "nested": AnyCodable(["key": "value"])
+        ]
+
+        // Encode
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(dict)
+
+        // Decode
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode([String: AnyCodable].self, from: data)
+
+        XCTAssertEqual(decoded["string"]?.value as? String, "hello")
+        XCTAssertEqual(decoded["int"]?.value as? Int, 42)
+        XCTAssertEqual(decoded["bool"]?.value as? Bool, true)
+    }
 }

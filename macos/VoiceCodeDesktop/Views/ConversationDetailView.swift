@@ -532,18 +532,23 @@ struct MessageRowView: View {
                     Spacer()
                 }
 
-                // Message text (using displayText for truncation)
-                Text(message.displayText)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .foregroundColor(.primary)
+                // Message content - use content blocks if available, otherwise plain text
+                if let contentBlocks = message.contentBlocks, !contentBlocks.isEmpty {
+                    ContentBlocksView(blocks: contentBlocks)
+                } else {
+                    // Plain text fallback (using displayText for truncation)
+                    Text(message.displayText)
+                        .font(.body)
+                        .textSelection(.enabled)
+                        .foregroundColor(.primary)
 
-                // Truncation indicator
-                if message.isTruncated {
-                    Text("Message truncated for display")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .italic()
+                    // Truncation indicator
+                    if message.isTruncated {
+                        Text("Message truncated for display")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .italic()
+                    }
                 }
             }
         }

@@ -755,4 +755,188 @@ final class ConversationDetailViewTests: XCTestCase {
         // Verify session is no longer active
         XCTAssertNil(ActiveSessionManager.shared.activeSessionId)
     }
+
+    // MARK: - ContentBlockView Tests
+
+    func testContentBlockViewToolUse() {
+        let block = ContentBlock(
+            type: .toolUse,
+            toolName: "Read",
+            toolInput: ["file_path": AnyCodable("/path/to/file.swift")]
+        )
+
+        let view = ContentBlockView(block: block)
+        XCTAssertNotNil(view)
+    }
+
+    func testContentBlockViewToolResultSuccess() {
+        let block = ContentBlock(
+            type: .toolResult,
+            isError: false,
+            content: "File contents here..."
+        )
+
+        let view = ContentBlockView(block: block)
+        XCTAssertNotNil(view)
+    }
+
+    func testContentBlockViewToolResultError() {
+        let block = ContentBlock(
+            type: .toolResult,
+            isError: true,
+            content: "Error: File not found"
+        )
+
+        let view = ContentBlockView(block: block)
+        XCTAssertNotNil(view)
+    }
+
+    func testContentBlockViewThinking() {
+        let block = ContentBlock(
+            type: .thinking,
+            thinking: "Let me analyze this code structure."
+        )
+
+        let view = ContentBlockView(block: block)
+        XCTAssertNotNil(view)
+    }
+
+    func testContentBlocksViewMultipleBlocks() {
+        let blocks = [
+            ContentBlock(type: .thinking, thinking: "Analyzing..."),
+            ContentBlock(type: .toolUse, toolName: "Read", toolInput: ["path": AnyCodable("/test.swift")]),
+            ContentBlock(type: .toolResult, isError: false, content: "Success"),
+            ContentBlock(type: .text, text: "Here's the result.")
+        ]
+
+        let view = ContentBlocksView(blocks: blocks)
+        XCTAssertNotNil(view)
+    }
+
+    func testMessageRowViewWithContentBlocks() {
+        let session = createTestSession()
+        let message = createTestMessage(
+            sessionId: session.id,
+            role: "assistant",
+            text: "Summarized text"
+        )
+
+        // Set content blocks JSON
+        let blocks = [
+            ContentBlock(type: .toolUse, toolName: "Read", toolInput: ["path": AnyCodable("/test.swift")]),
+            ContentBlock(type: .text, text: "Result of reading the file.")
+        ]
+        message.contentBlocksJson = ContentBlock.encode(blocks)
+        try? context.save()
+
+        let view = createMessageRowView(message: message)
+        XCTAssertNotNil(view)
+
+        // Verify message has content blocks
+        XCTAssertTrue(message.hasContentBlocks)
+        XCTAssertNotNil(message.contentBlocks)
+        XCTAssertEqual(message.contentBlocks?.count, 2)
+    }
+
+    func testMessageRowViewWithoutContentBlocks() {
+        let session = createTestSession()
+        let message = createTestMessage(
+            sessionId: session.id,
+            role: "assistant",
+            text: "Plain text message"
+        )
+
+        // No content blocks set
+        XCTAssertFalse(message.hasContentBlocks)
+        XCTAssertNil(message.contentBlocks)
+
+        let view = createMessageRowView(message: message)
+        XCTAssertNotNil(view)
+    }
+
+    func testContentBlocksJsonParsing() {
+        let session = createTestSession()
+        let message = createTestMessage(
+            sessionId: session.id,
+            role: "assistant",
+            text: "Message with blocks"
+        )
+
+        // Set valid JSON
+        let blocks = [
+            ContentBlock(type: .thinking, thinking: "Thinking..."),
+            ContentBlock(type: .toolUse, toolName: "Bash", toolInput: ["command": AnyCodable("ls -la")]),
+            ContentBlock(type: .toolResult, isError: false, content: "file1.txt\nfile2.txt"),
+            ContentBlock(type: .text, text: "Found 2 files.")
+        ]
+        message.contentBlocksJson = ContentBlock.encode(blocks)
+        try? context.save()
+
+        // Parse and verify
+        let parsedBlocks = message.contentBlocks
+        XCTAssertNotNil(parsedBlocks)
+        XCTAssertEqual(parsedBlocks?.count, 4)
+        XCTAssertEqual(parsedBlocks?[0].type, .thinking)
+        XCTAssertEqual(parsedBlocks?[1].type, .toolUse)
+        XCTAssertEqual(parsedBlocks?[1].toolName, "Bash")
+        XCTAssertEqual(parsedBlocks?[2].type, .toolResult)
+        XCTAssertEqual(parsedBlocks?[2].isError, false)
+        XCTAssertEqual(parsedBlocks?[3].type, .text)
+    }
+
+    func testContentBlocksJsonCaching() {
+        let session = createTestSession()
+        let message = createTestMessage(
+            sessionId: session.id,
+            role: "assistant",
+            text: "Message with blocks"
+        )
+
+        let blocks = [ContentBlock(type: .text, text: "Hello")]
+        message.contentBlocksJson = ContentBlock.encode(blocks)
+        try? context.save()
+
+        // First access parses JSON
+        let blocks1 = message.contentBlocks
+        XCTAssertNotNil(blocks1)
+
+        // Second access should use cache
+        let blocks2 = message.contentBlocks
+        XCTAssertNotNil(blocks2)
+
+        // Results should be equal
+        XCTAssertEqual(blocks1?.count, blocks2?.count)
+    }
+
+    func testContentBlocksEmptyJson() {
+        let session = createTestSession()
+        let message = createTestMessage(
+            sessionId: session.id,
+            role: "assistant",
+            text: "Message"
+        )
+
+        // Empty JSON string
+        message.contentBlocksJson = ""
+        try? context.save()
+
+        XCTAssertFalse(message.hasContentBlocks)
+        XCTAssertNil(message.contentBlocks)
+    }
+
+    func testContentBlocksNilJson() {
+        let session = createTestSession()
+        let message = createTestMessage(
+            sessionId: session.id,
+            role: "assistant",
+            text: "Message"
+        )
+
+        // Nil JSON
+        message.contentBlocksJson = nil
+        try? context.save()
+
+        XCTAssertFalse(message.hasContentBlocks)
+        XCTAssertNil(message.contentBlocks)
+    }
 }

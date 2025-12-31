@@ -21,6 +21,7 @@ public class CDMessage: NSManagedObject {
     @NSManaged private var status: String
     @NSManaged public var serverTimestamp: Date?
     @NSManaged public var session: CDBackendSession?
+    @NSManaged public var contentBlocksJson: String?
 
     /// Typed status accessor
     public var messageStatus: MessageStatus {
@@ -30,6 +31,35 @@ public class CDMessage: NSManagedObject {
         set {
             status = newValue.rawValue
         }
+    }
+
+    // MARK: - Content Blocks
+
+    /// Cached content blocks parsed from JSON
+    private var _contentBlocksCache: [ContentBlock]?
+    private var _contentBlocksCacheKey: String?
+
+    /// Parsed content blocks from contentBlocksJson
+    /// Returns nil if no content blocks are stored (plain text message)
+    public var contentBlocks: [ContentBlock]? {
+        guard let json = contentBlocksJson, !json.isEmpty else { return nil }
+
+        // Check cache validity
+        if let cached = _contentBlocksCache, _contentBlocksCacheKey == json {
+            return cached
+        }
+
+        // Parse and cache
+        let blocks = ContentBlock.decode(from: json)
+        _contentBlocksCache = blocks
+        _contentBlocksCacheKey = json
+        return blocks
+    }
+
+    /// Whether this message has structured content blocks
+    public var hasContentBlocks: Bool {
+        guard let json = contentBlocksJson, !json.isEmpty else { return false }
+        return true
     }
 
     // MARK: - Display Properties

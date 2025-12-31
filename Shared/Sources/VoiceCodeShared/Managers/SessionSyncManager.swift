@@ -698,12 +698,37 @@ public final class SessionSyncManager: @unchecked Sendable {
         message.messageStatus = .confirmed
         message.session = session
 
+        // Store raw content blocks for expandable UI display
+        if let contentBlocksJson = extractContentBlocksJson(from: messageData) {
+            message.contentBlocksJson = contentBlocksJson
+        }
+
         if let timestamp = extractTimestamp(from: messageData) {
             message.timestamp = timestamp
             message.serverTimestamp = timestamp
         } else {
             message.timestamp = Date()
         }
+    }
+
+    /// Extract content blocks as JSON string for storage
+    private func extractContentBlocksJson(from messageData: [String: Any]) -> String? {
+        guard let message = messageData["message"] as? [String: Any],
+              let contentArray = message["content"] as? [[String: Any]] else {
+            return nil
+        }
+
+        // Only store if there are non-text blocks (tool_use, tool_result, thinking)
+        let hasStructuredBlocks = contentArray.contains { block in
+            guard let type = block["type"] as? String else { return false }
+            return type != "text"
+        }
+
+        guard hasStructuredBlocks else { return nil }
+
+        // Parse and encode the content blocks
+        let blocks = ContentBlock.parse(from: contentArray)
+        return ContentBlock.encode(blocks)
     }
 
     // MARK: - Content Summarization

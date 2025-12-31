@@ -12,9 +12,8 @@ struct SessionLookupView: View {
     @ObservedObject var voiceOutput: VoiceOutputManager
     @ObservedObject var settings: AppSettings
 
+    @Environment(\.dismiss) private var dismiss
     @FetchRequest private var sessions: FetchedResults<CDBackendSession>
-    
-    @State private var showingCopyConfirmation = false
 
     init(sessionId: UUID, client: VoiceCodeClient, voiceOutput: VoiceOutputManager, settings: AppSettings) {
         self.sessionId = sessionId
@@ -34,66 +33,21 @@ struct SessionLookupView: View {
         if let session = sessions.first {
             ConversationView(session: session, client: client, voiceOutput: voiceOutput, settings: settings)
         } else {
-            // Session not found (possibly deleted)
-            VStack(spacing: 16) {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.system(size: 48))
-                    .foregroundColor(.orange)
-                Text("Session Not Found")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                Text("This session may have been deleted.")
-                    .font(.body)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                Text(sessionId.uuidString.lowercased())
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .padding(.top, 8)
-            }
-            .padding()
-            .contentShape(Rectangle())
-            .contextMenu {
-                Button(action: {
-                    copySessionID()
-                }) {
-                    Label("Copy Session ID", systemImage: "doc.on.clipboard")
+            // Session not found - use recovery view per AD.3
+            SessionNotFoundView(
+                sessionId: sessionId,
+                onDismiss: {
+                    dismiss()
+                },
+                onRefresh: {
+                    refreshFromBackend()
                 }
-            }
-            .overlay(alignment: .top) {
-                if showingCopyConfirmation {
-                    Text("Session ID copied to clipboard")
-                        .font(.caption)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color.green.opacity(0.9))
-                        .foregroundColor(.white)
-                        .cornerRadius(8)
-                        .padding(.top, 8)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-            }
+            )
         }
     }
-    
-    private func copySessionID() {
-        // Copy session ID to clipboard
-        UIPasteboard.general.string = sessionId.uuidString.lowercased()
-        
-        // Trigger haptic feedback
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-        
-        // Show confirmation banner
-        withAnimation {
-            showingCopyConfirmation = true
-        }
-        
-        // Hide confirmation after 2 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            withAnimation {
-                showingCopyConfirmation = false
-            }
-        }
+
+    private func refreshFromBackend() {
+        // Request fresh session list from backend
+        client.sendMessage(["type": "get_session_list"])
     }
 }
