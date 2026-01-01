@@ -29,6 +29,9 @@ struct ConversationDetailView: View {
     // Input state
     @State private var draftText: String = ""
 
+    // Search state
+    @State private var searchText: String = ""
+
     // Auto-scroll state
     @State private var autoScrollEnabled = true
 
@@ -57,6 +60,17 @@ struct ConversationDetailView: View {
         client.lockedSessions.contains(session.backendSessionId)
     }
 
+    /// Filtered messages based on search text
+    private var filteredMessages: [CDMessage] {
+        guard !searchText.isEmpty else {
+            return Array(messages)
+        }
+        let lowercasedSearch = searchText.lowercased()
+        return messages.filter { message in
+            message.text.lowercased().contains(lowercasedSearch)
+        }
+    }
+
     init(session: CDBackendSession, client: VoiceCodeClient, resourcesManager: ResourcesManager, settings: AppSettings) {
         self.session = session
         self.client = client
@@ -73,57 +87,13 @@ struct ConversationDetailView: View {
         )
     }
 
-    var body: some View {
+    /// Main content view extracted to help the type checker
+    @ViewBuilder
+    private var mainContentView: some View {
         ZStack {
             VStack(spacing: 0) {
-                // Message list with ScrollViewReader for auto-scroll
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(messages) { message in
-                                MessageRowView(
-                                    message: message,
-                                    voiceOutput: voiceOutput,
-                                    workingDirectory: session.workingDirectory,
-                                    onInferName: { messageText in
-                                        client.requestInferredName(
-                                            sessionId: session.backendSessionId,
-                                            messageText: messageText
-                                        )
-                                    }
-                                )
-                                .id(message.id)
-                            }
-                        }
-                        .padding()
-                    }
-                    .onChange(of: messages.count) { oldCount, newCount in
-                        guard newCount > oldCount, autoScrollEnabled else { return }
-
-                        // Capture target ID before async delay (per Appendix R)
-                        guard let targetId = messages.last?.id else { return }
-
-                        // Debounce scroll to avoid layout thrashing (300ms per spec)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            guard self.autoScrollEnabled else { return }
-                            // Verify message still exists (may have been pruned)
-                            guard messages.contains(where: { $0.id == targetId }) else { return }
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo(targetId, anchor: .bottom)
-                            }
-                        }
-                    }
-                    .onAppear {
-                        // Scroll to last message on appear
-                        if let lastId = messages.last?.id {
-                            proxy.scrollTo(lastId, anchor: .bottom)
-                        }
-                    }
-                }
-
+                messageListView
                 Divider()
-
-                // Input area
                 MessageInputView(
                     text: $draftText,
                     isLocked: isSessionLocked,
@@ -136,180 +106,269 @@ struct ConversationDetailView: View {
                 ConversationDragOverlayView()
             }
         }
-        .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
-            handleDrop(providers: providers)
-        }
-        .navigationTitle(session.displayName(context: viewContext))
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                // Kill session button (only visible when session is locked)
-                if isSessionLocked {
-                    Button(action: {
-                        showingKillConfirmation = true
-                    }) {
-                        Image(systemName: "stop.circle.fill")
-                            .foregroundColor(.red)
-                    }
-                    .help("Kill session process")
-                    .accessibilityLabel("Kill session")
-                }
+    }
 
-                // Compact button
-                Button(action: {
-                    if wasRecentlyCompacted {
-                        showingAlreadyCompactedAlert = true
-                    } else {
-                        showingCompactConfirmation = true
-                    }
-                }) {
-                    if isCompacting {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "rectangle.compress.vertical")
-                            .foregroundColor(wasRecentlyCompacted ? .green : nil)
+    /// Message list with ScrollViewReader for auto-scroll
+    @ViewBuilder
+    private var messageListView: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(filteredMessages) { message in
+                        MessageRowView(
+                            message: message,
+                            voiceOutput: voiceOutput,
+                            workingDirectory: session.workingDirectory,
+                            searchText: searchText,
+                            onInferName: { messageText in
+                                client.requestInferredName(
+                                    sessionId: session.backendSessionId,
+                                    messageText: messageText
+                                )
+                            }
+                        )
+                        .id(message.id)
                     }
                 }
-                .help("Compact session (⌘⇧C)")
-                .disabled(isCompacting || isSessionLocked)
-                .accessibilityLabel("Compact session")
-
-                // Refresh button
-                Button(action: refreshSession) {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .help("Refresh session (⌘R)")
-                .accessibilityLabel("Refresh session")
-
-                // Auto-scroll toggle
-                Button(action: {
-                    autoScrollEnabled.toggle()
-                }) {
-                    Image(systemName: autoScrollEnabled ? "arrow.down.circle.fill" : "arrow.down.circle")
-                }
-                .help(autoScrollEnabled ? "Disable auto-scroll" : "Enable auto-scroll")
-                .keyboardShortcut(.downArrow, modifiers: .command)
-                .accessibilityLabel(autoScrollEnabled ? "Disable auto-scroll" : "Enable auto-scroll")
-
-                // Session info button
-                Button(action: {
-                    showingSessionInfo = true
-                }) {
-                    Image(systemName: "info.circle")
-                }
-                .help("Session Info (⌘I)")
-                .keyboardShortcut("i")
-                .accessibilityLabel("Session info")
+                .padding()
             }
-        }
-        // Success/error message overlay
-        .overlay(alignment: .top) {
-            if showingSuccessMessage, let message = compactSuccessMessage {
-                Text(message)
-                    .font(.caption)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(isErrorMessage ? Color.red.opacity(0.9) : Color.green.opacity(0.9))
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
-                    .padding(.top, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-        }
-        // Recoverable error display (per Appendix Z.3)
-        .overlay(alignment: .top) {
-            if let error = client.currentRecoverableError {
-                RecoverableErrorView(
-                    error: error,
-                    onRetry: {
-                        error.recoveryAction?.perform()
-                    },
-                    onDismiss: {
-                        client.currentRecoverableError = nil
+            .onChange(of: messages.count) { oldCount, newCount in
+                guard newCount > oldCount, autoScrollEnabled else { return }
+
+                // Capture target ID before async delay (per Appendix R)
+                guard let targetId = messages.last?.id else { return }
+
+                // Debounce scroll to avoid layout thrashing (300ms per spec)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    guard self.autoScrollEnabled else { return }
+                    // Verify message still exists (may have been pruned)
+                    guard messages.contains(where: { $0.id == targetId }) else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(targetId, anchor: .bottom)
                     }
-                )
-                .padding(.horizontal, 16)
-                .padding(.top, showingSuccessMessage ? 50 : 8)
-                .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .onAppear {
+                // Scroll to last message on appear
+                if let lastId = messages.last?.id {
+                    proxy.scrollTo(lastId, anchor: .bottom)
+                }
             }
         }
-        // Compact confirmation alert
-        .alert("Compact Session?", isPresented: $showingCompactConfirmation) {
-            Button("Cancel", role: .cancel) { }
-            Button("Compact", role: .destructive) {
-                compactSession()
+    }
+
+    var body: some View {
+        mainContentView
+            .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
+                handleDrop(providers: providers)
             }
-        } message: {
-            Text("This will summarize the conversation history to reduce context size. This cannot be undone.")
-        }
-        // Already compacted alert
-        .alert("Session Already Compacted", isPresented: $showingAlreadyCompactedAlert) {
-            Button("Cancel", role: .cancel) { }
-            Button("Compact Again", role: .destructive) {
-                showingCompactConfirmation = true
+            .navigationTitle(session.displayName(context: viewContext))
+            .searchable(text: $searchText, prompt: "Search messages")
+            .toolbar { toolbarContent }
+            .overlay(alignment: .top) { successMessageOverlay }
+            .overlay(alignment: .top) { recoverableErrorOverlay }
+            .modifier(AlertsModifier(
+                showingCompactConfirmation: $showingCompactConfirmation,
+                showingAlreadyCompactedAlert: $showingAlreadyCompactedAlert,
+                showingKillConfirmation: $showingKillConfirmation,
+                compactionTimestamp: compactionTimestamp,
+                onCompact: compactSession,
+                onKill: killSession
+            ))
+            .sheet(isPresented: $showingSessionInfo) {
+                SessionInfoView(session: session, settings: settings)
             }
-        } message: {
-            if let timestamp = compactionTimestamp {
-                Text("This session was compacted \(timestamp.relativeFormatted()).\n\nCompact again?")
-            } else {
-                Text("This session was recently compacted.\n\nCompact again?")
+            .focusedSceneValue(\.selectedSession, session)
+            .focusedSceneValue(\.voiceCodeClient, client)
+            .focusedSceneValue(\.showSessionInfoAction, showSessionInfo)
+            .onReceive(NotificationCenter.default.publisher(for: .requestSessionCompaction)) { notification in
+                handleCompactionNotification(notification)
             }
-        }
-        // Kill confirmation alert
-        .alert("Kill Session?", isPresented: $showingKillConfirmation) {
-            Button("Cancel", role: .cancel) { }
-            Button("Kill", role: .destructive) {
-                killSession()
+            .onReceive(NotificationCenter.default.publisher(for: .requestSessionKill)) { notification in
+                handleKillNotification(notification)
             }
-        } message: {
-            Text("This will terminate the current Claude process. The session will be unlocked and you can send a new prompt.")
+            .onReceive(NotificationCenter.default.publisher(for: .requestFind)) { _ in
+                // Focus the search field by finding and activating the NSSearchField
+                focusSearchField()
+            }
+            .onAppear { handleOnAppear() }
+            .onDisappear { handleOnDisappear() }
+            .onChange(of: draftText) {
+                // Debounced save handled by MessageInputView
+            }
+    }
+
+    // MARK: - Toolbar Content
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            if isSessionLocked {
+                Button(action: { showingKillConfirmation = true }) {
+                    Image(systemName: "stop.circle.fill")
+                        .foregroundColor(.red)
+                }
+                .help("Kill session process")
+                .accessibilityLabel("Kill session")
+            }
+
+            compactButton
+            refreshButton
+            autoScrollButton
+            sessionInfoButton
         }
-        // Session info inspector sheet
-        .sheet(isPresented: $showingSessionInfo) {
-            SessionInfoView(session: session, settings: settings)
-        }
-        // Set focused values for menu commands
-        .focusedSceneValue(\.selectedSession, session)
-        .focusedSceneValue(\.voiceCodeClient, client)
-        .focusedSceneValue(\.showSessionInfoAction, showSessionInfo)
-        // Handle menu command notifications
-        .onReceive(NotificationCenter.default.publisher(for: .requestSessionCompaction)) { notification in
-            guard let sessionId = notification.userInfo?["sessionId"] as? String,
-                  sessionId == session.backendSessionId else { return }
+    }
+
+    private var compactButton: some View {
+        Button(action: {
             if wasRecentlyCompacted {
                 showingAlreadyCompactedAlert = true
             } else {
                 showingCompactConfirmation = true
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .requestSessionKill)) { notification in
-            guard let sessionId = notification.userInfo?["sessionId"] as? String,
-                  sessionId == session.backendSessionId else { return }
-            showingKillConfirmation = true
-        }
-        .onAppear {
-            loadDraft()
-            // Mark session as active for TTS routing
-            ActiveSessionManager.shared.setActiveSession(session.id)
-            // Clear unread count when viewing session
-            if session.unreadCount > 0 {
-                session.unreadCount = 0
-                try? viewContext.save()
+        }) {
+            if isCompacting {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: "rectangle.compress.vertical")
+                    .foregroundColor(wasRecentlyCompacted ? .green : nil)
             }
-            // Reset compaction state when view appears (handles session switching)
-            wasRecentlyCompacted = false
-            compactionTimestamp = nil
-            isCompacting = false
-            showingSuccessMessage = false
-            compactSuccessMessage = nil
         }
-        .onDisappear {
-            saveDraft()
-            ActiveSessionManager.shared.clearActiveSession()
+        .help("Compact session (⌘⇧C)")
+        .disabled(isCompacting || isSessionLocked)
+        .accessibilityLabel("Compact session")
+    }
+
+    private var refreshButton: some View {
+        Button(action: refreshSession) {
+            Image(systemName: "arrow.clockwise")
         }
-        .onChange(of: draftText) {
-            // Debounced save handled by MessageInputView
+        .help("Refresh session (⌘R)")
+        .accessibilityLabel("Refresh session")
+    }
+
+    private var autoScrollButton: some View {
+        Button(action: { autoScrollEnabled.toggle() }) {
+            Image(systemName: autoScrollEnabled ? "arrow.down.circle.fill" : "arrow.down.circle")
         }
+        .help(autoScrollEnabled ? "Disable auto-scroll" : "Enable auto-scroll")
+        .keyboardShortcut(.downArrow, modifiers: .command)
+        .accessibilityLabel(autoScrollEnabled ? "Disable auto-scroll" : "Enable auto-scroll")
+    }
+
+    private var sessionInfoButton: some View {
+        Button(action: { showingSessionInfo = true }) {
+            Image(systemName: "info.circle")
+        }
+        .help("Session Info (⌘I)")
+        .keyboardShortcut("i")
+        .accessibilityLabel("Session info")
+    }
+
+    // MARK: - Overlays
+
+    @ViewBuilder
+    private var successMessageOverlay: some View {
+        if showingSuccessMessage, let message = compactSuccessMessage {
+            Text(message)
+                .font(.caption)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(isErrorMessage ? Color.red.opacity(0.9) : Color.green.opacity(0.9))
+                .foregroundColor(.white)
+                .cornerRadius(8)
+                .padding(.top, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
+    @ViewBuilder
+    private var recoverableErrorOverlay: some View {
+        if let error = client.currentRecoverableError {
+            RecoverableErrorView(
+                error: error,
+                onRetry: { error.recoveryAction?.perform() },
+                onDismiss: { client.currentRecoverableError = nil }
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, showingSuccessMessage ? 50 : 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
+    // MARK: - Notification Handlers
+
+    private func handleCompactionNotification(_ notification: Notification) {
+        guard let sessionId = notification.userInfo?["sessionId"] as? String,
+              sessionId == session.backendSessionId else { return }
+        if wasRecentlyCompacted {
+            showingAlreadyCompactedAlert = true
+        } else {
+            showingCompactConfirmation = true
+        }
+    }
+
+    private func handleKillNotification(_ notification: Notification) {
+        guard let sessionId = notification.userInfo?["sessionId"] as? String,
+              sessionId == session.backendSessionId else { return }
+        showingKillConfirmation = true
+    }
+
+    private func handleOnAppear() {
+        loadDraft()
+        ActiveSessionManager.shared.setActiveSession(session.id)
+        if session.unreadCount > 0 {
+            session.unreadCount = 0
+            try? viewContext.save()
+        }
+        wasRecentlyCompacted = false
+        compactionTimestamp = nil
+        isCompacting = false
+        showingSuccessMessage = false
+        compactSuccessMessage = nil
+    }
+
+    private func handleOnDisappear() {
+        saveDraft()
+        ActiveSessionManager.shared.clearActiveSession()
+    }
+
+    /// Focus the search field when ⌘F is pressed
+    private func focusSearchField() {
+        // Find the key window and search for NSSearchField in the toolbar
+        guard let window = NSApp.keyWindow else { return }
+
+        // The .searchable modifier creates an NSSearchField in the toolbar
+        // Find it by traversing the view hierarchy
+        if let toolbar = window.toolbar {
+            for item in toolbar.items {
+                if let searchField = item.view as? NSSearchField {
+                    window.makeFirstResponder(searchField)
+                    return
+                }
+            }
+        }
+
+        // Fallback: traverse the window's content view hierarchy
+        findAndFocusSearchField(in: window.contentView)
+    }
+
+    /// Recursively search for and focus an NSSearchField
+    @discardableResult
+    private func findAndFocusSearchField(in view: NSView?) -> Bool {
+        guard let view = view else { return false }
+
+        if let searchField = view as? NSSearchField {
+            view.window?.makeFirstResponder(searchField)
+            return true
+        }
+
+        for subview in view.subviews {
+            if findAndFocusSearchField(in: subview) {
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: - Session Actions
@@ -516,7 +575,36 @@ struct MessageRowView: View {
     @ObservedObject var message: CDMessage
     @ObservedObject var voiceOutput: VoiceOutputManager
     let workingDirectory: String
+    var searchText: String = ""
     let onInferName: (String) -> Void
+
+    /// Creates an AttributedString with search matches highlighted
+    private func highlightedText(_ text: String) -> AttributedString {
+        guard !searchText.isEmpty else {
+            return AttributedString(text)
+        }
+
+        var attributedString = AttributedString(text)
+        let lowercasedText = text.lowercased()
+        let lowercasedSearch = searchText.lowercased()
+
+        var searchStartIndex = lowercasedText.startIndex
+        while let range = lowercasedText.range(of: lowercasedSearch, range: searchStartIndex..<lowercasedText.endIndex) {
+            // Convert String.Index range to AttributedString range
+            let startOffset = lowercasedText.distance(from: lowercasedText.startIndex, to: range.lowerBound)
+            let endOffset = lowercasedText.distance(from: lowercasedText.startIndex, to: range.upperBound)
+
+            let attrStart = attributedString.index(attributedString.startIndex, offsetByCharacters: startOffset)
+            let attrEnd = attributedString.index(attributedString.startIndex, offsetByCharacters: endOffset)
+
+            attributedString[attrStart..<attrEnd].backgroundColor = .yellow.opacity(0.4)
+            attributedString[attrStart..<attrEnd].foregroundColor = .primary
+
+            searchStartIndex = range.upperBound
+        }
+
+        return attributedString
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -551,10 +639,10 @@ struct MessageRowView: View {
 
                 // Message content - use content blocks if available, otherwise plain text
                 if let contentBlocks = message.contentBlocks, !contentBlocks.isEmpty {
-                    ContentBlocksView(blocks: contentBlocks)
+                    ContentBlocksView(blocks: contentBlocks, searchText: searchText)
                 } else {
                     // Plain text fallback (using displayText for truncation)
-                    Text(message.displayText)
+                    Text(highlightedText(message.displayText))
                         .font(.body)
                         .textSelection(.enabled)
                         .foregroundColor(.primary)
@@ -719,6 +807,46 @@ struct MessageInputView: View {
                 // Draft is saved by parent view's onDisappear
             }
         }
+    }
+}
+
+// MARK: - AlertsModifier
+
+/// ViewModifier to handle alerts for compact, already compacted, and kill confirmations
+struct AlertsModifier: ViewModifier {
+    @Binding var showingCompactConfirmation: Bool
+    @Binding var showingAlreadyCompactedAlert: Bool
+    @Binding var showingKillConfirmation: Bool
+    let compactionTimestamp: Date?
+    let onCompact: () -> Void
+    let onKill: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .alert("Compact Session?", isPresented: $showingCompactConfirmation) {
+                Button("Cancel", role: .cancel) { }
+                Button("Compact", role: .destructive) { onCompact() }
+            } message: {
+                Text("This will summarize the conversation history to reduce context size. This cannot be undone.")
+            }
+            .alert("Session Already Compacted", isPresented: $showingAlreadyCompactedAlert) {
+                Button("Cancel", role: .cancel) { }
+                Button("Compact Again", role: .destructive) {
+                    showingCompactConfirmation = true
+                }
+            } message: {
+                if let timestamp = compactionTimestamp {
+                    Text("This session was compacted \(timestamp.relativeFormatted()).\n\nCompact again?")
+                } else {
+                    Text("This session was recently compacted.\n\nCompact again?")
+                }
+            }
+            .alert("Kill Session?", isPresented: $showingKillConfirmation) {
+                Button("Cancel", role: .cancel) { }
+                Button("Kill", role: .destructive) { onKill() }
+            } message: {
+                Text("This will terminate the current Claude process. The session will be unlocked and you can send a new prompt.")
+            }
     }
 }
 

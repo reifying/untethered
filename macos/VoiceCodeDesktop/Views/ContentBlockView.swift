@@ -76,13 +76,42 @@ struct ContentBlockView: View {
 /// View for displaying all content blocks in a message
 struct ContentBlocksView: View {
     let blocks: [ContentBlock]
+    var searchText: String = ""
+
+    /// Creates an AttributedString with search matches highlighted
+    private func highlightedText(_ text: String) -> AttributedString {
+        guard !searchText.isEmpty else {
+            return AttributedString(text)
+        }
+
+        var attributedString = AttributedString(text)
+        let lowercasedText = text.lowercased()
+        let lowercasedSearch = searchText.lowercased()
+
+        var searchStartIndex = lowercasedText.startIndex
+        while let range = lowercasedText.range(of: lowercasedSearch, range: searchStartIndex..<lowercasedText.endIndex) {
+            // Convert String.Index range to AttributedString range
+            let startOffset = lowercasedText.distance(from: lowercasedText.startIndex, to: range.lowerBound)
+            let endOffset = lowercasedText.distance(from: lowercasedText.startIndex, to: range.upperBound)
+
+            let attrStart = attributedString.index(attributedString.startIndex, offsetByCharacters: startOffset)
+            let attrEnd = attributedString.index(attributedString.startIndex, offsetByCharacters: endOffset)
+
+            attributedString[attrStart..<attrEnd].backgroundColor = .yellow.opacity(0.4)
+            attributedString[attrStart..<attrEnd].foregroundColor = .primary
+
+            searchStartIndex = range.upperBound
+        }
+
+        return attributedString
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(blocks) { block in
                 if block.type == .text {
                     // Text blocks are displayed inline without collapse
-                    Text(block.text ?? "")
+                    Text(highlightedText(block.text ?? ""))
                         .font(.body)
                         .textSelection(.enabled)
                 } else {
