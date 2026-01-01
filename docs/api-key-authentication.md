@@ -1172,6 +1172,44 @@ iOS                                              Backend
  │                                                   │
  │  <──── WebSocket close ────                       │
  │                                                   │
+
+
+┌─────────────────────────────────────────────────────────────┐
+│              Backend Restart (Transparent to User)           │
+└─────────────────────────────────────────────────────────────┘
+
+iOS                                              Backend
+ │                                                   │
+ │  ════ WebSocket open, authenticated ════          │
+ │                                                   │
+ │                              [Backend restarts]   │
+ │                                                   │
+ │  <──── WebSocket close (server gone) ────         │
+ │                                                   │
+ │  [iOS detects disconnect]                         │
+ │  [Auto-reconnect with exponential backoff]        │
+ │                                                   │
+ │  ──── WebSocket connect ────>   [New backend]     │
+ │                                                   │
+ │  <──── {"type": "hello",   ────                   │
+ │         "auth_version": 1}                        │
+ │                                                   │
+ │  ──── {"type": "connect",  ────>                  │
+ │        "api_key": "..."}        (from Keychain)   │
+ │                                     ┌─────────────┤
+ │                                     │ Validate    │
+ │                                     │ (new sess)  │
+ │                                     └─────────────┤
+ │  <──── {"type": "connected"} ────                 │
+ │                                                   │
+ │  [Session restored, user unaware of restart]      │
+ │                                                   │
+
+**Key point:** Reconnection after backend restart is transparent because:
+1. API key persists in iOS Keychain (survives app/device restarts)
+2. iOS includes `api_key` in every `connect` message automatically
+3. No user intervention required - authentication is seamless
+4. Existing session mapping (iOS UUID → Claude session) is restored from disk
 ```
 
 ## 4. Verification Strategy
@@ -1361,8 +1399,14 @@ class KeychainManagerTests: XCTestCase {
    - Verify: Unit test covers `constant-time-equals?` function behavior
 
 9. **Share extension includes API key**
-   - Verify: HTTP `/upload` without key returns 401
-   - Verify: HTTP `/upload` with valid key returns 200
+   - Verify: HTTP `/upload` without Authorization header returns 401
+   - Verify: HTTP `/upload` with `Authorization: Bearer <key>` returns 200
+
+10. **Backend restart is transparent to user**
+    - Verify: Restart backend while iOS is connected
+    - Verify: iOS auto-reconnects and re-authenticates without user intervention
+    - Verify: No "API Key Required" prompt shown (key retrieved from Keychain)
+    - Verify: Session resumes normally after reconnection
 
 ## 5. Alternatives Considered
 
