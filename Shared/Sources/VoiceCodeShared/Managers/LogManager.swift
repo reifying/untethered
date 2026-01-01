@@ -9,6 +9,10 @@ public enum LogManagerConfig {
     /// The OSLog subsystem to filter for when reading system logs
     /// Configure this at app startup (e.g., "com.yourcompany.YourApp")
     nonisolated(unsafe) public static var subsystem: String = "com.voicecode.shared"
+
+    /// Enable file-based logging (macOS only)
+    /// When enabled, logs are written to ~/Library/Logs/VoiceCode/
+    nonisolated(unsafe) public static var fileLoggingEnabled: Bool = false
 }
 
 /// Manages app logs for debugging and crash reporting
@@ -18,8 +22,27 @@ public final class LogManager: Sendable {
 
     private let maxLogLines = 1000
     private let storage = LogStorage()
+    private let fileDestination: FileLogDestination?
 
-    private init() {}
+    private init() {
+        // Initialize file destination if enabled
+        #if os(macOS)
+        if LogManagerConfig.fileLoggingEnabled {
+            self.fileDestination = FileLogDestination()
+            // Run cleanup on startup
+            self.fileDestination?.cleanupOldLogs()
+        } else {
+            self.fileDestination = nil
+        }
+        #else
+        self.fileDestination = nil
+        #endif
+    }
+
+    /// Initialize with a custom file destination (for testing)
+    internal init(fileDestination: FileLogDestination?) {
+        self.fileDestination = fileDestination
+    }
 
     /// Append a log message
     /// - Parameters:
@@ -29,6 +52,9 @@ public final class LogManager: Sendable {
         let timestamp = Self.formatTimestamp(Date())
         let logLine = "[\(timestamp)] [\(category)] \(message)"
         storage.append(logLine, maxLines: maxLogLines)
+
+        // Also write to file if file logging is enabled
+        fileDestination?.write(logLine)
     }
 
     /// Get the last N bytes of logs (complete lines only)
@@ -46,6 +72,31 @@ public final class LogManager: Sendable {
     /// Clear all logs
     public func clearLogs() {
         storage.clear()
+    }
+
+    // MARK: - File Logging (macOS)
+
+    /// Get the current log file path (macOS only)
+    /// - Returns: URL to current log file, or nil if file logging is disabled
+    public var currentLogFilePath: URL? {
+        fileDestination?.currentLogFilePath
+    }
+
+    /// Get all log files in the log directory (macOS only)
+    /// - Returns: Array of URLs to log files, sorted most recent first
+    public func getAllLogFiles() -> [URL] {
+        fileDestination?.getAllLogFiles() ?? []
+    }
+
+    /// Get the log directory path
+    /// - Returns: URL to the log directory
+    public var logDirectory: URL {
+        FileLogConfig.logDirectory
+    }
+
+    /// Trigger cleanup of old log files
+    public func cleanupOldLogs() {
+        fileDestination?.cleanupOldLogs()
     }
 
     /// Get system logs from OSLog (last hour, filtered to app subsystem)
