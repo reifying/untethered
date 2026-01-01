@@ -66,7 +66,9 @@ voice-code-a1b2c3d4e5f678901234567890ab
 
 ### 3.2 API Design
 
-#### Protocol Change: Authentication in Every Message
+#### Protocol Change: Session-Based Authentication
+
+Authentication happens once on the `connect` message. After successful authentication, the WebSocket session is marked as authenticated and subsequent messages don't require re-authentication.
 
 **Current message (no auth):**
 ```json
@@ -83,7 +85,20 @@ voice-code-a1b2c3d4e5f678901234567890ab
 }
 ```
 
-All message types include `api_key` field. Backend validates before processing.
+Only the `connect` message includes `api_key`. Backend validates once and stores authenticated state in the `connected-clients` atom (`:authenticated true`). Subsequent messages are allowed without re-authentication for that session.
+
+**Updated hello message (includes auth version):**
+```json
+{
+  "type": "hello",
+  "message": "Welcome to voice-code backend",
+  "version": "0.1.0",
+  "auth_version": 1,
+  "instructions": "Send connect message with api_key"
+}
+```
+
+The `auth_version` field allows future protocol changes while maintaining backward compatibility.
 
 #### New Message Types
 
@@ -131,8 +146,18 @@ make show-key-qr
            [java.nio.file Files]
            [java.nio.file.attribute PosixFilePermissions]))
 
-(def ^:private key-file-path
+(def default-key-file-path
+  "Default path for API key file. Can be overridden for testing."
   (str (System/getProperty "user.home") "/.voice-code/api-key"))
+
+(def ^:dynamic *key-file-path*
+  "Dynamic var for key file path, allows override in tests."
+  nil)
+
+(defn key-file-path
+  "Get the current key file path. Uses *key-file-path* if bound, otherwise default."
+  []
+  (or *key-file-path* default-key-file-path))
 
 (defn generate-api-key
   "Generate a new API key with 128 bits of entropy."
@@ -147,7 +172,7 @@ make show-key-qr
   "Ensure API key file exists with correct permissions.
   Creates new key if file doesn't exist."
   []
-  (let [file (io/file key-file-path)
+  (let [file (io/file (key-file-path))
         parent (.getParentFile file)]
     ;; Create directory with 700 permissions
     (when-not (.exists parent)
@@ -169,7 +194,7 @@ make show-key-qr
 (defn read-api-key
   "Read the current API key from file."
   []
-  (let [file (io/file key-file-path)]
+  (let [file (io/file (key-file-path))]
     (when (.exists file)
       (str/trim (slurp file)))))
 
@@ -197,15 +222,28 @@ make show-key-qr
     (constant-time-equals? stored-key provided-key)))
 ```
 
-#### Backend: Authentication Middleware
+#### Backend: Session-Based Authentication
 
 ```clojure
 ;; In voice-code.server namespace
 
-(defn authenticate-message
-  "Check if message contains valid API key.
+;; Stored key loaded once at startup (in -main)
+(defonce api-key (atom nil))
+
+;; connected-clients atom structure (existing, with auth state added):
+;; {channel {:session-id "ios-uuid"
+;;           :authenticated true}}
+(defonce connected-clients (atom {}))
+
+(defn channel-authenticated?
+  "Check if a WebSocket channel has been authenticated."
+  [channel]
+  (get-in @connected-clients [channel :authenticated] false))
+
+(defn authenticate-connect!
+  "Validate API key on connect message and mark channel as authenticated.
   Returns {:authenticated true} or {:authenticated false :error \"message\"}."
-  [data stored-key]
+  [channel data stored-key]
   (let [provided-key (:api-key data)]
     (cond
       (nil? provided-key)
@@ -215,34 +253,56 @@ make show-key-qr
       {:authenticated false :error "Invalid API key"}
 
       :else
-      {:authenticated true})))
-
-;; Stored key loaded once at startup (in -main)
-(defonce api-key (atom nil))
+      (do
+        ;; Mark channel as authenticated in connected-clients
+        (swap! connected-clients assoc-in [channel :authenticated] true)
+        {:authenticated true}))))
 
 (defn handle-message
-  "Handle incoming WebSocket message with authentication."
+  "Handle incoming WebSocket message with session-based authentication."
   [channel msg]
   (try
     (let [data (parse-json msg)
-          auth-result (authenticate-message data @api-key)]
-      (if (:authenticated auth-result)
-        ;; Process message normally (existing code)
-        (let [msg-type (:type data)]
+          msg-type (:type data)]
+      (case msg-type
+        ;; connect requires authentication
+        "connect"
+        (let [auth-result (authenticate-connect! channel data @api-key)]
+          (if (:authenticated auth-result)
+            (handle-connect channel data)
+            (do
+              (log/warn "Authentication failed" {:error (:error auth-result)})
+              (http/send! channel
+                          (generate-json {:type :auth-error
+                                          :message (:error auth-result)}))
+              (http/close channel))))
+
+        ;; All other messages require prior authentication
+        (if (channel-authenticated? channel)
           (case msg-type
-            "connect" (handle-connect channel data)
+            "prompt" (handle-prompt channel data)
+            "ping" (handle-ping channel)
             ;; ... rest of handlers
-            ))
-        ;; Authentication failed
-        (do
-          (log/warn "Authentication failed" {:error (:error auth-result)})
-          (http/send! channel
-                      (generate-json {:type :auth-error
-                                      :message (:error auth-result)}))
-          (http/close channel))))
+            )
+          ;; Not authenticated - reject
+          (do
+            (log/warn "Unauthenticated message rejected" {:type msg-type})
+            (http/send! channel
+                        (generate-json {:type :auth-error
+                                        :message "Not authenticated. Send connect with api_key first."}))
+            (http/close channel)))))
     (catch Exception e
       ;; ... error handling
       )))
+
+;; Update hello message to include auth_version
+(defn send-hello [channel]
+  (http/send! channel
+              (generate-json {:type :hello
+                              :message "Welcome to voice-code backend"
+                              :version "0.1.0"
+                              :auth-version 1
+                              :instructions "Send connect message with api_key"})))
 ```
 
 #### Backend: QR Code Display
@@ -284,19 +344,38 @@ make show-key-qr
 (defn display-api-key
   "Display API key with optional QR code."
   [show-qr?]
-  (let [key (auth/read-api-key)]
+  (let [key (auth/read-api-key)
+        key-len (count key)
+        ;; Box width = key length + 4 (2 spaces padding each side)
+        box-width (+ key-len 4)
+        horizontal-line (apply str (repeat box-width "═"))
+        empty-line (str "║" (apply str (repeat box-width " ")) "║")
+        title "Voice-Code API Key"
+        title-padding (quot (- box-width (count title)) 2)
+        title-line (str "║"
+                        (apply str (repeat title-padding " "))
+                        title
+                        (apply str (repeat (- box-width title-padding (count title)) " "))
+                        "║")]
     (println)
-    (println "╔══════════════════════════════════════════════════╗")
-    (println "║            Voice-Code API Key                    ║")
-    (println "╠══════════════════════════════════════════════════╣")
+    (println (str "╔" horizontal-line "╗"))
+    (println title-line)
+    (println (str "╠" horizontal-line "╣"))
     (when show-qr?
-      (println "║  Scan with iOS camera or paste manually:         ║")
-      (println "║                                                  ║")
-      (let [matrix (generate-qr-matrix key 25)]
-        (render-qr-terminal matrix))
-      (println "║                                                  ║"))
+      (let [scan-msg "Scan with iOS camera or paste manually:"
+            scan-padding (quot (- box-width (count scan-msg)) 2)
+            scan-line (str "║"
+                           (apply str (repeat scan-padding " "))
+                           scan-msg
+                           (apply str (repeat (- box-width scan-padding (count scan-msg)) " "))
+                           "║")]
+        (println scan-line)
+        (println empty-line)
+        (let [matrix (generate-qr-matrix key 25)]
+          (render-qr-terminal matrix))
+        (println empty-line)))
     (println (str "║  " key "  ║"))
-    (println "╚══════════════════════════════════════════════════╝")
+    (println (str "╚" horizontal-line "╝"))
     (println)))
 ```
 
@@ -320,6 +399,11 @@ class KeychainManager {
     private let service = "dev.910labs.voice-code"
     private let account = "api-key"
 
+    /// Access group for sharing keychain items with app extensions.
+    /// Format: $(TeamIdentifierPrefix)dev.910labs.voice-code
+    /// This allows the Share Extension to access the same API key.
+    private let accessGroup = "$(TeamIdentifierPrefix)dev.910labs.voice-code"
+
     private init() {}
 
     /// Save API key to Keychain
@@ -332,6 +416,7 @@ class KeychainManager {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
+            kSecAttrAccessGroup as String: accessGroup,
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
         ]
@@ -362,6 +447,7 @@ class KeychainManager {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
+            kSecAttrAccessGroup as String: accessGroup,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
@@ -383,7 +469,8 @@ class KeychainManager {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account
+            kSecAttrAccount as String: account,
+            kSecAttrAccessGroup as String: accessGroup
         ]
 
         let status = SecItemDelete(query as CFDictionary)
@@ -416,29 +503,41 @@ class VoiceCodeClient: ObservableObject {
 
     @Published var isAuthenticated = false
     @Published var authenticationError: String?
+    @Published var requiresReauthentication = false  // Shows "re-scan required" UI
 
     private var apiKey: String? {
         KeychainManager.shared.getAPIKey()
     }
 
-    // Updated sendMessage to include API key
-    func sendMessage(_ message: [String: Any]) {
-        // Inject API key into every message
-        var authenticatedMessage = message
-        if let key = apiKey {
-            authenticatedMessage["api_key"] = key
+    // Send connect message with API key (authentication happens here only)
+    func sendConnectMessage() {
+        guard let key = apiKey else {
+            DispatchQueue.main.async { [weak self] in
+                self?.requiresReauthentication = true
+                self?.authenticationError = "API key not configured. Please scan QR code in Settings."
+            }
+            return
         }
 
-        guard let data = try? JSONSerialization.data(withJSONObject: authenticatedMessage),
+        let message: [String: Any] = [
+            "type": "connect",
+            "session_id": currentSessionId,
+            "api_key": key
+        ]
+        sendRawMessage(message)
+    }
+
+    // Regular messages don't need API key (session already authenticated)
+    func sendMessage(_ message: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: message),
               let text = String(data: data, encoding: .utf8) else {
             LogManager.shared.log("Failed to serialize message", category: "VoiceCodeClient")
             return
         }
-
         // ... rest of existing send logic ...
     }
 
-    // Handle auth_error message type
+    // Handle auth_error message type with graceful UX
     func handleMessage(_ text: String) {
         // ... existing parsing ...
 
@@ -447,13 +546,18 @@ class VoiceCodeClient: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.isAuthenticated = false
+                self.requiresReauthentication = true
                 self.authenticationError = json["message"] as? String ?? "Authentication failed"
-                self.disconnect()
+                // Don't disconnect immediately - show error UI first
             }
 
         case "hello":
-            // If we receive hello, we're connected but not yet authenticated
-            // Authentication happens on first message send
+            // Check auth_version for compatibility (future-proofing)
+            if let authVersion = json["auth_version"] as? Int, authVersion > 1 {
+                LogManager.shared.log("Server requires newer auth version: \(authVersion)",
+                                      category: "VoiceCodeClient")
+            }
+            // Send connect with API key
             self.sendConnectMessage()
 
         case "connected":
@@ -462,12 +566,63 @@ class VoiceCodeClient: ObservableObject {
                 guard let self = self else { return }
                 self.isAuthenticated = true
                 self.authenticationError = nil
+                self.requiresReauthentication = false
             }
             // ... rest of existing connected handling ...
 
         // ... rest of existing cases ...
         }
     }
+}
+```
+
+#### iOS: Graceful Auth Failure UI
+
+When authentication fails, show a user-friendly message instead of just disconnecting:
+
+```swift
+// In ContentView.swift or appropriate view
+
+struct AuthenticationRequiredView: View {
+    @EnvironmentObject var voiceCodeClient: VoiceCodeClient
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "key.slash")
+                .font(.system(size: 60))
+                .foregroundColor(.orange)
+
+            Text("Authentication Required")
+                .font(.title2)
+                .fontWeight(.semibold)
+
+            if let error = voiceCodeClient.authenticationError {
+                Text(error)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+
+            NavigationLink(destination: SettingsView()) {
+                Label("Open Settings to Re-scan", systemImage: "qrcode.viewfinder")
+                    .font(.headline)
+            }
+            .buttonStyle(.borderedProminent)
+
+            Button("Retry Connection") {
+                voiceCodeClient.connect()
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding()
+    }
+}
+
+// Usage in main view:
+if voiceCodeClient.requiresReauthentication {
+    AuthenticationRequiredView()
+} else {
+    // Normal content
 }
 ```
 
@@ -844,27 +999,47 @@ Modify `-main` in `server.clj` to initialize authentication:
 
 ### 3.5 Share Extension Authentication
 
-The HTTP `/upload` endpoint also requires authentication. Modify `handle-http-upload`:
+The HTTP `/upload` endpoint uses the `Authorization` header for authentication (standard Bearer token format).
+
+#### Backend: HTTP Authentication
 
 ```clojure
+(defn extract-bearer-token
+  "Extract Bearer token from Authorization header.
+  Returns nil if header is missing or malformed."
+  [req]
+  (when-let [auth-header (get-in req [:headers "authorization"])]
+    (when (str/starts-with? auth-header "Bearer ")
+      (subs auth-header 7))))
+
 (defn handle-http-upload
-  "Handle HTTP POST /upload requests with API key authentication."
+  "Handle HTTP POST /upload requests with Bearer token authentication."
   [req channel]
   (try
-    (let [body (slurp (:body req))
-          data (parse-json body)
-          ;; Check API key first
-          auth-result (authenticate-message data @api-key)]
-      (if-not (:authenticated auth-result)
-        ;; Authentication failed
+    (let [provided-key (extract-bearer-token req)]
+      (cond
+        (nil? provided-key)
+        (http/send! channel
+                    {:status 401
+                     :headers {"Content-Type" "application/json"
+                               "WWW-Authenticate" "Bearer realm=\"voice-code\""}
+                     :body (generate-json
+                            {:success false
+                             :error "Missing Authorization header"})})
+
+        (not (auth/constant-time-equals? @api-key provided-key))
         (http/send! channel
                     {:status 401
                      :headers {"Content-Type" "application/json"}
                      :body (generate-json
                             {:success false
-                             :error (:error auth-result)})})
+                             :error "Invalid API key"})})
+
+        :else
         ;; Authenticated - proceed with upload
-        (let [filename (:filename data)
+        (let [body (slurp (:body req))
+              data (parse-json body)
+              filename (:filename data)
               content (:content data)
               storage-location (:storage-location data)]
           ;; ... rest of existing upload logic ...
@@ -874,7 +1049,9 @@ The HTTP `/upload` endpoint also requires authentication. Modify `handle-http-up
       )))
 ```
 
-iOS Share Extension must include API key in upload request:
+#### iOS: Share Extension with Authorization Header
+
+The Share Extension accesses the API key via the shared Keychain access group:
 
 ```swift
 // In ShareViewController.swift or similar
@@ -883,16 +1060,42 @@ func uploadFile(filename: String, content: Data, storageLocation: String) async 
         throw ShareError.notAuthenticated
     }
 
+    guard let url = URL(string: "\(backendURL)/upload") else {
+        throw ShareError.invalidURL
+    }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
     let payload: [String: Any] = [
-        "api_key": apiKey,
         "filename": filename,
         "content": content.base64EncodedString(),
         "storage_location": storageLocation
     ]
 
-    // ... make HTTP request with payload ...
+    request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+    let (data, response) = try await URLSession.shared.data(for: request)
+
+    guard let httpResponse = response as? HTTPURLResponse else {
+        throw ShareError.invalidResponse
+    }
+
+    if httpResponse.statusCode == 401 {
+        throw ShareError.notAuthenticated
+    }
+
+    guard httpResponse.statusCode == 200 else {
+        throw ShareError.uploadFailed(statusCode: httpResponse.statusCode)
+    }
 }
 ```
+
+**Note:** The Share Extension requires the same Keychain Access Group (`$(TeamIdentifierPrefix)dev.910labs.voice-code`) to be configured in both:
+1. Main app's entitlements file
+2. Share Extension's entitlements file
 
 ### 3.6 Component Interactions
 
@@ -930,22 +1133,24 @@ iOS                                              Backend
  │                                                   │
  │  ──── WebSocket connect ────>                     │
  │                                                   │
- │  <──── {"type": "hello"} ────                     │
+ │  <──── {"type": "hello",   ────                   │
+ │         "auth_version": 1}                        │
  │                                                   │
  │  ──── {"type": "connect",  ────>                  │
  │        "api_key": "..."}                          │
  │                                     ┌─────────────┤
  │                                     │ Validate    │
- │                                     │ api_key     │
+ │                                     │ api_key,    │
+ │                                     │ mark authed │
  │                                     └─────────────┤
  │  <──── {"type": "connected"} ────                 │
  │                                                   │
- │  ──── {"type": "prompt",   ────>                  │
- │        "api_key": "...",                          │
- │        "text": "..."}                             │
+ │  ──── {"type": "prompt",   ────>    (no api_key   │
+ │        "text": "..."}                needed now!) │
  │                                     ┌─────────────┤
- │                                     │ Validate    │
- │                                     │ api_key     │
+ │                                     │ Check       │
+ │                                     │ session     │
+ │                                     │ is authed   │
  │                                     └─────────────┤
  │  <──── {"type": "ack"} ────                       │
  │                                                   │
@@ -1023,8 +1228,8 @@ iOS                                              Backend
                         "/voice-code-auth-test-" (System/currentTimeMillis))
           test-key-path (str temp-dir "/api-key")]
       (try
-        ;; Override key-file-path for testing
-        (with-redefs [auth/key-file-path test-key-path]
+        ;; Override key-file-path using dynamic binding
+        (binding [auth/*key-file-path* test-key-path]
           (auth/ensure-key-file!)
           ;; Verify file exists
           (is (.exists (io/file test-key-path)))
@@ -1086,7 +1291,8 @@ class KeychainManagerTests: XCTestCase {
     }
 
     func testSaveAndRetrieveAPIKey() throws {
-        let testKey = "voice-code-test1234567890abcdef12345678"
+        // 43 chars total: "voice-code-" (11) + 32 hex chars
+        let testKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
 
         try KeychainManager.shared.saveAPIKey(testKey)
 
@@ -1178,7 +1384,12 @@ class KeychainManagerTests: XCTestCase {
 ### WebSocket Subprotocol
 - **Pros**: Auth in handshake, cleaner protocol
 - **Cons**: Harder to implement, less flexible
-- **Decision**: Rejected - per-message auth is simpler
+- **Decision**: Rejected - session-based auth (authenticate once on connect) is simpler
+
+### Per-Message Authentication
+- **Pros**: Stateless validation
+- **Cons**: Wasteful (re-validates every message), more bandwidth, slower
+- **Decision**: Rejected - session-based auth is more efficient. Authenticate once on `connect`, then mark WebSocket channel as authenticated.
 
 ## 6. Risks & Mitigations
 
@@ -1203,29 +1414,46 @@ class KeychainManagerTests: XCTestCase {
 
 ### Backend
 - [ ] Create `voice-code.auth` namespace with key generation/validation
+  - [ ] Expose `*key-file-path*` dynamic var for testing
+  - [ ] Implement `constant-time-equals?` for secure comparison
 - [ ] Add ZXing dependency to deps.edn: `com.google.zxing/core {:mvn/version "3.5.3"}`
 - [ ] Create `voice-code.qr` namespace for terminal QR display
+  - [ ] Dynamic box sizing based on key length
 - [ ] Add `api-key` atom and load key in `-main` startup
-- [ ] Modify `handle-message` to validate `api_key` on every message
-- [ ] Modify `handle-http-upload` to validate `api_key` (returns 401 if invalid)
+- [ ] Implement session-based auth:
+  - [ ] Add `:authenticated` flag to `connected-clients` atom
+  - [ ] Validate `api_key` only on `connect` message
+  - [ ] Check `channel-authenticated?` for subsequent messages
+- [ ] Update `hello` message to include `auth_version: 1`
+- [ ] Modify `handle-http-upload` to use `Authorization: Bearer` header
+  - [ ] Add `extract-bearer-token` function
+  - [ ] Return `WWW-Authenticate` header on 401
 - [ ] Add `auth_error` message type
 - [ ] Add Makefile targets: `show-key`, `show-key-qr`, `regenerate-key`
-- [ ] Write unit tests for auth functions (including file permission test)
+- [ ] Write unit tests for auth functions (including file permission test with `binding`)
 - [ ] Write integration tests for auth flow
 
 ### iOS
 - [ ] Create `KeychainManager` class with `isValidAPIKeyFormat` validation
-- [ ] Update `VoiceCodeClient.sendMessage` to include `api_key`
-- [ ] Handle `auth_error` message type
+  - [ ] Add `kSecAttrAccessGroup` for Share Extension access
+- [ ] Update `VoiceCodeClient`:
+  - [ ] Include `api_key` only in `connect` message (not every message)
+  - [ ] Add `requiresReauthentication` published property
+  - [ ] Check `auth_version` in `hello` response
+- [ ] Handle `auth_error` message type gracefully
 - [ ] Add `isAuthenticated` and `authenticationError` published properties
+- [ ] Create `AuthenticationRequiredView` for graceful auth failure UX
 - [ ] Create `APIKeySection` for SettingsView (with validation error display)
 - [ ] Create `QRScannerView` using AVFoundation
 - [ ] Create `APIKeyManagementView` for viewing/updating/deleting key
-- [ ] Update Share Extension to include `api_key` in upload requests
+- [ ] Update Share Extension:
+  - [ ] Use `Authorization: Bearer` header (not body)
+  - [ ] Configure same Keychain Access Group in entitlements
 - [ ] Write unit tests for KeychainManager
 - [ ] Write UI tests for key entry flow
 
 ### Documentation
-- [ ] Update @STANDARDS.md with `api_key` field in protocol
+- [ ] Update @STANDARDS.md with `api_key` field in `connect` message
 - [ ] Update @STANDARDS.md with `auth_error` message type
+- [ ] Update @STANDARDS.md with `auth_version` in `hello` message
 - [ ] Add setup instructions to README
