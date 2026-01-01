@@ -76,6 +76,7 @@ final class ResourcesSettingsIntegrationTests: XCTestCase {
         let view = SettingsView(
             settings: settings,
             onServerChange: { _ in },
+            onMaxMessageSizeChange: nil,
             voiceOutputManager: nil
         )
 

@@ -14,6 +14,8 @@ struct RecipeMenuView: View {
     @State private var hasRequestedRecipes = false
     @State private var errorMessage: String?
     @State private var cancellables = Set<AnyCancellable>()
+    @State private var useNewSession = false
+    @State private var showingNewSessionConfirmation = false
 
     var body: some View {
         let _ = RenderTracker.count(Self.self)
@@ -73,13 +75,23 @@ struct RecipeMenuView: View {
                     } else {
                         // Recipe list
                         List {
-                            ForEach(client.availableRecipes) { recipe in
-                                RecipeRowView(
-                                    recipe: recipe,
-                                    onSelect: { recipeId in
-                                        selectRecipe(recipeId: recipeId)
-                                    }
-                                )
+                            // Toggle section at top
+                            Section {
+                                Toggle("Start in new session", isOn: $useNewSession)
+                            } footer: {
+                                Text("Creates a fresh session for this recipe instead of using the current session.")
+                            }
+
+                            // Recipe list section
+                            Section("Recipes") {
+                                ForEach(client.availableRecipes) { recipe in
+                                    RecipeRowView(
+                                        recipe: recipe,
+                                        onSelect: { recipeId in
+                                            selectRecipe(recipeId: recipeId)
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -114,6 +126,13 @@ struct RecipeMenuView: View {
                 isLoading = false
             }
         }
+        .alert("Recipe Started", isPresented: $showingNewSessionConfirmation) {
+            Button("OK") {
+                dismiss()
+            }
+        } message: {
+            Text("Recipe is running in a new session. Go to Sessions to view it.")
+        }
     }
 
     private func handleRecipeLoadTimeout() {
@@ -125,20 +144,30 @@ struct RecipeMenuView: View {
     }
 
     private func selectRecipe(recipeId: String) {
-        print("📤 [RecipeMenuView] Selected recipe: \(recipeId) for session \(sessionId) in \(workingDirectory)")
+        // Determine which session ID to use
+        let targetSessionId: String
+        if useNewSession {
+            targetSessionId = UUID().uuidString.lowercased()
+            print("📤 [RecipeMenuView] Starting recipe in NEW session: \(targetSessionId)")
+        } else {
+            targetSessionId = sessionId
+        }
+
+        print("📤 [RecipeMenuView] Selected recipe: \(recipeId) for session \(targetSessionId) in \(workingDirectory)")
         isLoading = true
         errorMessage = nil
 
-        client.startRecipe(sessionId: sessionId, recipeId: recipeId, workingDirectory: workingDirectory)
+        client.startRecipe(sessionId: targetSessionId, recipeId: recipeId, workingDirectory: workingDirectory)
 
         // Wait for recipe_started confirmation (15 second timeout)
-        // Use a wrapper since we can't use weak self on value types
-        let dismiss = self.dismiss  // Capture dismiss function
-        var isLoadingBinding = $isLoading
-        var errorMessageBinding = $errorMessage
+        // Capture bindings for use in closure
+        let dismissAction = self.dismiss
+        let isLoadingBinding = $isLoading
+        let errorMessageBinding = $errorMessage
+        let shouldShowConfirmation = useNewSession  // Capture current value
 
         client.$activeRecipes
-            .first { $0[sessionId] != nil }
+            .first { $0[targetSessionId] != nil }
             .timeout(.seconds(15), scheduler: DispatchQueue.main)
             .sink(
                 receiveCompletion: { completion in
@@ -147,8 +176,14 @@ struct RecipeMenuView: View {
                         errorMessageBinding.wrappedValue = "Recipe start timeout. Please check your connection and try again."
                     }
                 },
-                receiveValue: { _ in
-                    dismiss()
+                receiveValue: { [self] _ in
+                    isLoadingBinding.wrappedValue = false
+                    if shouldShowConfirmation {
+                        // Show confirmation instead of auto-dismiss
+                        self.showingNewSessionConfirmation = true
+                    } else {
+                        dismissAction()
+                    }
                 }
             )
             .store(in: &cancellables)
