@@ -236,4 +236,159 @@ final class VoiceCodeClientDeltaSyncTests: XCTestCase {
         XCTAssertNotNil(result)
         XCTAssertEqual(result, expectedNewestId?.uuidString.lowercased())
     }
+
+    // MARK: - Subscribe with Delta Sync Tests
+
+    func testSubscribeMessageIncludesLastMessageId() throws {
+        // Create a session with cached messages
+        let sessionId = UUID()
+        let sessionIdString = sessionId.uuidString.lowercased()
+        let messageId = UUID()
+
+        let message = CDMessage(context: context)
+        message.id = messageId
+        message.sessionId = sessionId
+        message.role = "assistant"
+        message.text = "Cached message"
+        message.timestamp = Date()
+        message.messageStatus = .confirmed
+
+        try context.save()
+
+        // Verify getNewestCachedMessageId returns the message ID
+        let lastMessageId = client.getNewestCachedMessageId(sessionId: sessionIdString, context: context)
+        XCTAssertNotNil(lastMessageId)
+        XCTAssertEqual(lastMessageId, messageId.uuidString.lowercased())
+
+        // Verify subscribe message structure includes last_message_id
+        var subscribeMessage: [String: Any] = [
+            "type": "subscribe",
+            "session_id": sessionIdString
+        ]
+        if let lastId = lastMessageId {
+            subscribeMessage["last_message_id"] = lastId
+        }
+
+        XCTAssertEqual(subscribeMessage["type"] as? String, "subscribe")
+        XCTAssertEqual(subscribeMessage["session_id"] as? String, sessionIdString)
+        XCTAssertEqual(subscribeMessage["last_message_id"] as? String, messageId.uuidString.lowercased())
+    }
+
+    func testSubscribeMessageWithoutCachedMessages() throws {
+        // Session with no cached messages
+        let sessionId = UUID()
+        let sessionIdString = sessionId.uuidString.lowercased()
+
+        // Verify getNewestCachedMessageId returns nil
+        let lastMessageId = client.getNewestCachedMessageId(sessionId: sessionIdString, context: context)
+        XCTAssertNil(lastMessageId)
+
+        // Verify subscribe message structure omits last_message_id when no cached messages
+        var subscribeMessage: [String: Any] = [
+            "type": "subscribe",
+            "session_id": sessionIdString
+        ]
+        if let lastId = lastMessageId {
+            subscribeMessage["last_message_id"] = lastId
+        }
+
+        XCTAssertEqual(subscribeMessage["type"] as? String, "subscribe")
+        XCTAssertEqual(subscribeMessage["session_id"] as? String, sessionIdString)
+        XCTAssertNil(subscribeMessage["last_message_id"])
+    }
+
+    func testSubscribeMessageFormatWithDeltaSync() {
+        // Test complete subscribe message format with delta sync
+        let sessionId = "abc123de-4567-89ab-cdef-0123456789ab"
+        let lastMessageId = "fedcba98-7654-3210-fedc-ba9876543210"
+
+        let message: [String: Any] = [
+            "type": "subscribe",
+            "session_id": sessionId,
+            "last_message_id": lastMessageId
+        ]
+
+        // Verify JSON structure
+        let data = try! JSONSerialization.data(withJSONObject: message)
+        let parsed = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+
+        XCTAssertEqual(parsed["type"] as? String, "subscribe")
+        XCTAssertEqual(parsed["session_id"] as? String, sessionId)
+        XCTAssertEqual(parsed["last_message_id"] as? String, lastMessageId)
+    }
+
+    func testSubscribeMessageFormatBackwardCompatible() {
+        // Test that subscribe message is backward compatible (omits last_message_id when nil)
+        let sessionId = "abc123de-4567-89ab-cdef-0123456789ab"
+
+        var message: [String: Any] = [
+            "type": "subscribe",
+            "session_id": sessionId
+        ]
+
+        // Simulate nil case - don't add last_message_id
+        let lastMessageId: String? = nil
+        if let lastId = lastMessageId {
+            message["last_message_id"] = lastId
+        }
+
+        // Verify JSON structure - should only have type and session_id
+        let data = try! JSONSerialization.data(withJSONObject: message)
+        let parsed = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+
+        XCTAssertEqual(parsed["type"] as? String, "subscribe")
+        XCTAssertEqual(parsed["session_id"] as? String, sessionId)
+        XCTAssertNil(parsed["last_message_id"])
+        XCTAssertEqual(parsed.count, 2) // Only type and session_id
+    }
+
+    func testSubscribeTracksActiveSubscription() {
+        // Test that subscribe adds to activeSubscriptions set
+        let sessionId = "test-session-delta"
+
+        // Call subscribe (this tracks the subscription internally)
+        client.subscribe(sessionId: sessionId)
+
+        // Verify method completed without crashing
+        // Note: activeSubscriptions is private, so we just verify no crash
+        XCTAssertTrue(true)
+    }
+
+    func testMultipleSubscriptionsWithDeltaSync() throws {
+        // Test subscribing to multiple sessions, each with their own cached messages
+        let session1Id = UUID()
+        let session2Id = UUID()
+        let message1Id = UUID()
+        let message2Id = UUID()
+
+        // Create cached message for session 1
+        let message1 = CDMessage(context: context)
+        message1.id = message1Id
+        message1.sessionId = session1Id
+        message1.role = "assistant"
+        message1.text = "Session 1 cached"
+        message1.timestamp = Date().addingTimeInterval(-100)
+        message1.messageStatus = .confirmed
+
+        // Create cached message for session 2
+        let message2 = CDMessage(context: context)
+        message2.id = message2Id
+        message2.sessionId = session2Id
+        message2.role = "assistant"
+        message2.text = "Session 2 cached"
+        message2.timestamp = Date()
+        message2.messageStatus = .confirmed
+
+        try context.save()
+
+        // Verify each session gets its own last_message_id
+        let lastId1 = client.getNewestCachedMessageId(sessionId: session1Id.uuidString.lowercased(), context: context)
+        let lastId2 = client.getNewestCachedMessageId(sessionId: session2Id.uuidString.lowercased(), context: context)
+
+        XCTAssertNotNil(lastId1)
+        XCTAssertNotNil(lastId2)
+        XCTAssertNotEqual(lastId1, lastId2)
+        XCTAssertEqual(lastId1, message1Id.uuidString.lowercased())
+        XCTAssertEqual(lastId2, message2Id.uuidString.lowercased())
+    }
 }

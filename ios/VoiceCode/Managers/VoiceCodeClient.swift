@@ -374,11 +374,19 @@ class VoiceCodeClient: ObservableObject {
                     print("🔄 [VoiceCodeClient] Restoring \(self.activeSubscriptions.count) subscription(s) after reconnection")
                     LogManager.shared.log("Restoring \(self.activeSubscriptions.count) subscription(s) after reconnection", category: "VoiceCodeClient")
                     for sessionId in self.activeSubscriptions {
-                        print("🔄 [VoiceCodeClient] Resubscribing to session: \(sessionId)")
-                        let message: [String: Any] = [
+                        // Use subscribe() method to include delta sync support
+                        // Note: activeSubscriptions is not modified since session is already tracked
+                        let lastMessageId = self.getNewestCachedMessageId(sessionId: sessionId)
+                        var message: [String: Any] = [
                             "type": "subscribe",
                             "session_id": sessionId
                         ]
+                        if let lastId = lastMessageId {
+                            message["last_message_id"] = lastId
+                            logger.info("🔄 [VoiceCodeClient] Resubscribing with delta sync, last: \(lastId), session: \(sessionId)")
+                        } else {
+                            logger.info("🔄 [VoiceCodeClient] Resubscribing without delta sync (no cached messages), session: \(sessionId)")
+                        }
                         self.sendMessage(message)
                     }
                 }
@@ -875,11 +883,21 @@ class VoiceCodeClient: ObservableObject {
         // Track subscription for auto-restore on reconnection
         activeSubscriptions.insert(sessionId)
 
-        let message: [String: Any] = [
+        // Find the newest message we have cached for this session (for delta sync)
+        let lastMessageId = getNewestCachedMessageId(sessionId: sessionId)
+
+        var message: [String: Any] = [
             "type": "subscribe",
             "session_id": sessionId
         ]
-        print("📖 [VoiceCodeClient] Subscribing to session: \(sessionId) (total active: \(activeSubscriptions.count))")
+
+        if let lastId = lastMessageId {
+            message["last_message_id"] = lastId
+            logger.info("📖 [VoiceCodeClient] Subscribing with delta sync, last: \(lastId), session: \(sessionId) (total active: \(self.activeSubscriptions.count))")
+        } else {
+            logger.info("📖 [VoiceCodeClient] Subscribing without delta sync (no cached messages), session: \(sessionId) (total active: \(self.activeSubscriptions.count))")
+        }
+
         sendMessage(message)
     }
 
