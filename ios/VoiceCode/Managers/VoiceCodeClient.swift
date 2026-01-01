@@ -3,6 +3,7 @@
 
 import Foundation
 import Combine
+import CoreData
 import UIKit
 import os.log
 
@@ -880,6 +881,34 @@ class VoiceCodeClient: ObservableObject {
         ]
         print("📖 [VoiceCodeClient] Subscribing to session: \(sessionId) (total active: \(activeSubscriptions.count))")
         sendMessage(message)
+    }
+
+    /// Get the UUID of the newest cached message for a session
+    /// Used for delta sync - sending last_message_id to backend to only receive new messages
+    /// - Parameters:
+    ///   - sessionId: Claude session ID (lowercase UUID string)
+    ///   - context: Optional CoreData context for testing. Uses PersistenceController.shared.container.viewContext if nil.
+    /// - Returns: Lowercase UUID string of newest message, or nil if no messages or error
+    func getNewestCachedMessageId(sessionId: String, context: NSManagedObjectContext? = nil) -> String? {
+        guard let sessionUUID = UUID(uuidString: sessionId) else {
+            logger.warning("⚠️ [VoiceCodeClient] Invalid session ID for delta sync: \(sessionId)")
+            return nil
+        }
+
+        let ctx = context ?? PersistenceController.shared.container.viewContext
+        let request = CDMessage.fetchRequest()
+        request.predicate = NSPredicate(format: "sessionId == %@", sessionUUID as CVarArg)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: false)]
+        request.fetchLimit = 1
+
+        do {
+            let messages = try ctx.fetch(request)
+            // CDMessage.id contains the backend's UUID (extracted from "uuid" field)
+            return messages.first?.id.uuidString.lowercased()
+        } catch {
+            logger.error("⚠️ [VoiceCodeClient] Failed to fetch newest message for delta sync: \(error.localizedDescription)")
+            return nil
+        }
     }
     
     func unsubscribe(sessionId: String) {
