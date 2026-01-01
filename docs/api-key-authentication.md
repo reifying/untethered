@@ -42,11 +42,16 @@ Adding security before broader deployment. Currently works only on trusted Tails
 ```
 voice-code-<32-random-hex-characters>
 ```
-Example: `voice-code-a1b2c3d4e5f678901234567890ab`
+Example: `voice-code-a1b2c3d4e5f67890123456789abcdef`
 
 - Prefix `voice-code-` for easy identification (11 characters)
 - 32 hex characters = 128 bits of entropy
 - Total length: 43 characters (11 + 32)
+
+**Validation rules:**
+- Must start with `voice-code-`
+- Must be exactly 43 characters
+- Characters after prefix must be lowercase hex (0-9, a-f)
 
 #### Backend Storage
 **File:** `~/.voice-code/api-key`
@@ -169,8 +174,8 @@ make show-key-qr
          (apply str (map #(format "%02x" (bit-and % 0xff)) bytes)))))
 
 (defn ensure-key-file!
-  "Ensure API key file exists with correct permissions.
-  Creates new key if file doesn't exist."
+  "Ensure API key file exists with correct permissions and valid format.
+  Creates new key if file doesn't exist or contains invalid key."
   []
   (let [file (io/file (key-file-path))
         parent (.getParentFile file)]
@@ -180,14 +185,19 @@ make show-key-qr
       (let [path (.toPath parent)
             perms (PosixFilePermissions/fromString "rwx------")]
         (Files/setPosixFilePermissions path perms)))
-    ;; Create key file with 600 permissions
-    (when-not (.exists file)
-      (let [key (generate-api-key)]
-        (spit file key)
-        (let [path (.toPath file)
-              perms (PosixFilePermissions/fromString "rw-------")]
-          (Files/setPosixFilePermissions path perms))
-        (log/info "Generated new API key")))
+    ;; Check if existing key is valid
+    (let [existing-key (when (.exists file) (str/trim (slurp file)))
+          needs-regeneration (or (nil? existing-key)
+                                  (not (valid-key-format? existing-key)))]
+      (when needs-regeneration
+        (when existing-key
+          (log/warn "Existing API key has invalid format, regenerating"))
+        (let [key (generate-api-key)]
+          (spit file key)
+          (let [path (.toPath file)
+                perms (PosixFilePermissions/fromString "rw-------")]
+            (Files/setPosixFilePermissions path perms))
+          (log/info "Generated new API key"))))
     ;; Return the key
     (str/trim (slurp file))))
 
@@ -213,6 +223,15 @@ make show-key-qr
           (let [a-byte (if (< i (alength a-bytes)) (aget a-bytes i) 0)
                 b-byte (if (< i (alength b-bytes)) (aget b-bytes i) 0)]
             (recur (inc i) (bit-or result (bit-xor a-byte b-byte)))))))))
+
+(defn valid-key-format?
+  "Check if a key string has valid format.
+  Must be 43 chars: 'voice-code-' prefix + 32 lowercase hex chars."
+  [key]
+  (and (string? key)
+       (= 43 (count key))
+       (str/starts-with? key "voice-code-")
+       (re-matches #"[0-9a-f]{32}" (subs key 11))))
 
 (defn validate-api-key
   "Validate an API key against the stored key.
@@ -242,15 +261,19 @@ make show-key-qr
 
 (defn authenticate-connect!
   "Validate API key on connect message and mark channel as authenticated.
-  Returns {:authenticated true} or {:authenticated false :error \"message\"}."
+  Returns {:authenticated true} or {:authenticated false :error \"message\" :log-reason \"...\"}."
   [channel data stored-key]
   (let [provided-key (:api-key data)]
     (cond
       (nil? provided-key)
-      {:authenticated false :error "Missing API key"}
+      {:authenticated false
+       :error "Authentication failed"  ; Generic message to client
+       :log-reason "Missing API key"}  ; Detailed reason for logs
 
       (not (auth/constant-time-equals? stored-key provided-key))
-      {:authenticated false :error "Invalid API key"}
+      {:authenticated false
+       :error "Authentication failed"
+       :log-reason "Invalid API key"}
 
       :else
       (do
@@ -271,7 +294,7 @@ make show-key-qr
           (if (:authenticated auth-result)
             (handle-connect channel data)
             (do
-              (log/warn "Authentication failed" {:error (:error auth-result)})
+              (log/warn "Authentication failed" {:reason (:log-reason auth-result)})
               (http/send! channel
                           (generate-json {:type :auth-error
                                           :message (:error auth-result)}))
@@ -428,7 +451,8 @@ class KeychainManager {
             let updateQuery: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: service,
-                kSecAttrAccount as String: account
+                kSecAttrAccount as String: account,
+                kSecAttrAccessGroup as String: accessGroup
             ]
             let updateAttributes: [String: Any] = [
                 kSecValueData as String: data
@@ -486,9 +510,15 @@ class KeychainManager {
     }
 
     /// Validate API key format before saving
-    /// Key must start with "voice-code-" and be exactly 43 characters
+    /// Key must start with "voice-code-", be exactly 43 characters,
+    /// and contain only lowercase hex characters after the prefix
     func isValidAPIKeyFormat(_ key: String) -> Bool {
-        key.hasPrefix("voice-code-") && key.count == 43
+        guard key.hasPrefix("voice-code-") && key.count == 43 else {
+            return false
+        }
+        let hexPart = key.dropFirst(11)  // Remove "voice-code-" prefix
+        let hexCharacterSet = CharacterSet(charactersIn: "0123456789abcdef")
+        return hexPart.unicodeScalars.allSatisfy { hexCharacterSet.contains($0) }
     }
 }
 ```
@@ -726,6 +756,7 @@ struct APIKeySection: View {
 // QRScannerView.swift
 import SwiftUI
 import AVFoundation
+import AudioToolbox
 
 struct QRScannerView: UIViewControllerRepresentable {
     let onCodeScanned: (String) -> Void
@@ -770,7 +801,45 @@ class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsD
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupCamera()
+        checkCameraPermission()
+    }
+
+    private func checkCameraPermission() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            setupCamera()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                DispatchQueue.main.async {
+                    if granted {
+                        self?.setupCamera()
+                    } else {
+                        self?.showPermissionDeniedAlert()
+                    }
+                }
+            }
+        case .denied, .restricted:
+            showPermissionDeniedAlert()
+        @unknown default:
+            break
+        }
+    }
+
+    private func showPermissionDeniedAlert() {
+        let alert = UIAlertController(
+            title: "Camera Access Required",
+            message: "Please enable camera access in Settings to scan QR codes.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Open Settings", style: .default) { _ in
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                UIApplication.shared.open(url)
+            }
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
+            self?.dismiss(animated: true)
+        })
+        present(alert, animated: true)
     }
 
     private func setupCamera() {
@@ -1054,6 +1123,14 @@ The HTTP `/upload` endpoint uses the `Authorization` header for authentication (
 The Share Extension accesses the API key via the shared Keychain access group:
 
 ```swift
+// ShareError.swift
+enum ShareError: Error {
+    case notAuthenticated
+    case invalidURL
+    case invalidResponse
+    case uploadFailed(statusCode: Int)
+}
+
 // In ShareViewController.swift or similar
 func uploadFile(filename: String, content: Data, storageLocation: String) async throws {
     guard let apiKey = KeychainManager.shared.getAPIKey() else {
@@ -1369,10 +1446,11 @@ class KeychainManagerTests: XCTestCase {
    - Verify: `cat ~/.voice-code/api-key | wc -c` outputs 43 (correct length)
    - Verify: Key starts with `voice-code-`
 
-2. **Backend validates every message**
+2. **Backend validates connect message and enforces session auth**
    - Test: Send `{"type": "connect"}` (no key) → receive `auth_error`, connection closes
    - Test: Send `{"type": "connect", "api_key": "wrong"}` → receive `auth_error`
    - Test: Send with valid key → receive `connected`
+   - Test: Send `{"type": "prompt"}` without prior `connect` → receive `auth_error`
 
 3. **iOS stores key in Keychain**
    - Verify: Key persists after app termination and restart
@@ -1454,12 +1532,50 @@ class KeychainManagerTests: XCTestCase {
 2. iOS continues sending `api_key` (ignored by backend)
 3. No breaking changes - backward compatible
 
+### Edge Cases
+
+#### Corrupted Key File
+If `~/.voice-code/api-key` contains invalid data:
+- Backend should validate key format on load (43 chars, correct prefix, hex-only)
+- If invalid, regenerate key and log warning
+- Implementation: Add `valid-api-key?` function to validate format
+
+#### Channel Cleanup on Disconnect
+When WebSocket closes, the `:authenticated` flag must be cleaned up:
+```clojure
+(defn on-close [channel status]
+  (swap! connected-clients dissoc channel)
+  (log/info "Client disconnected" {:status status}))
+```
+
+#### iOS Auto-Reconnect Backoff
+Exponential backoff for reconnection attempts:
+- Initial delay: 1 second
+- Max delay: 30 seconds
+- Multiplier: 2x per attempt
+- Jitter: ±25% randomization
+
+#### Error Message Information Leakage
+Use generic error messages to avoid leaking information:
+- Both "Missing API key" and "Invalid API key" should return same generic message
+- Log detailed error internally, send generic "Authentication failed" to client
+
+### Future Considerations (Out of Scope)
+
+1. **Rate Limiting**: Limit auth failures per IP to prevent brute-force attacks
+2. **Key Expiration**: Add optional TTL for API keys with refresh mechanism
+3. **Audit Logging**: Log all auth events to a separate audit log
+4. **Multiple Keys**: Support multiple valid keys for device migration
+5. **Backend Keychain**: Store API key in macOS Keychain instead of filesystem
+
 ## 7. Implementation Checklist
 
 ### Backend
 - [ ] Create `voice-code.auth` namespace with key generation/validation
   - [ ] Expose `*key-file-path*` dynamic var for testing
   - [ ] Implement `constant-time-equals?` for secure comparison
+  - [ ] Implement `valid-key-format?` for hex validation
+  - [ ] Validate existing key on startup, regenerate if corrupted
 - [ ] Add ZXing dependency to deps.edn: `com.google.zxing/core {:mvn/version "3.5.3"}`
 - [ ] Create `voice-code.qr` namespace for terminal QR display
   - [ ] Dynamic box sizing based on key length
@@ -1468,6 +1584,8 @@ class KeychainManagerTests: XCTestCase {
   - [ ] Add `:authenticated` flag to `connected-clients` atom
   - [ ] Validate `api_key` only on `connect` message
   - [ ] Check `channel-authenticated?` for subsequent messages
+  - [ ] Clean up `connected-clients` entry on WebSocket close
+  - [ ] Use generic error messages (log detailed reason internally)
 - [ ] Update `hello` message to include `auth_version: 1`
 - [ ] Modify `handle-http-upload` to use `Authorization: Bearer` header
   - [ ] Add `extract-bearer-token` function
@@ -1480,6 +1598,8 @@ class KeychainManagerTests: XCTestCase {
 ### iOS
 - [ ] Create `KeychainManager` class with `isValidAPIKeyFormat` validation
   - [ ] Add `kSecAttrAccessGroup` for Share Extension access
+  - [ ] Validate hex characters (not just length and prefix)
+  - [ ] Include accessGroup in update query
 - [ ] Update `VoiceCodeClient`:
   - [ ] Include `api_key` only in `connect` message (not every message)
   - [ ] Add `requiresReauthentication` published property
@@ -1489,6 +1609,8 @@ class KeychainManagerTests: XCTestCase {
 - [ ] Create `AuthenticationRequiredView` for graceful auth failure UX
 - [ ] Create `APIKeySection` for SettingsView (with validation error display)
 - [ ] Create `QRScannerView` using AVFoundation
+  - [ ] Handle camera permission request and denial
+  - [ ] Validate scanned code format before accepting
 - [ ] Create `APIKeyManagementView` for viewing/updating/deleting key
 - [ ] Update Share Extension:
   - [ ] Use `Authorization: Bearer` header (not body)
