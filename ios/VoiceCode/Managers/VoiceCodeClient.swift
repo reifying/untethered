@@ -501,7 +501,21 @@ class VoiceCodeClient: ObservableObject {
                 // Full conversation history (response to subscribe)
                 if let sessionId = json["session_id"] as? String,
                    let messages = json["messages"] as? [[String: Any]] {
-                    print("📚 [VoiceCodeClient] Received session_history for \(sessionId) with \(messages.count) messages")
+                    // Parse delta sync metadata fields (default true for backward compatibility)
+                    let isComplete = json["is_complete"] as? Bool ?? true
+                    let oldestMessageId = json["oldest_message_id"] as? String
+                    let newestMessageId = json["newest_message_id"] as? String
+
+                    if isComplete {
+                        logger.info("📚 [VoiceCodeClient] Received session_history for \(sessionId) with \(messages.count) messages (complete)")
+                    } else {
+                        logger.warning("⚠️ [VoiceCodeClient] Session history incomplete for \(sessionId): budget exhausted before sending all messages. Received \(messages.count) messages.")
+                    }
+
+                    if let oldest = oldestMessageId, let newest = newestMessageId {
+                        logger.debug("📚 [VoiceCodeClient] Session history range: oldest=\(oldest), newest=\(newest)")
+                    }
+
                     self.sessionSyncManager.handleSessionHistory(sessionId: sessionId, messages: messages)
                 }
 

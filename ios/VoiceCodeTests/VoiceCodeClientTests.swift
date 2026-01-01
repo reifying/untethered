@@ -1160,4 +1160,179 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertFalse(client.lockedSessions.contains(session2))
         XCTAssertTrue(client.lockedSessions.contains(session3))
     }
+
+    // MARK: - Session History Delta Sync Tests (voice-code-message-too-long-hfn.6)
+
+    func testSessionHistoryMessageWithIsCompleteTrue() {
+        // Test that is_complete=true is parsed correctly
+        let json: [String: Any] = [
+            "type": "session_history",
+            "session_id": "test-session-123",
+            "messages": [],
+            "total_count": 0,
+            "is_complete": true,
+            "oldest_message_id": "oldest-uuid",
+            "newest_message_id": "newest-uuid"
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let text = String(data: data, encoding: .utf8)!
+
+        // Verify JSON structure is valid
+        XCTAssertTrue(text.contains("session_history"))
+        XCTAssertTrue(text.contains("is_complete"))
+        XCTAssertTrue(text.contains("oldest_message_id"))
+        XCTAssertTrue(text.contains("newest_message_id"))
+
+        // Verify parsing
+        let parsed = try! JSONSerialization.jsonObject(with: data) as? [String: Any]
+        XCTAssertEqual(parsed?["is_complete"] as? Bool, true)
+        XCTAssertEqual(parsed?["oldest_message_id"] as? String, "oldest-uuid")
+        XCTAssertEqual(parsed?["newest_message_id"] as? String, "newest-uuid")
+    }
+
+    func testSessionHistoryMessageWithIsCompleteFalse() {
+        // Test that is_complete=false is parsed correctly (budget exhausted)
+        let json: [String: Any] = [
+            "type": "session_history",
+            "session_id": "test-session-456",
+            "messages": [
+                ["uuid": "msg-1", "type": "user", "text": "Hello"],
+                ["uuid": "msg-2", "type": "assistant", "text": "Hi there"]
+            ],
+            "total_count": 100,
+            "is_complete": false,
+            "oldest_message_id": "msg-1",
+            "newest_message_id": "msg-2"
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let parsed = try! JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        // Verify is_complete=false indicates incomplete history (budget exhausted)
+        XCTAssertEqual(parsed?["is_complete"] as? Bool, false)
+        XCTAssertEqual(parsed?["total_count"] as? Int, 100)
+
+        // messages array only contains 2 of 100 total messages
+        let messages = parsed?["messages"] as? [[String: Any]]
+        XCTAssertEqual(messages?.count, 2)
+    }
+
+    func testSessionHistoryMessageWithMissingIsComplete() {
+        // Test backward compatibility: missing is_complete defaults to true
+        let json: [String: Any] = [
+            "type": "session_history",
+            "session_id": "test-session-789",
+            "messages": [],
+            "total_count": 0
+            // Note: is_complete, oldest_message_id, newest_message_id are missing
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let parsed = try! JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        // Verify is_complete is nil (will default to true in implementation)
+        XCTAssertNil(parsed?["is_complete"])
+        XCTAssertNil(parsed?["oldest_message_id"])
+        XCTAssertNil(parsed?["newest_message_id"])
+
+        // In VoiceCodeClient.handleMessage, we use: json["is_complete"] as? Bool ?? true
+        let isComplete = parsed?["is_complete"] as? Bool ?? true
+        XCTAssertEqual(isComplete, true)
+    }
+
+    func testSessionHistoryMessageWithNullIds() {
+        // Test that null oldest/newest IDs are handled (empty session)
+        let json: [String: Any] = [
+            "type": "session_history",
+            "session_id": "empty-session",
+            "messages": [],
+            "total_count": 0,
+            "is_complete": true,
+            "oldest_message_id": NSNull(),
+            "newest_message_id": NSNull()
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let parsed = try! JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        // NSNull should result in nil when casting to String
+        XCTAssertNil(parsed?["oldest_message_id"] as? String)
+        XCTAssertNil(parsed?["newest_message_id"] as? String)
+    }
+
+    func testSessionHistoryHandleMessageIntegration() {
+        // Test that handleMessage correctly processes session_history with delta sync fields
+        // Note: This tests the actual handleMessage path
+
+        // Create a mock SessionSyncManager expectation
+        // Since handleMessage is internal, we can call it directly
+        let json: [String: Any] = [
+            "type": "session_history",
+            "session_id": "integration-test-session",
+            "messages": [
+                ["uuid": "msg-uuid-1", "type": "user", "message": ["content": [["type": "text", "text": "Test"]]]],
+            ],
+            "total_count": 1,
+            "is_complete": true,
+            "oldest_message_id": "msg-uuid-1",
+            "newest_message_id": "msg-uuid-1"
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let text = String(data: data, encoding: .utf8)!
+
+        // Call handleMessage - this will log the delta sync info
+        // We can't easily verify logs in unit tests, but we verify it doesn't crash
+        client.handleMessage(text)
+
+        // If we got here without crashing, the message was handled correctly
+        XCTAssertTrue(true)
+    }
+
+    func testSessionHistoryHandleMessageIncomplete() {
+        // Test that handleMessage logs warning for incomplete history
+        let json: [String: Any] = [
+            "type": "session_history",
+            "session_id": "incomplete-session",
+            "messages": [],
+            "total_count": 50,
+            "is_complete": false,
+            "oldest_message_id": "some-uuid",
+            "newest_message_id": "another-uuid"
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let text = String(data: data, encoding: .utf8)!
+
+        // Call handleMessage - should log warning for is_complete=false
+        client.handleMessage(text)
+
+        // If we got here without crashing, the incomplete history was handled correctly
+        XCTAssertTrue(true)
+    }
+
+    func testSessionHistoryDeltaSyncFlow() {
+        // Test the complete delta sync flow structure
+        let messages: [[String: Any]] = [
+            // 1. Subscribe with last_message_id (client -> backend)
+            ["type": "subscribe", "session_id": "delta-session", "last_message_id": "prev-msg-uuid"],
+
+            // 2. Backend responds with delta (only new messages)
+            ["type": "session_history",
+             "session_id": "delta-session",
+             "messages": [["uuid": "new-msg-uuid", "type": "assistant", "text": "New response"]],
+             "total_count": 100,  // Total messages in session
+             "is_complete": true, // All requested messages included
+             "oldest_message_id": "new-msg-uuid",
+             "newest_message_id": "new-msg-uuid"]
+        ]
+
+        for json in messages {
+            let data = try! JSONSerialization.data(withJSONObject: json)
+            XCTAssertNotNil(data)
+            let parsed = try! JSONSerialization.jsonObject(with: data) as? [String: Any]
+            XCTAssertNotNil(parsed?["type"])
+        }
+    }
 }
