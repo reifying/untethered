@@ -483,12 +483,113 @@ Before marking complete:
    :steps (assoc review-commit-steps :implement implement-step)
    :guardrails default-guardrails})
 
+(defn rebase-recipe
+  "Returns the rebase recipe definition.
+   This recipe rebases the current branch on local main with careful conflict resolution."
+  []
+  {:id :rebase
+   :label "Rebase"
+   :description "Rebase current branch on local main with conflict resolution"
+   :initial-step :rebase
+   :steps
+   {:rebase
+    {:prompt "Rebase on the local (not remote) main branch.
+
+## Before Starting
+1. Ensure working directory is clean (`git status`)
+2. Fetch latest changes (`git fetch origin`)
+3. Check current branch name
+
+## Rebase Best Practices
+
+### Preserve Intent of Both Branches
+- The goal is to replay your commits on top of main while preserving the intent of BOTH branches
+- Your branch's changes should achieve their original purpose
+- Main's changes should remain intact and functional
+- The combined result should honor both sets of changes
+
+### Conflict Resolution Guidelines
+- Read both versions carefully before making changes
+- Understand WHY each change was made, not just WHAT changed
+- If main refactored code your branch modifies, apply your changes to the new structure
+- If both branches modified the same logic, combine the intents thoughtfully
+- Test after resolving conflicts to ensure nothing is broken
+
+### When in Doubt
+- If the correct resolution is unclear, select the `ask-questions` outcome
+- It's better to ask than to guess and introduce bugs
+- Provide context about what's unclear when asking
+
+## Execution
+Run: `git rebase main`
+
+Handle any conflicts that arise following the guidelines above."
+     :outcomes #{:complete :ask-questions :conflicts-unresolvable :other}
+     :on-outcome
+     {:complete {:next-step :review}
+      :ask-questions {:action :exit :reason "clarification-needed"}
+      :conflicts-unresolvable {:action :exit :reason "conflicts-require-human-intervention"}
+      :other {:action :exit :reason "user-provided-other"}}}
+
+    :review
+    {:prompt "Ask a subagent to perform a review on the rebase with special attention to any files that had merge conflicts.
+
+## Review Instructions for Subagent
+Use the Task tool to launch a subagent with these instructions:
+
+1. Identify all files that had merge conflicts during the rebase
+2. For each conflicted file:
+   - Verify the resolution preserves intent from both branches
+   - Check for accidentally deleted code
+   - Check for duplicated code
+   - Ensure the combined logic is coherent
+3. Run tests to verify nothing is broken
+4. Report any issues found
+
+Wait for the subagent to complete and report its findings."
+     :outcomes #{:no-issues :issues-found :other}
+     :on-outcome
+     {:no-issues {:next-step :complete}
+      :issues-found {:next-step :fix}
+      :other {:action :exit :reason "user-provided-other"}}}
+
+    :fix
+    {:prompt "Address the issues found in the rebase review.
+
+After fixing:
+- Amend the relevant commits if needed (`git commit --amend` or `git rebase -i`)
+- Run tests to ensure they pass
+- Verify the fix doesn't introduce new issues"
+     :outcomes #{:complete :other}
+     :on-outcome
+     {:complete {:next-step :review}
+      :other {:action :exit :reason "user-provided-other"}}}
+
+    :complete
+    {:prompt "The rebase has been reviewed and is ready.
+
+## Summary
+Provide a brief summary of:
+- Number of commits rebased
+- Any conflicts that were resolved
+- Key changes from main that were incorporated
+
+The branch is now rebased on main and ready for further work or pushing."
+     :model "haiku"
+     :outcomes #{:done :other}
+     :on-outcome
+     {:done {:action :exit :reason "rebase-complete"}
+      :other {:action :exit :reason "user-provided-other"}}}}
+
+   :guardrails default-guardrails})
+
 (def all-recipes
   "Registry of all available recipes"
   {:document-design (document-design-recipe)
    :break-down-tasks (break-down-tasks-recipe)
    :review-and-commit (review-and-commit-recipe)
-   :implement-and-review (implement-and-review-recipe)})
+   :implement-and-review (implement-and-review-recipe)
+   :rebase (rebase-recipe)})
 
 (defn get-recipe
   "Get a recipe by ID. Returns nil if not found."
