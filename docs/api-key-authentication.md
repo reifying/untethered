@@ -1412,10 +1412,10 @@ iOS                                              Backend
   (testing "rejects invalid keys"
     (is (not (auth/valid-key-format? nil)))
     (is (not (auth/valid-key-format? "")))
-    (is (not (auth/valid-key-format? "voice-code-short")))
-    (is (not (auth/valid-key-format? "wrong-prefix-a1b2c3d4e5f67890123456789abcdef")))
-    (is (not (auth/valid-key-format? "voice-code-UPPERCASE1234567890123456789abc")))  ; uppercase
-    (is (not (auth/valid-key-format? "voice-code-ghijklmn1234567890123456789abc")))))  ; non-hex
+    (is (not (auth/valid-key-format? "voice-code-short")))  ; too short
+    (is (not (auth/valid-key-format? "wrong-prefix-a1b2c3d4e5f678901234567890abcd")))  ; wrong prefix (43 chars)
+    (is (not (auth/valid-key-format? "voice-code-ABCDEF12345678901234567890abcdef")))  ; uppercase (43 chars)
+    (is (not (auth/valid-key-format? "voice-code-ghijklmn12345678901234567890abcd")))))  ; non-hex g-n (43 chars)
 ```
 
 #### iOS Tests (`VoiceCodeTests/KeychainManagerTests.swift`)
@@ -1565,7 +1565,7 @@ class KeychainManagerTests: XCTestCase {
 If `~/.voice-code/api-key` contains invalid data:
 - Backend should validate key format on load (43 chars, correct prefix, hex-only)
 - If invalid, regenerate key and log warning
-- Implementation: Add `valid-api-key?` function to validate format
+- Implementation: Use `valid-key-format?` function to validate format
 
 #### Channel Cleanup on Disconnect
 When WebSocket closes, the `:authenticated` flag must be cleaned up:
