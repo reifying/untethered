@@ -305,3 +305,120 @@
           prompt (get-in recipe [:steps :implement :prompt])]
       (is (re-find #"No Tasks Available" prompt))
       (is (re-find #"no-tasks" prompt)))))
+
+;; ============================================================================
+;; Rebase Recipe Tests
+;; ============================================================================
+
+(deftest rebase-recipe-test
+  (testing "retrieves rebase recipe"
+    (let [recipe (recipes/get-recipe :rebase)]
+      (is (not (nil? recipe)))
+      (is (= :rebase (:id recipe)))))
+
+  (testing "has correct initial step"
+    (let [recipe (recipes/get-recipe :rebase)]
+      (is (= :rebase (:initial-step recipe)))))
+
+  (testing "has all required steps"
+    (let [recipe (recipes/get-recipe :rebase)
+          steps (:steps recipe)]
+      (is (contains? steps :rebase))
+      (is (contains? steps :review))
+      (is (contains? steps :fix))
+      (is (contains? steps :complete))))
+
+  (testing "rebase step has correct outcomes including ask-questions"
+    (let [recipe (recipes/get-recipe :rebase)
+          outcomes (get-in recipe [:steps :rebase :outcomes])]
+      (is (= #{:complete :ask-questions :conflicts-unresolvable :other} outcomes))))
+
+  (testing "review step has correct outcomes"
+    (let [recipe (recipes/get-recipe :rebase)
+          outcomes (get-in recipe [:steps :review :outcomes])]
+      (is (= #{:no-issues :issues-found :other} outcomes))))
+
+  (testing "fix step has correct outcomes"
+    (let [recipe (recipes/get-recipe :rebase)
+          outcomes (get-in recipe [:steps :fix :outcomes])]
+      (is (= #{:complete :other} outcomes))))
+
+  (testing "complete step has correct outcomes"
+    (let [recipe (recipes/get-recipe :rebase)
+          outcomes (get-in recipe [:steps :complete :outcomes])]
+      (is (= #{:done :other} outcomes))))
+
+  (testing "complete step uses haiku model"
+    (let [recipe (recipes/get-recipe :rebase)
+          model (get-in recipe [:steps :complete :model])]
+      (is (= "haiku" model))))
+
+  (testing "has valid guardrails"
+    (let [recipe (recipes/get-recipe :rebase)]
+      (is (= 3 (get-in recipe [:guardrails :max-step-visits])))
+      (is (= 100 (get-in recipe [:guardrails :max-total-steps])))))
+
+  (testing "recipe validation passes"
+    (let [recipe (recipes/rebase-recipe)]
+      (is (nil? (recipes/validate-recipe recipe))))))
+
+(deftest rebase-recipe-transitions-test
+  (testing "rebase complete transitions to review"
+    (let [recipe (recipes/get-recipe :rebase)
+          transition (get-in recipe [:steps :rebase :on-outcome :complete])]
+      (is (= :review (:next-step transition)))))
+
+  (testing "ask-questions exits with clarification-needed"
+    (let [recipe (recipes/get-recipe :rebase)
+          transition (get-in recipe [:steps :rebase :on-outcome :ask-questions])]
+      (is (= :exit (:action transition)))
+      (is (= "clarification-needed" (:reason transition)))))
+
+  (testing "conflicts-unresolvable exits appropriately"
+    (let [recipe (recipes/get-recipe :rebase)
+          transition (get-in recipe [:steps :rebase :on-outcome :conflicts-unresolvable])]
+      (is (= :exit (:action transition)))
+      (is (= "conflicts-require-human-intervention" (:reason transition)))))
+
+  (testing "review no-issues transitions to complete"
+    (let [recipe (recipes/get-recipe :rebase)
+          transition (get-in recipe [:steps :review :on-outcome :no-issues])]
+      (is (= :complete (:next-step transition)))))
+
+  (testing "review issues-found transitions to fix"
+    (let [recipe (recipes/get-recipe :rebase)
+          transition (get-in recipe [:steps :review :on-outcome :issues-found])]
+      (is (= :fix (:next-step transition)))))
+
+  (testing "fix complete transitions back to review"
+    (let [recipe (recipes/get-recipe :rebase)
+          transition (get-in recipe [:steps :fix :on-outcome :complete])]
+      (is (= :review (:next-step transition)))))
+
+  (testing "complete done exits with rebase-complete"
+    (let [recipe (recipes/get-recipe :rebase)
+          transition (get-in recipe [:steps :complete :on-outcome :done])]
+      (is (= :exit (:action transition)))
+      (is (= "rebase-complete" (:reason transition))))))
+
+(deftest rebase-recipe-prompts-test
+  (testing "rebase step mentions local main"
+    (let [recipe (recipes/get-recipe :rebase)
+          prompt (get-in recipe [:steps :rebase :prompt])]
+      (is (re-find #"local.*main" prompt))))
+
+  (testing "rebase step mentions preserving intent"
+    (let [recipe (recipes/get-recipe :rebase)
+          prompt (get-in recipe [:steps :rebase :prompt])]
+      (is (re-find #"[Pp]reserve.*[Ii]ntent" prompt))))
+
+  (testing "rebase step mentions ask-questions outcome"
+    (let [recipe (recipes/get-recipe :rebase)
+          prompt (get-in recipe [:steps :rebase :prompt])]
+      (is (re-find #"ask-questions" prompt))))
+
+  (testing "review step mentions subagent"
+    (let [recipe (recipes/get-recipe :rebase)
+          prompt (get-in recipe [:steps :review :prompt])]
+      (is (re-find #"subagent" prompt))
+      (is (re-find #"merge conflicts" prompt)))))
