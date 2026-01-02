@@ -454,4 +454,90 @@ final class GlobalHotkeyManagerTests: XCTestCase {
         XCTAssertEqual(manager1.hotkey.keyCode, UInt32(kVK_ANSI_V))
         XCTAssertEqual(manager2.hotkey.keyCode, UInt32(kVK_ANSI_M))
     }
+
+    // MARK: - AppSettings Integration Tests
+
+    @MainActor
+    func testInitWithAppSettings() {
+        // Clear any existing settings
+        UserDefaults.standard.removeObject(forKey: "hotkeyKeyCode")
+        UserDefaults.standard.removeObject(forKey: "hotkeyModifiers")
+
+        let settings = AppSettings()
+        let manager = GlobalHotkeyManager(appSettings: settings)
+
+        // Should use settings values
+        XCTAssertEqual(manager.hotkey.keyCode, settings.hotkeyKeyCode)
+        XCTAssertEqual(manager.hotkey.modifiers, settings.hotkeyModifiers)
+    }
+
+    @MainActor
+    func testInitWithCustomAppSettingsHotkey() {
+        // Clear any existing settings
+        UserDefaults.standard.removeObject(forKey: "hotkeyKeyCode")
+        UserDefaults.standard.removeObject(forKey: "hotkeyModifiers")
+
+        let settings = AppSettings()
+        settings.updateHotkey(keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(cmdKey | shiftKey))
+
+        let manager = GlobalHotkeyManager(appSettings: settings)
+
+        XCTAssertEqual(manager.hotkey.keyCode, UInt32(kVK_ANSI_K))
+        XCTAssertEqual(manager.hotkey.modifiers, UInt32(cmdKey | shiftKey))
+    }
+
+    @MainActor
+    func testAppSettingsObservationUpdatesHotkey() {
+        // Clear any existing settings
+        UserDefaults.standard.removeObject(forKey: "hotkeyKeyCode")
+        UserDefaults.standard.removeObject(forKey: "hotkeyModifiers")
+
+        let settings = AppSettings()
+        let manager = GlobalHotkeyManager(appSettings: settings)
+
+        // Verify initial state
+        XCTAssertEqual(manager.hotkey.keyCode, UInt32(kVK_ANSI_V))
+        XCTAssertEqual(manager.hotkey.modifiers, UInt32(controlKey | optionKey))
+
+        // Update settings
+        settings.updateHotkey(keyCode: UInt32(kVK_ANSI_J), modifiers: UInt32(optionKey | shiftKey))
+
+        // Manager should update to match
+        XCTAssertEqual(manager.hotkey.keyCode, UInt32(kVK_ANSI_J))
+        XCTAssertEqual(manager.hotkey.modifiers, UInt32(optionKey | shiftKey))
+    }
+
+    @MainActor
+    func testAppSettingsObservationOnlyKeyCode() {
+        // Clear any existing settings
+        UserDefaults.standard.removeObject(forKey: "hotkeyKeyCode")
+        UserDefaults.standard.removeObject(forKey: "hotkeyModifiers")
+
+        let settings = AppSettings()
+        let manager = GlobalHotkeyManager(appSettings: settings)
+
+        // Update only keyCode (via direct property, not updateHotkey)
+        settings.hotkeyKeyCode = UInt32(kVK_ANSI_X)
+
+        XCTAssertEqual(manager.hotkey.keyCode, UInt32(kVK_ANSI_X))
+        // Modifiers should remain unchanged
+        XCTAssertEqual(manager.hotkey.modifiers, UInt32(controlKey | optionKey))
+    }
+
+    @MainActor
+    func testAppSettingsObservationOnlyModifiers() {
+        // Clear any existing settings
+        UserDefaults.standard.removeObject(forKey: "hotkeyKeyCode")
+        UserDefaults.standard.removeObject(forKey: "hotkeyModifiers")
+
+        let settings = AppSettings()
+        let manager = GlobalHotkeyManager(appSettings: settings)
+
+        // Update only modifiers (via direct property, not updateHotkey)
+        settings.hotkeyModifiers = UInt32(cmdKey | shiftKey)
+
+        // KeyCode should remain unchanged
+        XCTAssertEqual(manager.hotkey.keyCode, UInt32(kVK_ANSI_V))
+        XCTAssertEqual(manager.hotkey.modifiers, UInt32(cmdKey | shiftKey))
+    }
 }

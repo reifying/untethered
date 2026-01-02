@@ -185,12 +185,7 @@ struct VoiceSettingsPane: View {
                 .padding(.vertical, 8)
 
             Section {
-                HStack {
-                    Text("Push-to-Talk Hotkey:")
-                    TextField("", text: $settings.pushToTalkHotkey)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 100)
-                }
+                HotkeyPreferenceView(settings: settings)
 
                 Text("Default: ⌃⌥V (Control + Option + V)")
                     .font(.caption)

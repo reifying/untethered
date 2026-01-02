@@ -23,6 +23,8 @@ final class SettingsViewTests: XCTestCase {
         defaults.removeObject(forKey: "showInMenuBar")
         defaults.removeObject(forKey: "speechRate")
         defaults.removeObject(forKey: "pushToTalkHotkey")
+        defaults.removeObject(forKey: "hotkeyKeyCode")
+        defaults.removeObject(forKey: "hotkeyModifiers")
         defaults.removeObject(forKey: "defaultWorkingDirectory")
         defaults.removeObject(forKey: "autoAddToQueue")
         defaults.removeObject(forKey: "sessionRetentionDays")

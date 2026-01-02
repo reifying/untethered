@@ -5,6 +5,7 @@ import Foundation
 import Carbon.HIToolbox
 import OSLog
 import AppKit
+import Combine
 
 private let logger = Logger(subsystem: "dev.910labs.voice-code-desktop", category: "GlobalHotkeyManager")
 
@@ -38,6 +39,12 @@ class GlobalHotkeyManager: ObservableObject {
     /// Unique signature for our hotkey: "VOIC" (0x564F4943)
     private let hotkeySignature: OSType = 0x564F4943
 
+    /// Cancellables for AppSettings observation
+    private var cancellables = Set<AnyCancellable>()
+
+    /// Optional reference to AppSettings for observing hotkey changes
+    private weak var appSettings: AppSettings?
+
     // MARK: - Callback
 
     /// Called when the global hotkey is pressed
@@ -47,6 +54,45 @@ class GlobalHotkeyManager: ObservableObject {
 
     init() {
         logger.debug("GlobalHotkeyManager initialized")
+    }
+
+    /// Initialize with AppSettings to automatically sync hotkey changes from preferences.
+    /// - Parameter appSettings: The app settings to observe for hotkey changes
+    init(appSettings: AppSettings) {
+        self.appSettings = appSettings
+
+        // Initialize with current settings values
+        self.hotkey = (keyCode: appSettings.hotkeyKeyCode, modifiers: appSettings.hotkeyModifiers)
+
+        logger.debug("GlobalHotkeyManager initialized with AppSettings observation")
+
+        // Observe changes to hotkey settings
+        setupAppSettingsObservation(appSettings)
+    }
+
+    /// Set up observation of AppSettings hotkey properties
+    private func setupAppSettingsObservation(_ settings: AppSettings) {
+        // Observe keyCode changes
+        settings.$hotkeyKeyCode
+            .dropFirst()  // Skip initial value
+            .sink { [weak self] newKeyCode in
+                guard let self = self else { return }
+                if self.hotkey.keyCode != newKeyCode {
+                    self.updateHotkey(keyCode: newKeyCode, modifiers: self.hotkey.modifiers)
+                }
+            }
+            .store(in: &cancellables)
+
+        // Observe modifiers changes
+        settings.$hotkeyModifiers
+            .dropFirst()  // Skip initial value
+            .sink { [weak self] newModifiers in
+                guard let self = self else { return }
+                if self.hotkey.modifiers != newModifiers {
+                    self.updateHotkey(keyCode: self.hotkey.keyCode, modifiers: newModifiers)
+                }
+            }
+            .store(in: &cancellables)
     }
 
     deinit {

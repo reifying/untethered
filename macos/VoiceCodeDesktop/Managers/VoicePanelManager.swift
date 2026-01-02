@@ -53,6 +53,15 @@ class VoicePanelManager: ObservableObject {
         self.init(hotkeyManager: GlobalHotkeyManager(), voiceInput: VoiceInputManager())
     }
 
+    /// Convenience initializer that uses AppSettings for hotkey configuration.
+    /// The GlobalHotkeyManager will automatically sync with settings changes.
+    convenience init(appSettings: AppSettings) {
+        self.init(
+            hotkeyManager: GlobalHotkeyManager(appSettings: appSettings),
+            voiceInput: VoiceInputManager()
+        )
+    }
+
     // MARK: - Setup
 
     private func setupBindings() {
