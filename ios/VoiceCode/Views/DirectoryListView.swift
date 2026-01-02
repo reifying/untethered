@@ -794,32 +794,30 @@ struct RecentSessionRowContent: View {
 
     var body: some View {
         let _ = RenderTracker.count(Self.self)
-        VStack(alignment: .leading, spacing: 4) {
-            // Line 1: Session name (user custom name if set, otherwise backend name)
-            Text(session.displayName(context: viewContext))
-                .font(.headline)
-            
-            // Line 2: Session ID (first 8 chars) + working directory
-            HStack(spacing: 8) {
-                Text("[\(session.sessionId.prefix(8))]")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .fontDesign(.monospaced)
-                Text("•")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                Text(session.workingDirectory)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                // Line 1: Session name
+                Text(session.displayName(context: viewContext))
+                    .font(.headline)
+
+                // Line 2: Working directory (last path component only)
+                HStack(spacing: 8) {
+                    Text(URL(fileURLWithPath: session.workingDirectory).lastPathComponent)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+
+                // Line 3: Relative timestamp
+                HStack(spacing: 8) {
+                    Text(session.lastModified.relativeFormatted())
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
             }
-            
-            // Line 3: Last modified timestamp
-            Text(session.lastModified.relativeFormatted())
-                .font(.caption2)
-                .foregroundColor(.secondary)
+
+            Spacer()
         }
-        .padding(.vertical, 4)
     }
 }
 
