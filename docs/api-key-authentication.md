@@ -78,7 +78,8 @@ Authentication happens once on the `connect` message. After successful authentic
 **Current message (no auth):**
 ```json
 {
-  "type": "connect"
+  "type": "connect",
+  "session_id": "<iOS-session-UUID>"
 }
 ```
 
@@ -86,6 +87,7 @@ Authentication happens once on the `connect` message. After successful authentic
 ```json
 {
   "type": "connect",
+  "session_id": "<iOS-session-UUID>",
   "api_key": "voice-code-a1b2c3d4e5f678901234567890abcdef"
 }
 ```
@@ -786,8 +788,8 @@ struct QRScannerView: UIViewControllerRepresentable {
         }
 
         func didScanCode(_ code: String) {
-            // Validate it looks like our API key before accepting
-            if code.hasPrefix("voice-code-") && code.count == 43 {
+            // Validate using same logic as isValidAPIKeyFormat
+            if KeychainManager.shared.isValidAPIKeyFormat(code) {
                 onCodeScanned(code)
             }
         }
@@ -1188,7 +1190,7 @@ func uploadFile(filename: String, content: Data, storageLocation: String) async 
 1. Backend starts
    └─> Checks ~/.voice-code/api-key
        └─> If missing: generates key, creates file with chmod 600
-       └─> Logs: "API key ready. Run 'make show-key' to display."
+       └─> Prints: "✓ API key ready. Run 'make show-key' to display."
 
 2. User runs: make show-key-qr
    └─> Backend displays QR code in terminal
@@ -1311,7 +1313,8 @@ iOS                                              Backend
     (let [key (auth/generate-api-key)]
       (is (string? key))
       (is (str/starts-with? key "voice-code-"))
-      (is (= 43 (count key)))))  ; "voice-code-" (11) + 32 hex chars
+      (is (= 43 (count key)))  ; "voice-code-" (11) + 32 hex chars
+      (is (re-matches #"voice-code-[0-9a-f]{32}" key))))  ; lowercase hex only
 
   (testing "generates unique keys"
     (let [keys (repeatedly 100 auth/generate-api-key)]
