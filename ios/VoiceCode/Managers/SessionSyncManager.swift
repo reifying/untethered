@@ -141,13 +141,24 @@ class SessionSyncManager {
     
     // MARK: - Session History Handling
     
-    /// Handle session_history message from backend (full conversation history)
+    /// Handle session_history message from backend (full or delta conversation history)
+    ///
+    /// With delta sync, backend may return only messages newer than the last_message_id
+    /// iOS sent. This method merges new messages with existing ones instead of replacing all.
+    ///
     /// - Parameters:
     ///   - sessionId: Session UUID
-    ///   - messages: Array of all message dictionaries for the session
+    ///   - messages: Array of message dictionaries (may be delta or full history)
     func handleSessionHistory(sessionId: String, messages: [[String: Any]]) {
         let historyStart = Date()
         logger.info("⏱️ handleSessionHistory START - \(sessionId.prefix(8))... with \(messages.count) messages")
+
+        // Early return if no messages - delta sync with no new messages
+        // Don't touch existing messages
+        if messages.isEmpty {
+            logger.info("⏱️ handleSessionHistory COMPLETE - no new messages (delta sync up to date)")
+            return
+        }
 
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
@@ -168,24 +179,46 @@ class SessionSyncManager {
             }
             logger.info("⏱️ +\(Int(Date().timeIntervalSince(fetchStart) * 1000))ms - fetched session")
 
-            // Clear existing messages (if any) and add all from history
-            let deleteStart = Date()
+            // Get existing message IDs to avoid duplicates
+            let existingIds: Set<UUID>
             if let existingMessages = session.messages?.allObjects as? [CDMessage] {
-                for message in existingMessages {
-                    backgroundContext.delete(message)
-                }
-                logger.info("⏱️ +\(Int(Date().timeIntervalSince(deleteStart) * 1000))ms - deleted \(existingMessages.count) existing messages")
+                existingIds = Set(existingMessages.map { $0.id })
+                logger.info("⏱️ Found \(existingIds.count) existing messages")
+            } else {
+                existingIds = Set()
             }
 
-            // Add all messages from history
+            // Add only new messages (those not already in CoreData)
             let createStart = Date()
+            var addedCount = 0
             for messageData in messages {
+                // Extract UUID from message data
+                if let messageId = self.extractMessageId(from: messageData),
+                   existingIds.contains(messageId) {
+                    // Skip - message already exists
+                    continue
+                }
                 self.createMessage(messageData, sessionId: sessionId, in: backgroundContext, session: session)
+                addedCount += 1
             }
-            logger.info("⏱️ +\(Int(Date().timeIntervalSince(createStart) * 1000))ms - created \(messages.count) messages")
+            logger.info("⏱️ +\(Int(Date().timeIntervalSince(createStart) * 1000))ms - added \(addedCount) new messages (skipped \(messages.count - addedCount) duplicates)")
 
-            // Update session metadata
-            session.messageCount = Int32(messages.count)
+            // Prune old messages to prevent unbounded growth in long-running sessions
+            // This keeps only the newest N messages (iOS only needs recent history; backend retains full)
+            let pruneStart = Date()
+            let prunedCount = CDMessage.pruneOldMessages(sessionId: sessionUUID, in: backgroundContext)
+            if prunedCount > 0 {
+                logger.info("⏱️ +\(Int(Date().timeIntervalSince(pruneStart) * 1000))ms - pruned \(prunedCount) old messages")
+            }
+
+            // Update session metadata with actual count after pruning
+            let finalMessageCount: Int
+            if let currentMessages = session.messages?.allObjects as? [CDMessage] {
+                finalMessageCount = currentMessages.count
+            } else {
+                finalMessageCount = existingIds.count + addedCount - prunedCount
+            }
+            session.messageCount = Int32(finalMessageCount)
             // Note: Do NOT update lastModified here - we're replaying existing history.
             // The correct lastModified timestamp was already set from the backend's session_list message.
             // Only handleSessionUpdated() should update lastModified for truly NEW messages.
@@ -200,7 +233,9 @@ class SessionSyncManager {
                     let saveStart = Date()
                     try backgroundContext.save()
                     logger.info("⏱️ +\(Int(Date().timeIntervalSince(saveStart) * 1000))ms - saved to CoreData")
-                    logger.info("⏱️ handleSessionHistory COMPLETE - total: \(Int(Date().timeIntervalSince(historyStart) * 1000))ms for \(messages.count) messages")
+                    logger.info("⏱️ handleSessionHistory COMPLETE - total: \(Int(Date().timeIntervalSince(historyStart) * 1000))ms, \(addedCount) new messages, \(prunedCount) pruned")
+                } else {
+                    logger.info("⏱️ handleSessionHistory COMPLETE - no changes to save")
                 }
             } catch {
                 logger.error("Failed to save session_history: \(error.localizedDescription)")
