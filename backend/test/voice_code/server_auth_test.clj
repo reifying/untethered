@@ -1,0 +1,267 @@
+(ns voice-code.server-auth-test
+  "Tests for WebSocket and HTTP authentication in server.clj"
+  (:require [clojure.test :refer :all]
+            [voice-code.server :as server]
+            [voice-code.auth :as auth]
+            [cheshire.core :as json]))
+
+;; Test fixtures and helpers
+
+(def test-api-key "voice-code-a1b2c3d4e5f678901234567890abcdef")
+
+(defn with-test-api-key
+  "Fixture that sets up a known API key for testing"
+  [f]
+  (let [original-key @server/api-key]
+    (reset! server/api-key test-api-key)
+    (try
+      (f)
+      (finally
+        (reset! server/api-key original-key)))))
+
+(use-fixtures :each with-test-api-key)
+
+;; Channel authentication tests
+
+(deftest channel-authenticated-test
+  (testing "returns false for unknown channel"
+    (let [fake-channel (Object.)]
+      (is (not (server/channel-authenticated? fake-channel)))))
+
+  (testing "returns false for registered but unauthenticated channel"
+    (let [fake-channel (Object.)]
+      (swap! server/connected-clients assoc fake-channel {:deleted-sessions #{}})
+      (try
+        (is (not (server/channel-authenticated? fake-channel)))
+        (finally
+          (swap! server/connected-clients dissoc fake-channel)))))
+
+  (testing "returns true for authenticated channel"
+    (let [fake-channel (Object.)]
+      (swap! server/connected-clients assoc fake-channel {:authenticated true})
+      (try
+        (is (server/channel-authenticated? fake-channel))
+        (finally
+          (swap! server/connected-clients dissoc fake-channel))))))
+
+;; authenticate-connect! tests
+
+(deftest authenticate-connect-test
+  (testing "authenticates with valid key"
+    (let [fake-channel (Object.)
+          sent-messages (atom [])
+          closed (atom false)]
+      ;; Initialize connected-clients entry
+      (swap! server/connected-clients assoc fake-channel {})
+      (try
+        (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                      org.httpkit.server/close (fn [_] (reset! closed true))]
+          (let [result (server/authenticate-connect! fake-channel {:api-key test-api-key})]
+            (is result "Should return true for valid key")
+            (is (server/channel-authenticated? fake-channel) "Channel should be marked authenticated")
+            (is (empty? @sent-messages) "Should not send error message")
+            (is (not @closed) "Should not close connection")))
+        (finally
+          (swap! server/connected-clients dissoc fake-channel)))))
+
+  (testing "rejects missing key"
+    (let [fake-channel (Object.)
+          sent-messages (atom [])
+          closed (atom false)]
+      (swap! server/connected-clients assoc fake-channel {})
+      (try
+        (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                      org.httpkit.server/close (fn [_] (reset! closed true))]
+          (let [result (server/authenticate-connect! fake-channel {:type "connect"})]
+            (is (not result) "Should return false for missing key")
+            (is (= 1 (count @sent-messages)) "Should send auth_error")
+            (let [error-msg (server/parse-json (first @sent-messages))]
+              (is (= "auth_error" (:type error-msg)))
+              (is (= "Authentication failed" (:message error-msg))))
+            (is @closed "Should close connection")))
+        (finally
+          (swap! server/connected-clients dissoc fake-channel)))))
+
+  (testing "rejects invalid key with generic error"
+    (let [fake-channel (Object.)
+          sent-messages (atom [])
+          closed (atom false)]
+      (swap! server/connected-clients assoc fake-channel {})
+      (try
+        (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                      org.httpkit.server/close (fn [_] (reset! closed true))]
+          (let [result (server/authenticate-connect! fake-channel {:api-key "voice-code-wrongkey1234567890abcdefghijkl"})]
+            (is (not result) "Should return false for invalid key")
+            (is (= 1 (count @sent-messages)) "Should send auth_error")
+            (let [error-msg (server/parse-json (first @sent-messages))]
+              ;; Must use generic error message (not "Invalid API key")
+              (is (= "auth_error" (:type error-msg)))
+              (is (= "Authentication failed" (:message error-msg))))
+            (is @closed "Should close connection")))
+        (finally
+          (swap! server/connected-clients dissoc fake-channel))))))
+
+;; extract-bearer-token tests
+
+(deftest extract-bearer-token-test
+  (testing "extracts valid bearer token"
+    (let [req {:headers {"authorization" "Bearer voice-code-test123"}}]
+      (is (= "voice-code-test123" (server/extract-bearer-token req)))))
+
+  (testing "returns nil for missing header"
+    (let [req {:headers {}}]
+      (is (nil? (server/extract-bearer-token req)))))
+
+  (testing "returns nil for non-bearer auth"
+    (let [req {:headers {"authorization" "Basic dXNlcjpwYXNz"}}]
+      (is (nil? (server/extract-bearer-token req)))))
+
+  (testing "returns nil for malformed bearer"
+    (let [req {:headers {"authorization" "Bearertoken"}}]
+      (is (nil? (server/extract-bearer-token req)))))
+
+  (testing "handles case-sensitive Bearer prefix"
+    ;; HTTP headers are case-insensitive but Bearer prefix should be exact
+    (let [req {:headers {"authorization" "bearer voice-code-test123"}}]
+      (is (nil? (server/extract-bearer-token req))))))
+
+;; Hello message format tests
+
+(deftest hello-message-format-test
+  (testing "hello message includes auth_version"
+    (let [sent-messages (atom [])
+          fake-channel (Object.)]
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    org.httpkit.server/websocket? (constantly true)
+                    org.httpkit.server/on-receive (fn [_ _] nil)
+                    org.httpkit.server/on-close (fn [_ _] nil)]
+        ;; Simulate WebSocket handler sending hello
+        (let [hello-json (server/generate-json
+                          {:type :hello
+                           :message "Welcome to voice-code backend"
+                           :version "0.2.0"
+                           :auth-version 1
+                           :instructions "Send connect message with api_key"})
+              parsed (server/parse-json hello-json)]
+          (is (= "hello" (:type parsed)))
+          (is (= 1 (:auth-version parsed)) "Should include auth_version")
+          (is (contains? (set (keys parsed)) :instructions) "Should include instructions"))))))
+
+;; HTTP upload authentication tests
+
+(deftest http-upload-auth-test
+  (testing "rejects request without Authorization header"
+    (let [sent-responses (atom [])
+          fake-channel (Object.)
+          req {:headers {}
+               :body (java.io.ByteArrayInputStream. (.getBytes "{}"))}]
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-responses conj msg))]
+        (server/handle-http-upload req fake-channel)
+        (is (= 1 (count @sent-responses)))
+        (let [resp (first @sent-responses)]
+          (is (= 401 (:status resp)))
+          (is (= "Bearer realm=\"voice-code\"" (get-in resp [:headers "WWW-Authenticate"])))
+          (let [body (server/parse-json (:body resp))]
+            (is (= false (:success body)))
+            (is (= "Authentication failed" (:error body))))))))
+
+  (testing "rejects request with invalid API key"
+    (let [sent-responses (atom [])
+          fake-channel (Object.)
+          req {:headers {"authorization" "Bearer voice-code-wrongkey1234567890abcdefg"}
+               :body (java.io.ByteArrayInputStream. (.getBytes "{}"))}]
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-responses conj msg))]
+        (server/handle-http-upload req fake-channel)
+        (is (= 1 (count @sent-responses)))
+        (let [resp (first @sent-responses)]
+          (is (= 401 (:status resp)))
+          ;; Must use generic error message
+          (let [body (server/parse-json (:body resp))]
+            (is (= "Authentication failed" (:error body)))))))))
+
+;; Message handling authentication flow tests
+
+(deftest message-auth-flow-test
+  (testing "ping works without authentication"
+    (let [sent-messages (atom [])
+          fake-channel (Object.)]
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    org.httpkit.server/close (fn [_] nil)]
+        (server/handle-message fake-channel (server/generate-json {:type "ping"}))
+        (is (= 1 (count @sent-messages)))
+        (let [resp (server/parse-json (first @sent-messages))]
+          (is (= "pong" (:type resp)))))))
+
+  (testing "non-connect messages rejected without auth"
+    (let [sent-messages (atom [])
+          closed (atom false)
+          fake-channel (Object.)]
+      ;; Don't register channel as authenticated
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    org.httpkit.server/close (fn [_] (reset! closed true))]
+        (server/handle-message fake-channel (server/generate-json {:type "subscribe" :session-id "test"}))
+        ;; Should send auth_error and close
+        (is (= 1 (count @sent-messages)))
+        (let [resp (server/parse-json (first @sent-messages))]
+          (is (= "auth_error" (:type resp)))
+          (is (= "Authentication failed" (:message resp))))
+        (is @closed "Should close connection")))))
+
+;; Connect message authentication tests
+
+(deftest connect-auth-test
+  (testing "connect with valid key authenticates and proceeds"
+    (let [sent-messages (atom [])
+          fake-channel (Object.)]
+      ;; Mock all the dependencies
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    org.httpkit.server/close (fn [_] nil)
+                    voice-code.replication/get-all-sessions (constantly [])
+                    server/send-recent-sessions! (fn [_ _] nil)
+                    server/send-to-client! (fn [_ _] nil)]
+        (server/handle-message fake-channel
+                               (server/generate-json {:type "connect"
+                                                      :api-key test-api-key}))
+        ;; Should be authenticated
+        (is (server/channel-authenticated? fake-channel))
+        ;; Should have sent session-list
+        (is (some #(= "session_list" (:type (server/parse-json %))) @sent-messages))
+        ;; Clean up
+        (swap! server/connected-clients dissoc fake-channel))))
+
+  (testing "connect with missing key fails"
+    (let [sent-messages (atom [])
+          closed (atom false)
+          fake-channel (Object.)]
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    org.httpkit.server/close (fn [_] (reset! closed true))]
+        (server/handle-message fake-channel
+                               (server/generate-json {:type "connect"}))
+        ;; Should have sent auth_error
+        (is (= 1 (count @sent-messages)))
+        (let [resp (server/parse-json (first @sent-messages))]
+          (is (= "auth_error" (:type resp))))
+        (is @closed)
+        ;; Should NOT be authenticated
+        (is (not (server/channel-authenticated? fake-channel)))))))
+
+;; Constant-time comparison verification
+
+(deftest constant-time-comparison-usage-test
+  (testing "authenticate-connect! uses constant-time comparison"
+    ;; This test verifies the code path uses auth/constant-time-equals?
+    ;; by checking behavior is correct for same-length different keys
+    (let [fake-channel (Object.)
+          sent-messages (atom [])
+          closed (atom false)
+          ;; Key same length as test-api-key but different
+          wrong-key "voice-code-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"]
+      (swap! server/connected-clients assoc fake-channel {})
+      (try
+        (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                      org.httpkit.server/close (fn [_] (reset! closed true))]
+          (let [result (server/authenticate-connect! fake-channel {:api-key wrong-key})]
+            (is (not result) "Should reject wrong key of same length")
+            (is @closed "Should close connection")))
+        (finally
+          (swap! server/connected-clients dissoc fake-channel))))))

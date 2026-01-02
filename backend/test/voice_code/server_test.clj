@@ -7,6 +7,22 @@
             [cheshire.core :as json]
             [clojure.java.io :as io]))
 
+;; Test API key for authentication tests
+(def test-api-key "voice-code-0123456789abcdef0123456789abcdef")
+
+(defn with-test-auth
+  "Sets up test API key and marks channel as authenticated for tests that need it."
+  [f]
+  (reset! server/api-key test-api-key)
+  (f)
+  (reset! server/api-key nil))
+
+(defn authenticated-connect-msg
+  "Create a connect message with valid API key for tests."
+  ([] (authenticated-connect-msg {}))
+  ([extra-fields]
+   (json/generate-string (merge {:type "connect" :api_key test-api-key} extra-fields))))
+
 (deftest test-load-config
   (testing "Configuration loading from resources"
     (let [config (server/load-config)]
@@ -248,6 +264,7 @@
 
 (deftest test-new-protocol-connect
   (testing "Connect message returns session list and recent sessions"
+    (reset! server/api-key test-api-key)
     (with-redefs [voice-code.replication/get-all-sessions
                   (fn [] [{:session-id "s1" :name "Session 1" :last-modified 1000 :message-count 5 :ios-notified true :working-directory "/path1"}
                           {:session-id "s2" :name "Session 2" :last-modified 2000 :message-count 10 :ios-notified true :working-directory "/path2"}])]
@@ -255,7 +272,7 @@
       (let [sent-messages (atom [])]
         (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                  (swap! sent-messages conj msg))]
-          (server/handle-message :test-ch "{\"type\":\"connect\"}")
+          (server/handle-message :test-ch (authenticated-connect-msg))
 
           ;; Verify client registered
           (is (contains? @server/connected-clients :test-ch))
@@ -274,11 +291,13 @@
           (let [msg2 (json/parse-string (second @sent-messages) true)]
             (is (= "recent_sessions" (:type msg2)))
             (is (= 5 (:limit msg2))) ;; Default limit is 5
-            (is (vector? (:sessions msg2)))))))))
+            (is (vector? (:sessions msg2)))))))
+    (reset! server/api-key nil)))
 
 (deftest test-prompt-session-id-distinction
   (testing "Prompt with new_session_id uses --session-id flag"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [claude-args (atom nil)]
       (with-redefs [voice-code.claude/invoke-claude-async
                     (fn [prompt callback & {:keys [new-session-id resume-session-id]}]
@@ -290,10 +309,12 @@
         (server/handle-message :test-ch "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-123\"}")
 
         (is (= "new-123" (:new-session-id @claude-args)))
-        (is (nil? (:resume-session-id @claude-args))))))
+        (is (nil? (:resume-session-id @claude-args)))))
+    (reset! server/api-key nil))
 
   (testing "Prompt with resume_session_id uses --resume flag"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [claude-args (atom nil)]
       (with-redefs [voice-code.claude/invoke-claude-async
                     (fn [prompt callback & {:keys [new-session-id resume-session-id]}]
@@ -305,13 +326,15 @@
         (server/handle-message :test-ch "{\"type\":\"prompt\",\"text\":\"continue\",\"resume_session_id\":\"resume-456\"}")
 
         (is (nil? (:new-session-id @claude-args)))
-        (is (= "resume-456" (:resume-session-id @claude-args)))))))
+        (is (= "resume-456" (:resume-session-id @claude-args)))))
+    (reset! server/api-key nil)))
 
 ;; Compaction Tests
 
 (deftest test-handle-compact-session-missing-session-id
   (testing "compact_session message without session_id returns error"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [sent-messages (atom [])]
       (with-redefs [org.httpkit.server/send!
                     (fn [ch msg]
@@ -322,11 +345,13 @@
         (is (= 1 (count @sent-messages)))
         (let [response (first @sent-messages)]
           (is (= "error" (:type response)))
-          (is (= "session_id required in compact_session message" (:message response))))))))
+          (is (= "session_id required in compact_session message" (:message response))))))
+    (reset! server/api-key nil)))
 
 (deftest test-handle-compact-session-success
   (testing "compact_session message triggers compaction and returns results"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [sent-messages (atom [])
           compact-called (atom nil)]
       (with-redefs [org.httpkit.server/send!
@@ -346,11 +371,13 @@
         (is (= 1 (count @sent-messages)))
         (let [response (first @sent-messages)]
           (is (= "compaction_complete" (:type response)))
-          (is (= "test-session-123" (:session_id response))))))))
+          (is (= "test-session-123" (:session_id response))))))
+    (reset! server/api-key nil)))
 
 (deftest test-handle-compact-session-failure
   (testing "compact_session returns error when compaction fails"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [sent-messages (atom [])]
       (with-redefs [org.httpkit.server/send!
                     (fn [ch msg]
@@ -369,11 +396,13 @@
         (let [response (first @sent-messages)]
           (is (= "compaction_error" (:type response)))
           (is (= "test-session-123" (:session_id response)))
-          (is (= "Session not found: test-session-123" (:error response))))))))
+          (is (= "Session not found: test-session-123" (:error response))))))
+    (reset! server/api-key nil)))
 
 (deftest test-handle-compact-session-exception
   (testing "compact_session handles exceptions gracefully"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [sent-messages (atom [])]
       (with-redefs [org.httpkit.server/send!
                     (fn [ch msg]
@@ -391,11 +420,13 @@
         (let [response (first @sent-messages)]
           (is (= "compaction_error" (:type response)))
           (is (= "test-session-123" (:session_id response)))
-          (is (re-find #"Test exception" (:error response))))))))
+          (is (re-find #"Test exception" (:error response))))))
+    (reset! server/api-key nil)))
 
 (deftest test-prompt-uses-stored-working-dir-for-resume
   (testing "Prompt with resume_session_id uses stored working directory from session metadata"
-    (reset! server/connected-clients {:test-ch "ios-123"})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
     (let [working-dir-used (atom nil)]
       (with-redefs [voice-code.replication/get-session-metadata
                     (fn [session-id]
@@ -416,11 +447,13 @@
                                  :working_directory "[from project: -Users-test-placeholder]"}))
 
         (is (= "/Users/test/real/path" @working-dir-used)
-            "Should use stored working directory from session metadata, not iOS placeholder")))))
+            "Should use stored working directory from session metadata, not iOS placeholder")))
+    (reset! server/api-key nil)))
 
 (deftest test-prompt-uses-ios-working-dir-for-new-session
   (testing "Prompt with new_session_id uses iOS-provided working directory"
-    (reset! server/connected-clients {:test-ch "ios-123"})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
     (let [working-dir-used (atom nil)]
       (with-redefs [voice-code.claude/invoke-claude-async
                     (fn [prompt callback & {:keys [working-directory]}]
@@ -435,11 +468,13 @@
                                  :working_directory "/Users/test/new/project"}))
 
         (is (= "/Users/test/new/project" @working-dir-used)
-            "Should use iOS-provided working directory for new sessions")))))
+            "Should use iOS-provided working directory for new sessions")))
+    (reset! server/api-key nil)))
 
 (deftest test-prompt-converts-placeholder-for-new-session
   (testing "Prompt with new_session_id converts placeholder working directory"
-    (reset! server/connected-clients {:test-ch "ios-123"})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
     (let [working-dir-used (atom nil)]
       (with-redefs [voice-code.replication/project-name->working-dir
                     (fn [project-name]
@@ -459,11 +494,13 @@
                                  :working_directory "[from project: -Users-test-real-path]"}))
 
         (is (= "/Users/test/real/path" @working-dir-used)
-            "Should convert placeholder to real path for new sessions")))))
+            "Should convert placeholder to real path for new sessions")))
+    (reset! server/api-key nil)))
 
 (deftest test-prompt-handles-missing-session-metadata
   (testing "Prompt with resume_session_id falls back to iOS dir if session metadata not found"
-    (reset! server/connected-clients {:test-ch "ios-123"})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
     (let [working-dir-used (atom nil)]
       (with-redefs [voice-code.replication/get-session-metadata
                     (fn [session-id] nil) ; Session not found
@@ -480,7 +517,8 @@
                                  :working_directory "/Users/test/fallback"}))
 
         (is (= "/Users/test/fallback" @working-dir-used)
-            "Should fall back to iOS working directory if session metadata not found")))))
+            "Should fall back to iOS working directory if session metadata not found")))
+    (reset! server/api-key nil)))
 
 (deftest test-recent-sessions-message-format
   (testing "recent_sessions message uses snake_case and ISO-8601 timestamps (no name field)"

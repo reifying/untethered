@@ -7,6 +7,9 @@
             [clojure.java.io :as io])
   (:import [java.util Base64]))
 
+;; Test API key for authentication
+(def test-api-key "voice-code-0123456789abcdef0123456789abcdef")
+
 (defn create-temp-dir []
   (let [temp-dir (io/file (System/getProperty "java.io.tmpdir")
                           (str "voice-code-resources-integration-test-" (System/currentTimeMillis)))]
@@ -26,6 +29,7 @@
 
 (deftest test-upload-file-message-handler
   (testing "upload_file message successfully uploads file"
+    (reset! server/api-key test-api-key)
     (let [temp-dir (create-temp-dir)
           test-content "Integration test file"
           base64-content (.encodeToString (Base64/getEncoder) (.getBytes test-content "UTF-8"))
@@ -33,8 +37,8 @@
           sent-messages (atom [])]
 
       (try
-        ;; Register mock channel in connected-clients
-        (swap! server/connected-clients assoc mock-channel {:deleted-sessions #{}})
+        ;; Register mock channel in connected-clients with authentication
+        (swap! server/connected-clients assoc mock-channel {:deleted-sessions #{} :authenticated true})
 
         ;; Mock send function
         (with-redefs [org.httpkit.server/send! (fn [channel msg]
@@ -64,15 +68,17 @@
 
         (finally
           (swap! server/connected-clients dissoc mock-channel)
+          (reset! server/api-key nil)
           (cleanup-dir temp-dir))))))
 
 (deftest test-upload-file-missing-params
   (testing "upload_file returns error when parameters missing"
+    (reset! server/api-key test-api-key)
     (let [mock-channel :test-channel
           sent-messages (atom [])]
 
       (try
-        (swap! server/connected-clients assoc mock-channel {:deleted-sessions #{}})
+        (swap! server/connected-clients assoc mock-channel {:deleted-sessions #{} :authenticated true})
 
         (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                  (swap! sent-messages conj {:channel channel :msg msg}))]
@@ -87,10 +93,12 @@
               (is (re-find #"filename.*required" (:message response))))))
 
         (finally
-          (swap! server/connected-clients dissoc mock-channel))))))
+          (swap! server/connected-clients dissoc mock-channel)
+          (reset! server/api-key nil))))))
 
 (deftest test-list-resources-message-handler
   (testing "list_resources message returns resource list"
+    (reset! server/api-key test-api-key)
     (let [temp-dir (create-temp-dir)
           test-content "List test file"
           base64-content (.encodeToString (Base64/getEncoder) (.getBytes test-content "UTF-8"))
@@ -102,7 +110,7 @@
         (resources/upload-file! temp-dir "list-test.txt" base64-content)
 
         ;; Register mock channel
-        (swap! server/connected-clients assoc mock-channel {:deleted-sessions #{}})
+        (swap! server/connected-clients assoc mock-channel {:deleted-sessions #{} :authenticated true})
 
         ;; Mock send function
         (with-redefs [org.httpkit.server/send! (fn [channel msg]
@@ -128,16 +136,18 @@
 
         (finally
           (swap! server/connected-clients dissoc mock-channel)
+          (reset! server/api-key nil)
           (cleanup-dir temp-dir))))))
 
 (deftest test-list-resources-empty
   (testing "list_resources returns empty list when no resources exist"
+    (reset! server/api-key test-api-key)
     (let [temp-dir (create-temp-dir)
           mock-channel :test-channel
           sent-messages (atom [])]
 
       (try
-        (swap! server/connected-clients assoc mock-channel {:deleted-sessions #{}})
+        (swap! server/connected-clients assoc mock-channel {:deleted-sessions #{} :authenticated true})
 
         (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                  (swap! sent-messages conj {:channel channel :msg msg}))]
@@ -153,10 +163,12 @@
 
         (finally
           (swap! server/connected-clients dissoc mock-channel)
+          (reset! server/api-key nil)
           (cleanup-dir temp-dir))))))
 
 (deftest test-delete-resource-message-handler
   (testing "delete_resource message deletes file"
+    (reset! server/api-key test-api-key)
     (let [temp-dir (create-temp-dir)
           test-content "Delete test file"
           base64-content (.encodeToString (Base64/getEncoder) (.getBytes test-content "UTF-8"))
@@ -170,7 +182,7 @@
           (is (.exists file-path))
 
           ;; Register mock channel
-          (swap! server/connected-clients assoc mock-channel {:deleted-sessions #{}})
+          (swap! server/connected-clients assoc mock-channel {:deleted-sessions #{} :authenticated true})
 
           ;; Mock send function
           (with-redefs [org.httpkit.server/send! (fn [channel msg]
@@ -195,16 +207,18 @@
 
         (finally
           (swap! server/connected-clients dissoc mock-channel)
+          (reset! server/api-key nil)
           (cleanup-dir temp-dir))))))
 
 (deftest test-delete-resource-nonexistent
   (testing "delete_resource returns error for non-existent file"
+    (reset! server/api-key test-api-key)
     (let [temp-dir (create-temp-dir)
           mock-channel :test-channel
           sent-messages (atom [])]
 
       (try
-        (swap! server/connected-clients assoc mock-channel {:deleted-sessions #{}})
+        (swap! server/connected-clients assoc mock-channel {:deleted-sessions #{} :authenticated true})
 
         (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                  (swap! sent-messages conj {:channel channel :msg msg}))]
@@ -221,10 +235,12 @@
 
         (finally
           (swap! server/connected-clients dissoc mock-channel)
+          (reset! server/api-key nil)
           (cleanup-dir temp-dir))))))
 
 (deftest test-round-trip-upload-list-delete
   (testing "Complete workflow: upload -> list -> delete"
+    (reset! server/api-key test-api-key)
     (let [temp-dir (create-temp-dir)
           test-content "Round trip test"
           base64-content (.encodeToString (Base64/getEncoder) (.getBytes test-content "UTF-8"))
@@ -232,7 +248,7 @@
           sent-messages (atom [])]
 
       (try
-        (swap! server/connected-clients assoc mock-channel {:deleted-sessions #{}})
+        (swap! server/connected-clients assoc mock-channel {:deleted-sessions #{} :authenticated true})
 
         (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                  (swap! sent-messages conj {:channel channel :msg msg}))]
@@ -275,4 +291,5 @@
 
         (finally
           (swap! server/connected-clients dissoc mock-channel)
+          (reset! server/api-key nil)
           (cleanup-dir temp-dir))))))

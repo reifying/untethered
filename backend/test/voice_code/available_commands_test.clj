@@ -5,6 +5,15 @@
             [cheshire.core :as json]
             [clojure.java.io :as io]))
 
+;; Test API key for authentication tests
+(def test-api-key "voice-code-0123456789abcdef0123456789abcdef")
+
+(defn authenticated-connect-msg
+  "Create a connect message with valid API key for tests."
+  ([] (authenticated-connect-msg {}))
+  ([extra-fields]
+   (json/generate-string (merge {:type "connect" :api_key test-api-key} extra-fields))))
+
 (defn parse-messages
   "Helper to parse all JSON messages"
   [messages]
@@ -12,13 +21,14 @@
 
 (deftest test-available-commands-sent-after-connected
   (testing "available_commands message sent after connect with no working directory"
+    (reset! server/api-key test-api-key)
     (with-redefs [voice-code.replication/get-all-sessions (fn [] [])]
       (reset! server/connected-clients {})
       (let [sent-messages (atom [])]
         (with-redefs [org.httpkit.server/send!
                       (fn [channel msg]
                         (swap! sent-messages conj msg))]
-          (server/handle-message :test-ch "{\"type\":\"connect\"}")
+          (server/handle-message :test-ch (authenticated-connect-msg))
 
           ;; Parse all messages
           (let [messages (parse-messages @sent-messages)
@@ -56,11 +66,13 @@
               (is (= "bd.ready" (:id bd-ready)))
               (is (= "Beads Ready" (:label bd-ready)))
               (is (= "bd.list" (:id bd-list)))
-              (is (= "Beads List" (:label bd-list))))))))))
+              (is (= "Beads List" (:label bd-list)))))))
+      (reset! server/api-key nil))))
 
 (deftest test-available-commands-sent-after-set-directory
   (testing "available_commands message sent after set-directory with project commands"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [sent-messages (atom [])
           test-dir "/tmp/test-makefile-dir"]
       (with-redefs [org.httpkit.server/send!
@@ -98,7 +110,8 @@
 
           ;; Verify general commands
           (is (= "git.status" (:id (first (:general_commands available-cmd)))))
-          (is (= "git.push" (:id (second (:general_commands available-cmd))))))))))
+          (is (= "git.push" (:id (second (:general_commands available-cmd))))))))
+    (reset! server/api-key nil)))
 
 (deftest test-available-commands-message-format-snake-case
   (testing "available_commands message uses snake_case keys in JSON"
@@ -131,7 +144,8 @@
 
 (deftest test-available-commands-with-missing-makefile
   (testing "available_commands with missing Makefile returns empty project_commands"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [sent-messages (atom [])
           test-dir "/tmp/nonexistent-makefile-dir"]
       (with-redefs [org.httpkit.server/send!
@@ -148,7 +162,8 @@
               available-cmd (second messages)]
           (is (= "available_commands" (:type available-cmd)))
           (is (empty? (:project_commands available-cmd)))
-          (is (= 5 (count (:general_commands available-cmd)))))))))
+          (is (= 5 (count (:general_commands available-cmd)))))))
+    (reset! server/api-key nil)))
 
 (deftest test-available-commands-key-conversion
   (testing "Kebab-case to snake_case conversion for all keys"
@@ -177,7 +192,8 @@
 
 (deftest test-general-commands-always-includes-git-status
   (testing "general_commands always includes all expected commands"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
 
     (doseq [test-dir ["/tmp/dir1" "/home/user/project" "/var/lib/app"]]
       (let [sent-messages (atom [])]
@@ -200,11 +216,13 @@
             (is (contains? cmd-ids "git.push"))
             (is (contains? cmd-ids "git.worktree.list"))
             (is (contains? cmd-ids "bd.ready"))
-            (is (contains? cmd-ids "bd.list"))))))))
+            (is (contains? cmd-ids "bd.list"))))))
+    (reset! server/api-key nil)))
 
 (deftest test-available-commands-with-complex-makefile
   (testing "available_commands handles complex Makefile structure with groups"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [sent-messages (atom [])
           test-dir "/tmp/complex-project"]
       (with-redefs [org.httpkit.server/send!
@@ -236,11 +254,13 @@
 
           (let [test-group (first (filter #(= "test" (:id %)) (:project_commands available-cmd)))]
             (is (= "group" (:type test-group)))
-            (is (= 2 (count (:children test-group))))))))))
+            (is (= 2 (count (:children test-group))))))))
+    (reset! server/api-key nil)))
 
 (deftest test-available-commands-deterministic
   (testing "available_commands produces deterministic output for same input"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [test-dir "/tmp/deterministic-test"
           mock-commands [{:id "build" :label "Build" :type :command}
                          {:id "test" :label "Test" :type :command}]]
@@ -267,7 +287,8 @@
                                   {:type "set_directory"
                                    :path test-dir})))
 
-        (is (= (second @messages1) (second @messages2)))))))
+        (is (= (second @messages1) (second @messages2)))))
+    (reset! server/api-key nil)))
 
 (deftest test-available-commands-format-matches-spec
   (testing "available_commands message format exactly matches STANDARDS.md specification"

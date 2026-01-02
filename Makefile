@@ -74,6 +74,11 @@ help:
 	@echo "Debugging:"
 	@echo "  show-destinations  - Show available build destinations"
 	@echo "  check-sdk          - Show iOS SDK version info"
+	@echo ""
+	@echo "API Key Management:"
+	@echo "  show-key           - Display the current API key"
+	@echo "  show-key-qr        - Display API key with QR code for iOS scanning"
+	@echo "  regenerate-key     - Generate a new API key (invalidates old key)"
 
 # Ensure simulator exists and is booted
 setup-simulator:
@@ -324,3 +329,17 @@ show-destinations: generate-project
 # Debug target to check SDK info
 check-sdk:
 	@xcodebuild -version -sdk iphoneos
+
+# API Key Management
+show-key:
+	@cd $(BACKEND_DIR) && clojure -M -e "(require '[voice-code.auth :as auth]) (if-let [key (auth/read-api-key)] (println (str \"API Key: \" key)) (println \"No API key found. Start the backend to generate one.\"))"
+
+show-key-qr:
+	@cd $(BACKEND_DIR) && clojure -M -e "(require '[voice-code.qr :as qr]) (qr/display-api-key true)"
+
+regenerate-key:
+	@echo "WARNING: This will invalidate your current API key."
+	@echo "You will need to re-pair your iOS device."
+	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
+	@rm -f ~/.voice-code/api-key
+	@cd $(BACKEND_DIR) && clojure -M -e "(require '[voice-code.auth :as auth]) (auth/ensure-key-file!) (println \"New API key generated. Run 'make show-key' to display.\")"
