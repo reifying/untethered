@@ -18,7 +18,7 @@ MACOS_DESTINATION := 'platform=macOS'
 .PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
-.PHONY: macos-generate macos-build macos-test macos-run macos-clean
+.PHONY: macos-generate macos-build macos-test macos-run macos-clean macos-archive macos-dmg macos-notarize macos-staple macos-verify macos-publish macos-store-creds macos-test-distribution
 
 # Default target
 help:
@@ -30,6 +30,15 @@ help:
 	@echo "  macos-test        - Run macOS unit tests"
 	@echo "  macos-run         - Build and run the macOS app"
 	@echo "  macos-clean       - Clean macOS build artifacts"
+	@echo ""
+	@echo "macOS distribution (notarized DMG):"
+	@echo "  macos-publish     - ⭐ Complete workflow: archive, DMG, notarize, staple"
+	@echo "  macos-archive     - Create signed archive and export app"
+	@echo "  macos-dmg         - Create DMG from exported app"
+	@echo "  macos-notarize    - Submit DMG to Apple Notary Service"
+	@echo "  macos-staple      - Staple notarization ticket to DMG"
+	@echo "  macos-verify      - Verify DMG passes Gatekeeper"
+	@echo "  macos-store-creds - Store notarization credentials in keychain"
 	@echo ""
 	@echo "iOS targets:"
 	@echo "  generate-project  - Generate Xcode project from project.yml (XcodeGen)"
@@ -368,3 +377,48 @@ macos-clean:
 	cd $(MACOS_DIR) && xcodebuild clean -scheme $(MACOS_SCHEME) 2>/dev/null || true
 	rm -rf $(MACOS_DIR)/build
 	rm -rf ~/Library/Developer/Xcode/DerivedData/VoiceCodeDesktop-*
+
+# =============================================================================
+# macOS Distribution (Notarized DMG)
+# =============================================================================
+
+# Create signed archive for distribution
+macos-archive: macos-generate
+	@echo "Creating signed macOS archive..."
+	$(WRAP) ./scripts/publish-macos-dmg.sh archive
+
+# Create DMG from archive (without notarization)
+macos-dmg:
+	@echo "Creating DMG..."
+	$(WRAP) ./scripts/publish-macos-dmg.sh dmg
+
+# Submit DMG for notarization
+macos-notarize:
+	@echo "Notarizing DMG..."
+	$(WRAP) ./scripts/publish-macos-dmg.sh notarize
+
+# Staple ticket to DMG
+macos-staple:
+	@echo "Stapling ticket..."
+	$(WRAP) ./scripts/publish-macos-dmg.sh staple
+
+# Verify notarization
+macos-verify:
+	@echo "Verifying notarization..."
+	$(WRAP) ./scripts/publish-macos-dmg.sh verify
+
+# Complete distribution workflow: archive, DMG, notarize, staple
+macos-publish: macos-generate
+	@echo "Publishing macOS app as notarized DMG..."
+	$(WRAP) ./scripts/publish-macos-dmg.sh publish
+	@echo "✅ Distribution complete! DMG ready at build/VoiceCodeDesktop.dmg"
+
+# Store notarization credentials in keychain
+macos-store-creds:
+	@echo "Storing notarization credentials..."
+	./scripts/publish-macos-dmg.sh store-creds
+
+# Test macOS distribution scripts
+macos-test-distribution:
+	@echo "Testing macOS distribution scripts..."
+	./scripts/test-publish-macos-dmg.sh
