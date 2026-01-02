@@ -49,9 +49,17 @@ struct RecentSession: Identifiable, Equatable {
         self.lastModified = lastModified
     }
 
-    // Display name comes directly from backend (no CoreData lookup needed)
-    var displayName: String {
-        name
+    /// Display name: user's custom name if set, otherwise backend name
+    func displayName(context: NSManagedObjectContext) -> String {
+        guard let sessionUUID = UUID(uuidString: sessionId) else {
+            return name
+        }
+        let request = CDUserSession.fetchUserSession(id: sessionUUID)
+        if let userSession = try? context.fetch(request).first,
+           let customName = userSession.customName {
+            return customName
+        }
+        return name
     }
 
     // Batch parse recent sessions (simplified - backend provides all data)

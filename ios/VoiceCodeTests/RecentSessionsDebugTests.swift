@@ -35,11 +35,11 @@ final class RecentSessionsDebugTests: XCTestCase {
         XCTAssertEqual(sessions.count, 1, "Should parse backend JSON with name field")
         XCTAssertEqual(sessions.first?.sessionId, "82cbb54e-f076-453a-8777-7111a3f49eb4")
         XCTAssertEqual(sessions.first?.workingDirectory, "/Users/travisbrown/code/mono/hunt910-stand-filter")
-        XCTAssertEqual(sessions.first?.displayName, "hunt910-stand-filter")
+        XCTAssertEqual(sessions.first?.name, "hunt910-stand-filter")
     }
 
     func testDisplayNameWithCoreDataSession() {
-        // Create a CoreData session with a custom name
+        // Create a CoreData session
         let sessionId = UUID(uuidString: "82cbb54e-f076-453a-8777-7111a3f49eb4")!
         let cdSession = CDBackendSession(context: viewContext)
         cdSession.id = sessionId
@@ -59,23 +59,24 @@ final class RecentSessionsDebugTests: XCTestCase {
 
         try! viewContext.save()
 
-        // Create RecentSession from backend data (includes name from backend)
+        // Create RecentSession from backend data (backend sends Claude summary, not custom name)
         let backendJSON: [String: Any] = [
             "session_id": "82cbb54e-f076-453a-8777-7111a3f49eb4",
-            "name": "My Custom Session Name",
+            "name": "Backend Claude Summary",  // Backend sends Claude summary
             "working_directory": "/Users/travisbrown/code/mono/hunt910-stand-filter",
             "last_modified": "2025-10-23T13:29:31.809Z"
         ]
 
         let sessions = RecentSession.parseRecentSessions([backendJSON])
 
-        // Display name should come from backend
+        // Display name should prefer user's custom name over backend name
         XCTAssertEqual(sessions.count, 1)
-        XCTAssertEqual(sessions.first?.displayName, "My Custom Session Name")
+        XCTAssertEqual(sessions.first?.name, "Backend Claude Summary", "Backend name should be stored")
+        XCTAssertEqual(sessions.first?.displayName(context: viewContext), "My Custom Session Name", "Display name should use custom name")
     }
 
-    func testDisplayNameFromBackend() {
-        // RecentSession gets name directly from backend (no CoreData lookup needed)
+    func testDisplayNameFromBackendWhenNoCustomName() {
+        // When no custom name is set, displayName should return backend name
         let backendJSON: [String: Any] = [
             "session_id": "99999999-9999-9999-9999-999999999999",
             "name": "Code Review: My Project Architecture",
@@ -85,9 +86,10 @@ final class RecentSessionsDebugTests: XCTestCase {
 
         let sessions = RecentSession.parseRecentSessions([backendJSON])
 
-        // Should use backend-provided name (Claude summary)
+        // Should use backend-provided name (Claude summary) when no custom name exists
         XCTAssertEqual(sessions.count, 1)
-        XCTAssertEqual(sessions.first?.displayName, "Code Review: My Project Architecture")
+        XCTAssertEqual(sessions.first?.name, "Code Review: My Project Architecture")
+        XCTAssertEqual(sessions.first?.displayName(context: viewContext), "Code Review: My Project Architecture")
     }
 
     func testParseMinimalJSON() {
@@ -100,6 +102,6 @@ final class RecentSessionsDebugTests: XCTestCase {
 
         let sessions = RecentSession.parseRecentSessions([json])
         XCTAssertEqual(sessions.count, 1, "Should parse JSON with all required fields")
-        XCTAssertEqual(sessions.first?.displayName, "test - 2025-10-23 13:29")
+        XCTAssertEqual(sessions.first?.name, "test - 2025-10-23 13:29")
     }
 }

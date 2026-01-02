@@ -37,7 +37,7 @@ final class RecentSessionBatchParsingTests: XCTestCase {
         // Then: Should parse successfully with backend-provided name
         XCTAssertEqual(result.count, 1)
         XCTAssertEqual(result[0].sessionId, sessionId.uuidString.lowercased())
-        XCTAssertEqual(result[0].displayName, "Test Session from Backend", "Display name should come from backend")
+        XCTAssertEqual(result[0].name, "Test Session from Backend", "Name should come from backend")
         XCTAssertEqual(result[0].workingDirectory, "/Users/test/project")
     }
 
@@ -60,8 +60,8 @@ final class RecentSessionBatchParsingTests: XCTestCase {
 
         for (index, recentSession) in result.enumerated() {
             let expectedName = "Backend Session \(index + 1)"
-            XCTAssertEqual(recentSession.displayName, expectedName,
-                          "Display name should match backend-provided name at index \(index)")
+            XCTAssertEqual(recentSession.name, expectedName,
+                          "Name should match backend-provided name at index \(index)")
         }
     }
 
@@ -99,8 +99,8 @@ final class RecentSessionBatchParsingTests: XCTestCase {
 
         // Then: Should only parse valid sessions
         XCTAssertEqual(result.count, 2, "Should only parse 2 valid sessions out of 4")
-        XCTAssertEqual(result[0].displayName, "Valid Session 1")
-        XCTAssertEqual(result[1].displayName, "Valid Session 2")
+        XCTAssertEqual(result[0].name, "Valid Session 1")
+        XCTAssertEqual(result[1].name, "Valid Session 2")
     }
 
     func testBatchParseWithClaudeSummaryNames() {
@@ -125,8 +125,8 @@ final class RecentSessionBatchParsingTests: XCTestCase {
 
         // Then: Should preserve Claude's summary names
         XCTAssertEqual(result.count, 2)
-        XCTAssertEqual(result[0].displayName, "Code Review: Implementing WebSocket reconnection logic")
-        XCTAssertEqual(result[1].displayName, "Bug Fix: Resolving CoreData threading issues")
+        XCTAssertEqual(result[0].name, "Code Review: Implementing WebSocket reconnection logic")
+        XCTAssertEqual(result[1].name, "Bug Fix: Resolving CoreData threading issues")
     }
 
     func testBatchParsePreservesTimestamps() {
