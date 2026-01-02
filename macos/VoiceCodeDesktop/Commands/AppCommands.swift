@@ -140,6 +140,46 @@ struct AppCommands: Commands {
             sessionMenuItems: sessionMenuItems,
             selectedSessionBinding: selectedSessionBinding
         )
+
+        // Help menu - Debug logs
+        HelpMenuCommands()
+    }
+}
+
+// MARK: - Help Menu Commands
+
+/// Help menu: Show Debug Logs
+struct HelpMenuCommands: Commands {
+    var body: some Commands {
+        CommandGroup(replacing: .help) {
+            Button("Show Logs") {
+                HelpMenuCommands.openDebugLogsWindow()
+            }
+            .keyboardShortcut("l", modifiers: [.command, .option])
+
+            Button("Show Logs in Finder") {
+                HelpMenuCommands.revealLogsInFinder()
+            }
+        }
+    }
+
+    /// Open a new debug logs window
+    static func openDebugLogsWindow() {
+        let logsView = DebugLogsView()
+        let hostingController = NSHostingController(rootView: logsView)
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "Debug Logs"
+        window.setContentSize(NSSize(width: 900, height: 600))
+        window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Reveal logs directory in Finder
+    static func revealLogsInFinder() {
+        let logDir = LogManager.shared.logDirectory
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: logDir.path)
     }
 }
 
@@ -421,4 +461,10 @@ extension Notification.Name {
     /// Request to rename a session
     /// userInfo contains "sessionId" key (UUID)
     static let requestSessionRename = Notification.Name("requestSessionRename")
+
+    /// Show debug logs window
+    static let showDebugLogs = Notification.Name("showDebugLogs")
+
+    /// Reveal logs directory in Finder
+    static let revealLogsInFinder = Notification.Name("revealLogsInFinder")
 }
