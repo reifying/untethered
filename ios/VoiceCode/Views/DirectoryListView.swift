@@ -790,12 +790,13 @@ struct DirectoryRowContent: View {
 
 struct RecentSessionRowContent: View {
     let session: RecentSession
+    @Environment(\.managedObjectContext) private var viewContext
 
     var body: some View {
         let _ = RenderTracker.count(Self.self)
         VStack(alignment: .leading, spacing: 4) {
-            // Line 1: Session name (from backend: Claude summary or dir-timestamp)
-            Text(session.displayName)
+            // Line 1: Session name (user custom name if set, otherwise backend name)
+            Text(session.displayName(context: viewContext))
                 .font(.headline)
             
             // Line 2: Session ID (first 8 chars) + working directory
