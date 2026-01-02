@@ -33,12 +33,16 @@
                 "project_commands should be empty when no directory set")
             (is (vector? (:general_commands available-cmd))
                 "general_commands should be a vector")
-            (is (= 2 (count (:general_commands available-cmd)))
-                "Should have exactly 2 general commands")
+            (is (= 5 (count (:general_commands available-cmd)))
+                "Should have exactly 5 general commands")
 
-            ;; Verify git.status command
-            (let [git-status (first (:general_commands available-cmd))
-                  git-push (second (:general_commands available-cmd))]
+            ;; Verify general commands
+            (let [cmds (:general_commands available-cmd)
+                  git-status (nth cmds 0)
+                  git-push (nth cmds 1)
+                  git-worktree-list (nth cmds 2)
+                  bd-ready (nth cmds 3)
+                  bd-list (nth cmds 4)]
               (is (= "git.status" (:id git-status)))
               (is (= "Git Status" (:label git-status)))
               (is (= "Show git working tree status" (:description git-status)))
@@ -46,7 +50,13 @@
               (is (= "git.push" (:id git-push)))
               (is (= "Git Push" (:label git-push)))
               (is (= "Push commits to remote repository" (:description git-push)))
-              (is (= "command" (:type git-push))))))))))
+              (is (= "command" (:type git-push)))
+              (is (= "git.worktree.list" (:id git-worktree-list)))
+              (is (= "Git Worktree List" (:label git-worktree-list)))
+              (is (= "bd.ready" (:id bd-ready)))
+              (is (= "Beads Ready" (:label bd-ready)))
+              (is (= "bd.list" (:id bd-list)))
+              (is (= "Beads List" (:label bd-list))))))))))
 
 (deftest test-available-commands-sent-after-set-directory
   (testing "available_commands message sent after set-directory with project commands"
@@ -77,7 +87,7 @@
           (is (= "available_commands" (:type available-cmd)))
           (is (= test-dir (:working_directory available-cmd)))
           (is (= 3 (count (:project_commands available-cmd))))
-          (is (= 2 (count (:general_commands available-cmd))))
+          (is (= 5 (count (:general_commands available-cmd))))
 
           ;; Verify project commands
           (let [cmds (:project_commands available-cmd)]
@@ -138,7 +148,7 @@
               available-cmd (second messages)]
           (is (= "available_commands" (:type available-cmd)))
           (is (empty? (:project_commands available-cmd)))
-          (is (= 2 (count (:general_commands available-cmd)))))))))
+          (is (= 5 (count (:general_commands available-cmd)))))))))
 
 (deftest test-available-commands-key-conversion
   (testing "Kebab-case to snake_case conversion for all keys"
@@ -166,7 +176,7 @@
         (is (contains? cmd :group))))))
 
 (deftest test-general-commands-always-includes-git-status
-  (testing "general_commands always includes git.status and git.push"
+  (testing "general_commands always includes all expected commands"
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
 
     (doseq [test-dir ["/tmp/dir1" "/home/user/project" "/var/lib/app"]]
@@ -183,10 +193,14 @@
 
           (let [messages (parse-messages @sent-messages)
                 available-cmd (second messages)
-                general-cmds (:general_commands available-cmd)]
-            (is (= 2 (count general-cmds)))
-            (is (= "git.status" (:id (first general-cmds))))
-            (is (= "git.push" (:id (second general-cmds))))))))))
+                general-cmds (:general_commands available-cmd)
+                cmd-ids (set (map :id general-cmds))]
+            (is (= 5 (count general-cmds)))
+            (is (contains? cmd-ids "git.status"))
+            (is (contains? cmd-ids "git.push"))
+            (is (contains? cmd-ids "git.worktree.list"))
+            (is (contains? cmd-ids "bd.ready"))
+            (is (contains? cmd-ids "bd.list"))))))))
 
 (deftest test-available-commands-with-complex-makefile
   (testing "available_commands handles complex Makefile structure with groups"

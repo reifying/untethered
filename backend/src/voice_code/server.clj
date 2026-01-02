@@ -986,6 +986,18 @@
                                                    {:id "git.push"
                                                     :label "Git Push"
                                                     :description "Push commits to remote repository"
+                                                    :type :command}
+                                                   {:id "git.worktree.list"
+                                                    :label "Git Worktree List"
+                                                    :description "List all git worktrees"
+                                                    :type :command}
+                                                   {:id "bd.ready"
+                                                    :label "Beads Ready"
+                                                    :description "Show tasks ready to work on"
+                                                    :type :command}
+                                                   {:id "bd.list"
+                                                    :label "Beads List"
+                                                    :description "List all beads tasks"
                                                     :type :command}]})))
 
           "subscribe"
@@ -1208,6 +1220,18 @@
                                         {:id "git.push"
                                          :label "Git Push"
                                          :description "Push commits to remote repository"
+                                         :type :command}
+                                        {:id "git.worktree.list"
+                                         :label "Git Worktree List"
+                                         :description "List all git worktrees"
+                                         :type :command}
+                                        {:id "bd.ready"
+                                         :label "Beads Ready"
+                                         :description "Show tasks ready to work on"
+                                         :type :command}
+                                        {:id "bd.list"
+                                         :label "Beads List"
+                                         :description "List all beads tasks"
                                          :type :command}]]
                   (send-to-client! channel
                                    {:type :available-commands
