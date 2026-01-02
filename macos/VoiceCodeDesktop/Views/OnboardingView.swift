@@ -140,9 +140,11 @@ struct WelcomeStep: View {
             Image(systemName: "waveform.circle.fill")
                 .font(.system(size: 80))
                 .foregroundColor(.accentColor)
+                .accessibilityHidden(true)
 
             Text("Welcome to Voice Code")
                 .font(.largeTitle)
+                .accessibilityAddTraits(.isHeader)
 
             Text("Voice-powered AI coding assistant for your projects.")
                 .foregroundColor(.secondary)
@@ -152,6 +154,7 @@ struct WelcomeStep: View {
             Button("Get Started") { onContinue() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+                .accessibilityHint("Continue to server configuration")
         }
         .padding(40)
     }
@@ -253,19 +256,24 @@ struct ServerConfigStep: View {
                         .foregroundColor(.secondary)
                 }
                 .padding(.vertical, 8)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Testing connection to server")
             } else if connectionSuccess {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.green)
+                        .accessibilityHidden(true)
                     Text("Connection successful!")
                         .foregroundColor(.green)
                 }
                 .padding(.vertical, 8)
+                .accessibilityLabel("Connection successful")
             } else if let error = connectionError {
                 VStack(spacing: 4) {
                     HStack(spacing: 8) {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.red)
+                            .accessibilityHidden(true)
                         Text("Connection failed")
                             .foregroundColor(.red)
                     }
@@ -276,6 +284,8 @@ struct ServerConfigStep: View {
                         .padding(.horizontal)
                 }
                 .padding(.vertical, 8)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Connection failed. \(error)")
             }
 
             Spacer()
@@ -423,9 +433,11 @@ struct VoicePermissionsStep: View {
             Image(systemName: "mic.circle.fill")
                 .font(.system(size: 60))
                 .foregroundColor(.accentColor)
+                .accessibilityHidden(true)
 
             Text("Voice Input")
                 .font(.title)
+                .accessibilityAddTraits(.isHeader)
 
             Text("Voice Code uses your microphone for speech-to-text input. Grant permissions to enable voice features.")
                 .multilineTextAlignment(.center)
@@ -524,6 +536,20 @@ struct PermissionRow: View {
     let permissionType: VoicePermissionsStep.PermissionType
     let onRequest: () -> Void
 
+    /// Accessibility label for the permission row
+    private var accessibilityDescription: String {
+        switch status {
+        case .granted:
+            return "\(title) permission granted"
+        case .denied:
+            return "\(title) permission denied. Open Settings to grant."
+        case .requesting:
+            return "Requesting \(title) permission"
+        case .unknown:
+            return "\(title) permission required. \(description)"
+        }
+    }
+
     var body: some View {
         HStack {
             VStack(alignment: .leading) {
@@ -541,6 +567,7 @@ struct PermissionRow: View {
             case .granted:
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundColor(.green)
+                    .accessibilityLabel("Granted")
             case .denied:
                 Button("Open Settings") {
                     if let url = permissionType.settingsURL {
@@ -548,14 +575,19 @@ struct PermissionRow: View {
                     }
                 }
                 .buttonStyle(.bordered)
+                .accessibilityHint("Opens System Settings to grant \(title) permission")
             case .requesting:
                 ProgressView()
+                    .accessibilityLabel("Requesting permission")
             case .unknown:
                 Button("Grant") { onRequest() }
                     .buttonStyle(.bordered)
+                    .accessibilityHint("Request \(title) permission")
             }
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityDescription)
     }
 }
 
@@ -569,9 +601,11 @@ struct SuccessStep: View {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 80))
                 .foregroundColor(.green)
+                .accessibilityHidden(true)
 
             Text("You're All Set!")
                 .font(.largeTitle)
+                .accessibilityAddTraits(.isHeader)
 
             Text("Voice Code is ready to use.")
                 .foregroundColor(.secondary)
@@ -581,6 +615,7 @@ struct SuccessStep: View {
             Button("Start Using Voice Code") { onFinish() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+                .accessibilityHint("Complete setup and open the main window")
         }
         .padding(40)
     }

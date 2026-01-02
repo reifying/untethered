@@ -669,6 +669,12 @@ struct SidebarView: View {
 struct RecentSessionRowView: View {
     let session: RecentSession
 
+    /// Accessibility label for VoiceOver
+    private var accessibilityDescription: String {
+        let directoryName = URL(fileURLWithPath: session.workingDirectory).lastPathComponent
+        return "\(session.displayName), in \(directoryName), modified \(session.lastModified.relativeFormatted())"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             // Line 1: Session name
@@ -699,6 +705,9 @@ struct RecentSessionRowView: View {
                 .foregroundColor(.secondary)
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityDescription)
+        .accessibilityHint("Double-tap to open session")
     }
 }
 
@@ -712,6 +721,19 @@ struct SessionRowView: View {
     /// Whether this session is open in a detached (non-main) window
     private var isInDetachedWindow: Bool {
         windowRegistry.sessionsInDetachedWindows.contains(session.id)
+    }
+
+    /// Accessibility label for VoiceOver
+    private var accessibilityDescription: String {
+        let accessibility = SessionAccessibility(
+            displayName: session.displayName(context: viewContext),
+            workingDirectory: session.workingDirectory,
+            messageCount: session.messageCount,
+            unreadCount: session.unreadCount,
+            isLocked: false,
+            isInDetachedWindow: isInDetachedWindow
+        )
+        return accessibility.accessibilityLabel
     }
 
     var body: some View {
@@ -728,6 +750,7 @@ struct SessionRowView: View {
                             .font(.caption2)
                             .foregroundColor(.secondary)
                             .help("Open in another window")
+                            .accessibilityHidden(true)  // Already in combined label
                     }
                 }
 
@@ -755,9 +778,13 @@ struct SessionRowView: View {
                     .padding(.vertical, 2)
                     .background(Color.accentColor)
                     .clipShape(Capsule())
+                    .accessibilityHidden(true)  // Already in combined label
             }
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityDescription)
+        .accessibilityHint("Double-tap to open session")
         .contextMenu {
             SessionContextMenu(session: session)
         }
@@ -876,6 +903,19 @@ struct SessionListRowView: View {
         windowRegistry.sessionsInDetachedWindows.contains(session.id)
     }
 
+    /// Accessibility label for VoiceOver
+    private var accessibilityDescription: String {
+        let accessibility = SessionAccessibility(
+            displayName: session.displayName(context: viewContext),
+            workingDirectory: session.workingDirectory,
+            messageCount: session.messageCount,
+            unreadCount: session.unreadCount,
+            isLocked: false,
+            isInDetachedWindow: isInDetachedWindow
+        )
+        return accessibility.accessibilityLabel
+    }
+
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
@@ -891,6 +931,7 @@ struct SessionListRowView: View {
                             .font(.caption2)
                             .foregroundColor(.secondary)
                             .help("Open in another window")
+                            .accessibilityHidden(true)  // Already in combined label
                     }
                 }
 
@@ -930,6 +971,7 @@ struct SessionListRowView: View {
                     .padding(.vertical, 2)
                     .background(Color.secondary.opacity(0.15))
                     .clipShape(Capsule())
+                    .accessibilityHidden(true)  // Already in combined label
             }
 
             // Unread badge
@@ -942,9 +984,13 @@ struct SessionListRowView: View {
                     .padding(.vertical, 2)
                     .background(Color.accentColor)
                     .clipShape(Capsule())
+                    .accessibilityHidden(true)  // Already in combined label
             }
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityDescription)
+        .accessibilityHint("Double-tap to open session")
         .contextMenu {
             SessionContextMenu(session: session)
         }
@@ -957,6 +1003,20 @@ struct DirectoryRowView: View {
     let directory: SidebarView.DirectoryInfo
     var isSelected: Bool = false
 
+    /// Accessibility label for VoiceOver
+    private var accessibilityDescription: String {
+        var components = [directory.directoryName]
+        components.append("\(directory.sessionCount) session\(directory.sessionCount == 1 ? "" : "s")")
+        if directory.totalUnread > 0 {
+            components.append("\(directory.totalUnread) unread")
+        }
+        components.append("modified \(directory.lastModified.relativeFormatted())")
+        if isSelected {
+            components.append("selected")
+        }
+        return components.joined(separator: ", ")
+    }
+
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
@@ -965,6 +1025,7 @@ struct DirectoryRowView: View {
                     Image(systemName: "folder.fill")
                         .foregroundColor(isSelected ? .white : .blue)
                         .imageScale(.medium)
+                        .accessibilityHidden(true)
 
                     Text(directory.directoryName)
                         .font(.headline)
@@ -1005,12 +1066,17 @@ struct DirectoryRowView: View {
                     .padding(.vertical, 2)
                     .background(isSelected ? Color.white : Color.red)
                     .clipShape(Capsule())
+                    .accessibilityHidden(true)  // Already in combined label
             }
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
         .background(isSelected ? Color.accentColor : Color.clear)
         .cornerRadius(6)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityDescription)
+        .accessibilityHint("Double-tap to view sessions")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -1097,6 +1163,7 @@ struct EmptySelectionView: View {
             Image(systemName: "bubble.left.and.bubble.right")
                 .font(.system(size: 60))
                 .foregroundColor(.secondary)
+                .accessibilityHidden(true)
 
             Text("Select a Session")
                 .font(.title2)
@@ -1108,6 +1175,8 @@ struct EmptySelectionView: View {
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("No session selected. Choose a session from the sidebar to view the conversation.")
     }
 }
 
@@ -1124,6 +1193,7 @@ struct SessionNotFoundView: View {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 48))
                 .foregroundColor(.orange)
+                .accessibilityHidden(true)
 
             Text("Session Not Found")
                 .font(.title2)
@@ -1139,12 +1209,16 @@ struct SessionNotFoundView: View {
 
             HStack(spacing: 12) {
                 Button("Refresh") { onRefresh() }
+                    .accessibilityHint("Reload the session list")
                 Button("Close") { onDismiss() }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityHint("Close this view and clear selection")
             }
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Session not found. This session may have been deleted or is no longer available.")
     }
 }
 

@@ -8,6 +8,7 @@ import VoiceCodeShared
 struct ContentBlockView: View {
     let block: ContentBlock
     @State private var isExpanded: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(block: ContentBlock) {
         self.block = block
@@ -18,7 +19,13 @@ struct ContentBlockView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             // Header row with icon, summary, and expand button
-            Button(action: { withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() } }) {
+            Button(action: {
+                if reduceMotion {
+                    isExpanded.toggle()
+                } else {
+                    withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+                }
+            }) {
                 HStack(spacing: 8) {
                     Image(systemName: block.icon)
                         .foregroundColor(iconColor)
@@ -51,7 +58,7 @@ struct ContentBlockView: View {
                     .textSelection(.enabled)
                     .padding(.leading, 22) // Align with text after icon
                     .padding(.vertical, 4)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(reduceMotion ? .identity : .opacity.combined(with: .move(edge: .top)))
             }
         }
         .padding(.vertical, 2)

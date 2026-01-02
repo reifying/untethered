@@ -559,12 +559,15 @@ struct ConversationDragOverlayView: View {
                 Image(systemName: "arrow.down.doc.fill")
                     .font(.system(size: 40))
                     .foregroundColor(.accentColor)
+                    .accessibilityHidden(true)
 
                 Text("Drop files to upload")
                     .font(.headline)
                     .foregroundColor(.accentColor)
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Drop zone active. Release to upload files.")
     }
 }
 
@@ -606,11 +609,32 @@ struct MessageRowView: View {
         return attributedString
     }
 
+    /// Accessibility label for VoiceOver
+    private var messageAccessibilityLabel: String {
+        let roleLabel = message.role == "user" ? "Your message" : "Claude's response"
+        let timeLabel = message.timestamp.formatted(date: .omitted, time: .shortened)
+        var statusLabel = ""
+
+        switch message.messageStatus {
+        case .sending:
+            statusLabel = ", sending"
+        case .error:
+            statusLabel = ", failed to send"
+        case .confirmed:
+            break
+        }
+
+        // Include preview of message for VoiceOver
+        let preview = message.displayText.prefix(100)
+        return "\(roleLabel) at \(timeLabel)\(statusLabel). \(preview)"
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             // Role indicator
             roleIcon
                 .frame(width: 24, height: 24)
+                .accessibilityHidden(true)  // Role is in combined label
 
             VStack(alignment: .leading, spacing: 4) {
                 // Role label with timestamp
@@ -628,10 +652,12 @@ struct MessageRowView: View {
                     if message.messageStatus == .sending {
                         ProgressView()
                             .controlSize(.mini)
+                            .accessibilityLabel("Sending")
                     } else if message.messageStatus == .error {
                         Image(systemName: "exclamationmark.circle.fill")
                             .foregroundColor(.red)
                             .font(.caption)
+                            .accessibilityLabel("Failed to send")
                     }
 
                     Spacer()
@@ -661,6 +687,9 @@ struct MessageRowView: View {
         .padding(.horizontal, 12)
         .background(messageBackground)
         .cornerRadius(8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(messageAccessibilityLabel)
+        .accessibilityHint("Double-tap to open context menu for copy, read aloud, and other options")
         .contextMenu {
             Button {
                 NSPasteboard.general.clearContents()

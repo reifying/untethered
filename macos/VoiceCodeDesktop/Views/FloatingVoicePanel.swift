@@ -19,12 +19,21 @@ struct WaveformView: View {
     /// Minimum height for bars (ensures visibility even at 0 level)
     var minHeight: CGFloat = 2
 
+    /// Average audio level for accessibility
+    private var averageLevel: Float {
+        guard !levels.isEmpty else { return 0 }
+        return levels.reduce(0, +) / Float(levels.count)
+    }
+
     var body: some View {
         HStack(spacing: 2) {
             ForEach(levels.indices, id: \.self) { index in
                 WaveformBar(level: levels[index], maxHeight: maxHeight, minHeight: minHeight)
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Audio waveform")
+        .accessibilityValue(averageLevel > 0.5 ? "Strong input" : averageLevel > 0.2 ? "Moderate input" : "Low input")
     }
 }
 
@@ -33,12 +42,13 @@ struct WaveformBar: View {
     let level: Float
     let maxHeight: CGFloat
     let minHeight: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         RoundedRectangle(cornerRadius: 2)
             .fill(Color.accentColor)
             .frame(width: 4, height: barHeight)
-            .animation(.easeOut(duration: 0.1), value: level)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: level)
     }
 
     private var barHeight: CGFloat {
@@ -166,6 +176,7 @@ private struct TranscriptionPreview: View {
         .padding(.vertical, 4)
         .background(Color.secondary.opacity(0.1))
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .accessibilityLabel(text.isEmpty ? "Listening for speech" : "Transcription: \(text)")
     }
 }
 
@@ -182,10 +193,12 @@ private struct StatusControls: View {
                 .fill(isRecording ? .red : .gray)
                 .frame(width: 8, height: 8)
                 .opacity(isRecording ? 1 : 0.5)
+                .accessibilityHidden(true)
 
             Text(isRecording ? "Listening..." : "Stopped")
                 .foregroundColor(.secondary)
                 .font(.caption)
+                .accessibilityLabel(isRecording ? "Recording in progress" : "Recording stopped")
 
             Spacer()
 
@@ -196,6 +209,7 @@ private struct StatusControls: View {
             .keyboardShortcut(.escape, modifiers: [])
             .buttonStyle(.plain)
             .foregroundColor(.secondary)
+            .accessibilityHint("Discard transcription and close panel. Press Escape.")
 
             // Accept button
             Button("Accept") {
@@ -203,6 +217,7 @@ private struct StatusControls: View {
             }
             .keyboardShortcut(.return, modifiers: [])
             .buttonStyle(.borderedProminent)
+            .accessibilityHint("Use this transcription as your message. Press Return.")
         }
     }
 }

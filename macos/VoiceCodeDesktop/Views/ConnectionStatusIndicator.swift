@@ -21,22 +21,23 @@ struct ConnectionStatusIndicator: View {
 
     /// Animation state for pulsing/rotating effects
     @State private var isAnimating = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Image(systemName: iconName)
             .font(.system(size: size))
             .foregroundColor(iconColor)
-            .symbolEffect(.pulse, options: .repeating, isActive: shouldPulse)
-            .rotationEffect(shouldRotate ? .degrees(isAnimating ? 360 : 0) : .zero)
+            .symbolEffect(.pulse, options: .repeating, isActive: shouldPulse && !reduceMotion)
+            .rotationEffect(shouldRotate && !reduceMotion ? .degrees(isAnimating ? 360 : 0) : .zero)
             .animation(
-                shouldRotate ? .linear(duration: 1.0).repeatForever(autoreverses: false) : .default,
+                shouldRotate && !reduceMotion ? .linear(duration: 1.0).repeatForever(autoreverses: false) : .default,
                 value: isAnimating
             )
             .onAppear {
-                isAnimating = shouldRotate
+                isAnimating = shouldRotate && !reduceMotion
             }
             .onChange(of: connectionState) {
-                isAnimating = shouldRotate
+                isAnimating = shouldRotate && !reduceMotion
             }
             .accessibilityLabel(accessibilityLabel)
     }
