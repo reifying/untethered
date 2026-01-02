@@ -42,7 +42,7 @@ Adding security before broader deployment. Currently works only on trusted Tails
 ```
 voice-code-<32-random-hex-characters>
 ```
-Example: `voice-code-a1b2c3d4e5f67890123456789abcdef`
+Example: `voice-code-a1b2c3d4e5f678901234567890abcdef`
 
 - Prefix `voice-code-` for easy identification (11 characters)
 - 32 hex characters = 128 bits of entropy
@@ -56,7 +56,7 @@ Example: `voice-code-a1b2c3d4e5f67890123456789abcdef`
 #### Backend Storage
 **File:** `~/.voice-code/api-key`
 ```
-voice-code-a1b2c3d4e5f67890123456789abcdef
+voice-code-a1b2c3d4e5f678901234567890abcdef
 ```
 - Plain text, single line
 - File permissions: `chmod 600` (owner read/write only)
@@ -86,7 +86,7 @@ Authentication happens once on the `connect` message. After successful authentic
 ```json
 {
   "type": "connect",
-  "api_key": "voice-code-a1b2c3d4e5f67890123456789abcdef"
+  "api_key": "voice-code-a1b2c3d4e5f678901234567890abcdef"
 }
 ```
 
@@ -111,7 +111,7 @@ The `auth_version` field allows future protocol changes while maintaining backwa
 ```json
 {
   "type": "auth_error",
-  "message": "Invalid or missing API key"
+  "message": "Authentication failed"
 }
 ```
 
@@ -123,7 +123,7 @@ Backend closes WebSocket connection after sending this.
 make show-key
 
 # Output:
-API Key: voice-code-a1b2c3d4e5f67890123456789abcdef
+API Key: voice-code-a1b2c3d4e5f678901234567890abcdef
 
 # Or with QR code:
 make show-key-qr
@@ -307,12 +307,12 @@ make show-key-qr
             "ping" (handle-ping channel)
             ;; ... rest of handlers
             )
-          ;; Not authenticated - reject
+          ;; Not authenticated - reject with generic error
           (do
             (log/warn "Unauthenticated message rejected" {:type msg-type})
             (http/send! channel
                         (generate-json {:type :auth-error
-                                        :message "Not authenticated. Send connect with api_key first."}))
+                                        :message "Authentication failed"}))
             (http/close channel)))))
     (catch Exception e
       ;; ... error handling
@@ -1375,7 +1375,7 @@ iOS                                              Backend
 (def mock-channel (atom nil))
 
 (deftest authenticate-connect-test
-  (let [stored-key "voice-code-a1b2c3d4e5f67890123456789abcdef"]
+  (let [stored-key "voice-code-a1b2c3d4e5f678901234567890abcdef"]
 
     (testing "authenticates valid key"
       (reset! server/connected-clients {})
@@ -1406,7 +1406,7 @@ iOS                                              Backend
 
 (deftest valid-key-format-test
   (testing "accepts valid keys"
-    (is (auth/valid-key-format? "voice-code-a1b2c3d4e5f67890123456789abcdef"))
+    (is (auth/valid-key-format? "voice-code-a1b2c3d4e5f678901234567890abcdef"))
     (is (auth/valid-key-format? "voice-code-00000000000000000000000000000000")))
 
   (testing "rejects invalid keys"
