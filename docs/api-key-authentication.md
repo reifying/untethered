@@ -1160,7 +1160,7 @@ func uploadFile(filename: String, content: Data, storageLocation: String) async 
 
     request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
-    let (data, response) = try await URLSession.shared.data(for: request)
+    let (_, response) = try await URLSession.shared.data(for: request)
 
     guard let httpResponse = response as? HTTPURLResponse else {
         throw ShareError.invalidResponse
@@ -1202,7 +1202,7 @@ func uploadFile(filename: String, content: Data, storageLocation: String) async 
    └─> Key saved to Keychain
 
 4. iOS connects to backend
-   └─> Sends: {"type": "connect", "api_key": "voice-code-..."}
+   └─> Sends: {"type": "connect", "session_id": "...", "api_key": "voice-code-..."}
    └─> Backend validates key
    └─> Sends: {"type": "connected", ...}
    └─> iOS sets isAuthenticated = true
@@ -1220,6 +1220,7 @@ iOS                                              Backend
  │         "auth_version": 1}                        │
  │                                                   │
  │  ──── {"type": "connect",  ────>                  │
+ │        "session_id": "...",                       │
  │        "api_key": "..."}                          │
  │                                     ┌─────────────┤
  │                                     │ Validate    │
@@ -1245,7 +1246,8 @@ iOS                                              Backend
 
 iOS                                              Backend
  │                                                   │
- │  ──── {"type": "connect"} ────>                   │
+ │  ──── {"type": "connect",  ────>                  │
+ │        "session_id": "..."}                       │
  │        (no api_key!)                              │
  │                                     ┌─────────────┤
  │                                     │ Missing key │
@@ -1278,6 +1280,7 @@ iOS                                              Backend
  │         "auth_version": 1}                        │
  │                                                   │
  │  ──── {"type": "connect",  ────>                  │
+ │        "session_id": "...",                       │
  │        "api_key": "..."}        (from Keychain)   │
  │                                     ┌─────────────┤
  │                                     │ Validate    │
@@ -1465,6 +1468,27 @@ class KeychainManagerTests: XCTestCase {
         try KeychainManager.shared.saveAPIKey("voice-code-second")
 
         XCTAssertEqual(KeychainManager.shared.getAPIKey(), "voice-code-second")
+    }
+
+    func testIsValidAPIKeyFormat() {
+        // Valid keys
+        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("voice-code-a1b2c3d4e5f678901234567890abcdef"))
+        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("voice-code-00000000000000000000000000000000"))
+
+        // Invalid: wrong prefix
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("wrong-prefix-a1b2c3d4e5f678901234567890abcd"))
+
+        // Invalid: too short
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-short"))
+
+        // Invalid: uppercase hex
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-ABCDEF12345678901234567890abcdef"))
+
+        // Invalid: non-hex characters
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-ghijklmn12345678901234567890abcd"))
+
+        // Invalid: empty
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat(""))
     }
 }
 ```
