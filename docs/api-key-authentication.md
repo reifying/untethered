@@ -56,7 +56,7 @@ Example: `voice-code-a1b2c3d4e5f67890123456789abcdef`
 #### Backend Storage
 **File:** `~/.voice-code/api-key`
 ```
-voice-code-a1b2c3d4e5f678901234567890ab
+voice-code-a1b2c3d4e5f67890123456789abcdef
 ```
 - Plain text, single line
 - File permissions: `chmod 600` (owner read/write only)
@@ -86,7 +86,7 @@ Authentication happens once on the `connect` message. After successful authentic
 ```json
 {
   "type": "connect",
-  "api_key": "voice-code-a1b2c3d4e5f678901234567890ab"
+  "api_key": "voice-code-a1b2c3d4e5f67890123456789abcdef"
 }
 ```
 
@@ -123,7 +123,7 @@ Backend closes WebSocket connection after sending this.
 make show-key
 
 # Output:
-API Key: voice-code-a1b2c3d4e5f678901234567890ab
+API Key: voice-code-a1b2c3d4e5f67890123456789abcdef
 
 # Or with QR code:
 make show-key-qr
@@ -172,6 +172,15 @@ make show-key-qr
     (.nextBytes random bytes)
     (str "voice-code-"
          (apply str (map #(format "%02x" (bit-and % 0xff)) bytes)))))
+
+(defn valid-key-format?
+  "Check if a key string has valid format.
+  Must be 43 chars: 'voice-code-' prefix + 32 lowercase hex chars."
+  [key]
+  (and (string? key)
+       (= 43 (count key))
+       (str/starts-with? key "voice-code-")
+       (re-matches #"[0-9a-f]{32}" (subs key 11))))
 
 (defn ensure-key-file!
   "Ensure API key file exists with correct permissions and valid format.
@@ -223,15 +232,6 @@ make show-key-qr
           (let [a-byte (if (< i (alength a-bytes)) (aget a-bytes i) 0)
                 b-byte (if (< i (alength b-bytes)) (aget b-bytes i) 0)]
             (recur (inc i) (bit-or result (bit-xor a-byte b-byte)))))))))
-
-(defn valid-key-format?
-  "Check if a key string has valid format.
-  Must be 43 chars: 'voice-code-' prefix + 32 lowercase hex chars."
-  [key]
-  (and (string? key)
-       (= 43 (count key))
-       (str/starts-with? key "voice-code-")
-       (re-matches #"[0-9a-f]{32}" (subs key 11))))
 
 (defn validate-api-key
   "Validate an API key against the stored key.
@@ -345,13 +345,18 @@ make show-key-qr
     (.encode writer text BarcodeFormat/QR_CODE size size)))
 
 (defn render-qr-terminal
-  "Render QR code to terminal using Unicode block characters."
+  "Render QR code to terminal using Unicode block characters.
+  Note: QR codes need high contrast. This renders dark modules as blocks
+  and light modules as spaces. For dark terminal backgrounds, you may need
+  to invert colors or ensure sufficient contrast."
   [^BitMatrix matrix]
   (let [width (.getWidth matrix)
         height (.getHeight matrix)]
     ;; Use Unicode block characters for compact display
     ;; Top half block: ▀ (U+2580), Bottom half block: ▄ (U+2584)
     ;; Full block: █ (U+2588), Space for white
+    ;; Note: Standard QR = black modules on white background
+    ;; Terminal with light text on dark bg may need inversion
     (doseq [y (range 0 height 2)]
       (doseq [x (range width)]
         (let [top (.get matrix x y)
@@ -1085,24 +1090,23 @@ The HTTP `/upload` endpoint uses the `Authorization` header for authentication (
   "Handle HTTP POST /upload requests with Bearer token authentication."
   [req channel]
   (try
-    (let [provided-key (extract-bearer-token req)]
+    (let [provided-key (extract-bearer-token req)
+          ;; Use generic error message, log detailed reason
+          auth-failed (fn [log-reason]
+                        (log/warn "HTTP auth failed" {:reason log-reason})
+                        (http/send! channel
+                                    {:status 401
+                                     :headers {"Content-Type" "application/json"
+                                               "WWW-Authenticate" "Bearer realm=\"voice-code\""}
+                                     :body (generate-json
+                                            {:success false
+                                             :error "Authentication failed"})}))]
       (cond
         (nil? provided-key)
-        (http/send! channel
-                    {:status 401
-                     :headers {"Content-Type" "application/json"
-                               "WWW-Authenticate" "Bearer realm=\"voice-code\""}
-                     :body (generate-json
-                            {:success false
-                             :error "Missing Authorization header"})})
+        (auth-failed "Missing Authorization header")
 
         (not (auth/constant-time-equals? @api-key provided-key))
-        (http/send! channel
-                    {:status 401
-                     :headers {"Content-Type" "application/json"}
-                     :body (generate-json
-                            {:success false
-                             :error "Invalid API key"})})
+        (auth-failed "Invalid API key")
 
         :else
         ;; Authenticated - proceed with upload
@@ -1245,7 +1249,7 @@ iOS                                              Backend
  │                                     │ Missing key │
  │                                     └─────────────┤
  │  <──── {"type": "auth_error",  ────               │
- │         "message": "Missing API key"}             │
+ │         "message": "Authentication failed"}       │
  │                                                   │
  │  <──── WebSocket close ────                       │
  │                                                   │
@@ -1367,28 +1371,51 @@ iOS                                              Backend
             [voice-code.server :as server]
             [voice-code.auth :as auth]))
 
-(deftest authenticate-message-test
-  (let [stored-key "voice-code-testkey123"]
+;; Mock channel for testing
+(def mock-channel (atom nil))
+
+(deftest authenticate-connect-test
+  (let [stored-key "voice-code-a1b2c3d4e5f67890123456789abcdef"]
 
     (testing "authenticates valid key"
-      (let [result (server/authenticate-message
+      (reset! server/connected-clients {})
+      (let [result (server/authenticate-connect!
+                     mock-channel
                      {:type "connect" :api-key stored-key}
                      stored-key)]
-        (is (:authenticated result))))
+        (is (:authenticated result))
+        (is (get-in @server/connected-clients [mock-channel :authenticated]))))
 
     (testing "rejects missing key"
-      (let [result (server/authenticate-message
+      (let [result (server/authenticate-connect!
+                     mock-channel
                      {:type "connect"}
                      stored-key)]
         (is (not (:authenticated result)))
-        (is (= "Missing API key" (:error result)))))
+        (is (= "Authentication failed" (:error result)))
+        (is (= "Missing API key" (:log-reason result)))))
 
     (testing "rejects invalid key"
-      (let [result (server/authenticate-message
+      (let [result (server/authenticate-connect!
+                     mock-channel
                      {:type "connect" :api-key "wrong-key"}
                      stored-key)]
         (is (not (:authenticated result)))
-        (is (= "Invalid API key" (:error result)))))))
+        (is (= "Authentication failed" (:error result)))
+        (is (= "Invalid API key" (:log-reason result)))))))
+
+(deftest valid-key-format-test
+  (testing "accepts valid keys"
+    (is (auth/valid-key-format? "voice-code-a1b2c3d4e5f67890123456789abcdef"))
+    (is (auth/valid-key-format? "voice-code-00000000000000000000000000000000")))
+
+  (testing "rejects invalid keys"
+    (is (not (auth/valid-key-format? nil)))
+    (is (not (auth/valid-key-format? "")))
+    (is (not (auth/valid-key-format? "voice-code-short")))
+    (is (not (auth/valid-key-format? "wrong-prefix-a1b2c3d4e5f67890123456789abcdef")))
+    (is (not (auth/valid-key-format? "voice-code-UPPERCASE1234567890123456789abc")))  ; uppercase
+    (is (not (auth/valid-key-format? "voice-code-ghijklmn1234567890123456789abc")))))  ; non-hex
 ```
 
 #### iOS Tests (`VoiceCodeTests/KeychainManagerTests.swift`)
@@ -1611,6 +1638,7 @@ Use generic error messages to avoid leaking information:
 - [ ] Create `QRScannerView` using AVFoundation
   - [ ] Handle camera permission request and denial
   - [ ] Validate scanned code format before accepting
+  - [ ] Add `NSCameraUsageDescription` to Info.plist
 - [ ] Create `APIKeyManagementView` for viewing/updating/deleting key
 - [ ] Update Share Extension:
   - [ ] Use `Authorization: Bearer` header (not body)
