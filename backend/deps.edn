@@ -13,7 +13,8 @@
         com.taoensso/timbre {:mvn/version "6.8.0"}
 
         ;; QR code generation
-        com.google.zxing/core {:mvn/version "3.5.3"}}
+        com.google.zxing/core {:mvn/version "3.5.3"}
+        com.google.zxing/javase {:mvn/version "3.5.3"}}
 
  :aliases {;; nREPL for clojure-mcp integration
            :nrepl {:extra-paths ["test"]
