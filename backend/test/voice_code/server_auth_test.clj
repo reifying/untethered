@@ -402,3 +402,122 @@
 
         (finally
           (cleanup-dir temp-dir))))))
+
+;; Reconnection authentication tests
+
+(deftest reconnection-auth-test
+  (testing "new channel requires re-authentication after disconnect"
+    ;; Simulates: client connects, authenticates, disconnects, reconnects
+    ;; New channel should NOT inherit authentication from old channel
+    (let [channel-1 (Object.)
+          channel-2 (Object.)
+          sent-messages (atom [])
+          closed (atom false)]
+      ;; First connection: authenticate successfully
+      (swap! server/connected-clients assoc channel-1 {})
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    org.httpkit.server/close (fn [_] (reset! closed true))]
+        (server/authenticate-connect! channel-1 {:api-key test-api-key}))
+      (is (server/channel-authenticated? channel-1) "Channel 1 should be authenticated")
+
+      ;; Simulate disconnect (remove from connected-clients)
+      (swap! server/connected-clients dissoc channel-1)
+
+      ;; New connection (channel-2): should NOT be authenticated
+      (is (not (server/channel-authenticated? channel-2)) "New channel should not be authenticated")
+
+      ;; Attempting to send a message without auth should fail
+      (reset! sent-messages [])
+      (reset! closed false)
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    org.httpkit.server/close (fn [_] (reset! closed true))]
+        (server/handle-message channel-2 (server/generate-json {:type "prompt" :text "test"}))
+        (is (= 1 (count @sent-messages)) "Should send auth_error")
+        (let [resp (server/parse-json (first @sent-messages))]
+          (is (= "auth_error" (:type resp))))
+        (is @closed "Should close unauthenticated connection"))))
+
+  (testing "reconnection with valid key succeeds"
+    ;; Simulates: client connects, authenticates, disconnects, reconnects with key
+    (let [channel-1 (Object.)
+          channel-2 (Object.)
+          sent-messages (atom [])]
+      ;; First connection
+      (swap! server/connected-clients assoc channel-1 {})
+      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)
+                    org.httpkit.server/close (fn [_] nil)]
+        (server/authenticate-connect! channel-1 {:api-key test-api-key}))
+      (is (server/channel-authenticated? channel-1))
+
+      ;; Disconnect
+      (swap! server/connected-clients dissoc channel-1)
+
+      ;; Reconnect with valid key
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    org.httpkit.server/close (fn [_] nil)
+                    voice-code.replication/get-all-sessions (constantly [])
+                    server/send-recent-sessions! (fn [_ _] nil)
+                    server/send-to-client! (fn [_ _] nil)]
+        (server/handle-message channel-2
+                               (server/generate-json {:type "connect"
+                                                      :api-key test-api-key}))
+        ;; Should be authenticated
+        (is (server/channel-authenticated? channel-2) "Reconnected channel should be authenticated")
+        ;; Should receive session_list (normal flow)
+        (is (some #(= "session_list" (:type (server/parse-json %))) @sent-messages)
+            "Should receive session_list after reconnect auth")
+        ;; Clean up
+        (swap! server/connected-clients dissoc channel-2))))
+
+  (testing "reconnection with invalid key fails"
+    ;; Simulates: client was authenticated, disconnects, tries to reconnect with wrong key
+    (let [channel-1 (Object.)
+          channel-2 (Object.)
+          sent-messages (atom [])
+          closed (atom false)]
+      ;; First connection with valid key
+      (swap! server/connected-clients assoc channel-1 {})
+      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)
+                    org.httpkit.server/close (fn [_] nil)]
+        (server/authenticate-connect! channel-1 {:api-key test-api-key}))
+      (is (server/channel-authenticated? channel-1))
+
+      ;; Disconnect
+      (swap! server/connected-clients dissoc channel-1)
+
+      ;; Attempt reconnect with wrong key
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    org.httpkit.server/close (fn [_] (reset! closed true))]
+        (server/handle-message channel-2
+                               (server/generate-json {:type "connect"
+                                                      :api-key "voice-code-wrongkey1234567890abcdefghij"}))
+        ;; Should NOT be authenticated
+        (is (not (server/channel-authenticated? channel-2)) "Should not authenticate with wrong key")
+        ;; Should receive auth_error
+        (is (= 1 (count @sent-messages)))
+        (let [resp (server/parse-json (first @sent-messages))]
+          (is (= "auth_error" (:type resp)))
+          (is (= "Authentication failed" (:message resp))))
+        (is @closed "Should close connection on failed auth"))))
+
+  (testing "session state not shared between channels"
+    ;; Ensure authenticated session-ids from one channel don't leak to another
+    (let [channel-1 (Object.)
+          channel-2 (Object.)
+          test-session-id "test-session-123"]
+      ;; Authenticate channel-1 and register a session
+      (swap! server/connected-clients assoc channel-1 {})
+      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)
+                    org.httpkit.server/close (fn [_] nil)]
+        (server/authenticate-connect! channel-1 {:api-key test-api-key}))
+      ;; Register session on channel-1
+      (swap! server/connected-clients update channel-1 assoc :session-id test-session-id)
+
+      ;; Channel-2 should not have access to channel-1's session
+      (let [channel-1-data (get @server/connected-clients channel-1)
+            channel-2-data (get @server/connected-clients channel-2)]
+        (is (= test-session-id (:session-id channel-1-data)) "Channel 1 should have session")
+        (is (nil? channel-2-data) "Channel 2 should have no data"))
+
+      ;; Clean up
+      (swap! server/connected-clients dissoc channel-1))))
