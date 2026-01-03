@@ -14,6 +14,9 @@ class VoiceCodeClient: ObservableObject {
     @Published var currentError: String?
     @Published var isProcessing = false
     @Published var lockedSessions = Set<String>()  // Claude session IDs currently locked
+    @Published var isAuthenticated = false
+    @Published var authenticationError: String?
+    @Published var requiresReauthentication = false  // Shows "re-scan required" UI
     @Published var availableCommands: AvailableCommands?  // Available commands for current directory
     @Published var runningCommands: [String: CommandExecution] = [:]  // command_session_id -> execution
     @Published var commandHistory: [CommandHistorySession] = []  // Command history sessions
@@ -27,8 +30,14 @@ class VoiceCodeClient: ObservableObject {
     private var reconnectionTimer: DispatchSourceTimer?
     private var serverURL: String
     private var reconnectionAttempts = 0
-    private var maxReconnectionDelay: TimeInterval = 60.0 // Max 60 seconds
-    private var maxReconnectionAttempts = 20 // ~17 minutes max (1+2+4+8+16+32+60*14)
+    private var maxReconnectionDelay: TimeInterval = 30.0 // Max 30 seconds (per design spec)
+    private var maxReconnectionAttempts = 20 // ~17 minutes max
+    private var serverAuthVersion: Int?  // auth_version from hello message
+
+    /// API key loaded from Keychain for authentication
+    private var apiKey: String? {
+        KeychainManager.shared.retrieveAPIKey()
+    }
 
     var onMessageReceived: ((Message, String) -> Void)?  // (message, iosSessionId)
     var onSessionIdReceived: ((String) -> Void)?
@@ -267,15 +276,29 @@ class VoiceCodeClient: ObservableObject {
         connect()
     }
 
+    /// Calculate reconnection delay with exponential backoff and jitter
+    /// - Parameter attempt: Current attempt number (0-based)
+    /// - Returns: Delay in seconds with ±25% jitter applied
+    internal func calculateReconnectionDelay(attempt: Int) -> TimeInterval {
+        // Base delay: 1s * 2^attempt, capped at maxReconnectionDelay
+        let baseDelay = min(pow(2.0, Double(attempt)), maxReconnectionDelay)
+
+        // Apply ±25% jitter
+        let jitterRange = baseDelay * 0.25
+        let jitter = Double.random(in: -jitterRange...jitterRange)
+
+        return max(1.0, baseDelay + jitter)  // Never less than 1 second
+    }
+
     private func setupReconnection() {
         reconnectionTimer?.cancel()
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
 
-        // Calculate exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s (max)
-        let delay = min(pow(2.0, Double(reconnectionAttempts)), maxReconnectionDelay)
+        // Calculate delay with exponential backoff and jitter
+        let delay = calculateReconnectionDelay(attempt: reconnectionAttempts)
 
-        timer.schedule(deadline: .now() + delay, repeating: delay)
+        timer.schedule(deadline: .now() + delay, repeating: .never)
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
 
@@ -293,7 +316,8 @@ class VoiceCodeClient: ObservableObject {
                 }
 
                 self.reconnectionAttempts += 1
-                print("Attempting reconnection (attempt \(self.reconnectionAttempts)/\(self.maxReconnectionAttempts), next delay: \(min(pow(2.0, Double(self.reconnectionAttempts)), self.maxReconnectionDelay))s)...")
+                let nextDelay = self.calculateReconnectionDelay(attempt: self.reconnectionAttempts)
+                print("Attempting reconnection (attempt \(self.reconnectionAttempts)/\(self.maxReconnectionAttempts), next delay: \(String(format: "%.1f", nextDelay))s)...")
                 self.connect()
             }
         }
@@ -351,12 +375,25 @@ class VoiceCodeClient: ObservableObject {
             case "hello":
                 // Initial welcome message from server
                 print("📡 [VoiceCodeClient] Received hello from server")
-                // Send connect message with session UUID
+
+                // Check auth_version for compatibility (future-proofing)
+                if let authVersion = json["auth_version"] as? Int {
+                    self.serverAuthVersion = authVersion
+                    print("📡 [VoiceCodeClient] Server auth_version: \(authVersion)")
+                    if authVersion > 1 {
+                        print("⚠️ [VoiceCodeClient] Server requires newer auth version: \(authVersion)")
+                    }
+                }
+
+                // Send connect message with session UUID and API key
                 self.sendConnectMessage()
 
             case "connected":
-                // Connected confirmation received - reset reconnection attempts
+                // Connected confirmation received - successfully authenticated
                 self.reconnectionAttempts = 0
+                self.isAuthenticated = true
+                self.authenticationError = nil
+                self.requiresReauthentication = false
                 print("✅ [VoiceCodeClient] Session registered: \(json["message"] as? String ?? "")")
                 LogManager.shared.log("Session registered: \(json["message"] as? String ?? "")", category: "VoiceCodeClient")
                 if let sessionId = json["session_id"] as? String {
@@ -463,6 +500,16 @@ class VoiceCodeClient: ObservableObject {
                     scheduleUpdate(key: "lockedSessions", value: updatedSessions)
                     print("🔓 [VoiceCodeClient] Session unlocked after error: \(sessionId)")
                 }
+
+            case "auth_error":
+                // Authentication failed - graceful UX with re-scan option
+                print("🔐 [VoiceCodeClient] Authentication error received")
+                let errorMessage = json["message"] as? String ?? "Authentication failed"
+                self.isAuthenticated = false
+                self.requiresReauthentication = true
+                self.authenticationError = errorMessage
+                LogManager.shared.log("Authentication failed: \(errorMessage)", category: "VoiceCodeClient")
+                // Note: Backend will close connection after auth_error
 
             case "pong":
                 // Pong response to ping
@@ -1000,10 +1047,23 @@ class VoiceCodeClient: ObservableObject {
     }
 
     private func sendConnectMessage() {
+        // Check if API key is available
+        guard let key = apiKey else {
+            print("⚠️ [VoiceCodeClient] No API key available, cannot authenticate")
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.isAuthenticated = false
+                self.requiresReauthentication = true
+                self.authenticationError = "API key not configured. Please scan QR code in Settings."
+            }
+            return
+        }
+
         // New protocol: session_id is optional in connect message
         // Backend will send session list regardless
         var message: [String: Any] = [
-            "type": "connect"
+            "type": "connect",
+            "api_key": key  // Include API key for authentication
         ]
 
         if let sessionId = sessionId {
@@ -1019,6 +1079,7 @@ class VoiceCodeClient: ObservableObject {
             print("📤 [VoiceCodeClient] Requesting \(limit) recent sessions")
         }
 
+        print("📤 [VoiceCodeClient] Sending connect with API key")
         sendMessage(message)
     }
 

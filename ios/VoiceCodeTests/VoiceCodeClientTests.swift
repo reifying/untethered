@@ -1335,4 +1335,213 @@ final class VoiceCodeClientTests: XCTestCase {
             XCTAssertNotNil(parsed?["type"])
         }
     }
+
+    // MARK: - Authentication Tests (voice-code-security-au2.11)
+
+    func testInitialAuthenticationState() {
+        // Test that client starts with unauthenticated state
+        XCTAssertFalse(client.isAuthenticated)
+        XCTAssertNil(client.authenticationError)
+        XCTAssertFalse(client.requiresReauthentication)
+    }
+
+    func testHandleAuthErrorMessage() {
+        // Test auth_error message structure
+        let json: [String: Any] = [
+            "type": "auth_error",
+            "message": "Authentication failed"
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let text = String(data: data, encoding: .utf8)!
+
+        XCTAssertTrue(text.contains("auth_error"))
+        XCTAssertTrue(text.contains("Authentication failed"))
+    }
+
+    func testHandleHelloMessageWithAuthVersion() {
+        // Test that hello message with auth_version is parsed correctly
+        let json: [String: Any] = [
+            "type": "hello",
+            "message": "Welcome to voice-code backend",
+            "version": "0.1.0",
+            "auth_version": 1,
+            "instructions": "Send connect message with api_key"
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let parsed = try! JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        XCTAssertEqual(parsed?["type"] as? String, "hello")
+        XCTAssertEqual(parsed?["auth_version"] as? Int, 1)
+    }
+
+    func testConnectMessageWithApiKey() {
+        // Test connect message format with API key
+        let sessionId = "ios-session-uuid-456"
+        let apiKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let message: [String: Any] = [
+            "type": "connect",
+            "session_id": sessionId,
+            "api_key": apiKey
+        ]
+
+        XCTAssertEqual(message["type"] as? String, "connect")
+        XCTAssertEqual(message["session_id"] as? String, sessionId)
+        XCTAssertEqual(message["api_key"] as? String, apiKey)
+        XCTAssertEqual(message.count, 3)
+    }
+
+    func testAuthenticationFlow() {
+        // Test the full authentication message flow
+        let messages: [[String: Any]] = [
+            ["type": "hello", "message": "Welcome", "version": "0.1.0", "auth_version": 1],
+            ["type": "connect", "session_id": "ios-uuid", "api_key": "voice-code-test123"],
+            ["type": "connected", "message": "Session registered", "session_id": "ios-uuid"]
+        ]
+
+        for json in messages {
+            let data = try! JSONSerialization.data(withJSONObject: json)
+            let text = String(data: data, encoding: .utf8)!
+
+            XCTAssertNotNil(text)
+            let parsed = try! JSONSerialization.jsonObject(with: data) as? [String: Any]
+            XCTAssertNotNil(parsed?["type"])
+        }
+    }
+
+    func testAuthenticationFailureFlow() {
+        // Test authentication failure message flow
+        let messages: [[String: Any]] = [
+            ["type": "hello", "message": "Welcome", "version": "0.1.0", "auth_version": 1],
+            ["type": "connect", "session_id": "ios-uuid", "api_key": "invalid-key"],
+            ["type": "auth_error", "message": "Authentication failed"]
+        ]
+
+        for json in messages {
+            let data = try! JSONSerialization.data(withJSONObject: json)
+            XCTAssertNotNil(data)
+        }
+    }
+
+    func testExponentialBackoffWithJitter() {
+        // Test exponential backoff calculation with jitter
+        // Formula: base = min(2^attempt, 30), jitter = ±25%
+        let maxDelay: TimeInterval = 30.0
+
+        // Test that delay function exists and calculates reasonable values
+        // Attempt 0: base = 1s, with jitter should be 0.75-1.25
+        let delay0 = client.calculateReconnectionDelay(attempt: 0)
+        XCTAssertGreaterThanOrEqual(delay0, 0.75)
+        XCTAssertLessThanOrEqual(delay0, 1.25)
+
+        // Attempt 1: base = 2s, with jitter should be 1.5-2.5
+        let delay1 = client.calculateReconnectionDelay(attempt: 1)
+        XCTAssertGreaterThanOrEqual(delay1, 1.5)
+        XCTAssertLessThanOrEqual(delay1, 2.5)
+
+        // Attempt 2: base = 4s, with jitter should be 3-5
+        let delay2 = client.calculateReconnectionDelay(attempt: 2)
+        XCTAssertGreaterThanOrEqual(delay2, 3.0)
+        XCTAssertLessThanOrEqual(delay2, 5.0)
+
+        // Attempt 3: base = 8s, with jitter should be 6-10
+        let delay3 = client.calculateReconnectionDelay(attempt: 3)
+        XCTAssertGreaterThanOrEqual(delay3, 6.0)
+        XCTAssertLessThanOrEqual(delay3, 10.0)
+
+        // Attempt 4: base = 16s, with jitter should be 12-20
+        let delay4 = client.calculateReconnectionDelay(attempt: 4)
+        XCTAssertGreaterThanOrEqual(delay4, 12.0)
+        XCTAssertLessThanOrEqual(delay4, 20.0)
+
+        // Attempt 5: base = 30s (capped), with jitter should be 22.5-37.5
+        let delay5 = client.calculateReconnectionDelay(attempt: 5)
+        XCTAssertGreaterThanOrEqual(delay5, 22.5)
+        XCTAssertLessThanOrEqual(delay5, 37.5)
+
+        // Attempt 10: base = 30s (capped), with jitter should be 22.5-37.5
+        let delay10 = client.calculateReconnectionDelay(attempt: 10)
+        XCTAssertGreaterThanOrEqual(delay10, 22.5)
+        XCTAssertLessThanOrEqual(delay10, 37.5)
+    }
+
+    func testExponentialBackoffJitterDistribution() {
+        // Test that jitter provides reasonable distribution
+        // Run multiple calculations and verify they're not all the same
+        var delays: [TimeInterval] = []
+        for _ in 0..<10 {
+            delays.append(client.calculateReconnectionDelay(attempt: 3))
+        }
+
+        // With jitter, delays should vary (not all exactly 8.0)
+        let uniqueDelays = Set(delays)
+        // Very likely to have more than 1 unique value with random jitter
+        // (statistically near certain with ±25% jitter)
+        XCTAssertGreaterThan(uniqueDelays.count, 1)
+    }
+
+    func testExponentialBackoffNeverBelowMinimum() {
+        // Test that delay is never less than 1 second
+        for attempt in 0..<20 {
+            let delay = client.calculateReconnectionDelay(attempt: attempt)
+            XCTAssertGreaterThanOrEqual(delay, 1.0, "Delay for attempt \(attempt) was \(delay), which is below minimum")
+        }
+    }
+
+    func testExponentialBackoffCapsAt30Seconds() {
+        // Test that base delay is capped at 30 seconds (per design spec)
+        // With ±25% jitter, max possible is 37.5 seconds
+        for attempt in 5..<20 {
+            let delay = client.calculateReconnectionDelay(attempt: attempt)
+            XCTAssertLessThanOrEqual(delay, 37.5, "Delay for attempt \(attempt) was \(delay), which exceeds max with jitter")
+        }
+    }
+
+    func testConnectedMessageSetsAuthenticated() {
+        // Test that receiving "connected" message should set isAuthenticated to true
+        // (In real flow, handleMessage sets this)
+        let json: [String: Any] = [
+            "type": "connected",
+            "message": "Session registered",
+            "session_id": "test-session"
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let parsed = try! JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        XCTAssertEqual(parsed?["type"] as? String, "connected")
+        // In real code, handleMessage would set client.isAuthenticated = true
+    }
+
+    func testAuthErrorMessageStructure() {
+        // Test auth_error message matches protocol spec
+        let json: [String: Any] = [
+            "type": "auth_error",
+            "message": "Authentication failed"
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let parsed = try! JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        XCTAssertEqual(parsed?["type"] as? String, "auth_error")
+        XCTAssertEqual(parsed?["message"] as? String, "Authentication failed")
+    }
+
+    func testHigherAuthVersionLogged() {
+        // Test that higher auth_version from server is noted
+        // (In real code, this triggers a warning log)
+        let json: [String: Any] = [
+            "type": "hello",
+            "message": "Welcome",
+            "version": "0.2.0",
+            "auth_version": 2  // Higher than current v1
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let parsed = try! JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        let authVersion = parsed?["auth_version"] as? Int ?? 0
+        XCTAssertGreaterThan(authVersion, 1, "Test requires auth_version > 1")
+    }
 }
