@@ -43,6 +43,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleDisplayName: Untethered
         CFBundleIconName: AppIcon
+        NSCameraUsageDescription: Untethered needs camera access to scan QR codes for API key authentication.
         NSMicrophoneUsageDescription: Untethered needs microphone access for voice input to control Claude.
         NSSpeechRecognitionUsageDescription: Untethered needs speech recognition to transcribe your voice commands.
         NSLocalNetworkUsageDescription: Untethered needs to connect to your backend server on your local network to send voice commands and receive Claude Code responses.

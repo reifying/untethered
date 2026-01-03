@@ -24,6 +24,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>Untethered needs camera access to scan QR codes for API key authentication.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Untethered needs to connect to your backend server on your local network to send voice commands and receive Claude Code responses.</string>
 	<key>NSMicrophoneUsageDescription</key>
