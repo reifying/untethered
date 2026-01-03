@@ -1,15 +1,23 @@
 import UIKit
 import UniformTypeIdentifiers
 import MobileCoreServices
+import Security
 
 /// Share Extension view controller for handling file shares from other apps.
-/// Uploads files immediately to backend server via HTTP POST.
+/// Uploads files immediately to backend server via HTTP POST with Bearer token authentication.
 class ShareViewController: UIViewController {
 
     // MARK: - Constants
 
     private let appGroupIdentifier = "group.com.910labs.untethered.resources"
     private let uploadTimeout: TimeInterval = 60.0 // 60 second timeout for uploads
+
+    // MARK: - Keychain Configuration
+
+    /// Keychain service identifier (matches main app's KeychainManager)
+    private let keychainService = "dev.910labs.voice-code"
+    /// Keychain account identifier (matches main app's KeychainManager)
+    private let keychainAccount = "api-key"
 
     // MARK: - Debug UI
 
@@ -73,6 +81,32 @@ class ShareViewController: UIViewController {
 
         // Also log to console
         print("[ShareExtension] \(logEntry)")
+    }
+
+    // MARK: - Keychain Access
+
+    /// Retrieve API key from Keychain.
+    /// Uses the same service/account as the main app's KeychainManager.
+    /// - Returns: The API key if found, nil otherwise
+    private func retrieveAPIKey() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: keychainAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let key = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+
+        return key
     }
 
     // MARK: - Content Processing
@@ -245,6 +279,18 @@ class ShareViewController: UIViewController {
     private func uploadData(data: Data, filename: String) {
         logDebug("uploadData: Starting upload for \(filename) (\(data.count) bytes)")
 
+        // Retrieve API key from Keychain for authentication
+        guard let apiKey = retrieveAPIKey() else {
+            logDebug("ERROR: API key not found in Keychain")
+            completeRequest(
+                success: false,
+                error: "API key not configured. Please open the main app and set up authentication in Settings.",
+                serverPath: nil
+            )
+            return
+        }
+        logDebug("API key retrieved from Keychain")
+
         // Get server settings from UserDefaults (shared via App Group)
         let sharedDefaults = UserDefaults(suiteName: appGroupIdentifier)
         logDebug("App Group identifier: \(appGroupIdentifier)")
@@ -295,14 +341,15 @@ class ShareViewController: UIViewController {
 
         logDebug("JSON payload size: \(jsonData.count) bytes")
 
-        // Create HTTP POST request
+        // Create HTTP POST request with Bearer token authentication
         var request = URLRequest(url: uploadURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = jsonData
         request.timeoutInterval = uploadTimeout
 
-        logDebug("Sending HTTP POST request...")
+        logDebug("Sending HTTP POST request with Bearer authentication...")
 
         // Perform upload
         let task = URLSession.shared.dataTask(with: request) { [weak self] (data, response, error) in
@@ -321,6 +368,17 @@ class ShareViewController: UIViewController {
             }
 
             self.logDebug("HTTP response status: \(httpResponse.statusCode)")
+
+            // Handle 401 Unauthorized specifically
+            if httpResponse.statusCode == 401 {
+                self.logDebug("ERROR: Authentication failed (401 Unauthorized)")
+                self.completeRequest(
+                    success: false,
+                    error: "Authentication failed. Please verify your API key in the main app Settings.",
+                    serverPath: nil
+                )
+                return
+            }
 
             guard let data = data else {
                 self.logDebug("ERROR: No response data")

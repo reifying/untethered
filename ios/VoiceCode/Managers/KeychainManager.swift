@@ -34,9 +34,13 @@ class KeychainManager {
 
     /// Access group for sharing keychain items with app extensions.
     /// This allows the Share Extension to access the same API key.
-    /// Note: The AppIdentifierPrefix is configured in the entitlements file.
-    /// When using keychain-access-groups entitlement, items are automatically
-    /// accessible to all apps/extensions with the same group in their entitlements.
+    /// Format: $(AppIdentifierPrefix)dev.910labs.voice-code
+    /// The AppIdentifierPrefix is automatically added by iOS when using keychain-access-groups.
+    /// Since the entitlements specify the full access group, we set this to nil to let iOS
+    /// use the first group from the keychain-access-groups entitlement automatically.
+    ///
+    /// Note: When both main app and extension share the same keychain-access-groups entitlement,
+    /// items stored without an explicit access group are accessible to both.
     private let accessGroup: String? = nil
 
     private init() {}
