@@ -3,7 +3,9 @@
   (:require [clojure.test :refer :all]
             [voice-code.server :as server]
             [voice-code.auth :as auth]
-            [cheshire.core :as json]))
+            [cheshire.core :as json]
+            [clojure.java.io :as io])
+  (:import [java.util Base64]))
 
 ;; Test fixtures and helpers
 
@@ -177,7 +179,38 @@
           (is (= 401 (:status resp)))
           ;; Must use generic error message
           (let [body (server/parse-json (:body resp))]
-            (is (= "Authentication failed" (:error body)))))))))
+            (is (= "Authentication failed" (:error body))))))))
+
+  (testing "rejects request with malformed Authorization header"
+    (let [sent-responses (atom [])
+          fake-channel (Object.)
+          req {:headers {"authorization" "Basic dXNlcjpwYXNz"}
+               :body (java.io.ByteArrayInputStream. (.getBytes "{}"))}]
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-responses conj msg))]
+        (server/handle-http-upload req fake-channel)
+        (is (= 1 (count @sent-responses)))
+        (let [resp (first @sent-responses)]
+          (is (= 401 (:status resp)))
+          (let [body (server/parse-json (:body resp))]
+            (is (= "Authentication failed" (:error body))))))))
+
+  (testing "valid Bearer token allows request through to validation"
+    ;; With valid auth, request should proceed to body validation
+    ;; (which will fail due to missing fields, but NOT with 401)
+    (let [sent-responses (atom [])
+          fake-channel (Object.)
+          req {:headers {"authorization" (str "Bearer " test-api-key)}
+               :body (java.io.ByteArrayInputStream. (.getBytes "{}"))}]
+      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-responses conj msg))]
+        (server/handle-http-upload req fake-channel)
+        (is (= 1 (count @sent-responses)))
+        (let [resp (first @sent-responses)]
+          ;; Should get 400 (bad request for missing fields) not 401 (unauthorized)
+          (is (= 400 (:status resp)) "Valid auth should pass - failure should be validation, not auth")
+          (let [body (server/parse-json (:body resp))]
+            (is (= false (:success body)))
+            ;; Error should be about missing fields, not authentication
+            (is (re-find #"filename|content|storage_location" (:error body)))))))))
 
 ;; Message handling authentication flow tests
 
@@ -265,3 +298,107 @@
             (is @closed "Should close connection")))
         (finally
           (swap! server/connected-clients dissoc fake-channel))))))
+
+;; Integration test: HTTP file upload with Bearer token
+
+(defn create-temp-dir []
+  (let [temp-dir (io/file (System/getProperty "java.io.tmpdir")
+                          (str "voice-code-http-upload-auth-test-" (System/currentTimeMillis)))]
+    (.mkdirs temp-dir)
+    (.getAbsolutePath temp-dir)))
+
+(defn cleanup-dir [dir-path]
+  (let [dir (io/file dir-path)]
+    (when (.exists dir)
+      (doseq [f (reverse (file-seq dir))]
+        (.delete f)))))
+
+(deftest http-upload-integration-test
+  (testing "file upload with valid Bearer token succeeds"
+    (let [temp-dir (create-temp-dir)
+          test-content "Hello from HTTP upload integration test"
+          base64-content (.encodeToString (Base64/getEncoder) (.getBytes test-content "UTF-8"))
+          sent-responses (atom [])
+          fake-channel (Object.)
+          request-body (server/generate-json {:filename "test-upload.txt"
+                                              :content base64-content
+                                              :storage-location temp-dir})
+          req {:headers {"authorization" (str "Bearer " test-api-key)}
+               :body (java.io.ByteArrayInputStream. (.getBytes request-body))}]
+      (try
+        (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-responses conj msg))]
+          (server/handle-http-upload req fake-channel)
+          (is (= 1 (count @sent-responses)))
+          (let [resp (first @sent-responses)]
+            ;; Should succeed with 200
+            (is (= 200 (:status resp)) "Valid Bearer token should allow upload")
+            (let [body (server/parse-json (:body resp))]
+              (is (= true (:success body)))
+              (is (= "test-upload.txt" (:filename body)))
+              (is (string? (:path body))))))
+
+        ;; Verify file was actually written
+        (let [uploaded-file (io/file temp-dir ".untethered" "resources" "test-upload.txt")]
+          (is (.exists uploaded-file) "File should exist on disk")
+          (is (= test-content (slurp uploaded-file)) "File content should match"))
+
+        (finally
+          (cleanup-dir temp-dir)))))
+
+  (testing "file upload without Bearer token returns 401"
+    (let [temp-dir (create-temp-dir)
+          test-content "Should not be uploaded"
+          base64-content (.encodeToString (Base64/getEncoder) (.getBytes test-content "UTF-8"))
+          sent-responses (atom [])
+          fake-channel (Object.)
+          request-body (server/generate-json {:filename "should-fail.txt"
+                                              :content base64-content
+                                              :storage-location temp-dir})
+          req {:headers {} ;; No Authorization header
+               :body (java.io.ByteArrayInputStream. (.getBytes request-body))}]
+      (try
+        (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-responses conj msg))]
+          (server/handle-http-upload req fake-channel)
+          (is (= 1 (count @sent-responses)))
+          (let [resp (first @sent-responses)]
+            (is (= 401 (:status resp)) "Missing token should return 401")
+            (let [body (server/parse-json (:body resp))]
+              (is (= false (:success body)))
+              (is (= "Authentication failed" (:error body))))))
+
+        ;; Verify file was NOT written
+        (let [would-be-file (io/file temp-dir ".untethered" "resources" "should-fail.txt")]
+          (is (not (.exists would-be-file)) "File should NOT exist when auth fails"))
+
+        (finally
+          (cleanup-dir temp-dir)))))
+
+  (testing "file upload with wrong Bearer token returns 401"
+    (let [temp-dir (create-temp-dir)
+          test-content "Should not be uploaded with wrong key"
+          base64-content (.encodeToString (Base64/getEncoder) (.getBytes test-content "UTF-8"))
+          sent-responses (atom [])
+          fake-channel (Object.)
+          request-body (server/generate-json {:filename "wrong-key.txt"
+                                              :content base64-content
+                                              :storage-location temp-dir})
+          wrong-key "voice-code-00000000000000000000000000000000"
+          req {:headers {"authorization" (str "Bearer " wrong-key)}
+               :body (java.io.ByteArrayInputStream. (.getBytes request-body))}]
+      (try
+        (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-responses conj msg))]
+          (server/handle-http-upload req fake-channel)
+          (is (= 1 (count @sent-responses)))
+          (let [resp (first @sent-responses)]
+            (is (= 401 (:status resp)) "Wrong token should return 401")
+            (let [body (server/parse-json (:body resp))]
+              (is (= false (:success body)))
+              ;; Generic error message - not revealing that key was invalid
+              (is (= "Authentication failed" (:error body))))))
+
+        ;; Verify file was NOT written
+        (let [would-be-file (io/file temp-dir ".untethered" "resources" "wrong-key.txt")]
+          (is (not (.exists would-be-file)) "File should NOT exist when auth fails"))
+
+        (finally
+          (cleanup-dir temp-dir))))))
