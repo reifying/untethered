@@ -1,31 +1,37 @@
 (ns voice-code.qr
   "QR code generation for API key display in terminal.
-   
+
    Uses ZXing library to generate QR codes and renders them
    using Unicode block characters for terminal display."
-  (:require [voice-code.auth :as auth])
-  (:import [com.google.zxing BarcodeFormat]
+  (:require [clojure.string :as str]
+            [voice-code.auth :as auth])
+  (:import [com.google.zxing BarcodeFormat EncodeHintType]
            [com.google.zxing.qrcode QRCodeWriter]
+           [com.google.zxing.qrcode.decoder ErrorCorrectionLevel]
            [com.google.zxing.common BitMatrix]))
 
 (defn generate-qr-matrix
   "Generate QR code bit matrix for the given text.
-   Size determines the width/height in modules."
-  ^BitMatrix [^String text size]
-  (let [writer (QRCodeWriter.)]
-    (.encode writer text BarcodeFormat/QR_CODE size size)))
+   Uses error correction level L (7% recovery) for smaller QR codes.
+   ZXing auto-sizes the matrix based on content length.
+   Returns a BitMatrix where true = dark module, false = light module."
+  ^BitMatrix [^String text]
+  (let [writer (QRCodeWriter.)
+        hints {EncodeHintType/ERROR_CORRECTION ErrorCorrectionLevel/L
+               EncodeHintType/MARGIN 1}]
+    ;; Size 0 lets ZXing auto-size based on content
+    (.encode writer text BarcodeFormat/QR_CODE 0 0 hints)))
 
 (defn render-qr-terminal
   "Render QR code to terminal using Unicode block characters.
-   
+
    Uses half-block characters to fit 2 vertical pixels per character:
    - Full block █ (U+2588): both top and bottom are dark
-   - Upper half block ▀ (U+2580): only top is dark  
+   - Upper half block ▀ (U+2580): only top is dark
    - Lower half block ▄ (U+2584): only bottom is dark
    - Space: both light
-   
-   Standard QR codes are black modules on white background.
-   This renders dark modules as filled blocks."
+
+   Returns a string suitable for printing to terminal."
   [^BitMatrix matrix]
   (let [width (.getWidth matrix)
         height (.getHeight matrix)
@@ -34,7 +40,7 @@
     (doseq [y (range 0 height 2)]
       (doseq [x (range width)]
         (let [top (.get matrix x y)
-              bottom (when (< (inc y) height) (.get matrix x (inc y)))]
+              bottom (if (< (inc y) height) (.get matrix x (inc y)) false)]
           (.append sb
                    (cond
                      (and top bottom) "█"
@@ -46,7 +52,7 @@
 
 (defn display-api-key
   "Display API key with optional QR code in a formatted box.
-   
+
    Parameters:
    - show-qr?: If true, display QR code above the key text"
   [show-qr?]
@@ -84,8 +90,8 @@
             (println scan-line)
             (println empty-line)
             ;; Generate and display QR code
-            (let [matrix (generate-qr-matrix key 25)
-                  qr-lines (clojure.string/split-lines (render-qr-terminal matrix))
+            (let [matrix (generate-qr-matrix key)
+                  qr-lines (str/split-lines (render-qr-terminal matrix))
                   qr-width (count (first qr-lines))]
               ;; Center QR code in the box
               (doseq [line qr-lines]
@@ -99,6 +105,33 @@
         (println (str "║  " key "  ║"))
         (println (str "╚" horizontal-line "╝"))
         (println)))))
+
+(defn display-setup-qr!
+  "Display API key as QR code with setup instructions.
+   This is the primary entry point for showing the QR code to users.
+   Prints to stdout for terminal display."
+  []
+  (if-let [key (auth/read-api-key)]
+    (let [matrix (generate-qr-matrix key)
+          qr-str (render-qr-terminal matrix)]
+      (println)
+      (println "╔════════════════════════════════════════════════════╗")
+      (println "║           Voice-Code API Key Setup                 ║")
+      (println "╠════════════════════════════════════════════════════╣")
+      (println "║  Scan this QR code with your iOS device camera     ║")
+      (println "║  or paste the key manually in Settings.            ║")
+      (println "╚════════════════════════════════════════════════════╝")
+      (println)
+      (print qr-str)
+      (println)
+      (println "API Key:" key)
+      (println))
+    (do
+      (println)
+      (println "ERROR: No API key found.")
+      (println "Run the backend server to generate a key automatically,")
+      (println "or run: (voice-code.auth/ensure-key-file!)")
+      (println))))
 
 (defn -main
   "Entry point for displaying API key.
