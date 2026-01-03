@@ -65,6 +65,8 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.com.910labs.untethered.resources
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)dev.910labs.voice-code
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code
@@ -114,6 +116,8 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.com.910labs.untethered.resources
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)dev.910labs.voice-code
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code.VoiceCodeShareExtension

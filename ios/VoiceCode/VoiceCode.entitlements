@@ -6,5 +6,9 @@
 	<array>
 		<string>group.com.910labs.untethered.resources</string>
 	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)dev.910labs.voice-code</string>
+	</array>
 </dict>
 </plist>
