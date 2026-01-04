@@ -4,7 +4,11 @@
 import Foundation
 import Combine
 import CoreData
+#if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 import os.log
 
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "VoiceCodeClient")
@@ -85,34 +89,60 @@ class VoiceCodeClient: ObservableObject {
     }
 
     private func setupLifecycleObservers() {
-        // Reconnect when app returns to foreground
+        // Reconnect when app returns to foreground / becomes active
+        #if os(iOS)
         NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self = self else { return }
-            // Don't reconnect if reauthentication is required - user must provide new credentials
-            if self.requiresReauthentication {
-                print("📱 [VoiceCodeClient] App entering foreground, skipping reconnection - reauthentication required")
-                return
-            }
-            if !self.isConnected {
-                print("📱 [VoiceCodeClient] App entering foreground, attempting reconnection...")
-                self.reconnectionAttempts = 0 // Reset backoff on foreground
-                self.connect(sessionId: self.sessionId)
-            }
+            self?.handleAppBecameActive()
         }
+        #elseif os(macOS)
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleAppBecameActive()
+        }
+        #endif
 
-        // Optionally pause reconnection when app goes to background
+        // Handle app entering background / resigning active
+        #if os(iOS)
         NotificationCenter.default.addObserver(
             forName: UIApplication.didEnterBackgroundNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self = self else { return }
-            print("📱 [VoiceCodeClient] App entering background")
+            self?.handleAppEnteredBackground()
         }
+        #elseif os(macOS)
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleAppEnteredBackground()
+        }
+        #endif
+    }
+
+    private func handleAppBecameActive() {
+        // Don't reconnect if reauthentication is required - user must provide new credentials
+        if requiresReauthentication {
+            print("📱 [VoiceCodeClient] App became active, skipping reconnection - reauthentication required")
+            return
+        }
+        if !isConnected {
+            print("📱 [VoiceCodeClient] App became active, attempting reconnection...")
+            reconnectionAttempts = 0 // Reset backoff on foreground
+            connect(sessionId: sessionId)
+        }
+    }
+
+    private func handleAppEnteredBackground() {
+        print("📱 [VoiceCodeClient] App entering background")
     }
 
     // MARK: - Debouncing
