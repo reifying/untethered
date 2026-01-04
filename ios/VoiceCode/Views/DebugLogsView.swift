@@ -170,20 +170,20 @@ struct DebugLogsView: View {
                 do {
                     let systemLogs = try await LogManager.shared.getSystemLogs(maxBytes: 15_000)
                     await MainActor.run {
-                        UIPasteboard.general.string = systemLogs
+                        ClipboardUtility.copy(systemLogs)
                         showCopyConfirmation()
                     }
                 } catch {
                     await MainActor.run {
                         // Fallback to current view content
-                        UIPasteboard.general.string = String(logs.suffix(15_000))
+                        ClipboardUtility.copy(String(logs.suffix(15_000)))
                         showCopyConfirmation()
                     }
                 }
             }
         case .captured:
             logsToCopy = LogManager.shared.getRecentLogs(maxBytes: 15_000)
-            UIPasteboard.general.string = logsToCopy
+            ClipboardUtility.copy(logsToCopy)
             showCopyConfirmation()
         case .renderStats:
             // Render stats don't use copy button (has reset button instead)
@@ -193,8 +193,7 @@ struct DebugLogsView: View {
 
     private func showCopyConfirmation() {
         // Trigger haptic feedback
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
+        ClipboardUtility.triggerSuccessHaptic()
 
         // Show confirmation banner
         withAnimation {

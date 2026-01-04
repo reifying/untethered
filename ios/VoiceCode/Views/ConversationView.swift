@@ -669,18 +669,17 @@ struct ConversationView: View {
     
     private func copySessionID() {
         // Copy session ID to clipboard
-        UIPasteboard.general.string = session.id.uuidString.lowercased()
-        
+        ClipboardUtility.copy(session.id.uuidString.lowercased())
+
         // Trigger haptic feedback
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-        
+        ClipboardUtility.triggerSuccessHaptic()
+
         // Show confirmation banner with specific message
         copyConfirmationMessage = "Session ID copied to clipboard"
         withAnimation {
             showingCopyConfirmation = true
         }
-        
+
         // Hide confirmation after 2 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             withAnimation {
@@ -722,13 +721,13 @@ struct ConversationView: View {
         }
 
         // Copy to clipboard
-        UIPasteboard.general.string = exportText
-        
+        ClipboardUtility.copy(exportText)
+
         // Show confirmation banner
         withAnimation {
             showingCopyConfirmation = true
         }
-        
+
         // Hide confirmation after 2 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             withAnimation {
@@ -739,18 +738,17 @@ struct ConversationView: View {
     
     private func copyErrorToClipboard(_ error: String) {
         // Copy error to clipboard
-        UIPasteboard.general.string = error
-        
+        ClipboardUtility.copy(error)
+
         // Trigger haptic feedback
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-        
+        ClipboardUtility.triggerSuccessHaptic()
+
         // Show confirmation banner
         copyConfirmationMessage = "Error copied to clipboard"
         withAnimation {
             showingCopyConfirmation = true
         }
-        
+
         // Hide confirmation after 2 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             withAnimation {
@@ -763,9 +761,8 @@ struct ConversationView: View {
         let sessionId = session.id.uuidString.lowercased()
         print("🛑 [ConversationView] Killing session: \(sessionId)")
 
-        // Trigger haptic feedback
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.warning)
+        // Trigger haptic feedback (warning uses success haptic as fallback on macOS)
+        ClipboardUtility.triggerSuccessHaptic()
 
         // Send kill request
         client.killSession(sessionId: sessionId)
@@ -1070,11 +1067,10 @@ struct MessageDetailView: View {
                 // Action buttons at bottom for better accessibility
                 HStack(spacing: 20) {
                     Button(action: {
-                        UIPasteboard.general.string = message.text
+                        ClipboardUtility.copy(message.text)
 
                         // Haptic feedback
-                        let generator = UINotificationFeedbackGenerator()
-                        generator.notificationOccurred(.success)
+                        ClipboardUtility.triggerSuccessHaptic()
 
                         // Show confirmation
                         withAnimation {

@@ -282,40 +282,38 @@ struct SessionsForDirectoryView: View {
 
     private func copyDirectoryPath() {
         // Copy directory path to clipboard
-        UIPasteboard.general.string = workingDirectory
-        
+        ClipboardUtility.copy(workingDirectory)
+
         // Trigger haptic feedback
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-        
+        ClipboardUtility.triggerSuccessHaptic()
+
         // Show confirmation banner
         withAnimation {
             showingDirectoryCopyConfirmation = true
         }
-        
+
         // Hide confirmation after 2 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             withAnimation {
                 showingDirectoryCopyConfirmation = false
             }
         }
-        
+
         logger.info("📋 Copied directory path to clipboard: \(self.workingDirectory)")
     }
-    
+
     private func copySessionID(_ session: CDBackendSession) {
         // Copy session ID to clipboard
-        UIPasteboard.general.string = session.id.uuidString.lowercased()
-        
+        ClipboardUtility.copy(session.id.uuidString.lowercased())
+
         // Trigger haptic feedback
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-        
+        ClipboardUtility.triggerSuccessHaptic()
+
         // Show confirmation banner
         withAnimation {
             showingCopyConfirmation = true
         }
-        
+
         // Hide confirmation after 2 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             withAnimation {

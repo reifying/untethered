@@ -643,25 +643,24 @@ struct DirectoryListView: View {
 
     private func copyToClipboard(_ text: String, message: String) {
         // Copy to clipboard
-        UIPasteboard.general.string = text
-        
+        ClipboardUtility.copy(text)
+
         // Trigger haptic feedback
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-        
+        ClipboardUtility.triggerSuccessHaptic()
+
         // Show confirmation banner
         copyConfirmationMessage = message
         withAnimation {
             showingCopyConfirmation = true
         }
-        
+
         // Hide confirmation after 2 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             withAnimation {
                 showingCopyConfirmation = false
             }
         }
-        
+
         logger.info("📋 Copied to clipboard: \(text)")
     }
     

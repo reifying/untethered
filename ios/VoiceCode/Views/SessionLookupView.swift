@@ -77,17 +77,16 @@ struct SessionLookupView: View {
     
     private func copySessionID() {
         // Copy session ID to clipboard
-        UIPasteboard.general.string = sessionId.uuidString.lowercased()
-        
+        ClipboardUtility.copy(sessionId.uuidString.lowercased())
+
         // Trigger haptic feedback
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-        
+        ClipboardUtility.triggerSuccessHaptic()
+
         // Show confirmation banner
         withAnimation {
             showingCopyConfirmation = true
         }
-        
+
         // Hide confirmation after 2 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             withAnimation {

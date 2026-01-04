@@ -247,11 +247,8 @@ struct SessionInfoView: View {
     // MARK: - Actions
 
     private func copyToClipboard(_ text: String, message: String) {
-        UIPasteboard.general.string = text
-
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-
+        ClipboardUtility.copy(text)
+        ClipboardUtility.triggerSuccessHaptic()
         showConfirmation(message)
     }
 
@@ -292,11 +289,8 @@ struct SessionInfoView: View {
         }
 
         // Copy to clipboard
-        UIPasteboard.general.string = exportText
-
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-
+        ClipboardUtility.copy(exportText)
+        ClipboardUtility.triggerSuccessHaptic()
         showConfirmation("Conversation exported")
     }
 

@@ -163,7 +163,7 @@ struct CommandOutputDetailView: View {
 
     private func copyOutput() {
         guard let output = client.commandOutputFull else { return }
-        UIPasteboard.general.string = output.output
+        ClipboardUtility.copy(output.output)
     }
 
     private func shareText(_ output: CommandOutputFull) -> String {
