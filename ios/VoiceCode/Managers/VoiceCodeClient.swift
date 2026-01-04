@@ -303,7 +303,7 @@ class VoiceCodeClient: ObservableObject {
         // Calculate delay with exponential backoff and jitter
         let delay = calculateReconnectionDelay(attempt: reconnectionAttempts)
 
-        timer.schedule(deadline: .now() + delay, repeating: .never)
+        timer.schedule(deadline: .now() + delay, repeating: delay)
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
 
