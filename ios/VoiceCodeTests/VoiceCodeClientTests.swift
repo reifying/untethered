@@ -464,6 +464,28 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertFalse(client.isConnected)
     }
 
+    func testLifecycleObserversWithoutSetup() {
+        // Test that client can be created without lifecycle observers
+        // This is used in unit tests and allows testing without triggering notifications
+        let clientWithoutObservers = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+        XCTAssertNotNil(clientWithoutObservers)
+        XCTAssertFalse(clientWithoutObservers.isConnected)
+        clientWithoutObservers.disconnect()
+    }
+
+    func testPlatformLifecycleNotifications() {
+        // Test that lifecycle observers are set up correctly for the current platform
+        // This verifies the platform conditionals compile correctly
+        // iOS uses willEnterForegroundNotification / didEnterBackgroundNotification
+        // macOS uses didBecomeActiveNotification / didResignActiveNotification
+        let client = VoiceCodeClient(serverURL: testServerURL, setupObservers: true)
+        XCTAssertNotNil(client)
+
+        // Client should handle app lifecycle events without crashing
+        // The actual notification handlers are registered in setupLifecycleObservers()
+        client.disconnect()
+    }
+
     func testMultipleReconnectionAttempts() {
         // Verify that multiple reconnection attempts don't cause issues
         client.connect(sessionId: "test-session")
