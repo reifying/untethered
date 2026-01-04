@@ -56,10 +56,12 @@ XcodeGen supports `supportedDestinations` to build the same source for multiple 
 | File | iOS-Only API | macOS Solution |
 |------|--------------|----------------|
 | `DeviceAudioSessionManager.swift` | `AVAudioSession` (silent switch) | Exclude from macOS target |
+| `QRScannerView.swift` | `UIViewController`, `AVCaptureSession` | Exclude from macOS target |
 | `VoiceInputManager.swift` | `AVAudioSession.sharedInstance()` | Conditional: use `AVAudioEngine` directly |
 | `VoiceCodeClient.swift` | `UIApplication` notifications | Conditional: use `NSApplication` |
 | `VoiceOutputManager.swift` | `AVAudioSession` for background | Conditional: skip session management, guard `audioSessionManager` property |
 | `VoiceCodeApp.swift` | `UIApplication` lifecycle | Conditional: use `NSApplication` |
+| `APIKeySection.swift` | Uses `QRScannerView` | Conditional: hide QR scanning UI on macOS |
 
 **Views requiring clipboard/haptic conditionals (7 files):**
 
@@ -79,9 +81,10 @@ XcodeGen supports `supportedDestinations` to build the same source for multiple 
 
 - **All CoreData models**: `CDBackendSession`, `CDMessage`, `CDUserSession`, extensions
 - **All data models**: `Message`, `RecentSession`, `Command`, `Recipe`, `Resource`
-- **All managers** (with minor conditionals): `VoiceCodeClient`, `SessionSyncManager`, `AppSettings`, `PersistenceController`, `DraftManager`, `ResourcesManager`, `ActiveSessionManager`, `NotificationManager`
-- **All views**: SwiftUI is cross-platform; navigation patterns work on both
+- **All managers** (with minor conditionals): `VoiceCodeClient`, `SessionSyncManager`, `AppSettings`, `PersistenceController`, `DraftManager`, `ResourcesManager`, `ActiveSessionManager`, `NotificationManager`, `KeychainManager`
+- **All views**: SwiftUI is cross-platform; navigation patterns work on both (except `QRScannerView` which is iOS-only)
 - **All utilities**: `RenderTracker`, date formatting, etc.
+- **Authentication views**: `AuthenticationRequiredView`, `APIKeyManagementView` (pure SwiftUI, cross-platform)
 
 ### Code Changes Required
 
@@ -460,7 +463,8 @@ targets:
       - path: VoiceCode
         excludes:
           - "*.md"
-          - "Managers/DeviceAudioSessionManager.swift"  # iOS-only
+          - "Managers/DeviceAudioSessionManager.swift"  # iOS-only (AVAudioSession)
+          - "Views/QRScannerView.swift"  # iOS-only (UIViewController, AVCaptureSession)
     resources:
       - VoiceCode/Assets.xcassets
       - VoiceCode/VoiceCode.xcdatamodeld
@@ -513,11 +517,12 @@ targets:
     sources:
       - path: VoiceCodeTests
         excludes:
-          # iOS-only tests (use AVAudioSession or UIPasteboard)
+          # iOS-only tests (use AVAudioSession, UIPasteboard, or QRScannerView)
           - "DeviceAudioSessionManagerTests.swift"
           - "VoiceOutputManagerTests.swift"
           - "CopyFeaturesTests.swift"
           - "SessionInfoViewTests.swift"
+          - "QRScannerViewTests.swift"
     resources:
       - VoiceCodeTests/Fixtures
     dependencies:
@@ -652,14 +657,15 @@ Or use a single `AppIcon.appiconset` with both iOS and macOS sizes.
 #### Unit Tests
 
 Existing `VoiceCodeTests` run against both targets:
-- iOS: `VoiceCodeTests` target (all 52 test files)
-- macOS: `VoiceCodeMacTests` target (excludes 4 iOS-only test files)
+- iOS: `VoiceCodeTests` target (all test files)
+- macOS: `VoiceCodeMacTests` target (excludes 5 iOS-only test files)
 
 **iOS-only test files (excluded from macOS target):**
 - `DeviceAudioSessionManagerTests.swift` — tests `AVAudioSession` (iOS-only API)
 - `VoiceOutputManagerTests.swift` — tests audio session configuration
 - `CopyFeaturesTests.swift` — tests `UIPasteboard` clipboard operations
 - `SessionInfoViewTests.swift` — tests `UIPasteboard` clipboard operations
+- `QRScannerViewTests.swift` — tests `QRScannerView` (iOS-only, excluded from macOS target)
 
 Tests use the same source files, verifying shared code works on both platforms. The excluded tests validate iOS-specific behavior that doesn't apply to macOS.
 
@@ -795,7 +801,7 @@ Tests use the same source files, verifying shared code works on both platforms. 
 ## Implementation Order
 
 1. Create `VoiceCodeMac/` directory with Info.plist and entitlements
-2. Update `project.yml` with macOS target and test exclusions
+2. Update `project.yml` with macOS target, test exclusions, and iOS-only file exclusions (`DeviceAudioSessionManager.swift`, `QRScannerView.swift`)
 3. Add platform conditionals to `VoiceCodeClient.swift` (lifecycle notifications)
 4. Add platform conditionals to `VoiceInputManager.swift` (AVAudioSession)
 5. Add platform conditionals to `VoiceOutputManager.swift` (audio session, background playback properties)
@@ -809,8 +815,9 @@ Tests use the same source files, verifying shared code works on both platforms. 
    - `ConversationView.swift`
    - `DebugLogsView.swift`
    - `CommandOutputDetailView.swift`
-9. Add macOS icons to Assets.xcassets
-10. Run `xcodegen generate`
-11. Build macOS target and fix compilation errors
-12. Run `VoiceCodeMacTests` and verify tests pass
-13. Manual testing of all features on macOS
+9. Add platform conditionals to `APIKeySection.swift` (hide QR scanner UI on macOS)
+10. Add macOS icons to Assets.xcassets
+11. Run `xcodegen generate`
+12. Build macOS target and fix compilation errors
+13. Run `VoiceCodeMacTests` and verify tests pass
+14. Manual testing of all features on macOS
