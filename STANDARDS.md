@@ -77,18 +77,32 @@ iOS → Backend: WebSocket connection established
 Backend → iOS: {
   "type": "hello",
   "message": "Welcome to voice-code backend",
-  "version": "0.1.0",
-  "instructions": "Send connect message with session_id"
+  "version": "0.2.0",
+  "auth_version": 1,
+  "instructions": "Send connect message with api_key"
 }
 ```
+
+**Fields:**
+- `type` (required): Always `"hello"`
+- `message` (required): Welcome message
+- `version` (required): Backend protocol version
+- `auth_version` (required): Authentication protocol version. Currently `1`. Clients should check this for compatibility with future auth protocol changes.
+- `instructions` (required): Human-readable instructions for connecting
 
 **Connect Message (Initial or Reconnection)**
 ```json
 iOS → Backend: {
   "type": "connect",
-  "session_id": "<iOS-session-UUID>"
+  "session_id": "<iOS-session-UUID>",
+  "api_key": "voice-code-a1b2c3d4e5f678901234567890abcdef"
 }
 ```
+
+**Fields:**
+- `type` (required): Always `"connect"`
+- `session_id` (required): iOS session UUID (lowercase)
+- `api_key` (required): Pre-shared API key for authentication. Must match the key stored on the backend. Format: `voice-code-` prefix followed by 32 lowercase hex characters (43 characters total).
 
 **Connected Confirmation**
 ```json
@@ -254,6 +268,27 @@ Subscribes to session history and real-time updates. Supports delta sync for eff
 }
 ```
 
+**Authentication Error**
+```json
+{
+  "type": "auth_error",
+  "message": "Authentication failed"
+}
+```
+
+Sent when authentication fails. This occurs in the following scenarios:
+- Missing `api_key` in `connect` message
+- Invalid `api_key` (does not match backend's stored key)
+- Attempting to send any message (except `ping`) before authenticating via `connect`
+
+The backend closes the WebSocket connection immediately after sending this message. The error message is intentionally generic to prevent information leakage about valid keys.
+
+**Behavior on auth_error:**
+1. iOS should set `isAuthenticated = false`
+2. iOS should set `requiresReauthentication = true`
+3. iOS should display an authentication error UI prompting user to re-scan QR code or re-enter API key in Settings
+4. iOS should NOT automatically retry connection until user provides new credentials
+
 **Session Locked**
 ```json
 {
@@ -409,14 +444,19 @@ Session compaction summarizes conversation history to reduce context window usag
 
 ### Error Handling
 
+**Authentication Errors:**
+- Missing `api_key` in `connect` → `auth_error` + connection closed
+- Invalid `api_key` in `connect` → `auth_error` + connection closed
+- Any message (except `ping`) before `connect` → `auth_error` + connection closed
+
 **Protocol Errors:**
-- Sending `prompt` before `connect` → Error: "Must send connect message with session_id first"
+- Sending `prompt` before `connect` → `auth_error` (must authenticate first)
 - Missing `session_id` in `connect` → Error: "session_id required in connect message"
 - Unknown message type → Error: "Unknown message type: <type>"
 
 **Connection Errors:**
-- WebSocket disconnect → iOS reconnects with same session UUID
-- Backend restart → Sessions restored from `resources/sessions.edn`
+- WebSocket disconnect → iOS reconnects with same session UUID and re-authenticates with stored API key
+- Backend restart → Sessions restored from disk; iOS must re-authenticate on reconnection
 
 ### Session Locking
 
@@ -785,3 +825,81 @@ Response containing complete command output and metadata.
 2. Client calls `get_command_history` to discover recent commands
 3. Client checks for commands with `exit_code` field (completed) vs without (may still be running)
 4. Client calls `get_command_output` to retrieve any missed output
+
+## HTTP API Authentication
+
+The backend exposes HTTP endpoints (in addition to WebSocket) for synchronous operations like file uploads from the iOS Share Extension.
+
+### Authorization Header
+
+All HTTP endpoints require Bearer token authentication using the same API key as WebSocket authentication.
+
+**Request Header:**
+```
+Authorization: Bearer voice-code-a1b2c3d4e5f678901234567890abcdef
+```
+
+**Fields:**
+- `Authorization` (required): Standard HTTP Authorization header
+- Format: `Bearer <api_key>` where `<api_key>` is the same key used for WebSocket `connect` messages
+
+### Upload Endpoint
+
+**POST /upload**
+
+Upload a file to the backend for use as a Claude resource.
+
+**Request:**
+```http
+POST /upload HTTP/1.1
+Authorization: Bearer voice-code-a1b2c3d4e5f678901234567890abcdef
+Content-Type: application/json
+
+{
+  "filename": "image.png",
+  "content": "<base64-encoded-file-content>",
+  "storage_location": "~/Downloads"
+}
+```
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "filename": "image.png",
+  "path": "/Users/user/Downloads/image.png",
+  "relative_path": "image.png",
+  "size": 12345,
+  "timestamp": "2025-11-01T12:34:56.789Z"
+}
+```
+
+**Authentication Error Response (401):**
+```json
+{
+  "success": false,
+  "error": "Authentication failed"
+}
+```
+
+Response includes `WWW-Authenticate: Bearer realm="voice-code"` header.
+
+**Validation Error Response (400):**
+```json
+{
+  "success": false,
+  "error": "filename, content, and storage_location are required"
+}
+```
+
+### Share Extension Integration
+
+The iOS Share Extension uses the HTTP upload endpoint (not WebSocket) because:
+1. Share Extensions have limited execution time and need synchronous responses
+2. WebSocket connections are complex to manage in extension context
+3. HTTP POST with Bearer auth is simpler and more reliable for one-shot uploads
+
+**Implementation Notes:**
+- Share Extension must access API key from shared Keychain access group
+- Access group: `$(TeamIdentifierPrefix)dev.910labs.voice-code`
+- Both main app and Share Extension must configure same access group in entitlements
