@@ -1,9 +1,14 @@
 // VoiceCodeApp.swift
-// Main app entry point for voice-code iOS app
+// Main app entry point for voice-code iOS and macOS app
 
 import SwiftUI
 import OSLog
 import UserNotifications
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "RootView")
 
@@ -159,6 +164,7 @@ struct RootView: View {
             logger.info("📂 Checking for pending resource uploads...")
             resourcesManager.updatePendingCount()
         }
+        #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             logger.info("🔄 App entering foreground, checking for pending uploads...")
             resourcesManager.updatePendingCount()
@@ -166,5 +172,14 @@ struct RootView: View {
                 resourcesManager.processPendingUploads()
             }
         }
+        #elseif os(macOS)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            logger.info("🔄 App became active, checking for pending uploads...")
+            resourcesManager.updatePendingCount()
+            if client.isConnected {
+                resourcesManager.processPendingUploads()
+            }
+        }
+        #endif
     }
 }
