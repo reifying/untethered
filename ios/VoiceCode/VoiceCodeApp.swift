@@ -107,7 +107,12 @@ struct RootView: View {
                 onMaxMessageSizeChange: { sizeKB in
                     client.sendMaxMessageSize(sizeKB)
                 },
-                voiceOutputManager: voiceOutput
+                voiceOutputManager: voiceOutput,
+                onAPIKeyChanged: {
+                    // Reconnect with new key
+                    client.disconnect()
+                    client.connect()
+                }
             )
         }
         .onAppear {

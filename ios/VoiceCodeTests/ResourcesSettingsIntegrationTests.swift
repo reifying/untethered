@@ -77,7 +77,8 @@ final class ResourcesSettingsIntegrationTests: XCTestCase {
             settings: settings,
             onServerChange: { _ in },
             onMaxMessageSizeChange: nil,
-            voiceOutputManager: nil
+            voiceOutputManager: nil,
+            onAPIKeyChanged: nil
         )
 
         // Verify view can be initialized with resources settings
