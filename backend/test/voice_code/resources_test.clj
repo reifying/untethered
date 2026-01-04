@@ -2,11 +2,11 @@
   (:require [clojure.test :refer :all]
             [voice-code.resources :as resources]
             [clojure.java.io :as io])
-  (:import [java.util Base64]))
+  (:import [java.util Base64 UUID]))
 
 (defn create-temp-dir []
   (let [temp-dir (io/file (System/getProperty "java.io.tmpdir")
-                          (str "voice-code-resources-test-" (System/currentTimeMillis)))]
+                          (str "voice-code-resources-test-" (UUID/randomUUID)))]
     (.mkdirs temp-dir)
     (.getAbsolutePath temp-dir)))
 

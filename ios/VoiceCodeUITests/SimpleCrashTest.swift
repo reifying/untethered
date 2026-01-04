@@ -18,8 +18,9 @@ final class SimpleCrashTest: XCTestCase {
         app.launch()
 
         // Just verify app launches and doesn't crash immediately
-        let tabBar = app.tabBars.firstMatch
-        XCTAssertTrue(tabBar.waitForExistence(timeout: 10), "App should launch successfully")
+        // App uses NavigationStack, not TabView - look for navigation bar
+        let navBar = app.navigationBars.firstMatch
+        XCTAssertTrue(navBar.waitForExistence(timeout: 10), "App should launch successfully")
 
         // Navigate to Conversation tab (default)
         // Even without backend, there should be some UI elements
