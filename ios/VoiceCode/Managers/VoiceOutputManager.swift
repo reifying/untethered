@@ -10,20 +10,31 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
     private let synthesizer = AVSpeechSynthesizer()
     private weak var appSettings: AppSettings?
-    private let audioSessionManager = DeviceAudioSessionManager()
     var onSpeechComplete: (() -> Void)?
 
-    // Background playback support
+    // iOS-only: Audio session manager for silent switch handling
+    #if os(iOS)
+    private let audioSessionManager = DeviceAudioSessionManager()
+    #endif
+
+    // iOS-only: Background playback support
+    #if os(iOS)
     private var silencePlayer: AVAudioPlayer?
     private var keepAliveTimer: Timer?
+    #endif
 
     init(appSettings: AppSettings? = nil) {
         self.appSettings = appSettings
         super.init()
         synthesizer.delegate = self
+        #if os(iOS)
         setupSilencePlayer()
+        #endif
     }
 
+    // MARK: - iOS Background Playback Support
+
+    #if os(iOS)
     private func setupSilencePlayer() {
         // Create a 100ms silent audio buffer
         let silenceDuration: TimeInterval = 0.1
@@ -57,8 +68,6 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         }
     }
 
-    // MARK: - Background Playback Support
-
     private func startKeepAliveTimer() {
         // Only start timer if user wants background playback
         guard appSettings?.continuePlaybackWhenLocked ?? true else { return }
@@ -79,6 +88,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     private func playSilence() {
         silencePlayer?.play()
     }
+    #endif
 
     // MARK: - Speech Control
 
@@ -105,10 +115,10 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
             synthesizer.stopSpeaking(at: .immediate)
         }
 
-        // Configure audio session based on settings
+        #if os(iOS)
+        // iOS requires explicit audio session configuration
         do {
             let shouldRespectSilentMode = respectSilentMode && (appSettings?.respectSilentMode ?? true)
-            let continueWhenLocked = appSettings?.continuePlaybackWhenLocked ?? true
 
             if shouldRespectSilentMode {
                 // Use .ambient category which respects the silent switch
@@ -128,6 +138,8 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
             print("Failed to setup audio session: \(error)")
             return
         }
+        #endif
+        // macOS: No audio session management needed, AVSpeechSynthesizer works directly
 
         // Create utterance
         let utterance = AVSpeechUtterance(string: text)
@@ -156,7 +168,9 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
 
     func stop() {
+        #if os(iOS)
         stopKeepAliveTimer()
+        #endif
         synthesizer.stopSpeaking(at: .immediate)
         DispatchQueue.main.async {
             self.isSpeaking = false
@@ -177,11 +191,14 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         DispatchQueue.main.async {
             self.isSpeaking = true
         }
+        #if os(iOS)
         // Start keep-alive timer for long TTS playback
         startKeepAliveTimer()
+        #endif
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        #if os(iOS)
         // Stop keep-alive timer
         stopKeepAliveTimer()
 
@@ -195,6 +212,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
                 print("Failed to deactivate audio session: \(error)")
             }
         }
+        #endif
 
         DispatchQueue.main.async {
             self.isSpeaking = false
@@ -203,8 +221,10 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        #if os(iOS)
         // Stop keep-alive timer
         stopKeepAliveTimer()
+        #endif
 
         DispatchQueue.main.async {
             self.isSpeaking = false
@@ -212,7 +232,9 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
 
     deinit {
+        #if os(iOS)
         stopKeepAliveTimer()
+        #endif
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
         }
