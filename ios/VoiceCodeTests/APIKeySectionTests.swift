@@ -16,7 +16,7 @@ final class APIKeySectionTests: XCTestCase {
 
     func testMaskedKeyFormatWithValidKey() {
         // Create section instance to test maskedKey function
-        let section = APIKeySection(onKeyChanged: nil)
+        let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
         // Test with standard API key
         let key = "voice-code-a1b2c3d4e5f678901234567890abcdef"
@@ -27,7 +27,7 @@ final class APIKeySectionTests: XCTestCase {
     }
 
     func testMaskedKeyFormatPreservesFirstFourChars() {
-        let section = APIKeySection(onKeyChanged: nil)
+        let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
         let key = "test-prefix-a1b2c3d4e5f678901234567890abcdef"
         let masked = section.maskedKey(key)
@@ -36,7 +36,7 @@ final class APIKeySectionTests: XCTestCase {
     }
 
     func testMaskedKeyFormatPreservesLastFourChars() {
-        let section = APIKeySection(onKeyChanged: nil)
+        let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
         let key = "voice-code-a1b2c3d4e5f67890123456789012wxyz"
         let masked = section.maskedKey(key)
@@ -45,7 +45,7 @@ final class APIKeySectionTests: XCTestCase {
     }
 
     func testMaskedKeyFormatShortKey() {
-        let section = APIKeySection(onKeyChanged: nil)
+        let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
         // Keys 8 chars or less should not be masked
         let shortKey = "12345678"
@@ -55,7 +55,7 @@ final class APIKeySectionTests: XCTestCase {
     }
 
     func testMaskedKeyFormatVeryShortKey() {
-        let section = APIKeySection(onKeyChanged: nil)
+        let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
         // Very short key
         let shortKey = "abc"
@@ -65,7 +65,7 @@ final class APIKeySectionTests: XCTestCase {
     }
 
     func testMaskedKeyFormatEdgeCaseNineChars() {
-        let section = APIKeySection(onKeyChanged: nil)
+        let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
         // 9 character key should be masked (> 8)
         let key = "123456789"
@@ -120,7 +120,7 @@ final class APIKeySectionTests: XCTestCase {
         var callbackCalled = false
         let section = APIKeySection(onKeyChanged: {
             callbackCalled = true
-        })
+        }, apiKeyInput: .constant(""))
 
         XCTAssertNotNil(section, "APIKeySection should initialize successfully")
         XCTAssertFalse(callbackCalled, "Callback should not be called on initialization")
@@ -128,7 +128,7 @@ final class APIKeySectionTests: XCTestCase {
 
     func testAPIKeySectionInitializationWithNilCallback() {
         // Test that section can be initialized without callback
-        let section = APIKeySection(onKeyChanged: nil)
+        let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
         XCTAssertNotNil(section, "APIKeySection should initialize with nil callback")
     }
@@ -136,14 +136,14 @@ final class APIKeySectionTests: XCTestCase {
     // MARK: - Masked Key Format Edge Cases
 
     func testMaskedKeyWithEmptyString() {
-        let section = APIKeySection(onKeyChanged: nil)
+        let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
         let masked = section.maskedKey("")
         XCTAssertEqual(masked, "", "Empty string should remain empty")
     }
 
     func testMaskedKeyWithExactlyEightChars() {
-        let section = APIKeySection(onKeyChanged: nil)
+        let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
         // Exactly 8 characters - edge case, should NOT be masked
         let key = "12345678"
@@ -153,7 +153,7 @@ final class APIKeySectionTests: XCTestCase {
     }
 
     func testMaskedKeyFormatConsistency() {
-        let section = APIKeySection(onKeyChanged: nil)
+        let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
         // Multiple calls should produce consistent results
         let key = "voice-code-a1b2c3d4e5f678901234567890abcdef"
@@ -166,7 +166,7 @@ final class APIKeySectionTests: XCTestCase {
     // MARK: - Design Doc Format Tests
 
     func testMaskedKeyMatchesDesignDocFormat() {
-        let section = APIKeySection(onKeyChanged: nil)
+        let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
         // According to design doc, format should be "voic...89ab"
         // Testing with a key ending in "89ab"

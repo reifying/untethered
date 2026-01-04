@@ -13,6 +13,8 @@ struct SettingsView: View {
     @State private var testSuccess = false
     @State private var previewingVoice = false
     @State private var localSystemPrompt: String = ""
+    @State private var pendingAPIKeyInput: String = ""
+    @State private var showingAPIKeyError = false
 
     let onServerChange: (String) -> Void
     let onMaxMessageSizeChange: ((Int) -> Void)?
@@ -22,7 +24,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
-                APIKeySection(onKeyChanged: onAPIKeyChanged)
+                APIKeySection(onKeyChanged: onAPIKeyChanged, apiKeyInput: $pendingAPIKeyInput)
 
                 Section(header: Text("Server Configuration")) {
                     TextField("Server Address", text: $settings.serverURL)
@@ -214,6 +216,18 @@ struct SettingsView: View {
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Save") {
+                        // Save pending API key if there is one
+                        if !pendingAPIKeyInput.isEmpty {
+                            if KeychainManager.shared.isValidAPIKeyFormat(pendingAPIKeyInput) {
+                                try? KeychainManager.shared.saveAPIKey(pendingAPIKeyInput)
+                                pendingAPIKeyInput = ""
+                                onAPIKeyChanged?()
+                            } else {
+                                // Show error alert for invalid API key format
+                                showingAPIKeyError = true
+                                return
+                            }
+                        }
                         // Settings auto-save via didSet
                         onServerChange(settings.fullServerURL)
                         dismiss()
@@ -223,6 +237,11 @@ struct SettingsView: View {
             .onAppear {
                 // Initialize local state from settings
                 localSystemPrompt = settings.systemPrompt
+            }
+            .alert("Invalid API Key", isPresented: $showingAPIKeyError) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("API key must start with 'voice-code-' and be 43 characters.")
             }
         }
     }

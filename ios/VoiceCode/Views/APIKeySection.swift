@@ -7,13 +7,15 @@ import SwiftUI
 struct APIKeySection: View {
     @State private var showingScanner = false
     @State private var showingDeleteConfirmation = false
-    @State private var apiKeyInput = ""
     @State private var validationError: String?
     /// Tracks whether a key exists - used to trigger view refresh after save/delete
     @State private var hasKey: Bool = KeychainManager.shared.hasAPIKey()
 
     /// Callback when API key changes (for triggering reconnection)
     let onKeyChanged: (() -> Void)?
+
+    /// Binding for API key input - allows parent to access pending input for save
+    @Binding var apiKeyInput: String
 
     var body: some View {
         Section(header: Text("Authentication")) {
@@ -127,14 +129,6 @@ struct APIKeySection: View {
                     .font(.caption)
             }
 
-            // Save button for manual entry
-            if !apiKeyInput.isEmpty {
-                Button("Save Key") {
-                    saveAPIKey()
-                }
-                .disabled(apiKeyInput.isEmpty)
-            }
-
             // Help text
             Text("Run 'make show-key-qr' on your server to display the QR code")
                 .font(.caption)
@@ -156,13 +150,21 @@ struct APIKeySection: View {
 
     // MARK: - Actions
 
-    private func saveAPIKey() {
+    /// Save API key from input field. Returns true if saved successfully or nothing to save.
+    /// Returns false if validation failed.
+    @discardableResult
+    func saveAPIKey() -> Bool {
         validationError = nil
+
+        // Nothing to save
+        guard !apiKeyInput.isEmpty else {
+            return true
+        }
 
         // Validate format
         guard KeychainManager.shared.isValidAPIKeyFormat(apiKeyInput) else {
             validationError = "Invalid format. Must start with 'voice-code-' and be 43 characters."
-            return
+            return false
         }
 
         do {
@@ -170,8 +172,10 @@ struct APIKeySection: View {
             apiKeyInput = ""
             hasKey = true  // Update state to refresh view
             onKeyChanged?()
+            return true
         } catch {
             validationError = "Failed to save: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -194,7 +198,7 @@ struct APIKeySection: View {
 struct APIKeySection_Previews: PreviewProvider {
     static var previews: some View {
         Form {
-            APIKeySection(onKeyChanged: nil)
+            APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
         }
     }
 }

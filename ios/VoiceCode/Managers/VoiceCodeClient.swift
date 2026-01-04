@@ -89,6 +89,11 @@ class VoiceCodeClient: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self = self else { return }
+            // Don't reconnect if reauthentication is required - user must provide new credentials
+            if self.requiresReauthentication {
+                print("📱 [VoiceCodeClient] App entering foreground, skipping reconnection - reauthentication required")
+                return
+            }
             if !self.isConnected {
                 print("📱 [VoiceCodeClient] App entering foreground, attempting reconnection...")
                 self.reconnectionAttempts = 0 // Reset backoff on foreground
@@ -302,6 +307,14 @@ class VoiceCodeClient: ObservableObject {
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
 
+            // Don't reconnect if reauthentication is required - user must provide new credentials
+            if self.requiresReauthentication {
+                print("🔐 [VoiceCodeClient] Skipping reconnection - reauthentication required")
+                self.reconnectionTimer?.cancel()
+                self.reconnectionTimer = nil
+                return
+            }
+
             if !self.isConnected {
                 // Check if we've exceeded max attempts
                 if self.reconnectionAttempts >= self.maxReconnectionAttempts {
@@ -509,6 +522,10 @@ class VoiceCodeClient: ObservableObject {
                 self.requiresReauthentication = true
                 self.authenticationError = errorMessage
                 LogManager.shared.log("Authentication failed: \(errorMessage)", category: "VoiceCodeClient")
+                // Stop reconnection attempts - user must provide new credentials
+                self.reconnectionTimer?.cancel()
+                self.reconnectionTimer = nil
+                print("🔐 [VoiceCodeClient] Stopped reconnection attempts - reauthentication required")
                 // Note: Backend will close connection after auth_error
 
             case "pong":
@@ -1055,6 +1072,10 @@ class VoiceCodeClient: ObservableObject {
                 self.isAuthenticated = false
                 self.requiresReauthentication = true
                 self.authenticationError = "API key not configured. Please scan QR code in Settings."
+                // Stop reconnection attempts - user must configure API key first
+                self.reconnectionTimer?.cancel()
+                self.reconnectionTimer = nil
+                print("🔐 [VoiceCodeClient] Stopped reconnection attempts - API key required")
             }
             return
         }
