@@ -17,10 +17,13 @@ struct SettingsView: View {
     let onServerChange: (String) -> Void
     let onMaxMessageSizeChange: ((Int) -> Void)?
     let voiceOutputManager: VoiceOutputManager?
+    let onAPIKeyChanged: (() -> Void)?
 
     var body: some View {
         NavigationView {
             Form {
+                APIKeySection(onKeyChanged: onAPIKeyChanged)
+
                 Section(header: Text("Server Configuration")) {
                     TextField("Server Address", text: $settings.serverURL)
                         .autocapitalization(.none)
@@ -259,7 +262,8 @@ struct SettingsView_Previews: PreviewProvider {
             settings: AppSettings(),
             onServerChange: { _ in },
             onMaxMessageSizeChange: nil,
-            voiceOutputManager: nil
+            voiceOutputManager: nil,
+            onAPIKeyChanged: nil
         )
     }
 }
