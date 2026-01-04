@@ -49,7 +49,8 @@ class VoiceInputManager: NSObject, ObservableObject {
             recognitionTask = nil
         }
 
-        // Configure audio session
+        #if os(iOS)
+        // iOS requires explicit audio session configuration
         let audioSession = AVAudioSession.sharedInstance()
         do {
             try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
@@ -58,6 +59,8 @@ class VoiceInputManager: NSObject, ObservableObject {
             print("Failed to setup audio session: \(error)")
             return
         }
+        #endif
+        // macOS: AVAudioEngine handles audio routing automatically
 
         // Create recognition request
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
@@ -123,9 +126,11 @@ class VoiceInputManager: NSObject, ObservableObject {
             // Note: onTranscriptionComplete callback is never set - handled by view layer instead
         }
 
+        #if os(iOS)
         // Reset audio session
         let audioSession = AVAudioSession.sharedInstance()
         try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+        #endif
     }
 
     // MARK: - Cleanup
