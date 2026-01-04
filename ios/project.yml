@@ -4,6 +4,7 @@ options:
   bundleIdPrefix: dev.910labs
   deploymentTarget:
     iOS: "18.5"
+    macOS: "15.0"
   developmentLanguage: en
   createIntermediateGroups: true
   generateEmptyDirectories: false
@@ -125,6 +126,45 @@ targets:
         INFOPLIST_FILE: VoiceCodeShareExtension/Info.plist
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
 
+  VoiceCodeMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "15.0"
+    supportedDestinations:
+      - macOS
+    sources:
+      - path: VoiceCode
+        excludes:
+          - "*.md"
+          - "Managers/DeviceAudioSessionManager.swift"
+          - "Views/QRScannerView.swift"
+    resources:
+      - VoiceCode/Assets.xcassets
+      - VoiceCode/VoiceCode.xcdatamodeld
+    info:
+      path: VoiceCodeMac/Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDisplayName: Untethered
+        CFBundleIconName: AppIcon
+        NSMicrophoneUsageDescription: Untethered needs microphone access for voice input to control Claude.
+        NSSpeechRecognitionUsageDescription: Untethered needs speech recognition to transcribe your voice commands.
+        NSLocalNetworkUsageDescription: Untethered needs to connect to your backend server on your local network.
+    entitlements:
+      path: VoiceCodeMac/VoiceCodeMac.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.device.audio-input: true
+        com.apple.security.files.user-selected.read-write: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code-mac
+        INFOPLIST_FILE: VoiceCodeMac/Info.plist
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        COMBINE_HIDPI_IMAGES: YES
+
   VoiceCodeTests:
     type: bundle.unit-test
     platform: iOS
@@ -153,6 +193,27 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-codeUITests
         GENERATE_INFOPLIST_FILE: YES
 
+  VoiceCodeMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: VoiceCodeTests
+        excludes:
+          - "DeviceAudioSessionManagerTests.swift"
+          - "VoiceOutputManagerTests.swift"
+          - "CopyFeaturesTests.swift"
+          - "SessionInfoViewTests.swift"
+          - "QRScannerViewTests.swift"
+    resources:
+      - VoiceCodeTests/Fixtures
+    dependencies:
+      - target: VoiceCodeMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code-macTests
+        GENERATE_INFOPLIST_FILE: YES
+
 schemes:
   VoiceCode:
     build:
@@ -175,3 +236,14 @@ schemes:
       revealArchiveInOrganizer: true
       preActions: []
       postActions: []
+
+  VoiceCodeMac:
+    build:
+      targets:
+        VoiceCodeMac: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - name: VoiceCodeMacTests

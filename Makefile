@@ -13,6 +13,7 @@ WRAP := ./scripts/wrap-command
 .PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
+.PHONY: build-mac test-mac clean-mac list-schemes
 
 # Default target
 help:
@@ -32,6 +33,11 @@ help:
 	@echo "  clean             - Clean iOS build artifacts"
 	@echo "  setup-simulator   - Create and boot simulator: $(SIMULATOR_NAME)"
 	@echo "  deploy-device     - Build and install to connected iPhone (fast deployment)"
+	@echo ""
+	@echo "macOS targets:"
+	@echo "  build-mac         - Build the macOS project"
+	@echo "  test-mac          - Run macOS unit tests"
+	@echo "  clean-mac         - Clean macOS build artifacts"
 	@echo ""
 	@echo "Backend server management:"
 	@echo "  backend-run       - Start the backend server"
@@ -343,3 +349,21 @@ regenerate-key:
 	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
 	@rm -f ~/.voice-code/api-key
 	@cd $(BACKEND_DIR) && clojure -M -e "(require '[voice-code.auth :as auth]) (auth/ensure-key-file!) (println \"New API key generated. Run 'make show-key' to display.\")"
+
+# macOS targets
+
+# Build the macOS project
+build-mac: generate-project
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild build -scheme VoiceCodeMac -destination 'platform=macOS'"
+
+# Run macOS unit tests
+test-mac: generate-project
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS'"
+
+# Clean macOS build artifacts
+clean-mac:
+	cd $(IOS_DIR) && xcodebuild clean -scheme VoiceCodeMac
+
+# List available schemes
+list-schemes: generate-project
+	@cd $(IOS_DIR) && xcodebuild -list
