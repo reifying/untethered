@@ -645,7 +645,8 @@
 
 (deftest test-get-available-recipes
   (testing "get_available_recipes message returns available recipes"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [sent-messages (atom [])]
       (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                (swap! sent-messages conj msg))]
@@ -665,10 +666,12 @@
           (let [recipe (first (:recipes msg))]
             (is (contains? recipe :id))
             (is (contains? recipe :label))
-            (is (contains? recipe :description)))))))
+            (is (contains? recipe :description))))))
+    (reset! server/api-key nil))
 
   (testing "get_available_recipes uses correct JSON formatting with snake_case"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [sent-messages (atom [])]
       (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                (swap! sent-messages conj msg))]
@@ -681,11 +684,13 @@
           ;; Verify the recipe JSON keys are in snake_case (no hyphens)
           (is (str/includes? json-str "\"id\""))
           (is (str/includes? json-str "\"label\""))
-          (is (str/includes? json-str "\"description\"")))))))
+          (is (str/includes? json-str "\"description\"")))))
+    (reset! server/api-key nil)))
 
 (deftest test-get-available-recipes-full-integration
   (testing "Full integration: iOS sends get_available_recipes, backend responds with available_recipes"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [sent-messages (atom [])]
       (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                (swap! sent-messages conj msg))]
@@ -714,13 +719,15 @@
                 (let [recipe (first recipes)]
                   (is (contains? recipe :id) "Recipe must have id field")
                   (is (contains? recipe :label) "Recipe must have label field")
-                  (is (contains? recipe :description) "Recipe must have description field"))))))))))
+                  (is (contains? recipe :description) "Recipe must have description field"))))))))
+    (reset! server/api-key nil)))
 
 (deftest test-available-recipes-ios-message-type-matching
   (testing "Backend response message type exactly matches iOS case statement"
     ;; This test verifies the exact message type value that will be sent to iOS
     ;; iOS switch statement at line 726: case "available_recipes":
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [sent-messages (atom [])]
       (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                (swap! sent-messages conj msg))]
@@ -734,7 +741,8 @@
             (let [extracted-type (second type-regex)]
               ;; iOS switch statement looks for: case "available_recipes":
               (is (= "available_recipes" extracted-type)
-                  (str "iOS expects 'available_recipes' but backend sends: '" extracted-type "'")))))))))
+                  (str "iOS expects 'available_recipes' but backend sends: '" extracted-type "'")))))))
+    (reset! server/api-key nil)))
 
 (deftest test-process-orchestration-response-valid-outcome
   (testing "Valid outcome triggers next step transition"
@@ -1272,9 +1280,10 @@
           sent-messages (atom [])
           mock-channel :test-ch]
       ;; Setup
+      (reset! server/api-key test-api-key)
       (reset! server/session-orchestration-state {})
       (reset! voice-code.replication/session-locks #{})
-      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{} :authenticated true}})
 
       ;; Pre-lock the session to simulate another operation holding the lock
       (voice-code.replication/acquire-session-lock! session-id)
@@ -1300,7 +1309,8 @@
               "Should send session_locked message")))
 
       ;; Cleanup
-      (voice-code.replication/release-session-lock! session-id))))
+      (voice-code.replication/release-session-lock! session-id)
+      (reset! server/api-key nil))))
 
 (deftest test-session-exists?
   (testing "returns false when get-session-metadata returns nil"
@@ -1322,8 +1332,9 @@
           sent-messages (atom [])
           mock-channel :test-ch]
       ;; Setup
+      (reset! server/api-key test-api-key)
       (reset! server/session-orchestration-state {})
-      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{} :authenticated true}})
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
                     ;; Session doesn't exist (new session)
@@ -1339,16 +1350,18 @@
               error-msg (first (filter #(= "error" (:type %)) parsed-messages))]
           (is (some? error-msg) "Should send error message")
           (is (= "working_directory required for new session" (:message error-msg)))
-          (is (= session-id (:session_id error-msg)) "Error should include session_id")))))
+          (is (= session-id (:session_id error-msg)) "Error should include session_id")))
+      (reset! server/api-key nil)))
 
   (testing "New session with working_directory succeeds"
     (let [session-id "new-session-with-dir"
           sent-messages (atom [])
           mock-channel :test-ch]
       ;; Setup
+      (reset! server/api-key test-api-key)
       (reset! server/session-orchestration-state {})
       (reset! repl/session-locks #{})
-      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{} :authenticated true}})
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
                     ;; Session doesn't exist (new session)
@@ -1376,16 +1389,18 @@
         (let [state (server/get-session-recipe-state session-id)]
           (is (some? state) "Recipe state should exist")
           (is (false? (:session-created? state))
-              "New session should have :session-created? = false")))))
+              "New session should have :session-created? = false")))
+      (reset! server/api-key nil)))
 
   (testing "Existing session works without working_directory"
     (let [session-id "existing-session"
           sent-messages (atom [])
           mock-channel :test-ch]
       ;; Setup
+      (reset! server/api-key test-api-key)
       (reset! server/session-orchestration-state {})
       (reset! repl/session-locks #{})
-      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{} :authenticated true}})
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
                     ;; Session exists (existing session)
@@ -1413,14 +1428,16 @@
         (let [state (server/get-session-recipe-state session-id)]
           (is (some? state) "Recipe state should exist")
           (is (true? (:session-created? state))
-              "Existing session should have :session-created? = true"))))))
+              "Existing session should have :session-created? = true")))
+      (reset! server/api-key nil))))
 
 ;; Session Subscribe Tests - verifies size-based message limiting
 
 (deftest test-subscribe-sends-messages-within-size-budget
   (testing "Subscribe sends messages within client's size budget"
     ;; Client with default max-message-size-kb (100KB)
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
     (let [sent-messages (atom [])
           ;; Create small messages that easily fit in 100KB budget
           mock-messages (vec (for [i (range 50)]
@@ -1466,11 +1483,13 @@
               "Last message should be Message 49")
           ;; Delta sync fields should be present
           (is (true? (:is_complete response))
-              "is_complete should be true when all messages fit"))))))
+              "is_complete should be true when all messages fit"))))
+    (reset! server/api-key nil)))
 
 (deftest test-subscribe-filters-internal-messages
   (testing "Subscribe filters out internal messages (sidechain, summary, system)"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
     (let [sent-messages (atom [])
           ;; Create mock messages including internal ones
           mock-messages [{:uuid "uuid-1" :type "user" :text "Real message 1" :message {:role "user" :content "Real message 1"}}
@@ -1512,7 +1531,8 @@
           (is (= 3 (count (:messages response)))
               "Should only send 3 real messages, filtering out summary, system, and sidechain")
           ;; Total count reflects displayable (filtered) messages
-          (is (= 3 (:total_count response))))))))
+          (is (= 3 (:total_count response))))))
+    (reset! server/api-key nil)))
 
 ;; Message Size Truncation Tests
 
@@ -1602,7 +1622,7 @@
 
       (testing "Returns client-specific setting when configured"
         (reset! server/connected-clients {:test-ch {:deleted-sessions #{}
-                                                     :max-message-size-kb 150}})
+                                                    :max-message-size-kb 150}})
         (let [result (server/get-client-max-message-size-bytes :test-ch)]
           (is (= (* 150 1024) result))))
       (finally
@@ -1611,8 +1631,9 @@
 (deftest test-handle-set-max-message-size
   (let [original-clients @server/connected-clients]
     (try
+      (reset! server/api-key test-api-key)
       (testing "set_max_message_size stores size in client state"
-        (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+        (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
         (let [sent-messages (atom [])]
           (with-redefs [org.httpkit.server/send! (fn [ch msg]
                                                    (swap! sent-messages conj (json/parse-string msg true)))]
@@ -1628,7 +1649,7 @@
               (is (clojure.string/includes? (:message response) "175"))))))
 
       (testing "set_max_message_size rejects invalid size"
-        (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+        (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
         (let [sent-messages (atom [])]
           (with-redefs [org.httpkit.server/send! (fn [ch msg]
                                                    (swap! sent-messages conj (json/parse-string msg true)))]
@@ -1640,7 +1661,7 @@
               (is (= "error" (:type response)))))))
 
       (testing "set_max_message_size rejects missing size"
-        (reset! server/connected-clients {:test-ch {:deleted-sessions #{}}})
+        (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
         (let [sent-messages (atom [])]
           (with-redefs [org.httpkit.server/send! (fn [ch msg]
                                                    (swap! sent-messages conj (json/parse-string msg true)))]
@@ -1651,6 +1672,7 @@
             (let [response (first @sent-messages)]
               (is (= "error" (:type response)))))))
       (finally
+        (reset! server/api-key nil)
         (reset! server/connected-clients original-clients)))))
 
 ;; Delta Sync Session History Tests
@@ -1764,7 +1786,8 @@
 
 (deftest test-subscribe-with-delta-sync
   (testing "Subscribe with last_message_id triggers delta sync"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
     (let [sent-messages (atom [])
           mock-messages [{:uuid "msg-1" :type "user" :text "old message"}
                          {:uuid "msg-2" :type "assistant" :text "older response"}
@@ -1804,11 +1827,13 @@
           (is (contains? response :is_complete))
           (is (= "msg-2" (:oldest_message_id response)))
           (is (= "msg-3" (:newest_message_id response)))
-          (is (true? (:is_complete response))))))))
+          (is (true? (:is_complete response))))))
+    (reset! server/api-key nil)))
 
 (deftest test-subscribe-backward-compatible
   (testing "Subscribe without last_message_id works (backward compatible)"
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100}})
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
     (let [sent-messages (atom [])
           mock-messages [{:uuid "msg-1" :type "user" :text "first"}
                          {:uuid "msg-2" :type "assistant" :text "second"}]]
@@ -1843,5 +1868,6 @@
           ;; Should include new fields for backward compat
           (is (= "msg-1" (:oldest_message_id response)))
           (is (= "msg-2" (:newest_message_id response)))
-          (is (true? (:is_complete response))))))))
+          (is (true? (:is_complete response))))))
+    (reset! server/api-key nil)))
 
