@@ -9,6 +9,23 @@ private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "Pers
 class PersistenceController {
     static let shared = PersistenceController()
 
+    /// Shared managed object model to prevent multiple entity description conflicts during tests.
+    /// CoreData requires a single NSManagedObjectModel instance per entity class. When multiple
+    /// containers load different model instances, the @objc(EntityName) class mappings conflict,
+    /// causing "+[Entity entity] Failed to find a unique match" errors.
+    private static let sharedModel: NSManagedObjectModel = {
+        // Use Bundle(for:) to find the model in the correct bundle, which works in both
+        // the app context and test host context
+        let bundle = Bundle(for: PersistenceController.self)
+        guard let modelURL = bundle.url(forResource: "VoiceCode", withExtension: "momd") else {
+            fatalError("Failed to find VoiceCode.momd in bundle \(bundle.bundlePath)")
+        }
+        guard let model = NSManagedObjectModel(contentsOf: modelURL) else {
+            fatalError("Failed to load CoreData model from \(modelURL)")
+        }
+        return model
+    }()
+
     /// Preview instance for SwiftUI previews
     static var preview: PersistenceController = {
         let controller = PersistenceController(inMemory: true)
@@ -18,7 +35,7 @@ class PersistenceController {
         let session = CDBackendSession(context: viewContext)
         session.id = UUID()
         session.backendName = "Terminal: voice-code - 2025-10-17 14:30"
-        session.workingDirectory = "~/projects/voice-code" 
+        session.workingDirectory = "~/projects/voice-code"
         session.lastModified = Date()
         session.messageCount = 2
         session.preview = "Hello! How can I help you?"
@@ -53,7 +70,8 @@ class PersistenceController {
     let container: NSPersistentContainer
 
     init(inMemory: Bool = false) {
-        container = NSPersistentContainer(name: "VoiceCode")
+        // Use shared model to prevent multiple entity description conflicts
+        container = NSPersistentContainer(name: "VoiceCode", managedObjectModel: Self.sharedModel)
 
         if inMemory {
             container.persistentStoreDescriptions.first?.url = URL(fileURLWithPath: "/dev/null")

@@ -35,19 +35,10 @@ final class AutoScrollTests: XCTestCase {
     // MARK: - Helper Functions
 
     private func createInMemoryContext() -> NSManagedObjectContext {
-        let container = NSPersistentContainer(name: "VoiceCode")
-        let description = NSPersistentStoreDescription()
-        description.type = NSInMemoryStoreType
-        container.persistentStoreDescriptions = [description]
-
-        let expectation = self.expectation(description: "Store loaded")
-        container.loadPersistentStores { _, error in
-            XCTAssertNil(error)
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 1.0)
-
-        return container.viewContext
+        // Use PersistenceController to ensure shared NSManagedObjectModel is used
+        // This prevents "Multiple NSEntityDescriptions claim the same subclass" errors
+        let controller = PersistenceController(inMemory: true)
+        return controller.container.viewContext
     }
 
     private func createTestSession() -> CDBackendSession {
