@@ -2,7 +2,7 @@ import XCTest
 #if os(iOS)
 @testable import VoiceCode
 #else
-@testable import VoiceCodeMac
+@testable import VoiceCode
 #endif
 
 /// Tests for pending upload processing logic.

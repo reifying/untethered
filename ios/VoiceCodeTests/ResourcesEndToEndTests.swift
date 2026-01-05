@@ -3,7 +3,7 @@ import Combine
 #if os(iOS)
 @testable import VoiceCode
 #else
-@testable import VoiceCodeMac
+@testable import VoiceCode
 #endif
 
 /// End-to-end integration tests for complete Resources feature flow.

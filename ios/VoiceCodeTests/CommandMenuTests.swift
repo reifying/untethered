@@ -6,7 +6,7 @@ import SwiftUI
 #if os(iOS)
 @testable import VoiceCode
 #else
-@testable import VoiceCodeMac
+@testable import VoiceCode
 #endif
 
 final class CommandMenuTests: XCTestCase {

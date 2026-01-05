@@ -7,7 +7,7 @@ import CoreData
 #if os(iOS)
 @testable import VoiceCode
 #else
-@testable import VoiceCodeMac
+@testable import VoiceCode
 #endif
 
 class SessionInfoViewTests: XCTestCase {

@@ -2,6 +2,11 @@
 // Full-screen view for manual API key entry and management
 
 import SwiftUI
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 /// Full-screen view for detailed API key management.
 /// Provides manual entry alternative to QR scanning with real-time validation.
@@ -50,12 +55,15 @@ struct APIKeyManagementView: View {
                 helpSection
             }
             .navigationTitle("API Key")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
             }
+            #if os(iOS)
             .sheet(isPresented: $showingScanner) {
                 QRScannerView(
                     onCodeScanned: { scannedKey in
@@ -69,6 +77,7 @@ struct APIKeyManagementView: View {
                 )
                 .ignoresSafeArea()
             }
+            #endif
             .alert("Delete API Key?", isPresented: $showDeleteConfirmation) {
                 Button("Cancel", role: .cancel) {}
                 Button("Delete", role: .destructive) {
@@ -95,7 +104,7 @@ struct APIKeyManagementView: View {
                     }
                     Spacer()
                     Button {
-                        UIPasteboard.general.string = key
+                        ClipboardUtility.copy(key)
                     } label: {
                         Image(systemName: "doc.on.doc")
                     }
@@ -114,9 +123,11 @@ struct APIKeyManagementView: View {
         Section {
             TextField("Enter API key", text: $newKeyInput)
                 .textContentType(.password)
+                #if os(iOS)
                 .autocapitalization(.none)
+                #endif
                 .autocorrectionDisabled()
-                .font(.system(.body, design: .monospaced))
+                .font(.system(size: 14, design: .monospaced))
                 .accessibilityIdentifier("apiKeyTextField")
 
             // Real-time validation feedback
@@ -173,6 +184,7 @@ struct APIKeyManagementView: View {
 
     // MARK: - Scanner Section
 
+    #if os(iOS)
     private var scannerSection: some View {
         Section {
             Button {
@@ -189,6 +201,11 @@ struct APIKeyManagementView: View {
             Text("Run 'make show-key-qr' on your server to display the QR code")
         }
     }
+    #else
+    private var scannerSection: some View {
+        EmptyView()
+    }
+    #endif
 
     // MARK: - Delete Section
 
