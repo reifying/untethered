@@ -25,6 +25,7 @@ struct APIKeySection: View {
                 notConfiguredKeyView
             }
         }
+        #if os(iOS)
         .sheet(isPresented: $showingScanner) {
             QRScannerView(
                 onCodeScanned: { scannedKey in
@@ -38,6 +39,7 @@ struct APIKeySection: View {
             )
             .ignoresSafeArea()
         }
+        #endif
         .alert("Delete API Key?", isPresented: $showingDeleteConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) {
@@ -65,7 +67,8 @@ struct APIKeySection: View {
                 }
             }
 
-            // Update key button
+            #if os(iOS)
+            // Update key button (iOS only - requires camera for QR scanning)
             Button(action: { showingScanner = true }) {
                 HStack {
                     Text("Update Key")
@@ -74,6 +77,7 @@ struct APIKeySection: View {
                         .foregroundColor(.accentColor)
                 }
             }
+            #endif
 
             // Delete key button
             Button(role: .destructive) {
@@ -106,7 +110,8 @@ struct APIKeySection: View {
                 Text("API Key Required")
             }
 
-            // Scan QR button
+            #if os(iOS)
+            // Scan QR button (iOS only - requires camera)
             Button(action: { showingScanner = true }) {
                 HStack {
                     Text("Scan QR Code")
@@ -115,13 +120,16 @@ struct APIKeySection: View {
                         .foregroundColor(.accentColor)
                 }
             }
+            #endif
 
             // Manual entry field
-            TextField("Or paste API key", text: $apiKeyInput)
+            TextField("Paste API key", text: $apiKeyInput)
                 .textContentType(.password)
+                #if os(iOS)
                 .autocapitalization(.none)
+                #endif
                 .autocorrectionDisabled()
-                .font(.system(.body, design: .monospaced))
+                .font(.system(size: 14, design: .monospaced))
 
             if let error = validationError {
                 Text(error)

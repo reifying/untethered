@@ -463,7 +463,9 @@ struct ConversationView: View {
                     .disabled(isCompacting || client.lockedSessions.contains(session.id.uuidString.lowercased()))
 
                     Button(action: {
-                        client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
+                        Task {
+                            await client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
+                        }
                     }) {
                         Image(systemName: "arrow.clockwise")
                     }

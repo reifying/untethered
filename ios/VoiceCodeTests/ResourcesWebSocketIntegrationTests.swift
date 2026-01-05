@@ -3,7 +3,7 @@ import Combine
 #if os(iOS)
 @testable import VoiceCode
 #else
-@testable import VoiceCodeMac
+@testable import VoiceCode
 #endif
 
 /// Integration tests for ResourcesManager → WebSocket message flow.

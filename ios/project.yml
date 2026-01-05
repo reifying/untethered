@@ -161,6 +161,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code-mac
+        PRODUCT_MODULE_NAME: VoiceCode
         INFOPLIST_FILE: VoiceCodeMac/Info.plist
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
         COMBINE_HIDPI_IMAGES: YES

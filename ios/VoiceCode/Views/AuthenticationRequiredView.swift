@@ -2,6 +2,9 @@
 // View shown when app launches without API key or when authentication fails
 
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// View displayed when API key authentication is required.
 /// Provides clear instructions and navigation to QR scanning or manual entry.
@@ -44,7 +47,8 @@ struct AuthenticationRequiredView: View {
 
                 Spacer()
 
-                // Primary action: Scan QR Code
+                #if os(iOS)
+                // Primary action: Scan QR Code (iOS only - requires camera)
                 Button(action: {
                     showingScanner = true
                 }) {
@@ -57,17 +61,27 @@ struct AuthenticationRequiredView: View {
                         .cornerRadius(12)
                 }
                 .padding(.horizontal, 24)
+                #endif
 
-                // Secondary action: Manual Entry
+                // Primary action on macOS, secondary on iOS: Manual Entry
                 Button(action: {
                     showingManualEntry = true
                 }) {
                     Label("Enter Manually", systemImage: "keyboard")
+                        #if os(iOS)
                         .font(.subheadline)
+                        #else
+                        .font(.headline)
+                        #endif
                         .frame(maxWidth: .infinity)
                         .padding()
+                        #if os(iOS)
                         .background(Color(.systemGray5))
                         .foregroundColor(.primary)
+                        #else
+                        .background(Color.accentColor)
+                        .foregroundColor(.white)
+                        #endif
                         .cornerRadius(12)
                 }
                 .padding(.horizontal, 24)
@@ -100,8 +114,11 @@ struct AuthenticationRequiredView: View {
                     .padding(.bottom, 24)
             }
             .navigationTitle("Setup")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
         }
+        #if os(iOS)
         .sheet(isPresented: $showingScanner) {
             QRScannerView(
                 onCodeScanned: { scannedKey in
@@ -113,6 +130,7 @@ struct AuthenticationRequiredView: View {
                 }
             )
         }
+        #endif
         .sheet(isPresented: $showingManualEntry) {
             ManualKeyEntrySheet(
                 keyInput: $manualKeyInput,
@@ -180,9 +198,11 @@ private struct ManualKeyEntrySheet: View {
             Form {
                 Section {
                     TextField("API Key", text: $keyInput)
+                        #if os(iOS)
                         .autocapitalization(.none)
+                        #endif
                         .autocorrectionDisabled()
-                        .font(.system(.body, design: .monospaced))
+                        .font(.system(size: 14, design: .monospaced))
 
                     if let error = validationError {
                         Text(error)
@@ -196,7 +216,9 @@ private struct ManualKeyEntrySheet: View {
                 }
             }
             .navigationTitle("Manual Entry")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: onCancel)
