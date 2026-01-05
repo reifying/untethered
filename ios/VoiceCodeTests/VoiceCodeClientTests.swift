@@ -2,7 +2,11 @@
 // Unit tests for VoiceCodeClient
 
 import XCTest
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 final class VoiceCodeClientTests: XCTestCase {
 

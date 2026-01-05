@@ -2,6 +2,11 @@
 // Display running and completed command executions with streaming output
 
 import SwiftUI
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 struct CommandExecutionView: View {
     @ObservedObject var client: VoiceCodeClient
@@ -43,7 +48,11 @@ struct CommandExecutionView: View {
                     .padding(.horizontal)
                     .padding(.vertical, 12)
                 }
+                #if os(iOS)
                 .background(Color(UIColor.secondarySystemBackground))
+                #elseif os(macOS)
+                .background(Color(NSColor.windowBackgroundColor))
+                #endif
 
                 Divider()
 
@@ -85,7 +94,11 @@ struct CommandExecutionView: View {
                                 .foregroundColor(autoScrollEnabled ? .blue : .gray)
                                 .background(
                                     Circle()
+                                        #if os(iOS)
                                         .fill(Color(UIColor.systemBackground))
+                                        #elseif os(macOS)
+                                        .fill(Color(NSColor.windowBackgroundColor))
+                                        #endif
                                         .shadow(radius: 2)
                                 )
                         }
@@ -106,7 +119,9 @@ struct CommandExecutionView: View {
             }
         }
         .navigationTitle("Command Output")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
 
     // MARK: - View Components
@@ -203,7 +218,9 @@ struct ActiveCommandsListView: View {
             }
         }
         .navigationTitle("Active Commands")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
 }
 

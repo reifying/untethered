@@ -4,17 +4,23 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import CoreData
+#if os(iOS)
+import UIKit
+#endif
 
 struct ResourceShareView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @ObservedObject var resourcesManager: ResourcesManager
+    #if os(iOS)
     @State private var showingDocumentPicker = false
     @State private var showingSessionPicker = false
     @State private var selectedFileURL: URL?
     @State private var showingError = false
     @State private var errorMessage = ""
+    #endif
 
     var body: some View {
+        #if os(iOS)
         VStack(spacing: 24) {
             Image(systemName: "square.and.arrow.up")
                 .font(.system(size: 64))
@@ -72,8 +78,30 @@ struct ResourceShareView: View {
         } message: {
             Text(errorMessage)
         }
+        #else
+        // macOS: File sharing feature not available in MVP
+        VStack(spacing: 24) {
+            Image(systemName: "square.and.arrow.up")
+                .font(.system(size: 64))
+                .foregroundColor(.secondary)
+
+            Text("File Sharing")
+                .font(.title2)
+                .fontWeight(.semibold)
+
+            Text("File sharing from the app is not yet available on macOS.\n\nUse the iOS Share Extension to share files to your sessions.")
+                .font(.body)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+
+            Spacer()
+        }
+        .padding(.top, 60)
+        #endif
     }
 
+    #if os(iOS)
     private func uploadFile(fileURL: URL, toSession session: CDBackendSession) {
         // Access security-scoped resource
         guard fileURL.startAccessingSecurityScopedResource() else {
@@ -154,8 +182,10 @@ struct ResourceShareView: View {
 
         print("✅ [ResourceShareView] File saved for upload: \(fileURL.lastPathComponent) -> session \(session.displayName)")
     }
+    #endif
 }
 
+#if os(iOS)
 // MARK: - Document Picker
 
 struct DocumentPicker: UIViewControllerRepresentable {
@@ -191,3 +221,4 @@ struct DocumentPicker: UIViewControllerRepresentable {
         }
     }
 }
+#endif

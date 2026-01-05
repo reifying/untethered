@@ -98,13 +98,23 @@ struct RecipeMenuView: View {
                 }
             }
             .navigationTitle("Select Recipe")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
+                #if os(iOS)
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Cancel") {
                         dismiss()
                     }
                 }
+                #else
+                ToolbarItem(placement: .automatic) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                #endif
             }
         }
         .onAppear {

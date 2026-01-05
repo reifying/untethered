@@ -1,5 +1,9 @@
 import XCTest
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 /// Tests for LogManager logging functionality
 final class LogManagerTests: XCTestCase {

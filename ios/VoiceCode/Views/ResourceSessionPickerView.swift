@@ -33,11 +33,19 @@ struct ResourceSessionPickerView: View {
                 }
             }
             .navigationTitle("Select Session")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
+                #if os(iOS)
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Cancel", action: onCancel)
                 }
+                #else
+                ToolbarItem(placement: .automatic) {
+                    Button("Cancel", action: onCancel)
+                }
+                #endif
             }
         }
     }

@@ -2,7 +2,11 @@
 // Tests for the "Start in new session" toggle feature in RecipeMenuView
 
 import XCTest
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 class RecipeNewSessionToggleTests: XCTestCase {
     var client: VoiceCodeClient!

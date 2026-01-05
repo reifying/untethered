@@ -95,7 +95,9 @@ struct SessionsForDirectoryView: View {
             }
         }
         .navigationTitle(directoryName)
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
+        #endif
         .overlay(alignment: .top) {
             if showingCopyConfirmation {
                 Text("Session ID copied to clipboard")
@@ -120,6 +122,7 @@ struct SessionsForDirectoryView: View {
             }
         }
         .toolbar {
+            #if os(iOS)
             ToolbarItem(placement: .navigationBarLeading) {
                 Button(action: {
                     copyDirectoryPath()
@@ -127,7 +130,17 @@ struct SessionsForDirectoryView: View {
                     Image(systemName: "doc.on.clipboard")
                 }
             }
-            
+            #else
+            ToolbarItem(placement: .automatic) {
+                Button(action: {
+                    copyDirectoryPath()
+                }) {
+                    Image(systemName: "doc.on.clipboard")
+                }
+            }
+            #endif
+
+            #if os(iOS)
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
                     // Command menu button - execute commands
@@ -190,6 +203,70 @@ struct SessionsForDirectoryView: View {
                     }
                 }
             }
+            #else
+            ToolbarItem(placement: .automatic) {
+                HStack(spacing: 16) {
+                    // Command menu button - execute commands
+                    if client.availableCommands != nil {
+                        Button(action: {
+                            showingCommandMenu = true
+                        }) {
+                            let totalCount = (client.availableCommands?.projectCommands.count ?? 0) +
+                                           (client.availableCommands?.generalCommands.count ?? 0)
+                            if totalCount > 0 {
+                                ZStack(alignment: .topTrailing) {
+                                    Image(systemName: "play.rectangle")
+                                    Text("\(totalCount)")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(3)
+                                        .background(Color.blue)
+                                        .clipShape(Circle())
+                                        .offset(x: 8, y: -8)
+                                }
+                            } else {
+                                Image(systemName: "play.rectangle")
+                            }
+                        }
+                    }
+
+                    // Command history button - view past executions
+                    Button(action: {
+                        showingCommandHistory = true
+                    }) {
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "clock.arrow.circlepath")
+                            if !client.runningCommands.isEmpty {
+                                Circle()
+                                    .fill(Color.green)
+                                    .frame(width: 8, height: 8)
+                                    .offset(x: 4, y: -4)
+                            }
+                        }
+                    }
+
+                    Button(action: {
+                        logger.info("🔄 Refresh button tapped - requesting session list from backend")
+                        Task {
+                            await client.requestSessionList()
+                        }
+                    }) {
+                        Image(systemName: "arrow.clockwise")
+                    }
+
+                    Button(action: {
+                        // Pre-fill with this directory's path
+                        showingNewSession = true
+                    }) {
+                        Image(systemName: "plus")
+                    }
+
+                    Button(action: { showingSettings = true }) {
+                        Image(systemName: "gear")
+                    }
+                }
+            }
+            #endif
         }
         .sheet(isPresented: $showingCommandMenu) {
             CommandMenuView(
@@ -217,11 +294,19 @@ struct SessionsForDirectoryView: View {
             NavigationView {
                 ActiveCommandsListView(client: client)
                     .toolbar {
+                        #if os(iOS)
                         ToolbarItem(placement: .navigationBarTrailing) {
                             Button("Done") {
                                 showingCommandHistory = false
                             }
                         }
+                        #else
+                        ToolbarItem(placement: .automatic) {
+                            Button("Done") {
+                                showingCommandHistory = false
+                            }
+                        }
+                        #endif
                     }
             }
         }

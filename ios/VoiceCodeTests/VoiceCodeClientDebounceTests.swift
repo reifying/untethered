@@ -2,7 +2,11 @@
 // Tests for VoiceCodeClient debouncing mechanism
 
 import XCTest
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 class VoiceCodeClientDebounceTests: XCTestCase {
     var client: VoiceCodeClient!

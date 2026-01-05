@@ -1,6 +1,10 @@
 import XCTest
 import Combine
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 /// End-to-end integration tests for complete Resources feature flow.
 /// Tests: Share Extension → App Group → ResourcesManager → WebSocket → Backend

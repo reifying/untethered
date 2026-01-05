@@ -6,7 +6,11 @@
 
 import XCTest
 import CoreData
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 final class AutoScrollToggleTests: XCTestCase {
     var testContext: NSManagedObjectContext!

@@ -1,6 +1,10 @@
 import XCTest
 import SwiftUI
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 /// Tests that VoiceCodeClient remains alive during SwiftUI view updates and copies.
 /// This addresses the crash where VoiceCodeClient was being deallocated during RootView assignWithCopy operations.

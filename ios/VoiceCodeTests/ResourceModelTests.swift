@@ -1,5 +1,9 @@
 import XCTest
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 final class ResourceModelTests: XCTestCase {
     

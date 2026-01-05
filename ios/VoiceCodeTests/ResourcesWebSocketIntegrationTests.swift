@@ -1,6 +1,10 @@
 import XCTest
 import Combine
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 /// Integration tests for ResourcesManager → WebSocket message flow.
 /// Tests that ResourcesManager correctly processes pending uploads and sends WebSocket messages.

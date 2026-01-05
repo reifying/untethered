@@ -2,7 +2,11 @@
 // Tests for CommandHistoryView and related components
 
 import XCTest
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 class CommandHistoryViewTests: XCTestCase {
     var client: VoiceCodeClient!

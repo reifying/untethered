@@ -1,6 +1,10 @@
 import XCTest
 import Combine
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 /// Tests to verify ResourcesManager doesn't create retain cycles with VoiceCodeClient
 final class ResourcesManagerRetainCycleTests: XCTestCase {

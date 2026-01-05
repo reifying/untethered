@@ -3,7 +3,11 @@
 
 import XCTest
 import AVFoundation
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 @MainActor
 final class DeviceAudioSessionManagerTests: XCTestCase {

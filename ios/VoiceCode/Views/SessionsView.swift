@@ -74,7 +74,9 @@ struct NewSessionView: View {
                     TextField("Session Name", text: $name)
 
                     TextField(createWorktree ? "Parent Repository Path" : "Working Directory (Optional)", text: $workingDirectory)
+                        #if os(iOS)
                         .autocapitalization(.none)
+                        #endif
                         .disableAutocorrection(true)
                 }
 
@@ -99,18 +101,35 @@ struct NewSessionView: View {
                 }
             }
             .navigationTitle("New Session")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
+                #if os(iOS)
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Cancel", action: onCancel)
                 }
+                #else
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onCancel)
+                }
+                #endif
 
+                #if os(iOS)
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Create") {
                         onCreate()
                     }
                     .disabled(name.isEmpty || (createWorktree && workingDirectory.isEmpty))
                 }
+                #else
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") {
+                        onCreate()
+                    }
+                    .disabled(name.isEmpty || (createWorktree && workingDirectory.isEmpty))
+                }
+                #endif
             }
         }
     }

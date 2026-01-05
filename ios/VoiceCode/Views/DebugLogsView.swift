@@ -3,6 +3,11 @@
 
 import SwiftUI
 import OSLog
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 struct DebugLogsView: View {
     @State private var logs: String = "Loading logs..."
@@ -39,7 +44,11 @@ struct DebugLogsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
             }
+            #if os(iOS)
             .background(Color(UIColor.systemGroupedBackground))
+            #elseif os(macOS)
+            .background(Color(NSColor.windowBackgroundColor))
+            #endif
 
             // Action buttons
             HStack(spacing: 16) {
@@ -93,7 +102,9 @@ struct DebugLogsView: View {
             .padding()
         }
         .navigationTitle("Debug Logs")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .overlay(alignment: .top) {
             if showingCopyConfirmation {
                 Text("Last 15KB of logs copied to clipboard")

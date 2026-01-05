@@ -2,7 +2,11 @@
 // Unit tests for Message model (DTO for WebSocket communication)
 
 import XCTest
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 final class ModelTests: XCTestCase {
 

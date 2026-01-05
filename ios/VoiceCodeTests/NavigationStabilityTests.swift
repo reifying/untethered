@@ -4,7 +4,11 @@
 import XCTest
 import SwiftUI
 import CoreData
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 final class NavigationStabilityTests: XCTestCase {
     var persistenceController: PersistenceController!

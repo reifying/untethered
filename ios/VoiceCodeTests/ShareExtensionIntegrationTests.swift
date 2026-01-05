@@ -1,5 +1,9 @@
 import XCTest
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 /// Integration tests for Share Extension → App Group → ResourcesManager flow.
 /// Tests the complete file sharing workflow from external apps to backend upload.

@@ -2,7 +2,11 @@
 // Tests for text processing utilities
 
 import XCTest
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 final class TextProcessorTests: XCTestCase {
     

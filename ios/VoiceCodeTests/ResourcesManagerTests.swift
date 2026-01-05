@@ -1,6 +1,10 @@
 import XCTest
 import Combine
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 final class ResourcesManagerTests: XCTestCase {
     private var testContainerURL: URL!

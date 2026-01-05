@@ -2,7 +2,11 @@
 // Minimal test to debug crash
 
 import XCTest
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 class SimpleCommandTest: XCTestCase {
     func testCreateSession() {

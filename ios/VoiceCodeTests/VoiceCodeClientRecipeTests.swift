@@ -2,7 +2,11 @@
 // Tests for recipe orchestration message handling in VoiceCodeClient
 
 import XCTest
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 class VoiceCodeClientRecipeTests: XCTestCase {
     var client: VoiceCodeClient!

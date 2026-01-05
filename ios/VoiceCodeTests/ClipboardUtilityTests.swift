@@ -2,7 +2,11 @@
 // Unit tests for ClipboardUtility
 
 import XCTest
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 #if os(iOS)
 import UIKit

@@ -6,7 +6,11 @@
 //
 
 import Testing
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 struct VoiceCodeTests {
 

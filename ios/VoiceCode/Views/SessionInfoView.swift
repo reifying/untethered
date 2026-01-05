@@ -206,13 +206,23 @@ struct SessionInfoView: View {
                 }
             }
             .navigationTitle("Session Info")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
+                #if os(iOS)
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
                         dismiss()
                     }
                 }
+                #else
+                ToolbarItem(placement: .automatic) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+                #endif
             }
             .overlay(alignment: .top) {
                 if showCopyConfirmation {

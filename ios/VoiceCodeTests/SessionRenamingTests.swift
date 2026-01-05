@@ -7,7 +7,11 @@
 
 import XCTest
 import CoreData
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 class SessionRenamingTests: XCTestCase {
     var persistenceController: PersistenceController!

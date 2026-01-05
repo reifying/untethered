@@ -288,6 +288,7 @@ struct DirectoryListView: View {
             }
         }
         .toolbar {
+            #if os(iOS)
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
                     // Resources button with badge
@@ -335,6 +336,48 @@ struct DirectoryListView: View {
                     }
                 }
             }
+            #else
+            ToolbarItem(placement: .automatic) {
+                HStack(spacing: 16) {
+                    // Resources button with badge
+                    Button(action: {
+                        navigationPath.append(ResourcesNavigationTarget.list)
+                    }) {
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "doc.on.doc")
+
+                            if resourcesManager.pendingUploadCount > 0 {
+                                Circle()
+                                    .fill(Color.red)
+                                    .frame(width: 8, height: 8)
+                                    .offset(x: 4, y: -4)
+                            }
+                        }
+                    }
+
+                    Button(action: {
+                        logger.info("🔄 Refresh button tapped - requesting session list from backend")
+                        Task {
+                            await client.requestSessionList()
+                        }
+                    }) {
+                        Image(systemName: "arrow.clockwise")
+                    }
+
+                    Button(action: {
+                        // Pre-populate with most recently used directory
+                        newWorkingDirectory = defaultWorkingDirectory
+                        showingNewSession = true
+                    }) {
+                        Image(systemName: "plus")
+                    }
+
+                    Button(action: { showingSettings = true }) {
+                        Image(systemName: "gear")
+                    }
+                }
+            }
+            #endif
         }
         .sheet(isPresented: $showingNewSession) {
             NewSessionView(

@@ -28,12 +28,16 @@ struct SettingsView: View {
 
                 Section(header: Text("Server Configuration")) {
                     TextField("Server Address", text: $settings.serverURL)
+                        #if os(iOS)
                         .autocapitalization(.none)
-                        .disableAutocorrection(true)
                         .keyboardType(.URL)
+                        #endif
+                        .disableAutocorrection(true)
 
                     TextField("Port", text: $settings.serverPort)
+                        #if os(iOS)
                         .keyboardType(.numberPad)
+                        #endif
 
                     Text("Full URL: \(settings.fullServerURL)")
                         .font(.caption)
@@ -131,7 +135,9 @@ struct SettingsView: View {
 
                 Section(header: Text("Resources")) {
                     TextField("Storage Location", text: $settings.resourceStorageLocation)
+                        #if os(iOS)
                         .autocapitalization(.none)
+                        #endif
                         .disableAutocorrection(true)
 
                     Text("Directory where uploaded files will be saved on the backend")
@@ -153,7 +159,9 @@ struct SettingsView: View {
                 Section(header: Text("System Prompt")) {
                     TextField("Custom System Prompt", text: $localSystemPrompt, axis: .vertical)
                         .lineLimit(3...6)
+                        #if os(iOS)
                         .autocapitalization(.sentences)
+                        #endif
                         .onChange(of: localSystemPrompt) { newValue in
                             settings.systemPrompt = newValue
                         }
@@ -209,11 +217,20 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .toolbar {
+                #if os(iOS)
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Cancel") {
                         dismiss()
                     }
                 }
+                #else
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                #endif
+                #if os(iOS)
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Save") {
                         // Save pending API key if there is one
@@ -233,6 +250,15 @@ struct SettingsView: View {
                         dismiss()
                     }
                 }
+                #else
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        // Settings auto-save via didSet
+                        onServerChange(settings.fullServerURL)
+                        dismiss()
+                    }
+                }
+                #endif
             }
             .onAppear {
                 // Initialize local state from settings

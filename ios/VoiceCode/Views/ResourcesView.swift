@@ -46,11 +46,14 @@ struct ResourcesView: View {
                             }
                         }
                     }
+                    #if os(iOS)
                     .listStyle(.insetGrouped)
+                    #endif
                 }
             }
             .navigationTitle("Resources")
             .toolbar {
+                #if os(iOS)
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: {
                         resourcesManager.listResources()
@@ -59,6 +62,16 @@ struct ResourcesView: View {
                     }
                     .disabled(!client.isConnected || resourcesManager.isLoadingResources)
                 }
+                #else
+                ToolbarItem(placement: .automatic) {
+                    Button(action: {
+                        resourcesManager.listResources()
+                    }) {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .disabled(!client.isConnected || resourcesManager.isLoadingResources)
+                }
+                #endif
             }
             .onAppear {
                 resourcesManager.updatePendingCount()

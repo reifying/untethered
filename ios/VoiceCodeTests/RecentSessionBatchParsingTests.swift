@@ -2,7 +2,11 @@
 // Tests for batch parsing of recent sessions from backend data
 
 import XCTest
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 final class RecentSessionBatchParsingTests: XCTestCase {
 

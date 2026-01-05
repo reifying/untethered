@@ -4,6 +4,11 @@
 import SwiftUI
 import CoreData
 import os.log
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "ConversationView")
 
@@ -280,10 +285,17 @@ struct ConversationView: View {
                 }
             }
             .padding(.vertical, 12)
+            #if os(iOS)
             .background(Color(UIColor.systemBackground))
+            #elseif os(macOS)
+            .background(Color(NSColor.windowBackgroundColor))
+            #endif
         }
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .toolbar {
+            #if os(iOS)
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
                     // Kill session button (only visible when session is locked)
@@ -380,6 +392,95 @@ struct ConversationView: View {
 
                 }
             }
+            #else
+            ToolbarItem(placement: .automatic) {
+                HStack(spacing: 16) {
+                    // Kill session button (only visible when session is locked)
+                    if isSessionLocked {
+                        Button(action: {
+                            showingKillConfirmation = true
+                        }) {
+                            Image(systemName: "stop.circle.fill")
+                                .foregroundColor(.red)
+                        }
+                    }
+
+                    // Recipe button - shows active recipe or opens menu
+                    if let active = activeRecipe {
+                        // Show active recipe with exit option
+                        Menu {
+                            Text("\(active.recipeLabel) - Step \(active.stepCount)")
+                            Text("Current: \(active.currentStep)")
+                            Divider()
+                            Button(role: .destructive) {
+                                exitRecipe()
+                            } label: {
+                                Label("Exit Recipe", systemImage: "stop.circle")
+                            }
+                        } label: {
+                            Image(systemName: "list.bullet.clipboard.fill")
+                                .foregroundColor(.green)
+                        }
+                    } else {
+                        // Show button to start a recipe
+                        Button(action: {
+                            showingRecipeMenu = true
+                        }) {
+                            Image(systemName: "list.bullet.clipboard")
+                        }
+                    }
+
+                    // Session info button
+                    Button(action: {
+                        showingSessionInfo = true
+                    }) {
+                        Image(systemName: "info.circle")
+                    }
+
+                    // Auto-scroll toggle button (always visible)
+                    Button(action: {
+                        toggleAutoScroll()
+                    }) {
+                        Image(systemName: autoScrollEnabled ? "arrow.down.circle.fill" : "arrow.down.circle")
+                            .foregroundColor(autoScrollEnabled ? .blue : .gray)
+                    }
+
+                    // Compact button
+                    Button(action: {
+                        if wasRecentlyCompacted {
+                            showingAlreadyCompactedAlert = true
+                        } else {
+                            showingCompactConfirmation = true
+                        }
+                    }) {
+                        if isCompacting {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "rectangle.compress.vertical")
+                                .foregroundColor(wasRecentlyCompacted ? .green : .primary)
+                        }
+                    }
+                    .disabled(isCompacting || client.lockedSessions.contains(session.id.uuidString.lowercased()))
+
+                    Button(action: {
+                        client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
+                    }) {
+                        Image(systemName: "arrow.clockwise")
+                    }
+
+                    // Queue remove button
+                    if settings.queueEnabled && session.isInQueue {
+                        Button(action: {
+                            removeFromQueue(session)
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.orange)
+                        }
+                    }
+
+                }
+            }
+            #endif
         }
         .overlay(alignment: .top) {
             if showingCopyConfirmation {
@@ -1119,16 +1220,30 @@ struct MessageDetailView: View {
                     }
                 }
                 .padding()
+                #if os(iOS)
                 .background(Color(UIColor.systemBackground))
+                #elseif os(macOS)
+                .background(Color(NSColor.windowBackgroundColor))
+                #endif
             }
             .navigationTitle("Full Message")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
+                #if os(iOS)
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
                         dismiss()
                     }
                 }
+                #else
+                ToolbarItem(placement: .automatic) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+                #endif
             }
         }
     }
@@ -1147,7 +1262,9 @@ struct RenameSessionView: View {
                 Section(header: Text("Session Name")) {
                     HStack {
                         TextField("Enter session name", text: $sessionName)
+                            #if os(iOS)
                             .textInputAutocapitalization(.words)
+                            #endif
                         
                         if !sessionName.isEmpty {
                             Button(action: {
@@ -1162,18 +1279,35 @@ struct RenameSessionView: View {
                 }
             }
             .navigationTitle("Rename Session")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
+                #if os(iOS)
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Cancel", action: onCancel)
                 }
+                #else
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onCancel)
+                }
+                #endif
 
+                #if os(iOS)
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Save") {
                         onSave()
                     }
                     .disabled(sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
+                #else
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        onSave()
+                    }
+                    .disabled(sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                #endif
             }
         }
     }

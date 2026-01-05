@@ -2,12 +2,19 @@
 // Detail view for displaying full command output
 
 import SwiftUI
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 struct CommandOutputDetailView: View {
     @ObservedObject var client: VoiceCodeClient
     let session: CommandHistorySession
     @State private var isLoading = true
+    #if os(iOS)
     @State private var showShareSheet = false
+    #endif
 
     var body: some View {
         ScrollView {
@@ -34,8 +41,11 @@ struct CommandOutputDetailView: View {
             .padding()
         }
         .navigationTitle("Command Output")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .toolbar {
+            #if os(iOS)
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     Button(action: copyOutput) {
@@ -49,12 +59,22 @@ struct CommandOutputDetailView: View {
                 }
                 .disabled(client.commandOutputFull == nil)
             }
+            #elseif os(macOS)
+            ToolbarItem(placement: .automatic) {
+                Button(action: copyOutput) {
+                    Label("Copy Output", systemImage: "doc.on.doc")
+                }
+                .disabled(client.commandOutputFull == nil)
+            }
+            #endif
         }
+        #if os(iOS)
         .sheet(isPresented: $showShareSheet) {
             if let output = client.commandOutputFull {
                 ShareSheet(items: [shareText(output)])
             }
         }
+        #endif
         .onAppear {
             loadOutput()
         }
@@ -145,7 +165,11 @@ struct CommandOutputDetailView: View {
                     .font(.system(.body, design: .monospaced))
                     .textSelection(.enabled)
                     .padding(12)
+                    #if os(iOS)
                     .background(Color(UIColor.secondarySystemBackground))
+                    #elseif os(macOS)
+                    .background(Color(NSColor.windowBackgroundColor))
+                    #endif
                     .cornerRadius(8)
             }
         }
@@ -197,6 +221,7 @@ struct CommandOutputDetailView: View {
     }
 }
 
+#if os(iOS)
 // ShareSheet helper for UIActivityViewController
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
@@ -207,6 +232,7 @@ struct ShareSheet: UIViewControllerRepresentable {
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
+#endif
 
 struct CommandOutputDetailView_Previews: PreviewProvider {
     static var previews: some View {

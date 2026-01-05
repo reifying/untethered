@@ -1,5 +1,9 @@
 import XCTest
+#if os(iOS)
 @testable import VoiceCode
+#else
+@testable import VoiceCodeMac
+#endif
 
 /// Tests for pending upload processing logic.
 /// These tests verify the App Group file handling used by ResourcesManager.
