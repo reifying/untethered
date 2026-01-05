@@ -83,28 +83,34 @@
   "Generate the JSON format requirement text to append to prompts.
    Specifies the required format and valid outcomes."
   [step-name expected-outcomes]
-  (let [outcomes-list (str/join ", " (map name (sort expected-outcomes)))]
+  (let [sorted-outcomes (sort (map name expected-outcomes))
+        non-other-outcomes (remove #(= "other" %) sorted-outcomes)
+        has-other? (contains? expected-outcomes :other)
+        outcome-examples (str/join "\n" (map #(str "{\"outcome\": \"" % "\"}") non-other-outcomes))
+        other-example (when has-other?
+                        "{\"outcome\": \"other\", \"otherDescription\": \"<brief description>\"}")]
     (str "\n\n"
-         "End your response with a JSON block on the last line:\n"
-         "{\"outcome\": \"<outcome>\"}\n\n"
-         "or if needed:\n\n"
-         "{\"outcome\": \"other\", \"otherDescription\": \"<brief description>\"}\n\n"
-         "Your possible outcomes for this step: " outcomes-list)))
+         "End your response with one of these JSON blocks on the last line:\n\n"
+         outcome-examples
+         (when has-other? (str "\n" other-example)))))
 
 (defn get-outcome-reminder-prompt
   "Generate a reminder prompt when agent fails to produce JSON outcome.
    This is sent as a follow-up to give the agent another chance."
   [step-name expected-outcomes error-details]
-  (let [outcomes-list (str/join ", " (map name (sort expected-outcomes)))]
+  (let [sorted-outcomes (sort (map name expected-outcomes))
+        non-other-outcomes (remove #(= "other" %) sorted-outcomes)
+        has-other? (contains? expected-outcomes :other)
+        outcome-examples (str/join "\n" (map #(str "{\"outcome\": \"" % "\"}") non-other-outcomes))
+        other-example (when has-other?
+                        "{\"outcome\": \"other\", \"otherDescription\": \"<brief description>\"}")]
     (str "Your previous response did not include the required JSON outcome block. "
          "Please respond now with ONLY the JSON outcome on a single line.\n\n"
          "Error: " error-details "\n\n"
-         "Required format:\n"
-         "{\"outcome\": \"<outcome>\"}\n\n"
-         "Valid outcomes for this step (" (name step-name) "): " outcomes-list "\n\n"
-         "If none of the standard outcomes apply, use:\n"
-         "{\"outcome\": \"other\", \"otherDescription\": \"<brief description>\"}\n\n"
-         "Respond with ONLY the JSON block, nothing else.")))
+         "Valid responses:\n\n"
+         outcome-examples
+         (when has-other? (str "\n" other-example))
+         "\n\nRespond with ONLY the JSON block, nothing else.")))
 
 (defn append-outcome-requirements
   "Append JSON outcome requirements to the end of a prompt."

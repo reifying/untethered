@@ -33,6 +33,7 @@ struct DirectoryListView: View {
     @State private var isPriorityQueueExpanded = true
     @State private var showingCopyConfirmation = false
     @State private var copyConfirmationMessage = ""
+    @State private var isRefreshing = false
 
     // Cached computed properties to prevent recomputation on every render
     @State private var cachedDirectories: [DirectoryInfo] = []
@@ -307,12 +308,19 @@ struct DirectoryListView: View {
 
                     Button(action: {
                         logger.info("🔄 Refresh button tapped - requesting session list from backend")
+                        isRefreshing = true
                         Task {
                             await client.requestSessionList()
+                            await MainActor.run { isRefreshing = false }
                         }
                     }) {
-                        Image(systemName: "arrow.clockwise")
+                        if isRefreshing {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
                     }
+                    .disabled(isRefreshing)
 
                     Button(action: {
                         // Pre-populate with most recently used directory

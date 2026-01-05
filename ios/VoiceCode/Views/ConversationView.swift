@@ -60,6 +60,7 @@ struct ConversationView: View {
     @State private var showingKillConfirmation = false
     @State private var showingSessionInfo = false
     @State private var showingRecipeMenu = false
+    @State private var isRefreshingMessages = false
 
     // Compaction feedback state
     @State private var wasRecentlyCompacted: Bool = false
@@ -353,10 +354,19 @@ struct ConversationView: View {
                     .disabled(isCompacting || client.lockedSessions.contains(session.id.uuidString.lowercased()))
 
                     Button(action: {
-                        client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
+                        isRefreshingMessages = true
+                        Task {
+                            await client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
+                            await MainActor.run { isRefreshingMessages = false }
+                        }
                     }) {
-                        Image(systemName: "arrow.clockwise")
+                        if isRefreshingMessages {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
                     }
+                    .disabled(isRefreshingMessages)
 
                     // Queue remove button
                     if settings.queueEnabled && session.isInQueue {
@@ -796,7 +806,9 @@ struct ConversationView: View {
                     }
 
                     // Refresh session to update message count
-                    client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
+                    Task {
+                        await client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
+                    }
 
                     // Hide confirmation after 3 seconds
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {

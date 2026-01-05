@@ -118,20 +118,36 @@
       (is (string? (:error result))))))
 
 (deftest outcome-format-block-test
-  (testing "generates format block with correct outcomes"
-    (let [block (orch/get-outcome-format-block :implement #{:complete :other})]
-      (is (str/includes? block "complete"))
-      (is (str/includes? block "other"))
-      (is (str/includes? block "\"outcome\""))
-      (is (str/includes? block "otherDescription"))))
+  (testing "generates concrete JSON examples for each outcome"
+    (let [block (orch/get-outcome-format-block :commit #{:committed :nothing-to-commit :other})]
+      ;; Should have concrete examples, not placeholders
+      (is (str/includes? block "{\"outcome\": \"committed\"}"))
+      (is (str/includes? block "{\"outcome\": \"nothing-to-commit\"}"))
+      (is (str/includes? block "{\"outcome\": \"other\", \"otherDescription\":"))
+      ;; Should NOT have the old placeholder format
+      (is (not (str/includes? block "{\"outcome\": \"<outcome>\"}"))
+          "Should not use placeholder format")))
+
+  (testing "handles outcomes without 'other'"
+    (let [block (orch/get-outcome-format-block :simple #{:done :failed})]
+      (is (str/includes? block "{\"outcome\": \"done\"}"))
+      (is (str/includes? block "{\"outcome\": \"failed\"}"))
+      (is (not (str/includes? block "otherDescription")))))
 
   (testing "appends format requirements to prompt"
     (let [original "Run bd ready and implement the task."
           result (orch/append-outcome-requirements original :implement #{:complete :other})]
       (is (str/starts-with? result original))
       (is (> (count result) (count original)))
-      (is (str/includes? result "complete"))
-      (is (str/includes? result "other")))))
+      (is (str/includes? result "{\"outcome\": \"complete\"}"))))
+
+  (testing "reminder prompt shows concrete examples"
+    (let [reminder (orch/get-outcome-reminder-prompt :commit #{:committed :nothing-to-commit :other} "No JSON found")]
+      (is (str/includes? reminder "{\"outcome\": \"committed\"}"))
+      (is (str/includes? reminder "{\"outcome\": \"nothing-to-commit\"}"))
+      (is (str/includes? reminder "{\"outcome\": \"other\", \"otherDescription\":"))
+      (is (not (str/includes? reminder "{\"outcome\": \"<outcome>\"}"))
+          "Reminder should not use placeholder format"))))
 
 (deftest orchestration-state-test
   (testing "creates initial state for recipe"

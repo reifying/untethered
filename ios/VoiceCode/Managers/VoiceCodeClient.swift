@@ -56,6 +56,9 @@ class VoiceCodeClient: ObservableObject {
     // Continuation for async session list requests
     private var sessionListContinuation: CheckedContinuation<Void, Never>?
 
+    // Continuations for async session refresh requests (sessionId -> continuation)
+    private var sessionRefreshContinuations: [String: CheckedContinuation<Void, Never>] = [:]
+
     // Continuations for async command execution requests (commandId -> continuation)
     private var commandExecutionContinuations: [String: CheckedContinuation<String, Never>] = [:]
 
@@ -581,6 +584,11 @@ class VoiceCodeClient: ObservableObject {
                     }
 
                     self.sessionSyncManager.handleSessionHistory(sessionId: sessionId, messages: messages)
+
+                    // Resume any waiting refresh continuation
+                    if let continuation = self.sessionRefreshContinuations.removeValue(forKey: sessionId) {
+                        continuation.resume()
+                    }
                 }
 
             case "session_updated":
@@ -1051,15 +1059,28 @@ class VoiceCodeClient: ObservableObject {
         }
     }
 
-    func requestSessionRefresh(sessionId: String) {
+    func requestSessionRefresh(sessionId: String) async {
         // Refresh a specific session by unsubscribing and re-subscribing
         // This will fetch the latest messages from the backend
-        print("🔄 [VoiceCodeClient] Requesting session refresh: \(sessionId)")
-        unsubscribe(sessionId: sessionId)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            // Store continuation to resume when session_history is received
+            sessionRefreshContinuations[sessionId] = continuation
 
-        // Re-subscribe after a brief delay to ensure clean state
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            self.subscribe(sessionId: sessionId)
+            print("🔄 [VoiceCodeClient] Requesting session refresh: \(sessionId)")
+            unsubscribe(sessionId: sessionId)
+
+            // Re-subscribe after a brief delay to ensure clean state
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.subscribe(sessionId: sessionId)
+            }
+
+            // Set a timeout to prevent infinite waiting
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
+                if let cont = self?.sessionRefreshContinuations.removeValue(forKey: sessionId) {
+                    cont.resume()
+                    print("⚠️ [VoiceCodeClient] Session refresh request timed out after 10 seconds for \(sessionId)")
+                }
+            }
         }
     }
 
