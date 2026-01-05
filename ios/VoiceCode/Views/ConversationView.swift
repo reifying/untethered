@@ -1156,97 +1156,113 @@ struct MessageDetailView: View {
     @State private var showCopiedConfirmation = false
 
     var body: some View {
+        messageDetailNavigation
+    }
+
+    @ViewBuilder
+    private var messageDetailNavigation: some View {
+        #if os(macOS)
+        NavigationStack {
+            messageDetailContent
+        }
+        .frame(minWidth: 500, minHeight: 400)
+        #else
         NavigationView {
-            VStack(spacing: 0) {
-                ScrollView {
-                    Text(message.text)
-                        .font(.body)
-                        .textSelection(.enabled)
-                        .padding()
-                }
+            messageDetailContent
+        }
+        #endif
+    }
 
-                Divider()
+    private var messageDetailContent: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                Text(message.text)
+                    .font(.body)
+                    .textSelection(.enabled)
+                    .padding()
+            }
 
-                // Action buttons at bottom for better accessibility
-                HStack(spacing: 20) {
-                    Button(action: {
-                        ClipboardUtility.copy(message.text)
+            Divider()
 
-                        // Haptic feedback
-                        ClipboardUtility.triggerSuccessHaptic()
+            // Action buttons at bottom for better accessibility
+            HStack(spacing: 20) {
+                Button(action: {
+                    ClipboardUtility.copy(message.text)
 
-                        // Show confirmation
+                    // Haptic feedback
+                    ClipboardUtility.triggerSuccessHaptic()
+
+                    // Show confirmation
+                    withAnimation {
+                        showCopiedConfirmation = true
+                    }
+
+                    // Hide after 1.5 seconds
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                         withAnimation {
-                            showCopiedConfirmation = true
-                        }
-
-                        // Hide after 1.5 seconds
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                            withAnimation {
-                                showCopiedConfirmation = false
-                            }
-                        }
-                    }) {
-                        VStack(spacing: 4) {
-                            Image(systemName: showCopiedConfirmation ? "checkmark.circle.fill" : "doc.on.doc")
-                                .font(.title2)
-                                .foregroundColor(showCopiedConfirmation ? .green : .primary)
-                            Text(showCopiedConfirmation ? "Copied!" : "Copy")
-                                .font(.caption)
-                                .foregroundColor(showCopiedConfirmation ? .green : .primary)
+                            showCopiedConfirmation = false
                         }
                     }
-
-                    Button(action: {
-                        let processedText = TextProcessor.removeCodeBlocks(from: message.text)
-                        voiceOutput.speak(processedText, workingDirectory: message.session?.workingDirectory)
-                    }) {
-                        VStack(spacing: 4) {
-                            Image(systemName: "speaker.wave.2.fill")
-                                .font(.title2)
-                            Text("Read Aloud")
-                                .font(.caption)
-                        }
-                    }
-
-                    Button(action: {
-                        onInferName(message.text)
-                        dismiss()
-                    }) {
-                        VStack(spacing: 4) {
-                            Image(systemName: "sparkles.rectangle.stack")
-                                .font(.title2)
-                            Text("Infer Name")
-                                .font(.caption)
-                        }
+                }) {
+                    VStack(spacing: 4) {
+                        Image(systemName: showCopiedConfirmation ? "checkmark.circle.fill" : "doc.on.doc")
+                            .font(.title2)
+                            .foregroundColor(showCopiedConfirmation ? .green : .primary)
+                        Text(showCopiedConfirmation ? "Copied!" : "Copy")
+                            .font(.caption)
+                            .foregroundColor(showCopiedConfirmation ? .green : .primary)
                     }
                 }
-                .padding()
-                #if os(iOS)
-                .background(Color(UIColor.systemBackground))
-                #elseif os(macOS)
-                .background(Color(NSColor.windowBackgroundColor))
-                #endif
+
+                Button(action: {
+                    let processedText = TextProcessor.removeCodeBlocks(from: message.text)
+                    voiceOutput.speak(processedText, workingDirectory: message.session?.workingDirectory)
+                }) {
+                    VStack(spacing: 4) {
+                        Image(systemName: "speaker.wave.2.fill")
+                            .font(.title2)
+                        Text("Read Aloud")
+                            .font(.caption)
+                    }
+                }
+
+                Button(action: {
+                    onInferName(message.text)
+                    dismiss()
+                }) {
+                    VStack(spacing: 4) {
+                        Image(systemName: "sparkles.rectangle.stack")
+                            .font(.title2)
+                        Text("Infer Name")
+                            .font(.caption)
+                    }
+                }
             }
-            .navigationTitle("Full Message")
+            .padding()
             #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
+            .background(Color(UIColor.systemBackground))
+            #elseif os(macOS)
+            .background(Color(NSColor.windowBackgroundColor))
             #endif
-            .toolbar {
-                #if os(iOS)
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
+        }
+        .navigationTitle("Full Message")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
+            #if os(iOS)
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("Done") {
+                    dismiss()
                 }
-                #else
-                ToolbarItem(placement: .automatic) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-                #endif
             }
+            #else
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") {
+                    dismiss()
+                }
+            }
+            #endif
         }
     }
 }
@@ -1259,58 +1275,77 @@ struct RenameSessionView: View {
     let onCancel: () -> Void
 
     var body: some View {
-        NavigationView {
-            Form {
-                Section(header: Text("Session Name")) {
-                    HStack {
-                        TextField("Enter session name", text: $sessionName)
-                            #if os(iOS)
-                            .textInputAutocapitalization(.words)
-                            #endif
-                        
-                        if !sessionName.isEmpty {
-                            Button(action: {
-                                sessionName = ""
-                            }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Rename Session")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                #if os(iOS)
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Cancel", action: onCancel)
-                }
-                #else
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onCancel)
-                }
-                #endif
+        renameNavigation
+    }
 
-                #if os(iOS)
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Save") {
-                        onSave()
+    @ViewBuilder
+    private var renameNavigation: some View {
+        #if os(macOS)
+        NavigationStack {
+            renameForm
+        }
+        .frame(minWidth: 400, minHeight: 200)
+        #else
+        NavigationView {
+            renameForm
+        }
+        #endif
+    }
+
+    private var renameForm: some View {
+        Form {
+            Section(header: Text("Session Name")) {
+                HStack {
+                    TextField("Enter session name", text: $sessionName)
+                        #if os(iOS)
+                        .textInputAutocapitalization(.words)
+                        #endif
+
+                    if !sessionName.isEmpty {
+                        Button(action: {
+                            sessionName = ""
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .disabled(sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                #else
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        onSave()
-                    }
-                    .disabled(sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                #endif
             }
+        }
+        #if os(macOS)
+        .formStyle(.grouped)
+        #endif
+        .navigationTitle("Rename Session")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
+            #if os(iOS)
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button("Cancel", action: onCancel)
+            }
+            #else
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel", action: onCancel)
+            }
+            #endif
+
+            #if os(iOS)
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("Save") {
+                    onSave()
+                }
+                .disabled(sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            #else
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    onSave()
+                }
+                .disabled(sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            #endif
         }
     }
 }

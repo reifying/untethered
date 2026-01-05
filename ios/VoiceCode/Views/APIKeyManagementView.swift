@@ -33,59 +33,78 @@ struct APIKeyManagementView: View {
     }
 
     var body: some View {
+        apiKeyNavigation
+    }
+
+    @ViewBuilder
+    private var apiKeyNavigation: some View {
+        #if os(macOS)
+        NavigationStack {
+            apiKeyForm
+        }
+        .frame(minWidth: 500, minHeight: 500)
+        #else
         NavigationView {
-            Form {
-                // Current key section
-                if hasKey {
-                    currentKeySection
-                }
+            apiKeyForm
+        }
+        #endif
+    }
 
-                // Manual entry section
-                manualEntrySection
+    private var apiKeyForm: some View {
+        Form {
+            // Current key section
+            if hasKey {
+                currentKeySection
+            }
 
-                // QR scanner alternative
-                scannerSection
+            // Manual entry section
+            manualEntrySection
 
-                // Delete option (only shown when key exists)
-                if hasKey {
-                    deleteSection
-                }
+            // QR scanner alternative
+            scannerSection
 
-                // Help section
-                helpSection
+            // Delete option (only shown when key exists)
+            if hasKey {
+                deleteSection
             }
-            .navigationTitle("API Key")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+
+            // Help section
+            helpSection
+        }
+        #if os(macOS)
+        .formStyle(.grouped)
+        #endif
+        .navigationTitle("API Key")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Done") { dismiss() }
+            }
+        }
+        #if os(iOS)
+        .sheet(isPresented: $showingScanner) {
+            QRScannerView(
+                onCodeScanned: { scannedKey in
+                    newKeyInput = scannedKey
+                    saveKey()
+                    showingScanner = false
+                },
+                onCancel: {
+                    showingScanner = false
                 }
+            )
+            .ignoresSafeArea()
+        }
+        #endif
+        .alert("Delete API Key?", isPresented: $showDeleteConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                deleteKey()
             }
-            #if os(iOS)
-            .sheet(isPresented: $showingScanner) {
-                QRScannerView(
-                    onCodeScanned: { scannedKey in
-                        newKeyInput = scannedKey
-                        saveKey()
-                        showingScanner = false
-                    },
-                    onCancel: {
-                        showingScanner = false
-                    }
-                )
-                .ignoresSafeArea()
-            }
-            #endif
-            .alert("Delete API Key?", isPresented: $showDeleteConfirmation) {
-                Button("Cancel", role: .cancel) {}
-                Button("Delete", role: .destructive) {
-                    deleteKey()
-                }
-            } message: {
-                Text("You will need to re-enter the API key to connect to the backend.")
-            }
+        } message: {
+            Text("You will need to re-enter the API key to connect to the backend.")
         }
     }
 

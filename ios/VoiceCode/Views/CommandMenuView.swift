@@ -30,102 +30,118 @@ struct CommandMenuView: View {
 
     var body: some View {
         let _ = RenderTracker.count(Self.self)
+        commandMenuNavigation
+    }
+
+    @ViewBuilder
+    private var commandMenuNavigation: some View {
+        #if os(macOS)
+        NavigationStack {
+            commandMenuContent
+        }
+        .frame(minWidth: 450, minHeight: 400)
+        #else
         NavigationView {
-            ZStack {
-                // NavigationLink hidden in background for programmatic navigation
-                if let commandSessionId = activeCommandSessionId {
-                    NavigationLink(
-                        destination: CommandExecutionView(client: client, commandSessionId: commandSessionId),
-                        isActive: $navigateToExecution
-                    ) {
-                        EmptyView()
-                    }
-                    .hidden()
+            commandMenuContent
+        }
+        #endif
+    }
+
+    private var commandMenuContent: some View {
+        ZStack {
+            // NavigationLink hidden in background for programmatic navigation
+            if let commandSessionId = activeCommandSessionId {
+                NavigationLink(
+                    destination: CommandExecutionView(client: client, commandSessionId: commandSessionId),
+                    isActive: $navigateToExecution
+                ) {
+                    EmptyView()
                 }
+                .hidden()
+            }
 
-            Group {
-                if isLoading {
-                    // Loading state
-                    VStack(spacing: 16) {
-                        ProgressView()
-                        Text("Loading commands...")
-                            .font(.body)
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if client.availableCommands == nil {
-                    // Empty state (no commands available)
-                    VStack(spacing: 16) {
-                        Image(systemName: "terminal")
-                            .font(.system(size: 64))
-                            .foregroundColor(.secondary)
-                        Text("No commands available")
-                            .font(.title2)
-                            .foregroundColor(.secondary)
-                        Text("Commands will appear when connected to a project directory.")
-                            .font(.body)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 32)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    // Command list
-                    List {
-                        // Project Commands section
-                        if !sortedProjectCommands.isEmpty {
-                            Section {
-                                ForEach(sortedProjectCommands) { command in
-                                    CommandRowView(
-                                        command: command,
-                                        onExecute: { commandId in
-                                            executeCommand(commandId: commandId)
-                                        }
-                                    )
-                                }
-                            } header: {
-                                Text("Project Commands")
+        Group {
+            if isLoading {
+                // Loading state
+                VStack(spacing: 16) {
+                    ProgressView()
+                    Text("Loading commands...")
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if client.availableCommands == nil {
+                // Empty state (no commands available)
+                VStack(spacing: 16) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 64))
+                        .foregroundColor(.secondary)
+                    Text("No commands available")
+                        .font(.title2)
+                        .foregroundColor(.secondary)
+                    Text("Commands will appear when connected to a project directory.")
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                // Command list
+                List {
+                    // Project Commands section
+                    if !sortedProjectCommands.isEmpty {
+                        Section {
+                            ForEach(sortedProjectCommands) { command in
+                                CommandRowView(
+                                    command: command,
+                                    onExecute: { commandId in
+                                        executeCommand(commandId: commandId)
+                                    }
+                                )
                             }
+                        } header: {
+                            Text("Project Commands")
                         }
+                    }
 
-                        // General Commands section
-                        if !sortedGeneralCommands.isEmpty {
-                            Section {
-                                ForEach(sortedGeneralCommands) { command in
-                                    CommandRowView(
-                                        command: command,
-                                        onExecute: { commandId in
-                                            executeCommand(commandId: commandId)
-                                        }
-                                    )
-                                }
-                            } header: {
-                                Text("General Commands")
+                    // General Commands section
+                    if !sortedGeneralCommands.isEmpty {
+                        Section {
+                            ForEach(sortedGeneralCommands) { command in
+                                CommandRowView(
+                                    command: command,
+                                    onExecute: { commandId in
+                                        executeCommand(commandId: commandId)
+                                    }
+                                )
                             }
+                        } header: {
+                            Text("General Commands")
                         }
                     }
                 }
             }
-            }
-            .navigationTitle("Commands")
+        }
+        }
+        .navigationTitle("Commands")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
             #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                #if os(iOS)
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("Done") {
+                    dismiss()
                 }
-                #else
-                ToolbarItem(placement: .automatic) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-                #endif
             }
+            #else
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") {
+                    dismiss()
+                }
+            }
+            #endif
         }
         .onAppear {
             // Request commands if not already available

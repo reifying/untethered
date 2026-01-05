@@ -22,8 +22,25 @@ struct SessionInfoView: View {
     }
 
     var body: some View {
+        sessionInfoNavigation
+    }
+
+    @ViewBuilder
+    private var sessionInfoNavigation: some View {
+        #if os(macOS)
+        NavigationStack {
+            sessionInfoContent
+        }
+        .frame(minWidth: 500, minHeight: 500)
+        #else
         NavigationView {
-            List {
+            sessionInfoContent
+        }
+        #endif
+    }
+
+    private var sessionInfoContent: some View {
+        List {
                 // Session Information Section
                 Section {
                     InfoRow(
@@ -237,12 +254,11 @@ struct SessionInfoView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
-            .sheet(isPresented: $showingRecipeMenu) {
-                RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased(), workingDirectory: session.workingDirectory)
-            }
-            .task {
-                await loadGitBranch()
-            }
+        .sheet(isPresented: $showingRecipeMenu) {
+            RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased(), workingDirectory: session.workingDirectory)
+        }
+        .task {
+            await loadGitBranch()
         }
     }
 

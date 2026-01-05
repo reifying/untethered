@@ -18,107 +18,121 @@ struct AuthenticationRequiredView: View {
     @State private var isRetrying = false
 
     var body: some View {
+        authRequiredNavigation
+    }
+
+    @ViewBuilder
+    private var authRequiredNavigation: some View {
+        #if os(macOS)
+        NavigationStack {
+            authRequiredContent
+        }
+        .frame(minWidth: 450, minHeight: 450)
+        #else
         NavigationView {
-            VStack(spacing: 24) {
-                Spacer()
+            authRequiredContent
+        }
+        #endif
+    }
 
-                // Lock icon
-                Image(systemName: "key.slash")
-                    .font(.system(size: 60))
-                    .foregroundColor(.orange)
+    private var authRequiredContent: some View {
+        VStack(spacing: 24) {
+            Spacer()
 
-                // Title
-                Text("Authentication Required")
-                    .font(.title2)
-                    .fontWeight(.semibold)
+            // Lock icon
+            Image(systemName: "key.slash")
+                .font(.system(size: 60))
+                .foregroundColor(.orange)
 
-                // Error message or instructions
-                if let error = client.authenticationError {
-                    Text(error)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                } else {
-                    Text("Connect your app to the voice-code backend by scanning the API key QR code displayed in your terminal.")
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                }
+            // Title
+            Text("Authentication Required")
+                .font(.title2)
+                .fontWeight(.semibold)
 
-                Spacer()
-
-                #if os(iOS)
-                // Primary action: Scan QR Code (iOS only - requires camera)
-                Button(action: {
-                    showingScanner = true
-                }) {
-                    Label("Scan QR Code", systemImage: "qrcode.viewfinder")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.accentColor)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                }
-                .padding(.horizontal, 24)
-                #endif
-
-                // Primary action on macOS, secondary on iOS: Manual Entry
-                Button(action: {
-                    showingManualEntry = true
-                }) {
-                    Label("Enter Manually", systemImage: "keyboard")
-                        #if os(iOS)
-                        .font(.subheadline)
-                        #else
-                        .font(.headline)
-                        #endif
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        #if os(iOS)
-                        .background(Color(.systemGray5))
-                        .foregroundColor(.primary)
-                        #else
-                        .background(Color.accentColor)
-                        .foregroundColor(.white)
-                        #endif
-                        .cornerRadius(12)
-                }
-                .padding(.horizontal, 24)
-
-                // Retry button (only shown if there was an error)
-                if client.authenticationError != nil {
-                    Button(action: retryConnection) {
-                        HStack {
-                            if isRetrying {
-                                ProgressView()
-                                    .scaleEffect(0.8)
-                            }
-                            Text("Retry Connection")
-                        }
-                    }
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                    .padding(.top, 8)
-                    .disabled(isRetrying)
-                }
-
-                Spacer()
-
-                // Help text
-                Text("Run `make show-key-qr` in your terminal to display the QR code")
-                    .font(.caption)
+            // Error message or instructions
+            if let error = client.authenticationError {
+                Text(error)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
-                    .padding(.bottom, 24)
+            } else {
+                Text("Connect your app to the voice-code backend by scanning the API key QR code displayed in your terminal.")
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
             }
-            .navigationTitle("Setup")
+
+            Spacer()
+
             #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
+            // Primary action: Scan QR Code (iOS only - requires camera)
+            Button(action: {
+                showingScanner = true
+            }) {
+                Label("Scan QR Code", systemImage: "qrcode.viewfinder")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.accentColor)
+                    .foregroundColor(.white)
+                    .cornerRadius(12)
+            }
+            .padding(.horizontal, 24)
             #endif
+
+            // Primary action on macOS, secondary on iOS: Manual Entry
+            Button(action: {
+                showingManualEntry = true
+            }) {
+                Label("Enter Manually", systemImage: "keyboard")
+                    #if os(iOS)
+                    .font(.subheadline)
+                    #else
+                    .font(.headline)
+                    #endif
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    #if os(iOS)
+                    .background(Color(.systemGray5))
+                    .foregroundColor(.primary)
+                    #else
+                    .background(Color.accentColor)
+                    .foregroundColor(.white)
+                    #endif
+                    .cornerRadius(12)
+            }
+            .padding(.horizontal, 24)
+
+            // Retry button (only shown if there was an error)
+            if client.authenticationError != nil {
+                Button(action: retryConnection) {
+                    HStack {
+                        if isRetrying {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        }
+                        Text("Retry Connection")
+                    }
+                }
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .padding(.top, 8)
+                .disabled(isRetrying)
+            }
+
+            Spacer()
+
+            // Help text
+            Text("Run `make show-key-qr` in your terminal to display the QR code")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+                .padding(.bottom, 24)
         }
+        .navigationTitle("Setup")
         #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showingScanner) {
             QRScannerView(
                 onCodeScanned: { scannedKey in
@@ -194,47 +208,66 @@ private struct ManualKeyEntrySheet: View {
     let onCancel: () -> Void
 
     var body: some View {
-        NavigationView {
-            Form {
-                Section {
-                    TextField("API Key", text: $keyInput)
-                        #if os(iOS)
-                        .autocapitalization(.none)
-                        #endif
-                        .autocorrectionDisabled()
-                        .font(.system(size: 14, design: .monospaced))
+        manualEntryNavigation
+    }
 
-                    if let error = validationError {
-                        Text(error)
-                            .foregroundColor(.red)
-                            .font(.caption)
-                    }
-                } header: {
-                    Text("Enter API Key")
-                } footer: {
-                    Text("Paste the API key from your terminal. It starts with 'voice-code-' and is 43 characters long.")
+    @ViewBuilder
+    private var manualEntryNavigation: some View {
+        #if os(macOS)
+        NavigationStack {
+            manualEntryForm
+        }
+        .frame(minWidth: 450, minHeight: 300)
+        #else
+        NavigationView {
+            manualEntryForm
+        }
+        #endif
+    }
+
+    private var manualEntryForm: some View {
+        Form {
+            Section {
+                TextField("API Key", text: $keyInput)
+                    #if os(iOS)
+                    .autocapitalization(.none)
+                    #endif
+                    .autocorrectionDisabled()
+                    .font(.system(size: 14, design: .monospaced))
+
+                if let error = validationError {
+                    Text(error)
+                        .foregroundColor(.red)
+                        .font(.caption)
                 }
+            } header: {
+                Text("Enter API Key")
+            } footer: {
+                Text("Paste the API key from your terminal. It starts with 'voice-code-' and is 43 characters long.")
             }
-            .navigationTitle("Manual Entry")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onCancel)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        // Validate before calling onSave
-                        if KeychainManager.shared.isValidAPIKeyFormat(keyInput) {
-                            validationError = nil
-                            onSave()
-                        } else {
-                            validationError = "Invalid format. Must start with 'voice-code-' and be 43 characters."
-                        }
+        }
+        #if os(macOS)
+        .formStyle(.grouped)
+        #endif
+        .navigationTitle("Manual Entry")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel", action: onCancel)
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    // Validate before calling onSave
+                    if KeychainManager.shared.isValidAPIKeyFormat(keyInput) {
+                        validationError = nil
+                        onSave()
+                    } else {
+                        validationError = "Invalid format. Must start with 'voice-code-' and be 43 characters."
                     }
-                    .disabled(keyInput.isEmpty)
                 }
+                .disabled(keyInput.isEmpty)
             }
         }
     }
