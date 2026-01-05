@@ -19,103 +19,119 @@ struct RecipeMenuView: View {
 
     var body: some View {
         let _ = RenderTracker.count(Self.self)
-        NavigationView {
-            ZStack {
-                Group {
-                    if isLoading {
-                        // Loading state
-                        VStack(spacing: 16) {
-                            ProgressView()
-                            Text("Loading recipes...")
-                                .font(.body)
-                                .foregroundColor(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if let error = errorMessage {
-                        // Error state
-                        VStack(spacing: 16) {
-                            Image(systemName: "exclamationmark.triangle")
-                                .font(.system(size: 64))
-                                .foregroundColor(.red)
-                            Text("Recipe Error")
-                                .font(.title2)
-                                .foregroundColor(.primary)
-                            Text(error)
-                                .font(.body)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 32)
-                            Button(action: { errorMessage = nil }) {
-                                Text("Dismiss")
-                                    .font(.body)
-                                    .padding(.horizontal, 20)
-                                    .padding(.vertical, 8)
-                                    .background(Color.blue)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(6)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if client.availableRecipes.isEmpty {
-                        // Empty state
-                        VStack(spacing: 16) {
-                            Image(systemName: "list.bullet.clipboard")
-                                .font(.system(size: 64))
-                                .foregroundColor(.secondary)
-                            Text("No recipes available")
-                                .font(.title2)
-                                .foregroundColor(.secondary)
-                            Text("Recipes will appear when your backend is configured.")
-                                .font(.body)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 32)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        // Recipe list
-                        List {
-                            // Toggle section at top
-                            Section {
-                                Toggle("Start in new session", isOn: $useNewSession)
-                            } footer: {
-                                Text("Creates a fresh session for this recipe instead of using the current session.")
-                            }
+        recipeMenuNavigation
+    }
 
-                            // Recipe list section
-                            Section("Recipes") {
-                                ForEach(client.availableRecipes) { recipe in
-                                    RecipeRowView(
-                                        recipe: recipe,
-                                        onSelect: { recipeId in
-                                            selectRecipe(recipeId: recipeId)
-                                        }
-                                    )
-                                }
+    @ViewBuilder
+    private var recipeMenuNavigation: some View {
+        #if os(macOS)
+        NavigationStack {
+            recipeMenuContent
+        }
+        .frame(minWidth: 450, minHeight: 400)
+        #else
+        NavigationView {
+            recipeMenuContent
+        }
+        #endif
+    }
+
+    private var recipeMenuContent: some View {
+        ZStack {
+            Group {
+                if isLoading {
+                    // Loading state
+                    VStack(spacing: 16) {
+                        ProgressView()
+                        Text("Loading recipes...")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let error = errorMessage {
+                    // Error state
+                    VStack(spacing: 16) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 64))
+                            .foregroundColor(.red)
+                        Text("Recipe Error")
+                            .font(.title2)
+                            .foregroundColor(.primary)
+                        Text(error)
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 32)
+                        Button(action: { errorMessage = nil }) {
+                            Text("Dismiss")
+                                .font(.body)
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 8)
+                                .background(Color.blue)
+                                .foregroundColor(.white)
+                                .cornerRadius(6)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if client.availableRecipes.isEmpty {
+                    // Empty state
+                    VStack(spacing: 16) {
+                        Image(systemName: "list.bullet.clipboard")
+                            .font(.system(size: 64))
+                            .foregroundColor(.secondary)
+                        Text("No recipes available")
+                            .font(.title2)
+                            .foregroundColor(.secondary)
+                        Text("Recipes will appear when your backend is configured.")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 32)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    // Recipe list
+                    List {
+                        // Toggle section at top
+                        Section {
+                            Toggle("Start in new session", isOn: $useNewSession)
+                        } footer: {
+                            Text("Creates a fresh session for this recipe instead of using the current session.")
+                        }
+
+                        // Recipe list section
+                        Section("Recipes") {
+                            ForEach(client.availableRecipes) { recipe in
+                                RecipeRowView(
+                                    recipe: recipe,
+                                    onSelect: { recipeId in
+                                        selectRecipe(recipeId: recipeId)
+                                    }
+                                )
                             }
                         }
                     }
                 }
             }
-            .navigationTitle("Select Recipe")
+        }
+        .navigationTitle("Select Recipe")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
             #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                #if os(iOS)
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("Cancel") {
+                    dismiss()
                 }
-                #else
-                ToolbarItem(placement: .automatic) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                }
-                #endif
             }
+            #else
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") {
+                    dismiss()
+                }
+            }
+            #endif
         }
         .onAppear {
             if client.availableRecipes.isEmpty && !hasRequestedRecipes {

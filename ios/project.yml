@@ -215,6 +215,19 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code-macTests
         GENERATE_INFOPLIST_FILE: YES
 
+  VoiceCodeMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - VoiceCodeMacUITests
+    dependencies:
+      - target: VoiceCodeMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code-macUITests
+        GENERATE_INFOPLIST_FILE: YES
+
 schemes:
   VoiceCode:
     build:
@@ -248,3 +261,4 @@ schemes:
       config: Debug
       targets:
         - name: VoiceCodeMacTests
+        - name: VoiceCodeMacUITests

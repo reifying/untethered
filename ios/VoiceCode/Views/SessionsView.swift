@@ -68,69 +68,88 @@ struct NewSessionView: View {
     let onCancel: () -> Void
 
     var body: some View {
+        newSessionNavigation
+    }
+
+    @ViewBuilder
+    private var newSessionNavigation: some View {
+        #if os(macOS)
+        NavigationStack {
+            newSessionForm
+        }
+        .frame(minWidth: 450, minHeight: 350)
+        #else
         NavigationView {
-            Form {
-                Section(header: Text("Session Details")) {
-                    TextField("Session Name", text: $name)
+            newSessionForm
+        }
+        #endif
+    }
 
-                    TextField(createWorktree ? "Parent Repository Path" : "Working Directory (Optional)", text: $workingDirectory)
-                        #if os(iOS)
-                        .autocapitalization(.none)
-                        #endif
-                        .disableAutocorrection(true)
-                }
+    private var newSessionForm: some View {
+        Form {
+            Section(header: Text("Session Details")) {
+                TextField("Session Name", text: $name)
 
-                Section(header: Text("Examples")) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if createWorktree {
-                            Text("/Users/yourname/projects/myapp")
-                            Text("~/code/voice-code")
-                            Text("~/projects/my-repo")
-                        } else {
-                            Text("/Users/yourname/projects/myapp")
-                            Text("/tmp/scratch")
-                            Text("~/code/voice-code")
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                }
-
-                Section(header: Text("Git Worktree"), footer: Text("Creates a new git worktree with an isolated branch for this session. Requires the parent directory to be a git repository.")) {
-                    Toggle("Create Git Worktree", isOn: $createWorktree)
-                }
+                TextField(createWorktree ? "Parent Repository Path" : "Working Directory (Optional)", text: $workingDirectory)
+                    #if os(iOS)
+                    .autocapitalization(.none)
+                    #endif
+                    .disableAutocorrection(true)
             }
-            .navigationTitle("New Session")
+
+            Section(header: Text("Examples")) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if createWorktree {
+                        Text("/Users/yourname/projects/myapp")
+                        Text("~/code/voice-code")
+                        Text("~/projects/my-repo")
+                    } else {
+                        Text("/Users/yourname/projects/myapp")
+                        Text("/tmp/scratch")
+                        Text("~/code/voice-code")
+                    }
+                }
+                .font(.caption)
+                .foregroundColor(.secondary)
+            }
+
+            Section(header: Text("Git Worktree"), footer: Text("Creates a new git worktree with an isolated branch for this session. Requires the parent directory to be a git repository.")) {
+                Toggle("Create Git Worktree", isOn: $createWorktree)
+            }
+        }
+        #if os(macOS)
+        .formStyle(.grouped)
+        #endif
+        .navigationTitle("New Session")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
             #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                #if os(iOS)
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Cancel", action: onCancel)
-                }
-                #else
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onCancel)
-                }
-                #endif
-
-                #if os(iOS)
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Create") {
-                        onCreate()
-                    }
-                    .disabled(name.isEmpty || (createWorktree && workingDirectory.isEmpty))
-                }
-                #else
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") {
-                        onCreate()
-                    }
-                    .disabled(name.isEmpty || (createWorktree && workingDirectory.isEmpty))
-                }
-                #endif
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button("Cancel", action: onCancel)
             }
+            #else
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel", action: onCancel)
+            }
+            #endif
+
+            #if os(iOS)
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("Create") {
+                    onCreate()
+                }
+                .disabled(name.isEmpty || (createWorktree && workingDirectory.isEmpty))
+            }
+            #else
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Create") {
+                    onCreate()
+                }
+                .disabled(name.isEmpty || (createWorktree && workingDirectory.isEmpty))
+            }
+            #endif
         }
     }
 }

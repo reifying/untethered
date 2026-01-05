@@ -15,38 +15,54 @@ struct ResourceSessionPickerView: View {
     let onCancel: () -> Void
 
     var body: some View {
+        sessionPickerNavigation
+    }
+
+    @ViewBuilder
+    private var sessionPickerNavigation: some View {
+        #if os(macOS)
+        NavigationStack {
+            sessionPickerContent
+        }
+        .frame(minWidth: 400, minHeight: 350)
+        #else
         NavigationView {
-            List {
-                if sessions.isEmpty {
-                    Text("No sessions available")
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding()
-                } else {
-                    ForEach(sessions) { session in
-                        Button(action: {
-                            onSelect(session)
-                        }) {
-                            CDBackendSessionRowContent(session: session)
-                        }
+            sessionPickerContent
+        }
+        #endif
+    }
+
+    private var sessionPickerContent: some View {
+        List {
+            if sessions.isEmpty {
+                Text("No sessions available")
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding()
+            } else {
+                ForEach(sessions) { session in
+                    Button(action: {
+                        onSelect(session)
+                    }) {
+                        CDBackendSessionRowContent(session: session)
                     }
                 }
             }
-            .navigationTitle("Select Session")
+        }
+        .navigationTitle("Select Session")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
             #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                #if os(iOS)
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Cancel", action: onCancel)
-                }
-                #else
-                ToolbarItem(placement: .automatic) {
-                    Button("Cancel", action: onCancel)
-                }
-                #endif
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button("Cancel", action: onCancel)
             }
+            #else
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel", action: onCancel)
+            }
+            #endif
         }
     }
 }
