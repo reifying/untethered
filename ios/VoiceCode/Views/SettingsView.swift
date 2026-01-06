@@ -33,16 +33,10 @@ struct SettingsView: View {
 
             Section(header: Text("Server Configuration")) {
                 TextField("Server Address", text: $settings.serverURL)
-                    #if os(iOS)
-                    .autocapitalization(.none)
-                    .keyboardType(.URL)
-                    #endif
-                    .disableAutocorrection(true)
+                    .urlInputConfiguration()
 
                 TextField("Port", text: $settings.serverPort)
-                    #if os(iOS)
-                    .keyboardType(.numberPad)
-                    #endif
+                    .numericInputConfiguration()
 
                 Text("Full URL: \(settings.fullServerURL)")
                     .font(.caption)
@@ -142,10 +136,7 @@ struct SettingsView: View {
 
             Section(header: Text("Resources")) {
                 TextField("Storage Location", text: $settings.resourceStorageLocation)
-                    #if os(iOS)
-                    .autocapitalization(.none)
-                    #endif
-                    .disableAutocorrection(true)
+                    .pathInputConfiguration()
 
                 Text("Directory where uploaded files will be saved on the backend")
                     .font(.caption)
@@ -174,7 +165,7 @@ struct SettingsView: View {
                 #else
                 TextField("Custom System Prompt", text: $localSystemPrompt, axis: .vertical)
                     .lineLimit(3...6)
-                    .autocapitalization(.sentences)
+                    .textInputConfiguration()
                     .onChange(of: localSystemPrompt) { newValue in
                         settings.systemPrompt = newValue
                     }

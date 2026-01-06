@@ -131,10 +131,7 @@ struct APIKeyManagementView: View {
         Section {
             TextField("Enter API key", text: $newKeyInput)
                 .textContentType(.password)
-                #if os(iOS)
-                .autocapitalization(.none)
-                #endif
-                .autocorrectionDisabled()
+                .secretInputConfiguration()
                 .font(.system(size: 14, design: .monospaced))
                 .accessibilityIdentifier("apiKeyTextField")
 

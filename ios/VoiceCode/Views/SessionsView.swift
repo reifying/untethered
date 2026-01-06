@@ -79,10 +79,7 @@ struct NewSessionView: View {
                 TextField("Session Name", text: $name)
 
                 TextField(createWorktree ? "Parent Repository Path" : "Working Directory (Optional)", text: $workingDirectory)
-                    #if os(iOS)
-                    .autocapitalization(.none)
-                    #endif
-                    .disableAutocorrection(true)
+                    .pathInputConfiguration()
             }
 
             Section(header: Text("Examples")) {
