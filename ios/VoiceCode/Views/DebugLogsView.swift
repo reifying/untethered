@@ -44,11 +44,7 @@ struct DebugLogsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
             }
-            #if os(iOS)
-            .background(Color(UIColor.systemGroupedBackground))
-            #elseif os(macOS)
-            .background(Color(NSColor.windowBackgroundColor))
-            #endif
+            .background(Color.systemGroupedBackground)
 
             // Action buttons
             HStack(spacing: 16) {

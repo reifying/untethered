@@ -293,11 +293,7 @@ struct ConversationView: View {
                 }
             }
             .padding(.vertical, 12)
-            #if os(iOS)
-            .background(Color(UIColor.systemBackground))
-            #elseif os(macOS)
-            .background(Color(NSColor.windowBackgroundColor))
-            #endif
+            .background(Color.systemBackground)
         }
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -1270,11 +1266,7 @@ struct MessageDetailView: View {
                 }
             }
             .padding()
-            #if os(iOS)
-            .background(Color(UIColor.systemBackground))
-            #elseif os(macOS)
-            .background(Color(NSColor.windowBackgroundColor))
-            #endif
+            .background(Color.systemBackground)
         }
         .navigationTitle("Full Message")
         #if os(iOS)
