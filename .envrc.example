@@ -1,0 +1,15 @@
+# Copy this file to .envrc and fill in your values
+# Then run: direnv allow
+
+# Apple Developer Team ID (required for code signing)
+# Find at: https://developer.apple.com/account -> Membership -> Team ID
+export DEVELOPMENT_TEAM=YOUR_TEAM_ID
+
+# App Store Connect API credentials (required for TestFlight uploads)
+# Create at: https://appstoreconnect.apple.com/access/integrations/api
+export ASC_KEY_ID=YOUR_KEY_ID
+export ASC_ISSUER_ID=YOUR_ISSUER_ID
+export ASC_KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+
+# Optional: Override bundle ID (defaults to dev.910labs.voice-code)
+# export BUNDLE_ID=com.yourcompany.voice-code

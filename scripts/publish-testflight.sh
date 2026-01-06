@@ -14,8 +14,8 @@ ARCHIVE_PATH="build/archives/VoiceCode.xcarchive"
 EXPORT_PATH="build/ipa"
 IPA_PATH="build/ipa/VoiceCode.ipa"
 EXPORT_OPTIONS_PLIST="build/ExportOptions.plist"
-BUNDLE_ID="dev.910labs.voice-code"
-TEAM_ID="REDACTED_TEAM_ID"
+BUNDLE_ID="${BUNDLE_ID:-dev.910labs.voice-code}"
+TEAM_ID="${TEAM_ID:-$DEVELOPMENT_TEAM}"
 
 # App Store Connect API credentials (read from environment)
 ASC_KEY_ID="${ASC_KEY_ID:-}"
