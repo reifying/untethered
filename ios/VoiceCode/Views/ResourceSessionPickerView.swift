@@ -15,21 +15,9 @@ struct ResourceSessionPickerView: View {
     let onCancel: () -> Void
 
     var body: some View {
-        sessionPickerNavigation
-    }
-
-    @ViewBuilder
-    private var sessionPickerNavigation: some View {
-        #if os(macOS)
-        NavigationStack {
+        NavigationController(minWidth: 400, minHeight: 350) {
             sessionPickerContent
         }
-        .frame(minWidth: 400, minHeight: 350)
-        #else
-        NavigationView {
-            sessionPickerContent
-        }
-        #endif
     }
 
     private var sessionPickerContent: some View {

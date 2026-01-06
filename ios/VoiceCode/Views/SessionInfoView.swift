@@ -22,21 +22,11 @@ struct SessionInfoView: View {
     }
 
     var body: some View {
-        sessionInfoNavigation
-    }
-
-    @ViewBuilder
-    private var sessionInfoNavigation: some View {
+        NavigationController(minWidth: 500, minHeight: 500) {
+            sessionInfoContent
+        }
         #if os(macOS)
-        NavigationStack {
-            sessionInfoContent
-        }
-        .frame(minWidth: 500, minHeight: 500)
         .swipeToBack()
-        #else
-        NavigationView {
-            sessionInfoContent
-        }
         #endif
     }
 

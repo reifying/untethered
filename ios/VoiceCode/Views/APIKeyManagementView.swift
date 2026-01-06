@@ -33,21 +33,11 @@ struct APIKeyManagementView: View {
     }
 
     var body: some View {
-        apiKeyNavigation
-    }
-
-    @ViewBuilder
-    private var apiKeyNavigation: some View {
+        NavigationController(minWidth: 500, minHeight: 500) {
+            apiKeyForm
+        }
         #if os(macOS)
-        NavigationStack {
-            apiKeyForm
-        }
-        .frame(minWidth: 500, minHeight: 500)
         .swipeToBack()
-        #else
-        NavigationView {
-            apiKeyForm
-        }
         #endif
     }
 

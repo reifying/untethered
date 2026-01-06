@@ -19,21 +19,11 @@ struct RecipeMenuView: View {
 
     var body: some View {
         let _ = RenderTracker.count(Self.self)
-        recipeMenuNavigation
-    }
-
-    @ViewBuilder
-    private var recipeMenuNavigation: some View {
+        NavigationController(minWidth: 450, minHeight: 400) {
+            recipeMenuContent
+        }
         #if os(macOS)
-        NavigationStack {
-            recipeMenuContent
-        }
-        .frame(minWidth: 450, minHeight: 400)
         .swipeToBack()
-        #else
-        NavigationView {
-            recipeMenuContent
-        }
         #endif
     }
 

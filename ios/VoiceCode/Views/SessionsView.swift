@@ -68,21 +68,9 @@ struct NewSessionView: View {
     let onCancel: () -> Void
 
     var body: some View {
-        newSessionNavigation
-    }
-
-    @ViewBuilder
-    private var newSessionNavigation: some View {
-        #if os(macOS)
-        NavigationStack {
+        NavigationController(minWidth: 450, minHeight: 350) {
             newSessionForm
         }
-        .frame(minWidth: 450, minHeight: 350)
-        #else
-        NavigationView {
-            newSessionForm
-        }
-        #endif
     }
 
     private var newSessionForm: some View {

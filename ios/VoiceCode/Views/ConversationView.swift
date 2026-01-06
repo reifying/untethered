@@ -1194,21 +1194,9 @@ struct MessageDetailView: View {
     @State private var showCopiedConfirmation = false
 
     var body: some View {
-        messageDetailNavigation
-    }
-
-    @ViewBuilder
-    private var messageDetailNavigation: some View {
-        #if os(macOS)
-        NavigationStack {
+        NavigationController(minWidth: 500, minHeight: 400) {
             messageDetailContent
         }
-        .frame(minWidth: 500, minHeight: 400)
-        #else
-        NavigationView {
-            messageDetailContent
-        }
-        #endif
     }
 
     private var messageDetailContent: some View {
@@ -1318,21 +1306,9 @@ struct RenameSessionView: View {
     let onCancel: () -> Void
 
     var body: some View {
-        renameNavigation
-    }
-
-    @ViewBuilder
-    private var renameNavigation: some View {
-        #if os(macOS)
-        NavigationStack {
+        NavigationController(minWidth: 400, minHeight: 200) {
             renameForm
         }
-        .frame(minWidth: 400, minHeight: 200)
-        #else
-        NavigationView {
-            renameForm
-        }
-        #endif
     }
 
     private var renameForm: some View {
