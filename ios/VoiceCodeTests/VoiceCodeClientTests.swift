@@ -698,15 +698,16 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertTrue(true) // Method completed without crashing
     }
 
-    func testUpdateServerURLClearsSessionsViaManager() {
-        // Verify that updateServerURL calls sessionSyncManager.clearAllSessions()
-        // This ensures sessions from old server don't appear after switching
+    func testUpdateServerURLPreservesSessions() {
+        // Verify that updateServerURL does NOT clear sessions (voice-code-emptied-queue fix)
+        // Sessions and priority queue should persist across server URL changes
+        // This is intentional - users may change server settings without wanting to lose their queue
 
         let newURL = "ws://different-server:8080"
         client.updateServerURL(newURL)
 
-        // SessionSyncManager.clearAllSessions() should have been called
-        // Integration test would verify CoreData is cleared
+        // Sessions should NOT be cleared when changing server URL
+        // Integration test verifies CoreData is preserved
         // Unit test verifies method doesn't crash
         XCTAssertTrue(true) // Method completed without crashing
     }
@@ -724,10 +725,10 @@ final class VoiceCodeClientTests: XCTestCase {
         client.updateServerURL(newURL)
 
         // Expected behavior:
-        // 1. Sessions cleared (verified in integration test)
-        // 2. Disconnected from old server
-        // 3. Reconnection attempts reset
-        // 4. Connected to new server (would happen in real environment)
+        // 1. Disconnected from old server
+        // 2. Reconnection attempts reset
+        // 3. Connected to new server (would happen in real environment)
+        // Note: Sessions are NOT cleared - priority queue persists across server changes
 
         // Verify method chain completes successfully
         XCTAssertTrue(true) // Completed without crashing

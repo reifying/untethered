@@ -297,10 +297,7 @@ class VoiceCodeClient: ObservableObject {
 
     func updateServerURL(_ url: String) {
         print("🔄 [VoiceCodeClient] Updating server URL from \(serverURL) to \(url)")
-        
-        // Clear all sessions from old server
-        sessionSyncManager.clearAllSessions()
-        
+
         // Disconnect from old server (if connected)
         disconnect()
         
