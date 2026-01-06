@@ -33,6 +33,10 @@ We don't care about work duration estimates. Don't provide estimates in hours, d
 
 Do not write implementation code without also writing tests. We want test development to keep pace with code development. Do not say that work is complete if you haven't written corresponding tests. Do not say that work is complete if you haven't run tests. Running tests and ensuring they all pass is required before completing any development step. By definition, development is not "done" if we do not have tests proving that the code works and meets our intent.
 
+## Running Tests
+
+Run `make test` (or other test targets) directly—never redirect to `/dev/null`. The `wrap-command` script already captures output and shows the last 100 lines. On failure, read the full log from the `OUTPUT_FILE` path printed at the start instead of re-running tests.
+
 Always log the actual invalid values with sufficient context (names, paths) when validation fails so we can diagnose issues from logs alone.
 
 See @STANDARDS.md for coding conventions.
