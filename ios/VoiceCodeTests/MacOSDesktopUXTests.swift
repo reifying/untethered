@@ -55,8 +55,6 @@ final class MacOSDesktopUXTests: XCTestCase {
 
     func testSwipeToBackWithCustomAction() {
         // Test that custom action variant compiles
-        var actionCalled = false
-
         struct TestView: View {
             let action: () -> Void
 
