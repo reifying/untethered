@@ -110,19 +110,7 @@ struct RecipeMenuView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Cancel") {
-                    dismiss()
-                }
-            }
-            #else
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") {
-                    dismiss()
-                }
-            }
-            #endif
+            ToolbarBuilder.cancelButton { dismiss() }
         }
         .onAppear {
             if client.availableRecipes.isEmpty && !hasRequestedRecipes {

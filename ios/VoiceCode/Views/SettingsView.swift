@@ -234,60 +234,11 @@ struct SettingsView: View {
         #endif
         .navigationTitle("Settings")
         .toolbar {
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button("Cancel") {
-                    dismiss()
-                }
-            }
-            #else
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") {
-                    dismiss()
-                }
-            }
-            #endif
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Save") {
-                    // Save pending API key if there is one
-                    if !pendingAPIKeyInput.isEmpty {
-                        if KeychainManager.shared.isValidAPIKeyFormat(pendingAPIKeyInput) {
-                            try? KeychainManager.shared.saveAPIKey(pendingAPIKeyInput)
-                            pendingAPIKeyInput = ""
-                            onAPIKeyChanged?()
-                        } else {
-                            // Show error alert for invalid API key format
-                            showingAPIKeyError = true
-                            return
-                        }
-                    }
-                    // Settings auto-save via didSet
-                    onServerChange(settings.fullServerURL)
-                    dismiss()
-                }
-            }
-            #else
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Save") {
-                    // Save pending API key if there is one
-                    if !pendingAPIKeyInput.isEmpty {
-                        if KeychainManager.shared.isValidAPIKeyFormat(pendingAPIKeyInput) {
-                            try? KeychainManager.shared.saveAPIKey(pendingAPIKeyInput)
-                            pendingAPIKeyInput = ""
-                            onAPIKeyChanged?()
-                        } else {
-                            // Show error alert for invalid API key format
-                            showingAPIKeyError = true
-                            return
-                        }
-                    }
-                    // Settings auto-save via didSet
-                    onServerChange(settings.fullServerURL)
-                    dismiss()
-                }
-            }
-            #endif
+            ToolbarBuilder.cancelAndConfirm(
+                confirmTitle: "Save",
+                onCancel: { dismiss() },
+                onConfirm: saveSettings
+            )
         }
         .onAppear {
             // Initialize local state from settings
@@ -298,6 +249,24 @@ struct SettingsView: View {
         } message: {
             Text("API key must start with 'voice-code-' and be 43 characters.")
         }
+    }
+
+    private func saveSettings() {
+        // Save pending API key if there is one
+        if !pendingAPIKeyInput.isEmpty {
+            if KeychainManager.shared.isValidAPIKeyFormat(pendingAPIKeyInput) {
+                try? KeychainManager.shared.saveAPIKey(pendingAPIKeyInput)
+                pendingAPIKeyInput = ""
+                onAPIKeyChanged?()
+            } else {
+                // Show error alert for invalid API key format
+                showingAPIKeyError = true
+                return
+            }
+        }
+        // Settings auto-save via didSet
+        onServerChange(settings.fullServerURL)
+        dismiss()
     }
 
     func testConnection() {

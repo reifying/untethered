@@ -1281,19 +1281,7 @@ struct MessageDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Done") {
-                    dismiss()
-                }
-            }
-            #else
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Done") {
-                    dismiss()
-                }
-            }
-            #endif
+            ToolbarBuilder.doneButton { dismiss() }
         }
     }
 }
@@ -1340,31 +1328,12 @@ struct RenameSessionView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button("Cancel", action: onCancel)
-            }
-            #else
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel", action: onCancel)
-            }
-            #endif
-
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Save") {
-                    onSave()
-                }
-                .disabled(sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            #else
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Save") {
-                    onSave()
-                }
-                .disabled(sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            #endif
+            ToolbarBuilder.cancelAndConfirm(
+                confirmTitle: "Save",
+                isConfirmDisabled: sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                onCancel: onCancel,
+                onConfirm: onSave
+            )
         }
     }
 }

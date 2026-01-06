@@ -113,31 +113,12 @@ struct NewSessionView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button("Cancel", action: onCancel)
-            }
-            #else
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel", action: onCancel)
-            }
-            #endif
-
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Create") {
-                    onCreate()
-                }
-                .disabled(name.isEmpty || (createWorktree && workingDirectory.isEmpty))
-            }
-            #else
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Create") {
-                    onCreate()
-                }
-                .disabled(name.isEmpty || (createWorktree && workingDirectory.isEmpty))
-            }
-            #endif
+            ToolbarBuilder.cancelAndConfirm(
+                confirmTitle: "Create",
+                isConfirmDisabled: name.isEmpty || (createWorktree && workingDirectory.isEmpty),
+                onCancel: onCancel,
+                onConfirm: onCreate
+            )
         }
     }
 }

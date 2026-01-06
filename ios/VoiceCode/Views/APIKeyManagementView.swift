@@ -70,9 +70,7 @@ struct APIKeyManagementView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Done") { dismiss() }
-            }
+            ToolbarBuilder.doneButton { dismiss() }
         }
         #if os(iOS)
         .sheet(isPresented: $showingScanner) {
