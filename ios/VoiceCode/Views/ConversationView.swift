@@ -235,15 +235,23 @@ struct ConversationView: View {
                     }
                     
                     Spacer()
-                    
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(client.isConnected ? Color.green : Color.red)
-                            .frame(width: 8, height: 8)
-                        Text(client.isConnected ? "Connected" : "Disconnected")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+
+                    Button(action: {
+                        client.forceReconnect()
+                    }) {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(client.isConnected ? Color.green : Color.red)
+                                .frame(width: 8, height: 8)
+                            Text(client.isConnected ? "Connected" : "Disconnected")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
+                    .buttonStyle(.plain)
+                    #if os(macOS)
+                    .help("Click to reconnect")
+                    #endif
                 }
                 .padding(.horizontal)
                 
@@ -395,6 +403,16 @@ struct ConversationView: View {
             #else
             ToolbarItem(placement: .automatic) {
                 HStack(spacing: 16) {
+                    // Stop speech button (only visible when speaking)
+                    if voiceOutput.isSpeaking {
+                        Button(action: { voiceOutput.stop() }) {
+                            Image(systemName: "stop.circle.fill")
+                                .foregroundColor(.red)
+                        }
+                        .help("Stop speaking (Cmd+.)")
+                        .keyboardShortcut(".", modifiers: [.command])
+                    }
+
                     // Kill session button (only visible when session is locked)
                     if isSessionLocked {
                         Button(action: {
@@ -403,6 +421,8 @@ struct ConversationView: View {
                             Image(systemName: "stop.circle.fill")
                                 .foregroundColor(.red)
                         }
+                        .help("Stop current prompt (Cmd+K)")
+                        .keyboardShortcut("k", modifiers: [.command])
                     }
 
                     // Recipe button - shows active recipe or opens menu
@@ -421,6 +441,7 @@ struct ConversationView: View {
                             Image(systemName: "list.bullet.clipboard.fill")
                                 .foregroundColor(.green)
                         }
+                        .help("Active recipe menu")
                     } else {
                         // Show button to start a recipe
                         Button(action: {
@@ -428,6 +449,8 @@ struct ConversationView: View {
                         }) {
                             Image(systemName: "list.bullet.clipboard")
                         }
+                        .help("Run recipe (Cmd+Shift+R)")
+                        .keyboardShortcut("r", modifiers: [.command, .shift])
                     }
 
                     // Session info button
@@ -436,6 +459,8 @@ struct ConversationView: View {
                     }) {
                         Image(systemName: "info.circle")
                     }
+                    .help("Session info (Cmd+I)")
+                    .keyboardShortcut("i", modifiers: [.command])
 
                     // Auto-scroll toggle button (always visible)
                     Button(action: {
@@ -444,6 +469,7 @@ struct ConversationView: View {
                         Image(systemName: autoScrollEnabled ? "arrow.down.circle.fill" : "arrow.down.circle")
                             .foregroundColor(autoScrollEnabled ? .blue : .gray)
                     }
+                    .help("Toggle auto-scroll")
 
                     // Compact button
                     Button(action: {
@@ -461,14 +487,24 @@ struct ConversationView: View {
                         }
                     }
                     .disabled(isCompacting || client.lockedSessions.contains(session.id.uuidString.lowercased()))
+                    .help("Compact session history")
 
                     Button(action: {
+                        isRefreshingMessages = true
                         Task {
                             await client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
+                            await MainActor.run { isRefreshingMessages = false }
                         }
                     }) {
-                        Image(systemName: "arrow.clockwise")
+                        if isRefreshingMessages {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
                     }
+                    .disabled(isRefreshingMessages)
+                    .help("Refresh session (Cmd+R)")
+                    .keyboardShortcut("r", modifiers: [.command])
 
                     // Queue remove button
                     if settings.queueEnabled && session.isInQueue {
@@ -478,6 +514,7 @@ struct ConversationView: View {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundColor(.orange)
                         }
+                        .help("Remove from queue")
                     }
 
                 }
@@ -591,6 +628,7 @@ struct ConversationView: View {
             // This ensures messages are refreshed when navigating back to session
             hasSubscribedThisAppear = false
         }
+        .swipeToBack()
     }
     
     private func setupVoiceInput() {
@@ -1215,13 +1253,18 @@ struct MessageDetailView: View {
                 }
 
                 Button(action: {
-                    let processedText = TextProcessor.removeCodeBlocks(from: message.text)
-                    voiceOutput.speak(processedText, workingDirectory: message.session?.workingDirectory)
+                    if voiceOutput.isSpeaking {
+                        voiceOutput.stop()
+                    } else {
+                        let processedText = TextProcessor.removeCodeBlocks(from: message.text)
+                        voiceOutput.speak(processedText, workingDirectory: message.session?.workingDirectory)
+                    }
                 }) {
                     VStack(spacing: 4) {
-                        Image(systemName: "speaker.wave.2.fill")
+                        Image(systemName: voiceOutput.isSpeaking ? "stop.circle.fill" : "speaker.wave.2.fill")
                             .font(.title2)
-                        Text("Read Aloud")
+                            .foregroundColor(voiceOutput.isSpeaking ? .red : .primary)
+                        Text(voiceOutput.isSpeaking ? "Stop" : "Read Aloud")
                             .font(.caption)
                     }
                 }
@@ -1438,6 +1481,20 @@ struct ConversationTextInputView: View {
                         onManualUnlock()
                     }
                 }
+                #if os(macOS)
+                .onKeyPress(.return, phases: .down) { press in
+                    // Shift+Return inserts newline (let default behavior handle it)
+                    if press.modifiers.contains(.shift) {
+                        return .ignored
+                    }
+                    // Return sends the prompt
+                    if !text.isEmpty && !isDisabled {
+                        onSend()
+                        return .handled
+                    }
+                    return .ignored
+                }
+                #endif
 
             Button(action: {
                 if isDisabled {

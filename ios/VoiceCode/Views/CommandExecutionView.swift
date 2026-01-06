@@ -122,6 +122,7 @@ struct CommandExecutionView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .swipeToBack()
     }
 
     // MARK: - View Components

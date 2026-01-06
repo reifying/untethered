@@ -309,11 +309,15 @@ struct SessionsForDirectoryView: View {
                         #endif
                     }
             }
+            #if os(macOS)
+            .frame(minWidth: 600, minHeight: 400)
+            #endif
         }
         .onAppear {
             // Notify backend of working directory so it can parse Makefile
             client.setWorkingDirectory(workingDirectory)
         }
+        .swipeToBack()
     }
 
     private func createNewSession(name: String) {

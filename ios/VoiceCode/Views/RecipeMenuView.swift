@@ -29,6 +29,7 @@ struct RecipeMenuView: View {
             recipeMenuContent
         }
         .frame(minWidth: 450, minHeight: 400)
+        .swipeToBack()
         #else
         NavigationView {
             recipeMenuContent

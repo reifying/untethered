@@ -78,6 +78,7 @@ struct CommandOutputDetailView: View {
         .onAppear {
             loadOutput()
         }
+        .swipeToBack()
     }
 
     private var metadataSection: some View {

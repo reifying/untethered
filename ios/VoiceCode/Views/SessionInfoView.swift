@@ -32,6 +32,7 @@ struct SessionInfoView: View {
             sessionInfoContent
         }
         .frame(minWidth: 500, minHeight: 500)
+        .swipeToBack()
         #else
         NavigationView {
             sessionInfoContent

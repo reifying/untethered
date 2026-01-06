@@ -43,6 +43,7 @@ struct APIKeyManagementView: View {
             apiKeyForm
         }
         .frame(minWidth: 500, minHeight: 500)
+        .swipeToBack()
         #else
         NavigationView {
             apiKeyForm

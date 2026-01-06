@@ -112,6 +112,7 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
 
+            #if os(iOS)
             Section(header: Text("Audio Playback")) {
                 Toggle("Silence speech when phone is on vibrate", isOn: $settings.respectSilentMode)
 
@@ -125,6 +126,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+            #endif
 
             Section(header: Text("Recent")) {
                 Stepper("Show \(settings.recentSessionsLimit) sessions", value: $settings.recentSessionsLimit, in: 1...20)
@@ -174,14 +176,21 @@ struct SettingsView: View {
             }
 
             Section(header: Text("System Prompt")) {
-                TextField("Custom System Prompt", text: $localSystemPrompt, axis: .vertical)
-                    .lineLimit(3...6)
-                    #if os(iOS)
-                    .autocapitalization(.sentences)
-                    #endif
+                #if os(macOS)
+                TextEditor(text: $localSystemPrompt)
+                    .frame(minHeight: 80)
+                    .font(.body)
                     .onChange(of: localSystemPrompt) { newValue in
                         settings.systemPrompt = newValue
                     }
+                #else
+                TextField("Custom System Prompt", text: $localSystemPrompt, axis: .vertical)
+                    .lineLimit(3...6)
+                    .autocapitalization(.sentences)
+                    .onChange(of: localSystemPrompt) { newValue in
+                        settings.systemPrompt = newValue
+                    }
+                #endif
 
                 Text("Optional instructions to append to Claude's system prompt on every message. Leave empty to use default behavior.")
                     .font(.caption)

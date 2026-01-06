@@ -295,6 +295,15 @@ class VoiceCodeClient: ObservableObject {
         }
     }
 
+    /// Force reconnection to the server
+    /// Called when user manually taps the connection status indicator
+    func forceReconnect() {
+        logger.info("🔄 [VoiceCodeClient] Force reconnect requested by user")
+        reconnectionAttempts = 0
+        disconnect()
+        connect(sessionId: sessionId)
+    }
+
     func updateServerURL(_ url: String) {
         print("🔄 [VoiceCodeClient] Updating server URL from \(serverURL) to \(url)")
         

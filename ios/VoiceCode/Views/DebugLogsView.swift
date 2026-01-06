@@ -121,6 +121,7 @@ struct DebugLogsView: View {
         .onAppear {
             loadLogs()
         }
+        .swipeToBack()
     }
 
     private func loadLogs() {
