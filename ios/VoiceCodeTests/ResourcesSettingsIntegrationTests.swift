@@ -7,6 +7,18 @@ import XCTest
 
 final class ResourcesSettingsIntegrationTests: XCTestCase {
 
+    override func setUp() {
+        super.setUp()
+        // Clear any persisted value to ensure tests start with clean state
+        UserDefaults.standard.removeObject(forKey: "resourceStorageLocation")
+    }
+
+    override func tearDown() {
+        // Restore default to avoid polluting other tests
+        UserDefaults.standard.removeObject(forKey: "resourceStorageLocation")
+        super.tearDown()
+    }
+
     func testAppSettingsDefaultResourceStorageLocation() {
         // Create AppSettings
         let settings = AppSettings()
@@ -25,9 +37,6 @@ final class ResourcesSettingsIntegrationTests: XCTestCase {
 
         // Verify value persisted
         XCTAssertEqual(settings2.resourceStorageLocation, "/custom/path", "Storage location should persist across instances")
-
-        // Cleanup - restore default
-        settings2.resourceStorageLocation = "~/Downloads"
     }
 
     func testResourcesManagerIncludesStorageLocationInUploadMessage() {
@@ -55,9 +64,6 @@ final class ResourcesSettingsIntegrationTests: XCTestCase {
             settings.resourceStorageLocation = path
             XCTAssertEqual(settings.resourceStorageLocation, path, "Should handle path: \(path)")
         }
-
-        // Cleanup
-        settings.resourceStorageLocation = "~/Downloads"
     }
 
     func testResourceStorageLocationEmptyString() {
@@ -66,9 +72,6 @@ final class ResourcesSettingsIntegrationTests: XCTestCase {
 
         // Should allow empty string (backend can handle with default)
         XCTAssertEqual(settings.resourceStorageLocation, "", "Should allow empty storage location")
-
-        // Cleanup
-        settings.resourceStorageLocation = "~/Downloads"
     }
 
     func testSettingsViewDisplaysResourcesSection() {

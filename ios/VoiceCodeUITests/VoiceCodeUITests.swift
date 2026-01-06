@@ -26,6 +26,7 @@ final class VoiceCodeUITests: XCTestCase {
     func testExample() throws {
         // UI tests must launch the application that they test.
         let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
         app.launch()
 
         // Use XCTAssert and related functions to verify your tests produce the correct results.
@@ -35,7 +36,9 @@ final class VoiceCodeUITests: XCTestCase {
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
+            let app = XCUIApplication()
+            app.launchArguments = ["--uitesting"]
+            app.launch()
         }
     }
 
@@ -50,10 +53,10 @@ final class VoiceCodeUITests: XCTestCase {
     func testRapidTextInputNoCrash() throws {
         let app = XCUIApplication()
 
-        // Launch with crash detection enabled
+        // Launch with crash detection enabled and UI testing mode
         app.launchArguments = [
-            "-com.apple.CoreData.ConcurrencyDebug", "1",
-            "-UITestingMode", "1"  // Signal to app we're in UI test mode
+            "--uitesting",
+            "-com.apple.CoreData.ConcurrencyDebug", "1"
         ]
         app.launch()
 

@@ -4,7 +4,7 @@ import Combine
 /// Manages file resources uploaded via Share Extension and synced with backend
 class ResourcesManager: ObservableObject {
     private let appGroupIdentifier = "group.com.910labs.untethered.resources"
-    private let voiceCodeClient: VoiceCodeClient
+    private weak var voiceCodeClient: VoiceCodeClient?
     private let appSettings: AppSettings
 
     @Published var isProcessing = false
@@ -21,6 +21,8 @@ class ResourcesManager: ObservableObject {
         self.appSettings = appSettings
 
         // Monitor connection state to process uploads when connected
+        // Note: Using the parameter (strong reference) to set up subscriptions,
+        // but the sink closures use [weak self] to avoid retain cycles
         voiceCodeClient.$isConnected
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isConnected in
@@ -54,7 +56,7 @@ class ResourcesManager: ObservableObject {
 
     /// Request list of resources from backend
     func listResources() {
-        guard voiceCodeClient.isConnected else {
+        guard let client = voiceCodeClient, client.isConnected else {
             print("⚠️ [ResourcesManager] Not connected, cannot list resources")
             LogManager.shared.log("Not connected, cannot list resources", category: "ResourcesManager")
             return
@@ -62,19 +64,19 @@ class ResourcesManager: ObservableObject {
 
         isLoadingResources = true
         LogManager.shared.log("Requesting resources list", category: "ResourcesManager")
-        voiceCodeClient.listResources(storageLocation: appSettings.resourceStorageLocation)
+        client.listResources(storageLocation: appSettings.resourceStorageLocation)
     }
 
     /// Delete a resource from backend
     func deleteResource(_ resource: Resource) {
-        guard voiceCodeClient.isConnected else {
+        guard let client = voiceCodeClient, client.isConnected else {
             print("⚠️ [ResourcesManager] Not connected, cannot delete resource")
             LogManager.shared.log("Not connected, cannot delete resource", category: "ResourcesManager")
             return
         }
 
         LogManager.shared.log("Deleting resource: \(resource.filename)", category: "ResourcesManager")
-        voiceCodeClient.deleteResource(filename: resource.filename, storageLocation: appSettings.resourceStorageLocation)
+        client.deleteResource(filename: resource.filename, storageLocation: appSettings.resourceStorageLocation)
     }
 
     /// Process all pending uploads from the App Group container
@@ -85,7 +87,7 @@ class ResourcesManager: ObservableObject {
             return
         }
 
-        guard voiceCodeClient.isConnected else {
+        guard let client = voiceCodeClient, client.isConnected else {
             print("⚠️ [ResourcesManager] Not connected, deferring upload processing")
             LogManager.shared.log("Not connected, deferring upload processing", category: "ResourcesManager")
             return
@@ -271,13 +273,21 @@ class ResourcesManager: ObservableObject {
             print("📨 [ResourcesManager] Sending upload_file message for: \(filename) to: \(appSettings.resourceStorageLocation)")
             LogManager.shared.log("Sending upload_file message for: \(filename) to: \(appSettings.resourceStorageLocation)", category: "ResourcesManager")
 
+            // Check if client is still available
+            guard let client = self.voiceCodeClient else {
+                print("⚠️ [ResourcesManager] Client deallocated, cannot send upload for: \(filename)")
+                LogManager.shared.log("Client deallocated, cannot send upload for: \(filename)", category: "ResourcesManager")
+                continuation.resume(returning: false)
+                return
+            }
+
             // Store continuation to be called when acknowledgment received
             pendingAcknowledgments[filename] = { success in
                 LogManager.shared.log("Received acknowledgment for \(filename): success=\(success)", category: "ResourcesManager")
                 continuation.resume(returning: success)
             }
 
-            self.voiceCodeClient.sendMessage(message)
+            client.sendMessage(message)
 
             // Timeout after 30 seconds if no response
             DispatchQueue.main.asyncAfter(deadline: .now() + 30.0) { [weak self] in

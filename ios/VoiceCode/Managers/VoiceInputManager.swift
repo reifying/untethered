@@ -26,6 +26,12 @@ class VoiceInputManager: NSObject, ObservableObject {
     // MARK: - Authorization
 
     func requestAuthorization(completion: @escaping (Bool) -> Void) {
+        // Skip permission prompts during UI tests to prevent blocking automation
+        if TestingEnvironment.isUITesting {
+            completion(false)
+            return
+        }
+
         SFSpeechRecognizer.requestAuthorization { status in
             DispatchQueue.main.async {
                 self.authorizationStatus = status
