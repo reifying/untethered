@@ -291,7 +291,7 @@ struct SessionsForDirectoryView: View {
             )
         }
         .sheet(isPresented: $showingCommandHistory) {
-            NavigationView {
+            NavigationController(minWidth: 600, minHeight: 400) {
                 ActiveCommandsListView(client: client)
                     .toolbar {
                         #if os(iOS)
@@ -309,9 +309,6 @@ struct SessionsForDirectoryView: View {
                         #endif
                     }
             }
-            #if os(macOS)
-            .frame(minWidth: 600, minHeight: 400)
-            #endif
         }
         .onAppear {
             // Notify backend of working directory so it can parse Makefile

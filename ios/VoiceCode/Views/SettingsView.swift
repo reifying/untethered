@@ -22,21 +22,9 @@ struct SettingsView: View {
     let onAPIKeyChanged: (() -> Void)?
 
     var body: some View {
-        settingsNavigation
-    }
-
-    @ViewBuilder
-    private var settingsNavigation: some View {
-        #if os(macOS)
-        NavigationStack {
+        NavigationController(minWidth: 600, minHeight: 800) {
             settingsForm
         }
-        .frame(minWidth: 600, minHeight: 800)
-        #else
-        NavigationView {
-            settingsForm
-        }
-        #endif
     }
 
     private var settingsForm: some View {
