@@ -9,6 +9,79 @@ import SwiftUI
 
 final class MacOSDesktopUXTests: XCTestCase {
 
+    // MARK: - Return Key Behavior Tests
+    // Note: These tests verify compile-time correctness of ConversationTextInputView.
+    // The .onKeyPress modifier (macOS-only) cannot be tested in unit tests -
+    // key press simulation requires UI testing. Manual verification is required
+    // for Return key sends prompt and Shift+Return inserts newline behavior.
+
+    #if os(macOS)
+    func testConversationTextInputViewCompiles() {
+        // Verify ConversationTextInputView can be instantiated with all required parameters.
+        // This ensures the view's interface is correct and the onKeyPress modifier compiles.
+        struct TestWrapper: View {
+            @Binding var text: String
+            let onSend: () -> Void
+            let onManualUnlock: () -> Void
+
+            var body: some View {
+                ConversationTextInputView(
+                    text: $text,
+                    isDisabled: false,
+                    onSend: onSend,
+                    onManualUnlock: onManualUnlock
+                )
+            }
+        }
+
+        let wrapper = TestWrapper(
+            text: .constant("Test message"),
+            onSend: {},
+            onManualUnlock: {}
+        )
+
+        XCTAssertNotNil(wrapper)
+    }
+
+    func testConversationTextInputViewCompilesWithEmptyText() {
+        // Verify the view compiles when configured with empty text binding.
+        struct TestWrapper: View {
+            @Binding var text: String
+
+            var body: some View {
+                ConversationTextInputView(
+                    text: $text,
+                    isDisabled: false,
+                    onSend: {},
+                    onManualUnlock: {}
+                )
+            }
+        }
+
+        let wrapper = TestWrapper(text: .constant(""))
+        XCTAssertNotNil(wrapper)
+    }
+
+    func testConversationTextInputViewCompilesInDisabledState() {
+        // Verify the view compiles when isDisabled is true.
+        struct TestWrapper: View {
+            @Binding var text: String
+
+            var body: some View {
+                ConversationTextInputView(
+                    text: $text,
+                    isDisabled: true,
+                    onSend: {},
+                    onManualUnlock: {}
+                )
+            }
+        }
+
+        let wrapper = TestWrapper(text: .constant("Test"))
+        XCTAssertNotNil(wrapper)
+    }
+    #endif
+
     // MARK: - ForceReconnect Tests
 
     func testForceReconnectResetsReconnectionAttempts() {
