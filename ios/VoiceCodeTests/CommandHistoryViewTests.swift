@@ -24,10 +24,11 @@ class CommandHistoryViewTests: XCTestCase {
         super.tearDown()
     }
 
-    // Helper to wait for main queue async operations
+    // Helper to wait for main queue async operations including debounced updates
     private func waitForMainQueue() {
         // Run the main run loop to process pending async operations
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+        // VoiceCodeClient uses 0.1s debounce delay, so we need to wait longer
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.15))
     }
 
     // MARK: - Model Tests
@@ -137,7 +138,8 @@ class CommandHistoryViewTests: XCTestCase {
         let output = try JSONDecoder().decode(CommandOutputFull.self, from: data)
 
         XCTAssertEqual(output.commandSessionId, "cmd-123")
-        XCTAssertEqual(output.output, "Building project...\\nBuild successful!")
+        // JSON \\n decodes to actual newline character
+        XCTAssertEqual(output.output, "Building project...\nBuild successful!")
         XCTAssertEqual(output.exitCode, 0)
         XCTAssertEqual(output.durationMs, 1234)
         XCTAssertEqual(output.commandId, "build")

@@ -24,8 +24,9 @@ final class CrashReproductionTest: XCTestCase {
     func testTypingInRealSessionWithBackend() throws {
         let app = XCUIApplication()
 
-        // Enable crash detection
+        // Enable crash detection and UI testing mode
         app.launchArguments = [
+            "--uitesting",
             "-com.apple.CoreData.ConcurrencyDebug", "1"
         ]
         app.launch()
@@ -138,7 +139,7 @@ final class CrashReproductionTest: XCTestCase {
     @MainActor
     func testMinimalReproduction() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["-com.apple.CoreData.ConcurrencyDebug", "1"]
+        app.launchArguments = ["--uitesting", "-com.apple.CoreData.ConcurrencyDebug", "1"]
         app.launch()
 
         // Wait for app to load - app uses NavigationStack, not TabView

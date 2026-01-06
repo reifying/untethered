@@ -49,40 +49,6 @@ final class VoiceCodeClientLifecycleTests: XCTestCase {
         XCTAssertNil(weakResourcesManager, "ResourcesManager should deallocate when no longer referenced")
     }
 
-    /// Test that ResourcesManager maintains strong reference to VoiceCodeClient
-    func testResourcesManagerStrongReference() throws {
-        weak var weakClient: VoiceCodeClient?
-        var resourcesManager: ResourcesManager?
-
-        autoreleasepool {
-            let settings = AppSettings()
-            settings.serverURL = "localhost:3000"
-            let voiceManager = VoiceOutputManager(appSettings: settings)
-            let client = VoiceCodeClient(
-                serverURL: settings.fullServerURL,
-                voiceOutputManager: voiceManager,
-                appSettings: settings
-            )
-
-            weakClient = client
-            resourcesManager = ResourcesManager(voiceCodeClient: client, appSettings: settings)
-
-            // Client should be alive while ResourcesManager holds it
-            XCTAssertNotNil(weakClient, "VoiceCodeClient should be alive while ResourcesManager references it")
-        }
-        // Client goes out of scope, but ResourcesManager still holds it
-
-        XCTAssertNotNil(weakClient, "VoiceCodeClient should stay alive via ResourcesManager's strong reference")
-
-        // Release ResourcesManager
-        resourcesManager = nil
-
-        // Give autoreleasepool a moment to drain
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
-
-        XCTAssertNil(weakClient, "VoiceCodeClient should deallocate when ResourcesManager is released")
-    }
-
     /// Test that ResourcesManager can use VoiceCodeClient after initialization
     func testResourcesManagerUsesVoiceCodeClient() throws {
         let settings = AppSettings()

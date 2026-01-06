@@ -166,6 +166,12 @@ class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsD
     // MARK: - Camera Permission
 
     private func checkCameraPermission() {
+        // Skip permission prompts during UI tests to prevent blocking automation
+        if TestingEnvironment.isUITesting {
+            showPermissionDenied()
+            return
+        }
+
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             setupCamera()

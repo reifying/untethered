@@ -265,6 +265,7 @@ struct DirectoryListView: View {
                 }
             }
         }
+        .navigationTitle("Projects")
         .task {
             // Load sessions when view appears
             do {
