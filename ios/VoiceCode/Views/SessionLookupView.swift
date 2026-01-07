@@ -22,10 +22,13 @@ struct SessionLookupView: View {
         self.settings = settings
 
         // Fetch session by ID
+        // Note: animation: nil prevents SwiftUI from triggering animated transitions
+        // when session metadata changes, which could cause child view (ConversationView)
+        // to miss CoreData updates during animation state changes
         _sessions = FetchRequest<CDBackendSession>(
             sortDescriptors: [],
             predicate: NSPredicate(format: "id == %@", sessionId as CVarArg),
-            animation: .default
+            animation: nil
         )
     }
 
