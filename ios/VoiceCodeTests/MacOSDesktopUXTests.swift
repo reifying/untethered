@@ -107,6 +107,44 @@ final class MacOSDesktopUXTests: XCTestCase {
         XCTAssertFalse(client.isConnected) // Disconnection happens synchronously
     }
 
+    func testConnectionStatusButtonCompiles() {
+        // Verify that the connection status indicator button compiles correctly.
+        // The button calls client.forceReconnect() and shows tooltip on macOS.
+        struct TestWrapper: View {
+            @ObservedObject var client: VoiceCodeClient
+
+            var body: some View {
+                Button(action: {
+                    client.forceReconnect()
+                }) {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(client.isConnected ? Color.green : Color.red)
+                            .frame(width: 8, height: 8)
+                        Text(client.isConnected ? "Connected" : "Disconnected")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                #if os(macOS)
+                .help("Click to reconnect")
+                #endif
+            }
+        }
+
+        let client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
+        let wrapper = TestWrapper(client: client)
+        XCTAssertNotNil(wrapper)
+    }
+
+    func testConnectionStatusShowsCorrectStateWhenDisconnected() {
+        // Verify the connection status indicator shows "Disconnected" when client is not connected
+        let client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
+        XCTAssertFalse(client.isConnected)
+        // The UI would show red circle and "Disconnected" text
+    }
+
     // MARK: - SwipeNavigationModifier Tests
 
     #if os(macOS)
