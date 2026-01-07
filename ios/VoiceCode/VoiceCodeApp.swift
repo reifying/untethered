@@ -66,6 +66,11 @@ struct VoiceCodeApp: App {
                 }
                 .keyboardShortcut(".", modifiers: [.command])
                 .disabled(!voiceOutput.isSpeaking)
+
+                Button(voiceOutput.isMuted ? "Unmute Voice" : "Mute Voice") {
+                    voiceOutput.isMuted.toggle()
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
             }
         }
         #endif
