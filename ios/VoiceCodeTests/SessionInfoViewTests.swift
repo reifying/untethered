@@ -31,10 +31,11 @@ class SessionInfoViewTests: XCTestCase {
     func createTestSession(name: String? = nil, workingDirectory: String = "/Users/test/project") -> CDBackendSession {
         let session = CDBackendSession(context: viewContext)
         session.id = UUID()
+        session.backendName = session.id.uuidString.lowercased()  // Default backend name is UUID
         session.workingDirectory = workingDirectory
         session.lastModified = Date()
         session.messageCount = 0
-        
+
         if let name = name {
             let userSession = CDUserSession(context: viewContext)
             userSession.id = session.id
