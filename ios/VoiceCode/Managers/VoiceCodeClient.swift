@@ -252,6 +252,14 @@ class VoiceCodeClient: ObservableObject {
     // MARK: - Connection Management
 
     func connect(sessionId: String? = nil) {
+        // Guard against multiple simultaneous connections
+        // This prevents race conditions on macOS where both onAppear and
+        // didBecomeActiveNotification can trigger connect() nearly simultaneously
+        if webSocket != nil {
+            logger.debug("🔄 [VoiceCodeClient] connect() called but WebSocket already exists, skipping")
+            return
+        }
+
         self.sessionId = sessionId
         LogManager.shared.log("Connecting to WebSocket: \(serverURL)", category: "VoiceCodeClient")
 
