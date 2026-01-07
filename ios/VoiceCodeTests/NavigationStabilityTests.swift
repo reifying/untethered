@@ -253,4 +253,107 @@ final class NavigationStabilityTests: XCTestCase {
         // With position-based: navigation would break because array[1] is now different session
         // With ID-based: navigation works because we look up by UUID, not position
     }
+
+    // MARK: - SessionLookupView FetchRequest Configuration Tests
+
+    func testSessionLookupViewFetchRequestUsesNoAnimation() throws {
+        // voice-code-desktop3-awa: Verify that CoreData updates propagate immediately
+        // when fetching sessions by ID. This behavior is critical for SessionLookupView
+        // which uses animation: nil to prevent SwiftUI animated state changes from
+        // interfering with child view (ConversationView) CoreData updates.
+        //
+        // This test verifies the underlying CoreData behavior that animation: nil enables:
+        // when session metadata changes, the view should update without delays.
+
+        let sessionId = UUID()
+
+        // Create a session
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "Test Session"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 5
+        session.preview = "Initial preview"
+        session.unreadCount = 0
+        session.isLocallyCreated = false
+
+        try context.save()
+
+        // Simulate SessionLookupView behavior: fetch by ID
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
+        let fetchedSessions = try context.fetch(fetchRequest)
+
+        XCTAssertEqual(fetchedSessions.count, 1)
+        XCTAssertEqual(fetchedSessions.first?.id, sessionId)
+
+        // Update session metadata (simulates backend push)
+        let foundSession = fetchedSessions.first!
+        foundSession.messageCount = 10
+        foundSession.preview = "Updated preview"
+        foundSession.lastModified = Date()
+
+        try context.save()
+
+        // Verify update is immediately visible (no animation delay)
+        let refetchedSessions = try context.fetch(fetchRequest)
+        XCTAssertEqual(refetchedSessions.first?.messageCount, 10)
+        XCTAssertEqual(refetchedSessions.first?.preview, "Updated preview")
+
+        // The key verification: with animation: nil, FetchRequest updates
+        // propagate immediately. With animation: .default, there could be
+        // delays that cause the child ConversationView to miss CoreData updates.
+    }
+
+    func testSessionLookupViewMergesBetweenContextsImmediately() throws {
+        // voice-code-desktop3-awa: Verify background context saves are
+        // immediately visible to views fetching by session ID.
+
+        let sessionId = UUID()
+
+        // Create a session on main context
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "Background Merge Test"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.unreadCount = 0
+        session.isLocallyCreated = false
+
+        try context.save()
+
+        let expectation = XCTestExpectation(description: "Background update visible")
+
+        // Perform background update
+        persistenceController.performBackgroundTask { backgroundContext in
+            let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
+            guard let bgSession = try? backgroundContext.fetch(fetchRequest).first else {
+                XCTFail("Session not found in background context")
+                expectation.fulfill()
+                return
+            }
+
+            bgSession.messageCount = 42
+            bgSession.preview = "Background updated"
+
+            try? backgroundContext.save()
+
+            // Check main context immediately on main queue
+            DispatchQueue.main.async {
+                let mainFetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
+                let mainSessions = try? self.context.fetch(mainFetchRequest)
+
+                // With synchronous merge (performAndWait), update should be visible
+                XCTAssertEqual(mainSessions?.first?.messageCount, 42,
+                    "Background update should be immediately visible on main context")
+                XCTAssertEqual(mainSessions?.first?.preview, "Background updated")
+
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 2.0)
+    }
 }

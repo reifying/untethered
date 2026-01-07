@@ -740,4 +740,128 @@ final class CoreDataTests: XCTestCase {
         try context.save()
         XCTAssertTrue(CDMessage.needsPruning(sessionId: session.id, in: context))
     }
+
+    // MARK: - Synchronous Merge Tests
+
+    func testBackgroundContextMergesSynchronouslyOnMainThread() throws {
+        // Verify that background context saves merge synchronously to viewContext
+        // when the notification observer is on the main queue.
+        // This prevents race conditions where @FetchRequest misses updates.
+
+        let sessionId = UUID()
+
+        // Create initial session on main context
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "sync-merge-test"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.isLocallyCreated = false
+
+        try context.save()
+
+        // Create expectation that we'll verify synchronously
+        let expectation = XCTestExpectation(description: "Background save merges synchronously")
+        expectation.expectedFulfillmentCount = 1
+
+        // Perform background save
+        persistenceController.performBackgroundTask { backgroundContext in
+            let bgMessage = CDMessage(context: backgroundContext)
+            bgMessage.id = UUID()
+            bgMessage.sessionId = sessionId
+            bgMessage.role = "assistant"
+            bgMessage.text = "Synchronously merged message"
+            bgMessage.timestamp = Date()
+            bgMessage.messageStatus = .confirmed
+
+            // Fetch session in background context to set relationship
+            let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
+            if let bgSession = try? backgroundContext.fetch(fetchRequest).first {
+                bgMessage.session = bgSession
+            }
+
+            try? backgroundContext.save()
+
+            // Immediately check main context on main thread
+            // If merge is synchronous, the message should be visible right away
+            DispatchQueue.main.async {
+                // Small yield to allow synchronous merge to complete
+                // (NotificationCenter observer runs synchronously on .main queue)
+                let fetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
+                let messages = try? self.context.fetch(fetchRequest)
+
+                // With synchronous merge (performAndWait), message should be visible
+                // immediately after the main queue gets control
+                XCTAssertEqual(messages?.count, 1, "Message should be visible immediately after synchronous merge")
+                XCTAssertEqual(messages?.first?.text, "Synchronously merged message")
+
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 2.0)
+    }
+
+    func testMultipleRapidBackgroundSavesMergeCorrectly() throws {
+        // Verify that multiple rapid background saves all merge correctly
+        // without race conditions or missed updates
+
+        let sessionId = UUID()
+
+        // Create initial session
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "rapid-saves-test"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.isLocallyCreated = false
+
+        try context.save()
+
+        let messageCount = 5
+        let expectation = XCTestExpectation(description: "All background saves merged")
+
+        // Create a counter for completed saves
+        let completionLock = NSLock()
+        var completedSaves = 0
+
+        // Perform multiple rapid background saves
+        for i in 0..<messageCount {
+            persistenceController.performBackgroundTask { backgroundContext in
+                let message = CDMessage(context: backgroundContext)
+                message.id = UUID()
+                message.sessionId = sessionId
+                message.role = i % 2 == 0 ? "user" : "assistant"
+                message.text = "Rapid message \(i)"
+                message.timestamp = Date().addingTimeInterval(Double(i) * 0.1)
+                message.messageStatus = .confirmed
+
+                try? backgroundContext.save()
+
+                completionLock.lock()
+                completedSaves += 1
+                let allDone = completedSaves == messageCount
+                completionLock.unlock()
+
+                if allDone {
+                    // All saves complete, verify on main thread
+                    DispatchQueue.main.async {
+                        let fetchRequest = CDMessage.fetchMessages(sessionId: sessionId)
+                        let messages = try? self.context.fetch(fetchRequest)
+
+                        XCTAssertEqual(messages?.count, messageCount,
+                            "All \(messageCount) messages should be visible after merges")
+
+                        expectation.fulfill()
+                    }
+                }
+            }
+        }
+
+        wait(for: [expectation], timeout: 5.0)
+    }
 }
