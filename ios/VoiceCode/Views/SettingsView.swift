@@ -240,6 +240,7 @@ struct SettingsView: View {
         } message: {
             Text("API key must start with 'voice-code-' and be 43 characters.")
         }
+        .swipeToBack()
     }
 
     private func saveSettings() {

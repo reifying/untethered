@@ -52,5 +52,6 @@ struct ResourceSessionPickerView: View {
             }
             #endif
         }
+        .swipeToBack()
     }
 }

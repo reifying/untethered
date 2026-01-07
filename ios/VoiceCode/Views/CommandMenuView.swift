@@ -142,6 +142,7 @@ struct CommandMenuView: View {
                 }
             }
         }
+        .swipeToBack()
     }
 
     private func executeCommand(commandId: String) {

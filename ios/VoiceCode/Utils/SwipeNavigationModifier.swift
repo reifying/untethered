@@ -6,106 +6,178 @@ import SwiftUI
 #if os(macOS)
 import AppKit
 
-/// Manages swipe gesture state for event monitor callbacks
-/// Uses a class to avoid struct copy issues with NSEvent monitor closures
-/// Conforms to ObservableObject for @StateObject compatibility
-final class SwipeGestureState: ObservableObject {
-    var accumulatedScrollX: CGFloat = 0
-    var accumulatedScrollY: CGFloat = 0
-    var isTracking = false
+/// Singleton coordinator that manages swipe-to-back for the entire app.
+/// Uses a stack-based approach where only the topmost registered view responds to swipes.
+/// This prevents multiple views from dismissing simultaneously when nested.
+final class SwipeNavigationCoordinator {
+    static let shared = SwipeNavigationCoordinator()
 
-    func reset() {
-        accumulatedScrollX = 0
-        accumulatedScrollY = 0
-        isTracking = false
+    private var eventMonitor: Any?
+    private var registeredViews: [(id: UUID, action: () -> Void)] = []
+
+    // Gesture state
+    private var accumulatedScrollX: CGFloat = 0
+    private var accumulatedScrollY: CGFloat = 0
+    private var isTracking = false
+    private var gestureCommittedAsHorizontal = false
+    private let swipeThreshold: CGFloat = 50
+    private let commitSampleCount = 3  // Number of samples before committing gesture direction
+    private var sampleCount = 0
+
+    private init() {
+        setupEventMonitor()
+    }
+
+    /// Register a view's dismiss action. Returns an ID for unregistration.
+    func register(action: @escaping () -> Void) -> UUID {
+        let id = UUID()
+        registeredViews.append((id: id, action: action))
+        print("[SwipeDebug] Registered view \(id.uuidString.prefix(8)), stack depth: \(registeredViews.count)")
+        return id
+    }
+
+    /// Unregister a view when it disappears.
+    func unregister(id: UUID) {
+        registeredViews.removeAll { $0.id == id }
+        print("[SwipeDebug] Unregistered view \(id.uuidString.prefix(8)), stack depth: \(registeredViews.count)")
+    }
+
+    private func setupEventMonitor() {
+        // Use both local and global monitors to catch scroll events
+        // Local monitor can consume events (return nil), global cannot but sees all events
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self = self else { return event }
+            let shouldConsume = self.handleScrollEvent(event)
+            // If this is a horizontal swipe gesture, consume the event to prevent
+            // scroll views from also responding to it
+            return shouldConsume ? nil : event
+        }
+    }
+
+    /// Check if the first event of a gesture is predominantly horizontal
+    /// This helps us decide early whether to track this as a navigation gesture
+    private func isInitiallyHorizontal(_ event: NSEvent) -> Bool {
+        // For the first event, check if horizontal component dominates
+        return abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) * 1.5
+    }
+
+    /// Returns true if the event should be consumed (not passed to other views)
+    private func handleScrollEvent(_ event: NSEvent) -> Bool {
+        // Only handle trackpad scrolls (not mouse wheel)
+        guard event.hasPreciseScrollingDeltas else { return false }
+
+        switch event.phase {
+        case .began:
+            accumulatedScrollX = event.scrollingDeltaX
+            accumulatedScrollY = event.scrollingDeltaY
+            sampleCount = 1
+
+            // Immediately check if this looks like a horizontal gesture
+            // We need to decide NOW because scroll views will claim the gesture otherwise
+            let looksHorizontal = isInitiallyHorizontal(event)
+            gestureCommittedAsHorizontal = looksHorizontal
+            isTracking = true
+
+            print("[SwipeDebug] Gesture began - deltaX: \(event.scrollingDeltaX), deltaY: \(event.scrollingDeltaY), looksHorizontal: \(looksHorizontal)")
+
+            // Consume immediately if it looks horizontal to prevent scroll view from claiming it
+            return looksHorizontal
+
+        case .changed:
+            guard isTracking else { return false }
+            accumulatedScrollX += event.scrollingDeltaX
+            accumulatedScrollY += event.scrollingDeltaY
+            sampleCount += 1
+
+            // If we haven't committed yet and have enough samples, make final decision
+            if sampleCount == commitSampleCount {
+                // Re-evaluate with more data - require 2x horizontal dominance
+                let isStronglyHorizontal = abs(accumulatedScrollX) > abs(accumulatedScrollY) * 2
+                if gestureCommittedAsHorizontal && !isStronglyHorizontal {
+                    // We initially thought it was horizontal but now it's not - abort
+                    print("[SwipeDebug] Gesture reclassified as VERTICAL, releasing")
+                    gestureCommittedAsHorizontal = false
+                } else if isStronglyHorizontal {
+                    gestureCommittedAsHorizontal = true
+                    print("[SwipeDebug] Gesture confirmed as HORIZONTAL")
+                }
+            }
+
+            // Consume horizontal swipe events to prevent scroll view interference
+            return gestureCommittedAsHorizontal
+
+        case .ended:
+            guard isTracking else { return false }
+            isTracking = false
+            let wasHorizontal = gestureCommittedAsHorizontal
+
+            print("[SwipeDebug] Gesture ended - accumulatedX: \(accumulatedScrollX), accumulatedY: \(accumulatedScrollY), committedHorizontal: \(gestureCommittedAsHorizontal)")
+
+            // Swipe LEFT (fingers move right-to-left) = POSITIVE scrollingDeltaX on macOS
+            let isSwipeLeft = accumulatedScrollX > swipeThreshold
+
+            print("[SwipeDebug] isSwipeLeft: \(isSwipeLeft)")
+
+            if gestureCommittedAsHorizontal && isSwipeLeft {
+                // Only trigger the topmost (last registered) view's action
+                if let topView = registeredViews.last {
+                    print("[SwipeDebug] TRIGGERING NAVIGATION for view \(topView.id.uuidString.prefix(8))")
+                    topView.action()
+                } else {
+                    print("[SwipeDebug] No views registered for swipe")
+                }
+            }
+
+            accumulatedScrollX = 0
+            accumulatedScrollY = 0
+            gestureCommittedAsHorizontal = false
+            sampleCount = 0
+
+            return wasHorizontal  // Consume the end event too if it was a horizontal gesture
+
+        case .cancelled:
+            let wasHorizontal = gestureCommittedAsHorizontal
+            isTracking = false
+            accumulatedScrollX = 0
+            accumulatedScrollY = 0
+            gestureCommittedAsHorizontal = false
+            sampleCount = 0
+            print("[SwipeDebug] Gesture cancelled")
+            return wasHorizontal
+
+        default:
+            return false
+        }
     }
 }
 
-/// Detects two-finger horizontal swipe gestures on macOS trackpad
-/// Uses NSEvent scroll wheel monitoring since two-finger swipes are reported as scroll events
+/// View modifier that registers with the singleton coordinator
 struct SwipeToBackModifier: ViewModifier {
     @Environment(\.dismiss) private var dismiss
     var customAction: (() -> Void)?
 
-    // Use StateObject to ensure stable reference across view updates
-    @StateObject private var gestureState = SwipeGestureState()
-    @State private var eventMonitor: Any?
-
-    // Threshold for triggering navigation (in scroll units)
-    private let swipeThreshold: CGFloat = 50
+    @State private var registrationId: UUID?
 
     func body(content: Content) -> some View {
         content
             .onAppear {
-                setupEventMonitor()
-            }
-            .onDisappear {
-                removeEventMonitor()
-            }
-    }
-
-    private func setupEventMonitor() {
-        // Avoid duplicate monitors
-        guard eventMonitor == nil else { return }
-
-        // Capture references needed by the closure
-        let state = gestureState
-        let threshold = swipeThreshold
-        let dismissAction = dismiss
-        let custom = customAction
-
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-            // Only handle trackpad scrolls (not mouse wheel)
-            guard event.hasPreciseScrollingDeltas else { return event }
-
-            switch event.phase {
-            case .began:
-                // Start of new gesture
-                state.accumulatedScrollX = 0
-                state.accumulatedScrollY = 0
-                state.isTracking = true
-
-            case .changed:
-                guard state.isTracking else { break }
-                // Accumulate scroll deltas (negative X = swipe left)
-                state.accumulatedScrollX += event.scrollingDeltaX
-                state.accumulatedScrollY += event.scrollingDeltaY
-
-            case .ended:
-                guard state.isTracking else { break }
-                state.isTracking = false
-
-                // Check if swipe was predominantly horizontal and leftward
-                // Must be more horizontal than vertical to avoid triggering on diagonal scrolls
-                let isHorizontal = abs(state.accumulatedScrollX) > abs(state.accumulatedScrollY)
-                let isLeftward = state.accumulatedScrollX < -threshold
-
-                if isHorizontal && isLeftward {
+                // Capture dismiss in a closure that can be called later
+                let dismissAction = dismiss
+                let custom = customAction
+                registrationId = SwipeNavigationCoordinator.shared.register {
                     if let action = custom {
                         action()
                     } else {
                         dismissAction()
                     }
                 }
-                state.reset()
-
-            case .cancelled:
-                state.reset()
-
-            default:
-                break
             }
-
-            return event // Pass through to system
-        }
-    }
-
-    private func removeEventMonitor() {
-        if let monitor = eventMonitor {
-            NSEvent.removeMonitor(monitor)
-            eventMonitor = nil
-        }
-        gestureState.reset()
+            .onDisappear {
+                if let id = registrationId {
+                    SwipeNavigationCoordinator.shared.unregister(id: id)
+                    registrationId = nil
+                }
+            }
     }
 }
 #endif
