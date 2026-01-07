@@ -58,6 +58,17 @@ struct VoiceCodeApp: App {
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
                 .environmentObject(draftManager)
         }
+        #if os(macOS)
+        .commands {
+            CommandGroup(after: .textEditing) {
+                Button("Stop Speaking") {
+                    voiceOutput.stop()
+                }
+                .keyboardShortcut(".", modifiers: [.command])
+                .disabled(!voiceOutput.isSpeaking)
+            }
+        }
+        #endif
     }
 }
 

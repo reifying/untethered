@@ -143,6 +143,14 @@ struct SessionsForDirectoryView: View {
             #if os(iOS)
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
+                    // Stop speech button (visible when speaking)
+                    if voiceOutput.isSpeaking {
+                        Button(action: { voiceOutput.stop() }) {
+                            Image(systemName: "stop.circle.fill")
+                                .foregroundColor(.red)
+                        }
+                    }
+
                     // Command menu button - execute commands
                     if client.availableCommands != nil {
                         Button(action: {
@@ -206,6 +214,15 @@ struct SessionsForDirectoryView: View {
             #else
             ToolbarItem(placement: .automatic) {
                 HStack(spacing: 16) {
+                    // Stop speech button (visible when speaking)
+                    if voiceOutput.isSpeaking {
+                        Button(action: { voiceOutput.stop() }) {
+                            Image(systemName: "stop.circle.fill")
+                                .foregroundColor(.red)
+                        }
+                        .help("Stop speaking (Cmd+.)")
+                    }
+
                     // Command menu button - execute commands
                     if client.availableCommands != nil {
                         Button(action: {

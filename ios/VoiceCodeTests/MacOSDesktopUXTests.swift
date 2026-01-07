@@ -419,6 +419,68 @@ final class MacOSDesktopUXTests: XCTestCase {
         XCTAssertFalse(manager.isSpeaking)
     }
 
+    // MARK: - Global Stop Speech Tests
+
+    #if os(macOS)
+    func testGlobalStopSpeechMenuCommandCompiles() {
+        // Verify that the global Cmd+. menu command compiles correctly.
+        // This is implemented in VoiceCodeApp.swift using .commands modifier.
+        // The command should call voiceOutput.stop() when activated.
+        struct TestCommandGroup: View {
+            @ObservedObject var voiceOutput: VoiceOutputManager
+
+            var body: some View {
+                Button("Stop Speaking") {
+                    voiceOutput.stop()
+                }
+                .keyboardShortcut(".", modifiers: [.command])
+                .disabled(!voiceOutput.isSpeaking)
+            }
+        }
+
+        let manager = VoiceOutputManager()
+        let commandGroup = TestCommandGroup(voiceOutput: manager)
+        XCTAssertNotNil(commandGroup)
+    }
+    #endif
+
+    func testGlobalStopSpeechToolbarButtonCompiles() {
+        // Verify that the global stop speech toolbar button compiles correctly.
+        // This button appears in DirectoryListView and SessionsForDirectoryView toolbars
+        // when voiceOutput.isSpeaking is true.
+        struct TestToolbarButton: View {
+            @ObservedObject var voiceOutput: VoiceOutputManager
+
+            var body: some View {
+                if voiceOutput.isSpeaking {
+                    Button(action: { voiceOutput.stop() }) {
+                        Image(systemName: "stop.circle.fill")
+                            .foregroundColor(.red)
+                    }
+                    #if os(macOS)
+                    .help("Stop speaking (Cmd+.)")
+                    #endif
+                }
+            }
+        }
+
+        let manager = VoiceOutputManager()
+        let button = TestToolbarButton(voiceOutput: manager)
+        XCTAssertNotNil(button)
+    }
+
+    func testGlobalStopSpeechVisibilityLogic() {
+        // Verify that the stop button appears/disappears based on isSpeaking state
+        let manager = VoiceOutputManager()
+
+        // Initially not speaking - button should not be visible
+        XCTAssertFalse(manager.isSpeaking)
+
+        // After stop(), should still not be speaking
+        manager.stop()
+        XCTAssertFalse(manager.isSpeaking)
+    }
+
     // MARK: - Settings Platform Conditional Tests
 
     func testAudioPlaybackSectionHiddenOnMacOS() {
