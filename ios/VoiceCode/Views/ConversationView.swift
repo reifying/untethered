@@ -310,7 +310,7 @@ struct ConversationView: View {
                         Button(action: {
                             showingKillConfirmation = true
                         }) {
-                            Image(systemName: "stop.circle.fill")
+                            Image(systemName: "xmark.circle.fill")
                                 .foregroundColor(.red)
                         }
                     }
@@ -405,7 +405,7 @@ struct ConversationView: View {
                     // Stop speech button (only visible when speaking)
                     if voiceOutput.isSpeaking {
                         Button(action: { voiceOutput.stop() }) {
-                            Image(systemName: "stop.circle.fill")
+                            Image(systemName: "speaker.slash.fill")
                                 .foregroundColor(.red)
                         }
                         .help("Stop speaking (Cmd+.)")
@@ -417,10 +417,10 @@ struct ConversationView: View {
                         Button(action: {
                             showingKillConfirmation = true
                         }) {
-                            Image(systemName: "stop.circle.fill")
+                            Image(systemName: "xmark.circle.fill")
                                 .foregroundColor(.red)
                         }
-                        .help("Stop current prompt (Cmd+K)")
+                        .help("Cancel prompt (Cmd+K)")
                         .keyboardShortcut("k", modifiers: [.command])
                     }
 
@@ -1248,7 +1248,7 @@ struct MessageDetailView: View {
                     }
                 }) {
                     VStack(spacing: 4) {
-                        Image(systemName: voiceOutput.isSpeaking ? "stop.circle.fill" : "speaker.wave.2.fill")
+                        Image(systemName: voiceOutput.isSpeaking ? "speaker.slash.fill" : "speaker.wave.2.fill")
                             .font(.title2)
                             .foregroundColor(voiceOutput.isSpeaking ? .red : .primary)
                         Text(voiceOutput.isSpeaking ? "Stop" : "Read Aloud")

@@ -344,7 +344,7 @@ final class MacOSDesktopUXTests: XCTestCase {
                 VStack {
                     if voiceOutput.isSpeaking {
                         Button(action: { voiceOutput.stop() }) {
-                            Image(systemName: "stop.circle.fill")
+                            Image(systemName: "speaker.slash.fill")
                                 .foregroundColor(.red)
                         }
                         .help("Stop speaking (Cmd+.)")
@@ -389,7 +389,7 @@ final class MacOSDesktopUXTests: XCTestCase {
                     }
                 }) {
                     VStack(spacing: 4) {
-                        Image(systemName: voiceOutput.isSpeaking ? "stop.circle.fill" : "speaker.wave.2.fill")
+                        Image(systemName: voiceOutput.isSpeaking ? "speaker.slash.fill" : "speaker.wave.2.fill")
                             .font(.title2)
                             .foregroundColor(voiceOutput.isSpeaking ? .red : .primary)
                         Text(voiceOutput.isSpeaking ? "Stop" : "Read Aloud")
@@ -452,7 +452,7 @@ final class MacOSDesktopUXTests: XCTestCase {
             var body: some View {
                 if voiceOutput.isSpeaking {
                     Button(action: { voiceOutput.stop() }) {
-                        Image(systemName: "stop.circle.fill")
+                        Image(systemName: "speaker.slash.fill")
                             .foregroundColor(.red)
                     }
                     #if os(macOS)

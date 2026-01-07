@@ -295,7 +295,7 @@ struct DirectoryListView: View {
                     // Stop speech button (visible when speaking)
                     if voiceOutput.isSpeaking {
                         Button(action: { voiceOutput.stop() }) {
-                            Image(systemName: "stop.circle.fill")
+                            Image(systemName: "speaker.slash.fill")
                                 .foregroundColor(.red)
                         }
                     }
@@ -351,7 +351,7 @@ struct DirectoryListView: View {
                     // Stop speech button (visible when speaking)
                     if voiceOutput.isSpeaking {
                         Button(action: { voiceOutput.stop() }) {
-                            Image(systemName: "stop.circle.fill")
+                            Image(systemName: "speaker.slash.fill")
                                 .foregroundColor(.red)
                         }
                         .help("Stop speaking (Cmd+.)")
