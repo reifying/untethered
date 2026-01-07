@@ -425,6 +425,7 @@ class SessionSyncManager {
             session.messageCount += Int32(newMessageCount)
 
             // Update unread count and speaking logic
+            logger.info("🔊 Session \(sessionId.prefix(8))... isActive=\(isActiveSession), assistantMessages=\(assistantMessagesToSpeak.count), newMsgCount=\(newMessageCount)")
             if isActiveSession {
                 // Active session: speak assistant messages, don't increment unread count
                 logger.info("Active session: will speak \(assistantMessagesToSpeak.count) assistant messages")
@@ -497,11 +498,17 @@ class SessionSyncManager {
                 // Remove code blocks from text before speaking for better listening experience
                 if isActiveSession && !assistantMessagesToSpeak.isEmpty {
                     let workingDirectory = session.workingDirectory
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        for text in assistantMessagesToSpeak {
-                            let processedText = TextProcessor.removeCodeBlocks(from: text)
-                            self.voiceOutputManager?.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory)
+                    let voiceManager = self.voiceOutputManager  // Capture before dispatching to main queue
+                    logger.info("🔊 Preparing to speak \(assistantMessagesToSpeak.count) messages, voiceOutputManager is \(voiceManager == nil ? "nil" : "set")")
+                    DispatchQueue.main.async {
+                        if let voiceManager = voiceManager {
+                            for text in assistantMessagesToSpeak {
+                                let processedText = TextProcessor.removeCodeBlocks(from: text)
+                                logger.info("🔊 Calling speak() with text length: \(processedText.count)")
+                                voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory)
+                            }
+                        } else {
+                            logger.warning("⚠️ voiceOutputManager is nil, cannot speak messages")
                         }
                     }
                 }
