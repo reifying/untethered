@@ -479,6 +479,68 @@ final class MacOSDesktopUXTests: XCTestCase {
         XCTAssertFalse(manager.isSpeaking)
     }
 
+    // MARK: - Mute Voice Tests (macOS only)
+
+    #if os(macOS)
+    func testMutePropertyExists() {
+        // Verify that VoiceOutputManager has the isMuted property on macOS
+        let manager = VoiceOutputManager()
+        XCTAssertFalse(manager.isMuted) // Initially not muted
+    }
+
+    func testMuteToggle() {
+        // Verify that isMuted can be toggled
+        let manager = VoiceOutputManager()
+        XCTAssertFalse(manager.isMuted)
+
+        manager.isMuted = true
+        XCTAssertTrue(manager.isMuted)
+
+        manager.isMuted = false
+        XCTAssertFalse(manager.isMuted)
+    }
+
+    func testMutePersistence() {
+        // Verify that mute state is persisted to UserDefaults
+        let key = "voiceOutputMuted"
+
+        // Clear any existing value
+        UserDefaults.standard.removeObject(forKey: key)
+
+        let manager1 = VoiceOutputManager()
+        XCTAssertFalse(manager1.isMuted)
+
+        // Set muted
+        manager1.isMuted = true
+        XCTAssertTrue(UserDefaults.standard.bool(forKey: key))
+
+        // Create new manager - should load persisted state
+        let manager2 = VoiceOutputManager()
+        XCTAssertTrue(manager2.isMuted)
+
+        // Clean up
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    func testMuteMenuCommandCompiles() {
+        // Verify that the mute menu command structure compiles correctly
+        struct TestCommandGroup: View {
+            @ObservedObject var voiceOutput: VoiceOutputManager
+
+            var body: some View {
+                Button(voiceOutput.isMuted ? "Unmute Voice" : "Mute Voice") {
+                    voiceOutput.isMuted.toggle()
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+            }
+        }
+
+        let manager = VoiceOutputManager()
+        let commandGroup = TestCommandGroup(voiceOutput: manager)
+        XCTAssertNotNil(commandGroup)
+    }
+    #endif
+
     // MARK: - Settings Platform Conditional Tests
 
     func testAudioPlaybackSectionHiddenOnMacOS() {

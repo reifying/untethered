@@ -11,6 +11,19 @@ private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "Voic
 class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     @Published var isSpeaking = false
 
+    /// When muted, all speech requests are silently ignored (macOS only)
+    #if os(macOS)
+    @Published var isMuted: Bool {
+        didSet {
+            UserDefaults.standard.set(isMuted, forKey: "voiceOutputMuted")
+            if isMuted {
+                // Stop any current speech when muting
+                stop()
+            }
+        }
+    }
+    #endif
+
     private let synthesizer = AVSpeechSynthesizer()
     private weak var appSettings: AppSettings?
     var onSpeechComplete: (() -> Void)?
@@ -28,6 +41,9 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
     init(appSettings: AppSettings? = nil) {
         self.appSettings = appSettings
+        #if os(macOS)
+        self.isMuted = UserDefaults.standard.bool(forKey: "voiceOutputMuted")
+        #endif
         super.init()
         synthesizer.delegate = self
         #if os(iOS)
@@ -113,6 +129,14 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     ///   - voiceIdentifier: Optional voice identifier to use instead of user's configured voice
     ///   - respectSilentMode: Whether to respect the silent mode setting (default: false for manual actions)
     func speakWithVoice(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil, respectSilentMode: Bool = false) {
+        #if os(macOS)
+        // When muted, silently ignore all speech requests
+        if isMuted {
+            logger.info("🔇 Speech muted, ignoring request")
+            return
+        }
+        #endif
+
         // Stop any ongoing speech
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
