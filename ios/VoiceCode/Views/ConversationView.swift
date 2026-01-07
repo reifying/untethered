@@ -233,7 +233,10 @@ struct ConversationView: View {
                         .background(Color.blue.opacity(0.1))
                         .cornerRadius(8)
                     }
-                    
+                    #if os(macOS)
+                    .help(isVoiceMode ? "Switch to text input" : "Switch to voice input")
+                    #endif
+
                     Spacer()
 
                     Button(action: {
