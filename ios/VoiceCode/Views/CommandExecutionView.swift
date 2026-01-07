@@ -213,6 +213,8 @@ struct ActiveCommandsListView: View {
         .navigationTitle("Active Commands")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #elseif os(macOS)
+        .frame(minWidth: 500, minHeight: 300)
         #endif
     }
 }

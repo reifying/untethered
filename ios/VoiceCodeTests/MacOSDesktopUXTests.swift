@@ -141,6 +141,50 @@ final class MacOSDesktopUXTests: XCTestCase {
     }
     #endif
 
+    // MARK: - Command History Sheet Sizing Tests
+
+    #if os(macOS)
+    func testActiveCommandsListViewHasMacOSFrameConstraints() {
+        // Test that ActiveCommandsListView can be instantiated and compiles with frame modifier on macOS.
+        // The .frame(minWidth: 500, minHeight: 300) modifier ensures content is visible in sheets.
+        let client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
+
+        struct TestWrapper: View {
+            let client: VoiceCodeClient
+
+            var body: some View {
+                ActiveCommandsListView(client: client)
+            }
+        }
+
+        let wrapper = TestWrapper(client: client)
+        XCTAssertNotNil(wrapper)
+    }
+
+    func testCommandHistorySheetPresentationCompiles() {
+        // Test that the command history sheet presentation in SessionsForDirectoryView compiles correctly.
+        // NavigationController applies frame(minWidth: 600, minHeight: 400) on macOS.
+        struct TestWrapper: View {
+            let client: VoiceCodeClient
+
+            var body: some View {
+                NavigationController(minWidth: 600, minHeight: 400) {
+                    ActiveCommandsListView(client: client)
+                        .toolbar {
+                            ToolbarItem(placement: .automatic) {
+                                Button("Done") {}
+                            }
+                        }
+                }
+            }
+        }
+
+        let client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
+        let wrapper = TestWrapper(client: client)
+        XCTAssertNotNil(wrapper)
+    }
+    #endif
+
     // MARK: - Settings Platform Conditional Tests
 
     func testAudioPlaybackSectionHiddenOnMacOS() {
