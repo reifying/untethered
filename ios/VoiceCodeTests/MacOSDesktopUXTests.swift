@@ -2,9 +2,7 @@
 // Tests for macOS desktop UX improvements
 
 import XCTest
-#if os(macOS)
 import SwiftUI
-#endif
 @testable import VoiceCode
 
 final class MacOSDesktopUXTests: XCTestCase {
@@ -231,6 +229,92 @@ final class MacOSDesktopUXTests: XCTestCase {
         XCTAssertNotNil(wrapper)
     }
     #endif
+
+    // MARK: - Stop Speech Control Tests
+
+    #if os(macOS)
+    func testStopSpeechButtonCompilesInToolbar() {
+        // Verify that the stop speech toolbar button compiles correctly on macOS.
+        // The button conditionally appears when voiceOutput.isSpeaking is true.
+        struct TestWrapper: View {
+            @ObservedObject var voiceOutput: VoiceOutputManager
+
+            var body: some View {
+                VStack {
+                    if voiceOutput.isSpeaking {
+                        Button(action: { voiceOutput.stop() }) {
+                            Image(systemName: "stop.circle.fill")
+                                .foregroundColor(.red)
+                        }
+                        .help("Stop speaking (Cmd+.)")
+                        .keyboardShortcut(".", modifiers: [.command])
+                    }
+                }
+            }
+        }
+
+        let manager = VoiceOutputManager()
+        let wrapper = TestWrapper(voiceOutput: manager)
+        XCTAssertNotNil(wrapper)
+    }
+
+    func testStopSpeechKeyboardShortcutCompiles() {
+        // Verify that .keyboardShortcut(".", modifiers: [.command]) compiles correctly.
+        // Cmd+. is the standard macOS shortcut for "stop current operation".
+        struct TestWrapper: View {
+            var body: some View {
+                Button("Stop") {}
+                    .keyboardShortcut(".", modifiers: [.command])
+            }
+        }
+
+        let wrapper = TestWrapper()
+        XCTAssertNotNil(wrapper)
+    }
+    #endif
+
+    func testMessageDetailToggleCompiles() {
+        // Verify that the Read Aloud / Stop toggle button compiles correctly.
+        // This button toggles based on voiceOutput.isSpeaking state.
+        struct TestWrapper: View {
+            @ObservedObject var voiceOutput: VoiceOutputManager
+
+            var body: some View {
+                Button(action: {
+                    if voiceOutput.isSpeaking {
+                        voiceOutput.stop()
+                    } else {
+                        voiceOutput.speak("Test")
+                    }
+                }) {
+                    VStack(spacing: 4) {
+                        Image(systemName: voiceOutput.isSpeaking ? "stop.circle.fill" : "speaker.wave.2.fill")
+                            .font(.title2)
+                            .foregroundColor(voiceOutput.isSpeaking ? .red : .primary)
+                        Text(voiceOutput.isSpeaking ? "Stop" : "Read Aloud")
+                            .font(.caption)
+                    }
+                }
+            }
+        }
+
+        let manager = VoiceOutputManager()
+        let wrapper = TestWrapper(voiceOutput: manager)
+        XCTAssertNotNil(wrapper)
+    }
+
+    func testVoiceOutputIsSpeakingPropertyExists() {
+        // Verify that VoiceOutputManager has the isSpeaking property
+        let manager = VoiceOutputManager()
+        XCTAssertFalse(manager.isSpeaking) // Initially not speaking
+    }
+
+    func testVoiceOutputStopMethodExists() {
+        // Verify that VoiceOutputManager has the stop() method
+        let manager = VoiceOutputManager()
+        manager.stop() // Should not throw
+        XCTAssertFalse(manager.isSpeaking)
+    }
 
     // MARK: - Settings Platform Conditional Tests
 
