@@ -1,77 +1,48 @@
-# Voice-Code Backend
+# Untethered Backend
 
-Clojure WebSocket server that bridges iPhone voice input to Claude Code CLI.
+Clojure WebSocket server that bridges iOS voice input to Claude Code CLI.
 
-## Setup
+## Prerequisites
 
-### Prerequisites
+- Java 11+
+- [Clojure CLI](https://clojure.org/guides/install_clojure)
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
 
-- Java 11 or later
-- Clojure CLI tools (`clojure` command)
-- Claude Code CLI installed at `~/.claude/local/claude`
-
-### Install Dependencies
+## Quick Start
 
 ```bash
-clojure -P  # Download all dependencies
-```
+# Install dependencies
+clojure -P
 
-### Start Server
-
-```bash
+# Start the server
 clojure -M -m voice-code.server
 ```
 
-Server will listen on port 8080 (configurable in `resources/config.edn`).
+The server listens on `ws://0.0.0.0:8080` by default. An API key is generated on first run at `~/.voice-code/api-key`.
 
-### Start nREPL (for development)
+## Configuration
+
+Edit `resources/config.edn`:
+
+```edn
+{:server {:port 8080
+          :host "0.0.0.0"}
+ :claude {:cli-path "claude"
+          :default-timeout 86400000}
+ :logging {:level :info}}
+```
+
+## Development
+
+### Start nREPL
 
 ```bash
 clojure -M:nrepl
 ```
 
-Connect your editor to `nrepl://localhost:7888`.
+Connect your editor to `localhost:7888`.
 
-### Start clojure-mcp (optional)
-
-After starting nREPL:
-
-```bash
-clojure -X:mcp :port 7888
-```
-
-This enables Claude Code to use REPL-driven development tools.
-
-## Configuration
-
-Edit `resources/config.edn` to customize server settings:
-
-```edn
-{:server {:port 8080                    ; WebSocket server port
-          :host "0.0.0.0"}              ; Bind address (0.0.0.0 = all interfaces)
-
- :claude {:cli-path "claude"            ; Path to Claude CLI executable
-          :default-timeout 86400000     ; Default timeout in milliseconds (24 hours)
-          :default-working-directory nil}  ; Optional: default directory for Claude sessions
-
- :logging {:level :info}}               ; Logging level (:trace, :debug, :info, :warn, :error)
-```
-
-**Configuration Options:**
-
-- **:server**
-  - `:port` - WebSocket server port (default: 8080)
-  - `:host` - Bind address (default: "0.0.0.0" for all interfaces)
-
-- **:claude**
-  - `:cli-path` - Path to Claude CLI executable (default: "claude", assumes in PATH)
-  - `:default-timeout` - Timeout for Claude invocations in milliseconds (default: 86400000 = 24 hours)
-  - `:default-working-directory` - Optional default working directory for Claude sessions when not specified by client
-
-- **:logging**
-  - `:level` - Log verbosity: `:trace`, `:debug`, `:info`, `:warn`, `:error` (default: `:info`)
-
-## Testing
+### Run Tests
 
 ```bash
 clojure -M:test
@@ -81,12 +52,32 @@ clojure -M:test
 
 ```
 backend/
-├── src/
-│   └── voice_code/
-│       ├── server.clj          # Main entry + WebSocket handler
-│       └── claude.clj           # Claude CLI invocation
+├── src/voice_code/
+│   ├── server.clj       # WebSocket server + message routing
+│   ├── claude.clj       # Claude CLI invocation
+│   ├── auth.clj         # API key authentication
+│   ├── commands.clj     # Shell command execution
+│   └── replication.clj  # Session history sync
+├── test/                # Unit tests
 ├── resources/
-│   └── config.edn               # Server configuration
-├── test/                        # Test files
-└── deps.edn                     # Dependencies
+│   └── config.edn       # Server configuration
+└── deps.edn             # Dependencies
 ```
+
+## API Key Management
+
+```bash
+# View current key
+cat ~/.voice-code/api-key
+
+# Generate QR code (requires qrencode)
+cat ~/.voice-code/api-key | qrencode -t UTF8
+
+# Regenerate key
+rm ~/.voice-code/api-key
+clojure -M -m voice-code.server  # Generates new key on startup
+```
+
+## WebSocket Protocol
+
+See [STANDARDS.md](../STANDARDS.md) for the complete protocol specification.
