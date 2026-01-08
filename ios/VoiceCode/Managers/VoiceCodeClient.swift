@@ -249,6 +249,26 @@ class VoiceCodeClient: ObservableObject {
         return current
     }
 
+    // MARK: - Connection State Helpers
+
+    /// Convert URLSessionTask.State to readable string for logging
+    private func socketStateString(_ state: URLSessionTask.State?) -> String {
+        guard let state = state else { return "nil" }
+        switch state {
+        case .running: return "running"
+        case .suspended: return "suspended"
+        case .canceling: return "canceling"
+        case .completed: return "completed"
+        @unknown default: return "unknown(\(state.rawValue))"
+        }
+    }
+
+    /// Computed property for connection state summary logging
+    private var connectionStateDescription: String {
+        let socketState = socketStateString(webSocket?.state)
+        return "socket=\(socketState), connected=\(isConnected), authenticated=\(isAuthenticated), attempts=\(reconnectionAttempts)"
+    }
+
     // MARK: - Connection Management
 
     func connect(sessionId: String? = nil) {
@@ -356,6 +376,8 @@ class VoiceCodeClient: ObservableObject {
         timer.schedule(deadline: .now() + delay, repeating: delay)
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
+
+            logger.info("🔄 Reconnection timer fired: \(self.connectionStateDescription)")
 
             // Don't reconnect if reauthentication is required - user must provide new credentials
             if self.requiresReauthentication {
