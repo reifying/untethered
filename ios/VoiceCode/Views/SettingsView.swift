@@ -249,7 +249,10 @@ struct SettingsView: View {
             if KeychainManager.shared.isValidAPIKeyFormat(pendingAPIKeyInput) {
                 try? KeychainManager.shared.saveAPIKey(pendingAPIKeyInput)
                 pendingAPIKeyInput = ""
-                onAPIKeyChanged?()
+                // Note: Don't call onAPIKeyChanged() here because onServerChange() below
+                // will trigger updateServerURL() which does disconnect/connect.
+                // Calling onAPIKeyChanged() first would attempt to reconnect with the
+                // OLD server URL before it's updated.
             } else {
                 // Show error alert for invalid API key format
                 showingAPIKeyError = true
@@ -257,6 +260,7 @@ struct SettingsView: View {
             }
         }
         // Settings auto-save via didSet
+        // This triggers updateServerURL() which does disconnect + connect with new URL
         onServerChange(settings.fullServerURL)
         dismiss()
     }

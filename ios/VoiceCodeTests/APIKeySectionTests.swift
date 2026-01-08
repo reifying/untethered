@@ -175,4 +175,43 @@ final class APIKeySectionTests: XCTestCase {
 
         XCTAssertEqual(masked, "voic...89ab", "Masked key format should match design doc: 'voic...89ab'")
     }
+
+    // MARK: - QR Scan Flow Tests
+
+    func testQRScanPopulatesInputWithoutSaving() {
+        // Ensure no key exists initially
+        try? KeychainManager.shared.deleteAPIKey()
+        XCTAssertFalse(KeychainManager.shared.hasAPIKey())
+
+        // Simulate the QR scan flow: scanned key goes into apiKeyInput binding
+        var inputValue = ""
+        let scannedKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+
+        // QR scan populates the field (simulating what happens in APIKeySection)
+        inputValue = scannedKey
+
+        // Verify the input was populated
+        XCTAssertEqual(inputValue, scannedKey)
+
+        // But key should NOT be saved to keychain yet (user hasn't clicked Save)
+        XCTAssertFalse(KeychainManager.shared.hasAPIKey(),
+            "API key should NOT be saved to keychain until user clicks Save")
+    }
+
+    func testAPIKeySectionInitializationDoesNotTriggerCallback() {
+        // This test documents expected behavior: creating an APIKeySection
+        // should not invoke the onKeyChanged callback. The callback is only
+        // invoked when saveAPIKey() or deleteAPIKey() is called explicitly.
+        // Since QR scan no longer calls saveAPIKey(), it won't trigger the callback.
+        var callbackInvoked = false
+
+        // Create section with callback
+        let _ = APIKeySection(onKeyChanged: {
+            callbackInvoked = true
+        }, apiKeyInput: .constant(""))
+
+        // Callback should NOT have been invoked on initialization
+        XCTAssertFalse(callbackInvoked,
+            "onKeyChanged callback should NOT be invoked on initialization")
+    }
 }

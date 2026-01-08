@@ -352,19 +352,17 @@ class VoiceCodeClient: ObservableObject {
 
     func updateServerURL(_ url: String) {
         print("🔄 [VoiceCodeClient] Updating server URL from \(serverURL) to \(url)")
-        
-        // Clear all sessions from old server
-        sessionSyncManager.clearAllSessions()
-        
-        // Disconnect from old server (if connected)
+
+        // Disconnect from current connection (if any)
         disconnect()
-        
+
         // Update URL
         serverURL = url
-        
-        // Always attempt to connect to new server
-        // This ensures connection status updates and sessions load
-        print("🔄 [VoiceCodeClient] Connecting to new server...")
+
+        // Connect to server
+        // Note: We don't clear sessions because UUIDs are globally unique.
+        // Even if the URL changed (e.g., VPN IP change), cached sessions remain valid.
+        print("🔄 [VoiceCodeClient] Connecting to server...")
         reconnectionAttempts = 0
         connect()
     }

@@ -698,19 +698,6 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertTrue(true) // Method completed without crashing
     }
 
-    func testUpdateServerURLClearsSessionsViaManager() {
-        // Verify that updateServerURL calls sessionSyncManager.clearAllSessions()
-        // This ensures sessions from old server don't appear after switching
-
-        let newURL = "ws://different-server:8080"
-        client.updateServerURL(newURL)
-
-        // SessionSyncManager.clearAllSessions() should have been called
-        // Integration test would verify CoreData is cleared
-        // Unit test verifies method doesn't crash
-        XCTAssertTrue(true) // Method completed without crashing
-    }
-
     func testServerURLChangeFlow() {
         // Test the complete flow when user changes server settings
         let oldURL = "ws://old-server:8080"
@@ -724,10 +711,10 @@ final class VoiceCodeClientTests: XCTestCase {
         client.updateServerURL(newURL)
 
         // Expected behavior:
-        // 1. Sessions cleared (verified in integration test)
-        // 2. Disconnected from old server
-        // 3. Reconnection attempts reset
-        // 4. Connected to new server (would happen in real environment)
+        // 1. Disconnected from old server
+        // 2. Reconnection attempts reset
+        // 3. Connected to new server (would happen in real environment)
+        // Note: Sessions are preserved (UUIDs are globally unique)
 
         // Verify method chain completes successfully
         XCTAssertTrue(true) // Completed without crashing

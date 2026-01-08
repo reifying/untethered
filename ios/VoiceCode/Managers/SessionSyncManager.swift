@@ -834,35 +834,4 @@ class SessionSyncManager {
             }
         }
     }
-
-    // MARK: - Server Change Handling
-
-    /// Clear all sessions and messages when changing servers
-    /// This ensures we don't show sessions from the old server
-    func clearAllSessions() {
-        logger.info("Clearing all sessions due to server change")
-        
-        persistenceController.performBackgroundTask { backgroundContext in
-            // Fetch all sessions
-            let sessionFetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
-            
-            do {
-                let sessions = try backgroundContext.fetch(sessionFetchRequest)
-                logger.info("Deleting \(sessions.count) sessions")
-                
-                // Delete all sessions (cascade will delete messages)
-                for session in sessions {
-                    backgroundContext.delete(session)
-                }
-                
-                // Save context
-                if backgroundContext.hasChanges {
-                    try backgroundContext.save()
-                    logger.info("Successfully cleared all sessions")
-                }
-            } catch {
-                logger.error("Failed to clear sessions: \(error.localizedDescription)")
-            }
-        }
-    }
 }
