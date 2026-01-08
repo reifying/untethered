@@ -266,7 +266,7 @@ final class VoiceCodeClientTests: XCTestCase {
         }
     }
 
-    // MARK: - Connection Handshake Tests (voice-code-57)
+    // MARK: - Connection Handshake Tests (untethered-57)
 
     func testConnectWithSessionId() {
         let sessionId = "test-session-uuid-123"
@@ -395,7 +395,7 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertEqual(receivedMessage?.role, .assistant)
     }
 
-    // MARK: - Reconnection Tests (voice-code-60)
+    // MARK: - Reconnection Tests (untethered-60)
 
     func testExponentialBackoffDelays() {
         // Test exponential backoff calculation: 1s, 2s, 4s, 8s, 16s, 32s, 60s (max)
@@ -654,7 +654,7 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertEqual(receivedSessionId, "")
     }
 
-    // MARK: - Server URL Change Tests (voice-code-119, voice-code-151)
+    // MARK: - Server URL Change Tests (untethered-119, untethered-151)
 
     func testUpdateServerURLDisconnectsFromOldServer() {
         // Verify that changing server URL disconnects from old server
@@ -699,7 +699,7 @@ final class VoiceCodeClientTests: XCTestCase {
     }
 
     func testUpdateServerURLPreservesSessions() {
-        // Verify that updateServerURL does NOT clear sessions (voice-code-emptied-queue fix)
+        // Verify that updateServerURL does NOT clear sessions (untethered-emptied-queue fix)
         // Sessions and priority queue should persist across server URL changes
         // This is intentional - users may change server settings without wanting to lose their queue
 
@@ -763,7 +763,7 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertTrue(true) // Completed without crashing
     }
 
-    // MARK: - Subscription Tracking Tests (voice-code-157)
+    // MARK: - Subscription Tracking Tests (untethered-157)
 
     func testSubscribeAddsToActiveSubscriptions() {
         // Test that subscribe adds session ID to active subscriptions
@@ -1104,11 +1104,11 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertFalse(client.lockedSessions.contains(sessionId))
     }
 
-    // MARK: - Session Locking Identifier Tests (voice-code-300)
+    // MARK: - Session Locking Identifier Tests (untethered-300)
 
     func testLockingUsesLowercaseUUID() {
         // Test that session locking uses lowercase iOS UUID, not backendName
-        // This is the root fix for voice-code-300 bug
+        // This is the root fix for untethered-300 bug
 
         // Create a lowercase UUID (what we send to backend)
         let iosUUID = UUID()
@@ -1138,7 +1138,7 @@ final class VoiceCodeClientTests: XCTestCase {
 
     func testTurnCompleteWithMismatchedCaseDoesNotUnlock() {
         // Test that case mismatch between lock and unlock prevents unlock
-        // This demonstrates the bug we fixed in voice-code-300
+        // This demonstrates the bug we fixed in untethered-300
         let lowercaseId = "abc123de-4567-89ab-cdef-0123456789ab"
         let uppercaseId = "ABC123DE-4567-89AB-CDEF-0123456789AB"
 
@@ -1188,7 +1188,7 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertTrue(client.lockedSessions.contains(session3))
     }
 
-    // MARK: - Session History Delta Sync Tests (voice-code-message-too-long-hfn.6)
+    // MARK: - Session History Delta Sync Tests (untethered-message-too-long-hfn.6)
 
     func testSessionHistoryMessageWithIsCompleteTrue() {
         // Test that is_complete=true is parsed correctly
@@ -1363,7 +1363,7 @@ final class VoiceCodeClientTests: XCTestCase {
         }
     }
 
-    // MARK: - Authentication Tests (voice-code-security-au2.11)
+    // MARK: - Authentication Tests (untethered-security-au2.11)
 
     func testInitialAuthenticationState() {
         // Test that client starts with unauthenticated state
@@ -1406,7 +1406,7 @@ final class VoiceCodeClientTests: XCTestCase {
     func testConnectMessageWithApiKey() {
         // Test connect message format with API key
         let sessionId = "ios-session-uuid-456"
-        let apiKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let apiKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
         let message: [String: Any] = [
             "type": "connect",
             "session_id": sessionId,
@@ -1423,7 +1423,7 @@ final class VoiceCodeClientTests: XCTestCase {
         // Test the full authentication message flow
         let messages: [[String: Any]] = [
             ["type": "hello", "message": "Welcome", "version": "0.1.0", "auth_version": 1],
-            ["type": "connect", "session_id": "ios-uuid", "api_key": "voice-code-test123"],
+            ["type": "connect", "session_id": "ios-uuid", "api_key": "untethered-test123"],
             ["type": "connected", "message": "Session registered", "session_id": "ios-uuid"]
         ]
 
@@ -1681,7 +1681,7 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertTrue(true)
     }
 
-    // MARK: - isConnected Timing Tests (voice-code-desktop3-pd6.5)
+    // MARK: - isConnected Timing Tests (untethered-desktop3-pd6.5)
 
     func testInitialIsConnectedIsFalse() {
         // Test that a fresh client has isConnected = false
@@ -1849,7 +1849,7 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertTrue(testClient.isAuthenticated, "isAuthenticated should be true after connected")
     }
 
-    // MARK: - WebSocket Reconnection Fix Tests (voice-code-desktop3-pd6)
+    // MARK: - WebSocket Reconnection Fix Tests (untethered-desktop3-pd6)
     //
     // These tests verify the fixes from the WebSocket reconnection fix design doc:
     // - Fix 1: Clear WebSocket reference on connection failure

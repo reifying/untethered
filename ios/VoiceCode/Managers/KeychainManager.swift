@@ -29,7 +29,7 @@ enum KeychainError: Error, Equatable {
 class KeychainManager {
     static let shared = KeychainManager()
 
-    private let service = "dev.910labs.voice-code"
+    private let service = "dev.910labs.untethered"
     private let account = "api-key"
 
     /// Access group for sharing keychain items with app extensions.
@@ -48,11 +48,11 @@ class KeychainManager {
     // MARK: - API Key Validation
 
     /// Validate API key format before saving.
-    /// Key must start with "voice-code-", be exactly 43 characters,
+    /// Key must start with "untethered-", be exactly 43 characters,
     /// and contain only lowercase hex characters after the prefix.
     func isValidAPIKeyFormat(_ key: String) -> Bool {
-        // Must start with "voice-code-" prefix
-        guard key.hasPrefix("voice-code-") else {
+        // Must start with "untethered-" prefix
+        guard key.hasPrefix("untethered-") else {
             return false
         }
 
@@ -62,7 +62,7 @@ class KeychainManager {
         }
 
         // Characters after prefix must be lowercase hex (0-9, a-f)
-        let hexPart = key.dropFirst(11)  // Remove "voice-code-" prefix
+        let hexPart = key.dropFirst(11)  // Remove "untethered-" prefix
         let hexCharacterSet = CharacterSet(charactersIn: "0123456789abcdef")
         return hexPart.unicodeScalars.allSatisfy { hexCharacterSet.contains($0) }
     }

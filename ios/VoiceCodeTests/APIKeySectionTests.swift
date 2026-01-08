@@ -19,11 +19,11 @@ final class APIKeySectionTests: XCTestCase {
         let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
         // Test with standard API key
-        let key = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let key = "untethered-a1b2c3d4e5f678901234567890abcdef"
         let masked = section.maskedKey(key)
 
-        // Should show first 4 and last 4 characters: "voic...cdef"
-        XCTAssertEqual(masked, "voic...cdef", "Masked key should show first 4 and last 4 characters")
+        // Should show first 4 and last 4 characters: "unte...cdef"
+        XCTAssertEqual(masked, "unte...cdef", "Masked key should show first 4 and last 4 characters")
     }
 
     func testMaskedKeyFormatPreservesFirstFourChars() {
@@ -38,7 +38,7 @@ final class APIKeySectionTests: XCTestCase {
     func testMaskedKeyFormatPreservesLastFourChars() {
         let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
-        let key = "voice-code-a1b2c3d4e5f67890123456789012wxyz"
+        let key = "untethered-a1b2c3d4e5f67890123456789012wxyz"
         let masked = section.maskedKey(key)
 
         XCTAssertTrue(masked.hasSuffix("wxyz"), "Masked key should preserve last 4 characters")
@@ -86,7 +86,7 @@ final class APIKeySectionTests: XCTestCase {
 
     func testStatusWhenKeyConfigured() throws {
         // Save a valid key
-        let testKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let testKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
         try KeychainManager.shared.saveAPIKey(testKey)
 
         // Verify hasAPIKey returns true
@@ -99,13 +99,13 @@ final class APIKeySectionTests: XCTestCase {
         XCTAssertFalse(KeychainManager.shared.hasAPIKey())
 
         // Add key
-        try KeychainManager.shared.saveAPIKey("voice-code-a1b2c3d4e5f678901234567890abcdef")
+        try KeychainManager.shared.saveAPIKey("untethered-a1b2c3d4e5f678901234567890abcdef")
         XCTAssertTrue(KeychainManager.shared.hasAPIKey())
     }
 
     func testStatusTransitionFromConfiguredToNotConfigured() throws {
         // Start with key
-        try KeychainManager.shared.saveAPIKey("voice-code-a1b2c3d4e5f678901234567890abcdef")
+        try KeychainManager.shared.saveAPIKey("untethered-a1b2c3d4e5f678901234567890abcdef")
         XCTAssertTrue(KeychainManager.shared.hasAPIKey())
 
         // Remove key
@@ -156,7 +156,7 @@ final class APIKeySectionTests: XCTestCase {
         let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
         // Multiple calls should produce consistent results
-        let key = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let key = "untethered-a1b2c3d4e5f678901234567890abcdef"
         let masked1 = section.maskedKey(key)
         let masked2 = section.maskedKey(key)
 
@@ -168,12 +168,12 @@ final class APIKeySectionTests: XCTestCase {
     func testMaskedKeyMatchesDesignDocFormat() {
         let section = APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
 
-        // According to design doc, format should be "voic...89ab"
+        // Format should be "unte...89ab" with the untethered- prefix
         // Testing with a key ending in "89ab"
-        let key = "voice-code-0000000000000000000000000089ab"
+        let key = "untethered-0000000000000000000000000089ab"
         let masked = section.maskedKey(key)
 
-        XCTAssertEqual(masked, "voic...89ab", "Masked key format should match design doc: 'voic...89ab'")
+        XCTAssertEqual(masked, "unte...89ab", "Masked key format should be 'unte...89ab'")
     }
 
     // MARK: - QR Scan Flow Tests
@@ -185,7 +185,7 @@ final class APIKeySectionTests: XCTestCase {
 
         // Simulate the QR scan flow: scanned key goes into apiKeyInput binding
         var inputValue = ""
-        let scannedKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let scannedKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
 
         // QR scan populates the field (simulating what happens in APIKeySection)
         inputValue = scannedKey

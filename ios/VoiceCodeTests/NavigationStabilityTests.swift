@@ -59,7 +59,7 @@ final class NavigationStabilityTests: XCTestCase {
     }
 
     func testSessionLookupAfterReSort() throws {
-        // voice-code-195: Verify lookup works after sessions re-sort
+        // untethered-195: Verify lookup works after sessions re-sort
         let sessionIds = [UUID(), UUID(), UUID()]
         let now = Date()
 
@@ -105,7 +105,7 @@ final class NavigationStabilityTests: XCTestCase {
     }
 
     func testMissingSessionHandling() throws {
-        // voice-code-195: Verify graceful handling of missing session
+        // untethered-195: Verify graceful handling of missing session
         let sessionId = UUID()
 
         // Create session
@@ -211,7 +211,7 @@ final class NavigationStabilityTests: XCTestCase {
     // MARK: - Integration Tests
 
     func testNavigationDuringCoreDataUpdate() throws {
-        // voice-code-195: Core test - navigation stable during CoreData changes
+        // untethered-195: Core test - navigation stable during CoreData changes
         let sessionIds = [UUID(), UUID(), UUID()]
 
         for (index, sessionId) in sessionIds.enumerated() {
@@ -257,7 +257,7 @@ final class NavigationStabilityTests: XCTestCase {
     // MARK: - SessionLookupView FetchRequest Configuration Tests
 
     func testSessionLookupViewFetchRequestUsesNoAnimation() throws {
-        // voice-code-desktop3-awa: Verify that CoreData updates propagate immediately
+        // untethered-desktop3-awa: Verify that CoreData updates propagate immediately
         // when fetching sessions by ID. This behavior is critical for SessionLookupView
         // which uses animation: nil to prevent SwiftUI animated state changes from
         // interfering with child view (ConversationView) CoreData updates.
@@ -306,7 +306,7 @@ final class NavigationStabilityTests: XCTestCase {
     }
 
     func testSessionLookupViewMergesBetweenContextsImmediately() throws {
-        // voice-code-desktop3-awa: Verify background context saves are
+        // untethered-desktop3-awa: Verify background context saves are
         // immediately visible to views fetching by session ID.
 
         let sessionId = UUID()

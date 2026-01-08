@@ -247,7 +247,7 @@ final class ShareExtensionIntegrationTests: XCTestCase {
     /// Test that KeychainManager can be used for authentication data that Share Extension needs.
     /// This validates that the KeychainManager stores data accessible to extensions.
     func testKeychainManagerStoresAPIKeyForSharing() throws {
-        let testKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let testKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
 
         // Save using KeychainManager (simulating main app behavior)
         try KeychainManager.shared.saveAPIKey(testKey)
@@ -263,7 +263,7 @@ final class ShareExtensionIntegrationTests: XCTestCase {
     /// Test that API key is available after app restart simulation.
     /// Keychain items persist across app launches.
     func testAPIKeyPersistsAcrossSessions() throws {
-        let testKey = "voice-code-fedcba9876543210fedcba9876543210"
+        let testKey = "untethered-fedcba9876543210fedcba9876543210"
 
         // Save API key
         try KeychainManager.shared.saveAPIKey(testKey)

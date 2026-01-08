@@ -17,7 +17,7 @@ final class QRScannerViewTests: XCTestCase {
             onCancel: { cancelCalled = true }
         )
 
-        let testCode = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let testCode = "untethered-a1b2c3d4e5f678901234567890abcdef"
         coordinator.qrScannerDidScanCode(testCode)
 
         XCTAssertEqual(scannedCode, testCode)
@@ -43,15 +43,15 @@ final class QRScannerViewTests: XCTestCase {
 
     func testValidAPIKeyAccepted() {
         // Valid API key format
-        let validKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let validKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
         XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat(validKey))
 
         // All zeros
-        let allZeros = "voice-code-00000000000000000000000000000000"
+        let allZeros = "untethered-00000000000000000000000000000000"
         XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat(allZeros))
 
         // All f's
-        let allFs = "voice-code-ffffffffffffffffffffffffffffffff"
+        let allFs = "untethered-ffffffffffffffffffffffffffffffff"
         XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat(allFs))
     }
 
@@ -63,16 +63,16 @@ final class QRScannerViewTests: XCTestCase {
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("api-key-a1b2c3d4e5f678901234567890abcdef"))
 
         // Too short
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-short"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-short"))
 
         // Too long
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-a1b2c3d4e5f678901234567890abcdefg"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-a1b2c3d4e5f678901234567890abcdefg"))
 
         // Uppercase hex
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-A1B2C3D4E5F678901234567890ABCDEF"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-A1B2C3D4E5F678901234567890ABCDEF"))
 
         // Non-hex characters
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-ghijklmn12345678901234567890abcd"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-ghijklmn12345678901234567890abcd"))
 
         // Empty string
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat(""))
@@ -93,7 +93,7 @@ final class QRScannerViewTests: XCTestCase {
         // Clean up first
         try? KeychainManager.shared.deleteAPIKey()
 
-        let validKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let validKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
 
         // Simulate what happens after successful scan
         if KeychainManager.shared.isValidAPIKeyFormat(validKey) {
@@ -136,7 +136,7 @@ final class QRScannerViewTests: XCTestCase {
         )
 
         // Call scan multiple times (simulating duplicate scans)
-        let testCode = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let testCode = "untethered-a1b2c3d4e5f678901234567890abcdef"
         coordinator.qrScannerDidScanCode(testCode)
 
         // Each call to coordinator increments counter (controller handles dedup with hasScanned flag)
@@ -154,7 +154,7 @@ final class QRScannerViewTests: XCTestCase {
         )
 
         // Call scan
-        let testCode = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let testCode = "untethered-a1b2c3d4e5f678901234567890abcdef"
         coordinator.qrScannerDidScanCode(testCode)
 
         // Verify only scan callback was called

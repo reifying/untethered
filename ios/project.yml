@@ -48,7 +48,7 @@ targets:
         NSMicrophoneUsageDescription: Untethered needs microphone access for voice input to control Claude.
         NSSpeechRecognitionUsageDescription: Untethered needs speech recognition to transcribe your voice commands.
         NSLocalNetworkUsageDescription: Untethered needs to connect to your backend server on your local network to send voice commands and receive Claude Code responses.
-        NSPrivacyPolicyURL: https://raw.githubusercontent.com/travisbrown/voice-code/main/docs/privacy-policy.md
+        NSPrivacyPolicyURL: https://raw.githubusercontent.com/reifying/untethered/main/docs/privacy-policy.md
         UIBackgroundModes:
           - audio
         UIApplicationSceneManifest:
@@ -68,10 +68,10 @@ targets:
         com.apple.security.application-groups:
           - group.com.910labs.untethered.resources
         keychain-access-groups:
-          - $(AppIdentifierPrefix)dev.910labs.voice-code
+          - $(AppIdentifierPrefix)dev.910labs.untethered
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.untethered
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: VoiceCode/Info.plist
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
@@ -119,10 +119,10 @@ targets:
         com.apple.security.application-groups:
           - group.com.910labs.untethered.resources
         keychain-access-groups:
-          - $(AppIdentifierPrefix)dev.910labs.voice-code
+          - $(AppIdentifierPrefix)dev.910labs.untethered
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code.VoiceCodeShareExtension
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.untethered.ShareExtension
         INFOPLIST_FILE: VoiceCodeShareExtension/Info.plist
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
 
@@ -160,7 +160,7 @@ targets:
         com.apple.security.files.user-selected.read-write: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code-mac
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.untethered-mac
         PRODUCT_MODULE_NAME: VoiceCode
         INFOPLIST_FILE: VoiceCodeMac/Info.plist
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
@@ -178,7 +178,7 @@ targets:
       - target: VoiceCode
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-codeTests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.untetheredTests
         GENERATE_INFOPLIST_FILE: YES
 
   VoiceCodeUITests:
@@ -191,7 +191,7 @@ targets:
       - target: VoiceCode
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-codeUITests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.untetheredUITests
         GENERATE_INFOPLIST_FILE: YES
 
   VoiceCodeMacTests:
@@ -212,7 +212,7 @@ targets:
       - target: VoiceCodeMac
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code-macTests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.untethered-macTests
         GENERATE_INFOPLIST_FILE: YES
 
   VoiceCodeMacUITests:
@@ -225,7 +225,7 @@ targets:
       - target: VoiceCodeMac
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code-macUITests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.untethered-macUITests
         GENERATE_INFOPLIST_FILE: YES
 
 schemes:

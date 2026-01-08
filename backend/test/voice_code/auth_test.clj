@@ -10,9 +10,9 @@
   (testing "generates key with correct format"
     (let [key (auth/generate-api-key)]
       (is (string? key))
-      (is (str/starts-with? key "voice-code-"))
+      (is (str/starts-with? key "untethered-"))
       (is (= 43 (count key)) "Key should be exactly 43 characters")
-      (is (re-matches #"voice-code-[0-9a-f]{32}" key) "Key should have correct format")))
+      (is (re-matches #"untethered-[0-9a-f]{32}" key) "Key should have correct format")))
 
   (testing "generates lowercase hex only"
     (let [key (auth/generate-api-key)
@@ -25,9 +25,9 @@
 
 (deftest valid-key-format-test
   (testing "accepts valid keys"
-    (is (auth/valid-key-format? "voice-code-a1b2c3d4e5f678901234567890abcdef"))
-    (is (auth/valid-key-format? "voice-code-00000000000000000000000000000000"))
-    (is (auth/valid-key-format? "voice-code-ffffffffffffffffffffffffffffffff")))
+    (is (auth/valid-key-format? "untethered-a1b2c3d4e5f678901234567890abcdef"))
+    (is (auth/valid-key-format? "untethered-00000000000000000000000000000000"))
+    (is (auth/valid-key-format? "untethered-ffffffffffffffffffffffffffffffff")))
 
   (testing "rejects nil"
     (is (not (auth/valid-key-format? nil))))
@@ -36,28 +36,28 @@
     (is (not (auth/valid-key-format? ""))))
 
   (testing "rejects too short"
-    (is (not (auth/valid-key-format? "voice-code-short")))
-    (is (not (auth/valid-key-format? "voice-code-a1b2c3d4e5f6789012345678"))))
+    (is (not (auth/valid-key-format? "untethered-short")))
+    (is (not (auth/valid-key-format? "untethered-a1b2c3d4e5f6789012345678"))))
 
   (testing "rejects too long"
-    (is (not (auth/valid-key-format? "voice-code-a1b2c3d4e5f678901234567890abcdef00"))))
+    (is (not (auth/valid-key-format? "untethered-a1b2c3d4e5f678901234567890abcdef00"))))
 
   (testing "rejects wrong prefix"
     (is (not (auth/valid-key-format? "wrong-code-a1b2c3d4e5f678901234567890abcdef")))
     (is (not (auth/valid-key-format? "voice_code-a1b2c3d4e5f678901234567890abcdef"))))
 
   (testing "rejects uppercase hex"
-    (is (not (auth/valid-key-format? "voice-code-A1B2C3D4E5F678901234567890ABCDEF")))
-    (is (not (auth/valid-key-format? "voice-code-a1b2c3d4e5f678901234567890ABCDEF"))))
+    (is (not (auth/valid-key-format? "untethered-A1B2C3D4E5F678901234567890ABCDEF")))
+    (is (not (auth/valid-key-format? "untethered-a1b2c3d4e5f678901234567890ABCDEF"))))
 
   (testing "rejects non-hex characters"
-    (is (not (auth/valid-key-format? "voice-code-ghijklmnopqrstuvwxyz1234567890ab")))
-    (is (not (auth/valid-key-format? "voice-code-a1b2c3d4e5f67890123456789!abcdef")))))
+    (is (not (auth/valid-key-format? "untethered-ghijklmnopqrstuvwxyz1234567890ab")))
+    (is (not (auth/valid-key-format? "untethered-a1b2c3d4e5f67890123456789!abcdef")))))
 
 (deftest constant-time-equals-test
   (testing "returns true for equal strings"
     (is (auth/constant-time-equals? "abc" "abc"))
-    (is (auth/constant-time-equals? "voice-code-123" "voice-code-123"))
+    (is (auth/constant-time-equals? "untethered-123" "untethered-123"))
     (is (auth/constant-time-equals? "" "")))
 
   (testing "returns false for different strings"
@@ -77,22 +77,22 @@
 
 (deftest validate-api-key-test
   (testing "validates correct key"
-    (let [test-key "voice-code-a1b2c3d4e5f678901234567890abcdef"]
+    (let [test-key "untethered-a1b2c3d4e5f678901234567890abcdef"]
       (with-redefs [auth/read-api-key (constantly test-key)]
         (is (auth/validate-api-key test-key)))))
 
   (testing "rejects incorrect key"
-    (with-redefs [auth/read-api-key (constantly "voice-code-a1b2c3d4e5f678901234567890abcdef")]
-      (is (not (auth/validate-api-key "voice-code-wrong12345678901234567890abcdef")))))
+    (with-redefs [auth/read-api-key (constantly "untethered-a1b2c3d4e5f678901234567890abcdef")]
+      (is (not (auth/validate-api-key "untethered-wrong12345678901234567890abcdef")))))
 
   (testing "returns falsy when no stored key"
     (with-redefs [auth/read-api-key (constantly nil)]
-      (is (not (auth/validate-api-key "voice-code-a1b2c3d4e5f678901234567890abcdef"))))))
+      (is (not (auth/validate-api-key "untethered-a1b2c3d4e5f678901234567890abcdef"))))))
 
 (deftest ensure-key-file-test
   (testing "creates key file with correct permissions"
     (let [temp-dir (str (System/getProperty "java.io.tmpdir")
-                        "/voice-code-auth-test-" (System/currentTimeMillis))
+                        "/untethered-auth-test-" (System/currentTimeMillis))
           test-key-path (str temp-dir "/api-key")]
       (try
         ;; Override key-file-path using dynamic binding
@@ -116,9 +116,9 @@
 
   (testing "returns existing valid key without regenerating"
     (let [temp-dir (str (System/getProperty "java.io.tmpdir")
-                        "/voice-code-auth-test-" (System/currentTimeMillis))
+                        "/untethered-auth-test-" (System/currentTimeMillis))
           test-key-path (str temp-dir "/api-key")
-          existing-key "voice-code-0123456789abcdef0123456789abcdef"]
+          existing-key "untethered-0123456789abcdef0123456789abcdef"]
       (try
         ;; Create directory and file manually
         (.mkdirs (io/file temp-dir))
@@ -134,7 +134,7 @@
 
   (testing "regenerates invalid key"
     (let [temp-dir (str (System/getProperty "java.io.tmpdir")
-                        "/voice-code-auth-test-" (System/currentTimeMillis))
+                        "/untethered-auth-test-" (System/currentTimeMillis))
           test-key-path (str temp-dir "/api-key")
           invalid-key "invalid-key-format"]
       (try
@@ -153,7 +153,7 @@
 
   (testing "regenerates empty file"
     (let [temp-dir (str (System/getProperty "java.io.tmpdir")
-                        "/voice-code-auth-test-" (System/currentTimeMillis))
+                        "/untethered-auth-test-" (System/currentTimeMillis))
           test-key-path (str temp-dir "/api-key")]
       (try
         ;; Create directory and empty file
@@ -170,22 +170,22 @@
 
 (deftest read-api-key-test
   (testing "returns nil when file doesn't exist"
-    (let [nonexistent-path "/tmp/nonexistent-voice-code-key-12345"]
+    (let [nonexistent-path "/tmp/nonexistent-untethered-key-12345"]
       (binding [auth/*key-file-path* nonexistent-path]
         (is (nil? (auth/read-api-key))))))
 
   (testing "trims whitespace from key"
     (let [temp-dir (str (System/getProperty "java.io.tmpdir")
-                        "/voice-code-auth-test-" (System/currentTimeMillis))
+                        "/untethered-auth-test-" (System/currentTimeMillis))
           test-key-path (str temp-dir "/api-key")
-          key-with-whitespace "  voice-code-a1b2c3d4e5f678901234567890abcdef\n  "]
+          key-with-whitespace "  untethered-a1b2c3d4e5f678901234567890abcdef\n  "]
       (try
         (.mkdirs (io/file temp-dir))
         (spit test-key-path key-with-whitespace)
 
         (binding [auth/*key-file-path* test-key-path]
           (let [key (auth/read-api-key)]
-            (is (= "voice-code-a1b2c3d4e5f678901234567890abcdef" key))))
+            (is (= "untethered-a1b2c3d4e5f678901234567890abcdef" key))))
         (finally
           (io/delete-file test-key-path true)
           (io/delete-file temp-dir true))))))

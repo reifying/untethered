@@ -132,7 +132,7 @@ For privacy questions or concerns:
 
 **Email:** privacy@910labs.dev
 **Website:** https://910labs.dev
-**GitHub:** https://github.com/910labs/voice-code
+**GitHub:** https://github.com/reifying/untethered
 
 ## Technical Details
 
@@ -160,7 +160,7 @@ For transparency, here are the technical specifics:
 ## Open Source
 
 Untethered is open source software. You can review the complete source code at:
-https://github.com/910labs/voice-code
+https://github.com/reifying/untethered
 
 This transparency allows you to verify exactly what the app does with your data.
 

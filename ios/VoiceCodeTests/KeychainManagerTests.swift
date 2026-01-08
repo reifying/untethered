@@ -15,8 +15,8 @@ final class KeychainManagerTests: XCTestCase {
     // MARK: - Save and Retrieve Tests
 
     func testSaveAndRetrieveAPIKey() throws {
-        // 43 chars total: "voice-code-" (11) + 32 hex chars
-        let testKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        // 43 chars total: "untethered-" (11) + 32 hex chars
+        let testKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
 
         try KeychainManager.shared.saveAPIKey(testKey)
 
@@ -33,8 +33,8 @@ final class KeychainManagerTests: XCTestCase {
     }
 
     func testUpdateExistingKey() throws {
-        let firstKey = "voice-code-11111111111111111111111111111111"
-        let secondKey = "voice-code-22222222222222222222222222222222"
+        let firstKey = "untethered-11111111111111111111111111111111"
+        let secondKey = "untethered-22222222222222222222222222222222"
 
         try KeychainManager.shared.saveAPIKey(firstKey)
         try KeychainManager.shared.saveAPIKey(secondKey)
@@ -53,14 +53,14 @@ final class KeychainManagerTests: XCTestCase {
     }
 
     func testHasAPIKeyReturnsTrueWhenSet() throws {
-        try KeychainManager.shared.saveAPIKey("voice-code-a1b2c3d4e5f678901234567890abcdef")
+        try KeychainManager.shared.saveAPIKey("untethered-a1b2c3d4e5f678901234567890abcdef")
         XCTAssertTrue(KeychainManager.shared.hasAPIKey())
     }
 
     // MARK: - Delete Tests
 
     func testDeleteAPIKey() throws {
-        let testKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let testKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
         try KeychainManager.shared.saveAPIKey(testKey)
 
         try KeychainManager.shared.deleteAPIKey()
@@ -81,10 +81,10 @@ final class KeychainManagerTests: XCTestCase {
 
     func testValidAPIKeyFormat() {
         // Valid keys
-        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("voice-code-a1b2c3d4e5f678901234567890abcdef"))
-        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("voice-code-00000000000000000000000000000000"))
-        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("voice-code-ffffffffffffffffffffffffffffffff"))
-        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("voice-code-0123456789abcdef0123456789abcdef"))
+        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("untethered-a1b2c3d4e5f678901234567890abcdef"))
+        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("untethered-00000000000000000000000000000000"))
+        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("untethered-ffffffffffffffffffffffffffffffff"))
+        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("untethered-0123456789abcdef0123456789abcdef"))
     }
 
     func testInvalidAPIKeyFormatWrongPrefix() {
@@ -96,23 +96,23 @@ final class KeychainManagerTests: XCTestCase {
 
     func testInvalidAPIKeyFormatWrongLength() {
         // Invalid: too short
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-short"))
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-a1b2c3d4e5f678901234567890abcde"))  // 42 chars
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-short"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-a1b2c3d4e5f678901234567890abcde"))  // 42 chars
 
         // Invalid: too long
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-a1b2c3d4e5f678901234567890abcdefg"))  // 44 chars
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-a1b2c3d4e5f678901234567890abcdefg"))  // 44 chars
     }
 
     func testInvalidAPIKeyFormatUppercaseHex() {
         // Invalid: uppercase hex characters
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-A1B2C3D4E5F678901234567890ABCDEF"))
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-a1b2c3d4e5f678901234567890ABCDEF"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-A1B2C3D4E5F678901234567890ABCDEF"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-a1b2c3d4e5f678901234567890ABCDEF"))
     }
 
     func testInvalidAPIKeyFormatNonHexCharacters() {
         // Invalid: non-hex characters (g-z)
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-ghijklmn12345678901234567890abcd"))
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-xyz12345678901234567890abcdefgh"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-ghijklmn12345678901234567890abcd"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-xyz12345678901234567890abcdefgh"))
     }
 
     func testInvalidAPIKeyFormatEmpty() {
@@ -122,8 +122,8 @@ final class KeychainManagerTests: XCTestCase {
 
     func testInvalidAPIKeyFormatSpecialCharacters() {
         // Invalid: special characters in hex portion
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-a1b2c3d4e5f67890123456789!@#$%^&"))
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-a1b2-c3d4-e5f6-7890-12345678abcd"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-a1b2c3d4e5f67890123456789!@#$%^&"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-a1b2-c3d4-e5f6-7890-12345678abcd"))
     }
 
     // MARK: - Error Enum Tests
@@ -157,7 +157,7 @@ final class KeychainManagerTests: XCTestCase {
 
     func testSaveKeyWithSpecialCharacters() throws {
         // Keys with special characters should be saveable
-        let specialKey = "voice-code-test!@#$%^&*()_+-=[]{}|;':\",./<>?"
+        let specialKey = "untethered-test!@#$%^&*()_+-=[]{}|;':\",./<>?"
         try KeychainManager.shared.saveAPIKey(specialKey)
 
         let retrieved = KeychainManager.shared.retrieveAPIKey()
@@ -166,7 +166,7 @@ final class KeychainManagerTests: XCTestCase {
 
     func testSaveKeyWithUnicode() throws {
         // Keys with unicode should be saveable
-        let unicodeKey = "voice-code-\u{1F511}\u{1F512}\u{1F513}"  // Key emojis
+        let unicodeKey = "untethered-\u{1F511}\u{1F512}\u{1F513}"  // Key emojis
         try KeychainManager.shared.saveAPIKey(unicodeKey)
 
         let retrieved = KeychainManager.shared.retrieveAPIKey()
@@ -175,9 +175,9 @@ final class KeychainManagerTests: XCTestCase {
 
     func testMultipleSavesOverwrite() throws {
         let keys = [
-            "voice-code-11111111111111111111111111111111",
-            "voice-code-22222222222222222222222222222222",
-            "voice-code-33333333333333333333333333333333"
+            "untethered-11111111111111111111111111111111",
+            "untethered-22222222222222222222222222222222",
+            "untethered-33333333333333333333333333333333"
         ]
 
         for key in keys {
@@ -198,13 +198,13 @@ final class KeychainManagerTests: XCTestCase {
         XCTAssertNil(KeychainManager.shared.retrieveAPIKey())
 
         // Save a key
-        let key1 = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let key1 = "untethered-a1b2c3d4e5f678901234567890abcdef"
         try KeychainManager.shared.saveAPIKey(key1)
         XCTAssertTrue(KeychainManager.shared.hasAPIKey())
         XCTAssertEqual(KeychainManager.shared.retrieveAPIKey(), key1)
 
         // Update the key
-        let key2 = "voice-code-fedcba9876543210fedcba9876543210"
+        let key2 = "untethered-fedcba9876543210fedcba9876543210"
         try KeychainManager.shared.saveAPIKey(key2)
         XCTAssertTrue(KeychainManager.shared.hasAPIKey())
         XCTAssertEqual(KeychainManager.shared.retrieveAPIKey(), key2)

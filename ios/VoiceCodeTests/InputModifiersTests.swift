@@ -83,7 +83,7 @@ final class InputModifiersTests: XCTestCase {
 
     func testSecretInputConfigurationDoesNotCrash() {
         // Given a text field
-        let textField = TextField("API Key", text: .constant("voice-code-abc123"))
+        let textField = TextField("API Key", text: .constant("untethered-abc123"))
 
         // When applying secret input configuration
         let modifiedView = textField.secretInputConfiguration()

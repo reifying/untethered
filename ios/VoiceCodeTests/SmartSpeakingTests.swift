@@ -2,7 +2,7 @@
 //  SmartSpeakingTests.swift
 //  VoiceCodeTests
 //
-//  Tests for smart speaking logic (voice-code-93)
+//  Tests for smart speaking logic (untethered-93)
 //
 
 import XCTest

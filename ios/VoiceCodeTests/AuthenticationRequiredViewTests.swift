@@ -49,16 +49,16 @@ final class AuthenticationRequiredViewTests: XCTestCase {
 
     func testValidAPIKeyFormats() {
         // Standard valid key
-        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("voice-code-a1b2c3d4e5f678901234567890abcdef"))
+        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("untethered-a1b2c3d4e5f678901234567890abcdef"))
 
         // All zeros
-        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("voice-code-00000000000000000000000000000000"))
+        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("untethered-00000000000000000000000000000000"))
 
         // All f's
-        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("voice-code-ffffffffffffffffffffffffffffffff"))
+        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("untethered-ffffffffffffffffffffffffffffffff"))
 
         // Mixed case hex (lowercase only)
-        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("voice-code-0123456789abcdef0123456789abcdef"))
+        XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat("untethered-0123456789abcdef0123456789abcdef"))
     }
 
     func testInvalidAPIKeyFormats() {
@@ -66,7 +66,7 @@ final class AuthenticationRequiredViewTests: XCTestCase {
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat(""))
 
         // Too short
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-abc"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-abc"))
 
         // Wrong prefix
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("api-key-a1b2c3d4e5f678901234567890abcdef"))
@@ -75,13 +75,13 @@ final class AuthenticationRequiredViewTests: XCTestCase {
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("a1b2c3d4e5f678901234567890abcdef"))
 
         // Uppercase hex (invalid)
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-A1B2C3D4E5F678901234567890ABCDEF"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-A1B2C3D4E5F678901234567890ABCDEF"))
 
         // Non-hex characters
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-ghijklmnopqrstuvwxyz1234567890ab"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-ghijklmnopqrstuvwxyz1234567890ab"))
 
         // Too long
-        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("voice-code-a1b2c3d4e5f678901234567890abcdef1"))
+        XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("untethered-a1b2c3d4e5f678901234567890abcdef1"))
 
         // Random URL
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat("https://example.com"))
@@ -93,7 +93,7 @@ final class AuthenticationRequiredViewTests: XCTestCase {
         // Clean up first
         try? KeychainManager.shared.deleteAPIKey()
 
-        let validKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let validKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
 
         // Validate and save
         XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat(validKey))
@@ -208,15 +208,15 @@ final class AuthenticationRequiredViewTests: XCTestCase {
 
     func testManualEntryValidation() {
         // Valid key should pass
-        let validKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let validKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
         XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat(validKey))
 
         // Pasted key with whitespace should fail (user needs to trim)
-        let keyWithWhitespace = " voice-code-a1b2c3d4e5f678901234567890abcdef "
+        let keyWithWhitespace = " untethered-a1b2c3d4e5f678901234567890abcdef "
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat(keyWithWhitespace))
 
         // Partial key should fail
-        let partialKey = "voice-code-a1b2c3d4"
+        let partialKey = "untethered-a1b2c3d4"
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat(partialKey))
     }
 

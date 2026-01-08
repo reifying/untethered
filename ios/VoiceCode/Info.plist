@@ -31,7 +31,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Untethered needs microphone access for voice input to control Claude.</string>
 	<key>NSPrivacyPolicyURL</key>
-	<string>https://raw.githubusercontent.com/travisbrown/voice-code/main/docs/privacy-policy.md</string>
+	<string>https://raw.githubusercontent.com/reifying/untethered/main/docs/privacy-policy.md</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Untethered needs speech recognition to transcribe your voice commands.</string>
 	<key>UIApplicationSceneManifest</key>

@@ -27,30 +27,30 @@ final class ShareExtensionAuthTests: XCTestCase {
 
     func testAuthorizationHeaderFormat() {
         // Test that Bearer token format is correct
-        let apiKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let apiKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
         let expectedHeader = "Bearer \(apiKey)"
 
         // This matches what ShareViewController does:
         // request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        XCTAssertEqual(expectedHeader, "Bearer voice-code-a1b2c3d4e5f678901234567890abcdef")
+        XCTAssertEqual(expectedHeader, "Bearer untethered-a1b2c3d4e5f678901234567890abcdef")
         XCTAssertTrue(expectedHeader.hasPrefix("Bearer "),
                      "Authorization header should have Bearer prefix")
     }
 
     func testBearerTokenDoesNotExposeKeyPrefix() {
-        // Ensure the bearer token format doesn't duplicate the "voice-code-" prefix
-        let apiKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        // Ensure the bearer token format doesn't duplicate the "untethered-" prefix
+        let apiKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
         let header = "Bearer \(apiKey)"
 
-        // Count occurrences of "voice-code-" - should be exactly 1
-        let occurrences = header.components(separatedBy: "voice-code-").count - 1
+        // Count occurrences of "untethered-" - should be exactly 1
+        let occurrences = header.components(separatedBy: "untethered-").count - 1
         XCTAssertEqual(occurrences, 1, "API key prefix should appear exactly once")
     }
 
     // MARK: - API Key Availability Tests
 
     func testAPIKeyAvailableFromKeychain() throws {
-        let testKey = "voice-code-11111111111111111111111111111111"
+        let testKey = "untethered-11111111111111111111111111111111"
 
         // Save API key (simulates main app saving it)
         try KeychainManager.shared.saveAPIKey(testKey)
@@ -73,7 +73,7 @@ final class ShareExtensionAuthTests: XCTestCase {
     }
 
     func testHasAPIKeyReturnsTrueWhenConfigured() throws {
-        try KeychainManager.shared.saveAPIKey("voice-code-22222222222222222222222222222222")
+        try KeychainManager.shared.saveAPIKey("untethered-22222222222222222222222222222222")
         XCTAssertTrue(KeychainManager.shared.hasAPIKey(),
                      "hasAPIKey should return true when configured")
     }
@@ -126,12 +126,12 @@ final class ShareExtensionAuthTests: XCTestCase {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let apiKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let apiKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         // Verify headers
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"),
-                      "Bearer voice-code-a1b2c3d4e5f678901234567890abcdef",
+                      "Bearer untethered-a1b2c3d4e5f678901234567890abcdef",
                       "Request should include Authorization header with Bearer token")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"),
                       "application/json",
@@ -170,7 +170,7 @@ final class ShareExtensionAuthTests: XCTestCase {
 
         // If KeychainManager changes these, this test will catch it
         // (We can't directly access private properties, but we verify behavior)
-        let testKey = "voice-code-33333333333333333333333333333333"
+        let testKey = "untethered-33333333333333333333333333333333"
 
         do {
             try KeychainManager.shared.saveAPIKey(testKey)
@@ -202,8 +202,8 @@ final class ShareExtensionAuthTests: XCTestCase {
         // Share Extension should ideally validate key format
         let invalidKeys = [
             "wrong-prefix-a1b2c3d4e5f678901234567890abcdef",
-            "voice-code-short",
-            "voice-code-UPPERCASE1234567890ABCDEF1234",
+            "untethered-short",
+            "untethered-UPPERCASE1234567890ABCDEF1234",
             ""
         ]
 
@@ -215,9 +215,9 @@ final class ShareExtensionAuthTests: XCTestCase {
 
     func testValidAPIKeyFormatAccepted() {
         let validKeys = [
-            "voice-code-a1b2c3d4e5f678901234567890abcdef",
-            "voice-code-00000000000000000000000000000000",
-            "voice-code-ffffffffffffffffffffffffffffffff"
+            "untethered-a1b2c3d4e5f678901234567890abcdef",
+            "untethered-00000000000000000000000000000000",
+            "untethered-ffffffffffffffffffffffffffffffff"
         ]
 
         for key in validKeys {

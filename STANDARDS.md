@@ -95,14 +95,14 @@ Backend → iOS: {
 iOS → Backend: {
   "type": "connect",
   "session_id": "<iOS-session-UUID>",
-  "api_key": "voice-code-a1b2c3d4e5f678901234567890abcdef"
+  "api_key": "untethered-a1b2c3d4e5f678901234567890abcdef"
 }
 ```
 
 **Fields:**
 - `type` (required): Always `"connect"`
 - `session_id` (required): iOS session UUID (lowercase)
-- `api_key` (required): Pre-shared API key for authentication. Must match the key stored on the backend. Format: `voice-code-` prefix followed by 32 lowercase hex characters (43 characters total).
+- `api_key` (required): Pre-shared API key for authentication. Must match the key stored on the backend. Format: `untethered-` prefix followed by 32 lowercase hex characters (43 characters total).
 
 **Connected Confirmation**
 ```json
@@ -836,7 +836,7 @@ All HTTP endpoints require Bearer token authentication using the same API key as
 
 **Request Header:**
 ```
-Authorization: Bearer voice-code-a1b2c3d4e5f678901234567890abcdef
+Authorization: Bearer untethered-a1b2c3d4e5f678901234567890abcdef
 ```
 
 **Fields:**
@@ -852,7 +852,7 @@ Upload a file to the backend for use as a Claude resource.
 **Request:**
 ```http
 POST /upload HTTP/1.1
-Authorization: Bearer voice-code-a1b2c3d4e5f678901234567890abcdef
+Authorization: Bearer untethered-a1b2c3d4e5f678901234567890abcdef
 Content-Type: application/json
 
 {

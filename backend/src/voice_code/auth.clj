@@ -2,7 +2,7 @@
   "API key authentication for voice-code backend.
    
    Generates and validates pre-shared keys for iOS app authentication.
-   Keys are 43 characters: 'voice-code-' prefix + 32 lowercase hex characters."
+   Keys are 43 characters: 'untethered-' prefix + 32 lowercase hex characters."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log])
@@ -12,7 +12,7 @@
 
 (def default-key-file-path
   "Default path for API key file. Can be overridden for testing."
-  (str (System/getProperty "user.home") "/.voice-code/api-key"))
+  (str (System/getProperty "user.home") "/.untethered/api-key"))
 
 (def ^:dynamic *key-file-path*
   "Dynamic var for key file path, allows override in tests."
@@ -25,21 +25,21 @@
 
 (defn generate-api-key
   "Generate a new API key with 128 bits of entropy.
-   Returns a 43-character string: 'voice-code-' + 32 lowercase hex chars."
+   Returns a 43-character string: 'untethered-' + 32 lowercase hex chars."
   []
   (let [random (SecureRandom.)
         bytes (byte-array 16)]
     (.nextBytes random bytes)
-    (str "voice-code-"
+    (str "untethered-"
          (apply str (map #(format "%02x" (bit-and % 0xff)) bytes)))))
 
 (defn valid-key-format?
   "Check if a key string has valid format.
-   Must be 43 chars: 'voice-code-' prefix + 32 lowercase hex chars."
+   Must be 43 chars: 'untethered-' prefix + 32 lowercase hex chars."
   [key]
   (and (string? key)
        (= 43 (count key))
-       (str/starts-with? key "voice-code-")
+       (str/starts-with? key "untethered-")
        (boolean (re-matches #"[0-9a-f]{32}" (subs key 11)))))
 
 (defn ensure-directory-permissions!
@@ -76,7 +76,7 @@
         (when existing-key
           (log/warn "Existing API key has invalid format, regenerating"
                     {:length (count existing-key)
-                     :has-prefix (str/starts-with? (or existing-key "") "voice-code-")}))
+                     :has-prefix (str/starts-with? (or existing-key "") "untethered-")}))
         (let [key (generate-api-key)]
           (spit file key)
           (set-file-permissions! file)

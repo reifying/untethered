@@ -103,14 +103,14 @@ final class SessionRowDisplayTests: XCTestCase {
         // Given: A session with a complex nested path
         let session = createTestSession(
             name: "Test Session",
-            workingDirectory: "/Users/travis/code/mono/active/voice-code-queue-project"
+            workingDirectory: "/Users/travis/code/mono/active/untethered-queue-project"
         )
 
         // When: Extracting the last path component
         let displayPath = URL(fileURLWithPath: session.workingDirectory).lastPathComponent
 
         // Then: Should show only the most relevant part
-        XCTAssertEqual(displayPath, "voice-code-queue-project")
+        XCTAssertEqual(displayPath, "untethered-queue-project")
     }
 
     // MARK: - Session Row Content Integration Tests

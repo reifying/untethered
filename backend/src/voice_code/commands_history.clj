@@ -14,7 +14,7 @@
 
 (def ^:private history-dir-path
   "Path to command history directory"
-  (str (System/getProperty "user.home") "/.voice-code/command-history"))
+  (str (System/getProperty "user.home") "/.untethered/command-history"))
 
 (def ^:private index-file-name "index.edn")
 

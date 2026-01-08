@@ -15,7 +15,7 @@ final class APIKeyManagementViewTests: XCTestCase {
     // MARK: - Validation Tests
 
     func testIsValidKeyWithValidKey() {
-        let validKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let validKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
         XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat(validKey))
     }
 
@@ -25,22 +25,22 @@ final class APIKeyManagementViewTests: XCTestCase {
     }
 
     func testIsValidKeyWithTooShort() {
-        let shortKey = "voice-code-short"
+        let shortKey = "untethered-short"
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat(shortKey))
     }
 
     func testIsValidKeyWithTooLong() {
-        let longKey = "voice-code-a1b2c3d4e5f678901234567890abcdef12"
+        let longKey = "untethered-a1b2c3d4e5f678901234567890abcdef12"
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat(longKey))
     }
 
     func testIsValidKeyWithUppercaseHex() {
-        let uppercaseKey = "voice-code-A1B2C3D4E5F678901234567890ABCDEF"
+        let uppercaseKey = "untethered-A1B2C3D4E5F678901234567890ABCDEF"
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat(uppercaseKey))
     }
 
     func testIsValidKeyWithNonHexCharacters() {
-        let nonHexKey = "voice-code-ghijklmn12345678901234567890abcd"
+        let nonHexKey = "untethered-ghijklmn12345678901234567890abcd"
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat(nonHexKey))
     }
 
@@ -60,23 +60,23 @@ final class APIKeyManagementViewTests: XCTestCase {
 
     func testValidationMessageForWrongPrefix() {
         let wrongPrefix = "wrong-prefix-a1b2c3d4e5f678901234567890ab"
-        XCTAssertFalse(wrongPrefix.hasPrefix("voice-code-"))
+        XCTAssertFalse(wrongPrefix.hasPrefix("untethered-"))
     }
 
     func testValidationMessageForTooShortKey() {
-        let shortKey = "voice-code-abc"
+        let shortKey = "untethered-abc"
         XCTAssertTrue(shortKey.count < 43)
         XCTAssertEqual(43 - shortKey.count, 29, "Should need 29 more characters")
     }
 
     func testValidationMessageForTooLongKey() {
-        let longKey = "voice-code-a1b2c3d4e5f678901234567890abcdef123"
+        let longKey = "untethered-a1b2c3d4e5f678901234567890abcdef123"
         XCTAssertTrue(longKey.count > 43)
         XCTAssertEqual(longKey.count - 43, 3, "Should have 3 extra characters")
     }
 
     func testValidationMessageForUppercaseLetters() {
-        let mixedCase = "voice-code-A1B2c3d4e5f678901234567890abcdef"
+        let mixedCase = "untethered-A1B2c3d4e5f678901234567890abcdef"
         let hexPart = mixedCase.dropFirst(11)
         XCTAssertTrue(hexPart.contains(where: { $0.isUppercase }), "Should detect uppercase letters")
     }
@@ -85,19 +85,19 @@ final class APIKeyManagementViewTests: XCTestCase {
 
     func testMaskedKeyFormat() {
         let view = APIKeyManagementView(onKeyChanged: nil)
-        let key = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let key = "untethered-a1b2c3d4e5f678901234567890abcdef"
         let masked = view.maskedKey(key)
 
         // Should show first 15 chars + "...****"
-        XCTAssertEqual(masked, "voice-code-a1b2...****")
+        XCTAssertEqual(masked, "untethered-a1b2...****")
     }
 
     func testMaskedKeyPreservesPrefix() {
         let view = APIKeyManagementView(onKeyChanged: nil)
-        let key = "voice-code-0000000000000000000000000000000"
+        let key = "untethered-0000000000000000000000000000000"
         let masked = view.maskedKey(key)
 
-        XCTAssertTrue(masked.hasPrefix("voice-code-0000"))
+        XCTAssertTrue(masked.hasPrefix("untethered-0000"))
     }
 
     func testMaskedKeyShortKeyNotMasked() {
@@ -151,7 +151,7 @@ final class APIKeyManagementViewTests: XCTestCase {
     }
 
     func testInitializationWithExistingKey() throws {
-        let testKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let testKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
         try KeychainManager.shared.saveAPIKey(testKey)
 
         let view = APIKeyManagementView(onKeyChanged: nil)
@@ -173,7 +173,7 @@ final class APIKeyManagementViewTests: XCTestCase {
 
     func testSaveButtonEnabledForValidKey() {
         // Valid key should enable save
-        let validKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let validKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
         XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat(validKey))
     }
 
@@ -183,7 +183,7 @@ final class APIKeyManagementViewTests: XCTestCase {
         try KeychainManager.shared.deleteAPIKey()
         XCTAssertFalse(KeychainManager.shared.hasAPIKey())
 
-        let testKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let testKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
         try KeychainManager.shared.saveAPIKey(testKey)
 
         XCTAssertTrue(KeychainManager.shared.hasAPIKey())
@@ -191,7 +191,7 @@ final class APIKeyManagementViewTests: XCTestCase {
     }
 
     func testDeleteKeyIntegration() throws {
-        let testKey = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let testKey = "untethered-a1b2c3d4e5f678901234567890abcdef"
         try KeychainManager.shared.saveAPIKey(testKey)
         XCTAssertTrue(KeychainManager.shared.hasAPIKey())
 
@@ -200,11 +200,11 @@ final class APIKeyManagementViewTests: XCTestCase {
     }
 
     func testUpdateExistingKeyIntegration() throws {
-        let firstKey = "voice-code-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        let firstKey = "untethered-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         try KeychainManager.shared.saveAPIKey(firstKey)
         XCTAssertEqual(KeychainManager.shared.retrieveAPIKey(), firstKey)
 
-        let secondKey = "voice-code-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        let secondKey = "untethered-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         try KeychainManager.shared.saveAPIKey(secondKey)
         XCTAssertEqual(KeychainManager.shared.retrieveAPIKey(), secondKey)
     }
@@ -223,31 +223,31 @@ final class APIKeyManagementViewTests: XCTestCase {
     // MARK: - Edge Cases
 
     func testValidationWithOnlyPrefix() {
-        let prefixOnly = "voice-code-"
+        let prefixOnly = "untethered-"
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat(prefixOnly))
         XCTAssertEqual(prefixOnly.count, 11)
     }
 
     func testValidationWithExactlyCorrectLength() {
-        let exactLength = "voice-code-a1b2c3d4e5f678901234567890abcdef"
+        let exactLength = "untethered-a1b2c3d4e5f678901234567890abcdef"
         XCTAssertEqual(exactLength.count, 43)
         XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat(exactLength))
     }
 
     func testValidationWithAllZeros() {
-        let allZeros = "voice-code-00000000000000000000000000000000"
+        let allZeros = "untethered-00000000000000000000000000000000"
         XCTAssertEqual(allZeros.count, 43)
         XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat(allZeros))
     }
 
     func testValidationWithAllFs() {
-        let allFs = "voice-code-ffffffffffffffffffffffffffffffff"
+        let allFs = "untethered-ffffffffffffffffffffffffffffffff"
         XCTAssertEqual(allFs.count, 43)
         XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat(allFs))
     }
 
     func testValidationWithMixedValidHex() {
-        let mixedHex = "voice-code-0123456789abcdef0123456789abcdef"
+        let mixedHex = "untethered-0123456789abcdef0123456789abcdef"
         XCTAssertEqual(mixedHex.count, 43)
         XCTAssertTrue(KeychainManager.shared.isValidAPIKeyFormat(mixedHex))
     }
@@ -255,13 +255,13 @@ final class APIKeyManagementViewTests: XCTestCase {
     // MARK: - Character Length Boundary Tests
 
     func testValidationAt42Characters() {
-        let key42 = "voice-code-a1b2c3d4e5f678901234567890abcde"  // 42 chars
+        let key42 = "untethered-a1b2c3d4e5f678901234567890abcde"  // 42 chars
         XCTAssertEqual(key42.count, 42)
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat(key42))
     }
 
     func testValidationAt44Characters() {
-        let key44 = "voice-code-a1b2c3d4e5f678901234567890abcdeff"  // 44 chars
+        let key44 = "untethered-a1b2c3d4e5f678901234567890abcdeff"  // 44 chars
         XCTAssertEqual(key44.count, 44)
         XCTAssertFalse(KeychainManager.shared.isValidAPIKeyFormat(key44))
     }
