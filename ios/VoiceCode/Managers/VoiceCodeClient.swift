@@ -317,9 +317,9 @@ class VoiceCodeClient: ObservableObject {
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            logger.debug("🔄 VoiceCodeClient updating: isConnected=true")
-            self.isConnected = true
+            logger.debug("🔄 VoiceCodeClient: WebSocket created, awaiting hello")
             self.currentError = nil
+            // Note: isConnected will be set true when we receive "hello"
         }
     }
 
@@ -482,8 +482,9 @@ class VoiceCodeClient: ObservableObject {
             guard let self = self else { return }
             switch type {
             case "hello":
-                // Initial welcome message from server
-                print("📡 [VoiceCodeClient] Received hello from server")
+                // Mark as connected when we receive hello from server
+                self.isConnected = true
+                print("📡 [VoiceCodeClient] Received hello from server, connection confirmed")
 
                 // Check auth_version for compatibility (future-proofing)
                 if let authVersion = json["auth_version"] as? Int {
