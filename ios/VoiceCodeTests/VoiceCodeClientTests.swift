@@ -1847,4 +1847,225 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertTrue(testClient.isConnected, "isConnected should still be true")
         XCTAssertTrue(testClient.isAuthenticated, "isAuthenticated should be true after connected")
     }
+
+    // MARK: - WebSocket Reconnection Fix Tests (voice-code-desktop3-pd6)
+    //
+    // These tests verify the fixes from the WebSocket reconnection fix design doc:
+    // - Fix 1: Clear WebSocket reference on connection failure
+    // - Fix 2: Improve connect() guard to check WebSocket state
+    // - Fix 3: Defer isConnected until hello message received
+
+    // MARK: isConnected Timing Tests (Fix 3)
+
+    func testIsConnectedFalseAfterConnect() {
+        // Given: A fresh client
+        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+
+        // When: connect() is called (before any server response)
+        testClient.connect()
+
+        // Then: isConnected should still be false (waiting for hello)
+        // Note: With Fix 3, isConnected is only set true on receiving "hello"
+        XCTAssertFalse(testClient.isConnected, "isConnected should be false immediately after connect()")
+
+        testClient.disconnect()
+    }
+
+    func testIsConnectedTrueAfterHelloMessage() {
+        // Given: A client that has connected
+        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+        testClient.connect()
+        XCTAssertFalse(testClient.isConnected, "isConnected should be false before hello")
+
+        // When: Hello message is received from server
+        testClient.handleMessage("""
+            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            """)
+
+        // Wait for handleMessage's dispatch
+        let expectation = XCTestExpectation(description: "Hello dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        // Then: isConnected should now be true
+        XCTAssertTrue(testClient.isConnected, "isConnected should be true after hello")
+
+        testClient.disconnect()
+    }
+
+    func testIsConnectedFalseAfterDisconnect() {
+        // Given: A connected client
+        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+        testClient.connect()
+        testClient.handleMessage("""
+            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            """)
+
+        let helloExpectation = XCTestExpectation(description: "Hello dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            helloExpectation.fulfill()
+        }
+        wait(for: [helloExpectation], timeout: 1.0)
+
+        XCTAssertTrue(testClient.isConnected, "Precondition: should be connected")
+
+        // When: disconnect() is called
+        testClient.disconnect()
+
+        // Wait for disconnect dispatch
+        let disconnectExpectation = XCTestExpectation(description: "Disconnect dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            disconnectExpectation.fulfill()
+        }
+        wait(for: [disconnectExpectation], timeout: 1.0)
+
+        // Then: isConnected should be false
+        XCTAssertFalse(testClient.isConnected, "isConnected should be false after disconnect")
+    }
+
+    // MARK: Reconnection Behavior Tests (Fix 1 & 2)
+
+    func testMultipleConnectCallsAreSafe() {
+        // Given: A client
+        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+
+        // When: connect() is called multiple times
+        testClient.connect()
+        testClient.connect()  // Should not crash or create duplicate sockets
+        testClient.connect()
+
+        // Then: Client should be in a valid state
+        // (Fix 2 ensures second/third calls either skip or clean up)
+        testClient.disconnect()
+        XCTAssertFalse(testClient.isConnected, "Should be disconnected after cleanup")
+    }
+
+    func testDisconnectThenConnectWorks() {
+        // Given: A client that was connected then disconnected
+        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+        testClient.connect()
+        testClient.handleMessage("""
+            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            """)
+
+        let helloExpectation = XCTestExpectation(description: "First hello dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            helloExpectation.fulfill()
+        }
+        wait(for: [helloExpectation], timeout: 1.0)
+
+        XCTAssertTrue(testClient.isConnected, "Should be connected after first hello")
+
+        testClient.disconnect()
+
+        let disconnectExpectation = XCTestExpectation(description: "Disconnect dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            disconnectExpectation.fulfill()
+        }
+        wait(for: [disconnectExpectation], timeout: 1.0)
+
+        XCTAssertFalse(testClient.isConnected, "Should be disconnected")
+
+        // When: connect() is called again (simulating reconnection)
+        testClient.connect()
+
+        // Then: Should be able to receive hello again
+        // (Fix 1 ensures webSocket is cleared on disconnect, allowing new connection)
+        testClient.handleMessage("""
+            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            """)
+
+        let secondHelloExpectation = XCTestExpectation(description: "Second hello dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            secondHelloExpectation.fulfill()
+        }
+        wait(for: [secondHelloExpectation], timeout: 1.0)
+
+        XCTAssertTrue(testClient.isConnected, "Should be connected after second hello")
+
+        testClient.disconnect()
+    }
+
+    func testForceReconnectResetsState() {
+        // Given: A client that was connected
+        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+        testClient.connect()
+        testClient.handleMessage("""
+            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            """)
+
+        let helloExpectation = XCTestExpectation(description: "Initial hello dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            helloExpectation.fulfill()
+        }
+        wait(for: [helloExpectation], timeout: 1.0)
+
+        XCTAssertTrue(testClient.isConnected, "Precondition: should be connected")
+
+        // When: forceReconnect() is called
+        testClient.forceReconnect()
+
+        // Wait for forceReconnect dispatch to complete
+        let forceReconnectExpectation = XCTestExpectation(description: "ForceReconnect dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            forceReconnectExpectation.fulfill()
+        }
+        wait(for: [forceReconnectExpectation], timeout: 1.0)
+
+        // Then: isConnected should be false immediately after forceReconnect
+        // (forceReconnect calls disconnect which clears the connected state)
+        XCTAssertFalse(testClient.isConnected, "isConnected should be false after forceReconnect")
+
+        // Note: In a real scenario with a server, receiving "hello" would set isConnected=true again.
+        // We can't test that here without a real server because the WebSocket failure handler
+        // would race with our manual handleMessage call. The behavior is verified in integration tests.
+
+        testClient.disconnect()
+    }
+
+    // MARK: Lock Clearing Tests (related to Fix 1)
+
+    func testLockedSessionsClearedOnDisconnect() {
+        // Given: A client with a locked session
+        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+        testClient.connect()
+        testClient.handleMessage("""
+            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            """)
+
+        let helloExpectation = XCTestExpectation(description: "Hello dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            helloExpectation.fulfill()
+        }
+        wait(for: [helloExpectation], timeout: 1.0)
+
+        // Simulate locked session via session_locked message
+        testClient.handleMessage("""
+            {"type": "session_locked", "session_id": "test-session-123", "message": "Session locked"}
+            """)
+
+        let lockExpectation = XCTestExpectation(description: "Lock dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            lockExpectation.fulfill()
+        }
+        wait(for: [lockExpectation], timeout: 1.0)
+
+        XCTAssertTrue(testClient.lockedSessions.contains("test-session-123"), "Session should be locked")
+
+        // When: disconnect() is called
+        testClient.disconnect()
+
+        // Wait for disconnect dispatch
+        let disconnectExpectation = XCTestExpectation(description: "Disconnect dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            disconnectExpectation.fulfill()
+        }
+        wait(for: [disconnectExpectation], timeout: 1.0)
+
+        // Then: Locked sessions should be cleared
+        // (Fix 1 ensures locks are cleared when connection fails/closes)
+        XCTAssertTrue(testClient.lockedSessions.isEmpty, "Locked sessions should be empty after disconnect")
+    }
 }
