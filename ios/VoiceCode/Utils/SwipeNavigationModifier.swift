@@ -32,14 +32,12 @@ final class SwipeNavigationCoordinator {
     func register(action: @escaping () -> Void) -> UUID {
         let id = UUID()
         registeredViews.append((id: id, action: action))
-        print("[SwipeDebug] Registered view \(id.uuidString.prefix(8)), stack depth: \(registeredViews.count)")
         return id
     }
 
     /// Unregister a view when it disappears.
     func unregister(id: UUID) {
         registeredViews.removeAll { $0.id == id }
-        print("[SwipeDebug] Unregistered view \(id.uuidString.prefix(8)), stack depth: \(registeredViews.count)")
     }
 
     private func setupEventMonitor() {
@@ -78,8 +76,6 @@ final class SwipeNavigationCoordinator {
             gestureCommittedAsHorizontal = looksHorizontal
             isTracking = true
 
-            print("[SwipeDebug] Gesture began - deltaX: \(event.scrollingDeltaX), deltaY: \(event.scrollingDeltaY), looksHorizontal: \(looksHorizontal)")
-
             // Consume immediately if it looks horizontal to prevent scroll view from claiming it
             return looksHorizontal
 
@@ -95,11 +91,9 @@ final class SwipeNavigationCoordinator {
                 let isStronglyHorizontal = abs(accumulatedScrollX) > abs(accumulatedScrollY) * 2
                 if gestureCommittedAsHorizontal && !isStronglyHorizontal {
                     // We initially thought it was horizontal but now it's not - abort
-                    print("[SwipeDebug] Gesture reclassified as VERTICAL, releasing")
                     gestureCommittedAsHorizontal = false
                 } else if isStronglyHorizontal {
                     gestureCommittedAsHorizontal = true
-                    print("[SwipeDebug] Gesture confirmed as HORIZONTAL")
                 }
             }
 
@@ -111,20 +105,13 @@ final class SwipeNavigationCoordinator {
             isTracking = false
             let wasHorizontal = gestureCommittedAsHorizontal
 
-            print("[SwipeDebug] Gesture ended - accumulatedX: \(accumulatedScrollX), accumulatedY: \(accumulatedScrollY), committedHorizontal: \(gestureCommittedAsHorizontal)")
-
             // Swipe LEFT (fingers move right-to-left) = POSITIVE scrollingDeltaX on macOS
             let isSwipeLeft = accumulatedScrollX > swipeThreshold
-
-            print("[SwipeDebug] isSwipeLeft: \(isSwipeLeft)")
 
             if gestureCommittedAsHorizontal && isSwipeLeft {
                 // Only trigger the topmost (last registered) view's action
                 if let topView = registeredViews.last {
-                    print("[SwipeDebug] TRIGGERING NAVIGATION for view \(topView.id.uuidString.prefix(8))")
                     topView.action()
-                } else {
-                    print("[SwipeDebug] No views registered for swipe")
                 }
             }
 
@@ -142,7 +129,6 @@ final class SwipeNavigationCoordinator {
             accumulatedScrollY = 0
             gestureCommittedAsHorizontal = false
             sampleCount = 0
-            print("[SwipeDebug] Gesture cancelled")
             return wasHorizontal
 
         default:
