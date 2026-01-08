@@ -451,15 +451,21 @@ class VoiceCodeClient: ObservableObject {
                 self.receiveMessage()
 
             case .failure(let error):
+                // Clear WebSocket reference inside main queue to ensure thread safety
+                // Both connect() and this failure handler must access webSocket on main thread
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
+
+                    // Clear WebSocket reference to enable reconnection
+                    self.webSocket?.cancel(with: .goingAway, reason: nil)
+                    self.webSocket = nil
+
                     logger.debug("🔄 VoiceCodeClient updating: isConnected=false (failure)")
                     self.isConnected = false
                     self.scheduleUpdate(key: "currentError", value: error.localizedDescription as String?)
-                    // Clear all locked sessions on connection failure
                     self.scheduleUpdate(key: "lockedSessions", value: Set<String>())
-                    self.flushPendingUpdates()  // Immediate flush for critical operation
-                    print("🔓 [VoiceCodeClient] Cleared all locked sessions on connection failure")
+                    self.flushPendingUpdates()
+                    print("🔓 [VoiceCodeClient] Cleared WebSocket and locked sessions on connection failure")
                 }
             }
         }
