@@ -29,8 +29,9 @@ struct APIKeySection: View {
         .sheet(isPresented: $showingScanner) {
             QRScannerView(
                 onCodeScanned: { scannedKey in
+                    // Populate the field; key will be saved when user clicks Save
+                    // This ensures the server URL is also updated before reconnecting
                     apiKeyInput = scannedKey
-                    saveAPIKey()
                     showingScanner = false
                 },
                 onCancel: {

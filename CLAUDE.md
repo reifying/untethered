@@ -1,6 +1,38 @@
-We track work in Beads instead of Markdown. Run `bd quickstart` to see how.
+This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
-This is November 2025 or later.
+## Quick Reference
+
+```bash
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --status in_progress  # Claim work
+bd close <id>         # Complete work
+bd sync               # Sync with git
+```
+
+## Landing the Plane (Session Completion)
+
+**When ending a work session**, you MUST complete ALL steps below. 
+
+**MANDATORY WORKFLOW:**
+
+1. **File issues for remaining work** - Create issues for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **PUSH TO REMOTE** - This is MANDATORY:
+   ```bash
+   git pull --rebase
+   bd sync
+   git push
+   git status  # MUST show "up to date with origin"
+   ```
+5. **Clean up** - Clear stashes, prune remote branches
+6. **Verify** - All changes committed AND pushed
+7. **Hand off** - Provide context for next session
+
+---
+
+This is January 2026 or later
 
 ## Clojure MCP Setup (Required First Step)
 
@@ -32,6 +64,10 @@ Keep all responses brief and direct. No verbose explanations or unnecessary comm
 We don't care about work duration estimates. Don't provide estimates in hours, days, weeks, etc. about how long development will take.
 
 Do not write implementation code without also writing tests. We want test development to keep pace with code development. Do not say that work is complete if you haven't written corresponding tests. Do not say that work is complete if you haven't run tests. Running tests and ensuring they all pass is required before completing any development step. By definition, development is not "done" if we do not have tests proving that the code works and meets our intent.
+
+## Running Tests
+
+Run `make test` (or other test targets) directly—never redirect to `/dev/null`. The `wrap-command` script already captures output and shows the last 100 lines. On failure, read the full log from the `OUTPUT_FILE` path printed at the start instead of re-running tests.
 
 Always log the actual invalid values with sufficient context (names, paths) when validation fails so we can diagnose issues from logs alone.
 

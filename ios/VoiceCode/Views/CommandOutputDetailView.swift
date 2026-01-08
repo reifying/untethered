@@ -78,6 +78,7 @@ struct CommandOutputDetailView: View {
         .onAppear {
             loadOutput()
         }
+        .swipeToBack()
     }
 
     private var metadataSection: some View {
@@ -165,11 +166,7 @@ struct CommandOutputDetailView: View {
                     .font(.system(.body, design: .monospaced))
                     .textSelection(.enabled)
                     .padding(12)
-                    #if os(iOS)
-                    .background(Color(UIColor.secondarySystemBackground))
-                    #elseif os(macOS)
-                    .background(Color(NSColor.windowBackgroundColor))
-                    #endif
+                    .background(Color.secondarySystemBackground)
                     .cornerRadius(8)
             }
         }

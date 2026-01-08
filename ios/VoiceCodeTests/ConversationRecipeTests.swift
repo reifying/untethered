@@ -4,6 +4,7 @@
 import XCTest
 import SwiftUI
 import CoreData
+import Combine
 #if os(iOS)
 @testable import VoiceCode
 #else
@@ -146,8 +147,18 @@ class ConversationRecipeTests: XCTestCase {
     func testExitRecipeRemovesActiveRecipe() {
         let session = createTestSession()
         let sessionId = session.id.uuidString.lowercased()
-        var updateCount = 0
-        let expectation = XCTestExpectation(description: "Recipe exited")
+        let recipeStartedExpectation = XCTestExpectation(description: "Recipe started")
+        let recipeExitedExpectation = XCTestExpectation(description: "Recipe exited")
+
+        var startedCancellable: AnyCancellable?
+        startedCancellable = client.$activeRecipes
+            .dropFirst()
+            .sink { recipes in
+                if recipes[sessionId] != nil {
+                    recipeStartedExpectation.fulfill()
+                    startedCancellable?.cancel()
+                }
+            }
 
         // Start recipe first
         client.handleMessage("""
@@ -161,33 +172,32 @@ class ConversationRecipeTests: XCTestCase {
         }
         """)
 
-        // Wait for debounce, then set up listener for exit
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            let cancellable = self.client.$activeRecipes
-                .dropFirst()
-                .sink { recipes in
-                    if recipes[sessionId] == nil {
-                        expectation.fulfill()
-                    }
+        wait(for: [recipeStartedExpectation], timeout: 1.0)
+
+        // Set up listener for exit
+        var exitedCancellable: AnyCancellable?
+        exitedCancellable = client.$activeRecipes
+            .dropFirst()
+            .sink { recipes in
+                if recipes[sessionId] == nil {
+                    recipeExitedExpectation.fulfill()
+                    exitedCancellable?.cancel()
                 }
-
-            // Exit recipe
-            self.client.handleMessage("""
-            {
-                "type": "recipe_exited",
-                "session_id": "\(sessionId)",
-                "reason": "user-requested"
             }
-            """)
 
-            self.wait(for: [expectation], timeout: 1.0)
-            cancellable.cancel()
+        // Exit recipe
+        client.handleMessage("""
+        {
+            "type": "recipe_exited",
+            "session_id": "\(sessionId)",
+            "reason": "user-requested"
         }
+        """)
+
+        wait(for: [recipeExitedExpectation], timeout: 1.0)
 
         // Verify recipe removed
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            XCTAssertNil(self.client.activeRecipes[sessionId])
-        }
+        XCTAssertNil(client.activeRecipes[sessionId])
     }
 
     func testExitRecipeMethod() {
@@ -258,8 +268,19 @@ class ConversationRecipeTests: XCTestCase {
         let session2 = createTestSession(workingDirectory: "/Users/test/project2")
         let sessionId1 = session1.id.uuidString.lowercased()
         let sessionId2 = session2.id.uuidString.lowercased()
-        let expectation = XCTestExpectation(description: "Exit completed")
-        var updateCount = 0
+        let bothStartedExpectation = XCTestExpectation(description: "Both recipes started")
+        let exitCompletedExpectation = XCTestExpectation(description: "Exit completed")
+
+        // Set up listener for both recipes to start
+        var startedCancellable: AnyCancellable?
+        startedCancellable = client.$activeRecipes
+            .dropFirst()
+            .sink { recipes in
+                if recipes.count == 2 {
+                    bothStartedExpectation.fulfill()
+                    startedCancellable?.cancel()
+                }
+            }
 
         // Start both recipes
         client.handleMessage("""
@@ -273,41 +294,45 @@ class ConversationRecipeTests: XCTestCase {
         }
         """)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            self.client.handleMessage("""
-            {
-                "type": "recipe_started",
-                "session_id": "\(sessionId2)",
-                "recipe_id": "implement-and-review",
-                "recipe_label": "Implement & Review",
-                "current_step": "implement",
-                "step_count": 1
-            }
-            """)
+        client.handleMessage("""
+        {
+            "type": "recipe_started",
+            "session_id": "\(sessionId2)",
+            "recipe_id": "implement-and-review",
+            "recipe_label": "Implement & Review",
+            "current_step": "implement",
+            "step_count": 1
         }
+        """)
 
-        // Wait for both to be active, then exit session 1
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            let cancellable = self.client.$activeRecipes
-                .dropFirst()
-                .sink { recipes in
-                    // After exit, should have 1 remaining
-                    if recipes.count == 1 && recipes[sessionId2] != nil {
-                        expectation.fulfill()
-                    }
+        wait(for: [bothStartedExpectation], timeout: 1.0)
+
+        // Set up listener for exit
+        var exitCancellable: AnyCancellable?
+        exitCancellable = client.$activeRecipes
+            .dropFirst()
+            .sink { recipes in
+                // After exit, should have 1 remaining
+                if recipes.count == 1 && recipes[sessionId2] != nil {
+                    exitCompletedExpectation.fulfill()
+                    exitCancellable?.cancel()
                 }
-
-            self.client.handleMessage("""
-            {
-                "type": "recipe_exited",
-                "session_id": "\(sessionId1)",
-                "reason": "user-requested"
             }
-            """)
 
-            self.wait(for: [expectation], timeout: 1.0)
-            cancellable.cancel()
+        // Exit session 1
+        client.handleMessage("""
+        {
+            "type": "recipe_exited",
+            "session_id": "\(sessionId1)",
+            "reason": "user-requested"
         }
+        """)
+
+        wait(for: [exitCompletedExpectation], timeout: 1.0)
+
+        // Verify session 2 still has its recipe
+        XCTAssertNil(client.activeRecipes[sessionId1])
+        XCTAssertNotNil(client.activeRecipes[sessionId2])
     }
 
     // MARK: - Recipe Menu Tests

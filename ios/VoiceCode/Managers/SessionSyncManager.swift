@@ -425,6 +425,7 @@ class SessionSyncManager {
             session.messageCount += Int32(newMessageCount)
 
             // Update unread count and speaking logic
+            logger.info("🔊 Session \(sessionId.prefix(8))... isActive=\(isActiveSession), assistantMessages=\(assistantMessagesToSpeak.count), newMsgCount=\(newMessageCount)")
             if isActiveSession {
                 // Active session: speak assistant messages, don't increment unread count
                 logger.info("Active session: will speak \(assistantMessagesToSpeak.count) assistant messages")
@@ -497,11 +498,17 @@ class SessionSyncManager {
                 // Remove code blocks from text before speaking for better listening experience
                 if isActiveSession && !assistantMessagesToSpeak.isEmpty {
                     let workingDirectory = session.workingDirectory
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        for text in assistantMessagesToSpeak {
-                            let processedText = TextProcessor.removeCodeBlocks(from: text)
-                            self.voiceOutputManager?.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory)
+                    let voiceManager = self.voiceOutputManager  // Capture before dispatching to main queue
+                    logger.info("🔊 Preparing to speak \(assistantMessagesToSpeak.count) messages, voiceOutputManager is \(voiceManager == nil ? "nil" : "set")")
+                    DispatchQueue.main.async {
+                        if let voiceManager = voiceManager {
+                            for text in assistantMessagesToSpeak {
+                                let processedText = TextProcessor.removeCodeBlocks(from: text)
+                                logger.info("🔊 Calling speak() with text length: \(processedText.count)")
+                                voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory)
+                            }
+                        } else {
+                            logger.warning("⚠️ voiceOutputManager is nil, cannot speak messages")
                         }
                     }
                 }
@@ -824,37 +831,6 @@ class SessionSyncManager {
                 }
             } catch {
                 logger.error("Failed to update session custom name: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    // MARK: - Server Change Handling
-
-    /// Clear all sessions and messages when changing servers
-    /// This ensures we don't show sessions from the old server
-    func clearAllSessions() {
-        logger.info("Clearing all sessions due to server change")
-        
-        persistenceController.performBackgroundTask { backgroundContext in
-            // Fetch all sessions
-            let sessionFetchRequest: NSFetchRequest<CDBackendSession> = CDBackendSession.fetchRequest()
-            
-            do {
-                let sessions = try backgroundContext.fetch(sessionFetchRequest)
-                logger.info("Deleting \(sessions.count) sessions")
-                
-                // Delete all sessions (cascade will delete messages)
-                for session in sessions {
-                    backgroundContext.delete(session)
-                }
-                
-                // Save context
-                if backgroundContext.hasChanges {
-                    try backgroundContext.save()
-                    logger.info("Successfully cleared all sessions")
-                }
-            } catch {
-                logger.error("Failed to clear sessions: \(error.localizedDescription)")
             }
         }
     }

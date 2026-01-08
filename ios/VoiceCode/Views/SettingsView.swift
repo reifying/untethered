@@ -22,21 +22,9 @@ struct SettingsView: View {
     let onAPIKeyChanged: (() -> Void)?
 
     var body: some View {
-        settingsNavigation
-    }
-
-    @ViewBuilder
-    private var settingsNavigation: some View {
-        #if os(macOS)
-        NavigationStack {
+        NavigationController(minWidth: 600, minHeight: 800) {
             settingsForm
         }
-        .frame(minWidth: 600, minHeight: 800)
-        #else
-        NavigationView {
-            settingsForm
-        }
-        #endif
     }
 
     private var settingsForm: some View {
@@ -45,16 +33,10 @@ struct SettingsView: View {
 
             Section(header: Text("Server Configuration")) {
                 TextField("Server Address", text: $settings.serverURL)
-                    #if os(iOS)
-                    .autocapitalization(.none)
-                    .keyboardType(.URL)
-                    #endif
-                    .disableAutocorrection(true)
+                    .urlInputConfiguration()
 
                 TextField("Port", text: $settings.serverPort)
-                    #if os(iOS)
-                    .keyboardType(.numberPad)
-                    #endif
+                    .numericInputConfiguration()
 
                 Text("Full URL: \(settings.fullServerURL)")
                     .font(.caption)
@@ -112,6 +94,7 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
 
+            #if os(iOS)
             Section(header: Text("Audio Playback")) {
                 Toggle("Silence speech when phone is on vibrate", isOn: $settings.respectSilentMode)
 
@@ -125,6 +108,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+            #endif
 
             Section(header: Text("Recent")) {
                 Stepper("Show \(settings.recentSessionsLimit) sessions", value: $settings.recentSessionsLimit, in: 1...20)
@@ -152,10 +136,7 @@ struct SettingsView: View {
 
             Section(header: Text("Resources")) {
                 TextField("Storage Location", text: $settings.resourceStorageLocation)
-                    #if os(iOS)
-                    .autocapitalization(.none)
-                    #endif
-                    .disableAutocorrection(true)
+                    .pathInputConfiguration()
 
                 Text("Directory where uploaded files will be saved on the backend")
                     .font(.caption)
@@ -174,14 +155,21 @@ struct SettingsView: View {
             }
 
             Section(header: Text("System Prompt")) {
-                TextField("Custom System Prompt", text: $localSystemPrompt, axis: .vertical)
-                    .lineLimit(3...6)
-                    #if os(iOS)
-                    .autocapitalization(.sentences)
-                    #endif
+                #if os(macOS)
+                TextEditor(text: $localSystemPrompt)
+                    .frame(minHeight: 80)
+                    .font(.body)
                     .onChange(of: localSystemPrompt) { newValue in
                         settings.systemPrompt = newValue
                     }
+                #else
+                TextField("Custom System Prompt", text: $localSystemPrompt, axis: .vertical)
+                    .lineLimit(3...6)
+                    .textInputConfiguration()
+                    .onChange(of: localSystemPrompt) { newValue in
+                        settings.systemPrompt = newValue
+                    }
+                #endif
 
                 Text("Optional instructions to append to Claude's system prompt on every message. Leave empty to use default behavior.")
                     .font(.caption)
@@ -237,60 +225,11 @@ struct SettingsView: View {
         #endif
         .navigationTitle("Settings")
         .toolbar {
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button("Cancel") {
-                    dismiss()
-                }
-            }
-            #else
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") {
-                    dismiss()
-                }
-            }
-            #endif
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Save") {
-                    // Save pending API key if there is one
-                    if !pendingAPIKeyInput.isEmpty {
-                        if KeychainManager.shared.isValidAPIKeyFormat(pendingAPIKeyInput) {
-                            try? KeychainManager.shared.saveAPIKey(pendingAPIKeyInput)
-                            pendingAPIKeyInput = ""
-                            onAPIKeyChanged?()
-                        } else {
-                            // Show error alert for invalid API key format
-                            showingAPIKeyError = true
-                            return
-                        }
-                    }
-                    // Settings auto-save via didSet
-                    onServerChange(settings.fullServerURL)
-                    dismiss()
-                }
-            }
-            #else
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Save") {
-                    // Save pending API key if there is one
-                    if !pendingAPIKeyInput.isEmpty {
-                        if KeychainManager.shared.isValidAPIKeyFormat(pendingAPIKeyInput) {
-                            try? KeychainManager.shared.saveAPIKey(pendingAPIKeyInput)
-                            pendingAPIKeyInput = ""
-                            onAPIKeyChanged?()
-                        } else {
-                            // Show error alert for invalid API key format
-                            showingAPIKeyError = true
-                            return
-                        }
-                    }
-                    // Settings auto-save via didSet
-                    onServerChange(settings.fullServerURL)
-                    dismiss()
-                }
-            }
-            #endif
+            ToolbarBuilder.cancelAndConfirm(
+                confirmTitle: "Save",
+                onCancel: { dismiss() },
+                onConfirm: saveSettings
+            )
         }
         .onAppear {
             // Initialize local state from settings
@@ -301,6 +240,29 @@ struct SettingsView: View {
         } message: {
             Text("API key must start with 'voice-code-' and be 43 characters.")
         }
+        .swipeToBack()
+    }
+
+    private func saveSettings() {
+        // Save pending API key if there is one
+        if !pendingAPIKeyInput.isEmpty {
+            if KeychainManager.shared.isValidAPIKeyFormat(pendingAPIKeyInput) {
+                try? KeychainManager.shared.saveAPIKey(pendingAPIKeyInput)
+                pendingAPIKeyInput = ""
+                // Note: Don't call onAPIKeyChanged() here because onServerChange() below
+                // will trigger updateServerURL() which does disconnect/connect.
+                // Calling onAPIKeyChanged() first would attempt to reconnect with the
+                // OLD server URL before it's updated.
+            } else {
+                // Show error alert for invalid API key format
+                showingAPIKeyError = true
+                return
+            }
+        }
+        // Settings auto-save via didSet
+        // This triggers updateServerURL() which does disconnect + connect with new URL
+        onServerChange(settings.fullServerURL)
+        dismiss()
     }
 
     func testConnection() {

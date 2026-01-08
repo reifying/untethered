@@ -14,7 +14,7 @@ final class SimpleCrashTest: XCTestCase {
     @MainActor
     func testDraftManagerDoesNotCrashOnRapidUpdates() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["-com.apple.CoreData.ConcurrencyDebug", "1"]
+        app.launchArguments = ["--uitesting", "-com.apple.CoreData.ConcurrencyDebug", "1"]
         app.launch()
 
         // Just verify app launches and doesn't crash immediately

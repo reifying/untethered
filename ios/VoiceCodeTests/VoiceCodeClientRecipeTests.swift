@@ -2,6 +2,7 @@
 // Tests for recipe orchestration message handling in VoiceCodeClient
 
 import XCTest
+import Combine
 #if os(iOS)
 @testable import VoiceCode
 #else
@@ -55,13 +56,11 @@ class VoiceCodeClientRecipeTests: XCTestCase {
 
         client.handleMessage(json)
 
-        // Wait for debounced update
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            XCTAssertEqual(self.client.availableRecipes.count, 1)
-        }
-
         wait(for: [expectation], timeout: 1.0)
         cancellable.cancel()
+
+        // Verify final state after expectation fulfilled
+        XCTAssertEqual(client.availableRecipes.count, 1)
     }
 
     func testHandleMultipleAvailableRecipes() throws {
@@ -94,12 +93,11 @@ class VoiceCodeClientRecipeTests: XCTestCase {
 
         client.handleMessage(json)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            XCTAssertEqual(self.client.availableRecipes.count, 2)
-        }
-
         wait(for: [expectation], timeout: 1.0)
         cancellable.cancel()
+
+        // Verify final state after expectation fulfilled
+        XCTAssertEqual(client.availableRecipes.count, 2)
     }
 
     func testHandleEmptyAvailableRecipes() throws {
@@ -121,12 +119,11 @@ class VoiceCodeClientRecipeTests: XCTestCase {
 
         client.handleMessage(json)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            XCTAssertEqual(self.client.availableRecipes.count, 0)
-        }
-
         wait(for: [expectation], timeout: 1.0)
         cancellable.cancel()
+
+        // Verify final state after expectation fulfilled
+        XCTAssertEqual(client.availableRecipes.count, 0)
     }
 
     // MARK: - Recipe Started Tests
@@ -163,12 +160,11 @@ class VoiceCodeClientRecipeTests: XCTestCase {
 
         client.handleMessage(json)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            XCTAssertNotNil(self.client.activeRecipes["test-session-123"])
-        }
-
         wait(for: [expectation], timeout: 1.0)
         cancellable.cancel()
+
+        // Verify final state after expectation fulfilled
+        XCTAssertNotNil(client.activeRecipes["test-session-123"])
     }
 
     func testHandleMultipleRecipesStarted() throws {
@@ -202,7 +198,8 @@ class VoiceCodeClientRecipeTests: XCTestCase {
         client.handleMessage(json1)
 
         // Start second recipe after delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self = self else { return }
             let json2 = """
             {
                 "type": "recipe_started",
@@ -223,7 +220,19 @@ class VoiceCodeClientRecipeTests: XCTestCase {
     // MARK: - Recipe Exited Tests
 
     func testHandleRecipeExitedMessage() throws {
-        let expectation = XCTestExpectation(description: "Recipe exited")
+        let recipeStartedExpectation = XCTestExpectation(description: "Recipe started")
+        let recipeExitedExpectation = XCTestExpectation(description: "Recipe exited")
+
+        // Set up listener for recipe to start
+        var startedCancellable: AnyCancellable?
+        startedCancellable = client.$activeRecipes
+            .dropFirst()
+            .sink { recipes in
+                if recipes["test-session-456"] != nil {
+                    recipeStartedExpectation.fulfill()
+                    startedCancellable?.cancel()
+                }
+            }
 
         // First, start a recipe
         let startJson = """
@@ -239,34 +248,34 @@ class VoiceCodeClientRecipeTests: XCTestCase {
 
         client.handleMessage(startJson)
 
-        // Wait for it to be added
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, expectation] in
-            // Now exit the recipe
-            let exitJson = """
-            {
-                "type": "recipe_exited",
-                "session_id": "test-session-456",
-                "reason": "user-requested"
-            }
-            """
+        wait(for: [recipeStartedExpectation], timeout: 1.0)
 
-            let cancellable = self?.client.$activeRecipes
-                .dropFirst()
-                .sink { recipes in
-                    XCTAssertEqual(recipes.count, 0, "Should have no active recipes")
-                    expectation.fulfill()
+        // Set up listener for exit
+        var exitedCancellable: AnyCancellable?
+        exitedCancellable = client.$activeRecipes
+            .dropFirst()
+            .sink { recipes in
+                if recipes["test-session-456"] == nil {
+                    recipeExitedExpectation.fulfill()
+                    exitedCancellable?.cancel()
                 }
-
-            self?.client.handleMessage(exitJson)
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                guard let self = self else { return }
-                XCTAssertNil(self.client.activeRecipes["test-session-456"])
             }
 
-            self?.wait(for: [expectation], timeout: 1.0)
-            cancellable?.cancel()
+        // Now exit the recipe
+        let exitJson = """
+        {
+            "type": "recipe_exited",
+            "session_id": "test-session-456",
+            "reason": "user-requested"
         }
+        """
+
+        client.handleMessage(exitJson)
+
+        wait(for: [recipeExitedExpectation], timeout: 1.0)
+
+        // Verify final state
+        XCTAssertNil(client.activeRecipes["test-session-456"])
     }
 
     func testHandleRecipeExitedAfterMultipleRecipes() throws {
@@ -298,7 +307,8 @@ class VoiceCodeClientRecipeTests: XCTestCase {
             }
             """)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self = self else { return }
             self.client.handleMessage("""
                 {
                     "type": "recipe_started",
@@ -311,7 +321,8 @@ class VoiceCodeClientRecipeTests: XCTestCase {
                 """)
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self = self else { return }
             // Exit session-2
             self.client.handleMessage("""
                 {
@@ -358,8 +369,8 @@ class VoiceCodeClientRecipeTests: XCTestCase {
         cancellable.cancel()
     }
 
-    func testHandleRecipeExitedWithMissingFields() throws {
-        let expectation = XCTestExpectation(description: "Recipe exit with missing fields handled")
+    func testHandleRecipeExitedWithMissingSessionId() throws {
+        let expectation = XCTestExpectation(description: "Recipe exit with missing session_id ignored")
 
         var updateReceived = false
         let cancellable = client.$activeRecipes
@@ -368,19 +379,19 @@ class VoiceCodeClientRecipeTests: XCTestCase {
                 updateReceived = true
             }
 
-        // Message missing required fields
+        // Message missing required session_id field - should be ignored
         let json = """
         {
             "type": "recipe_exited",
-            "session_id": "test-session"
+            "reason": "completed"
         }
         """
 
         client.handleMessage(json)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            // Should not have received any update (missing reason)
-            XCTAssertFalse(updateReceived, "Should not update with incomplete data")
+            // Should not have received any update (missing session_id is required)
+            XCTAssertFalse(updateReceived, "Should not update when session_id is missing")
             expectation.fulfill()
         }
 

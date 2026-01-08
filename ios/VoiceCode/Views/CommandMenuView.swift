@@ -30,21 +30,9 @@ struct CommandMenuView: View {
 
     var body: some View {
         let _ = RenderTracker.count(Self.self)
-        commandMenuNavigation
-    }
-
-    @ViewBuilder
-    private var commandMenuNavigation: some View {
-        #if os(macOS)
-        NavigationStack {
+        NavigationController(minWidth: 450, minHeight: 400) {
             commandMenuContent
         }
-        .frame(minWidth: 450, minHeight: 400)
-        #else
-        NavigationView {
-            commandMenuContent
-        }
-        #endif
     }
 
     private var commandMenuContent: some View {
@@ -154,6 +142,7 @@ struct CommandMenuView: View {
                 }
             }
         }
+        .swipeToBack()
     }
 
     private func executeCommand(commandId: String) {

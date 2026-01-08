@@ -9,6 +9,7 @@ final class SettingsDialogUITests: XCTestCase {
     @MainActor
     func testSettingsDialogLayout() throws {
         let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
         app.launch()
 
         // Take screenshot of initial state

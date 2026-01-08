@@ -33,20 +33,11 @@ struct APIKeyManagementView: View {
     }
 
     var body: some View {
-        apiKeyNavigation
-    }
-
-    @ViewBuilder
-    private var apiKeyNavigation: some View {
+        NavigationController(minWidth: 500, minHeight: 500) {
+            apiKeyForm
+        }
         #if os(macOS)
-        NavigationStack {
-            apiKeyForm
-        }
-        .frame(minWidth: 500, minHeight: 500)
-        #else
-        NavigationView {
-            apiKeyForm
-        }
+        .swipeToBack()
         #endif
     }
 
@@ -79,9 +70,7 @@ struct APIKeyManagementView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Done") { dismiss() }
-            }
+            ToolbarBuilder.doneButton { dismiss() }
         }
         #if os(iOS)
         .sheet(isPresented: $showingScanner) {
@@ -142,10 +131,7 @@ struct APIKeyManagementView: View {
         Section {
             TextField("Enter API key", text: $newKeyInput)
                 .textContentType(.password)
-                #if os(iOS)
-                .autocapitalization(.none)
-                #endif
-                .autocorrectionDisabled()
+                .secretInputConfiguration()
                 .font(.system(size: 14, design: .monospaced))
                 .accessibilityIdentifier("apiKeyTextField")
 

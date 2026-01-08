@@ -92,12 +92,12 @@ final class CommandExecutionIntegrationTests: XCTestCase {
         let commandId = "git.status"
         let workingDir = "/Users/test/project"
 
-        // Execute command (would send WebSocket message in real scenario)
+        // Execute command (fire-and-forget since no backend will respond)
         Task {
             _ = await client.executeCommand(commandId: commandId, workingDirectory: workingDir)
         }
 
-        // Step 3: Backend sends command_started
+        // Step 3: Backend sends command_started (simulated)
         commandSessionId = "cmd-550e8400-e29b-41d4-a716-446655440000"
         startedExpectation.fulfill()
 
@@ -202,19 +202,20 @@ final class CommandExecutionIntegrationTests: XCTestCase {
     // MARK: - Command Execution Tests
 
     func testExecuteCommandMessageFormat() {
-        // Verify executeCommand sends correct message structure
+        // Verify executeCommand sends correct message structure without blocking
+        // (Real WebSocket would send the message; we just verify no crash on call)
         let commandId = "git.status"
         let workingDir = "/Users/test/project"
 
-        // Expected message structure
-        let expectedKeys = ["type", "command_id", "working_directory"]
-
-        // Execute command (message would be sent via WebSocket)
+        // Fire-and-forget: start execution but don't await (would hang without backend)
         Task {
             _ = await client.executeCommand(commandId: commandId, workingDirectory: workingDir)
         }
 
-        // Verify method completes without crash
+        // Give the Task time to send the message
+        usleep(10_000)
+
+        // Verify method initiated without crash
         XCTAssertTrue(true)
     }
 
@@ -223,9 +224,12 @@ final class CommandExecutionIntegrationTests: XCTestCase {
         let commandId = "git.status"
         let workingDir = "/Users/test/My Project With Spaces"
 
+        // Fire-and-forget: start execution but don't await (would hang without backend)
         Task {
             _ = await client.executeCommand(commandId: commandId, workingDirectory: workingDir)
         }
+
+        usleep(10_000)
         XCTAssertTrue(true)
     }
 
@@ -237,11 +241,14 @@ final class CommandExecutionIntegrationTests: XCTestCase {
             ("test", "/Users/test/project3")
         ]
 
+        // Fire-and-forget: start executions but don't await
         for (commandId, workingDir) in commands {
             Task {
-                _ = await client.executeCommand(commandId: commandId, workingDirectory: workingDir)
+                _ = await self.client.executeCommand(commandId: commandId, workingDirectory: workingDir)
             }
         }
+
+        usleep(10_000)
 
         // All commands should execute without blocking
         XCTAssertTrue(true)

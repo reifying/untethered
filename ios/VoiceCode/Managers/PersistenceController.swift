@@ -130,6 +130,8 @@ class PersistenceController {
         // which would cause AttributeGraph crashes during rapid UI updates (typing/voice input)
 
         // Configure observer to merge background context saves on main thread
+        // Using performAndWait to ensure synchronous merge - prevents race conditions
+        // where @FetchRequest misses updates due to async scheduling delays
         NotificationCenter.default.addObserver(
             forName: .NSManagedObjectContextDidSave,
             object: nil,
@@ -142,8 +144,10 @@ class PersistenceController {
                 return
             }
 
-            // Merge changes on main thread
-            container.viewContext.perform {
+            // Merge changes synchronously on main thread
+            // performAndWait is safe here since we're already on main queue and viewContext
+            // uses main queue concurrency type - this ensures @FetchRequest sees updates immediately
+            container.viewContext.performAndWait {
                 container.viewContext.mergeChanges(fromContextDidSave: notification)
             }
         }

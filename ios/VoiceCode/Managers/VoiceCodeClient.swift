@@ -249,9 +249,55 @@ class VoiceCodeClient: ObservableObject {
         return current
     }
 
+    // MARK: - Connection State Helpers
+
+    /// Convert URLSessionTask.State to readable string for logging
+    private func socketStateString(_ state: URLSessionTask.State?) -> String {
+        guard let state = state else { return "nil" }
+        switch state {
+        case .running: return "running"
+        case .suspended: return "suspended"
+        case .canceling: return "canceling"
+        case .completed: return "completed"
+        @unknown default: return "unknown(\(state.rawValue))"
+        }
+    }
+
+    /// Computed property for connection state summary logging
+    private var connectionStateDescription: String {
+        let socketState = socketStateString(webSocket?.state)
+        return "socket=\(socketState), connected=\(isConnected), authenticated=\(isAuthenticated), attempts=\(reconnectionAttempts)"
+    }
+
     // MARK: - Connection Management
 
     func connect(sessionId: String? = nil) {
+        // If we have an existing WebSocket, check if it's still valid
+        // Only skip reconnection for .running state; clean up non-running sockets
+        if let existingSocket = webSocket {
+            switch existingSocket.state {
+            case .running:
+                logger.debug("🔄 [VoiceCodeClient] connect() called but WebSocket is running, skipping")
+                return
+            case .suspended:
+                logger.info("🔄 [VoiceCodeClient] Cleaning up suspended WebSocket (\(self.socketStateString(existingSocket.state)))")
+                existingSocket.cancel(with: .goingAway, reason: nil)
+                webSocket = nil
+            case .canceling:
+                logger.info("🔄 [VoiceCodeClient] Cleaning up canceling WebSocket (\(self.socketStateString(existingSocket.state)))")
+                existingSocket.cancel(with: .goingAway, reason: nil)
+                webSocket = nil
+            case .completed:
+                logger.info("🔄 [VoiceCodeClient] Cleaning up completed WebSocket (\(self.socketStateString(existingSocket.state)))")
+                existingSocket.cancel(with: .goingAway, reason: nil)
+                webSocket = nil
+            @unknown default:
+                logger.warning("🔄 [VoiceCodeClient] Unknown WebSocket state (\(self.socketStateString(existingSocket.state))), cleaning up")
+                existingSocket.cancel(with: .goingAway, reason: nil)
+                webSocket = nil
+            }
+        }
+
         self.sessionId = sessionId
         LogManager.shared.log("Connecting to WebSocket: \(serverURL)", category: "VoiceCodeClient")
 
@@ -271,9 +317,9 @@ class VoiceCodeClient: ObservableObject {
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            logger.debug("🔄 VoiceCodeClient updating: isConnected=true")
-            self.isConnected = true
+            logger.debug("🔄 VoiceCodeClient: WebSocket created, awaiting hello")
             self.currentError = nil
+            // Note: isConnected will be set true when we receive "hello"
         }
     }
 
@@ -295,18 +341,28 @@ class VoiceCodeClient: ObservableObject {
         }
     }
 
+    /// Force reconnection to the server
+    /// Called when user manually taps the connection status indicator
+    func forceReconnect() {
+        logger.info("🔄 [VoiceCodeClient] Force reconnect requested by user")
+        reconnectionAttempts = 0
+        disconnect()
+        connect(sessionId: sessionId)
+    }
+
     func updateServerURL(_ url: String) {
         print("🔄 [VoiceCodeClient] Updating server URL from \(serverURL) to \(url)")
 
-        // Disconnect from old server (if connected)
+        // Disconnect from current connection (if any)
         disconnect()
-        
+
         // Update URL
         serverURL = url
-        
-        // Always attempt to connect to new server
-        // This ensures connection status updates and sessions load
-        print("🔄 [VoiceCodeClient] Connecting to new server...")
+
+        // Connect to server
+        // Note: We don't clear sessions because UUIDs are globally unique.
+        // Even if the URL changed (e.g., VPN IP change), cached sessions remain valid.
+        print("🔄 [VoiceCodeClient] Connecting to server...")
         reconnectionAttempts = 0
         connect()
     }
@@ -336,6 +392,8 @@ class VoiceCodeClient: ObservableObject {
         timer.schedule(deadline: .now() + delay, repeating: delay)
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
+
+            logger.info("🔄 Reconnection timer fired: \(self.connectionStateDescription)")
 
             // Don't reconnect if reauthentication is required - user must provide new credentials
             if self.requiresReauthentication {
@@ -391,15 +449,21 @@ class VoiceCodeClient: ObservableObject {
                 self.receiveMessage()
 
             case .failure(let error):
+                // Clear WebSocket reference inside main queue to ensure thread safety
+                // Both connect() and this failure handler must access webSocket on main thread
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
+
+                    // Clear WebSocket reference to enable reconnection
+                    self.webSocket?.cancel(with: .goingAway, reason: nil)
+                    self.webSocket = nil
+
                     logger.debug("🔄 VoiceCodeClient updating: isConnected=false (failure)")
                     self.isConnected = false
                     self.scheduleUpdate(key: "currentError", value: error.localizedDescription as String?)
-                    // Clear all locked sessions on connection failure
                     self.scheduleUpdate(key: "lockedSessions", value: Set<String>())
-                    self.flushPendingUpdates()  // Immediate flush for critical operation
-                    print("🔓 [VoiceCodeClient] Cleared all locked sessions on connection failure")
+                    self.flushPendingUpdates()
+                    print("🔓 [VoiceCodeClient] Cleared WebSocket and locked sessions on connection failure")
                 }
             }
         }
@@ -416,8 +480,9 @@ class VoiceCodeClient: ObservableObject {
             guard let self = self else { return }
             switch type {
             case "hello":
-                // Initial welcome message from server
-                print("📡 [VoiceCodeClient] Received hello from server")
+                // Mark as connected when we receive hello from server
+                self.isConnected = true
+                print("📡 [VoiceCodeClient] Received hello from server, connection confirmed")
 
                 // Check auth_version for compatibility (future-proofing)
                 if let authVersion = json["auth_version"] as? Int {

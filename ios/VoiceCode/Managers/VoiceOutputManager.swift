@@ -4,9 +4,25 @@
 import Foundation
 import AVFoundation
 import Combine
+import os.log
+
+private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "VoiceOutput")
 
 class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     @Published var isSpeaking = false
+
+    /// When muted, all speech requests are silently ignored (macOS only)
+    #if os(macOS)
+    @Published var isMuted: Bool {
+        didSet {
+            UserDefaults.standard.set(isMuted, forKey: "voiceOutputMuted")
+            if isMuted {
+                // Stop any current speech when muting
+                stop()
+            }
+        }
+    }
+    #endif
 
     private let synthesizer = AVSpeechSynthesizer()
     private weak var appSettings: AppSettings?
@@ -25,6 +41,9 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
     init(appSettings: AppSettings? = nil) {
         self.appSettings = appSettings
+        #if os(macOS)
+        self.isMuted = UserDefaults.standard.bool(forKey: "voiceOutputMuted")
+        #endif
         super.init()
         synthesizer.delegate = self
         #if os(iOS)
@@ -110,6 +129,14 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     ///   - voiceIdentifier: Optional voice identifier to use instead of user's configured voice
     ///   - respectSilentMode: Whether to respect the silent mode setting (default: false for manual actions)
     func speakWithVoice(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil, respectSilentMode: Bool = false) {
+        #if os(macOS)
+        // When muted, silently ignore all speech requests
+        if isMuted {
+            logger.info("🔇 Speech muted, ignoring request")
+            return
+        }
+        #endif
+
         // Stop any ongoing speech
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
@@ -148,11 +175,28 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         if let identifier = voiceIdentifier,
            let voice = AVSpeechSynthesisVoice(identifier: identifier) {
             utterance.voice = voice
-            print("Using voice: \(voice.name) [\(voice.language)]")
+            logger.info("🔊 Using voice: \(voice.name, privacy: .public) [\(voice.language, privacy: .public)]")
+        } else if let voiceIdentifier = voiceIdentifier {
+            // Voice identifier was provided but not found
+            logger.warning("⚠️ Voice not found for identifier: \(voiceIdentifier, privacy: .public), trying fallback")
+            // Try en-US first
+            if let enUSVoice = AVSpeechSynthesisVoice(language: "en-US") {
+                utterance.voice = enUSVoice
+                logger.info("🔊 Using fallback en-US voice: \(enUSVoice.name, privacy: .public)")
+            } else {
+                // Use system default
+                logger.warning("⚠️ en-US voice not available, using system default")
+                utterance.voice = nil  // AVSpeechSynthesizer will use system default
+            }
         } else {
-            // Fallback to default en-US voice
-            utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-            print("Using default en-US voice")
+            // No voice identifier provided, use en-US or system default
+            if let enUSVoice = AVSpeechSynthesisVoice(language: "en-US") {
+                utterance.voice = enUSVoice
+                logger.info("🔊 Using default en-US voice: \(enUSVoice.name, privacy: .public)")
+            } else {
+                logger.warning("⚠️ en-US voice not available, using system default")
+                utterance.voice = nil  // AVSpeechSynthesizer will use system default
+            }
         }
 
         utterance.rate = rate
@@ -160,6 +204,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         utterance.volume = 1.0
 
         // Speak
+        logger.info("🔊 Invoking synthesizer.speak() with text length: \(text.count), voice: \(utterance.voice?.name ?? "system default", privacy: .public)")
         synthesizer.speak(utterance)
 
         DispatchQueue.main.async {
@@ -188,6 +233,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     // MARK: - AVSpeechSynthesizerDelegate
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        logger.info("🔊 Speech STARTED: \(utterance.speechString.prefix(50), privacy: .public)...")
         DispatchQueue.main.async {
             self.isSpeaking = true
         }
@@ -198,6 +244,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        logger.info("🔊 Speech FINISHED")
         #if os(iOS)
         // Stop keep-alive timer
         stopKeepAliveTimer()
@@ -209,7 +256,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
             do {
                 try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
             } catch {
-                print("Failed to deactivate audio session: \(error)")
+                logger.error("Failed to deactivate audio session: \(error.localizedDescription, privacy: .public)")
             }
         }
         #endif
@@ -221,6 +268,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        logger.info("🔊 Speech CANCELLED")
         #if os(iOS)
         // Stop keep-alive timer
         stopKeepAliveTimer()

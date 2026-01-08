@@ -19,20 +19,11 @@ struct RecipeMenuView: View {
 
     var body: some View {
         let _ = RenderTracker.count(Self.self)
-        recipeMenuNavigation
-    }
-
-    @ViewBuilder
-    private var recipeMenuNavigation: some View {
+        NavigationController(minWidth: 450, minHeight: 400) {
+            recipeMenuContent
+        }
         #if os(macOS)
-        NavigationStack {
-            recipeMenuContent
-        }
-        .frame(minWidth: 450, minHeight: 400)
-        #else
-        NavigationView {
-            recipeMenuContent
-        }
+        .swipeToBack()
         #endif
     }
 
@@ -119,19 +110,7 @@ struct RecipeMenuView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Cancel") {
-                    dismiss()
-                }
-            }
-            #else
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") {
-                    dismiss()
-                }
-            }
-            #endif
+            ToolbarBuilder.cancelButton { dismiss() }
         }
         .onAppear {
             if client.availableRecipes.isEmpty && !hasRequestedRecipes {

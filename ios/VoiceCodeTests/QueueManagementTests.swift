@@ -324,6 +324,10 @@ final class QueueManagementTests: XCTestCase {
         fetchRequest.predicate = NSPredicate(format: "isInQueue == YES")
         fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDBackendSession.queuePosition, ascending: true)]
 
-        return (try? context.fetch(fetchRequest)) ?? []
+        let allQueued = (try? context.fetch(fetchRequest)) ?? []
+        // Filter out sessions marked as deleted by the user
+        return allQueued.filter { session in
+            !session.isUserDeleted(context: context)
+        }
     }
 }

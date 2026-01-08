@@ -233,17 +233,28 @@ struct ConversationView: View {
                         .background(Color.blue.opacity(0.1))
                         .cornerRadius(8)
                     }
-                    
+                    #if os(macOS)
+                    .help(isVoiceMode ? "Switch to text input" : "Switch to voice input")
+                    #endif
+
                     Spacer()
-                    
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(client.isConnected ? Color.green : Color.red)
-                            .frame(width: 8, height: 8)
-                        Text(client.isConnected ? "Connected" : "Disconnected")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+
+                    Button(action: {
+                        client.forceReconnect()
+                    }) {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(client.isConnected ? Color.green : Color.red)
+                                .frame(width: 8, height: 8)
+                            Text(client.isConnected ? "Connected" : "Disconnected")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
+                    .buttonStyle(.plain)
+                    #if os(macOS)
+                    .help("Click to reconnect")
+                    #endif
                 }
                 .padding(.horizontal)
                 
@@ -285,11 +296,7 @@ struct ConversationView: View {
                 }
             }
             .padding(.vertical, 12)
-            #if os(iOS)
-            .background(Color(UIColor.systemBackground))
-            #elseif os(macOS)
-            .background(Color(NSColor.windowBackgroundColor))
-            #endif
+            .background(Color.systemBackground)
         }
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -303,7 +310,7 @@ struct ConversationView: View {
                         Button(action: {
                             showingKillConfirmation = true
                         }) {
-                            Image(systemName: "stop.circle.fill")
+                            Image(systemName: "xmark.circle.fill")
                                 .foregroundColor(.red)
                         }
                     }
@@ -395,14 +402,26 @@ struct ConversationView: View {
             #else
             ToolbarItem(placement: .automatic) {
                 HStack(spacing: 16) {
+                    // Stop speech button (only visible when speaking)
+                    if voiceOutput.isSpeaking {
+                        Button(action: { voiceOutput.stop() }) {
+                            Image(systemName: "speaker.slash.fill")
+                                .foregroundColor(.red)
+                        }
+                        .help("Stop speaking (Cmd+.)")
+                        .keyboardShortcut(".", modifiers: [.command])
+                    }
+
                     // Kill session button (only visible when session is locked)
                     if isSessionLocked {
                         Button(action: {
                             showingKillConfirmation = true
                         }) {
-                            Image(systemName: "stop.circle.fill")
+                            Image(systemName: "xmark.circle.fill")
                                 .foregroundColor(.red)
                         }
+                        .help("Cancel prompt (Cmd+K)")
+                        .keyboardShortcut("k", modifiers: [.command])
                     }
 
                     // Recipe button - shows active recipe or opens menu
@@ -421,6 +440,7 @@ struct ConversationView: View {
                             Image(systemName: "list.bullet.clipboard.fill")
                                 .foregroundColor(.green)
                         }
+                        .help("Active recipe menu")
                     } else {
                         // Show button to start a recipe
                         Button(action: {
@@ -428,6 +448,8 @@ struct ConversationView: View {
                         }) {
                             Image(systemName: "list.bullet.clipboard")
                         }
+                        .help("Run recipe (Cmd+Shift+R)")
+                        .keyboardShortcut("r", modifiers: [.command, .shift])
                     }
 
                     // Session info button
@@ -436,6 +458,8 @@ struct ConversationView: View {
                     }) {
                         Image(systemName: "info.circle")
                     }
+                    .help("Session info (Cmd+I)")
+                    .keyboardShortcut("i", modifiers: [.command])
 
                     // Auto-scroll toggle button (always visible)
                     Button(action: {
@@ -444,6 +468,7 @@ struct ConversationView: View {
                         Image(systemName: autoScrollEnabled ? "arrow.down.circle.fill" : "arrow.down.circle")
                             .foregroundColor(autoScrollEnabled ? .blue : .gray)
                     }
+                    .help("Toggle auto-scroll")
 
                     // Compact button
                     Button(action: {
@@ -461,14 +486,24 @@ struct ConversationView: View {
                         }
                     }
                     .disabled(isCompacting || client.lockedSessions.contains(session.id.uuidString.lowercased()))
+                    .help("Compact session history")
 
                     Button(action: {
+                        isRefreshingMessages = true
                         Task {
                             await client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
+                            await MainActor.run { isRefreshingMessages = false }
                         }
                     }) {
-                        Image(systemName: "arrow.clockwise")
+                        if isRefreshingMessages {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
                     }
+                    .disabled(isRefreshingMessages)
+                    .help("Refresh session (Cmd+R)")
+                    .keyboardShortcut("r", modifiers: [.command])
 
                     // Queue remove button
                     if settings.queueEnabled && session.isInQueue {
@@ -478,6 +513,7 @@ struct ConversationView: View {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundColor(.orange)
                         }
+                        .help("Remove from queue")
                     }
 
                 }
@@ -591,6 +627,7 @@ struct ConversationView: View {
             // This ensures messages are refreshed when navigating back to session
             hasSubscribedThisAppear = false
         }
+        .swipeToBack()
     }
     
     private func setupVoiceInput() {
@@ -1156,21 +1193,9 @@ struct MessageDetailView: View {
     @State private var showCopiedConfirmation = false
 
     var body: some View {
-        messageDetailNavigation
-    }
-
-    @ViewBuilder
-    private var messageDetailNavigation: some View {
-        #if os(macOS)
-        NavigationStack {
+        NavigationController(minWidth: 500, minHeight: 400) {
             messageDetailContent
         }
-        .frame(minWidth: 500, minHeight: 400)
-        #else
-        NavigationView {
-            messageDetailContent
-        }
-        #endif
     }
 
     private var messageDetailContent: some View {
@@ -1215,13 +1240,18 @@ struct MessageDetailView: View {
                 }
 
                 Button(action: {
-                    let processedText = TextProcessor.removeCodeBlocks(from: message.text)
-                    voiceOutput.speak(processedText, workingDirectory: message.session?.workingDirectory)
+                    if voiceOutput.isSpeaking {
+                        voiceOutput.stop()
+                    } else {
+                        let processedText = TextProcessor.removeCodeBlocks(from: message.text)
+                        voiceOutput.speak(processedText, workingDirectory: message.session?.workingDirectory)
+                    }
                 }) {
                     VStack(spacing: 4) {
-                        Image(systemName: "speaker.wave.2.fill")
+                        Image(systemName: voiceOutput.isSpeaking ? "speaker.slash.fill" : "speaker.wave.2.fill")
                             .font(.title2)
-                        Text("Read Aloud")
+                            .foregroundColor(voiceOutput.isSpeaking ? .red : .primary)
+                        Text(voiceOutput.isSpeaking ? "Stop" : "Read Aloud")
                             .font(.caption)
                     }
                 }
@@ -1239,30 +1269,14 @@ struct MessageDetailView: View {
                 }
             }
             .padding()
-            #if os(iOS)
-            .background(Color(UIColor.systemBackground))
-            #elseif os(macOS)
-            .background(Color(NSColor.windowBackgroundColor))
-            #endif
+            .background(Color.systemBackground)
         }
         .navigationTitle("Full Message")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Done") {
-                    dismiss()
-                }
-            }
-            #else
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Done") {
-                    dismiss()
-                }
-            }
-            #endif
+            ToolbarBuilder.doneButton { dismiss() }
         }
     }
 }
@@ -1275,21 +1289,9 @@ struct RenameSessionView: View {
     let onCancel: () -> Void
 
     var body: some View {
-        renameNavigation
-    }
-
-    @ViewBuilder
-    private var renameNavigation: some View {
-        #if os(macOS)
-        NavigationStack {
+        NavigationController(minWidth: 400, minHeight: 200) {
             renameForm
         }
-        .frame(minWidth: 400, minHeight: 200)
-        #else
-        NavigationView {
-            renameForm
-        }
-        #endif
     }
 
     private var renameForm: some View {
@@ -1321,31 +1323,12 @@ struct RenameSessionView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button("Cancel", action: onCancel)
-            }
-            #else
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel", action: onCancel)
-            }
-            #endif
-
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Save") {
-                    onSave()
-                }
-                .disabled(sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            #else
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Save") {
-                    onSave()
-                }
-                .disabled(sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            #endif
+            ToolbarBuilder.cancelAndConfirm(
+                confirmTitle: "Save",
+                isConfirmDisabled: sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                onCancel: onCancel,
+                onConfirm: onSave
+            )
         }
     }
 }
@@ -1438,6 +1421,20 @@ struct ConversationTextInputView: View {
                         onManualUnlock()
                     }
                 }
+                #if os(macOS)
+                .onKeyPress(.return, phases: .down) { press in
+                    // Shift+Return inserts newline (let default behavior handle it)
+                    if press.modifiers.contains(.shift) {
+                        return .ignored
+                    }
+                    // Return sends the prompt
+                    if !text.isEmpty && !isDisabled {
+                        onSend()
+                        return .handled
+                    }
+                    return .ignored
+                }
+                #endif
 
             Button(action: {
                 if isDisabled {

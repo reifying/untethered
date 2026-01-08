@@ -18,21 +18,9 @@ struct AuthenticationRequiredView: View {
     @State private var isRetrying = false
 
     var body: some View {
-        authRequiredNavigation
-    }
-
-    @ViewBuilder
-    private var authRequiredNavigation: some View {
-        #if os(macOS)
-        NavigationStack {
+        NavigationController(minWidth: 450, minHeight: 450) {
             authRequiredContent
         }
-        .frame(minWidth: 450, minHeight: 450)
-        #else
-        NavigationView {
-            authRequiredContent
-        }
-        #endif
     }
 
     private var authRequiredContent: some View {
@@ -208,21 +196,9 @@ private struct ManualKeyEntrySheet: View {
     let onCancel: () -> Void
 
     var body: some View {
-        manualEntryNavigation
-    }
-
-    @ViewBuilder
-    private var manualEntryNavigation: some View {
-        #if os(macOS)
-        NavigationStack {
+        NavigationController(minWidth: 450, minHeight: 300) {
             manualEntryForm
         }
-        .frame(minWidth: 450, minHeight: 300)
-        #else
-        NavigationView {
-            manualEntryForm
-        }
-        #endif
     }
 
     private var manualEntryForm: some View {

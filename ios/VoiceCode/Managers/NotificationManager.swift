@@ -64,8 +64,14 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     }
     
     // MARK: - Permission Handling
-    
+
     func requestAuthorization() async -> Bool {
+        // Skip permission prompts during UI tests to prevent blocking automation
+        if TestingEnvironment.isUITesting {
+            logger.info("🧪 Skipping notification authorization in UI testing mode")
+            return false
+        }
+
         do {
             let granted = try await UNUserNotificationCenter.current().requestAuthorization(
                 options: [.alert, .sound, .badge]

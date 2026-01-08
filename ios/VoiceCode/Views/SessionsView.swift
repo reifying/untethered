@@ -68,21 +68,9 @@ struct NewSessionView: View {
     let onCancel: () -> Void
 
     var body: some View {
-        newSessionNavigation
-    }
-
-    @ViewBuilder
-    private var newSessionNavigation: some View {
-        #if os(macOS)
-        NavigationStack {
+        NavigationController(minWidth: 450, minHeight: 350) {
             newSessionForm
         }
-        .frame(minWidth: 450, minHeight: 350)
-        #else
-        NavigationView {
-            newSessionForm
-        }
-        #endif
     }
 
     private var newSessionForm: some View {
@@ -91,10 +79,7 @@ struct NewSessionView: View {
                 TextField("Session Name", text: $name)
 
                 TextField(createWorktree ? "Parent Repository Path" : "Working Directory (Optional)", text: $workingDirectory)
-                    #if os(iOS)
-                    .autocapitalization(.none)
-                    #endif
-                    .disableAutocorrection(true)
+                    .pathInputConfiguration()
             }
 
             Section(header: Text("Examples")) {
@@ -125,31 +110,12 @@ struct NewSessionView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button("Cancel", action: onCancel)
-            }
-            #else
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel", action: onCancel)
-            }
-            #endif
-
-            #if os(iOS)
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Create") {
-                    onCreate()
-                }
-                .disabled(name.isEmpty || (createWorktree && workingDirectory.isEmpty))
-            }
-            #else
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Create") {
-                    onCreate()
-                }
-                .disabled(name.isEmpty || (createWorktree && workingDirectory.isEmpty))
-            }
-            #endif
+            ToolbarBuilder.cancelAndConfirm(
+                confirmTitle: "Create",
+                isConfirmDisabled: name.isEmpty || (createWorktree && workingDirectory.isEmpty),
+                onCancel: onCancel,
+                onConfirm: onCreate
+            )
         }
     }
 }

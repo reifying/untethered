@@ -48,11 +48,7 @@ struct CommandExecutionView: View {
                     .padding(.horizontal)
                     .padding(.vertical, 12)
                 }
-                #if os(iOS)
-                .background(Color(UIColor.secondarySystemBackground))
-                #elseif os(macOS)
-                .background(Color(NSColor.windowBackgroundColor))
-                #endif
+                .background(Color.secondarySystemBackground)
 
                 Divider()
 
@@ -94,11 +90,7 @@ struct CommandExecutionView: View {
                                 .foregroundColor(autoScrollEnabled ? .blue : .gray)
                                 .background(
                                     Circle()
-                                        #if os(iOS)
-                                        .fill(Color(UIColor.systemBackground))
-                                        #elseif os(macOS)
-                                        .fill(Color(NSColor.windowBackgroundColor))
-                                        #endif
+                                        .fill(Color.systemBackground)
                                         .shadow(radius: 2)
                                 )
                         }
@@ -122,6 +114,7 @@ struct CommandExecutionView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .swipeToBack()
     }
 
     // MARK: - View Components
@@ -220,6 +213,8 @@ struct ActiveCommandsListView: View {
         .navigationTitle("Active Commands")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #elseif os(macOS)
+        .frame(minWidth: 500, minHeight: 300)
         #endif
     }
 }

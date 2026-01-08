@@ -265,6 +265,7 @@ struct DirectoryListView: View {
                 }
             }
         }
+        .navigationTitle("Projects")
         .task {
             // Load sessions when view appears
             do {
@@ -291,6 +292,14 @@ struct DirectoryListView: View {
             #if os(iOS)
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
+                    // Stop speech button (visible when speaking)
+                    if voiceOutput.isSpeaking {
+                        Button(action: { voiceOutput.stop() }) {
+                            Image(systemName: "speaker.slash.fill")
+                                .foregroundColor(.red)
+                        }
+                    }
+
                     // Resources button with badge
                     Button(action: {
                         navigationPath.append(ResourcesNavigationTarget.list)
@@ -339,6 +348,15 @@ struct DirectoryListView: View {
             #else
             ToolbarItem(placement: .automatic) {
                 HStack(spacing: 16) {
+                    // Stop speech button (visible when speaking)
+                    if voiceOutput.isSpeaking {
+                        Button(action: { voiceOutput.stop() }) {
+                            Image(systemName: "speaker.slash.fill")
+                                .foregroundColor(.red)
+                        }
+                        .help("Stop speaking (Cmd+.)")
+                    }
+
                     // Resources button with badge
                     Button(action: {
                         navigationPath.append(ResourcesNavigationTarget.list)

@@ -23,6 +23,7 @@ struct CommandHistoryView: View {
         .onAppear {
             loadHistory()
         }
+        .swipeToBack()
     }
 
     private func loadHistory() {

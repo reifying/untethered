@@ -125,12 +125,22 @@ final class NameInferenceTests: XCTestCase {
     func testDisplayNamePrefersLocalName() {
         let context = persistenceController.container.viewContext
 
+        let sessionId = UUID()
+
         let session = CDBackendSession(context: context)
-        session.id = UUID()
+        session.id = sessionId
         session.backendName = "Backend Name"
         session.workingDirectory = "/tmp"
 
-        // localName should be preferred
+        // Create a CDUserSession with custom name for the same session ID
+        let userSession = CDUserSession(context: context)
+        userSession.id = sessionId
+        userSession.customName = "User Custom Name"
+        userSession.createdAt = Date()
+
+        try? context.save()
+
+        // customName from CDUserSession should be preferred
         XCTAssertEqual(session.displayName(context: context), "User Custom Name")
     }
 
