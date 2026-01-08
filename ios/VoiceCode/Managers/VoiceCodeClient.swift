@@ -272,12 +272,30 @@ class VoiceCodeClient: ObservableObject {
     // MARK: - Connection Management
 
     func connect(sessionId: String? = nil) {
-        // Guard against multiple simultaneous connections
-        // This prevents race conditions on macOS where both onAppear and
-        // didBecomeActiveNotification can trigger connect() nearly simultaneously
-        if webSocket != nil {
-            logger.debug("🔄 [VoiceCodeClient] connect() called but WebSocket already exists, skipping")
-            return
+        // If we have an existing WebSocket, check if it's still valid
+        // Only skip reconnection for .running state; clean up non-running sockets
+        if let existingSocket = webSocket {
+            switch existingSocket.state {
+            case .running:
+                logger.debug("🔄 [VoiceCodeClient] connect() called but WebSocket is running, skipping")
+                return
+            case .suspended:
+                logger.info("🔄 [VoiceCodeClient] Cleaning up suspended WebSocket (\(self.socketStateString(existingSocket.state)))")
+                existingSocket.cancel(with: .goingAway, reason: nil)
+                webSocket = nil
+            case .canceling:
+                logger.info("🔄 [VoiceCodeClient] Cleaning up canceling WebSocket (\(self.socketStateString(existingSocket.state)))")
+                existingSocket.cancel(with: .goingAway, reason: nil)
+                webSocket = nil
+            case .completed:
+                logger.info("🔄 [VoiceCodeClient] Cleaning up completed WebSocket (\(self.socketStateString(existingSocket.state)))")
+                existingSocket.cancel(with: .goingAway, reason: nil)
+                webSocket = nil
+            @unknown default:
+                logger.warning("🔄 [VoiceCodeClient] Unknown WebSocket state (\(self.socketStateString(existingSocket.state))), cleaning up")
+                existingSocket.cancel(with: .goingAway, reason: nil)
+                webSocket = nil
+            }
         }
 
         self.sessionId = sessionId
