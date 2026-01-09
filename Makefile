@@ -14,6 +14,7 @@ WRAP := ./scripts/wrap-command
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 .PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
+.PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
 
 # Default target
 help:
@@ -41,6 +42,12 @@ help:
 	@echo "  test-mac-ui       - Run macOS UI tests"
 	@echo "  test-mac-ui-settings - Run Settings dialog UI test with screenshots"
 	@echo "  clean-mac         - Clean macOS build artifacts"
+	@echo ""
+	@echo "macOS release (distribution):"
+	@echo "  release-mac       - Complete release: build → notarize → package"
+	@echo "  release-mac-build - Build and sign with Developer ID only"
+	@echo "  release-mac-notarize - Notarize existing build"
+	@echo "  release-mac-package  - Create distribution zip"
 	@echo ""
 	@echo "Backend server management:"
 	@echo "  backend-run       - Start the backend server"
@@ -383,3 +390,21 @@ clean-mac:
 # List available schemes
 list-schemes: generate-project
 	@cd $(IOS_DIR) && xcodebuild -list
+
+# macOS release targets (sign, notarize, package for distribution)
+
+# Complete release workflow: build → notarize → package
+release-mac: generate-project
+	./scripts/publish-mac.sh release
+
+# Build and sign with Developer ID (no notarization)
+release-mac-build: generate-project
+	./scripts/publish-mac.sh build
+
+# Notarize existing build
+release-mac-notarize:
+	./scripts/publish-mac.sh notarize
+
+# Create distribution zip from notarized app
+release-mac-package:
+	./scripts/publish-mac.sh package

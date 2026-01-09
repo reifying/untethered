@@ -165,6 +165,7 @@ targets:
         INFOPLIST_FILE: VoiceCodeMac/Info.plist
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
         COMBINE_HIDPI_IMAGES: YES
+        ENABLE_HARDENED_RUNTIME: YES
 
   VoiceCodeTests:
     type: bundle.unit-test
