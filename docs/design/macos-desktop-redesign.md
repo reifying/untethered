@@ -31,7 +31,7 @@ The macOS app shares most code with iOS via SwiftUI. Platform differentiation ex
 
 | Implemented | Missing |
 |-------------|---------|
-| Keyboard shortcuts (Cmd+., Cmd+K, etc.) | NavigationSplitView sidebar |
+| Keyboard shortcuts (Cmd+., Cmd+Shift+M, etc.) | NavigationSplitView sidebar |
 | `.help()` tooltips on toolbar buttons | Settings scene (uses sheet) |
 | `.formStyle(.grouped)` on forms | Command palette (Cmd+K overlay) |
 | Trackpad swipe-to-back gesture | Push-to-talk keyboard shortcut |
@@ -53,6 +53,58 @@ Desktop users represent a significant portion of voice-code usage. The current e
 - @ios/VoiceCode/VoiceCodeApp.swift - Current app structure
 
 ## Detailed Design
+
+### Data Model Changes
+
+No CoreData schema changes are required. All new functionality uses existing entities.
+
+#### AppSettings Additions
+
+The following properties need to be added to `AppSettings.swift`:
+
+```swift
+// Track last used directory for menu bar quick capture
+@Published var lastUsedDirectory: String? {
+    didSet {
+        UserDefaults.standard.set(lastUsedDirectory, forKey: "lastUsedDirectory")
+    }
+}
+
+// Track recent directories for menu bar directory picker
+@Published var recentDirectories: [String] {
+    didSet {
+        UserDefaults.standard.set(recentDirectories, forKey: "recentDirectories")
+    }
+}
+
+// Initialize in init():
+self.lastUsedDirectory = UserDefaults.standard.string(forKey: "lastUsedDirectory")
+self.recentDirectories = UserDefaults.standard.stringArray(forKey: "recentDirectories") ?? []
+
+// Helper to update recent directories when a session is opened
+func trackDirectoryUsage(_ directory: String) {
+    lastUsedDirectory = directory
+    recentDirectories = ([directory] + recentDirectories.filter { $0 != directory }).prefix(10).map { $0 }
+}
+```
+
+#### VoiceCodeClient Additions
+
+The following method needs to be added to `VoiceCodeClient.swift` for menu bar quick capture:
+
+```swift
+/// Send a quick prompt from menu bar, creating a new session if needed.
+/// - Parameters:
+///   - text: The prompt text
+///   - directory: Working directory for the session
+///   - completion: Callback with response text or nil on error
+func sendQuickPrompt(text: String, directory: String, completion: @escaping (String?) -> Void) {
+    // Implementation: Create a temporary session, send prompt, return first response
+    // This is a simplified flow for quick one-off queries from menu bar
+}
+```
+
+---
 
 ### 1. Navigation Architecture: Persistent Sidebar
 
@@ -131,9 +183,11 @@ struct EmptyDetailView: View {
 ```swift
 #if os(macOS)
 import SwiftUI
+import CoreData
 
 struct SessionSidebarView: View {
     @EnvironmentObject var client: VoiceCodeClient
+    @Environment(\.managedObjectContext) private var viewContext
     @Binding var selectedSessionId: UUID?
 
     @FetchRequest(
@@ -154,13 +208,22 @@ struct SessionSidebarView: View {
         Dictionary(grouping: allSessions) { $0.workingDirectory ?? "Unknown" }
     }
 
+    /// Sorted project commands from available commands (mirrors CommandMenuView pattern)
+    private var sortedProjectCommands: [Command] {
+        guard let commands = client.availableCommands?.projectCommands else { return [] }
+        return CommandSorter.sortByMRU(commands)
+    }
+
     var body: some View {
         List(selection: $selectedSessionId) {
             // Recent Sessions
             Section(isExpanded: $recentExpanded) {
                 ForEach(recentSessions, id: \.id) { session in
-                    SessionSidebarRow(session: session, isLocked: client.lockedSessions.contains(session.sessionId ?? ""))
-                        .tag(session.id)
+                    SessionSidebarRow(
+                        session: session,
+                        isLocked: client.lockedSessions.contains(session.backendName)
+                    )
+                    .tag(session.id)
                 }
             } header: {
                 Label("Recent", systemImage: "clock")
@@ -171,8 +234,11 @@ struct SessionSidebarView: View {
                 ForEach(sessionsByDirectory.keys.sorted(), id: \.self) { directory in
                     DisclosureGroup {
                         ForEach(sessionsByDirectory[directory] ?? [], id: \.id) { session in
-                            SessionSidebarRow(session: session, isLocked: client.lockedSessions.contains(session.sessionId ?? ""))
-                                .tag(session.id)
+                            SessionSidebarRow(
+                                session: session,
+                                isLocked: client.lockedSessions.contains(session.backendName)
+                            )
+                            .tag(session.id)
                         }
                     } label: {
                         Label(URL(fileURLWithPath: directory).lastPathComponent, systemImage: "folder")
@@ -183,9 +249,9 @@ struct SessionSidebarView: View {
             }
 
             // Commands quick access
-            if !client.availableCommands.isEmpty {
+            if client.availableCommands != nil {
                 Section(isExpanded: $commandsExpanded) {
-                    ForEach(client.sortedProjectCommands.prefix(5), id: \.id) { command in
+                    ForEach(Array(sortedProjectCommands.prefix(5)), id: \.id) { command in
                         CommandSidebarRow(command: command)
                     }
                 } header: {
@@ -209,11 +275,12 @@ struct SessionSidebarView: View {
 struct SessionSidebarRow: View {
     let session: CDBackendSession
     let isLocked: Bool
+    @Environment(\.managedObjectContext) private var viewContext
 
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(session.displayName)
+                Text(session.displayName(context: viewContext))
                     .font(.body)
                     .lineLimit(1)
                 Text(session.workingDirectory?.components(separatedBy: "/").suffix(2).joined(separator: "/") ?? "")
@@ -230,8 +297,8 @@ struct SessionSidebarRow: View {
                     .foregroundColor(.orange)
             }
 
-            if (session.unreadCount ?? 0) > 0 {
-                Text("\(session.unreadCount ?? 0)")
+            if session.unreadCount > 0 {
+                Text("\(session.unreadCount)")
                     .font(.caption2)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
@@ -241,6 +308,20 @@ struct SessionSidebarRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+struct CommandSidebarRow: View {
+    let command: Command
+
+    var body: some View {
+        HStack {
+            Image(systemName: "play.fill")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Text(command.label)
+                .lineLimit(1)
+        }
     }
 }
 #endif
@@ -279,12 +360,16 @@ struct SessionSidebarRow: View {
 
 #### Implementation
 
-**File:** `ios/VoiceCode/Views/ConversationView.swift`
+**File:** `ios/VoiceCode/Utils/PushToTalkModifier.swift` (new file)
 
 ```swift
 #if os(macOS)
+import SwiftUI
+
+/// ViewModifier that enables push-to-talk voice input via Option+Space.
+/// VoiceInputManager must be passed explicitly since it's instantiated locally in ConversationView.
 struct PushToTalkModifier: ViewModifier {
-    @EnvironmentObject var voiceInput: VoiceInputManager
+    @ObservedObject var voiceInput: VoiceInputManager
     @State private var isHolding = false
 
     let keyCombination: KeyEquivalent = " " // Space
@@ -310,8 +395,10 @@ struct PushToTalkModifier: ViewModifier {
 }
 
 extension View {
-    func pushToTalk() -> some View {
-        modifier(PushToTalkModifier())
+    /// Adds push-to-talk capability via Option+Space keyboard shortcut.
+    /// - Parameter voiceInput: The VoiceInputManager instance to control
+    func pushToTalk(voiceInput: VoiceInputManager) -> some View {
+        modifier(PushToTalkModifier(voiceInput: voiceInput))
     }
 }
 #endif
@@ -320,12 +407,14 @@ extension View {
 **Usage in ConversationView:**
 
 ```swift
+// ConversationView already has: @StateObject private var voiceInputManager = VoiceInputManager()
+
 var body: some View {
     VStack {
         // ... message list and input
     }
     #if os(macOS)
-    .pushToTalk()
+    .pushToTalk(voiceInput: voiceInputManager)
     #endif
 }
 ```
@@ -341,7 +430,8 @@ When push-to-talk is active:
 ```swift
 #if os(macOS)
 struct RecordingIndicator: View {
-    @EnvironmentObject var voiceInput: VoiceInputManager
+    @ObservedObject var voiceInput: VoiceInputManager
+    @State private var pulseAnimation = false
 
     var body: some View {
         if voiceInput.isRecording {
@@ -359,10 +449,9 @@ struct RecordingIndicator: View {
             .padding(.vertical, 6)
             .background(Color.red.opacity(0.1))
             .cornerRadius(8)
+            .onAppear { pulseAnimation = true }
         }
     }
-
-    @State private var pulseAnimation = false
 }
 #endif
 ```
@@ -441,13 +530,15 @@ struct CommandPaletteView: View {
         ])
 
         // Project commands from backend
-        for command in client.sortedProjectCommands {
-            items.append(CommandPaletteItem(
-                title: command.label,
-                shortcut: nil,
-                category: "Project Commands",
-                action: .runCommand(command.id)
-            ))
+        if let projectCommands = client.availableCommands?.projectCommands {
+            for command in CommandSorter.sortByMRU(projectCommands) {
+                items.append(CommandPaletteItem(
+                    title: command.label,
+                    shortcut: nil,
+                    category: "Project Commands",
+                    action: .runCommand(command.id)
+                ))
+            }
         }
 
         return items
@@ -486,7 +577,7 @@ struct CommandPaletteView: View {
                     }
                 }
                 .listStyle(.plain)
-                .onChange(of: selectedIndex) { newIndex in
+                .onChange(of: selectedIndex) { _, newIndex in
                     if newIndex < filteredCommands.count {
                         proxy.scrollTo(filteredCommands[newIndex].id)
                     }
@@ -684,6 +775,7 @@ struct ConnectionSettingsTab: View {
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var client: VoiceCodeClient
     @State private var testResult: ConnectionTestResult?
+    @State private var apiKeyInput: String = ""
 
     var body: some View {
         Form {
@@ -700,8 +792,16 @@ struct ConnectionSettingsTab: View {
             }
 
             Section("Authentication") {
-                SecureField("API Key", text: $settings.apiKey)
+                // Note: API key is stored in Keychain via KeychainManager.
+                // Use a local @State variable bound to KeychainManager for the SecureField.
+                SecureField("API Key", text: $apiKeyInput)
                     .textFieldStyle(.roundedBorder)
+                    .onAppear {
+                        apiKeyInput = KeychainManager.shared.getAPIKey() ?? ""
+                    }
+                    .onChange(of: apiKeyInput) { _, newValue in
+                        KeychainManager.shared.saveAPIKey(newValue)
+                    }
             }
 
             Section {
@@ -859,15 +959,20 @@ struct MenuBarContentView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var voiceInput: VoiceInputManager
 
+    // Note: These properties need to be added to AppSettings in implementation
     @State private var selectedDirectory: String
     @State private var transcription: String = ""
     @State private var response: String?
     @State private var isProcessing = false
 
+    // Recent sessions received via callback (same pattern as RootView)
+    @State private var recentSessions: [RecentSession] = []
+
     init(client: VoiceCodeClient, settings: AppSettings, voiceInput: VoiceInputManager) {
         self.client = client
         self.settings = settings
         self.voiceInput = voiceInput
+        // Use last used directory from settings (to be added) or fallback
         self._selectedDirectory = State(initialValue: settings.lastUsedDirectory ?? "~")
     }
 
@@ -877,6 +982,7 @@ struct MenuBarContentView: View {
             HStack {
                 Image(systemName: "folder")
                 Menu {
+                    // Use recent directories from settings (to be added)
                     ForEach(settings.recentDirectories, id: \.self) { dir in
                         Button(dir) { selectedDirectory = dir }
                     }
@@ -947,14 +1053,14 @@ struct MenuBarContentView: View {
 
             Divider()
 
-            // Recent sessions
+            // Recent sessions (populated via callback like RootView)
             VStack(alignment: .leading, spacing: 4) {
                 Text("Recent Sessions")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding(.horizontal)
 
-                ForEach(client.recentSessions.prefix(3), id: \.sessionId) { session in
+                ForEach(Array(recentSessions.prefix(3)), id: \.sessionId) { session in
                     Button(action: { openSession(session) }) {
                         HStack {
                             Text(session.name ?? "Unnamed")
@@ -988,6 +1094,12 @@ struct MenuBarContentView: View {
             .padding()
         }
         .frame(width: 300)
+        .onAppear {
+            // Set up callback to receive recent sessions (same pattern as RootView)
+            client.onRecentSessionsReceived = { sessions in
+                self.recentSessions = RecentSession.parseRecentSessions(sessions)
+            }
+        }
     }
 
     private func toggleRecording() {
@@ -1002,7 +1114,8 @@ struct MenuBarContentView: View {
 
     private func sendPrompt() {
         isProcessing = true
-        // Create new session in selectedDirectory and send prompt
+        // Note: sendQuickPrompt needs to be added to VoiceCodeClient
+        // It should create a new session in selectedDirectory and send the prompt
         client.sendQuickPrompt(text: transcription, directory: selectedDirectory) { result in
             isProcessing = false
             response = result
@@ -1269,17 +1382,63 @@ var displayText: String {
 
 #### Unit Tests
 
-1. **SessionSidebarView data grouping** - Verify sessions group by directory correctly
-2. **CommandPaletteView filtering** - Verify fuzzy search matches
-3. **Push-to-talk modifier** - Verify key events handled correctly
-4. **Settings tabs** - Verify bindings update settings
+1. **SessionSidebarView data grouping**
+   - Input: 5 sessions across 3 directories
+   - Expected: `sessionsByDirectory` returns 3 keys with correct session counts
+   - Verify: Recent sessions limited to 10
+
+2. **CommandPaletteView filtering**
+   - Input: Search text "new"
+   - Expected: "New session" appears in filtered results
+   - Input: Search text "xyz" (no match)
+   - Expected: Empty filtered results
+
+3. **Push-to-talk modifier**
+   - Input: Option+Space key down event
+   - Expected: `voiceInput.startRecording()` called, `isHolding` = true
+   - Input: Option+Space key up event
+   - Expected: `voiceInput.stopRecording()` called, `isHolding` = false
+   - Input: Space without Option modifier
+   - Expected: Event ignored (returns `.ignored`)
+
+4. **AppSettings.trackDirectoryUsage**
+   - Input: Track "/path/a", then "/path/b", then "/path/a" again
+   - Expected: `recentDirectories` = ["/path/a", "/path/b"], `lastUsedDirectory` = "/path/a"
+   - Verify: Duplicates removed, max 10 entries
+
+```swift
+func testTrackDirectoryUsage() {
+    let settings = AppSettings()
+    settings.trackDirectoryUsage("/path/a")
+    settings.trackDirectoryUsage("/path/b")
+    settings.trackDirectoryUsage("/path/a")
+
+    XCTAssertEqual(settings.lastUsedDirectory, "/path/a")
+    XCTAssertEqual(settings.recentDirectories, ["/path/a", "/path/b"])
+}
+```
 
 #### Integration Tests
 
-1. **Navigation flow** - Sidebar selection updates detail view
-2. **Command palette execution** - Actions trigger correctly
-3. **Menu bar quick capture** - Voice → transcription → send → response
-4. **Settings persistence** - Changes survive app restart
+1. **Navigation flow**
+   - Setup: Create NavigationSplitView with 3 sessions in sidebar
+   - Action: Set `selectedSessionId` to session 2's UUID
+   - Verify: Detail pane displays ConversationView for session 2
+
+2. **Command palette execution**
+   - Setup: Open command palette, select "New session"
+   - Action: Execute the action
+   - Verify: `onAction` callback receives `.newSession`
+
+3. **Menu bar quick capture**
+   - Setup: Open menu bar popover
+   - Action: Toggle recording, enter transcription, tap Send
+   - Verify: `sendQuickPrompt` called with correct directory and text
+
+4. **Settings persistence**
+   - Setup: Change voice selection in Settings
+   - Action: Close and reopen Settings
+   - Verify: Voice selection persists
 
 #### Manual Testing Checklist
 
@@ -1478,8 +1637,30 @@ var displayText: String {
 |------|---------|
 | `VoiceCodeApp.swift` | Add NavigationSplitView, Settings scene, MenuBarExtra, .commands |
 | `ConversationView.swift` | Add push-to-talk modifier, adjust for detail pane context |
-| `VoiceCodeClient.swift` | Add `sendQuickPrompt()` for menu bar |
-| `AppSettings.swift` | Add `lastUsedDirectory`, `recentDirectories` |
+| `VoiceCodeClient.swift` | Add `sendQuickPrompt()` for menu bar quick capture |
+| `AppSettings.swift` | Add `lastUsedDirectory`, `recentDirectories`, `trackDirectoryUsage()` |
+
+### API Additions
+
+#### VoiceCodeClient
+
+```swift
+/// Send a quick prompt from menu bar, creating a new session if needed.
+func sendQuickPrompt(text: String, directory: String, completion: @escaping (String?) -> Void)
+```
+
+#### AppSettings
+
+```swift
+/// Last used working directory (for menu bar default)
+var lastUsedDirectory: String?
+
+/// Recently used directories (for menu bar picker)
+var recentDirectories: [String]
+
+/// Track directory usage, updating lastUsedDirectory and recentDirectories
+func trackDirectoryUsage(_ directory: String)
+```
 
 ## Open Questions
 
