@@ -88,4 +88,41 @@ final class VoiceInputManagerTests: XCTestCase {
         XCTAssertNotNil(newManager)
         XCTAssertFalse(newManager.isRecording)
     }
+
+    // MARK: - TTS Muting Tests
+
+    func testInitWithVoiceOutputManager() {
+        let voiceOutput = VoiceOutputManager()
+        let inputManager = VoiceInputManager(voiceOutputManager: voiceOutput)
+        XCTAssertNotNil(inputManager)
+        XCTAssertFalse(inputManager.isRecording)
+    }
+
+    func testTTSStoppedWhenRecordingStarts() {
+        // Given: Voice output manager that is speaking
+        let voiceOutput = VoiceOutputManager()
+        let inputManager = VoiceInputManager(voiceOutputManager: voiceOutput)
+
+        // Start TTS playback
+        voiceOutput.speak("Test speech that should be stopped when recording starts")
+        // Wait a moment for speech to start
+        let speechStartExpectation = XCTestExpectation(description: "Speech starts")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            speechStartExpectation.fulfill()
+        }
+        wait(for: [speechStartExpectation], timeout: 1.0)
+
+        // When: startRecording is called (will fail due to no authorization, but should still stop TTS)
+        inputManager.startRecording()
+
+        // Then: TTS should be stopped
+        // Note: The actual recording may not start due to auth, but TTS should still be stopped
+        let ttsStopExpectation = XCTestExpectation(description: "TTS stops")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            ttsStopExpectation.fulfill()
+        }
+        wait(for: [ttsStopExpectation], timeout: 1.0)
+
+        XCTAssertFalse(voiceOutput.isSpeaking, "TTS should be stopped when recording starts")
+    }
 }

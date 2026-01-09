@@ -34,7 +34,7 @@ struct SessionLookupView: View {
 
     var body: some View {
         if let session = sessions.first {
-            ConversationView(session: session, client: client, voiceOutput: voiceOutput, settings: settings)
+            ConversationView(session: session, client: client, voiceOutput: voiceOutput, voiceInput: VoiceInputManager(voiceOutputManager: voiceOutput), settings: settings)
         } else {
             // Session not found (possibly deleted)
             VStack(spacing: 16) {
