@@ -34,16 +34,20 @@
     (is (= "/home/user" (worktree/parent-path "/home/user/test-repo")))))
 
 (deftest test-format-worktree-prompt
-  (testing "Format worktree prompt with all details"
+  (testing "Format worktree prompt with all details including beads label"
     (let [prompt (worktree/format-worktree-prompt
                   "Fix Auth Bug"
                   "/Users/travis/code/voice-code-fix-auth-bug"
                   "/Users/travis/code/voice-code"
-                  "fix-auth-bug")]
+                  "fix-auth-bug"
+                  "wt:fix-auth-bug")]
       (is (clojure.string/includes? prompt "Fix Auth Bug"))
       (is (clojure.string/includes? prompt "/Users/travis/code/voice-code-fix-auth-bug"))
       (is (clojure.string/includes? prompt "/Users/travis/code/voice-code"))
       (is (clojure.string/includes? prompt "fix-auth-bug"))
+      (is (clojure.string/includes? prompt "wt:fix-auth-bug"))
+      (is (clojure.string/includes? prompt "bd ready --label"))
+      (is (clojure.string/includes? prompt "bd create --labels"))
       (is (clojure.string/includes? prompt "Don't do anything yet")))))
 
 (deftest test-validate-worktree-creation
@@ -174,4 +178,97 @@
         (finally
           ;; Cleanup
           (doseq [f (reverse (file-seq temp-dir))]
+            (.delete f)))))))
+
+(deftest test-resolve-worktree-git-dir
+  (testing "Returns nil for regular git directory"
+    (let [temp-dir (io/file (System/getProperty "java.io.tmpdir") "test-git-regular")]
+      (.mkdirs temp-dir)
+      (try
+        ;; Create a regular .git directory (not a worktree)
+        (.mkdirs (io/file temp-dir ".git"))
+        (is (nil? (worktree/resolve-worktree-git-dir (.getAbsolutePath temp-dir))))
+        (finally
+          (doseq [f (reverse (file-seq temp-dir))]
+            (.delete f))))))
+
+  (testing "Resolves worktree git directory from .git file"
+    (let [temp-dir (io/file (System/getProperty "java.io.tmpdir") "test-worktree-resolve")]
+      (.mkdirs temp-dir)
+      (try
+        ;; Create a .git file like a real worktree has
+        (spit (io/file temp-dir ".git") "gitdir: /path/to/main/.git/worktrees/my-worktree\n")
+        (is (= "/path/to/main/.git/worktrees/my-worktree"
+               (worktree/resolve-worktree-git-dir (.getAbsolutePath temp-dir))))
+        (finally
+          (doseq [f (reverse (file-seq temp-dir))]
+            (.delete f)))))))
+
+(deftest test-setup-beads-worktree
+  (testing "Creates .beads-worktree file with correct label"
+    (let [temp-dir (io/file (System/getProperty "java.io.tmpdir")
+                            (str "worktree-test-" (System/currentTimeMillis)))
+          git-info-dir (io/file temp-dir ".git" "info")]
+      (.mkdirs git-info-dir)
+      (try
+        (spit (io/file git-info-dir "exclude") "# existing excludes\n")
+
+        (let [result (worktree/setup-beads-worktree! (.getAbsolutePath temp-dir) "panel-color")]
+          ;; Verify success
+          (is (:success result))
+          (is (= "wt:panel-color" (:label result)))
+
+          ;; Verify .beads-worktree file
+          (is (.exists (io/file temp-dir ".beads-worktree")))
+          (is (= "wt:panel-color" (slurp (io/file temp-dir ".beads-worktree"))))
+
+          ;; Verify git exclude
+          (let [exclude-content (slurp (io/file git-info-dir "exclude"))]
+            (is (clojure.string/includes? exclude-content ".beads-worktree"))))
+
+        (finally
+          (doseq [f (reverse (file-seq temp-dir))]
+            (.delete f))))))
+
+  (testing "Handles missing .git/info/exclude file"
+    (let [temp-dir (io/file (System/getProperty "java.io.tmpdir")
+                            (str "worktree-test-" (System/currentTimeMillis)))
+          git-info-dir (io/file temp-dir ".git" "info")]
+      (.mkdirs git-info-dir)
+      (try
+        ;; No exclude file exists
+        (let [result (worktree/setup-beads-worktree! (.getAbsolutePath temp-dir) "test-branch")]
+          (is (:success result))
+          (is (.exists (io/file git-info-dir "exclude")))
+          (is (clojure.string/includes? (slurp (io/file git-info-dir "exclude"))
+                                        ".beads-worktree")))
+        (finally
+          (doseq [f (reverse (file-seq temp-dir))]
+            (.delete f))))))
+
+  (testing "Resolves worktree git directory correctly"
+    (let [temp-dir (io/file (System/getProperty "java.io.tmpdir")
+                            (str "worktree-test-" (System/currentTimeMillis)))
+          git-worktree-dir (io/file (System/getProperty "java.io.tmpdir")
+                                    (str "git-worktree-" (System/currentTimeMillis)))
+          git-info-dir (io/file git-worktree-dir "info")]
+      (.mkdirs temp-dir)
+      (.mkdirs git-info-dir)
+      (try
+        ;; Create a .git file pointing to the worktree git dir
+        (spit (io/file temp-dir ".git") (str "gitdir: " (.getAbsolutePath git-worktree-dir) "\n"))
+
+        (let [result (worktree/setup-beads-worktree! (.getAbsolutePath temp-dir) "my-feature")]
+          (is (:success result))
+          (is (= "wt:my-feature" (:label result)))
+
+          ;; Verify exclude was written to the correct location (worktree git dir)
+          (is (.exists (io/file git-info-dir "exclude")))
+          (is (clojure.string/includes? (slurp (io/file git-info-dir "exclude"))
+                                        ".beads-worktree")))
+
+        (finally
+          (doseq [f (reverse (file-seq temp-dir))]
+            (.delete f))
+          (doseq [f (reverse (file-seq git-worktree-dir))]
             (.delete f)))))))

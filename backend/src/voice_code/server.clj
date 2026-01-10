@@ -1530,20 +1530,21 @@
                                               :details {:step "git_worktree_add"
                                                         :stderr (:stderr git-result)}})
 
-                            ;; Step 4b: Initialize Beads
-                            (let [bd-result (worktree/init-beads! worktree-path)]
+                            ;; Step 4b: Set up beads worktree context
+                            (let [bd-result (worktree/setup-beads-worktree! worktree-path sanitized-name)]
                               (if-not (:success bd-result)
                                 (send-to-client! channel
                                                  {:type :worktree-session-error
                                                   :success false
                                                   :error (:error bd-result)
                                                   :error-type :beads-failed
-                                                  :details {:step "bd_init"
-                                                            :stderr (:stderr bd-result)}})
+                                                  :details {:step "beads_worktree_setup"}})
 
-                                ;; Step 4c: Invoke Claude Code
-                                (let [prompt (worktree/format-worktree-prompt session-name worktree-path
-                                                                              parent-directory branch-name)]
+                                ;; Step 4c: Invoke Claude Code with label in prompt
+                                (let [worktree-label (:label bd-result)
+                                      prompt (worktree/format-worktree-prompt session-name worktree-path
+                                                                              parent-directory branch-name
+                                                                              worktree-label)]
                                   (claude/invoke-claude-async
                                    prompt
                                    (fn [response]
