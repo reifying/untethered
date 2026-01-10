@@ -2030,35 +2030,18 @@ final class VoiceCodeClientTests: XCTestCase {
 
     func testLockedSessionsClearedOnDisconnect() {
         // Given: A client with a locked session
+        // Note: We don't call connect() to avoid race conditions with real WebSocket
+        // connections. We're only testing that disconnect() clears locked sessions.
         let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
-        testClient.connect()
-        testClient.handleMessage("""
-            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
-            """)
 
-        let helloExpectation = XCTestExpectation(description: "Hello dispatch")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            helloExpectation.fulfill()
-        }
-        wait(for: [helloExpectation], timeout: 1.0)
-
-        // Simulate locked session via session_locked message
-        testClient.handleMessage("""
-            {"type": "session_locked", "session_id": "test-session-123", "message": "Session locked"}
-            """)
-
-        let lockExpectation = XCTestExpectation(description: "Lock dispatch")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            lockExpectation.fulfill()
-        }
-        wait(for: [lockExpectation], timeout: 1.0)
-
+        // Directly add a locked session (simulating session_locked message handling)
+        testClient.lockedSessions.insert("test-session-123")
         XCTAssertTrue(testClient.lockedSessions.contains("test-session-123"), "Session should be locked")
 
         // When: disconnect() is called
         testClient.disconnect()
 
-        // Wait for disconnect dispatch
+        // Wait for disconnect dispatch to complete on main queue
         let disconnectExpectation = XCTestExpectation(description: "Disconnect dispatch")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             disconnectExpectation.fulfill()

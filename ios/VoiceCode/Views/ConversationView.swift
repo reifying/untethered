@@ -558,7 +558,7 @@ struct ConversationView: View {
             }
         } message: {
             if let timestamp = compactionTimestamps[session.id] {
-                Text("This session was compacted \(timestamp.relativeTimeString()).\n\nCompact again?")
+                Text("This session was compacted \(timestamp.relativeFormatted()).\n\nCompact again?")
             } else {
                 Text("This session was recently compacted.\n\nCompact again?")
             }
@@ -1083,27 +1083,7 @@ struct ConversationView: View {
 }
 
 
-// MARK: - Relative Time Formatting
-
-extension Date {
-    func relativeTimeString() -> String {
-        let now = Date()
-        let interval = now.timeIntervalSince(self)
-        
-        if interval < 60 {
-            return "just now"
-        } else if interval < 3600 {
-            let minutes = Int(interval / 60)
-            return "\(minutes) minute\(minutes == 1 ? "" : "s") ago"
-        } else if interval < 86400 {
-            let hours = Int(interval / 3600)
-            return "\(hours) hour\(hours == 1 ? "" : "s") ago"
-        } else {
-            let days = Int(interval / 86400)
-            return "\(days) day\(days == 1 ? "" : "s") ago"
-        }
-    }
-}
+// Note: Date.relativeFormatted() is defined in Utils/RelativeTimeText.swift
 
 // MARK: - CoreData Message View
 

@@ -110,9 +110,7 @@ struct ResourceRow: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
-                    Text(resource.relativeTimestamp)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    RelativeTimeText(resource.timestamp, font: .caption)
                 }
             }
 

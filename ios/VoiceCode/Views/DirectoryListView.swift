@@ -844,9 +844,7 @@ struct DirectoryRowContent: View {
                         .font(.caption2)
                         .foregroundColor(.secondary)
 
-                    Text(directory.lastModified.relativeFormatted())
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                    RelativeTimeText(directory.lastModified)
                 }
             }
         }
@@ -876,11 +874,9 @@ struct RecentSessionRowContent: View {
                         .lineLimit(1)
                 }
 
-                // Line 3: Relative timestamp
+                // Line 3: Relative timestamp (auto-updates)
                 HStack(spacing: 8) {
-                    Text(session.lastModified.relativeFormatted())
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                    RelativeTimeText(session.lastModified)
                 }
             }
 
@@ -889,38 +885,7 @@ struct RecentSessionRowContent: View {
     }
 }
 
-// MARK: - Relative Time Formatting
-
-extension Date {
-    func relativeFormatted() -> String {
-        let now = Date()
-        let interval = now.timeIntervalSince(self)
-
-        // Less than 1 minute
-        if interval < 60 {
-            return "just now"
-        }
-
-        // Less than 7 days: use RelativeDateTimeFormatter
-        if interval < 7 * 24 * 60 * 60 {
-            let formatter = RelativeDateTimeFormatter()
-            formatter.unitsStyle = .full
-            return formatter.localizedString(for: self, relativeTo: now)
-        }
-
-        // 7+ days: use date format
-        let calendar = Calendar.current
-        let dateFormatter = DateFormatter()
-
-        if calendar.isDate(self, equalTo: now, toGranularity: .year) {
-            dateFormatter.dateFormat = "MMM d"
-        } else {
-            dateFormatter.dateFormat = "MMM d, yyyy"
-        }
-
-        return dateFormatter.string(from: self)
-    }
-}
+// Note: RelativeTimeText and Date.relativeFormatted() are defined in Utils/RelativeTimeText.swift
 
 // MARK: - Preview
 

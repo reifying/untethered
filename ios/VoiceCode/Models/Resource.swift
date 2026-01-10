@@ -44,10 +44,6 @@ struct Resource: Identifiable, Codable, Equatable {
         return formatter.string(fromByteCount: size)
     }
 
-    /// Relative timestamp (e.g., "2 min ago")
-    var relativeTimestamp: String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: timestamp, relativeTo: Date())
-    }
+    // Note: Relative timestamp display is handled by RelativeTimeText view
+    // which auto-updates via TimelineView (see Utils/RelativeTimeText.swift)
 }

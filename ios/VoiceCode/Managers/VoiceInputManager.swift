@@ -15,9 +15,13 @@ class VoiceInputManager: NSObject, ObservableObject {
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
 
+    /// Reference to voice output manager for muting TTS during recording
+    private weak var voiceOutputManager: VoiceOutputManager?
+
     var onTranscriptionComplete: ((String) -> Void)?
 
-    override init() {
+    init(voiceOutputManager: VoiceOutputManager? = nil) {
+        self.voiceOutputManager = voiceOutputManager
         super.init()
         speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
         authorizationStatus = SFSpeechRecognizer.authorizationStatus()
@@ -43,6 +47,10 @@ class VoiceInputManager: NSObject, ObservableObject {
     // MARK: - Recording
 
     func startRecording() {
+        // Stop TTS first to prevent mic from picking up speech output
+        // This must happen before auth check so TTS stops even if recording can't start
+        voiceOutputManager?.stop()
+
         // Check authorization
         guard authorizationStatus == .authorized else {
             print("Speech recognition not authorized")
