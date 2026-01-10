@@ -84,6 +84,9 @@
 (defn init-beads!
   "Initialize Beads in the worktree directory.
 
+  Uses --force flag to handle cases where .beads base files already exist
+  from git checkout (when the parent repo tracks .beads skeleton files).
+
   Parameters:
   - worktree-path: Path to the worktree directory
 
@@ -95,7 +98,7 @@
   (try
     (log/info "Initializing Beads in worktree" {:worktree-path worktree-path})
 
-    (let [result (shell/sh "bd" "init" "-q" :dir worktree-path)]
+    (let [result (shell/sh "bd" "init" "-q" "--force" :dir worktree-path)]
       (if (zero? (:exit result))
         {:success true}
         {:success false
