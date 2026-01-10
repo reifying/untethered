@@ -230,7 +230,7 @@ struct ConversationView: View {
                         .font(.caption)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
-                        .background(Color.blue.opacity(0.1))
+                        .background(Color.secondarySystemBackground)
                         .cornerRadius(8)
                     }
                     #if os(macOS)
@@ -1345,7 +1345,7 @@ struct ConversationVoiceInputView: View {
                             .font(.caption)
                     }
                     .frame(width: 100, height: 100)
-                    .background(Color.red.opacity(0.1))
+                    .background(Color.red.opacity(0.15))
                     .cornerRadius(50)
                 }
             } else {
@@ -1365,7 +1365,7 @@ struct ConversationVoiceInputView: View {
                             .foregroundColor(isDisabled ? .gray : .primary)
                     }
                     .frame(width: 100, height: 100)
-                    .background((isDisabled ? Color.gray : Color.blue).opacity(0.1))
+                    .background(isDisabled ? Color.secondary.opacity(0.1) : Color.secondarySystemBackground)
                     .cornerRadius(50)
                 }
             }
