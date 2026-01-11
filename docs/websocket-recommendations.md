@@ -16,7 +16,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Intermittent Signal Handling | 3/4 | 12 | 12 |
 | App Lifecycle Resilience | 0/4 | - | - |
 | Network Transition Handling | 1/3 | 1 | 1 |
-| Server-Side Resilience | 1/3 | 4 | 4 |
+| Server-Side Resilience | 2/3 | 4 | 4 |
 | Observability | 0/3 | - | - |
 | Edge Cases | 0/3 | - | - |
 
@@ -1092,7 +1092,64 @@ This is a single-server deployment (no load balancer), so "migrate to new instan
 
 4. **Reset backoff on draining**: Client should not count draining-triggered disconnect against retry attempts (it's expected, not a failure)
 
-<!-- Add findings for items 33-34 here -->
+#### 33. Use connection affinity with fallback
+**Status**: Not Applicable (Single Server Architecture)
+**Locations**:
+- `ios/VoiceCode/Managers/AppSettings.swift:18-19` - Single `serverURL` and `serverPort` properties
+- `ios/VoiceCode/Managers/AppSettings.swift:82-86` - `fullServerURL` computed property (single endpoint)
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:37` - Single `serverURL` property
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:358-373` - `updateServerURL()` for manual URL change
+- `backend/src/voice_code/server.clj:92-98` - `connected-clients` atom (ephemeral channel routing)
+- `backend/src/voice_code/replication.clj` - Filesystem-based session persistence (local only)
+
+**Findings**:
+This best practice is **not applicable** to the current architecture. Connection affinity with fallback is designed for multi-server deployments with load balancers, which this system does not have.
+
+**Current architecture: Single server**
+
+1. **Single server configuration** ✅ (by design)
+   - iOS stores one `serverURL` and `serverPort` in AppSettings
+   - No server pool, no load balancer, no failover configuration
+   - Reconnection always targets the same single server
+
+2. **Implicit session affinity**
+   - Session affinity exists implicitly because there's only one server
+   - All clients connect to the same backend instance
+   - Session state is automatically available (single filesystem)
+
+3. **Session persistence is local**
+   - Session files stored in `~/.claude/projects/<project>/<session-id>.jsonl`
+   - No replication between servers (would require external coordination)
+   - Each server instance has independent session storage
+
+4. **Ephemeral connection routing**
+   - `connected-clients` atom maps WebSocket channel → client state
+   - Channels exist only during active connections (not persistent)
+   - No cross-server message routing capability
+
+**What connection affinity would require:**
+If multi-server deployment were needed in the future:
+- Persistent session store (database, Redis, or replicated filesystem)
+- Server discovery/registration mechanism
+- Load balancer with sticky sessions (L7 session affinity)
+- Cross-server session state replication
+- Distributed locking for Claude CLI execution
+
+**Why single server is appropriate here:**
+- Personal/single-user deployment model
+- Claude CLI sessions are local to machine running backend
+- Session files live alongside Claude Code installation
+- No horizontal scaling requirements identified
+
+**Gaps**: None - single server architecture is intentional and appropriate for the use case.
+
+**Recommendations**: None currently needed. If multi-server deployment becomes a requirement in the future:
+1. Add server list configuration to iOS (with primary/fallback URLs)
+2. Implement health check endpoint for server selection
+3. Add session routing layer (external load balancer or application-level)
+4. Consider centralized session state (Redis for session metadata, shared filesystem for .jsonl files)
+
+<!-- Add findings for item 34 here -->
 
 ### Observability
 
