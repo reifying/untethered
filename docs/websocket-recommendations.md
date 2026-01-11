@@ -13,7 +13,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Protocol Design | 1/3 | 0 | 0 |
 | Detecting Degraded Connections | 0/3 | - | - |
 | Poor Bandwidth Handling | 0/4 | - | - |
-| Intermittent Signal Handling | 0/4 | - | - |
+| Intermittent Signal Handling | 1/4 | 4 | 4 |
 | App Lifecycle Resilience | 0/4 | - | - |
 | Network Transition Handling | 1/3 | 1 | 1 |
 | Server-Side Resilience | 0/3 | - | - |
@@ -365,7 +365,92 @@ The implementation fully meets this best practice across all three dimensions:
 
 ### Intermittent Signal Handling
 
-<!-- Add findings for items 21-24 here -->
+#### 21. Design for offline-first
+**Status**: Partial
+**Locations**:
+- `ios/VoiceCode/Models/CDMessage.swift:8-12` - `MessageStatus` enum (`sending`, `confirmed`, `error`)
+- `ios/VoiceCode/Views/ConversationView.swift:1139-1147` - UI indicators for message status (clock icon for sending, exclamation for error)
+- `ios/VoiceCode/Managers/SessionSyncManager.swift:265` - Sets `messageStatus = .sending` for optimistic messages
+- `ios/VoiceCode/Managers/ResourcesManager.swift:82-196` - File-based pending uploads queue
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1060-1094` - `sendPrompt()` sends directly without queueing
+- `ios/VoiceCode/Views/ConversationView.swift:772-774` - Creates optimistic message before sending
+
+**Findings**:
+The implementation has **partial offline-first support** with significant gaps:
+
+**What's implemented:**
+
+1. **Pending/synced status UI** ✅
+   - `MessageStatus` enum with `sending`, `confirmed`, `error` states
+   - UI shows clock icon for pending messages, exclamation for errors
+   - Messages created optimistically with `.sending` status before server confirms
+
+2. **Optimistic UI updates** ✅
+   - `createOptimisticMessage()` adds user message immediately to CoreData
+   - Message appears in conversation instantly without waiting for server
+   - Status updated to `.confirmed` when server responds
+
+3. **File uploads queue locally** ✅
+   - `ResourcesManager` uses App Group container for pending uploads
+   - Share Extension writes `.json` metadata + `.data` files
+   - Main app processes queue when connected (`processPendingUploads()`)
+   - Survives app termination, reboot, network changes
+
+4. **Session sync on reconnection** ✅
+   - Delta sync with `last_message_id` fetches only new messages
+   - Session subscriptions restored automatically on reconnect
+
+**What's NOT implemented:**
+
+1. **No prompt queueing when offline** ❌
+   - `sendPrompt()` calls `sendMessage()` directly without checking connection state
+   - If WebSocket is disconnected, prompt is silently dropped
+   - No persistent queue for prompts to retry on reconnection
+   - Contrast with file uploads which ARE queued
+
+2. **No automatic retry for failed prompts** ❌
+   - Messages can get `.error` status but no automatic retry mechanism
+   - User must manually resend failed messages
+
+3. **Limited status feedback** ⚠️
+   - No explicit "queued offline" vs "sending" distinction
+   - No message count badge showing pending items
+   - Error state exists but no UI to retry individual messages
+
+**Best practice requirements:**
+- Queue actions locally when offline ❌ (only file uploads queued, not prompts)
+- Sync when connection restored ✅ (session history syncs)
+- Show pending/synced status in UI ✅ (clock/exclamation icons)
+
+**Gaps**:
+1. Prompts sent while offline are dropped, not queued
+2. No persistent prompt queue that survives app restart
+3. No retry mechanism for failed message sends
+4. No offline detection before attempting to send
+
+**Recommendations**:
+1. **Add prompt queue to CoreData**: Store prompts with `pending` status before sending
+   ```swift
+   // In sendPrompt():
+   let pendingPrompt = savePendingPrompt(text, sessionId, workingDirectory)
+   if isConnected {
+       sendPendingPrompt(pendingPrompt)
+   }
+   // On reconnect: iterate pending prompts and send
+   ```
+
+2. **Flush prompt queue on connection**: When WebSocket connects, send all pending prompts in order
+   ```swift
+   voiceCodeClient.$isConnected
+       .filter { $0 }
+       .sink { _ in self.sendPendingPrompts() }
+   ```
+
+3. **Add retry button for error messages**: Let users tap failed messages to retry
+
+4. **Show offline indicator**: Display "Offline - messages queued" when disconnected with pending items
+
+<!-- Add findings for items 22-24 here -->
 
 ### App Lifecycle Resilience
 
@@ -476,7 +561,12 @@ The implementation does **not** detect or handle captive portals. A captive port
 - Make `message-ack` handler remove messages from queue
 - See [Message acknowledgment findings](#4-message-acknowledgment-system) for full details
 
-<!-- Add additional medium priority recommendations here -->
+**Offline Prompt Queueing** (Item 21)
+- Add persistent prompt queue to CoreData (similar to file uploads queue)
+- Queue prompts when offline instead of silently dropping
+- Flush queue in order when connection is restored
+- Add retry mechanism for failed message sends
+- See [Offline-first design findings](#21-design-for-offline-first) for full details
 
 ### Low Priority / Nice to Have
 
