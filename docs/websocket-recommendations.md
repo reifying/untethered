@@ -13,7 +13,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Protocol Design | 3/3 | 3 | 3 |
 | Detecting Degraded Connections | 0/3 | - | - |
 | Poor Bandwidth Handling | 0/4 | - | - |
-| Intermittent Signal Handling | 3/4 | 12 | 12 |
+| Intermittent Signal Handling | 4/4 | 16 | 16 |
 | App Lifecycle Resilience | 0/4 | - | - |
 | Network Transition Handling | 1/3 | 1 | 1 |
 | Server-Side Resilience | 2/3 | 4 | 4 |
@@ -1070,7 +1070,165 @@ Request coalescing is a client-side optimization that:
 - Server observability shows reconnection spikes causing issues
 - Implementing offline queueing (Item 21) which would naturally include batching
 
-<!-- Add findings for item 24 here -->
+#### 24. Handle half-open connections
+**Status**: Not Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:439-458` - `startPingTimer()` sends client-initiated pings
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1115-1118` - `ping()` sends `{"type": "ping"}`
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:686-688` - `pong` handler (empty - just breaks)
+- `backend/src/voice_code/server.clj:1051` - Server responds with pong (reactive only)
+
+**Findings**:
+The implementation does **not** handle half-open connections. A half-open connection occurs when TCP reports the connection as alive, but the peer is actually unreachable (e.g., server crashed, network path broken). The current ping/pong implementation only detects dead connections reactively, not proactively.
+
+**What half-open connection handling requires:**
+1. **Server sends periodic heartbeats**: Server proactively sends heartbeat messages on a timer (not just responding to client pings)
+2. **Client expects server heartbeat**: Client tracks when last server heartbeat was received
+3. **Missing heartbeat triggers reconnection**: If no server heartbeat arrives within the expected interval, client assumes connection is dead and reconnects
+
+**Current implementation:**
+
+1. **Client-initiated pings only** ❌
+   - iOS client sends `ping` every 30 seconds (`pingInterval = 30.0`)
+   - Server responds with `pong` synchronously in `handle-message`
+   - No server-initiated heartbeats exist
+
+2. **No pong timeout tracking** ❌
+   - Client sends ping but doesn't track when pong should arrive
+   - `pong` handler at line 686-688 is empty: `case "pong": break`
+   - If pong never arrives, client has no mechanism to detect this
+   - Connection appears alive until iOS's TCP layer times out (can take minutes)
+
+3. **No server heartbeat timer** ❌
+   - Backend has no scheduled task to send periodic messages to clients
+   - `broadcast-to-all-clients!` function exists but isn't used for heartbeats
+   - Server only sends messages in response to client requests
+
+4. **Detection relies on TCP** ⚠️
+   - Half-open connections are only detected when:
+     - Client tries to send a message and TCP reports failure
+     - iOS's URLSessionWebSocketTask layer times out (platform-dependent, often 60+ seconds)
+   - During this window, user sees "Connected" but messages go into a black hole
+
+**Scenario demonstrating the problem:**
+1. Client connected, authenticated, sending pings every 30s
+2. Server process crashes (or network path breaks silently)
+3. Client's TCP socket still "looks" open (no FIN/RST received)
+4. Client sends ping... no pong returns
+5. Next ping 30s later... still no pong
+6. Client continues showing "Connected" for potentially minutes
+7. Eventually TCP times out and triggers reconnection
+
+**Why this matters:**
+- Users see "Connected" indicator when they can't actually communicate
+- Prompts sent during this window appear to be sent but are never delivered
+- Mobile networks often create half-open connections (tower handoffs, signal loss)
+- iOS background/suspend can leave TCP in ambiguous state on foreground
+
+**Best practice requirements:**
+- Server sends periodic heartbeat messages (not just responding to pings) ❌
+- Client expects server heartbeat within interval ❌
+- Missing server heartbeat triggers reconnection ❌
+
+**Gaps**:
+1. No server-initiated heartbeat messages
+2. Client doesn't track pong arrival time or timeout
+3. No client-side "expected heartbeat" interval that triggers reconnection
+4. Half-open connections can persist for minutes before detection
+
+**Recommendations**:
+
+1. **Add pong timeout tracking on iOS**: Track when ping was sent, expect pong within 10s
+   ```swift
+   private var lastPingSentAt: Date?
+   private var pongTimeoutTimer: DispatchSourceTimer?
+   private let pongTimeout: TimeInterval = 10.0  // 10 seconds
+
+   func ping() {
+       lastPingSentAt = Date()
+       sendMessage(["type": "ping"])
+       startPongTimeoutTimer()
+   }
+
+   private func startPongTimeoutTimer() {
+       pongTimeoutTimer?.cancel()
+       let timer = DispatchSource.makeTimerSource(queue: .main)
+       timer.schedule(deadline: .now() + pongTimeout)
+       timer.setEventHandler { [weak self] in
+           guard let self = self else { return }
+           self.logger.warning("⚠️ [VoiceCodeClient] Pong timeout - connection may be dead")
+           // Force reconnection
+           self.handleDeadConnection()
+       }
+       timer.resume()
+       pongTimeoutTimer = timer
+   }
+
+   // In handleMessage for "pong":
+   case "pong":
+       pongTimeoutTimer?.cancel()
+       pongTimeoutTimer = nil
+       logger.debug("🏓 [VoiceCodeClient] Pong received")
+   ```
+
+2. **Add handleDeadConnection() helper**:
+   ```swift
+   private func handleDeadConnection() {
+       logger.warning("🔌 [VoiceCodeClient] Detected dead connection, forcing reconnection")
+       // Don't wait for TCP timeout - disconnect immediately
+       webSocket?.cancel(with: .abnormalClosure, reason: nil)
+       webSocket = nil
+       isConnected = false
+       stopPingTimer()
+       // Trigger immediate reconnection (reset backoff since this is detection, not failure)
+       reconnectionAttempts = 0
+       connect()
+   }
+   ```
+
+3. **(Optional) Add server-initiated heartbeats**: More robust but requires backend changes
+   ```clojure
+   ;; Backend: Start heartbeat timer per client
+   (defn start-client-heartbeat! [channel]
+     (let [timer (async/go-loop []
+                   (async/<! (async/timeout 30000))  ; 30 seconds
+                   (when (get @connected-clients channel)
+                     (http/send! channel (generate-json {:type :heartbeat
+                                                         :timestamp (System/currentTimeMillis)}))
+                     (recur)))]
+       (swap! connected-clients assoc-in [channel :heartbeat-timer] timer)))
+   ```
+
+   ```swift
+   // iOS: Track server heartbeats
+   private var lastServerHeartbeat: Date?
+   private let serverHeartbeatTimeout: TimeInterval = 60.0  // Expect heartbeat every 30s, allow 60s buffer
+
+   // In handleMessage:
+   case "heartbeat":
+       lastServerHeartbeat = Date()
+
+   // In ping timer, also check server heartbeat:
+   if let lastHeartbeat = lastServerHeartbeat,
+      Date().timeIntervalSince(lastHeartbeat) > serverHeartbeatTimeout {
+       handleDeadConnection()
+   }
+   ```
+
+4. **Protocol addition** (for server heartbeats):
+   ```markdown
+   ### Server Heartbeat
+   Backend → Client: {
+     "type": "heartbeat",
+     "timestamp": 1699876543210
+   }
+   Sent every 30 seconds to indicate server is alive.
+   Client should reconnect if no heartbeat received within 60 seconds.
+   ```
+
+**Priority**: Medium-High - This affects user experience during network instability, which is common on mobile. The client-side pong timeout (Recommendation 1-2) is straightforward and provides significant benefit. Server heartbeats (Recommendation 3-4) provide additional robustness but require more work.
+
+**Implementation approach**: Start with client-side pong timeout tracking - this is a self-contained iOS change that catches the most common half-open scenarios. Server heartbeats can be added later for belt-and-suspenders protection.
 
 ### App Lifecycle Resilience
 
