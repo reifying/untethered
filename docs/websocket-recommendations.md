@@ -17,7 +17,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | App Lifecycle Resilience | 1/4 | 3 | 3 |
 | Network Transition Handling | 1/3 | 1 | 1 |
 | Server-Side Resilience | 3/3 | 8 | 9 |
-| Observability | 1/3 | 5 | 5 |
+| Observability | 2/3 | 11 | 11 |
 | Edge Cases | 0/3 | - | - |
 
 ## Findings
@@ -2505,7 +2505,184 @@ Connection lifecycle logging is **partially implemented** with significant gaps:
 
 **Priority**: Medium - Current logging is sufficient for basic debugging but lacks the detail needed to diagnose intermittent mobile connectivity issues. Network type logging (Recommendation 2) is most valuable but requires NWPathMonitor from Item 2. Standardizing to LogManager (Recommendation 1) is low-effort and improves log coherence.
 
-<!-- Add findings for items 36-37 here -->
+#### 36. Track client-side metrics
+**Status**: Not Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:38` - `reconnectionAttempts` counter (ephemeral, not persisted/reported)
+- `ios/VoiceCode/Managers/LogManager.swift` - Basic log capture, no metrics aggregation
+- `backend/src/voice_code/replication.clj:build-index!` - Logs `elapsed-ms` for index build (one-time operation)
+- `backend/src/voice_code/commands.clj:spawn-process` - Tracks `duration-ms` for command execution
+- `backend/src/voice_code/commands-history.clj:complete-session!` - Stores `duration-ms` per command
+
+**Findings**:
+Client-side metrics tracking is **not implemented**. The system has no mechanism to track or report connection health metrics over time.
+
+**What the best practice recommends:**
+1. **Connection success rate**: Track successful vs failed connection attempts over time
+2. **Average reconnection time**: How long it takes to restore connection after disconnect
+3. **Message delivery latency**: Time from sending prompt to receiving response
+4. **Systemic issue identification**: Aggregate metrics to detect patterns (e.g., all users failing at same time = server issue)
+
+**What's currently implemented:**
+
+1. **Reconnection attempt counter** (ephemeral) ⚠️
+   - `reconnectionAttempts` in VoiceCodeClient (line 38)
+   - Incremented per attempt, reset on success
+   - **Not persisted** - lost on app restart
+   - **Not reported** - only used for backoff calculation
+   - No success/failure rate calculation
+
+2. **Command execution timing** (partial) ⚠️
+   - Backend tracks `duration-ms` for shell commands
+   - Stored in history index for later retrieval
+   - This is for commands, not WebSocket/Claude interactions
+
+3. **Prompt execution** ❌
+   - No timing from prompt send to response received
+   - No tracking of Claude CLI invocation duration
+   - No latency metrics exposed to client
+
+4. **Log manager** ❌
+   - Captures text logs but no structured metrics
+   - No aggregation or statistics
+   - No time-series data
+
+**What's NOT implemented:**
+
+1. **No metrics collection infrastructure** ❌
+   - No metrics store (in-memory or persistent)
+   - No counters for connection success/failure
+   - No timing histograms for latency
+
+2. **No connection success rate** ❌
+   - `reconnectionAttempts` tracks attempts but not outcomes
+   - No ratio of successful connects vs total attempts
+   - No trending over time (is it getting worse?)
+
+3. **No average reconnection time** ❌
+   - Reconnection delay is calculated, but time-to-successful-reconnect is not measured
+   - Don't know: "After disconnect, how long until working again?"
+
+4. **No message delivery latency** ❌
+   - Prompt send time not recorded
+   - Response receive time not correlated with send
+   - No end-to-end latency measurement
+   - No visibility into slow responses
+
+5. **No metrics reporting/export** ❌
+   - No telemetry to external service
+   - No local dashboard or debug view
+   - No way to aggregate across users to detect systemic issues
+
+6. **No ping/pong RTT tracking** ❌
+   - Pings sent every 30 seconds
+   - Pong receipt not timed
+   - No RTT metric calculated
+   - No connection quality indicator based on latency
+
+**Gaps**:
+1. No connection success/failure counters
+2. No reconnection duration tracking
+3. No message delivery latency measurement
+4. No ping/pong RTT metrics
+5. No metrics persistence or reporting infrastructure
+6. No way to detect systemic issues across sessions
+
+**Recommendations**:
+
+1. **Add ConnectionMetrics struct to iOS**:
+   ```swift
+   class ConnectionMetrics {
+       // Counters
+       var connectAttempts: Int = 0
+       var connectSuccesses: Int = 0
+       var connectFailures: Int = 0
+
+       // Timing
+       var lastDisconnectTime: Date?
+       var reconnectionDurations: [TimeInterval] = []
+       var pingRTTs: [TimeInterval] = []
+
+       // Computed
+       var successRate: Double {
+           guard connectAttempts > 0 else { return 0 }
+           return Double(connectSuccesses) / Double(connectAttempts)
+       }
+       var averageReconnectTime: TimeInterval {
+           guard !reconnectionDurations.isEmpty else { return 0 }
+           return reconnectionDurations.reduce(0, +) / Double(reconnectionDurations.count)
+       }
+       var averagePingRTT: TimeInterval {
+           guard !pingRTTs.isEmpty else { return 0 }
+           return pingRTTs.reduce(0, +) / Double(pingRTTs.count)
+       }
+   }
+   ```
+
+2. **Track connection outcomes in VoiceCodeClient**:
+   ```swift
+   // On successful connection (in handleMessage for "connected")
+   metrics.connectSuccesses += 1
+   if let disconnectTime = metrics.lastDisconnectTime {
+       let reconnectDuration = Date().timeIntervalSince(disconnectTime)
+       metrics.reconnectionDurations.append(reconnectDuration)
+   }
+
+   // On failed connection (in startListening catch block)
+   metrics.connectFailures += 1
+
+   // On disconnect
+   metrics.lastDisconnectTime = Date()
+   ```
+
+3. **Track ping/pong RTT**:
+   ```swift
+   private var lastPingTime: Date?
+
+   func ping() {
+       lastPingTime = Date()
+       sendMessage(["type": "ping"])
+   }
+
+   // In handleMessage for "pong"
+   if let pingTime = lastPingTime {
+       let rtt = Date().timeIntervalSince(pingTime)
+       metrics.pingRTTs.append(rtt)
+       // Keep last 100 RTTs for rolling average
+       if metrics.pingRTTs.count > 100 {
+           metrics.pingRTTs.removeFirst()
+       }
+   }
+   ```
+
+4. **Track message delivery latency**:
+   ```swift
+   private var pendingPromptTimes: [String: Date] = [:] // session-id -> send time
+
+   func sendPrompt(...) {
+       pendingPromptTimes[sessionId] = Date()
+       sendMessage(...)
+   }
+
+   // In handleMessage for "response" or "turn_complete"
+   if let sendTime = pendingPromptTimes.removeValue(forKey: sessionId) {
+       let latency = Date().timeIntervalSince(sendTime)
+       metrics.responseLatencies.append(latency)
+   }
+   ```
+
+5. **Expose metrics in debug view**:
+   - Add metrics summary to DebugLogsView
+   - Show: success rate, avg reconnect time, avg RTT, avg response latency
+   - Helps users diagnose their own connectivity issues
+
+6. **Optional: Persist metrics to UserDefaults**:
+   - Save daily aggregates for trending analysis
+   - "Is my connection getting worse over time?"
+
+**Priority**: Medium-Low - Metrics are valuable for debugging and understanding user experience issues, but the app functions without them. The most impactful metric would be ping/pong RTT (Recommendation 3) since it enables connection quality detection from Item 14. Implementing the basic ConnectionMetrics struct (Recommendation 1) provides a foundation for all other metrics.
+
+<!-- Add findings for item 37 here -->
 
 ### Edge Cases
 
