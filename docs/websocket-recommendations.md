@@ -14,7 +14,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Detecting Degraded Connections | 3/3 | 16 | 15 |
 | Poor Bandwidth Handling | 0/4 | - | - |
 | Intermittent Signal Handling | 4/4 | 16 | 16 |
-| App Lifecycle Resilience | 1/4 | 3 | 3 |
+| App Lifecycle Resilience | 2/4 | 10 | 8 |
 | Network Transition Handling | 1/3 | 1 | 1 |
 | Server-Side Resilience | 3/3 | 8 | 9 |
 | Observability | 2/3 | 11 | 11 |
@@ -1973,6 +1973,113 @@ The iOS client implements **partial** message persistence through CoreData:
 4. **Add failure timeout**: If a message stays in `.sending` for more than N seconds without server acknowledgment, update status to `.error` and notify user.
 
 **Priority**: Medium-High - The current implementation provides partial resilience (messages survive brief disconnections during active session), but doesn't handle app termination scenarios. This is a common mobile scenario (user force quits app, iOS terminates for memory, crash). Users could lose important prompts they thought were sent.
+
+#### 26. Use background URLSession for critical uploads
+**Status**: Not Applicable / Partial
+**Locations**:
+- `ios/VoiceCodeShareExtension/ShareViewController.swift:354-418` - Uses foreground `URLSession.shared.dataTask` for HTTP uploads
+- `ios/VoiceCode/Managers/ResourcesManager.swift:264-302` - Uses WebSocket for uploads from main app
+- `ios/VoiceCode/Managers/ResourcesManager.swift:83-100` - Processes pending uploads from App Group on connection
+
+**Findings**:
+The best practice states: "iOS continues uploads even after app suspension. Completion handler called when app relaunched. **Essential for file uploads, not suitable for WebSocket.**"
+
+The implementation has a **single upload path** with no fallback:
+
+1. **Share Extension (HTTP uploads only)**:
+   - Uses `URLSession.shared.dataTask(with:)` - a **foreground** data task
+   - No background session configuration (`URLSessionConfiguration.background(withIdentifier:)`)
+   - Share Extensions have limited execution time (~30 seconds from `viewDidLoad`)
+   - If upload doesn't complete within this window, the extension is terminated and **upload is lost**
+   - Current 60-second timeout (`uploadTimeout: TimeInterval = 60.0`) exceeds extension lifetime
+   - **No fallback mechanism**: If HTTP upload fails, the file is not saved anywhere
+
+2. **ResourcesManager (unused for Share Extension)**:
+   - The main app has `ResourcesManager` with pending-uploads App Group directory
+   - However, **the Share Extension does NOT write to this directory**
+   - Share Extension only reads from App Group (for server settings at line 294-296)
+   - The pending-uploads infrastructure exists but is not connected to Share Extension
+
+**Why background URLSession matters for Share Extensions**:
+- Background URLSession is the **only** way to guarantee upload completion from a Share Extension
+- When the extension is suspended, iOS takes over the upload
+- On completion (success or failure), iOS wakes the app to run the completion handler
+- Without this, uploads for files >~1-2MB reliably fail due to extension time limits
+
+**Current (flawed) resilience model**:
+```
+[User shares file]
+      ↓
+[Share Extension starts HTTP upload (foreground)]
+      ↓
+[If upload succeeds within ~30s] → Success
+      ↓
+[If upload fails/interrupted] → File is LOST (no fallback)
+```
+
+This provides **no delivery guarantee** for Share Extension uploads that exceed the extension lifetime.
+
+**Gaps**:
+1. Share Extension uses foreground URLSession, not background
+2. Large files (>1-2MB) likely fail from Share Extension due to time limits
+3. No completion handler registered for background task resumption
+4. Upload timeout (60s) exceeds Share Extension lifetime (~30s)
+5. **No fallback mechanism** - failed uploads are silently lost
+6. ResourcesManager pending-uploads infrastructure is unused by Share Extension
+
+**Recommendations**:
+1. **Implement background URLSession for Share Extension uploads**:
+   ```swift
+   // In ShareViewController
+   private lazy var backgroundSession: URLSession = {
+       let config = URLSessionConfiguration.background(withIdentifier: "dev.910labs.voice-code.upload")
+       config.sessionSendsLaunchEvents = true
+       config.isDiscretionary = false // Upload immediately
+       return URLSession(configuration: config, delegate: self, delegateQueue: nil)
+   }()
+
+   private func uploadData(data: Data, filename: String) {
+       // Write data to temp file (background sessions require file URLs)
+       let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+       try? data.write(to: tempURL)
+
+       let task = backgroundSession.uploadTask(with: request, fromFile: tempURL)
+       task.resume()
+   }
+   ```
+
+2. **Handle background completion in main app**:
+   ```swift
+   // In AppDelegate or App struct
+   func application(_ application: UIApplication,
+                    handleEventsForBackgroundURLSession identifier: String,
+                    completionHandler: @escaping () -> Void) {
+       // Recreate session and store completion handler
+       BackgroundUploadManager.shared.handleEventsForBackgroundURLSession(
+           identifier: identifier,
+           completionHandler: completionHandler
+       )
+   }
+   ```
+
+3. **Add App Group fallback in Share Extension**: Before starting HTTP upload, write file to pending-uploads directory so ResourcesManager can retry if HTTP fails:
+   ```swift
+   private func uploadData(data: Data, filename: String) {
+       // FIRST: Write to App Group as fallback
+       let uploadId = UUID().uuidString.lowercased()
+       let pendingDir = containerURL.appendingPathComponent("pending-uploads")
+       try? data.write(to: pendingDir.appendingPathComponent("\(uploadId).data"))
+       // Write metadata...
+
+       // THEN: Attempt HTTP upload
+       // On success: delete from App Group
+       // On failure: file remains for ResourcesManager to process
+   }
+   ```
+
+4. **Reduce upload timeout**: Change `uploadTimeout` from 60s to 25s to fail fast within extension lifetime.
+
+**Priority**: High - Currently **uploads can be silently lost** for large files or slow networks. This is data loss that users won't notice until they try to use the file. Either implement background URLSession or add the App Group fallback (simpler).
 
 ### Network Transition Handling
 
