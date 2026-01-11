@@ -15,7 +15,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Poor Bandwidth Handling | 4/4 | 15 | 11 |
 | Intermittent Signal Handling | 4/4 | 16 | 16 |
 | App Lifecycle Resilience | 4/4 | 19 | 14 |
-| Network Transition Handling | 2/3 | 8 | 8 |
+| Network Transition Handling | 3/3 | 12 | 12 |
 | Server-Side Resilience | 3/3 | 8 | 9 |
 | Observability | 3/3 | 16 | 16 |
 | Edge Cases | 3/3 | 13 | 11 |
@@ -2880,6 +2880,119 @@ Changes in interface type can be detected by comparing current and previous `NWP
 - User may think app is broken
 - Messages sent during handoff may be lost
 - Poor user experience in mobile scenarios
+
+#### 30. Implement path migration awareness
+**Status**: Not Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:35-36` - `pingTimer` with 30-second interval (no RTT tracking)
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:686-688` - `pong` handler is empty (doesn't calculate RTT)
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1115-1118` - `ping()` sends message without recording timestamp
+- No `NWPathMonitor` or `Network` framework imports anywhere in iOS codebase
+
+**Findings**:
+The implementation does **not** support path migration awareness. Path migration awareness means adjusting timeout/RTT expectations when the network interface changes, because different network types have different latency characteristics.
+
+**Prerequisites that are also missing:**
+1. **RTT tracking** (item 14): No round-trip time measurement exists. The `pong` handler is empty.
+2. **Interface change detection** (item 29): No `NWPathMonitor` to detect WiFi ↔ Cellular transitions.
+
+Without RTT tracking and interface change detection, path migration awareness cannot be implemented.
+
+**Why this matters:**
+- **WiFi typical RTT**: 10-50ms
+- **Cellular 4G typical RTT**: 50-100ms
+- **Cellular 3G typical RTT**: 100-500ms
+
+When switching from WiFi to Cellular:
+- If timeout was calibrated for WiFi (e.g., 100ms timeout at 3x 33ms RTT)
+- Cellular's 150ms RTT would appear "slow" or trigger false timeouts
+- Could cause unnecessary reconnections or degraded-connection warnings
+
+**What best practice recommends:**
+- New network may have different latency characteristics
+- Reset RTT estimates after network change
+- Adjust timeouts accordingly
+
+**Current behavior:**
+- No RTT baseline exists to reset
+- No timeouts are adaptive (all hardcoded or infinite)
+- Network interface changes aren't detected
+- When reconnecting after interface change, client uses same fixed timeouts regardless of network type
+
+**Gaps**:
+1. No RTT tracking to establish baseline for any network type
+2. No mechanism to detect network interface changed (prerequisite from item 29)
+3. No RTT history reset after network change
+4. No network-type-aware timeout configuration (WiFi vs Cellular defaults)
+
+**Recommendations**:
+
+1. **First implement prerequisites** (items 14 and 29):
+   - RTT tracking: Record ping timestamp, calculate RTT on pong, maintain rolling average
+   - Interface detection: Use `NWPathMonitor` to detect WiFi ↔ Cellular transitions
+
+2. **Reset RTT history on interface change**:
+   ```swift
+   private func handleInterfaceChange(from oldType: NWInterface.InterfaceType?,
+                                      to newType: NWInterface.InterfaceType?) {
+       logger.info("📶 [VoiceCodeClient] Interface changed: \(String(describing: oldType)) → \(String(describing: newType))")
+
+       // Reset RTT history - old measurements are invalid for new network
+       rttHistory.removeAll()
+       connectionQuality = .unknown
+
+       // Optionally: set initial estimates based on network type
+       if let type = newType {
+           applyNetworkTypeDefaults(type)
+       }
+   }
+   ```
+
+3. **Apply network-type-specific defaults**:
+   ```swift
+   private func applyNetworkTypeDefaults(_ type: NWInterface.InterfaceType) {
+       switch type {
+       case .wifi:
+           // WiFi: faster expected response, shorter initial timeout
+           initialPongTimeout = 5.0  // 5 seconds
+           logger.debug("📶 Using WiFi defaults (5s initial timeout)")
+       case .cellular:
+           // Cellular: higher latency expected, longer initial timeout
+           initialPongTimeout = 10.0  // 10 seconds
+           logger.debug("📶 Using Cellular defaults (10s initial timeout)")
+       default:
+           initialPongTimeout = 10.0  // Conservative default
+       }
+   }
+   ```
+
+4. **Adaptive timeout recalibration**:
+   After network change, the adaptive timeout logic (from item 14 recommendation) will naturally recalibrate:
+   ```swift
+   private func calculatePongTimeout() -> TimeInterval {
+       let baselineRtt = averageRtt
+       if baselineRtt > 0 {
+           // 3x baseline RTT, with network-type-aware bounds
+           let multiplier: Double = 3.0
+           let minTimeout = currentInterfaceType == .cellular ? 5.0 : 3.0
+           let maxTimeout: Double = 30.0
+           return min(max(baselineRtt * multiplier, minTimeout), maxTimeout)
+       }
+       return initialPongTimeout  // Use network-type default until calibrated
+   }
+   ```
+
+**Relationship to other items:**
+- **Item 14 (RTT tracking)**: Must implement RTT tracking first; this item extends it with reset-on-change
+- **Item 29 (WiFi/Cellular handoff)**: Must implement interface detection first; this item extends it with RTT awareness
+- **Item 16 (Slow vs dead)**: Network-aware timeouts help distinguish slow cellular from dead connection
+
+**Priority**: Medium - This is an enhancement that builds on items 14 and 29. Should be implemented after those prerequisites are in place. Provides better user experience on mobile by avoiding false "degraded" warnings when switching from WiFi to Cellular.
+
+**Implementation order**:
+1. Item 14: RTT tracking (required)
+2. Item 29: Interface change detection (required)
+3. Item 30: Path migration awareness (this item)
 
 #### 31. Handle captive portals
 **Status**: Not Implemented
