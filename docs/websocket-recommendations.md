@@ -11,7 +11,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Authentication | 2/2 | 0 | 0 |
 | Mobile-Specific | 3/3 | 8 | 8 |
 | Protocol Design | 3/3 | 3 | 3 |
-| Detecting Degraded Connections | 0/3 | - | - |
+| Detecting Degraded Connections | 1/3 | 5 | 5 |
 | Poor Bandwidth Handling | 0/4 | - | - |
 | Intermittent Signal Handling | 4/4 | 16 | 16 |
 | App Lifecycle Resilience | 0/4 | - | - |
@@ -837,7 +837,191 @@ iOS consistently:
 
 ### Detecting Degraded Connections
 
-<!-- Add findings for items 14-16 here -->
+#### 14. Implement connection quality monitoring (RTT)
+**Status**: Not Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:35-36` - `pingTimer` with 30-second interval
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:439-458` - `startPingTimer()` sends pings
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1115-1118` - `ping()` sends `{"type": "ping"}`
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:686-688` - `pong` handler is empty (just `break`)
+- `backend/src/voice_code/server.clj:1051` - Server responds with pong synchronously
+
+**Findings**:
+The implementation does **not** track connection quality via RTT (round-trip time). While the ping/pong mechanism exists for keepalive, no timing data is collected or used to detect degraded connections.
+
+**Current ping/pong behavior:**
+
+1. **Client sends periodic pings** ✅
+   - Ping sent every 30 seconds (`pingInterval = 30.0`)
+   - Timer starts after authentication, stops on disconnect
+   - Uses `DispatchSourceTimer` for reliable scheduling
+
+2. **Server responds immediately** ✅
+   - Backend handles `"ping"` message type in `handle-message`
+   - Sends `{"type": "pong"}` synchronously back to client
+
+3. **No RTT tracking** ❌
+   - Client does not record when ping was sent
+   - `pong` handler at line 686-688 is empty:
+     ```swift
+     case "pong":
+         // Pong response to ping
+         break
+     ```
+   - No calculation of round-trip time (time between ping sent and pong received)
+   - No historical RTT data for trend analysis
+
+4. **No zombie connection detection** ❌
+   - If pong never arrives, client has no mechanism to detect this
+   - Connection appears alive until TCP layer times out (potentially minutes)
+   - No timeout after 2-3x normal RTT as best practice recommends
+
+**What connection quality monitoring would enable:**
+- **Baseline RTT**: Track average round-trip time during normal operation
+- **Degradation detection**: When current RTT exceeds 2-3x baseline, mark connection as degraded
+- **Zombie detection**: If pong doesn't arrive within expected window (e.g., 10 seconds), treat connection as dead
+- **User feedback**: Could show connection quality indicator (green/yellow/red)
+- **Adaptive behavior**: Adjust timeouts or disable heavy features on slow connections
+
+**Best practice requirements:**
+- Track round-trip time (RTT) of ping/pong cycles ❌
+- Detect "zombie connections" where TCP is alive but unusable ❌
+- If pong doesn't arrive within 2-3x normal RTT, assume connection is degraded ❌
+
+**Gaps**:
+1. No timestamp recorded when ping is sent
+2. Pong handler does nothing (doesn't cancel any timeout, doesn't track RTT)
+3. No RTT history or baseline calculation
+4. No timeout mechanism for missing pong responses
+5. No connection quality state exposed to UI
+
+**Recommendations**:
+
+1. **Track ping send time and calculate RTT**:
+   ```swift
+   private var lastPingSentAt: Date?
+   private var rttHistory: [TimeInterval] = []
+   private let maxRttSamples = 10  // Rolling window
+
+   func ping() {
+       lastPingSentAt = Date()
+       sendMessage(["type": "ping"])
+   }
+
+   // In handleMessage for "pong":
+   case "pong":
+       if let sentAt = lastPingSentAt {
+           let rtt = Date().timeIntervalSince(sentAt)
+           recordRtt(rtt)
+           logger.debug("🏓 [VoiceCodeClient] Pong received, RTT: \(Int(rtt * 1000))ms")
+       }
+       lastPingSentAt = nil
+       cancelPongTimeout()  // See recommendation 2
+
+   private func recordRtt(_ rtt: TimeInterval) {
+       rttHistory.append(rtt)
+       if rttHistory.count > maxRttSamples {
+           rttHistory.removeFirst()
+       }
+   }
+
+   var averageRtt: TimeInterval {
+       guard !rttHistory.isEmpty else { return 0 }
+       return rttHistory.reduce(0, +) / Double(rttHistory.count)
+   }
+   ```
+
+2. **Add pong timeout for zombie detection**:
+   ```swift
+   private var pongTimeoutTimer: DispatchSourceTimer?
+   private let pongTimeout: TimeInterval = 10.0  // 10 seconds max
+
+   func ping() {
+       lastPingSentAt = Date()
+       sendMessage(["type": "ping"])
+       startPongTimeoutTimer()
+   }
+
+   private func startPongTimeoutTimer() {
+       pongTimeoutTimer?.cancel()
+       let timer = DispatchSource.makeTimerSource(queue: .main)
+       timer.schedule(deadline: .now() + pongTimeout)
+       timer.setEventHandler { [weak self] in
+           guard let self = self else { return }
+           logger.warning("⚠️ [VoiceCodeClient] Pong timeout - connection degraded or dead")
+           self.handleDegradedConnection()
+       }
+       timer.resume()
+       pongTimeoutTimer = timer
+   }
+
+   private func cancelPongTimeout() {
+       pongTimeoutTimer?.cancel()
+       pongTimeoutTimer = nil
+   }
+   ```
+
+3. **Implement adaptive timeout based on RTT baseline**:
+   ```swift
+   private func calculatePongTimeout() -> TimeInterval {
+       let baselineRtt = averageRtt
+       if baselineRtt > 0 {
+           // 3x baseline RTT, minimum 5s, maximum 30s
+           return min(max(baselineRtt * 3, 5.0), 30.0)
+       }
+       return 10.0  // Default when no baseline
+   }
+   ```
+
+4. **Add connection quality state for UI**:
+   ```swift
+   enum ConnectionQuality {
+       case good      // RTT < 500ms
+       case degraded  // RTT 500ms-2000ms or increasing trend
+       case poor      // RTT > 2000ms or pong nearly timing out
+       case unknown   // No RTT data yet
+   }
+
+   @Published var connectionQuality: ConnectionQuality = .unknown
+
+   private func updateConnectionQuality() {
+       let rtt = averageRtt
+       if rtt == 0 {
+           connectionQuality = .unknown
+       } else if rtt < 0.5 {
+           connectionQuality = .good
+       } else if rtt < 2.0 {
+           connectionQuality = .degraded
+       } else {
+           connectionQuality = .poor
+       }
+   }
+   ```
+
+5. **Handle degraded connection state**:
+   ```swift
+   private func handleDegradedConnection() {
+       // Could either:
+       // a) Immediately reconnect (aggressive - best for zombie detection)
+       // b) Mark as degraded and try one more ping (conservative)
+       // c) Trigger UI warning but keep connection (for slow-but-alive)
+
+       // For zombie detection, aggressive approach is best:
+       logger.warning("🔌 [VoiceCodeClient] Pong timeout, forcing reconnection")
+       webSocket?.cancel(with: .abnormalClosure, reason: nil)
+       webSocket = nil
+       isConnected = false
+       stopPingTimer()
+       reconnectionAttempts = 0  // Reset backoff for detection-triggered reconnect
+       connect()
+   }
+   ```
+
+**Priority**: Medium-High - This directly impacts user experience during network instability, which is common on mobile. Implementing pong timeout (Recommendation 2) alone provides significant value as zombie connection detection. RTT tracking (Recommendations 1, 3, 4) provides additional intelligence for adaptive behavior.
+
+**Implementation approach**: Start with pong timeout timer (Recommendation 2) as it's self-contained and catches the most common problem (dead connections). Add RTT tracking later for more nuanced quality monitoring.
+
+<!-- Add findings for items 15-16 here -->
 
 ### Poor Bandwidth Handling
 
