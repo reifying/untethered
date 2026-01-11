@@ -12,7 +12,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Mobile-Specific | 3/3 | 8 | 8 |
 | Protocol Design | 3/3 | 3 | 3 |
 | Detecting Degraded Connections | 3/3 | 16 | 15 |
-| Poor Bandwidth Handling | 1/4 | 5 | 4 |
+| Poor Bandwidth Handling | 2/4 | 10 | 7 |
 | Intermittent Signal Handling | 4/4 | 16 | 16 |
 | App Lifecycle Resilience | 3/4 | 14 | 11 |
 | Network Transition Handling | 1/3 | 1 | 1 |
@@ -1498,7 +1498,114 @@ The implementation has **no message prioritization system**. Both iOS and backen
 - Multiple operations need to be queued (batch scenarios)
 - Client needs to handle connection recovery gracefully
 
-<!-- Add findings for items 18-20 here -->
+#### 18. Support message compression
+**Status**: Not Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:312-314` - WebSocket created with plain `URLRequest` (no compression options)
+- `backend/src/voice_code/server.clj` - http-kit WebSocket handler with no compression configuration
+- `backend/deps.edn` - http-kit 2.8.1 dependency (no compression library)
+- `backend/src/voice_code/server.clj:108-151` - `truncate-text-middle` uses text-level truncation, not compression
+
+**Findings**:
+The implementation has **no message compression support**. Neither iOS nor the backend configure WebSocket compression:
+
+**iOS Client:**
+1. **No compression negotiation**: `URLRequest` created with default configuration
+   - iOS `URLSessionWebSocketTask` does not enable `permessage-deflate` by default
+   - No custom URLSession configuration for compression
+   - Messages sent as plain JSON text without compression
+
+2. **No payload-level compression**: Messages are serialized to JSON and sent directly
+   - `sendMessage()` passes raw JSON string to `URLSessionWebSocketTask.Message.string()`
+   - No `Foundation.Data` compression (e.g., `NSData.compressed(using:)`) applied
+
+**Backend Server:**
+1. **http-kit lacks compression**: The http-kit 2.8.1 WebSocket implementation does not support `permessage-deflate` extension
+   - No compression negotiation during WebSocket upgrade
+   - `http/send!` sends messages as-is without compression
+   - No server-side configuration options for WebSocket compression
+
+2. **Truncation instead of compression**: Large messages are truncated, not compressed
+   - `truncate-response-text` caps messages at ~100-200 KB by removing middle content
+   - This is a size limit workaround, not bandwidth optimization
+   - Information is lost, not preserved in compressed form
+
+3. **No protocol-level compression**: JSON payloads have repetitive structures but no optimization
+   - Message types, field names repeated verbatim in every message
+   - Session IDs (36-character UUIDs) sent in full each time
+   - No binary protocol or field abbreviation
+
+**Message Size Analysis:**
+- Typical Claude response: 5-50 KB of JSON text (highly compressible)
+- Session history: Can exceed 100 KB, currently truncated
+- Command output: Variable, potentially large (build logs, test results)
+- Text compresses well: 2-4x reduction typical for JSON payloads
+
+**Best practice requirements:**
+- Compress payloads over threshold (e.g., 1KB) ❌ (no compression)
+- Use per-message compression (permessage-deflate) ❌ (not negotiated)
+- Consider protocol-level compression for repetitive structures ❌ (plain JSON)
+
+**Gaps**:
+1. No WebSocket `permessage-deflate` extension negotiation (iOS or backend)
+2. No payload-level compression for large messages
+3. http-kit does not support WebSocket compression extensions
+4. No binary protocol or field abbreviation for repetitive data
+5. Large messages truncated with data loss rather than compressed
+
+**Recommendations**:
+1. **Evaluate backend alternatives** for WebSocket compression:
+   - Option A: Replace http-kit with Aleph or Undertow (both support `permessage-deflate`)
+   - Option B: Add application-level gzip compression for payloads >1KB
+   - Option C: Keep current approach (truncation acceptable for single-user deployment)
+
+2. **If implementing application-level compression**:
+   ```clojure
+   ;; Backend: compress large payloads
+   (require '[clojure.java.io :as io])
+   (import '[java.util.zip GZIPOutputStream])
+
+   (defn compress-if-large [json-str threshold-bytes]
+     (let [bytes (.getBytes json-str "UTF-8")]
+       (if (< (count bytes) threshold-bytes)
+         {:compressed false :data json-str}
+         {:compressed true
+          :data (with-open [baos (java.io.ByteArrayOutputStream.)
+                            gzip (GZIPOutputStream. baos)]
+                  (.write gzip bytes)
+                  (.close gzip)
+                  (java.util.Base64/getEncoder (.encode (.toByteArray baos))))})))
+   ```
+
+   ```swift
+   // iOS: decompress if indicated
+   import Compression
+
+   func decompressIfNeeded(_ message: [String: Any]) -> [String: Any] {
+       guard let compressed = message["compressed"] as? Bool,
+             compressed,
+             let data = message["data"] as? String,
+             let compressedData = Data(base64Encoded: data) else {
+           return message
+       }
+       // Decompress using NSData.decompressed(using: .zlib)
+       // ... parse JSON from decompressed data
+   }
+   ```
+
+3. **Protocol-level optimization** (lower priority):
+   - Define numeric message type codes instead of strings
+   - Use short field aliases in JSON (e.g., `"t"` for `"type"`)
+   - Consider binary protocol (MessagePack, Protocol Buffers) for high-volume scenarios
+
+**Assessment**: Low-to-medium impact for current single-user deployment:
+- **Current workaround is functional**: Truncation handles the iOS 256KB limit
+- **Compression would preserve information**: No data loss from large responses
+- **Bandwidth reduction**: 2-4x smaller payloads would help on poor mobile networks
+- **Implementation cost**: Medium - requires backend library change or application-level protocol
+- **Recommendation**: Defer unless mobile data usage or large response handling becomes a pain point. The existing truncation approach is acceptable for the current use case.
+
+<!-- Add findings for items 19-20 here -->
 
 ### Intermittent Signal Handling
 
