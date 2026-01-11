@@ -46,27 +46,9 @@
 
 (defn format-worktree-prompt
   "Generate Claude prompt for worktree initialization"
-  [session-name worktree-path parent-directory branch-name worktree-label]
-  (format "You are working in a git worktree named '%s'.
-This worktree was created at %s from the repository at %s.
-The branch is '%s'.
-
-## Beads Worktree Context
-
-This worktree uses label-based beads isolation. Filter all beads commands by: `--label %s`
-
-**Finding work:**
-- `bd ready --label %s` - See tasks for this worktree
-- `bd list --label %s` - List all issues for this worktree
-
-**Creating issues:**
-- `bd create --labels %s \"Task title\"` - New tasks get the worktree label
-
-**Important:** Always include `--label %s` when using `bd ready` or `bd list` to see only issues relevant to this worktree.
-
-Don't do anything yet."
-          session-name worktree-path parent-directory branch-name
-          worktree-label worktree-label worktree-label worktree-label worktree-label))
+  [session-name worktree-path parent-directory branch-name]
+  (format "You are working in a git worktree named '%s'. This worktree was created at %s from the repository at %s. The branch is '%s'. Don't do anything yet."
+          session-name worktree-path parent-directory branch-name))
 
 (defn create-worktree!
   "Create a git worktree with the given parameters.
@@ -99,82 +81,30 @@ Don't do anything yet."
       {:success false
        :error (format "Exception during git worktree creation: %s" (ex-message e))})))
 
-(defn resolve-worktree-git-dir
-  "Resolve the actual git directory for a worktree.
-
-  Git worktrees have a .git file (not directory) that contains a gitdir: pointer.
-  This function reads that file and returns the actual git directory path.
+(defn init-beads!
+  "Initialize Beads in the worktree directory.
 
   Parameters:
   - worktree-path: Path to the worktree directory
-
-  Returns:
-  The resolved git directory path, or nil if not a worktree."
-  [worktree-path]
-  (let [git-path (io/file worktree-path ".git")]
-    (when (and (.exists git-path) (.isFile git-path))
-      (let [content (str/trim (slurp git-path))]
-        (when (str/starts-with? content "gitdir: ")
-          (subs content 8))))))
-
-(defn setup-beads-worktree!
-  "Set up beads worktree context with label-based isolation.
-
-  Instead of trying to create an isolated database (not supported by beads),
-  we use labels to logically partition work within the shared database.
-
-  Creates:
-  1. .beads-worktree file containing the worktree label
-  2. Excludes this file from git tracking
-
-  Parameters:
-  - worktree-path: Path to the worktree directory
-  - worktree-name: Sanitized name of the worktree (used as label suffix)
 
   Returns:
   {:success true/false
-   :label \"wt:panel-color\" (the worktree label)
-   :error \"error message\" (if failed)}"
-  [worktree-path worktree-name]
+   :error \"error message\" (if failed)
+   :stderr \"bd stderr\" (if failed)}"
+  [worktree-path]
   (try
-    (let [label (str "wt:" worktree-name)
-          config-file (io/file worktree-path ".beads-worktree")
-          ;; Resolve the actual git dir for worktrees
-          git-dir (or (resolve-worktree-git-dir worktree-path)
-                      (str worktree-path "/.git"))
-          exclude-file (io/file git-dir "info" "exclude")]
+    (log/info "Initializing Beads in worktree" {:worktree-path worktree-path})
 
-      (log/info "Setting up beads worktree context"
-                {:worktree-path worktree-path
-                 :git-dir git-dir
-                 :label label})
-
-      ;; Write the worktree label file
-      (spit config-file label)
-
-      ;; Ensure info directory exists
-      (.mkdirs (.getParentFile exclude-file))
-
-      ;; Add to git exclude (local only, not committed)
-      (let [exclude-content (when (.exists exclude-file)
-                              (slurp exclude-file))
-            needs-exclude? (or (nil? exclude-content)
-                               (not (str/includes? exclude-content ".beads-worktree")))]
-        (when needs-exclude?
-          (spit exclude-file
-                (str (or exclude-content "")
-                     (when (and exclude-content
-                                (not (str/ends-with? exclude-content "\n")))
-                       "\n")
-                     ".beads-worktree\n"))))
-
-      {:success true
-       :label label})
-
+    (let [result (shell/sh "bd" "init" "-q" :dir worktree-path)]
+      (if (zero? (:exit result))
+        {:success true}
+        {:success false
+         :error (format "Beads initialization failed: %s" (:err result))
+         :stderr (:err result)}))
     (catch Exception e
-      (log/error e "Exception during beads worktree setup")
+      (log/error e "Exception during Beads initialization")
       {:success false
-       :error (format "Exception during beads worktree setup: %s" (ex-message e))})))
+       :error (format "Exception during Beads initialization: %s" (ex-message e))})))
 
 (defn validate-worktree-creation
   "Validate inputs for worktree creation.
