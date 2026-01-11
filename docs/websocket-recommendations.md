@@ -12,7 +12,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Mobile-Specific | 3/3 | 8 | 8 |
 | Protocol Design | 3/3 | 3 | 3 |
 | Detecting Degraded Connections | 3/3 | 16 | 15 |
-| Poor Bandwidth Handling | 3/4 | 15 | 11 |
+| Poor Bandwidth Handling | 4/4 | 15 | 11 |
 | Intermittent Signal Handling | 4/4 | 16 | 16 |
 | App Lifecycle Resilience | 4/4 | 19 | 14 |
 | Network Transition Handling | 1/3 | 1 | 1 |
@@ -1723,6 +1723,101 @@ The protocol exists for size configuration, but it's designed for static limits 
   - Users frequently on degraded mobile networks (3G/edge)
   - Sessions with consistently large responses (code generation, logs)
   - Multi-device deployment where bandwidth varies significantly
+
+#### 20. Use delta sync instead of full sync
+**Status**: Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1120` - `subscribe(sessionId:)` sends `last_message_id` for delta sync
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1148` - `getNewestCachedMessageId(sessionId:context:)` fetches newest cached message UUID
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:576-591` - Reconnection restores subscriptions with delta sync
+- `ios/VoiceCode/Managers/SessionSyncManager.swift:141` - `handleSessionHistory()` merges new messages with existing
+- `backend/src/voice_code/server.clj:259` - `build-session-history-response` implements delta sync algorithm
+- `backend/src/voice_code/server.clj` - Subscribe handler extracts `last-message-id` and passes to response builder
+- `STANDARDS.md:210-223` - Protocol documentation for `subscribe` message with `last_message_id`
+- `STANDARDS.md:357-361` - Delta sync behavior documentation in `session_history` response
+- `ios/VoiceCodeTests/VoiceCodeClientDeltaSyncTests.swift` - iOS delta sync unit tests
+- `ios/VoiceCodeTests/SessionSyncManagerDeltaSyncTests.swift` - Session sync manager delta sync tests
+- `backend/test/voice_code/server_test.clj` - Backend delta sync tests (`test-build-session-history-delta-sync`, etc.)
+
+**Findings**:
+The implementation **fully supports delta sync** for efficient reconnection bandwidth usage:
+
+**iOS Client:**
+
+1. **Sends `last_message_id` in subscribe requests** ✅
+   - `subscribe(sessionId:)` calls `getNewestCachedMessageId()` to find newest cached message
+   - If found, includes `last_message_id` in the subscribe message
+   - Logs indicate delta sync mode: "Subscribing with delta sync, last: <id>"
+
+2. **CoreData query for newest message** ✅
+   - `getNewestCachedMessageId(sessionId:context:)` queries `CDMessage` sorted by timestamp descending
+   - Returns UUID as lowercase string per STANDARDS.md convention
+   - Handles invalid/empty session IDs gracefully (returns nil)
+
+3. **Reconnection uses delta sync** ✅
+   - `handleConnectedMessage()` restores active subscriptions after reconnection
+   - Each subscription includes `last_message_id` if cached messages exist
+   - Dramatically reduces bandwidth on network blips
+
+4. **Merge strategy for incoming messages** ✅
+   - `handleSessionHistory()` checks if messages array is empty (no new messages since last sync)
+   - Empty response preserves existing messages (no wipe)
+   - New messages merged with existing via `handleSessionUpdated()` logic
+
+**Backend Server:**
+
+1. **`build-session-history-response` algorithm** ✅
+   - Finds index of `last-message-id` in message array
+   - Returns only messages newer than that index
+   - Falls back to all messages if ID not found (backward compatible)
+   - Returns empty array when `last-message-id` is the newest message
+
+2. **Smart truncation with newest-first priority** ✅
+   - Works backwards from newest message
+   - Adds messages until byte budget exhausted
+   - Per-message truncation (20KB) prevents single large message from consuming budget
+   - Returns `is-complete: false` when budget exhausted
+
+3. **Response metadata** ✅
+   - `oldest_message_id`: UUID of oldest message in response
+   - `newest_message_id`: UUID of newest message in response
+   - `is_complete`: Boolean indicating if all requested messages were included
+   - `total_count`: Total messages in session (enables pagination awareness)
+
+**Protocol Design:**
+```json
+// Subscribe request with delta sync
+{
+  "type": "subscribe",
+  "session_id": "<claude-session-id>",
+  "last_message_id": "<uuid-of-newest-message-ios-has>"
+}
+
+// Response with delta sync metadata
+{
+  "type": "session_history",
+  "session_id": "<claude-session-id>",
+  "messages": [...],  // Only messages newer than last_message_id
+  "total_count": 150,
+  "oldest_message_id": "<uuid>",
+  "newest_message_id": "<uuid>",
+  "is_complete": true
+}
+```
+
+**Test Coverage:**
+- `VoiceCodeClientDeltaSyncTests.swift`: Tests `getNewestCachedMessageId()` with various scenarios (multiple messages, no messages, invalid UUID, lowercase output)
+- `SessionSyncManagerDeltaSyncTests.swift`: Tests `handleSessionHistory()` with empty messages preserving existing
+- `server_test.clj`: Tests `build-session-history-response` for delta sync, budget exhaustion, unknown IDs, chronological ordering
+
+**Best practice requirements:**
+- Send `last_message_id` to request only new messages ✅
+- Server returns diff, not complete state ✅
+- Dramatically reduces bandwidth on reconnection ✅
+
+**Gaps**: None identified.
+
+**Recommendations**: None - implementation fully meets best practice.
 
 ### Intermittent Signal Handling
 
