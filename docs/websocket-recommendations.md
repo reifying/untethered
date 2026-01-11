@@ -8,7 +8,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 |----------|----------|------------|-----------------|
 | Connection Management | 3/3 | 1 | 1 |
 | Message Delivery | 2/2 | 2 | 2 |
-| Authentication | 0/2 | - | - |
+| Authentication | 1/2 | 0 | 0 |
 | Mobile-Specific | 0/3 | - | - |
 | Protocol Design | 0/3 | - | - |
 | Detecting Degraded Connections | 0/3 | - | - |
@@ -215,7 +215,54 @@ The implementation correctly handles message ordering using timestamps:
 
 ### Authentication
 
-<!-- Add findings for items 6-7 here -->
+#### 6. Authenticate early in connection lifecycle
+**Status**: Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:539-554` - `handleMessage()` handles `hello` and immediately calls `sendConnectMessage()`
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1239-1278` - `sendConnectMessage()` sends API key to backend
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:672-684` - `auth_error` handling sets `requiresReauthentication = true`
+- `ios/VoiceCode/Managers/KeychainManager.swift:72-117` - Secure API key storage using iOS Keychain
+- `backend/src/voice_code/server.clj:authenticate-connect!` - Validates API key and marks channel authenticated
+- `backend/src/voice_code/server.clj:send-auth-error!` - Sends generic auth error and closes connection
+- `backend/src/voice_code/server.clj:handle-message` - Enforces auth check for all message types except `ping`
+
+**Findings**:
+The implementation fully follows best practices for early authentication:
+
+1. **Immediate authentication after WebSocket opens**:
+   - Backend sends `hello` message immediately on connection
+   - iOS responds with `connect` message containing API key (lines 1258-1277)
+   - No other messages are sent before authentication completes
+
+2. **Auth errors close connection and notify user**:
+   - Backend sends `auth_error` with generic message ("Authentication failed") to prevent info leakage
+   - Backend immediately closes connection after `auth_error` (line 444)
+   - iOS sets `isAuthenticated = false`, `requiresReauthentication = true` (lines 676-678)
+   - Reconnection attempts are stopped to prevent infinite retry loops (lines 680-682)
+   - User sees authentication UI prompting to re-scan QR code
+
+3. **Credentials stored securely in Keychain**:
+   - `KeychainManager` uses `kSecClassGenericPassword` for secure storage
+   - `kSecAttrAccessibleAfterFirstUnlock` allows access after first device unlock
+   - API key retrieved via `retrieveAPIKey()` for each connect attempt
+   - Supports sharing with Share Extension via keychain access groups
+
+4. **Protocol enforcement**:
+   - All messages except `ping` require prior authentication (handle-message cond check)
+   - Unauthenticated messages receive `auth_error` and connection closes
+   - Constant-time comparison prevents timing attacks (`auth/constant-time-equals?`)
+
+5. **Test coverage**:
+   - `VoiceCodeClientTests.swift:1376-1392` - Tests auth_error message structure
+   - `VoiceCodeClientTests.swift:1558-1582` - Tests `requiresReauthentication` flag behavior
+   - `VoiceCodeClientTests.swift:1584-1592` - Tests reconnection skip when reauth required
+   - `KeychainManagerTests.swift` - Tests Keychain storage operations
+
+**Gaps**: None identified.
+
+**Recommendations**: None - implementation fully meets best practice.
+
+<!-- Add findings for item 7 here -->
 
 ### Mobile-Specific Concerns
 
