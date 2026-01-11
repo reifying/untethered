@@ -17,7 +17,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | App Lifecycle Resilience | 1/4 | 3 | 3 |
 | Network Transition Handling | 1/3 | 1 | 1 |
 | Server-Side Resilience | 3/3 | 8 | 9 |
-| Observability | 0/3 | - | - |
+| Observability | 1/3 | 5 | 5 |
 | Edge Cases | 0/3 | - | - |
 
 ## Findings
@@ -1990,7 +1990,143 @@ The implementation has **partial circuit breaker behavior** with max retry limit
 
 ### Observability
 
-<!-- Add findings for items 35-37 here -->
+#### 35. Log connection lifecycle events
+**Status**: Partial
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:136-147` - App lifecycle (foreground/background) logged with `print()`
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:282-297` - WebSocket state cleanup logged with `logger`
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:304-315` - `connect()` logs URL and task resumed
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:328-345` - `disconnect()` logs lock clearing
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:401-426` - Reconnection attempts logged
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:491-511` - Connection failures logged with `logger.error`
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:542-565` - Hello/connected messages logged
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:674-683` - Auth errors logged
+- `ios/VoiceCode/Managers/LogManager.swift:27-38` - Central log capture with timestamps
+- `backend/src/voice_code/server.clj:1952` - `"WebSocket connection established"` with remote-addr
+- `backend/src/voice_code/server.clj:1971` - `"WebSocket connection closed"` with status
+- `backend/src/voice_code/server.clj:1057` - `"Client connected and authenticated"`
+- `backend/src/voice_code/server.clj:424` - `"Client authenticated successfully"`
+- `backend/src/voice_code/server.clj:397` - `"Authentication failed"` with reason
+
+**Findings**:
+Connection lifecycle logging is **partially implemented** with significant gaps:
+
+**What's implemented:**
+
+1. **iOS connection events** ✅
+   - Connect attempt: `"Connecting to WebSocket: <url>"` (line 304)
+   - Hello received: `"Received hello from server, connection confirmed"` (line 542)
+   - Connected: `"Session registered: <message>"` (line 562)
+   - Disconnect: Logs lock clearing (line 345)
+   - Reconnection attempts: Logs attempt count and delay (line 426)
+   - Max attempts reached: Logs error message (line 414)
+   - Auth errors: Logs and sets `requiresReauthentication` (line 674-679)
+
+2. **iOS failure logging** ✅
+   - WebSocket receive failures: `logger.error` with localized description (line 491)
+   - JSON parse failures: Logged with message prefix (line 525)
+   - Missing API key: Logged with error (line 1242)
+
+3. **Backend connection events** ✅
+   - Connection established: `"WebSocket connection established"` with `remote-addr` (line 1952)
+   - Connection closed: `"WebSocket connection closed"` with status (line 1971)
+   - Authentication: Logs success/failure with reason (lines 397, 424)
+   - Client authenticated: `"Client connected and authenticated"` (line 1057)
+
+**What's NOT implemented:**
+
+1. **No network type logging** ❌
+   - iOS doesn't log whether connection is on WiFi, cellular, or captive network
+   - Backend doesn't log network characteristics
+   - Critical for debugging intermittent connectivity issues
+
+2. **No timestamp correlation** ⚠️
+   - iOS uses `print()` and `logger` interchangeably
+   - `print()` has no timestamp; `LogManager.shared.log()` adds timestamp
+   - Some connection events use `print()`, others use `LogManager`
+   - Makes log correlation difficult
+
+3. **Mixed logging mechanisms** ⚠️
+   - `print()` statements go to Xcode console but not LogManager
+   - `logger` (OSLog) goes to system logs but not LogManager
+   - `LogManager.shared.log()` captures to in-memory buffer for debug view
+   - Connection lifecycle logs are split across all three
+
+4. **No RTT/latency logging** ❌
+   - Ping/pong cycle doesn't log round-trip time
+   - No visibility into connection quality degradation
+
+5. **Incomplete failure reasons** ⚠️
+   - Backend logs generic "WebSocket connection closed" without distinguishing:
+     - Normal close (user disconnected)
+     - Error close (network failure)
+     - Timeout close (no heartbeat)
+   - iOS logs `error.localizedDescription` which may be vague
+
+**Best practice requirements:**
+- Connect, disconnect, reconnect with timestamps ⚠️ (logged, but timestamps inconsistent)
+- Failure reasons (timeout, auth, server error) ⚠️ (some reasons, not all)
+- Network type at time of event ❌ (not implemented)
+
+**Gaps**:
+1. Network type (WiFi/cellular) not logged
+2. Connection lifecycle events use inconsistent logging (print vs logger vs LogManager)
+3. RTT/latency not logged for ping/pong cycles
+4. Backend close reason not distinguished (normal vs error)
+5. Timestamps not attached to all connection logs
+
+**Recommendations**:
+1. **Standardize iOS connection logging to LogManager**:
+   ```swift
+   // Replace all connection lifecycle print() with LogManager
+   LogManager.shared.log(
+       "WebSocket connected: \(serverURL)",
+       category: "Connection"
+   )
+   ```
+
+2. **Add network type to connection logs** (requires NWPathMonitor from Item 2):
+   ```swift
+   // After implementing NWPathMonitor
+   LogManager.shared.log(
+       "Connection established on \(networkType): \(serverURL)",
+       category: "Connection"
+   )
+   ```
+
+3. **Log RTT on ping/pong cycles**:
+   ```swift
+   let pingTime = Date()
+   // After receiving pong:
+   let rtt = Date().timeIntervalSince(pingTime)
+   LogManager.shared.log(
+       "Ping/pong RTT: \(Int(rtt * 1000))ms",
+       category: "Connection"
+   )
+   ```
+
+4. **Enhance backend close reason logging**:
+   ```clojure
+   (http/on-close channel
+     (fn [status]
+       (log/info "WebSocket connection closed"
+                 {:status status
+                  :close-reason (case status
+                                  :normal "client disconnect"
+                                  :going-away "client going away"
+                                  :error "connection error"
+                                  "unknown")
+                  :duration-ms (- (System/currentTimeMillis)
+                                  connection-start-time)})))
+   ```
+
+5. **Add connection duration to close logs**:
+   - Track connection start time in `connected-clients` atom
+   - Log duration on close for session length visibility
+
+**Priority**: Medium - Current logging is sufficient for basic debugging but lacks the detail needed to diagnose intermittent mobile connectivity issues. Network type logging (Recommendation 2) is most valuable but requires NWPathMonitor from Item 2. Standardizing to LogManager (Recommendation 1) is low-effort and improves log coherence.
+
+<!-- Add findings for items 36-37 here -->
 
 ### Edge Cases
 
