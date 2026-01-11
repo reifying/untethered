@@ -90,6 +90,10 @@
   ([cli-path args working-dir timeout-ms session-id]
    (run-process-with-file-redirection cli-path args working-dir timeout-ms session-id nil))
   ([cli-path args working-dir timeout-ms session-id env-vars]
+   (log/info "run-process-with-file-redirection" {:working-dir working-dir
+                                                  :session-id session-id
+                                                  :env-vars env-vars
+                                                  :has-env-vars? (boolean (seq env-vars))})
    (let [stdout-path (java.nio.file.Files/createTempFile
                       "claude-stdout-" ".json"
                       (into-array java.nio.file.attribute.FileAttribute
@@ -108,6 +112,7 @@
                                    :in :pipe}
                             working-dir (assoc :dir working-dir)
                             (seq env-vars) (assoc :env env-vars))
+             _ (log/info "Starting process with opts" {:process-opts (dissoc process-opts :out :err :in)})
              all-args (into [cli-path] args)
              process (apply proc/start process-opts all-args)
              exit-ref (proc/exit-ref process)]

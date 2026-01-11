@@ -19,7 +19,9 @@
    Results are memoized in worktree-cache."
   [dir]
   (if-let [cached (get @worktree-cache dir)]
-    cached
+    (do
+      (log/info "Worktree detection (cached)" {:dir dir :result cached})
+      cached)
     (let [result (shell/sh "git" "rev-parse" "--git-dir" :dir dir)
           git-dir (str/trim (:out result))
           ;; Worktrees have git-dir like: /path/to/.git/worktrees/<name>
@@ -28,7 +30,7 @@
           name (when worktree? (last (str/split git-dir #"/")))]
       (let [info {:worktree? worktree? :name name}]
         (swap! worktree-cache assoc dir info)
-        (log/debug "Detected worktree status" {:dir dir :info info})
+        (log/info "Worktree detection (fresh)" {:dir dir :git-dir git-dir :result info})
         info))))
 
 (defn ensure-beads-local!
@@ -66,14 +68,23 @@
    Sets BEADS_DB for worktrees with existing local database.
    Returns empty map for non-worktrees or worktrees without db."
   [dir]
+  (log/info "env-for-directory called" {:dir dir})
   (let [{:keys [worktree?]} (detect-worktree dir)]
     (if worktree?
-      (let [db-path (str dir "/.beads-local/local.db")]
-        (if (.exists (io/file db-path))
-          {"BEADS_DB" db-path}
+      (let [db-path (str dir "/.beads-local/local.db")
+            exists? (.exists (io/file db-path))]
+        (log/info "Worktree env check" {:dir dir :db-path db-path :exists? exists?})
+        (if exists?
+          (do
+            (log/info "Returning BEADS_DB env var" {:BEADS_DB db-path})
+            {"BEADS_DB" db-path})
           ;; Database doesn't exist yet - will be created on first use
-          {}))
-      {})))
+          (do
+            (log/warn "Worktree has no local beads db" {:dir dir :db-path db-path})
+            {})))
+      (do
+        (log/info "Not a worktree, no env vars" {:dir dir})
+        {}))))
 
 (defn clear-cache!
   "Clear the worktree detection cache. Primarily for testing."
