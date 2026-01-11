@@ -7,7 +7,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Category | Reviewed | Gaps Found | Recommendations |
 |----------|----------|------------|-----------------|
 | Connection Management | 3/3 | 1 | 1 |
-| Message Delivery | 1/2 | 2 | 2 |
+| Message Delivery | 2/2 | 2 | 2 |
 | Authentication | 0/2 | - | - |
 | Mobile-Specific | 0/3 | - | - |
 | Protocol Design | 0/3 | - | - |
@@ -180,7 +180,38 @@ The protocol specification in STANDARDS.md defines a complete message acknowledg
 3. **Implement replay on reconnection**: After `connect` succeeds, replay all undelivered messages for that iOS session
 4. **Make ack handler remove from queue**: Update `message-ack` handler to remove acknowledged message from undelivered queue
 
-<!-- Add findings for item 5 here -->
+#### 5. Message ordering handling
+**Status**: Implemented
+**Locations**:
+- `STANDARDS.md:443` - Protocol explicitly states "No strict ordering: Messages may be delivered out of order. Timestamps provide ordering hints."
+- `ios/VoiceCode/Models/CDMessage.swift:93` - Messages sorted by timestamp ascending for display
+- `ios/VoiceCode/Managers/SessionSyncManager.swift:682-690` - Extracts timestamp from messages and stores as serverTimestamp
+- `ios/VoiceCode/Models/CDMessage.swift:22` - CDMessage has `serverTimestamp` field for server-assigned timestamps
+- `backend/src/voice_code/server.clj:build-session-history-response` - Returns messages in chronological order
+
+**Findings**:
+The implementation correctly handles message ordering using timestamps:
+
+1. **Protocol design**: The protocol explicitly tolerates out-of-order delivery (STANDARDS.md:443). This is a deliberate design choice for a system where strict ordering is not required.
+
+2. **Timestamp-based ordering**: Messages include ISO-8601 timestamps from the backend, and iOS sorts messages by timestamp for display:
+   - `CDMessage.timestamp` is the primary sort key
+   - `CDMessage.serverTimestamp` stores server-assigned timestamp for reconciliation
+
+3. **Server authoritative timestamps**: The backend assigns timestamps when Claude CLI writes messages to .jsonl files. iOS extracts these via `extractTimestamp()` (SessionSyncManager.swift:682-690).
+
+4. **Display ordering**: Messages are always displayed chronologically (oldest first) regardless of arrival order:
+   - `CDMessage.fetchMessages()` sorts by timestamp ascending
+   - CoreData ensures consistent display ordering
+
+5. **No sequence numbers**: The protocol does not use sequence numbers because:
+   - Strict ordering is not a requirement for conversation display
+   - Timestamps provide sufficient ordering hints
+   - Simpler implementation with lower overhead
+
+**Gaps**: None identified. The protocol explicitly accepts out-of-order delivery and uses timestamps for ordering, which is appropriate for this use case.
+
+**Recommendations**: None - implementation meets the best practice. The decision to tolerate out-of-order delivery with timestamp-based sorting is appropriate for a conversation UI where strict ordering is not critical.
 
 ### Authentication
 
