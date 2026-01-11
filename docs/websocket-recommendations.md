@@ -10,7 +10,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Message Delivery | 2/2 | 2 | 2 |
 | Authentication | 2/2 | 0 | 0 |
 | Mobile-Specific | 1/3 | 0 | 0 |
-| Protocol Design | 2/3 | 3 | 3 |
+| Protocol Design | 3/3 | 3 | 3 |
 | Detecting Degraded Connections | 0/3 | - | - |
 | Poor Bandwidth Handling | 0/4 | - | - |
 | Intermittent Signal Handling | 2/4 | 8 | 8 |
@@ -505,7 +505,102 @@ The implementation has **partial idempotency** with key safeguards in place but 
 
 3. **Document command execution behavior**: Make explicit in protocol docs that `execute_command` is intentionally not idempotent - each call runs the command regardless of prior calls.
 
-<!-- Add findings for item 13 here -->
+#### 13. Provide clear error responses
+**Status**: Implemented
+**Locations**:
+- `backend/src/voice_code/server.clj:393-401` - `send-auth-error!` for authentication failures
+- `backend/src/voice_code/server.clj:851-898` - Error handling in prompt execution with session-id
+- `backend/src/voice_code/server.clj:1136-1258` - Protocol validation errors (missing fields)
+- `backend/src/voice_code/server.clj:1409-1417` - `compaction_error` with session context
+- `backend/src/voice_code/server.clj:1460-1484` - `infer_name_error` with session context
+- `backend/src/voice_code/server.clj:1494-1560` - `worktree_session_error` with context
+- `backend/src/voice_code/server.clj:1615-1617` - `command_error` with command-id context
+- `backend/src/voice_code/server.clj:1825-1826` - Unknown message type errors
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:659-670` - Generic `error` handler unlocks session
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:672-684` - `auth_error` handler sets `requiresReauthentication`
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:804-815` - `compaction_error` handler unlocks session
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:919-923` - `command_error` handler
+- `STANDARDS.md:256-285` - Protocol specification for error response types
+
+**Findings**:
+The implementation has **strong error response design** with clear type distinctions and recovery paths:
+
+**1. Auth errors distinguished from protocol errors** ✅
+
+The protocol clearly separates authentication failures from other errors:
+
+- `auth_error`: Authentication-specific failures (invalid API key, missing credentials, unauthenticated message attempts)
+  - Backend sends generic message ("Authentication failed") to prevent information leakage
+  - Connection closed immediately after sending
+  - iOS sets `requiresReauthentication = true` and stops reconnection attempts
+  - Recovery path: User must re-scan QR code or re-enter credentials
+
+- `error`: General protocol/processing errors (missing required fields, unknown message types, operation failures)
+  - Connection remains open for continued use
+  - iOS unlocks session if `session_id` is present
+  - Recovery path: User can retry the operation
+
+**2. Domain-specific error types** ✅
+
+The protocol defines specialized error types with rich context for different operations:
+
+| Error Type | Context Fields | Recovery Path |
+|------------|----------------|---------------|
+| `auth_error` | `message` | Re-authenticate (re-scan QR) |
+| `error` | `message`, `session_id` (optional) | Retry operation |
+| `compaction_error` | `session_id`, `error` | Retry compaction or ignore |
+| `infer_name_error` | `session_id`, `error` | Use default name |
+| `worktree_session_error` | `success: false`, `error`, `session_id` | Fix issue and retry |
+| `command_error` | `command_id`, `error` | Retry command |
+| `session_locked` | `session_id`, `message` | Wait for turn_complete |
+
+**3. Actionable error messages** ✅
+
+Error messages are specific and actionable:
+- `"session_id required in subscribe message"` - tells user exactly what's missing
+- `"Cannot specify both new_session_id and resume_session_id"` - explains conflict
+- `"Recipe not found: <recipe-id>"` - identifies the missing resource
+- `"Failed to kill session: <reason>"` - includes underlying error
+- `"Session not found: <session-id>"` - identifies invalid reference
+
+**4. Error recovery paths** ✅
+
+Each error type has a defined recovery path:
+
+- **Authentication errors**:
+  - iOS sets `requiresReauthentication = true`
+  - Reconnection timer stopped (prevents pointless retries)
+  - UI shows authentication error with option to re-scan QR
+
+- **Session errors with session_id**:
+  - iOS unlocks the session (`lockedSessions.remove(sessionId)`)
+  - User can retry the operation with the unlocked session
+
+- **Validation errors**:
+  - Error message describes missing/invalid field
+  - User/client can correct and retry
+
+- **Operation-specific errors** (compaction, command, worktree):
+  - Typed errors enable specific UI handling
+  - Context fields (session_id, command_id) enable correlation with pending operations
+
+**5. Error handling consistency** ✅
+
+Backend consistently:
+- Includes `session-id` in error responses when operation targets a specific session
+- Uses `send-to-client!` wrapper which applies message truncation
+- Logs errors with context before sending client response
+- Returns appropriate error type based on operation domain
+
+iOS consistently:
+- Unlocks sessions when error responses include session_id
+- Updates UI state (isProcessing, currentError) on errors
+- Logs errors with context for debugging
+- Provides callbacks for operation-specific error handling
+
+**Gaps**: None identified. The implementation fully meets the best practice with clear type distinctions, rich context, and defined recovery paths.
+
+**Recommendations**: None - implementation meets best practice.
 
 ### Detecting Degraded Connections
 
