@@ -10,7 +10,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Message Delivery | 2/2 | 2 | 2 |
 | Authentication | 2/2 | 0 | 0 |
 | Mobile-Specific | 0/3 | - | - |
-| Protocol Design | 1/3 | 0 | 0 |
+| Protocol Design | 2/3 | 3 | 3 |
 | Detecting Degraded Connections | 0/3 | - | - |
 | Poor Bandwidth Handling | 0/4 | - | - |
 | Intermittent Signal Handling | 1/4 | 4 | 4 |
@@ -353,7 +353,97 @@ The implementation fully meets this best practice across all three dimensions:
 
 **Recommendations**: None - implementation fully meets best practice.
 
-<!-- Add findings for items 12-13 here -->
+#### 12. Design idempotent operations
+**Status**: Partial
+**Locations**:
+- `ios/VoiceCode/Managers/SessionSyncManager.swift:171-191` - UUID-based deduplication for incoming messages
+- `ios/VoiceCode/Managers/SessionSyncManager.swift:695-700` - `extractMessageId()` extracts UUID from message data
+- `backend/src/voice_code/commands.clj:155-156` - `stop-session` returns success for non-existent session (idempotent)
+- `backend/src/voice_code/claude.clj:56-59` - `kill-claude-session` returns success for non-existent process (idempotent)
+- `backend/src/voice_code/server.clj:1269` - Session locking prevents duplicate prompt processing
+- `backend/src/voice_code/server.clj:440` - `generate-message-id` function (defined but not used for responses)
+- `STANDARDS.md:436-442` - Protocol specifies message ID and acknowledgment system
+
+**Findings**:
+The implementation has **partial idempotency** with key safeguards in place but gaps in message acknowledgment:
+
+**What's implemented:**
+
+1. **Session history deduplication** ✅
+   - iOS maintains `existingIds: Set<UUID>` of messages already in CoreData
+   - Incoming messages are checked against this set before insertion
+   - Duplicate messages are skipped: "skipped N duplicates" logged
+   - Uses backend-assigned UUIDs from Claude Code's .jsonl format
+
+2. **Session locking prevents duplicate prompt processing** ✅
+   - Backend acquires per-session lock before invoking Claude CLI
+   - Concurrent prompts to same session receive `session_locked` message
+   - Lock released on completion (success or error)
+   - Prevents forked conversations from duplicate sends
+
+3. **Delete/stop operations are idempotent** ✅
+   - `stop-session` (commands.clj:155): Returns `{:success true}` even if session doesn't exist
+   - `kill-claude-session` (claude.clj:56): Returns `{:success true}` for non-existent processes
+   - Client can safely retry these operations without side effects
+
+4. **File uploads delete after processing** ✅
+   - `ResourcesManager.processUpload()` deletes `.json` and `.data` files after successful upload
+   - Re-processing an upload after completion is a no-op (files don't exist)
+
+5. **Delta sync with `last_message_id`** ✅
+   - Client sends `last_message_id` in subscribe requests
+   - Backend returns only messages newer than this ID
+   - Prevents full history replay on every reconnection
+
+**What's NOT implemented:**
+
+1. **Response messages lack deduplication IDs** ❌
+   - `generate-message-id` function exists but isn't called for responses
+   - Responses don't include `message_id` field for client deduplication
+   - If a response were replayed (hypothetically), client has no way to detect duplicate
+
+2. **No message acknowledgment queue** ❌
+   - As documented in Item 4, backend doesn't buffer messages for replay
+   - `message-ack` handler is a no-op (only logs)
+   - Replayed messages require manual client handling
+
+3. **Command execution not idempotent** ⚠️
+   - `execute_command` runs command every time called
+   - No command ID deduplication (each call generates new `cmd-<UUID>`)
+   - Appropriate for shell commands (user expects each call to run), but replay could cause unintended side effects
+
+4. **Prompts not idempotent** ⚠️
+   - If a prompt is sent twice (network retry), session lock prevents concurrent processing
+   - But sequential retry would process prompt twice (no prompt deduplication by content or ID)
+   - Currently acceptable because prompts aren't automatically retried
+
+**Best practice requirements:**
+- Replayed messages shouldn't cause duplicate side effects ⚠️ (partial - some operations idempotent, others not)
+- Use message IDs for deduplication ⚠️ (implemented for session sync, not for responses)
+
+**Gaps**:
+1. Response messages don't include `message_id` for client-side deduplication
+2. No idempotency key for prompt requests (if client retries, prompt runs twice)
+3. Command execution has no replay protection (by design, but worth noting)
+
+**Recommendations**:
+1. **Add `message_id` to response messages**: Use existing `generate-message-id` function to attach IDs to `response`, `error`, and other important message types. Client can track received IDs and ignore duplicates.
+   ```clojure
+   ;; In send-response! or similar
+   {:type :response
+    :message-id (generate-message-id)
+    :success true
+    ...}
+   ```
+
+2. **Consider idempotency key for prompts** (optional): If prompt retries become a concern (e.g., with offline queueing from Item 21), add client-generated `idempotency_key` to prompt messages. Backend checks against recent keys and returns cached response for duplicates.
+   ```json
+   {"type": "prompt", "idempotency_key": "uuid-from-client", "text": "..."}
+   ```
+
+3. **Document command execution behavior**: Make explicit in protocol docs that `execute_command` is intentionally not idempotent - each call runs the command regardless of prior calls.
+
+<!-- Add findings for item 13 here -->
 
 ### Detecting Degraded Connections
 
