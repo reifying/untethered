@@ -8,7 +8,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 |----------|----------|------------|-----------------|
 | Connection Management | 3/3 | 1 | 1 |
 | Message Delivery | 2/2 | 2 | 2 |
-| Authentication | 1/2 | 0 | 0 |
+| Authentication | 2/2 | 0 | 0 |
 | Mobile-Specific | 0/3 | - | - |
 | Protocol Design | 0/3 | - | - |
 | Detecting Degraded Connections | 0/3 | - | - |
@@ -262,7 +262,46 @@ The implementation fully follows best practices for early authentication:
 
 **Recommendations**: None - implementation fully meets best practice.
 
-<!-- Add findings for item 7 here -->
+#### 7. Design for reconnection auth
+**Status**: Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/KeychainManager.swift:72-117` - Secure API key storage with `kSecAttrAccessibleAfterFirstUnlock`
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:44-46` - `apiKey` computed property retrieves from Keychain
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1239-1278` - `sendConnectMessage()` uses stored API key
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:672-684` - `requiresReauthentication` only set on actual auth failure
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:389-433` - Reconnection logic continues using stored credentials
+
+**Findings**:
+The implementation fully supports credential persistence across reconnections without user interaction:
+
+1. **API key persists in Keychain**:
+   - Stored using `kSecAttrAccessibleAfterFirstUnlock` accessibility class
+   - Survives app restarts, device reboots (after first unlock), and network blips
+   - Shared with Share Extension via keychain access group
+
+2. **Automatic credential retrieval on reconnection**:
+   - `apiKey` is a computed property that reads from Keychain on each access
+   - Every call to `sendConnectMessage()` retrieves the stored key
+   - No user interaction required for reconnection authentication
+
+3. **Clear separation of auth failure vs connection failure**:
+   - Network failures trigger reconnection with backoff (stored credentials reused)
+   - `requiresReauthentication` flag **only** set when backend returns `auth_error`
+   - User is only prompted to re-scan QR code when authentication actually fails
+
+4. **Graceful handling of credential absence**:
+   - If API key is missing from Keychain, `requiresReauthentication = true` is set
+   - Reconnection timer is stopped to avoid pointless retries
+   - User sees clear error: "API key not configured. Please scan QR code in Settings."
+
+5. **No token refresh complexity**:
+   - API key is a pre-shared secret that doesn't expire
+   - Simpler than OAuth/JWT refresh token flows
+   - Appropriate for this single-user deployment model
+
+**Gaps**: None identified.
+
+**Recommendations**: None - implementation fully meets best practice.
 
 ### Mobile-Specific Concerns
 
