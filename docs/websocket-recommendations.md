@@ -13,7 +13,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Protocol Design | 2/3 | 3 | 3 |
 | Detecting Degraded Connections | 0/3 | - | - |
 | Poor Bandwidth Handling | 0/4 | - | - |
-| Intermittent Signal Handling | 1/4 | 4 | 4 |
+| Intermittent Signal Handling | 2/4 | 8 | 8 |
 | App Lifecycle Resilience | 0/4 | - | - |
 | Network Transition Handling | 1/3 | 1 | 1 |
 | Server-Side Resilience | 1/3 | 4 | 4 |
@@ -602,7 +602,135 @@ The implementation has **partial offline-first support** with significant gaps:
 
 4. **Show offline indicator**: Display "Offline - messages queued" when disconnected with pending items
 
-<!-- Add findings for items 22-24 here -->
+#### 22. Implement optimistic UI with rollback
+**Status**: Partial
+**Locations**:
+- `ios/VoiceCode/Models/CDMessage.swift:8-12` - `MessageStatus` enum (`sending`, `confirmed`, `error`)
+- `ios/VoiceCode/Managers/SessionSyncManager.swift:237-288` - `createOptimisticMessage()` creates message with `.sending` status
+- `ios/VoiceCode/Managers/SessionSyncManager.swift:290-312` - `reconcileMessage()` updates status to `.confirmed`
+- `ios/VoiceCode/Managers/SessionSyncManager.swift:379-408` - Reconciliation in `handleSessionUpdated()`
+- `ios/VoiceCode/Views/ConversationView.swift:771-774` - Creates optimistic message before sending prompt
+- `ios/VoiceCode/Views/ConversationView.swift:1139-1147` - UI indicators: clock icon for `.sending`, exclamation for `.error`
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:664-670` - Session unlock on error (but no message status update)
+- `ios/VoiceCodeTests/OptimisticUITests.swift:1-112` - Tests for optimistic message creation
+
+**Findings**:
+The implementation has **optimistic UI** but lacks **rollback** on server rejection:
+
+**What's implemented (Optimistic UI):**
+
+1. **Immediate UI update on user action** ✅
+   - When user sends prompt, `createOptimisticMessage()` immediately creates a `CDMessage` in CoreData
+   - Message appears instantly in conversation with `messageStatus = .sending`
+   - No waiting for server confirmation before showing the message
+
+2. **Asynchronous server confirmation** ✅
+   - Prompt sent to backend via WebSocket while message is already visible
+   - When backend echoes user message in `session_updated`, `reconcileMessage()` finds the optimistic message by matching `(sessionId, role, text)`
+   - Status updated from `.sending` to `.confirmed`
+   - `serverTimestamp` populated with backend's authoritative timestamp
+
+3. **Visual status indicators** ✅
+   - `.sending`: Clock icon (⏱️) in caption
+   - `.error`: Red exclamation triangle icon (⚠️) in caption
+   - `.confirmed`: No indicator (message appears normal)
+
+4. **Session locking** ✅
+   - Optimistic session lock (`lockedSessions.insert`) prevents duplicate sends
+   - Lock released on `turn_complete` or `error` response
+
+**What's NOT implemented (Rollback):**
+
+1. **No rollback on server rejection** ❌
+   - When backend returns `error` message type, the session is unlocked (line 665-670)
+   - But the optimistic message's status is **not** updated to `.error`
+   - Message remains with `.sending` status indefinitely (visual inconsistency)
+   - No code path sets `messageStatus = .error` based on server response
+
+2. **No retry mechanism** ❌
+   - Error messages show exclamation icon but there's no tap-to-retry functionality
+   - Users cannot resend failed messages without manually re-typing
+   - The `.error` state exists in the enum but is never set by the error handler
+
+3. **No deletion of failed messages** ❌
+   - Alternative to rollback: delete the optimistic message on failure
+   - Currently not implemented - failed sends leave orphan messages
+
+4. **No timeout for unconfirmed messages** ❌
+   - If `session_updated` never arrives (e.g., backend crash), message stays `.sending` forever
+   - No background job to detect and mark stale `.sending` messages as `.error`
+
+**Best practice requirements:**
+- Update UI immediately on user action ✅ (optimistic message created)
+- Confirm with server asynchronously ✅ (reconciliation on `session_updated`)
+- Rollback UI if server rejects ❌ (error handler doesn't update message status)
+
+**Gaps**:
+1. Error response handler doesn't update optimistic message status to `.error`
+2. No mechanism to identify which optimistic message corresponds to a failed prompt
+3. No timeout handling for messages stuck in `.sending` status
+4. No retry UI for error messages
+
+**Recommendations**:
+1. **Track optimistic message ID for rollback**: Store the message ID when sending prompt
+   ```swift
+   // In sendPrompt():
+   var pendingMessageId: UUID?
+   syncManager.createOptimisticMessage(sessionId: session.id, text: text) { messageId in
+       pendingMessageId = messageId
+   }
+   // Store pendingMessageId for use in error handler
+   ```
+
+2. **Update message status on error**: When error response received with session_id, find and update the pending message
+   ```swift
+   // In handleMessage() "error" case:
+   if let sessionId = json["session_id"] as? String,
+      let sessionUUID = UUID(uuidString: sessionId) {
+       sessionSyncManager.markOptimisticMessageAsError(sessionId: sessionUUID)
+   }
+   ```
+
+3. **Add `markOptimisticMessageAsError()` method** to SessionSyncManager:
+   ```swift
+   func markOptimisticMessageAsError(sessionId: UUID) {
+       persistenceController.performBackgroundTask { context in
+           let request = CDMessage.fetchRequest()
+           request.predicate = NSPredicate(
+               format: "sessionId == %@ AND status == %@",
+               sessionId as CVarArg, MessageStatus.sending.rawValue
+           )
+           if let messages = try? context.fetch(request) {
+               for message in messages {
+                   message.messageStatus = .error
+               }
+               try? context.save()
+           }
+       }
+   }
+   ```
+
+4. **Add retry functionality**: Tap error message to retry sending
+   ```swift
+   // In MessageBubble:
+   if message.messageStatus == .error {
+       Button("Tap to retry") {
+           onRetry(message)
+       }
+   }
+   ```
+
+5. **Add timeout for stale messages**: Background task to mark old `.sending` messages as `.error`
+   ```swift
+   // Run periodically (e.g., on app foreground)
+   func timeoutStaleSendingMessages(olderThan: TimeInterval = 60) {
+       let cutoff = Date().addingTimeInterval(-olderThan)
+       // Find messages with status=sending and timestamp < cutoff
+       // Update their status to .error
+   }
+   ```
+
+<!-- Add findings for items 23-24 here -->
 
 ### App Lifecycle Resilience
 
