@@ -16,7 +16,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Intermittent Signal Handling | 1/4 | 4 | 4 |
 | App Lifecycle Resilience | 0/4 | - | - |
 | Network Transition Handling | 1/3 | 1 | 1 |
-| Server-Side Resilience | 0/3 | - | - |
+| Server-Side Resilience | 1/3 | 4 | 4 |
 | Observability | 0/3 | - | - |
 | Edge Cases | 0/3 | - | - |
 
@@ -622,7 +622,77 @@ The implementation does **not** detect or handle captive portals. A captive port
 
 ### Server-Side Resilience
 
-<!-- Add findings for items 32-34 here -->
+#### 32. Implement server-side connection draining
+**Status**: Not Implemented
+**Locations**:
+- `backend/src/voice_code/server.clj:2017-2029` - Graceful shutdown hook (saves state, no client notification)
+- `backend/src/voice_code/server.clj:445-455` - `broadcast-to-all-clients!` function (exists but unused for draining)
+- `backend/src/voice_code/server.clj:96` - `connected-clients` atom tracks active connections
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:538-1041` - Message handler (no "reconnect" message type)
+
+**Findings**:
+The implementation does **not** support server-side connection draining. Connection draining allows a server to notify clients before shutdown so they can gracefully reconnect to a new instance without experiencing connection failures.
+
+**Current server shutdown behavior:**
+1. JVM shutdown hook triggers (`Runtime/addShutdownHook`)
+2. Filesystem watcher stopped (`repl/stop-watcher!`)
+3. Session index saved to disk (`repl/save-index!`)
+4. HTTP server stopped with 100ms timeout (`@server-state :timeout 100`)
+5. Clients experience abrupt connection close
+
+**What clients experience:**
+- WebSocket connections terminate suddenly with no warning
+- iOS clients enter reconnection backoff loop, burning through retry attempts
+- If server restarts quickly, clients reconnect within 1-30s (depending on backoff)
+- If server is down for extended period, clients exhaust 20 retry attempts (~17 min total)
+
+**What the best practice recommends:**
+- Before shutdown, send "reconnect" hint to clients
+- Allow graceful migration to new server instance
+- Clients reconnect to healthy instance proactively
+
+**Infrastructure note:**
+This is a single-server deployment (no load balancer), so "migrate to new instance" doesn't directly apply. However, draining would still improve restart UX.
+
+**Gaps**:
+1. No "reconnect" or "draining" message type in protocol
+2. No client handling for server-initiated reconnection hint
+3. Clients discover server is down only through connection failure
+4. Backend doesn't notify clients before stopping WebSocket server
+
+**Recommendations**:
+1. **Add "draining" message type to protocol**: Server sends this before shutdown
+   ```json
+   Backend → Client: {
+     "type": "draining",
+     "message": "Server shutting down, please reconnect",
+     "retry_after_ms": 5000
+   }
+   ```
+
+2. **Broadcast draining message in shutdown hook**: Before closing connections
+   ```clojure
+   ;; In shutdown hook, before stopping server
+   (broadcast-to-all-clients! {:type :draining
+                               :message "Server shutting down"
+                               :retry-after-ms 5000})
+   (Thread/sleep 1000) ;; Give clients time to receive message
+   ```
+
+3. **Handle "draining" in iOS client**: Trigger immediate reconnection with delay
+   ```swift
+   case "draining":
+       print("⚠️ [VoiceCodeClient] Server draining, will reconnect")
+       let retryAfter = json["retry_after_ms"] as? Int ?? 5000
+       disconnect() // Clean disconnect
+       DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(retryAfter)) {
+           self.connect()
+       }
+   ```
+
+4. **Reset backoff on draining**: Client should not count draining-triggered disconnect against retry attempts (it's expected, not a failure)
+
+<!-- Add findings for items 33-34 here -->
 
 ### Observability
 
