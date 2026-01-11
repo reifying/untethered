@@ -15,7 +15,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Poor Bandwidth Handling | 4/4 | 15 | 11 |
 | Intermittent Signal Handling | 4/4 | 16 | 16 |
 | App Lifecycle Resilience | 4/4 | 19 | 14 |
-| Network Transition Handling | 1/3 | 1 | 1 |
+| Network Transition Handling | 2/3 | 8 | 8 |
 | Server-Side Resilience | 3/3 | 8 | 9 |
 | Observability | 3/3 | 16 | 16 |
 | Edge Cases | 2/3 | 7 | 6 |
@@ -2765,6 +2765,121 @@ The implementation does **not** use `UIApplication.beginBackgroundTask` to reque
 The implementation is straightforward and provides meaningful improvement for a common mobile usage pattern (user sends prompt, switches to another app while waiting).
 
 ### Network Transition Handling
+
+#### 29. Handle WiFi to Cellular handoffs
+**Status**: Not Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:93-131` - `setupLifecycleObservers()` handles app lifecycle but not network interface changes
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:389-433` - `setupReconnection()` timer-based reconnection without interface awareness
+
+**Findings**:
+The implementation does **not** detect or handle WiFi-to-Cellular (or Cellular-to-WiFi) network handoffs. This is closely related to item 2 (network reachability) but focuses specifically on network interface changes rather than general connectivity.
+
+**What happens during a network handoff:**
+1. Device moves out of WiFi range while connected to WebSocket
+2. iOS switches to cellular network
+3. Original WebSocket connection becomes stale (bound to old interface)
+4. TCP connection may remain "open" but be unusable (zombie connection)
+5. Data packets route through new interface but server still expects old connection
+6. Eventually fails with timeout or connection reset
+
+**Current behavior:**
+1. **No NWPathMonitor**: The codebase has no imports of the `Network` framework and no usage of `NWPathMonitor` to detect interface changes
+2. **No interface change detection**: The client doesn't know when the active network interface changes (WiFi → Cellular or vice versa)
+3. **Passive failure detection**: The client relies on WebSocket errors or ping/pong failures to detect dead connections
+4. **Delayed recovery**: Without proactive reconnection, user may wait 30-60 seconds (ping interval + timeout) before reconnection starts
+
+**Best practice recommends:**
+- Monitor for network interface changes using `NWPathMonitor`
+- Proactively reconnect on interface change (don't wait for failure)
+- May need to re-resolve DNS on new network (handled automatically by URLSession)
+
+**iOS implementation details:**
+The `NWPathMonitor` provides `path.usesInterfaceType` to detect:
+- `.wifi` - WiFi connection
+- `.cellular` - Cellular connection
+- `.wiredEthernet` - Wired (Mac only)
+
+Changes in interface type can be detected by comparing current and previous `NWPath` values.
+
+**Gaps**:
+1. No `NWPathMonitor` to detect interface type changes
+2. No proactive reconnection when WiFi ↔ Cellular switch occurs
+3. No tracking of current network interface type
+4. Relies on passive failure detection (ping timeout, WebSocket error)
+
+**Recommendations**:
+1. **Track interface type with NWPathMonitor** (extends item 2 implementation):
+   ```swift
+   import Network
+
+   private var pathMonitor: NWPathMonitor?
+   private var currentInterfaceType: NWInterface.InterfaceType?
+
+   private func setupNetworkMonitoring() {
+       pathMonitor = NWPathMonitor()
+       pathMonitor?.pathUpdateHandler = { [weak self] path in
+           self?.handlePathUpdate(path)
+       }
+       pathMonitor?.start(queue: DispatchQueue.global(qos: .utility))
+   }
+   ```
+
+2. **Detect interface type changes and reconnect proactively**:
+   ```swift
+   private func handlePathUpdate(_ path: NWPath) {
+       let newInterfaceType = determineInterfaceType(path)
+
+       // Check for interface type change (WiFi ↔ Cellular)
+       if let current = currentInterfaceType,
+          let new = newInterfaceType,
+          current != new {
+           print("🔄 Network interface changed: \(current) → \(new)")
+
+           // Proactively reconnect - don't wait for connection to fail
+           DispatchQueue.main.async { [weak self] in
+               self?.handleInterfaceChange()
+           }
+       }
+
+       currentInterfaceType = newInterfaceType
+   }
+
+   private func determineInterfaceType(_ path: NWPath) -> NWInterface.InterfaceType? {
+       if path.usesInterfaceType(.wifi) { return .wifi }
+       if path.usesInterfaceType(.cellular) { return .cellular }
+       if path.usesInterfaceType(.wiredEthernet) { return .wiredEthernet }
+       return nil
+   }
+
+   private func handleInterfaceChange() {
+       // Close current connection (it's bound to old interface)
+       webSocket?.cancel(with: .goingAway, reason: "Network interface changed".data(using: .utf8))
+       webSocket = nil
+
+       // Immediate reconnection - reset backoff since this isn't a failure
+       reconnectionAttempts = 0
+       connect(sessionId: sessionId)
+   }
+   ```
+
+3. **Log interface changes for debugging**:
+   ```swift
+   print("📶 Network interface: WiFi → Cellular")
+   print("📶 Network interface: Cellular → WiFi")
+   ```
+
+4. **Consider interface type in connection quality metrics**: Cellular connections typically have higher latency than WiFi, which affects timeout tuning (see item 30).
+
+**Relationship to other items:**
+- **Item 2 (Reachability)**: This item focuses on interface changes; item 2 focuses on overall reachability (satisfied vs unsatisfied)
+- **Item 30 (Path migration awareness)**: That item covers adjusting timeouts after interface change; this item covers detecting and reconnecting
+
+**Priority**: Medium-High - Network handoffs are common on mobile devices (user walks from WiFi to cellular range). Without proactive handling:
+- Connection becomes unresponsive for 30-60 seconds
+- User may think app is broken
+- Messages sent during handoff may be lost
+- Poor user experience in mobile scenarios
 
 #### 31. Handle captive portals
 **Status**: Not Implemented
