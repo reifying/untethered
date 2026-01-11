@@ -1810,6 +1810,55 @@
                                     :session-id session-id
                                     :reason "user-requested"}))))
 
+            "refresh_sessions"
+            ;; Client requests updated session list without re-authentication
+            (let [limit (or (:recent-sessions-limit data) 5)]
+              (log/info "Client requested session list refresh" {:limit limit})
+              ;; Send session list (same logic as in connect handler)
+              (let [all-sessions (repl/get-all-sessions)
+                    recent-sessions (->> all-sessions
+                                         (filter #(pos? (or (:message-count %) 0)))
+                                         (sort-by :last-modified >)
+                                         (take 50)
+                                         (mapv #(select-keys % [:session-id :name :working-directory
+                                                                :last-modified :message-count])))
+                    total-non-empty (count (filter #(pos? (or (:message-count %) 0)) all-sessions))]
+                (log/info "Sending refreshed session list" {:count (count recent-sessions) :total total-non-empty})
+                (send-to-client! channel
+                                 {:type :session-list
+                                  :sessions recent-sessions
+                                  :total-count total-non-empty}))
+              ;; Send recent sessions
+              (send-recent-sessions! channel limit)
+              ;; Send available commands for current working directory (if set)
+              (when-let [working-dir (get-in @connected-clients [channel :working-directory])]
+                (let [project-commands (commands/parse-makefile working-dir)
+                      general-commands [{:id "git.status"
+                                         :label "Git Status"
+                                         :description "Show git working tree status"
+                                         :type :command}
+                                        {:id "git.push"
+                                         :label "Git Push"
+                                         :description "Push commits to remote repository"
+                                         :type :command}
+                                        {:id "git.worktree.list"
+                                         :label "Git Worktree List"
+                                         :description "List all git worktrees"
+                                         :type :command}
+                                        {:id "bd.ready"
+                                         :label "Beads Ready"
+                                         :description "Show tasks ready to work on"
+                                         :type :command}
+                                        {:id "bd.list"
+                                         :label "Beads List"
+                                         :description "List all beads tasks"
+                                         :type :command}]]
+                  (send-to-client! channel
+                                   {:type :available-commands
+                                    :working-directory working-dir
+                                    :project-commands project-commands
+                                    :general-commands general-commands}))))
+
             "get_available_recipes"
             (do
               (log/info "Sending available recipes")

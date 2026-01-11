@@ -222,6 +222,27 @@ Subscribes to session history and real-time updates. Supports delta sync for eff
 - `session_id` (required): Claude session ID to subscribe to
 - `last_message_id` (optional): UUID of the newest message iOS already has. If provided, backend returns only messages newer than this ID. If omitted or not found, backend returns all messages (backward compatible).
 
+**Refresh Sessions**
+```json
+{
+  "type": "refresh_sessions",
+  "recent_sessions_limit": 10
+}
+```
+
+Requests an updated session list without re-authentication. Use this instead of sending a `connect` message when the client needs to refresh the project/session list.
+
+**Fields:**
+- `type` (required): Always `"refresh_sessions"`
+- `recent_sessions_limit` (optional): Maximum number of recent sessions to return (default: 5)
+
+**Preconditions:**
+- Client must be authenticated (sent `connect` with valid `api_key` and received `connected`)
+- If not authenticated, backend sends `auth_error` and closes connection
+
+**Response:**
+Backend responds with `session_list` and `recent_sessions` messages (same as after `connect`). If the client has a working directory set, backend also sends `available_commands`.
+
 #### Backend → Client
 
 **Acknowledgment (Prompt Received)**

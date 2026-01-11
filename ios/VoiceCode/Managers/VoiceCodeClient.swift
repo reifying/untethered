@@ -1180,20 +1180,27 @@ class VoiceCodeClient: ObservableObject {
     }
 
     func requestSessionList() async {
-        // Request fresh session list from backend
-        // Backend will respond with session_list message
+        // Ensure we're authenticated before requesting
+        guard isAuthenticated else {
+            print("⚠️ [VoiceCodeClient] Cannot refresh sessions - not authenticated")
+            return
+        }
+
+        // Request fresh session list from backend using refresh_sessions message type
+        // (not connect, which would require re-authentication and break the connection)
+        // Backend will respond with session_list and recent_sessions messages
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             // Store continuation to resume when session_list is received
             sessionListContinuation = continuation
 
             var message: [String: Any] = [
-                "type": "connect"
+                "type": "refresh_sessions"
             ]
 
             // Include recent sessions limit from settings
             if let limit = appSettings?.recentSessionsLimit {
                 message["recent_sessions_limit"] = limit
-                print("🔄 [VoiceCodeClient] Requesting session list refresh (recent sessions limit: \(limit))")
+                print("🔄 [VoiceCodeClient] Requesting session list refresh (limit: \(limit))")
             } else {
                 print("🔄 [VoiceCodeClient] Requesting session list refresh")
             }
