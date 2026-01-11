@@ -6,7 +6,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 
 | Category | Reviewed | Gaps Found | Recommendations |
 |----------|----------|------------|-----------------|
-| Connection Management | 2/3 | 1 | 1 |
+| Connection Management | 3/3 | 1 | 1 |
 | Message Delivery | 0/2 | - | - |
 | Authentication | 0/2 | - | - |
 | Mobile-Specific | 0/3 | - | - |
@@ -92,6 +92,43 @@ What the best practice recommends:
 2. On network available: immediately attempt reconnection (reset backoff, connect)
 3. On network unavailable: pause reconnection timer (stop wasting battery)
 4. Track current network status to avoid redundant connection attempts
+
+#### 3. Heartbeats/ping-pong
+**Status**: Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:35-36` - `pingTimer` property with 30-second interval
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:439-458` - `startPingTimer()` starts after authentication
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:462-466` - `stopPingTimer()` stops on disconnect
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1115-1118` - `ping()` sends `{"type": "ping"}`
+- `backend/src/voice_code/server.clj:handle-message` - Responds with `{"type": "pong"}`
+
+**Findings**:
+The iOS client implements heartbeat/ping-pong with all recommended features:
+
+1. **Periodic pings**: 30-second interval (line 36: `pingInterval = 30.0`)
+   - Within recommended 30-60 second range
+   - Uses `DispatchSourceTimer` for reliable scheduling
+
+2. **Timer lifecycle management**:
+   - `startPingTimer()` called after successful authentication (line 597)
+   - `stopPingTimer()` called on disconnect (line 329) and connection failure (line 499)
+   - Cancels existing timer before creating new one (line 441)
+
+3. **Conditional ping sending**:
+   - Only sends if connected AND authenticated (lines 448-452)
+   - Prevents unnecessary pings during reconnection
+
+4. **Backend pong response**:
+   - Server immediately responds with `{"type": "pong"}` (handle-message case)
+   - No authentication required for ping (health check)
+
+5. **iOS URLSessionWebSocketTask built-in ping**:
+   - Note: iOS has native ping support, but we use application-level ping for explicit control
+   - Application-level ping allows better integration with our auth flow
+
+**Gaps**: None identified.
+
+**Recommendations**: None - implementation fully meets best practice.
 
 ### Message Delivery
 
