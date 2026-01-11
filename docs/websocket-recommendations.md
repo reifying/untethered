@@ -14,7 +14,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Detecting Degraded Connections | 3/3 | 16 | 15 |
 | Poor Bandwidth Handling | 1/4 | 5 | 4 |
 | Intermittent Signal Handling | 4/4 | 16 | 16 |
-| App Lifecycle Resilience | 2/4 | 10 | 8 |
+| App Lifecycle Resilience | 3/4 | 14 | 11 |
 | Network Transition Handling | 1/3 | 1 | 1 |
 | Server-Side Resilience | 3/3 | 8 | 9 |
 | Observability | 3/3 | 16 | 16 |
@@ -2174,6 +2174,147 @@ This provides **no delivery guarantee** for Share Extension uploads that exceed 
 4. **Reduce upload timeout**: Change `uploadTimeout` from 60s to 25s to fail fast within extension lifetime.
 
 **Priority**: High - Currently **uploads can be silently lost** for large files or slow networks. This is data loss that users won't notice until they try to use the file. Either implement background URLSession or add the App Group fallback (simpler).
+
+#### 27. Implement graceful degradation on background
+**Status**: Partial
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:93-131` - `setupLifecycleObservers()` registers for `didEnterBackgroundNotification` (iOS) and `didResignActiveNotification` (macOS)
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:146-148` - `handleAppEnteredBackground()` is an empty stub (only logs)
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:133-143` - `handleAppBecameActive()` reconnects on foreground
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:60` - `activeSubscriptions: Set<String>` persists subscription state in memory
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:575-593` - Subscription restoration on reconnection with delta sync
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1120-1140` - `subscribe()` stores `last_message_id` for delta sync
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1148-1168` - `getNewestCachedMessageId()` retrieves newest cached message ID from CoreData
+
+**Findings**:
+The implementation has **partial** graceful degradation with good foreground restoration but incomplete background handling:
+
+**Best practice requirements:**
+1. Close WebSocket cleanly before suspension ❌
+2. Store connection state (last message ID, session info) ✅
+3. Restore state on foreground, not full re-sync ✅
+
+**What's implemented:**
+
+1. **Connection state storage** ✅
+   - `activeSubscriptions: Set<String>` tracks which sessions the client is subscribed to
+   - CoreData stores all messages with their backend-assigned UUIDs
+   - `getNewestCachedMessageId()` queries CoreData to find the newest message ID for any session
+   - Session info (working directory, Claude session ID) persists in CoreData via `CDSession` entities
+
+2. **Foreground restoration with delta sync** ✅
+   - On reconnection, `activeSubscriptions` is preserved and all subscriptions are restored
+   - Each subscription includes `last_message_id` for delta sync (lines 581-592)
+   - Backend returns only messages newer than `last_message_id`, avoiding full re-sync
+   - This is highly efficient for reconnection after brief background periods
+
+3. **App lifecycle hooks exist** ✅
+   - iOS: `didEnterBackgroundNotification` triggers `handleAppEnteredBackground()`
+   - macOS: `didResignActiveNotification` triggers `handleAppEnteredBackground()`
+   - Foreground: `willEnterForegroundNotification` / `didBecomeActiveNotification` trigger `handleAppBecameActive()`
+
+**What's NOT implemented:**
+
+1. **No proactive WebSocket close on background** ❌
+   - `handleAppEnteredBackground()` only logs: `print("📱 [VoiceCodeClient] App entering background")`
+   - WebSocket remains open until iOS suspends the app and the connection times out
+   - This can lead to:
+     - Server holding stale connection state
+     - Unpredictable disconnection timing
+     - Missed opportunity to send final "going away" message
+
+2. **No graceful close code** ❌
+   - When iOS suspends the app, the WebSocket is terminated abruptly (not closed cleanly)
+   - Backend sees connection drop without close frame
+   - Backend may buffer messages for replay that won't be received until much later
+
+3. **activeSubscriptions not persisted to disk** ⚠️
+   - If app is terminated (force quit, crash, iOS memory pressure), `activeSubscriptions` is lost
+   - On next launch, subscriptions must be re-established manually
+   - However: this is partially mitigated by `session_list` message on reconnection
+
+**Current background flow:**
+```
+[App enters background]
+      ↓
+[handleAppEnteredBackground() logs only]
+      ↓
+[iOS eventually suspends app]
+      ↓
+[WebSocket times out (server-side) or disconnects on resume attempt]
+      ↓
+[App enters foreground]
+      ↓
+[handleAppBecameActive() reconnects]
+      ↓
+[Subscriptions restored with delta sync ✓]
+```
+
+**Recommended background flow:**
+```
+[App enters background]
+      ↓
+[Close WebSocket cleanly with .goingAway code]
+      ↓
+[activeSubscriptions preserved in memory]
+      ↓
+[iOS suspends app]
+      ↓
+[App enters foreground]
+      ↓
+[Reconnect WebSocket]
+      ↓
+[Restore subscriptions with delta sync]
+```
+
+**Gaps**:
+1. `handleAppEnteredBackground()` doesn't close WebSocket cleanly
+2. No "going away" close code sent to server before suspension
+3. `activeSubscriptions` not persisted to disk (lost on app termination)
+4. Backend may hold stale connection until timeout
+
+**Recommendations**:
+1. **Close WebSocket cleanly on background**:
+   ```swift
+   private func handleAppEnteredBackground() {
+       print("📱 [VoiceCodeClient] App entering background, closing WebSocket")
+       // Stop timers
+       stopPingTimer()
+       reconnectionTimer?.cancel()
+       reconnectionTimer = nil
+
+       // Close WebSocket cleanly
+       webSocket?.cancel(with: .goingAway, reason: "App backgrounded".data(using: .utf8))
+       webSocket = nil
+
+       // Update state (don't clear activeSubscriptions - needed for restore)
+       DispatchQueue.main.async { [weak self] in
+           self?.isConnected = false
+           self?.lockedSessions.removeAll()
+       }
+   }
+   ```
+
+2. **Persist activeSubscriptions to UserDefaults** (optional, for app termination resilience):
+   ```swift
+   private func persistSubscriptions() {
+       UserDefaults.standard.set(Array(activeSubscriptions), forKey: "activeSubscriptions")
+   }
+
+   private func loadPersistedSubscriptions() {
+       if let subs = UserDefaults.standard.stringArray(forKey: "activeSubscriptions") {
+           activeSubscriptions = Set(subs)
+       }
+   }
+   ```
+
+3. **Consider requestBackgroundTask for in-flight operations** (see Item 28):
+   If there are pending operations (e.g., waiting for turn_complete), request background execution time to receive them before suspension.
+
+**Priority**: Medium - Current implementation works well for typical usage (brief background periods followed by foreground return). The delta sync mechanism provides efficient state restoration. However, proactive WebSocket close would:
+- Free server resources faster
+- Provide cleaner disconnect semantics
+- Enable server-side handling of "graceful" vs "abrupt" disconnections
 
 ### Network Transition Handling
 
