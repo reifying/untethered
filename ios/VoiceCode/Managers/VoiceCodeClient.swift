@@ -4,6 +4,7 @@
 import Foundation
 import Combine
 import CoreData
+import Network
 #if os(iOS)
 import UIKit
 #elseif os(macOS)
@@ -29,8 +30,14 @@ class VoiceCodeClient: ObservableObject {
     @Published var resourcesList: [Resource] = []  // List of uploaded resources
     @Published var availableRecipes: [Recipe] = []  // All recipes from backend
     @Published var activeRecipes: [String: ActiveRecipe] = [:]  // session-id -> active recipe
+    @Published var networkStatus: NetworkStatus = .unknown  // Network availability for UI
 
     private var webSocket: URLSessionWebSocketTask?
+
+    // Network monitoring state (Feature 1: Network Reachability Monitoring)
+    private var pathMonitor: NWPathMonitor?
+    private var currentNetworkPath: NWPath?
+    private var isNetworkAvailable: Bool = true
     private var reconnectionTimer: DispatchSourceTimer?
     private var pingTimer: DispatchSourceTimer?  // Keepalive ping timer
     private let pingInterval: TimeInterval = 30.0  // Send ping every 30 seconds
@@ -87,6 +94,7 @@ class VoiceCodeClient: ObservableObject {
 
         if setupObservers {
             setupLifecycleObservers()
+            startNetworkMonitoring()  // Start monitoring network changes
         }
     }
 
@@ -133,11 +141,18 @@ class VoiceCodeClient: ObservableObject {
     private func handleAppBecameActive() {
         // Don't reconnect if reauthentication is required - user must provide new credentials
         if requiresReauthentication {
-            print("📱 [VoiceCodeClient] App became active, skipping reconnection - reauthentication required")
+            logger.info("📱 [VoiceCodeClient] App became active, skipping - reauthentication required")
             return
         }
+
+        // Don't reconnect if network is unavailable
+        guard isNetworkAvailable else {
+            logger.info("📱 [VoiceCodeClient] App became active, skipping - network unavailable")
+            return
+        }
+
         if !isConnected {
-            print("📱 [VoiceCodeClient] App became active, attempting reconnection...")
+            logger.info("📱 [VoiceCodeClient] App became active, attempting reconnection...")
             reconnectionAttempts = 0 // Reset backoff on foreground
             connect(sessionId: sessionId)
         }
@@ -388,6 +403,12 @@ class VoiceCodeClient: ObservableObject {
 
     private func setupReconnection() {
         reconnectionTimer?.cancel()
+
+        // Don't schedule reconnection if network is unavailable
+        guard isNetworkAvailable else {
+            logger.info("📶 [VoiceCodeClient] Network unavailable, skipping reconnection scheduling")
+            return
+        }
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
 
@@ -1581,6 +1602,112 @@ class VoiceCodeClient: ObservableObject {
     }
 }
 
+// MARK: - Network Monitoring (Feature 1: Network Reachability Monitoring)
+
+extension VoiceCodeClient {
+
+    /// Start monitoring network path changes using NWPathMonitor.
+    /// Called during initialization when setupObservers is true.
+    func startNetworkMonitoring() {
+        // Cancel any existing monitor
+        pathMonitor?.cancel()
+
+        let monitor = NWPathMonitor()
+
+        monitor.pathUpdateHandler = { [weak self] path in
+            self?.handleNetworkPathUpdate(path)
+        }
+
+        // Use dedicated queue to avoid main thread blocking
+        let queue = DispatchQueue(label: "dev.910labs.voice-code.network-monitor")
+        monitor.start(queue: queue)
+
+        pathMonitor = monitor
+        logger.info("📶 [VoiceCodeClient] Network monitoring started")
+    }
+
+    /// Stop network monitoring.
+    /// Called on disconnect or deinitialization.
+    func stopNetworkMonitoring() {
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        currentNetworkPath = nil
+        logger.debug("📶 [VoiceCodeClient] Network monitoring stopped")
+    }
+
+    /// Handle network path changes from NWPathMonitor.
+    /// - Parameter path: The new network path from the monitor.
+    private func handleNetworkPathUpdate(_ path: NWPath) {
+        // Dispatch to main queue for thread safety - all state access happens on main
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+
+            let wasAvailable = self.isNetworkAvailable
+            self.currentNetworkPath = path
+            self.isNetworkAvailable = (path.status == .satisfied)
+
+            // Update published status
+            self.networkStatus = self.mapPathToStatus(path)
+
+            if !wasAvailable && self.isNetworkAvailable {
+                // Network became available - immediate reconnection
+                self.handleNetworkBecameAvailable()
+            } else if wasAvailable && !self.isNetworkAvailable {
+                // Network became unavailable - pause reconnection
+                self.handleNetworkBecameUnavailable()
+            }
+            // Note: Interface change handling (WiFi↔Cellular) is Phase 1B (connectivity-1qq.3)
+        }
+    }
+
+    /// Map NWPath to NetworkStatus enum.
+    /// - Parameter path: The network path to map.
+    /// - Returns: The corresponding NetworkStatus value.
+    private func mapPathToStatus(_ path: NWPath) -> NetworkStatus {
+        switch path.status {
+        case .satisfied:
+            return path.isConstrained ? .constrained : .available
+        case .unsatisfied:
+            return .unavailable
+        case .requiresConnection:
+            return .unknown
+        @unknown default:
+            return .unknown
+        }
+    }
+
+    /// Network became available after being unavailable.
+    /// Reset backoff and attempt immediate reconnection.
+    private func handleNetworkBecameAvailable() {
+        logger.info("📶 [VoiceCodeClient] Network became available, attempting immediate reconnection")
+
+        // Reset backoff for immediate attempt
+        reconnectionAttempts = 0
+
+        // Cancel any pending reconnection timer
+        reconnectionTimer?.cancel()
+        reconnectionTimer = nil
+
+        // Attempt immediate reconnection if not already connected and not requiring reauth
+        if !isConnected && !requiresReauthentication {
+            connect(sessionId: sessionId)
+        }
+    }
+
+    /// Network became unavailable.
+    /// Pause reconnection attempts to save battery.
+    private func handleNetworkBecameUnavailable() {
+        logger.info("📶 [VoiceCodeClient] Network unavailable, pausing reconnection attempts")
+
+        // Stop reconnection timer to save battery
+        reconnectionTimer?.cancel()
+        reconnectionTimer = nil
+
+        // Note: Don't disconnect - let existing connection fail naturally
+        // This handles transient network blips
+    }
+}
+
 // MARK: - Network Status
 
 /// Network availability status for display and logic.
@@ -1614,10 +1741,11 @@ extension VoiceCodeClient {
     /// Set network availability for testing scenarios
     /// - Parameter available: Whether network should be considered available
     func testableSetNetworkAvailable(_ available: Bool) {
-        // Note: This will be used by Phase 1A when isNetworkAvailable property is added
-        // For now, this is a placeholder that enables test compilation
-        // The actual property will be added in connectivity-1qq.2
+        isNetworkAvailable = available
     }
+
+    /// Access to network availability state for testing
+    var testableIsNetworkAvailable: Bool { isNetworkAvailable }
 
     /// Set connected state for testing
     /// - Parameter connected: Whether client should be considered connected
@@ -1652,6 +1780,16 @@ extension VoiceCodeClient {
     /// Trigger handleAppEnteredBackground for testing background behavior
     func testableHandleAppEnteredBackground() {
         handleAppEnteredBackground()
+    }
+
+    /// Trigger handleNetworkBecameAvailable for testing network recovery behavior
+    func testableHandleNetworkBecameAvailable() {
+        handleNetworkBecameAvailable()
+    }
+
+    /// Trigger handleNetworkBecameUnavailable for testing network loss behavior
+    func testableHandleNetworkBecameUnavailable() {
+        handleNetworkBecameUnavailable()
     }
 
     // MARK: - Protocol-Based Test Methods

@@ -361,6 +361,95 @@ final class VoiceCodeClientNetworkTests: XCTestCase {
         XCTAssertNotEqual(NetworkStatus.available, NetworkStatus.unknown)
     }
 
+    // MARK: - Reconnection Behavior Tests
+
+    func testSetupReconnection_NetworkUnavailable_DoesNotScheduleTimer() {
+        // Given: Network is unavailable
+        client.testableSetNetworkAvailable(false)
+
+        // When: Setup reconnection is called
+        client.testableSetupReconnection()
+
+        // Then: No timer should be scheduled
+        XCTAssertNil(client.testableReconnectionTimer)
+    }
+
+    func testSetupReconnection_NetworkAvailable_SchedulesTimer() {
+        // Given: Network is available
+        client.testableSetNetworkAvailable(true)
+
+        // When: Setup reconnection is called
+        client.testableSetupReconnection()
+
+        // Then: Timer should be scheduled
+        XCTAssertNotNil(client.testableReconnectionTimer)
+    }
+
+    func testNetworkBecameAvailable_ResetsBackoff() {
+        // Given: Client was disconnected with backoff attempts
+        client.testableSetReconnectionAttempts(5)
+        client.testableSetConnected(false)
+        client.testableSetNetworkAvailable(true)
+
+        // When: Network becomes available
+        client.testableHandleNetworkBecameAvailable()
+
+        // Then: Backoff should be reset to 0
+        XCTAssertEqual(client.testableReconnectionAttempts, 0)
+    }
+
+    func testNetworkBecameUnavailable_CancelsReconnectionTimer() {
+        // Given: Network is available and timer is scheduled
+        client.testableSetNetworkAvailable(true)
+        client.testableSetupReconnection()
+        XCTAssertNotNil(client.testableReconnectionTimer)
+
+        // When: Network becomes unavailable
+        client.testableHandleNetworkBecameUnavailable()
+
+        // Then: Timer should be cancelled
+        XCTAssertNil(client.testableReconnectionTimer)
+    }
+
+    func testAppBecameActive_NetworkUnavailable_DoesNotReconnect() {
+        // Given: Client is disconnected and network is unavailable
+        client.testableSetConnected(false)
+        client.testableSetNetworkAvailable(false)
+
+        // When: App becomes active
+        client.testableHandleAppBecameActive()
+
+        // Then: Should NOT have attempted connection (still disconnected)
+        XCTAssertFalse(client.isConnected)
+    }
+
+    func testAppBecameActive_NetworkAvailable_AttemptsReconnect() {
+        // Given: Client is disconnected and network is available with previous backoff
+        client.testableSetConnected(false)
+        client.testableSetNetworkAvailable(true)
+        client.testableSetReconnectionAttempts(5)  // Simulate previous backoff
+
+        // When: App becomes active
+        // Note: This will attempt connect() but fail since there's no real server
+        // The test verifies the code path is taken by checking reconnectionAttempts is reset
+        client.testableHandleAppBecameActive()
+
+        // Then: Backoff should be reset (indicating reconnection was attempted)
+        XCTAssertEqual(client.testableReconnectionAttempts, 0)
+    }
+
+    func testNetworkAvailabilityAccessor_ReturnsCorrectValue() {
+        // Given: Network availability is set
+        client.testableSetNetworkAvailable(true)
+        XCTAssertTrue(client.testableIsNetworkAvailable)
+
+        // When: Set to false
+        client.testableSetNetworkAvailable(false)
+
+        // Then: Should return false
+        XCTAssertFalse(client.testableIsNetworkAvailable)
+    }
+
     // MARK: - Integration Tests (test methods work together)
 
     func testMapStatusAndInterfaceChange_Scenario_WiFiToCellularHandoff() {
