@@ -44,6 +44,13 @@ class VoiceCodeClient: ObservableObject {
     #if os(iOS)
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     #endif
+
+    // Heartbeat monitoring state (Feature 3: Server Heartbeat for Half-Open Detection)
+    private var lastHeartbeatReceived: Date?
+    private var heartbeatTimeoutTimer: DispatchSourceTimer?
+    private static let expectedHeartbeatInterval: TimeInterval = 45.0  // Backend sends every 45s
+    private static let heartbeatTimeout: TimeInterval = 90.0  // 2x interval
+
     private var pingTimer: DispatchSourceTimer?  // Keepalive ping timer
     private let pingInterval: TimeInterval = 30.0  // Send ping every 30 seconds
     private var serverURL: String
@@ -365,6 +372,9 @@ class VoiceCodeClient: ObservableObject {
         // Stop keepalive ping timer
         stopPingTimer()
 
+        // Stop heartbeat monitoring
+        stopHeartbeatMonitoring()
+
         reconnectionTimer?.cancel()
         reconnectionTimer = nil
 
@@ -638,6 +648,9 @@ class VoiceCodeClient: ObservableObject {
                 // Start ping keepalive timer after successful authentication
                 self.startPingTimer()
 
+                // Start heartbeat monitoring after successful authentication
+                self.startHeartbeatMonitoring()
+
             case "replay":
                 // Replayed message from undelivered queue
                 if let messageData = json["message"] as? [String: Any],
@@ -728,6 +741,10 @@ class VoiceCodeClient: ObservableObject {
             case "pong":
                 // Pong response to ping
                 break
+
+            case "heartbeat":
+                // Server heartbeat for half-open connection detection
+                self.handleHeartbeat(json)
 
             case "session_list":
                 // Initial session list received after connection
@@ -1868,6 +1885,88 @@ extension VoiceCodeClient {
     }
 }
 
+// MARK: - Heartbeat Monitoring (Feature 3: Server Heartbeat for Half-Open Detection)
+
+extension VoiceCodeClient {
+
+    /// Start monitoring for server heartbeats.
+    /// Called after receiving "connected" message (successful authentication).
+    /// Creates a 90-second timeout timer that fires periodically to check for heartbeat liveness.
+    func startHeartbeatMonitoring() {
+        // Cancel any existing timer
+        heartbeatTimeoutTimer?.cancel()
+
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+        timer.schedule(deadline: .now() + Self.heartbeatTimeout,
+                       repeating: Self.heartbeatTimeout)
+
+        timer.setEventHandler { [weak self] in
+            self?.checkHeartbeatTimeout()
+        }
+
+        timer.resume()
+        heartbeatTimeoutTimer = timer
+        lastHeartbeatReceived = Date()
+
+        logger.info("💓 [VoiceCodeClient] Heartbeat monitoring started (timeout: \(Self.heartbeatTimeout)s)")
+    }
+
+    /// Stop heartbeat monitoring.
+    /// Called on disconnect or connection failure.
+    func stopHeartbeatMonitoring() {
+        heartbeatTimeoutTimer?.cancel()
+        heartbeatTimeoutTimer = nil
+        lastHeartbeatReceived = nil
+        logger.debug("💓 [VoiceCodeClient] Heartbeat monitoring stopped")
+    }
+
+    /// Check if heartbeat has timed out.
+    /// Called periodically by the heartbeat timeout timer.
+    /// If no heartbeat received within 90 seconds, treats connection as zombie.
+    private func checkHeartbeatTimeout() {
+        // Only check if connected and authenticated
+        guard isConnected, isAuthenticated else { return }
+
+        // If no heartbeat ever received, server may not support heartbeat yet
+        // This provides graceful degradation for older backend versions
+        guard let lastHeartbeat = lastHeartbeatReceived else {
+            logger.debug("💓 [VoiceCodeClient] No heartbeat received yet, server may not support heartbeat")
+            return
+        }
+
+        let timeSinceLastHeartbeat = Date().timeIntervalSince(lastHeartbeat)
+
+        if timeSinceLastHeartbeat > Self.heartbeatTimeout {
+            logger.warning("💓 [VoiceCodeClient] Heartbeat timeout (\(String(format: "%.1f", timeSinceLastHeartbeat))s > \(Self.heartbeatTimeout)s), connection may be dead")
+            handleZombieConnection()
+        }
+    }
+
+    /// Handle detected zombie connection (half-open connection).
+    /// Forces disconnect and attempts immediate reconnection.
+    private func handleZombieConnection() {
+        logger.info("🧟 [VoiceCodeClient] Zombie connection detected, forcing reconnection")
+
+        // Force disconnect and reconnect
+        disconnect()
+        reconnectionAttempts = 0
+
+        // Only reconnect if network is available and not requiring reauth
+        if isNetworkAvailable && !requiresReauthentication {
+            connect(sessionId: sessionId)
+        }
+    }
+
+    /// Handle received heartbeat message from server.
+    /// Updates the last heartbeat timestamp for timeout detection.
+    /// - Parameter json: The heartbeat message JSON payload
+    private func handleHeartbeat(_ json: [String: Any]) {
+        lastHeartbeatReceived = Date()
+        // Debug level logging to avoid log noise (heartbeats are frequent)
+        logger.debug("💓 [VoiceCodeClient] Heartbeat received")
+    }
+}
+
 // MARK: - Network Status
 
 /// Network availability status for display and logic.
@@ -1941,6 +2040,41 @@ extension VoiceCodeClient {
     func testableHandleAppEnteredBackground() {
         handleAppEnteredBackground()
     }
+
+    // MARK: - Heartbeat Monitoring Test Accessors
+
+    /// Access to last heartbeat received timestamp for testing
+    var testableLastHeartbeatReceived: Date? { lastHeartbeatReceived }
+
+    /// Access to heartbeat timeout timer for testing
+    var testableHeartbeatTimeoutTimer: DispatchSourceTimer? { heartbeatTimeoutTimer }
+
+    /// Set last heartbeat received timestamp for testing timeout scenarios
+    /// - Parameter date: The date to set as last heartbeat, or nil to clear
+    func testableSetLastHeartbeat(_ date: Date?) {
+        lastHeartbeatReceived = date
+    }
+
+    /// Trigger checkHeartbeatTimeout for testing zombie detection
+    func testableCheckHeartbeatTimeout() {
+        checkHeartbeatTimeout()
+    }
+
+    /// Trigger handleZombieConnection for testing reconnection behavior
+    func testableHandleZombieConnection() {
+        handleZombieConnection()
+    }
+
+    /// Trigger handleHeartbeat for testing heartbeat handling
+    func testableHandleHeartbeat(_ json: [String: Any]) {
+        handleHeartbeat(json)
+    }
+
+    /// Access to expected heartbeat interval constant for testing
+    static var testableExpectedHeartbeatInterval: TimeInterval { expectedHeartbeatInterval }
+
+    /// Access to heartbeat timeout constant for testing
+    static var testableHeartbeatTimeout: TimeInterval { heartbeatTimeout }
 
     #if os(iOS)
     // MARK: - Background Lifecycle Test Accessors
