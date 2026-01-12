@@ -39,6 +39,11 @@ class VoiceCodeClient: ObservableObject {
     private var currentNetworkPath: NWPath?
     private var isNetworkAvailable: Bool = true
     private var reconnectionTimer: DispatchSourceTimer?
+
+    // Background lifecycle state (Feature 4: Background Lifecycle Management)
+    #if os(iOS)
+    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+    #endif
     private var pingTimer: DispatchSourceTimer?  // Keepalive ping timer
     private let pingInterval: TimeInterval = 30.0  // Send ping every 30 seconds
     private var serverURL: String
@@ -159,7 +164,23 @@ class VoiceCodeClient: ObservableObject {
     }
 
     private func handleAppEnteredBackground() {
-        print("📱 [VoiceCodeClient] App entering background")
+        logger.info("📱 [VoiceCodeClient] App entering background")
+
+        #if os(iOS)
+        // Request background time to complete cleanup
+        backgroundTaskID = UIApplication.shared.beginBackgroundTask(
+            withName: "VoiceCodeCleanup"
+        ) { [weak self] in
+            // Expiration handler - system is forcing us to stop
+            self?.completeBackgroundTask()
+        }
+
+        // Perform cleanup
+        performBackgroundCleanup()
+        #else
+        // macOS: Just disconnect cleanly
+        disconnect()
+        #endif
     }
 
     // MARK: - Debouncing
@@ -1602,6 +1623,90 @@ class VoiceCodeClient: ObservableObject {
     }
 }
 
+// MARK: - Background Lifecycle (Feature 4: Background Lifecycle Management)
+
+#if os(iOS)
+extension VoiceCodeClient {
+
+    /// Perform cleanup operations before suspension.
+    /// Called by handleAppEnteredBackground after requesting background task time.
+    private func performBackgroundCleanup() {
+        // Check if there are in-flight operations
+        let hasLockedSessions = !lockedSessions.isEmpty
+        let hasRunningCommands = !runningCommands.isEmpty
+
+        if hasLockedSessions || hasRunningCommands {
+            logger.info("📱 [VoiceCodeClient] In-flight operations detected, waiting... (locked sessions: \(self.lockedSessions.count), running commands: \(self.runningCommands.count))")
+
+            // Wait for operations to complete (with timeout)
+            waitForInFlightOperations { [weak self] in
+                self?.finalizeBackgroundCleanup()
+            }
+        } else {
+            // No in-flight operations, disconnect immediately
+            logger.info("📱 [VoiceCodeClient] No in-flight operations, disconnecting immediately")
+            finalizeBackgroundCleanup()
+        }
+    }
+
+    /// Wait for in-flight operations with timeout.
+    /// Polls every second until operations complete or timeout is reached.
+    /// - Parameter completion: Called when operations complete or timeout occurs.
+    private func waitForInFlightOperations(completion: @escaping () -> Void) {
+        let timeout: TimeInterval = 25.0  // iOS gives ~30s, leave margin
+        let startTime = Date()
+
+        // Poll for completion
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+        timer.schedule(deadline: .now(), repeating: 1.0)
+
+        timer.setEventHandler { [weak self] in
+            guard let self = self else {
+                timer.cancel()
+                return
+            }
+
+            let elapsed = Date().timeIntervalSince(startTime)
+            let stillBusy = !self.lockedSessions.isEmpty || !self.runningCommands.isEmpty
+
+            if !stillBusy || elapsed >= timeout {
+                timer.cancel()
+
+                if stillBusy {
+                    logger.warning("📱 [VoiceCodeClient] Timeout waiting for operations (elapsed: \(String(format: "%.1f", elapsed))s), disconnecting anyway")
+                } else {
+                    logger.info("📱 [VoiceCodeClient] All operations completed (elapsed: \(String(format: "%.1f", elapsed))s)")
+                }
+
+                completion()
+            }
+        }
+
+        timer.resume()
+    }
+
+    /// Final cleanup and disconnect.
+    /// Called after in-flight operations complete or timeout.
+    private func finalizeBackgroundCleanup() {
+        // Disconnect cleanly
+        disconnect()
+
+        // End background task
+        completeBackgroundTask()
+    }
+
+    /// Complete the background task.
+    /// Called when cleanup is done or when system forces expiration.
+    private func completeBackgroundTask() {
+        if backgroundTaskID != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTaskID)
+            backgroundTaskID = .invalid
+            logger.info("📱 [VoiceCodeClient] Background task completed")
+        }
+    }
+}
+#endif
+
 // MARK: - Network Monitoring (Feature 1: Network Reachability Monitoring)
 
 extension VoiceCodeClient {
@@ -1836,6 +1941,46 @@ extension VoiceCodeClient {
     func testableHandleAppEnteredBackground() {
         handleAppEnteredBackground()
     }
+
+    #if os(iOS)
+    // MARK: - Background Lifecycle Test Accessors
+
+    /// Access to background task ID for testing
+    var testableBackgroundTaskID: UIBackgroundTaskIdentifier { backgroundTaskID }
+
+    /// Set locked sessions for testing in-flight operations
+    /// - Parameter sessions: Set of session IDs to mark as locked
+    func testableSetLockedSessions(_ sessions: Set<String>) {
+        lockedSessions = sessions
+    }
+
+    /// Set running commands for testing in-flight operations
+    /// - Parameter commands: Dictionary of command session ID to CommandExecution
+    func testableSetRunningCommands(_ commands: [String: CommandExecution]) {
+        runningCommands = commands
+    }
+
+    /// Trigger performBackgroundCleanup for testing
+    func testablePerformBackgroundCleanup() {
+        performBackgroundCleanup()
+    }
+
+    /// Trigger finalizeBackgroundCleanup for testing
+    func testableFinalizeBgCleanup() {
+        finalizeBackgroundCleanup()
+    }
+
+    /// Trigger completeBackgroundTask for testing
+    func testableCompleteBackgroundTask() {
+        completeBackgroundTask()
+    }
+
+    /// Set background task ID for testing (allows simulating active background task)
+    /// - Parameter taskID: The background task identifier to set
+    func testableSetBackgroundTaskID(_ taskID: UIBackgroundTaskIdentifier) {
+        backgroundTaskID = taskID
+    }
+    #endif
 
     /// Trigger handleNetworkBecameAvailable for testing network recovery behavior
     func testableHandleNetworkBecameAvailable() {
