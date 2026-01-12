@@ -362,7 +362,31 @@ Mark tasks that can be worked in parallel with a note:
 ```
 ## Parallelization
 Can be worked alongside: [list task titles]
-```"
+```
+
+### Setting Up Dependency Links
+
+After creating all tasks, establish dependency links using `bd dep add`.
+This ensures `bd ready` only shows tasks that are actually ready to work on.
+
+**Syntax:** `bd dep add <blocked-task> <blocking-task>`
+(The blocked-task depends on blocking-task completing first)
+
+**Required dependencies:**
+1. Epic depends on ALL child tasks (epic can't close until children complete):
+   ```bash
+   bd dep add <epic-id> <child-task-1>
+   bd dep add <epic-id> <child-task-2>
+   # ... repeat for each child
+   ```
+
+2. Tasks depend on their prerequisites (tests depend on implementation, etc.):
+   ```bash
+   # Example: \"Write tests\" depends on \"Implement handler\"
+   bd dep add <test-task-id> <impl-task-id>
+   ```
+
+**Verify with:** `bd blocked` to see dependency relationships"
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :review-tasks}
@@ -386,10 +410,25 @@ Can be worked alongside: [list task titles]
 - [ ] No task is too vague (specific files and changes identified)
 
 ### Dependencies
-- [ ] Task dependencies are explicitly stated
+- [ ] Task dependencies are explicitly stated in descriptions
 - [ ] No circular dependencies exist
 - [ ] Foundation tasks come before dependent tasks
 - [ ] Parallelizable tasks are marked
+
+### Dependency Links (Critical)
+Run these commands to verify dependency links are properly set up:
+
+1. **Check blocked tasks:** `bd blocked`
+   - Tasks with prerequisites should appear here
+   - If nothing is blocked but tasks have dependencies, links are missing
+
+2. **Check epic dependencies:** `bd show <epic-id>`
+   - Epic should show \"Depends on\" section listing ALL child tasks
+   - If missing, epic will show as \"ready\" before children complete
+
+3. **Check ready tasks:** `bd ready`
+   - Only foundation tasks (no prerequisites) should appear
+   - If all tasks appear, dependency links are missing
 
 ### Traceability
 - [ ] Epic references the design document
@@ -410,7 +449,9 @@ Report any issues found."
 
 Use `bd edit <task-id>` to update task descriptions.
 Use `bd add` to create missing tasks.
-Use `bd delete <task-id>` to remove duplicate or unnecessary tasks."
+Use `bd delete <task-id>` to remove duplicate or unnecessary tasks.
+Use `bd dep add <blocked> <blocking>` to add missing dependency links.
+Use `bd dep rm <blocked> <blocking>` to remove incorrect dependencies."
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :review-tasks}
