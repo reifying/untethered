@@ -338,6 +338,26 @@ Sent when Claude CLI finishes processing a prompt successfully (turn is complete
 }
 ```
 
+**Heartbeat**
+```json
+{
+  "type": "heartbeat",
+  "timestamp": "<ISO-8601-timestamp>"
+}
+```
+
+Sent every 45 seconds from the backend to all connected clients. Used for half-open connection detection. Clients should track the last received heartbeat time and consider the connection dead if no heartbeat is received within 90 seconds (2x interval).
+
+**Fields:**
+- `type` (required): Always `"heartbeat"`
+- `timestamp` (required): ISO-8601 timestamp when heartbeat was generated
+
+**Client Behavior:**
+- Track `lastHeartbeatReceived` timestamp
+- If no heartbeat received within 90 seconds while authenticated, treat connection as zombie
+- Zombie detection should trigger disconnect and reconnection attempt
+- No acknowledgment required from client
+
 **Replayed Message**
 ```json
 {

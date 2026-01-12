@@ -437,6 +437,65 @@
   [channel]
   (swap! connected-clients dissoc channel))
 
+;; =============================================================================
+;; Heartbeat System
+;; =============================================================================
+
+(def heartbeat-interval-ms
+  "Interval between server heartbeats in milliseconds (45 seconds)"
+  45000)
+
+;; ScheduledExecutorService for heartbeat broadcasts
+(defonce heartbeat-executor (atom nil))
+
+(defn send-heartbeat!
+  "Send heartbeat to a specific client channel.
+   Removes stale channels if send fails."
+  [channel]
+  (when (contains? @connected-clients channel)
+    (try
+      (http/send! channel
+                  (generate-json {:type :heartbeat
+                                  :timestamp (.toString (java.time.Instant/now))}))
+      (catch Exception e
+        (log/warn e "Failed to send heartbeat, removing stale channel")
+        (unregister-channel! channel)))))
+
+(defn broadcast-heartbeat!
+  "Send heartbeat to all connected clients."
+  []
+  (log/debug "Broadcasting heartbeat to" (count @connected-clients) "clients")
+  (doseq [channel (keys @connected-clients)]
+    (send-heartbeat! channel)))
+
+(defn start-heartbeat-scheduler!
+  "Start the heartbeat scheduler.
+   Sends heartbeat to all connected clients every `heartbeat-interval-ms` milliseconds."
+  []
+  (when-not @heartbeat-executor
+    (let [executor (java.util.concurrent.Executors/newSingleThreadScheduledExecutor)
+          heartbeat-task (reify Runnable
+                           (run [_]
+                             (try
+                               (broadcast-heartbeat!)
+                               (catch Exception e
+                                 (log/error e "Error in heartbeat broadcast")))))]
+      (reset! heartbeat-executor executor)
+      (.scheduleAtFixedRate executor
+                            heartbeat-task
+                            heartbeat-interval-ms
+                            heartbeat-interval-ms
+                            java.util.concurrent.TimeUnit/MILLISECONDS)
+      (log/info "Heartbeat scheduler started" {:interval-ms heartbeat-interval-ms}))))
+
+(defn stop-heartbeat-scheduler!
+  "Stop the heartbeat scheduler."
+  []
+  (when-let [executor @heartbeat-executor]
+    (.shutdown executor)
+    (reset! heartbeat-executor nil)
+    (log/info "Heartbeat scheduler stopped")))
+
 (defn generate-message-id
   "Generate a UUID v4 for message tracking"
   []
@@ -2055,6 +2114,9 @@
       (catch Exception e
         (log/error e "Failed to start filesystem watcher")))
 
+    ;; Start heartbeat scheduler
+    (start-heartbeat-scheduler!)
+
     (log/info "Starting voice-code server"
               {:port port
                :host host
@@ -2068,6 +2130,8 @@
        (Runtime/getRuntime)
        (Thread. (fn []
                   (log/info "Shutting down voice-code server gracefully")
+                  ;; Stop heartbeat scheduler
+                  (stop-heartbeat-scheduler!)
                   ;; Stop filesystem watcher
                   (repl/stop-watcher!)
                   ;; Save session index
@@ -2079,6 +2143,7 @@
 
       (println (format "✓ Voice-code WebSocket server running on ws://%s:%d" host port))
       (println "  Authentication: ENABLED")
+      (println "  Heartbeat: ENABLED (45s interval)")
       (when default-dir
         (println (format "  Default working directory: %s" default-dir)))
       (println "  Ready for connections. Press Ctrl+C to stop.")

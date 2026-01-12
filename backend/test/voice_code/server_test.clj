@@ -751,6 +751,7 @@
           mock-channel :test-ch]
       ;; Setup: start recipe for session
       (reset! server/session-orchestration-state {})
+      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
       (server/start-recipe-for-session session-id :implement-and-review false)
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
@@ -1871,3 +1872,118 @@
           (is (true? (:is_complete response))))))
     (reset! server/api-key nil)))
 
+;; =============================================================================
+;; Heartbeat Tests
+;; =============================================================================
+
+(deftest test-send-heartbeat-to-connected-client
+  (testing "send-heartbeat! sends heartbeat message to connected client"
+    (reset! server/connected-clients {:ch1 {:deleted-sessions #{}}})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [channel msg]
+                      (swap! sent-messages conj {:channel channel :msg msg}))]
+        (server/send-heartbeat! :ch1)
+
+        ;; Verify message was sent
+        (is (= 1 (count @sent-messages)))
+        (let [{:keys [channel msg]} (first @sent-messages)
+              parsed (json/parse-string msg true)]
+          (is (= :ch1 channel))
+          (is (= "heartbeat" (:type parsed)))
+          (is (some? (:timestamp parsed)))
+          ;; Verify timestamp is valid ISO-8601 format
+          (is (re-matches #"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*" (:timestamp parsed)))))))
+  (reset! server/connected-clients {}))
+
+(deftest test-send-heartbeat-removes-stale-channel
+  (testing "send-heartbeat! removes channel when send fails"
+    (reset! server/connected-clients {:ch1 {:deleted-sessions #{}}})
+    (with-redefs [org.httpkit.server/send!
+                  (fn [_ _]
+                    (throw (Exception. "Connection closed")))]
+      ;; Should not throw, but should remove the channel
+      (server/send-heartbeat! :ch1)
+
+      ;; Channel should be removed
+      (is (empty? @server/connected-clients))))
+  (reset! server/connected-clients {}))
+
+(deftest test-send-heartbeat-ignores-unknown-channel
+  (testing "send-heartbeat! does nothing for unknown channel"
+    (reset! server/connected-clients {:ch1 {:deleted-sessions #{}}})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [channel msg]
+                      (swap! sent-messages conj {:channel channel :msg msg}))]
+        ;; Try to send to unknown channel
+        (server/send-heartbeat! :unknown-channel)
+
+        ;; Should not have sent anything
+        (is (empty? @sent-messages)))))
+  (reset! server/connected-clients {}))
+
+(deftest test-broadcast-heartbeat-to-all-clients
+  (testing "broadcast-heartbeat! sends to all connected clients"
+    (reset! server/connected-clients {:ch1 {:deleted-sessions #{}}
+                                      :ch2 {:deleted-sessions #{}}
+                                      :ch3 {:deleted-sessions #{}}})
+    (let [sent-count (atom 0)]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ _]
+                      (swap! sent-count inc))]
+        (server/broadcast-heartbeat!)
+
+        ;; Should have sent to all 3 clients
+        (is (= 3 @sent-count)))))
+  (reset! server/connected-clients {}))
+
+(deftest test-broadcast-heartbeat-handles-failures
+  (testing "broadcast-heartbeat! continues even when some sends fail"
+    (reset! server/connected-clients {:ch1 {:deleted-sessions #{}}
+                                      :ch2 {:deleted-sessions #{}}
+                                      :ch3 {:deleted-sessions #{}}})
+    (let [sent-count (atom 0)
+          fail-on-ch2 (atom true)]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch _]
+                      (if (and @fail-on-ch2 (= ch :ch2))
+                        (throw (Exception. "Connection closed"))
+                        (swap! sent-count inc)))]
+        (server/broadcast-heartbeat!)
+
+        ;; ch2 should be removed (failed), ch1 and ch3 should have received heartbeat
+        (is (= 2 @sent-count))
+        ;; ch2 should have been removed from connected-clients
+        (is (not (contains? @server/connected-clients :ch2)))
+        ;; ch1 and ch3 should still be present
+        (is (contains? @server/connected-clients :ch1))
+        (is (contains? @server/connected-clients :ch3)))))
+  (reset! server/connected-clients {}))
+
+(deftest test-heartbeat-scheduler-start-stop
+  (testing "start-heartbeat-scheduler! and stop-heartbeat-scheduler! work correctly"
+    ;; Ensure clean state
+    (server/stop-heartbeat-scheduler!)
+    (is (nil? @server/heartbeat-executor))
+
+    ;; Start scheduler
+    (server/start-heartbeat-scheduler!)
+    (is (some? @server/heartbeat-executor))
+
+    ;; Starting again should be idempotent (no-op)
+    (let [executor-before @server/heartbeat-executor]
+      (server/start-heartbeat-scheduler!)
+      (is (identical? executor-before @server/heartbeat-executor)))
+
+    ;; Stop scheduler
+    (server/stop-heartbeat-scheduler!)
+    (is (nil? @server/heartbeat-executor))
+
+    ;; Stopping again should be safe
+    (server/stop-heartbeat-scheduler!)
+    (is (nil? @server/heartbeat-executor))))
+
+(deftest test-heartbeat-interval-constant
+  (testing "heartbeat-interval-ms is 45 seconds (45000ms)"
+    (is (= 45000 server/heartbeat-interval-ms))))
