@@ -1580,3 +1580,114 @@ class VoiceCodeClient: ObservableObject {
         disconnect()
     }
 }
+
+// MARK: - Network Status
+
+/// Network availability status for display and logic.
+/// Used by network monitoring to categorize the current network state.
+enum NetworkStatus: Equatable {
+    /// Network status is unknown (e.g., during initialization)
+    case unknown
+    /// Network is available and ready for use
+    case available
+    /// Network is unavailable (no connection)
+    case unavailable
+    /// Network is constrained (e.g., Low Data Mode active)
+    case constrained
+}
+
+// MARK: - Test Accessors (DEBUG only)
+
+#if DEBUG
+extension VoiceCodeClient {
+
+    // MARK: - Internal State Accessors (read-only)
+
+    /// Access to reconnection timer for testing (e.g., verifying it's nil when network unavailable)
+    var testableReconnectionTimer: DispatchSourceTimer? { reconnectionTimer }
+
+    /// Access to reconnection attempts count for testing backoff reset behavior
+    var testableReconnectionAttempts: Int { reconnectionAttempts }
+
+    // MARK: - Internal State Mutators
+
+    /// Set network availability for testing scenarios
+    /// - Parameter available: Whether network should be considered available
+    func testableSetNetworkAvailable(_ available: Bool) {
+        // Note: This will be used by Phase 1A when isNetworkAvailable property is added
+        // For now, this is a placeholder that enables test compilation
+        // The actual property will be added in connectivity-1qq.2
+    }
+
+    /// Set connected state for testing
+    /// - Parameter connected: Whether client should be considered connected
+    func testableSetConnected(_ connected: Bool) {
+        isConnected = connected
+    }
+
+    /// Set authenticated state for testing
+    /// - Parameter authenticated: Whether client should be considered authenticated
+    func testableSetAuthenticated(_ authenticated: Bool) {
+        isAuthenticated = authenticated
+    }
+
+    /// Set reconnection attempts count for testing backoff behavior
+    /// - Parameter attempts: Number of reconnection attempts
+    func testableSetReconnectionAttempts(_ attempts: Int) {
+        reconnectionAttempts = attempts
+    }
+
+    // MARK: - Internal Method Triggers
+
+    /// Trigger setupReconnection for testing
+    func testableSetupReconnection() {
+        setupReconnection()
+    }
+
+    /// Trigger handleAppBecameActive for testing foreground behavior
+    func testableHandleAppBecameActive() {
+        handleAppBecameActive()
+    }
+
+    /// Trigger handleAppEnteredBackground for testing background behavior
+    func testableHandleAppEnteredBackground() {
+        handleAppEnteredBackground()
+    }
+
+    // MARK: - Protocol-Based Test Methods
+
+    /// Map a network path to NetworkStatus using protocol abstraction.
+    /// This allows testing with MockNWPath without requiring actual NWPath instances.
+    /// - Parameter path: Any object conforming to NetworkPathProtocol
+    /// - Returns: The corresponding NetworkStatus
+    func testableMapPathToStatus(_ path: NetworkPathProtocol) -> NetworkStatus {
+        switch path.status {
+        case .satisfied:
+            return path.isConstrained ? .constrained : .available
+        case .unsatisfied:
+            return .unavailable
+        case .requiresConnection:
+            return .unknown
+        @unknown default:
+            return .unknown
+        }
+    }
+
+    /// Detect if network interface changed between two paths using protocol abstraction.
+    /// This allows testing WiFi↔Cellular handoff detection with MockNWPath.
+    /// - Parameters:
+    ///   - oldPath: Previous network path (or nil if none)
+    ///   - newPath: Current network path
+    /// - Returns: True if interface type changed (WiFi↔Cellular)
+    func testableDidInterfaceChange(from oldPath: NetworkPathProtocol?, to newPath: NetworkPathProtocol) -> Bool {
+        guard let oldPath = oldPath else { return false }
+
+        let oldUsesWiFi = oldPath.usesInterfaceType(.wifi)
+        let newUsesWiFi = newPath.usesInterfaceType(.wifi)
+        let oldUsesCellular = oldPath.usesInterfaceType(.cellular)
+        let newUsesCellular = newPath.usesInterfaceType(.cellular)
+
+        return (oldUsesWiFi != newUsesWiFi) || (oldUsesCellular != newUsesCellular)
+    }
+}
+#endif
