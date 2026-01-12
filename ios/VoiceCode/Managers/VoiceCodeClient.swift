@@ -1643,6 +1643,7 @@ extension VoiceCodeClient {
             guard let self = self else { return }
 
             let wasAvailable = self.isNetworkAvailable
+            let previousPath = self.currentNetworkPath  // Capture before updating
             self.currentNetworkPath = path
             self.isNetworkAvailable = (path.status == .satisfied)
 
@@ -1655,8 +1656,10 @@ extension VoiceCodeClient {
             } else if wasAvailable && !self.isNetworkAvailable {
                 // Network became unavailable - pause reconnection
                 self.handleNetworkBecameUnavailable()
+            } else if self.isNetworkAvailable && self.didInterfaceChange(from: previousPath, to: path) {
+                // Interface changed (WiFi ↔ Cellular) - proactive reconnection
+                self.handleNetworkInterfaceChange(from: previousPath, to: path)
             }
-            // Note: Interface change handling (WiFi↔Cellular) is Phase 1B (connectivity-1qq.3)
         }
     }
 
@@ -1705,6 +1708,58 @@ extension VoiceCodeClient {
 
         // Note: Don't disconnect - let existing connection fail naturally
         // This handles transient network blips
+    }
+
+    /// Detect if network interface changed between two paths.
+    /// Used to trigger proactive reconnection on WiFi ↔ Cellular handoff.
+    /// - Parameters:
+    ///   - oldPath: Previous network path (or nil if none)
+    ///   - newPath: Current network path
+    /// - Returns: True if interface type changed (WiFi ↔ Cellular)
+    private func didInterfaceChange(from oldPath: NWPath?, to newPath: NWPath) -> Bool {
+        guard let oldPath = oldPath else { return false }
+
+        let oldUsesWiFi = oldPath.usesInterfaceType(.wifi)
+        let newUsesWiFi = newPath.usesInterfaceType(.wifi)
+        let oldUsesCellular = oldPath.usesInterfaceType(.cellular)
+        let newUsesCellular = newPath.usesInterfaceType(.cellular)
+
+        return (oldUsesWiFi != newUsesWiFi) || (oldUsesCellular != newUsesCellular)
+    }
+
+    /// Handle network interface change (WiFi ↔ Cellular).
+    /// Triggers proactive reconnection to prevent stale TCP connection issues.
+    /// - Parameters:
+    ///   - oldPath: Previous network path
+    ///   - newPath: Current network path
+    private func handleNetworkInterfaceChange(from oldPath: NWPath?, to newPath: NWPath) {
+        let fromInterface = describeInterface(oldPath)
+        let toInterface = describeInterface(newPath)
+
+        logger.info("📶 [VoiceCodeClient] Network interface changed: \(fromInterface) → \(toInterface)")
+
+        // Proactive reconnection on interface change
+        // Don't wait for connection to fail - disconnect and reconnect immediately
+        if isConnected {
+            // Disconnect cleanly
+            disconnect()
+
+            // Immediate reconnection attempt (backoff reset)
+            reconnectionAttempts = 0
+            connect(sessionId: sessionId)
+        }
+    }
+
+    /// Describe the network interface type for logging.
+    /// - Parameter path: Network path to describe
+    /// - Returns: Human-readable interface name
+    private func describeInterface(_ path: NWPath?) -> String {
+        guard let path = path else { return "none" }
+
+        if path.usesInterfaceType(.wifi) { return "WiFi" }
+        if path.usesInterfaceType(.cellular) { return "Cellular" }
+        if path.usesInterfaceType(.wiredEthernet) { return "Ethernet" }
+        return "other"
     }
 }
 
@@ -1790,6 +1845,37 @@ extension VoiceCodeClient {
     /// Trigger handleNetworkBecameUnavailable for testing network loss behavior
     func testableHandleNetworkBecameUnavailable() {
         handleNetworkBecameUnavailable()
+    }
+
+    /// Trigger handleNetworkInterfaceChange for testing WiFi↔Cellular handoff behavior
+    /// Uses protocol-based paths for testability with MockNWPath.
+    /// - Parameters:
+    ///   - oldPath: Previous network path
+    ///   - newPath: Current network path
+    func testableHandleNetworkInterfaceChange(from oldPath: NetworkPathProtocol?, to newPath: NetworkPathProtocol) {
+        let fromInterface = testableDescribeInterface(oldPath)
+        let toInterface = testableDescribeInterface(newPath)
+
+        logger.info("📶 [VoiceCodeClient] Network interface changed: \(fromInterface) → \(toInterface)")
+
+        // Proactive reconnection on interface change
+        if isConnected {
+            disconnect()
+            reconnectionAttempts = 0
+            connect(sessionId: sessionId)
+        }
+    }
+
+    /// Describe interface type for testing with MockNWPath.
+    /// - Parameter path: Any object conforming to NetworkPathProtocol
+    /// - Returns: Human-readable interface name
+    func testableDescribeInterface(_ path: NetworkPathProtocol?) -> String {
+        guard let path = path else { return "none" }
+
+        if path.usesInterfaceType(.wifi) { return "WiFi" }
+        if path.usesInterfaceType(.cellular) { return "Cellular" }
+        if path.usesInterfaceType(.wiredEthernet) { return "Ethernet" }
+        return "other"
     }
 
     // MARK: - Protocol-Based Test Methods

@@ -450,6 +450,109 @@ final class VoiceCodeClientNetworkTests: XCTestCase {
         XCTAssertFalse(client.testableIsNetworkAvailable)
     }
 
+    // MARK: - Interface Description Tests
+
+    func testDescribeInterface_WiFi_ReturnsWiFi() {
+        // Given: WiFi connected path
+        let path = MockNWPath.wifiConnected()
+
+        // When: Describing interface
+        let description = client.testableDescribeInterface(path)
+
+        // Then: Should return "WiFi"
+        XCTAssertEqual(description, "WiFi")
+    }
+
+    func testDescribeInterface_Cellular_ReturnsCellular() {
+        // Given: Cellular connected path
+        let path = MockNWPath.cellularConnected()
+
+        // When: Describing interface
+        let description = client.testableDescribeInterface(path)
+
+        // Then: Should return "Cellular"
+        XCTAssertEqual(description, "Cellular")
+    }
+
+    func testDescribeInterface_Ethernet_ReturnsEthernet() {
+        // Given: Ethernet connected path
+        let path = MockNWPath.ethernetConnected()
+
+        // When: Describing interface
+        let description = client.testableDescribeInterface(path)
+
+        // Then: Should return "Ethernet"
+        XCTAssertEqual(description, "Ethernet")
+    }
+
+    func testDescribeInterface_NoConnection_ReturnsOther() {
+        // Given: No connection path (no interface types)
+        let path = MockNWPath.noConnection()
+
+        // When: Describing interface
+        let description = client.testableDescribeInterface(path)
+
+        // Then: Should return "other" (no specific interface)
+        XCTAssertEqual(description, "other")
+    }
+
+    func testDescribeInterface_Nil_ReturnsNone() {
+        // Given: Nil path
+
+        // When: Describing interface
+        let description = client.testableDescribeInterface(nil)
+
+        // Then: Should return "none"
+        XCTAssertEqual(description, "none")
+    }
+
+    // MARK: - Interface Handoff Behavior Tests
+
+    func testHandleNetworkInterfaceChange_Connected_TriggersReconnect() {
+        // Given: Client is connected with backoff attempts
+        client.testableSetConnected(true)
+        client.testableSetReconnectionAttempts(3)
+
+        let oldPath = MockNWPath.wifiConnected()
+        let newPath = MockNWPath.cellularConnected()
+
+        // When: Interface change is handled
+        client.testableHandleNetworkInterfaceChange(from: oldPath, to: newPath)
+
+        // Then: Backoff should be reset (indicating reconnection was triggered)
+        XCTAssertEqual(client.testableReconnectionAttempts, 0)
+    }
+
+    func testHandleNetworkInterfaceChange_NotConnected_NoReconnect() {
+        // Given: Client is NOT connected
+        client.testableSetConnected(false)
+        client.testableSetReconnectionAttempts(3)
+
+        let oldPath = MockNWPath.wifiConnected()
+        let newPath = MockNWPath.cellularConnected()
+
+        // When: Interface change is handled
+        client.testableHandleNetworkInterfaceChange(from: oldPath, to: newPath)
+
+        // Then: Backoff should NOT be reset (no reconnection needed)
+        XCTAssertEqual(client.testableReconnectionAttempts, 3)
+    }
+
+    func testHandleNetworkInterfaceChange_CellularToWiFi_TriggersReconnect() {
+        // Given: Client is connected on Cellular, switching to WiFi
+        client.testableSetConnected(true)
+        client.testableSetReconnectionAttempts(5)
+
+        let oldPath = MockNWPath.cellularConnected()
+        let newPath = MockNWPath.wifiConnected()
+
+        // When: Interface change is handled (Cellular → WiFi)
+        client.testableHandleNetworkInterfaceChange(from: oldPath, to: newPath)
+
+        // Then: Backoff should be reset (proactive reconnection)
+        XCTAssertEqual(client.testableReconnectionAttempts, 0)
+    }
+
     // MARK: - Integration Tests (test methods work together)
 
     func testMapStatusAndInterfaceChange_Scenario_WiFiToCellularHandoff() {
