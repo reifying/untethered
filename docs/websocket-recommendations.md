@@ -1,8 +1,33 @@
 # WebSocket Implementation Recommendations
 
-This document captures findings and recommendations from reviewing our WebSocket implementation against best practices.
+This document captures findings and recommendations from reviewing our WebSocket implementation against best practices documented in [websocket-best-practices.md](websocket-best-practices.md).
 
-## Summary
+## Executive Summary
+
+**Overall Status:** 9 of 40 best practices fully implemented, 14 partially implemented, 15 not implemented, 2 not applicable.
+
+**Strengths:**
+- Robust reconnection with exponential backoff and jitter
+- Secure authentication with Keychain storage
+- Comprehensive message size handling with server-side truncation
+- Delta sync support reduces bandwidth on reconnection
+- Clean ping/pong heartbeat implementation
+
+**Critical Gaps (High Priority):**
+- No network reachability monitoring (`NWPathMonitor`) - reconnection timer fires blindly
+- No clean disconnect on app background - connections die when iOS suspends
+- No server heartbeats - can't detect half-open connections from client side
+- No background task for in-flight operations before suspension
+
+**Key Recommendations:**
+1. Add `NWPathMonitor` for network-aware reconnection (saves battery, better UX)
+2. Implement clean disconnect on background with `beginBackgroundTask`
+3. Add server-initiated heartbeats for half-open connection detection
+4. Complete message acknowledgment system (protocol defined, backend incomplete)
+
+See [Recommended Actions](#recommended-actions) for full prioritized list with implementation phases.
+
+## Summary by Category
 
 | Category | Reviewed | Gaps Found | Recommendations |
 |----------|----------|------------|-----------------|
@@ -4024,37 +4049,211 @@ The implementation **partially** follows this best practice with both platforms 
 
 ### High Priority
 
+These items have significant impact on reliability, user experience, or battery life.
+
 **Network Reachability Monitoring** (Item 2)
 - Add `NWPathMonitor` to VoiceCodeClient to detect network state changes
-- Pause reconnection timer when network is unreachable (battery savings)
+- Pause reconnection timer when network is unreachable (saves battery)
 - Immediately reconnect when network becomes available (better UX)
-- See [Network Transition Handling findings](#2-network-transition-handling-reachability) for full details
+- Foundation for items 29, 30 (network transition handling)
+
+**WiFi to Cellular Handoff** (Item 29)
+- Monitor for network interface changes via `NWPathMonitor`
+- Proactively reconnect on interface change (don't wait for failure)
+- Requires item 2 (Network Reachability) as prerequisite
+
+**Half-Open Connection Detection** (Item 24)
+- Add server-initiated heartbeats (not just client pings)
+- Client expects server heartbeat within interval
+- Detects zombie connections where server thinks client is gone but client thinks it's connected
+
+**Background Execution for Cleanup** (Item 28)
+- Use `beginBackgroundTask` to complete in-flight operations before suspension
+- Send pending acks before app suspends
+- Clean WebSocket disconnect on background (item 9)
+
+**App Lifecycle - Clean Disconnect on Background** (Item 9)
+- Close WebSocket gracefully when entering background
+- Currently left open, dies when iOS suspends app
+- Server wastes resources on connections to suspended clients
 
 ### Medium Priority
 
+These items improve robustness and developer experience.
+
 **Message Acknowledgment System** (Item 4)
 - Implement undelivered message queue per iOS session in backend
-- Attach `message_id` to response messages that require acknowledgment
+- Attach `message_id` to response messages
 - Replay unacknowledged messages on client reconnection
 - Make `message-ack` handler remove messages from queue
-- See [Message acknowledgment findings](#4-message-acknowledgment-system) for full details
 
 **Offline Prompt Queueing** (Item 21)
-- Add persistent prompt queue to CoreData (similar to file uploads queue)
+- Add persistent prompt queue to CoreData
 - Queue prompts when offline instead of silently dropping
 - Flush queue in order when connection is restored
-- Add retry mechanism for failed message sends
-- See [Offline-first design findings](#21-design-for-offline-first) for full details
+
+**Connection Quality Monitoring (RTT)** (Item 14)
+- Track ping/pong round-trip times
+- Detect degraded connections before they fail
+- Foundation for item 16 (slow vs dead detection)
+
+**Slow vs Dead Connection Detection** (Item 16)
+- Distinguish slow connections (increase timeouts) from dead (reconnect)
+- Progressive timeout increases before declaring dead
+- Requires item 14 (RTT tracking)
+
+**Application-Level Timeouts** (Item 15)
+- Add read timeout for prompt responses (beyond TCP)
+- Consider timeout per operation type (prompts longer than pings)
+- TCP can keep dead connections open for minutes
+
+**Circuit Breaker Pattern** (Item 34)
+- After N consecutive failures, stop retrying temporarily
+- Show "service unavailable" instead of endless spinner
+- Prevents battery drain on persistent server outage
+
+**Graceful Degradation on Background** (Item 27)
+- Store connection state before suspension
+- Restore subscriptions efficiently on foreground
+- Persist last message IDs for delta sync
+
+**Persist Pending Messages to Disk** (Item 25)
+- Write outgoing prompts to disk before sending
+- Delete from disk only after server ack
+- Survives app termination
+
+**User-Visible Connection Status** (Item 37)
+- Show explicit "Connecting...", "Connected", "Offline" states
+- Currently inferred from `isConnected` + `isAuthenticated`
+- Add "Degraded" state for slow connections
+- Manual reconnect button
+
+**Idempotent Operations** (Item 12)
+- Add message deduplication on backend
+- Prevent duplicate prompts on reconnection/retry
+- Use message IDs for deduplication
 
 ### Low Priority / Nice to Have
 
+These items are valuable but have lower impact or are rarely needed.
+
+**Message Prioritization** (Item 17)
+- Queue outgoing messages by priority
+- Send critical messages (auth, acks) before bulk data
+- Only matters under severe congestion
+
+**Message Compression** (Item 18)
+- Use per-message compression for payloads over threshold
+- WebSocket permessage-deflate extension
+- Reduces bandwidth on slow connections
+
+**Adaptive Payload Sizing** (Item 19)
+- Track successful vs failed message deliveries by size
+- Dynamically reduce max message size on repeated failures
+- Complex to implement, marginal benefit
+
+**Request Coalescing** (Item 23)
+- Batch multiple pending requests into single message
+- Deduplicate redundant requests
+- Only relevant for high-volume scenarios
+
+**Path Migration Awareness** (Item 30)
+- Reset RTT estimates after network change
+- Adjust timeouts for new network characteristics
+- Depends on items 2, 14
+
 **Captive Portal Detection** (Item 31)
-- Add HTTP probe before WebSocket connection to detect redirect responses
-- Show user-friendly alert explaining they need to authenticate with the network
-- Open Safari to captive.apple.com to trigger iOS's built-in captive portal handling
-- Pause reconnection timer while waiting for user to authenticate
-- See [Captive portal handling findings](#31-handle-captive-portals) for full details
+- HTTP probe before WebSocket to detect redirect
+- Show user-friendly alert
+- Pause reconnection while user authenticates
+
+**Server-Side Connection Draining** (Item 32)
+- Send "reconnect" hint before server shutdown
+- Graceful client migration to new instance
+- Only relevant for zero-downtime deploys
+
+**Client-Side Metrics** (Item 36)
+- Track connection success rate, reconnection time, latency
+- Export for monitoring/debugging
+- Useful for diagnosing systemic issues
+
+**Log Connection Lifecycle Events** (Item 35)
+- Structured logging for connect/disconnect/reconnect
+- Include network type, failure reasons
+- Partially implemented, needs enhancement
+
+**Optimistic UI Rollback** (Item 22)
+- Track optimistic state for potential rollback
+- Implement rollback mechanism on rejection
+- Currently fire-and-forget
+
+**Clock Skew Handling** (Item 38)
+- Calculate clock offset from server timestamps
+- Apply offset when comparing times
+- Mostly handled by server-authoritative timestamps
+
+**Replay Attack Protection** (Item 39)
+- Add nonce/timestamp to auth messages
+- Server rejects stale or reused credentials
+- Low risk given pre-shared key model
+
+**Battery Optimization** (Item 10)
+- Add network-aware ping interval (shorter on WiFi)
+- Batch non-urgent messages
+- Mostly addressed by fixing item 2
+
+**Message Corruption Handling** (Item 40)
+- Log unknown message types (currently silent)
+- Add structured validation logging
+- Current implementation prevents crashes
+
+### Not Applicable
+
+**Connection Affinity with Fallback** (Item 33)
+- Single-server architecture, not relevant
+- Would be needed for multi-server deployment
+
+**Background URLSession** (Item 26)
+- Already using HTTP POST for file uploads
+- Not suitable for WebSocket; alternative approach in place
+
+## Implementation Dependencies
+
+```
+Item 2 (Reachability) ─┬─> Item 29 (WiFi/Cellular Handoff)
+                       └─> Item 30 (Path Migration)
+                       └─> Item 10 (Battery - network-aware ping)
+
+Item 14 (RTT Tracking) ──> Item 16 (Slow vs Dead)
+                       └─> Item 30 (Path Migration)
+
+Item 9 (Background Disconnect) ──> Item 28 (Background Task)
+
+Item 4 (Message Ack) ──> Item 25 (Persist Messages)
+                     └─> Item 21 (Offline Queue)
+```
 
 ## Implementation Notes
 
-<!-- Add any implementation-specific notes, code snippets, or architectural considerations here -->
+**Suggested Implementation Order:**
+
+1. **Phase 1 - Network Awareness** (High impact, foundational)
+   - Item 2: NWPathMonitor integration
+   - Item 29: WiFi/Cellular handoff
+   - Item 9: Clean disconnect on background
+
+2. **Phase 2 - Connection Resilience**
+   - Item 24: Server heartbeats
+   - Item 14: RTT tracking
+   - Item 16: Slow vs dead detection
+   - Item 34: Circuit breaker
+
+3. **Phase 3 - Message Reliability**
+   - Item 4: Message acknowledgment
+   - Item 21: Offline queue
+   - Item 25: Persist pending messages
+
+4. **Phase 4 - Polish**
+   - Item 37: Connection status UI
+   - Item 35: Structured logging
+   - Remaining low-priority items as needed
