@@ -3,6 +3,7 @@
             [clojure.string :as str]
             [voice-code.server :as server]
             [voice-code.replication :as repl]
+            [voice-code.session-store :as session-store]
             [voice-code.recipes :as recipes]
             [cheshire.core :as json]
             [clojure.java.io :as io]))
@@ -518,6 +519,199 @@
 
         (is (= "/Users/test/fallback" @working-dir-used)
             "Should fall back to iOS working directory if session metadata not found")))
+    (reset! server/api-key nil)))
+
+;; ============================================================================
+;; Session Store Integration Tests
+;; ============================================================================
+
+(deftest test-prompt-creates-session-in-store
+  (testing "Prompt with new_session_id creates session in session-store"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [create-session-called (atom nil)]
+      (with-redefs [voice-code.session-store/create-session!
+                    (fn [session-id opts]
+                      (reset! create-session-called {:session-id session-id :opts opts}))
+                    voice-code.session-store/append-message!
+                    (fn [_ _] {:id "msg-1" :timestamp "2025-01-01T00:00:00Z"})
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & opts]
+                      (callback {:success true :session-id "new-session-123"}))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "Fix the login bug"
+                                 :new_session_id "new-session-123"
+                                 :working_directory "/Users/test/project"}))
+
+        (is (some? @create-session-called) "create-session! should be called for new sessions")
+        (is (= "new-session-123" (:session-id @create-session-called)))
+        (is (= "/Users/test/project" (get-in @create-session-called [:opts :working-directory])))
+        (is (= "Fix the login bug" (get-in @create-session-called [:opts :name]))
+            "Session name should be derived from prompt")))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-does-not-create-session-for-resume
+  (testing "Prompt with resume_session_id does not create new session in session-store"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [create-session-called (atom false)]
+      (with-redefs [voice-code.session-store/create-session!
+                    (fn [_ _] (reset! create-session-called true))
+                    voice-code.session-store/append-message!
+                    (fn [_ _] {:id "msg-1" :timestamp "2025-01-01T00:00:00Z"})
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:session-id "resume-456" :working-directory "/path"})
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & opts]
+                      (callback {:success true :session-id "resume-456"}))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "Continue working"
+                                 :resume_session_id "resume-456"}))
+
+        (is (false? @create-session-called)
+            "create-session! should NOT be called for resumed sessions")))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-stores-user-message
+  (testing "Prompt stores user message before invoking Claude"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [messages-appended (atom [])
+          claude-invoked (atom false)]
+      (with-redefs [voice-code.session-store/create-session!
+                    (fn [_ _] nil)
+                    voice-code.session-store/append-message!
+                    (fn [session-id msg]
+                      (swap! messages-appended conj {:session-id session-id
+                                                     :msg msg
+                                                     :claude-already-invoked @claude-invoked})
+                      {:id "msg-1" :timestamp "2025-01-01T00:00:00Z"})
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & opts]
+                      (reset! claude-invoked true)
+                      (callback {:success true
+                                 :session-id "test-123"
+                                 :result "Claude response"
+                                 :usage {:input-tokens 10 :output-tokens 20}
+                                 :cost {:input_cost 0.001 :output_cost 0.002 :total_cost 0.003}}))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "Hello Claude"
+                                 :new_session_id "test-123"}))
+
+        ;; Should have 2 messages: user before Claude, assistant after
+        (is (= 2 (count @messages-appended)))
+
+        ;; First message should be user, stored BEFORE Claude invocation
+        (let [user-msg (first @messages-appended)]
+          (is (= "test-123" (:session-id user-msg)))
+          (is (= "user" (get-in user-msg [:msg :role])))
+          (is (= "Hello Claude" (get-in user-msg [:msg :text])))
+          (is (false? (:claude-already-invoked user-msg))
+              "User message should be stored BEFORE Claude is invoked"))))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-stores-assistant-message-with-usage
+  (testing "Prompt stores assistant message with usage and cost data after success"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [messages-appended (atom [])]
+      (with-redefs [voice-code.session-store/create-session!
+                    (fn [_ _] nil)
+                    voice-code.session-store/append-message!
+                    (fn [session-id msg]
+                      (swap! messages-appended conj {:session-id session-id :msg msg})
+                      {:id "msg-1" :timestamp "2025-01-01T00:00:00Z"})
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & opts]
+                      (callback {:success true
+                                 :session-id "test-123"
+                                 :result "I'll help you fix that bug"
+                                 :usage {:input-tokens 100 :output-tokens 250}
+                                 :cost {:input_cost 0.01 :output_cost 0.025 :total_cost 0.035}}))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "Fix the bug"
+                                 :new_session_id "test-123"}))
+
+        ;; Second message should be assistant with usage/cost
+        (let [assistant-msg (second @messages-appended)]
+          (is (= "test-123" (:session-id assistant-msg)))
+          (is (= "assistant" (get-in assistant-msg [:msg :role])))
+          (is (= "I'll help you fix that bug" (get-in assistant-msg [:msg :text])))
+          (is (= {:input-tokens 100 :output-tokens 250} (get-in assistant-msg [:msg :usage])))
+          (is (= {:input-cost 0.01 :output-cost 0.025 :total-cost 0.035}
+                 (get-in assistant-msg [:msg :cost]))))))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-does-not-store-assistant-on-failure
+  (testing "Prompt does not store assistant message when Claude invocation fails"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [messages-appended (atom [])]
+      (with-redefs [voice-code.session-store/create-session!
+                    (fn [_ _] nil)
+                    voice-code.session-store/append-message!
+                    (fn [session-id msg]
+                      (swap! messages-appended conj {:session-id session-id :msg msg})
+                      {:id "msg-1" :timestamp "2025-01-01T00:00:00Z"})
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & opts]
+                      (callback {:success false
+                                 :error "Claude invocation failed"
+                                 :session-id "test-123"}))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "Fix the bug"
+                                 :new_session_id "test-123"}))
+
+        ;; Only user message should be stored, not assistant
+        (is (= 1 (count @messages-appended)))
+        (is (= "user" (get-in (first @messages-appended) [:msg :role])))))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-handles-missing-cost-data
+  (testing "Prompt handles Claude response without cost data gracefully"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [messages-appended (atom [])]
+      (with-redefs [voice-code.session-store/create-session!
+                    (fn [_ _] nil)
+                    voice-code.session-store/append-message!
+                    (fn [session-id msg]
+                      (swap! messages-appended conj {:session-id session-id :msg msg})
+                      {:id "msg-1" :timestamp "2025-01-01T00:00:00Z"})
+                    voice-code.claude/invoke-claude-async
+                    (fn [prompt callback & opts]
+                      (callback {:success true
+                                 :session-id "test-123"
+                                 :result "Response without cost"
+                                 :usage {:input-tokens 10 :output-tokens 20}}))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "prompt"
+                                 :text "Test"
+                                 :new_session_id "test-123"}))
+
+        ;; Assistant message should have nil cost when not provided
+        (let [assistant-msg (second @messages-appended)]
+          (is (= "assistant" (get-in assistant-msg [:msg :role])))
+          (is (nil? (get-in assistant-msg [:msg :cost])))
+          (is (= {:input-tokens 10 :output-tokens 20}
+                 (get-in assistant-msg [:msg :usage]))))))
     (reset! server/api-key nil)))
 
 (deftest test-recent-sessions-message-format

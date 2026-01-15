@@ -16,7 +16,8 @@
             [voice-code.resources :as resources]
             [voice-code.recipes :as recipes]
             [voice-code.orchestration :as orch]
-            [voice-code.env :as env])
+            [voice-code.env :as env]
+            [voice-code.session-store :as session-store])
   (:gen-class))
 
 ;; JSON key conversion utilities
@@ -1286,7 +1287,16 @@
                       ;; Filesystem watcher will send session_ready once Claude CLI creates the file
                       (when new-session-id
                         (log/info "New session detected, registering for session_ready" {:session-id new-session-id})
-                        (swap! pending-new-sessions assoc new-session-id channel))
+                        (swap! pending-new-sessions assoc new-session-id channel)
+                        ;; Create session in our store with name derived from prompt
+                        (session-store/create-session! new-session-id
+                                                       {:name (session-store/derive-name-from-prompt prompt-text)
+                                                        :working-directory working-dir}))
+
+                      ;; Store user message before invoking Claude
+                      (session-store/append-message! claude-session-id
+                                                     {:role "user"
+                                                      :text prompt-text})
 
                       ;; Invoke Claude asynchronously
                       ;; NEW ARCHITECTURE: Don't send response directly
@@ -1296,11 +1306,20 @@
                        (fn [response]
                          ;; Always release lock when done (success or failure)
                          (try
-                           ;; Just log completion - let filesystem watcher handle updates
+                           ;; Store assistant response and send turn_complete
                            (if (:success response)
                              (do
                                (log/info "Prompt completed successfully"
                                          {:session-id (:session-id response)})
+                               ;; Store assistant message with usage and cost data
+                               (session-store/append-message! claude-session-id
+                                                              {:role "assistant"
+                                                               :text (:result response)
+                                                               :usage (:usage response)
+                                                               :cost (when-let [c (:cost response)]
+                                                                       {:input-cost (:input_cost c)
+                                                                        :output-cost (:output_cost c)
+                                                                        :total-cost (:total_cost c)})})
                                ;; Send turn_complete message so iOS can unlock
                                (send-to-client! channel
                                                 {:type :turn-complete
