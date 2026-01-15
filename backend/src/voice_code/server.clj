@@ -1893,20 +1893,60 @@
                               {:success false
                                :error (str "Invalid request: " (ex-message e))})}))))))
 
+(defn handle-hook-stop
+  "Handle Stop hook notifications from external Claude sessions.
+   Records session existence without storing conversation content.
+   No authentication required (local-only, low-risk data)."
+  [req channel]
+  (try
+    (let [body (slurp (:body req))
+          data (parse-json body)
+          session-id (:session-id data)
+          cwd (:cwd data)]
+      (if (and session-id cwd)
+        (do
+          ;; Only record if not one of our sessions
+          (when-not (session-store/get-session-metadata session-id)
+            (log/info "Recording external session activity"
+                      {:session-id session-id :cwd cwd})
+            (session-store/record-external-activity! session-id cwd))
+          (http/send! channel
+                      {:status 200
+                       :headers {"Content-Type" "application/json"}
+                       :body (generate-json {:ok true})}))
+        (http/send! channel
+                    {:status 400
+                     :headers {"Content-Type" "application/json"}
+                     :body (generate-json {:error "session_id and cwd required"})})))
+    (catch Exception e
+      (log/error e "Error handling hook stop")
+      (http/send! channel
+                  {:status 500
+                   :headers {"Content-Type" "application/json"}
+                   :body (generate-json {:error (str "Internal error: " (ex-message e))})}))))
+
 ;; WebSocket handler
 (defn websocket-handler
-  "Handle WebSocket connections and HTTP upload requests"
+  "Handle WebSocket connections and HTTP requests"
   [request]
-  ;; Check for HTTP POST to /upload BEFORE with-channel
-  (if (and (= :post (:request-method request))
-           (= "/upload" (:uri request)))
-    ;; Handle synchronous HTTP upload
+  ;; Check for HTTP POST routes BEFORE with-channel
+  (cond
+    ;; HTTP POST /upload - file uploads from share extension
+    (and (= :post (:request-method request))
+         (= "/upload" (:uri request)))
     (http/with-channel request channel
       (handle-http-upload request channel)
-      ;; For synchronous response, we don't keep the channel open
       (http/close channel))
 
-    ;; Handle WebSocket connections
+    ;; HTTP POST /api/hook/stop - Stop hook notifications
+    (and (= :post (:request-method request))
+         (= "/api/hook/stop" (:uri request)))
+    (http/with-channel request channel
+      (handle-hook-stop request channel)
+      (http/close channel))
+
+    ;; Everything else - WebSocket connections
+    :else
     (http/with-channel request channel
       (if (http/websocket? channel)
         (do
@@ -1932,7 +1972,7 @@
                            (log/info "WebSocket connection closed" {:status status})
                            (unregister-channel! channel))))
 
-        ;; Not a WebSocket request and not /upload
+        ;; Not a WebSocket request
         (http/send! channel
                     {:status 400
                      :headers {"Content-Type" "text/plain"}

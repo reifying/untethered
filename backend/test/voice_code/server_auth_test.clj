@@ -404,6 +404,150 @@
         (finally
           (cleanup-dir temp-dir))))))
 
+(defn with-temp-sessions-dir
+  "Fixture that creates a temp directory for session storage."
+  [f]
+  (let [temp-dir (io/file (System/getProperty "java.io.tmpdir")
+                          (str "voice-code-hook-test-" (System/nanoTime)))]
+    (.mkdirs temp-dir)
+    (session-store/set-sessions-dir! (.getAbsolutePath temp-dir))
+    (try
+      (f)
+      (finally
+        (doseq [file (reverse (file-seq temp-dir))]
+          (.delete file))))))
+
+(deftest hook-stop-endpoint-test
+  (testing "POST to /api/hook/stop with valid JSON returns 200"
+    (with-temp-sessions-dir
+      (fn []
+        (let [sent-responses (atom [])
+              fake-channel (Object.)
+              request-body (server/generate-json {:session-id "ext-session-123"
+                                                  :cwd "/some/project"})
+              req {:body (java.io.ByteArrayInputStream. (.getBytes request-body))}]
+          (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-responses conj msg))]
+            (server/handle-hook-stop req fake-channel)
+            (is (= 1 (count @sent-responses)))
+            (let [resp (first @sent-responses)]
+              (is (= 200 (:status resp)))
+              (let [body (server/parse-json (:body resp))]
+                (is (= true (:ok body))))))))))
+
+  (testing "external session appears in session-store index"
+    (with-temp-sessions-dir
+      (fn []
+        (let [fake-channel (Object.)
+              session-id "external-test-456"
+              cwd "/Users/test/project"
+              request-body (server/generate-json {:session-id session-id :cwd cwd})
+              req {:body (java.io.ByteArrayInputStream. (.getBytes request-body))}]
+          (with-redefs [org.httpkit.server/send! (fn [_ _] nil)]
+            (server/handle-hook-stop req fake-channel)
+            ;; Verify session was recorded
+            (let [meta (session-store/get-session-metadata session-id)]
+              (is (some? meta) "External session should be recorded")
+              (is (= true (:external? meta)) "Session should be marked external")
+              (is (= cwd (:working-directory meta)) "Working directory should match")
+              (is (nil? (:name meta)) "External sessions have no name")))))))
+
+  (testing "no history file created for external sessions"
+    (with-temp-sessions-dir
+      (fn []
+        (let [fake-channel (Object.)
+              session-id "external-no-history-789"
+              request-body (server/generate-json {:session-id session-id :cwd "/tmp"})
+              req {:body (java.io.ByteArrayInputStream. (.getBytes request-body))}]
+          (with-redefs [org.httpkit.server/send! (fn [_ _] nil)]
+            (server/handle-hook-stop req fake-channel)
+            ;; Verify no history file was created
+            (is (nil? (session-store/load-session-history session-id))
+                "No history file should exist for external sessions"))))))
+
+  (testing "does not overwrite existing session"
+    (with-temp-sessions-dir
+      (fn []
+        (let [fake-channel (Object.)
+              session-id "existing-session-abc"
+              original-cwd "/original/path"]
+          ;; Create an existing session first
+          (session-store/create-session! session-id
+                                         {:name "My Session"
+                                          :working-directory original-cwd})
+          ;; Try to record external activity for same session
+          (let [request-body (server/generate-json {:session-id session-id
+                                                    :cwd "/different/path"})
+                req {:body (java.io.ByteArrayInputStream. (.getBytes request-body))}]
+            (with-redefs [org.httpkit.server/send! (fn [_ _] nil)]
+              (server/handle-hook-stop req fake-channel)
+              ;; Verify original session was NOT overwritten
+              (let [meta (session-store/get-session-metadata session-id)]
+                (is (= "My Session" (:name meta)) "Name should be preserved")
+                (is (= original-cwd (:working-directory meta)) "Working dir should be preserved")
+                (is (= false (:external? meta)) "Should not become external"))))))))
+
+  (testing "missing session_id returns 400"
+    (with-temp-sessions-dir
+      (fn []
+        (let [sent-responses (atom [])
+              fake-channel (Object.)
+              request-body (server/generate-json {:cwd "/some/path"}) ;; No session_id
+              req {:body (java.io.ByteArrayInputStream. (.getBytes request-body))}]
+          (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-responses conj msg))]
+            (server/handle-hook-stop req fake-channel)
+            (is (= 1 (count @sent-responses)))
+            (let [resp (first @sent-responses)]
+              (is (= 400 (:status resp)))
+              (let [body (server/parse-json (:body resp))]
+                (is (= "session_id and cwd required" (:error body))))))))))
+
+  (testing "missing cwd returns 400"
+    (with-temp-sessions-dir
+      (fn []
+        (let [sent-responses (atom [])
+              fake-channel (Object.)
+              request-body (server/generate-json {:session-id "some-session"}) ;; No cwd
+              req {:body (java.io.ByteArrayInputStream. (.getBytes request-body))}]
+          (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-responses conj msg))]
+            (server/handle-hook-stop req fake-channel)
+            (is (= 1 (count @sent-responses)))
+            (let [resp (first @sent-responses)]
+              (is (= 400 (:status resp)))
+              (let [body (server/parse-json (:body resp))]
+                (is (= "session_id and cwd required" (:error body))))))))))
+
+  (testing "invalid JSON returns 500"
+    (with-temp-sessions-dir
+      (fn []
+        (let [sent-responses (atom [])
+              fake-channel (Object.)
+              req {:body (java.io.ByteArrayInputStream. (.getBytes "not valid json"))}]
+          (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-responses conj msg))]
+            (server/handle-hook-stop req fake-channel)
+            (is (= 1 (count @sent-responses)))
+            (let [resp (first @sent-responses)]
+              (is (= 500 (:status resp)))
+              (let [body (server/parse-json (:body resp))]
+                (is (.contains (:error body) "Internal error")))))))))
+
+  (testing "no authentication required"
+    ;; This test verifies that hook-stop works without Bearer token
+    ;; (unlike /upload which requires auth)
+    (with-temp-sessions-dir
+      (fn []
+        (let [sent-responses (atom [])
+              fake-channel (Object.)
+              request-body (server/generate-json {:session-id "no-auth-session"
+                                                  :cwd "/test/path"})
+              req {:headers {} ;; No Authorization header
+                   :body (java.io.ByteArrayInputStream. (.getBytes request-body))}]
+          (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-responses conj msg))]
+            (server/handle-hook-stop req fake-channel)
+            (is (= 1 (count @sent-responses)))
+            (let [resp (first @sent-responses)]
+              ;; Should succeed without auth (unlike /upload which returns 401)
+              (is (= 200 (:status resp))))))))))
+
 ;; Reconnection authentication tests
 
 (deftest reconnection-auth-test
