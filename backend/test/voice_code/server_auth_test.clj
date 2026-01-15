@@ -2,6 +2,7 @@
   "Tests for WebSocket and HTTP authentication in server.clj"
   (:require [clojure.test :refer :all]
             [voice-code.server :as server]
+            [voice-code.session-store :as session-store]
             [voice-code.auth :as auth]
             [cheshire.core :as json]
             [clojure.java.io :as io])
@@ -249,7 +250,7 @@
       ;; Mock all the dependencies
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
                     org.httpkit.server/close (fn [_] nil)
-                    voice-code.replication/get-all-sessions (constantly [])
+                    session-store/list-sessions (constantly [])
                     server/send-recent-sessions! (fn [_ _] nil)
                     server/send-to-client! (fn [_ _] nil)]
         (server/handle-message fake-channel
@@ -455,7 +456,7 @@
       ;; Reconnect with valid key
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
                     org.httpkit.server/close (fn [_] nil)
-                    voice-code.replication/get-all-sessions (constantly [])
+                    session-store/list-sessions (constantly [])
                     server/send-recent-sessions! (fn [_ _] nil)
                     server/send-to-client! (fn [_ _] nil)]
         (server/handle-message channel-2
