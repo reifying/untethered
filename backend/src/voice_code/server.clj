@@ -474,19 +474,18 @@
 (defn send-recent-sessions!
   "Send the recent sessions list to a connected client.
   Uses the new recent_sessions message type (distinct from session-list).
-  Converts :last-modified from milliseconds to ISO-8601 string for JSON.
+  Uses session-store for data source (hooks-based architecture).
   Sends session-id, name, working-directory, last-modified."
   [channel limit]
-  (let [sessions (repl/get-recent-sessions limit)
-        ;; Convert to format with ISO-8601 timestamp
-        ;; Include name field (generated from Claude summary or fallback to dir-timestamp)
+  (let [sessions (session-store/list-sessions :limit limit)
+        ;; Map session-store fields to WebSocket format
+        ;; :updated-at is already ISO-8601 string, rename to :last-modified
         sessions-minimal (mapv
                           (fn [session]
                             {:session-id (:session-id session)
                              :name (:name session)
                              :working-directory (:working-directory session)
-                             :last-modified (.format (java.time.format.DateTimeFormatter/ISO_INSTANT)
-                                                     (java.time.Instant/ofEpochMilli (:last-modified session)))})
+                             :last-modified (:updated-at session)})
                           sessions)]
     (log/info "Sending recent sessions" {:count (count sessions-minimal) :limit limit})
     (send-to-client! channel
@@ -1063,30 +1062,28 @@
                    {:deleted-sessions #{}
                     :recent-sessions-limit limit}))
 
-          ;; Send session list (limit to 50 most recent, lightweight fields only)
-          (let [all-sessions (repl/get-all-sessions)
-                ;; Filter out sessions with 0 messages (after internal message filtering)
-                ;; Sort by last-modified descending, take 50
-                recent-sessions (->> all-sessions
-                                     (filter #(pos? (or (:message-count %) 0)))
-                                     (sort-by :last-modified >)
-                                     (take 50)
-                                     ;; Remove heavy fields to reduce payload size
-                                     (mapv #(select-keys % [:session-id :name :working-directory
-                                                            :last-modified :message-count])))
-                total-non-empty (count (filter #(pos? (or (:message-count %) 0)) all-sessions))
-                ;; Log any sessions with placeholder working directories
-                placeholder-sessions (filter #(str/starts-with? (or (:working-directory %) "") "[from project:") recent-sessions)]
-            (when (seq placeholder-sessions)
-              (log/warn "Sessions with placeholder working directories being sent to iOS"
-                        {:count (count placeholder-sessions)
-                         :sessions (mapv #(select-keys % [:session-id :name :working-directory]) placeholder-sessions)}))
-            (log/info "Sending session list" {:count (count recent-sessions) :total total-non-empty :total-all (count all-sessions)})
+          ;; Send session list from session-store (hooks-based architecture)
+          ;; Only include sessions with messages, limit to 50 most recent
+          (let [all-sessions (session-store/list-sessions :limit 50)
+                ;; Filter out sessions with 0 messages
+                sessions-with-messages (filter #(pos? (or (:message-count %) 0)) all-sessions)
+                ;; Map session-store fields to WebSocket format
+                ;; :updated-at -> :last-modified
+                recent-sessions (mapv
+                                 (fn [session]
+                                   {:session-id (:session-id session)
+                                    :name (:name session)
+                                    :working-directory (:working-directory session)
+                                    :last-modified (:updated-at session)
+                                    :message-count (:message-count session)})
+                                 sessions-with-messages)
+                total-count (count sessions-with-messages)]
+            (log/info "Sending session list" {:count (count recent-sessions) :total total-count})
             (http/send! channel
                         (generate-json
                          {:type :session-list
                           :sessions recent-sessions
-                          :total-count total-non-empty}))
+                          :total-count total-count}))
             ;; Send recent sessions list (separate message type for Recent section)
             ;; Use limit from client if provided, otherwise default to 5
             (let [limit (or (:recent-sessions-limit data) 5)]
@@ -1833,20 +1830,24 @@
             ;; Client requests updated session list without re-authentication
             (let [limit (or (:recent-sessions-limit data) 5)]
               (log/info "Client requested session list refresh" {:limit limit})
-              ;; Send session list (same logic as in connect handler)
-              (let [all-sessions (repl/get-all-sessions)
-                    recent-sessions (->> all-sessions
-                                         (filter #(pos? (or (:message-count %) 0)))
-                                         (sort-by :last-modified >)
-                                         (take 50)
-                                         (mapv #(select-keys % [:session-id :name :working-directory
-                                                                :last-modified :message-count])))
-                    total-non-empty (count (filter #(pos? (or (:message-count %) 0)) all-sessions))]
-                (log/info "Sending refreshed session list" {:count (count recent-sessions) :total total-non-empty})
+              ;; Send session list from session-store (hooks-based architecture)
+              (let [all-sessions (session-store/list-sessions :limit 50)
+                    sessions-with-messages (filter #(pos? (or (:message-count %) 0)) all-sessions)
+                    ;; Map session-store fields to WebSocket format
+                    recent-sessions (mapv
+                                     (fn [session]
+                                       {:session-id (:session-id session)
+                                        :name (:name session)
+                                        :working-directory (:working-directory session)
+                                        :last-modified (:updated-at session)
+                                        :message-count (:message-count session)})
+                                     sessions-with-messages)
+                    total-count (count sessions-with-messages)]
+                (log/info "Sending refreshed session list" {:count (count recent-sessions) :total total-count})
                 (send-to-client! channel
                                  {:type :session-list
                                   :sessions recent-sessions
-                                  :total-count total-non-empty}))
+                                  :total-count total-count}))
               ;; Send recent sessions
               (send-recent-sessions! channel limit)
               ;; Send available commands for current working directory (if set)

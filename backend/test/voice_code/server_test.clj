@@ -266,9 +266,12 @@
 (deftest test-new-protocol-connect
   (testing "Connect message returns session list and recent sessions"
     (reset! server/api-key test-api-key)
-    (with-redefs [voice-code.replication/get-all-sessions
-                  (fn [] [{:session-id "s1" :name "Session 1" :last-modified 1000 :message-count 5 :ios-notified true :working-directory "/path1"}
-                          {:session-id "s2" :name "Session 2" :last-modified 2000 :message-count 10 :ios-notified true :working-directory "/path2"}])]
+    ;; Mock session-store/list-sessions - now the data source for connect handler
+    (with-redefs [session-store/list-sessions
+                  (fn [& {:keys [limit]}]
+                    ;; Return sessions sorted by updated-at descending (as session-store does)
+                    [{:session-id "s2" :name "Session 2" :updated-at "2026-01-14T12:00:00Z" :message-count 10 :working-directory "/path2"}
+                     {:session-id "s1" :name "Session 1" :updated-at "2026-01-14T11:00:00Z" :message-count 5 :working-directory "/path1"}])]
       (reset! server/connected-clients {})
       (let [sent-messages (atom [])]
         (with-redefs [org.httpkit.server/send! (fn [channel msg]
@@ -285,7 +288,7 @@
           (let [msg1 (json/parse-string (first @sent-messages) true)]
             (is (= "session_list" (:type msg1)))
             (is (= 2 (count (:sessions msg1))))
-            ;; Sessions are sorted by last-modified descending, so s2 comes first
+            ;; Sessions are sorted by updated-at (mapped to last-modified), s2 comes first
             (is (= "s2" (:session_id (first (:sessions msg1))))))
 
           ;; Second message should be recent_sessions with default limit of 5
@@ -715,8 +718,16 @@
     (reset! server/api-key nil)))
 
 (deftest test-recent-sessions-message-format
-  (testing "recent_sessions message uses snake_case and ISO-8601 timestamps (no name field)"
-    (with-redefs [server/send-to-client! (fn [channel message]
+  (testing "recent_sessions message uses snake_case and ISO-8601 timestamps"
+    ;; Mock session-store/list-sessions to provide test data
+    (with-redefs [session-store/list-sessions
+                  (fn [& {:keys [limit]}]
+                    [{:session-id "test-session-123"
+                      :name "Test Session"
+                      :working-directory "/path/to/project"
+                      :updated-at "2026-01-14T10:00:00Z"
+                      :message-count 5}])
+                  server/send-to-client! (fn [channel message]
                                            (is (= :recent-sessions (:type message)))
                                            (is (number? (:limit message)))
                                            (is (vector? (:sessions message)))
@@ -724,11 +735,11 @@
                                              (let [first-session (first (:sessions message))]
                                                ;; Verify kebab-case keys from Clojure
                                                (is (contains? first-session :session-id))
-                                               ;; Name field removed - iOS provides its own
-                                               (is (not (contains? first-session :name)))
+                                               ;; Name field now included from session-store
+                                               (is (contains? first-session :name))
                                                (is (contains? first-session :working-directory))
                                                (is (contains? first-session :last-modified))
-                                               ;; Verify timestamp is ISO-8601 string
+                                               ;; Verify timestamp is ISO-8601 string (from :updated-at)
                                                (is (string? (:last-modified first-session)))
                                                (is (re-matches #"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z"
                                                                (:last-modified first-session))))))]
@@ -753,30 +764,33 @@
       (is (= "2025-10-22T12:00:00Z" (:last_modified (first (:sessions parsed))))))))
 
 (deftest test-recent-sessions-filters-zero-message-sessions
-  (testing "get-recent-sessions filters out sessions with 0 messages (e.g., sidechain-only sessions)"
+  (testing "session-store/list-sessions returns sessions (filtering already done by list-sessions)"
     (let [sent-sessions (atom nil)]
-      (with-redefs [voice-code.replication/get-recent-sessions
-                    ;; Now get-recent-sessions does the filtering internally
-                    (fn [limit]
+      ;; Mock session-store/list-sessions - the new data source
+      (with-redefs [session-store/list-sessions
+                    (fn [& {:keys [limit]}]
+                      ;; session-store returns sessions sorted by updated-at
                       [{:session-id "session-with-messages"
+                        :name "Session A"
                         :message-count 5
                         :working-directory "/path/one"
-                        :last-modified 1000000}
+                        :updated-at "2026-01-14T12:00:00Z"}
                        {:session-id "another-with-messages"
+                        :name "Session B"
                         :message-count 3
                         :working-directory "/path/three"
-                        :last-modified 3000000}])
+                        :updated-at "2026-01-14T10:00:00Z"}])
                     server/send-to-client!
                     (fn [channel message]
                       (reset! sent-sessions (:sessions message)))]
         (server/send-recent-sessions! :test-channel 10)
 
-        ;; Verify all sessions returned have positive message counts
+        ;; Verify all sessions returned
         (is (= 2 (count @sent-sessions))
-            "Should send exactly the sessions returned by get-recent-sessions")
+            "Should send exactly the sessions returned by list-sessions")
         (is (= #{"session-with-messages" "another-with-messages"}
                (set (map :session-id @sent-sessions)))
-            "Should include all sessions from get-recent-sessions")))))
+            "Should include all sessions from list-sessions")))))
 
 (deftest test-turn-complete-message-format
   (testing "Turn complete message uses correct snake_case format"
