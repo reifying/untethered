@@ -9,7 +9,7 @@
             [voice-code.auth :as auth]
             [voice-code.qr :as qr]
             [voice-code.server :as server]
-            [voice-code.replication :as repl])
+            [voice-code.session-store :as session-store])
   (:import [java.util Base64]))
 
 ;; =============================================================================
@@ -86,7 +86,7 @@
         (try
           (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
                         org.httpkit.server/close (fn [_] (reset! closed true))
-                        repl/get-all-sessions (constantly [])
+                        session-store/list-sessions (constantly [])
                         server/send-recent-sessions! (fn [_ _] nil)
                         server/send-to-client! (fn [_ _] nil)]
 
@@ -302,7 +302,7 @@
       (swap! server/connected-clients assoc channel-1 {})
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
                     org.httpkit.server/close (fn [_] nil)
-                    repl/get-all-sessions (constantly [])
+                    session-store/list-sessions (constantly [])
                     server/send-recent-sessions! (fn [_ _] nil)
                     server/send-to-client! (fn [_ _] nil)]
 
@@ -323,7 +323,7 @@
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
                     org.httpkit.server/close (fn [_] nil)
-                    repl/get-all-sessions (constantly [])
+                    session-store/list-sessions (constantly [])
                     server/send-recent-sessions! (fn [_ _] nil)
                     server/send-to-client! (fn [_ _] nil)]
 
@@ -351,7 +351,7 @@
       (swap! server/connected-clients assoc channel-1 {})
       (with-redefs [org.httpkit.server/send! (fn [_ _] nil)
                     org.httpkit.server/close (fn [_] nil)
-                    repl/get-all-sessions (constantly [])
+                    session-store/list-sessions (constantly [])
                     server/send-recent-sessions! (fn [_ _] nil)
                     server/send-to-client! (fn [_ _] nil)]
         (server/handle-message channel-1
@@ -393,7 +393,7 @@
       (swap! server/connected-clients assoc fake-channel {})
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
                     org.httpkit.server/close (fn [_] nil)
-                    repl/get-all-sessions (constantly [])
+                    session-store/list-sessions (constantly [])
                     server/send-recent-sessions! (fn [_ _] nil)
                     server/send-to-client! (fn [_ _] nil)]
 
@@ -485,7 +485,7 @@
 
       (with-redefs [org.httpkit.server/send! (fn [_ _] nil)
                     org.httpkit.server/close (fn [_] nil)
-                    repl/get-all-sessions (constantly [])
+                    session-store/list-sessions (constantly [])
                     server/send-recent-sessions! (fn [_ _] nil)
                     server/send-to-client! (fn [_ _] nil)]
 

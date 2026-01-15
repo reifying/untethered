@@ -2,48 +2,48 @@
   "Integration tests for session locking across the full stack.
    Tests that verify the locking mechanism works correctly with the server handler."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
-            [voice-code.replication :as repl]))
+            [voice-code.session-store :as session-store]))
 
 (use-fixtures :each
   (fn [f]
     ;; Reset session locks before each test
-    (reset! repl/session-locks #{})
+    (reset! session-store/session-locks #{})
     (f)
     ;; Clean up after test
-    (reset! repl/session-locks #{})))
+    (reset! session-store/session-locks #{})))
 
 (deftest test-prompt-handler-locking-simulation
   (testing "Simulating concurrent prompts to same session"
     (let [session-id "integration-test-session-123"]
 
       ;; First prompt: Should acquire lock
-      (is (true? (repl/acquire-session-lock! session-id))
+      (is (true? (session-store/acquire-session-lock! session-id))
           "First prompt should acquire lock")
 
       ;; Simulate second prompt arriving while first is still processing
-      (is (false? (repl/acquire-session-lock! session-id))
+      (is (false? (session-store/acquire-session-lock! session-id))
           "Second prompt should fail to acquire lock (session busy)")
 
       ;; Verify session is locked
-      (is (true? (repl/is-session-locked? session-id))
+      (is (true? (session-store/is-session-locked? session-id))
           "Session should be locked during processing")
 
       ;; First prompt completes (lock released in finally block)
-      (repl/release-session-lock! session-id)
+      (session-store/release-session-lock! session-id)
 
       ;; Now second prompt can be retried
-      (is (true? (repl/acquire-session-lock! session-id))
+      (is (true? (session-store/acquire-session-lock! session-id))
           "After first prompt completes, can process second prompt"))))
 
 (deftest test-error-handling-with-locks
   (testing "Lock is released even when prompt fails"
     (let [session-id "error-handling-test"]
 
-      (is (true? (repl/acquire-session-lock! session-id)))
+      (is (true? (session-store/acquire-session-lock! session-id)))
 
       ;; Simulate the try/finally pattern used in server.clj
       (try
-        (is (true? (repl/is-session-locked? session-id)))
+        (is (true? (session-store/is-session-locked? session-id)))
         ;; Simulate Claude CLI error
         (throw (Exception. "Claude CLI execution failed"))
         (catch Exception e
@@ -51,10 +51,10 @@
           (is (= "Claude CLI execution failed" (.getMessage e))))
         (finally
           ;; Lock MUST be released in finally block
-          (repl/release-session-lock! session-id)))
+          (session-store/release-session-lock! session-id)))
 
       ;; Verify lock was released despite error
-      (is (false? (repl/is-session-locked? session-id))
+      (is (false? (session-store/is-session-locked? session-id))
           "Lock must be released after error to prevent permanent lock"))))
 
 (deftest test-multi-user-multi-session-scenario
@@ -65,33 +65,33 @@
           user2-session-d "user2-session-d"]
 
       ;; User 1 sends prompt to session A
-      (is (true? (repl/acquire-session-lock! user1-session-a)))
+      (is (true? (session-store/acquire-session-lock! user1-session-a)))
 
       ;; User 2 sends prompt to session C (different session, should work)
-      (is (true? (repl/acquire-session-lock! user2-session-c))
+      (is (true? (session-store/acquire-session-lock! user2-session-c))
           "Different session should be lockable while another is locked")
 
       ;; User 1 tries to send another prompt to session A (should fail)
-      (is (false? (repl/acquire-session-lock! user1-session-a))
+      (is (false? (session-store/acquire-session-lock! user1-session-a))
           "Cannot send second prompt to locked session")
 
       ;; User 1 switches to session B and sends prompt there (should work)
-      (is (true? (repl/acquire-session-lock! user1-session-b))
+      (is (true? (session-store/acquire-session-lock! user1-session-b))
           "User can work with different session while first is locked")
 
       ;; User 2 switches to session D and sends prompt (should work)
-      (is (true? (repl/acquire-session-lock! user2-session-d))
+      (is (true? (session-store/acquire-session-lock! user2-session-d))
           "Second user can also work with multiple sessions")
 
       ;; Verify all 4 sessions are locked
-      (is (= 4 (count @repl/session-locks))
+      (is (= 4 (count @session-store/session-locks))
           "All 4 sessions should be independently locked")
 
       ;; Session A completes
-      (repl/release-session-lock! user1-session-a)
+      (session-store/release-session-lock! user1-session-a)
 
       ;; Now User 1 can send another prompt to session A
-      (is (true? (repl/acquire-session-lock! user1-session-a))
+      (is (true? (session-store/acquire-session-lock! user1-session-a))
           "After completion, can send new prompt to same session"))))
 
 (deftest test-race-condition-handling
@@ -101,12 +101,12 @@
           threads (doall
                    (for [i (range 20)]
                      (future
-                       (let [acquired? (repl/acquire-session-lock! session-id)]
+                       (let [acquired? (session-store/acquire-session-lock! session-id)]
                          (swap! results conj {:thread i :acquired acquired?})
                          (when acquired?
                            ;; Hold lock briefly
                            (Thread/sleep 10)
-                           (repl/release-session-lock! session-id))))))]
+                           (session-store/release-session-lock! session-id))))))]
 
       ;; Wait for all threads
       (doseq [t threads] @t)
@@ -118,7 +118,7 @@
             "At least one thread should have acquired lock")
 
         ;; Verify no session is left locked
-        (is (false? (repl/is-session-locked? session-id))
+        (is (false? (session-store/is-session-locked? session-id))
             "All locks should be released after threads complete")))))
 
 (deftest test-backend-frontend-contract
@@ -127,25 +127,25 @@
 
       ;; Frontend sends prompt, optimistically locks
       ;; Backend receives prompt, tries to acquire lock
-      (is (true? (repl/acquire-session-lock! claude-session-id))
+      (is (true? (session-store/acquire-session-lock! claude-session-id))
           "Backend should acquire lock for first prompt")
 
       ;; Frontend sends second prompt (user didn't wait)
       ;; Backend receives second prompt, should reject
-      (is (false? (repl/acquire-session-lock! claude-session-id))
+      (is (false? (session-store/acquire-session-lock! claude-session-id))
           "Backend should reject concurrent prompt")
 
       ;; At this point, backend would send session_locked message
       ;; Frontend would show "Session Locked" on input controls
 
       ;; First prompt completes, backend sends response
-      (repl/release-session-lock! claude-session-id)
+      (session-store/release-session-lock! claude-session-id)
 
       ;; Frontend receives response, unlocks session in lockedSessions set
       ;; Frontend re-enables input controls
 
       ;; User can now send new prompt
-      (is (true? (repl/acquire-session-lock! claude-session-id))
+      (is (true? (session-store/acquire-session-lock! claude-session-id))
           "After completion, new prompts are accepted"))))
 
 (comment

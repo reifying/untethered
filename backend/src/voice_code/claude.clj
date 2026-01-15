@@ -266,20 +266,10 @@
                         :timeout true})))))
   nil)
 
-(defn get-session-file-path
-  "Get the file path for a Claude session ID.
-
-  Searches in ~/.claude/projects/ for the session file."
-  [session-id]
-  (let [home (System/getProperty "user.home")
-        claude-dir (str home "/.claude/projects")]
-    ;; Search for session file - it could be in any project directory
-    (when (.exists (io/file claude-dir))
-      (let [session-file-name (str session-id ".jsonl")
-            matching-files (filter #(.endsWith (.getName %) session-file-name)
-                                   (file-seq (io/file claude-dir)))]
-        (when (seq matching-files)
-          (.getAbsolutePath (first matching-files)))))))
+;; NOTE: get-session-file-path has been removed as part of the hooks-based
+;; architecture migration. Session data is now stored in our own session-store,
+;; not read from Claude's internal ~/.claude/projects/*.jsonl files.
+;; See docs/design/hooks-based-session-tracking.md for details.
 
 (defn get-inference-directory
   "Get path to temp directory for name inference sessions.
@@ -361,37 +351,32 @@
   (let [cli-path (get-claude-cli-path)]
     (when-not cli-path
       (throw (ex-info "Claude CLI not found" {})))
-    (let [session-metadata ((requiring-resolve 'voice-code.replication/get-session-metadata) session-id)
+    (let [session-metadata ((requiring-resolve 'voice-code.session-store/get-session-metadata) session-id)
           working-dir (:working-directory session-metadata)
           expanded-dir (expand-tilde working-dir)]
       (when-not session-metadata
-        (log/warn "Session metadata not found in index" {:session-id session-id}))
-      (let [session-file (get-session-file-path session-id)]
-        (if-not session-file
-          {:success false
-           :error (str "Session not found: " session-id)}
+        (log/warn "Session metadata not found in store" {:session-id session-id}))
+      (log/info "Compacting session" {:session-id session-id
+                                      :working-directory expanded-dir})
+      (let [cmd-args ["-p"
+                      "--output-format" "json"
+                      "--resume" session-id
+                      "/compact"]
+            result (run-process-with-file-redirection cli-path cmd-args expanded-dir 3600000)]
+        (log/debug "Compact CLI completed"
+                   {:exit (:exit result)
+                    :stdout-length (count (:out result))
+                    :stderr-length (count (:err result))})
+        (if (zero? (:exit result))
           (do
-            (log/info "Compacting session" {:session-id session-id
-                                            :file session-file
-                                            :working-directory expanded-dir})
-            (let [cmd-args ["-p"
-                            "--output-format" "json"
-                            "--resume" session-id
-                            "/compact"]
-                  result (run-process-with-file-redirection cli-path cmd-args expanded-dir 3600000)]
-              (log/debug "Compact CLI completed"
-                         {:exit (:exit result)
-                          :stdout-length (count (:out result))
-                          :stderr-length (count (:err result))})
-              (if (zero? (:exit result))
-                (do
-                  (log/info "Session compacted successfully" {:session-id session-id})
-                  {:success true})
-                (do
-                  (log/error "Compact CLI command failed"
-                             {:session-id session-id
-                              :exit (:exit result)
-                              :stderr (:err result)})
-                  {:success false
-                   :error (or (not-empty (:err result))
-                              (str "Compact command exited with code " (:exit result)))})))))))))
+            (log/info "Session compacted successfully" {:session-id session-id})
+            {:success true})
+          (do
+            (log/error "Compact CLI command failed"
+                       {:session-id session-id
+                        :exit (:exit result)
+                        :stderr (:err result)})
+            {:success false
+             :error (or (not-empty (:err result))
+                        (str "Compact command exited with code " (:exit result)))}))))))
+

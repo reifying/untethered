@@ -46,6 +46,105 @@
   (Object.))
 
 ;; ============================================================================
+;; Session Locking
+;; ============================================================================
+
+(defonce session-locks
+  ;; Set of Claude session IDs currently executing Claude CLI commands.
+  ;; Used to prevent concurrent prompts from forking the same session.
+  (atom #{}))
+
+(defn acquire-session-lock!
+  "Attempt to acquire a lock for the given session ID.
+   Returns true if lock was acquired, false if session is already locked."
+  [session-id]
+  (let [acquired? (atom false)]
+    (swap! session-locks
+           (fn [locks]
+             (if (contains? locks session-id)
+               locks ; Already locked, don't modify
+               (do
+                 (reset! acquired? true)
+                 (conj locks session-id)))))
+    (when @acquired?
+      (log/info "Acquired session lock" {:session-id session-id}))
+    @acquired?))
+
+(defn release-session-lock!
+  "Release the lock for the given session ID."
+  [session-id]
+  (swap! session-locks disj session-id)
+  (log/info "Released session lock" {:session-id session-id}))
+
+(defn is-session-locked?
+  "Check if a session is currently locked."
+  [session-id]
+  (contains? @session-locks session-id))
+
+;; ============================================================================
+;; Path Conversion Utilities
+;; ============================================================================
+
+(defn- find-valid-path
+  "Try to find a valid filesystem path by testing dash/slash combinations.
+  Uses greedy approach: build path incrementally, trying progressively longer
+  combinations of parts to handle directory names with multiple hyphens."
+  [project-name]
+  (when (str/starts-with? project-name "-")
+    (let [parts (str/split (subs project-name 1) #"-")]
+      (loop [remaining parts
+             current-path "/"]
+        (if (empty? remaining)
+          ;; Successfully built complete path
+          (when (.exists (io/file current-path))
+            current-path)
+
+          ;; Try progressively longer combinations of parts
+          ;; For ["my-app" "feature" "branch"], try:
+          ;; - "my-app-feature-branch" (3 parts)
+          ;; - "my-app-feature" (2 parts)
+          ;; - "my-app" (1 part)
+          (let [num-remaining (count remaining)
+                ;; Generate all possible combinations from longest to shortest
+                combinations (for [len (range num-remaining 0 -1)]
+                               (let [combined-parts (take len remaining)
+                                     combined-name (str/join "-" combined-parts)
+                                     path (str current-path
+                                               (when-not (= current-path "/") "/")
+                                               combined-name)
+                                     rest-parts (drop len remaining)]
+                                 {:path path
+                                  :len len
+                                  :remaining rest-parts}))
+                ;; Find first combination that exists as a directory
+                match (first (filter #(and (.exists (io/file (:path %)))
+                                           (.isDirectory (io/file (:path %))))
+                                     combinations))]
+
+            (if match
+              (recur (:remaining match) (:path match))
+              ;; No valid combination found
+              nil)))))))
+
+(defn project-name->working-dir
+  "Convert Claude Code project directory name to working directory path.
+
+  For paths starting with dash (absolute paths), uses filesystem validation
+  to intelligently reverse the lossy dash transformation. Handles directory
+  names with hyphens (e.g., 'voice-code') by checking filesystem at each step.
+
+  For simple names, appends to home directory."
+  [project-name]
+  (if (str/starts-with? project-name "-")
+    ;; Try to find valid path using filesystem-based approach
+    (or (find-valid-path project-name)
+        ;; If no valid path found, return placeholder
+        (str "[from project: " project-name "]"))
+    ;; Simple project name - append to home directory
+    (let [home (System/getProperty "user.home")]
+      (str home "/" project-name))))
+
+;; ============================================================================
 ;; Helper Functions
 ;; ============================================================================
 

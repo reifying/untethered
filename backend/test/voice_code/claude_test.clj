@@ -2,7 +2,7 @@
   (:require [clojure.test :refer :all]
             [clojure.core.async :as async]
             [voice-code.claude :as claude]
-            [voice-code.replication]))
+            [voice-code.session-store :as session-store]))
 
 (deftest test-get-claude-cli-path
   (testing "Claude CLI path detection"
@@ -316,15 +316,8 @@
 
 ;; Compaction Tests
 
-(deftest test-get-session-file-path
-  (testing "Find session file in projects directory"
-    (with-redefs [claude/get-session-file-path
-                  (fn [session-id]
-                    (when (= session-id "test-session-123")
-                      "/mock/path/test-session-123.jsonl"))]
-      (is (= "/mock/path/test-session-123.jsonl"
-             (claude/get-session-file-path "test-session-123")))
-      (is (nil? (claude/get-session-file-path "nonexistent"))))))
+;; test-get-session-file-path removed - function no longer exists
+;; Session file lookup is now handled by Claude CLI directly
 
 (deftest test-compact-session-missing-cli
   (testing "Error when CLI not found"
@@ -332,141 +325,108 @@
       (is (thrown? Exception (claude/compact-session "test-123"))))))
 
 (deftest test-compact-session-not-found
-  (testing "Error when session not found"
+  (testing "Error when session not found (CLI returns error)"
     (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                  claude/get-session-file-path (fn [_] nil)]
+                  session-store/get-session-metadata (fn [_] nil)
+                  voice-code.claude/run-process-with-file-redirection
+                  (fn [_ _ _ _]
+                    {:exit 1
+                     :out ""
+                     :err "Error: Session not found"})]
       (let [result (claude/compact-session "nonexistent-session")]
         (is (not (:success result)))
-        (is (= "Session not found: nonexistent-session" (:error result)))))))
+        (is (= "Error: Session not found" (:error result)))))))
 
 (deftest test-compact-session-success
   (testing "Successful session compaction"
-    (let [temp-file (java.io.File/createTempFile "test-session" ".jsonl")]
-      (try
-        ;; Write test data
-        (spit temp-file "{\"message\":\"test\"}\n")
+    (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                  session-store/get-session-metadata (fn [_] {:working-directory "/test/path"})
+                  voice-code.claude/run-process-with-file-redirection
+                  (fn [cli-path args working-dir timeout-ms]
+                    {:exit 0
+                     :out "[{\"type\":\"system\",\"subtype\":\"compact_boundary\"}]"})]
 
-        (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                      claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
-                      voice-code.claude/run-process-with-file-redirection
-                      (fn [cli-path args working-dir timeout-ms]
-                        {:exit 0
-                         :out "[{\"type\":\"system\",\"subtype\":\"compact_boundary\"}]"})]
-
-          (let [result (claude/compact-session "test-123")]
-            (is (:success result))))
-
-        (finally
-          (.delete temp-file))))))
+      (let [result (claude/compact-session "test-123")]
+        (is (:success result))))))
 
 (deftest test-compact-session-cli-failure
   (testing "Handle CLI command failure"
-    (let [temp-file (java.io.File/createTempFile "test-session" ".jsonl")]
-      (try
-        (spit temp-file "{\"message\":\"test\"}\n")
+    (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                  session-store/get-session-metadata (fn [_] {:working-directory "/test/path"})
+                  voice-code.claude/run-process-with-file-redirection
+                  (fn [cli-path args working-dir timeout-ms]
+                    {:exit 1
+                     :err "Session not found"})]
 
-        (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                      claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
-                      voice-code.claude/run-process-with-file-redirection
-                      (fn [cli-path args working-dir timeout-ms]
-                        {:exit 1
-                         :err "Session not found"})]
-
-          (let [result (claude/compact-session "test-123")]
-            (is (not (:success result)))
-            (is (= "Session not found" (:error result)))))
-
-        (finally
-          (.delete temp-file))))))
+      (let [result (claude/compact-session "test-123")]
+        (is (not (:success result)))
+        (is (= "Session not found" (:error result)))))))
 
 (deftest test-compact-session-invokes-correct-command
   (testing "Compact session invokes CLI with correct arguments"
-    (let [temp-file (java.io.File/createTempFile "test-session" ".jsonl")
-          called-args (atom nil)]
-      (try
-        (spit temp-file "{\"message\":\"test\"}\n")
+    (let [called-args (atom nil)]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    session-store/get-session-metadata (fn [_] {:working-directory "/test/path"})
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms]
+                      (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms})
+                      {:exit 0
+                       :out "[{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"preTokens\":0}}]"})]
 
-        (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                      claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
-                      voice-code.claude/run-process-with-file-redirection
-                      (fn [cli-path args working-dir timeout-ms]
-                        (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms})
-                        {:exit 0
-                         :out "[{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"preTokens\":0}}]"})]
+        (claude/compact-session "test-session-id")
 
-          (claude/compact-session "test-session-id")
-
-          (let [{:keys [cli-path args]} @called-args]
-            (is (= "/mock/claude" cli-path))
-            (is (some #(= "-p" %) args))
-            (is (some #(= "--output-format" %) args))
-            (is (some #(= "json" %) args))
-            (is (some #(= "--resume" %) args))
-            (is (some #(= "test-session-id" %) args))
-            (is (some #(= "/compact" %) args))))
-
-        (finally
-          (.delete temp-file))))))
+        (let [{:keys [cli-path args]} @called-args]
+          (is (= "/mock/claude" cli-path))
+          (is (some #(= "-p" %) args))
+          (is (some #(= "--output-format" %) args))
+          (is (some #(= "json" %) args))
+          (is (some #(= "--resume" %) args))
+          (is (some #(= "test-session-id" %) args))
+          (is (some #(= "/compact" %) args)))))))
 
 (deftest test-compact-session-with-working-directory
   (testing "Compact session passes working directory to process"
-    (let [temp-file (java.io.File/createTempFile "test-session" ".jsonl")
-          called-args (atom nil)]
-      (try
-        (spit temp-file "{\"message\":\"test\"}\n")
+    (let [called-args (atom nil)]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    session-store/get-session-metadata
+                    (fn [_] {:working-directory "/Users/test/project"})
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms]
+                      (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms})
+                      {:exit 0
+                       :out "[{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"preTokens\":0}}]"})]
 
-        (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                      claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
-                      voice-code.replication/get-session-metadata
-                      (fn [_] {:working-directory "/Users/test/project"})
-                      voice-code.claude/run-process-with-file-redirection
-                      (fn [cli-path args working-dir timeout-ms]
-                        (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms})
-                        {:exit 0
-                         :out "[{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"preTokens\":0}}]"})]
+        (claude/compact-session "test-session-id")
 
-          (claude/compact-session "test-session-id")
-
-          (let [{:keys [cli-path args working-dir]} @called-args]
-            (is (= "/mock/claude" cli-path))
-            (is (some #(= "-p" %) args))
-            (is (some #(= "--resume" %) args))
-            (is (some #(= "test-session-id" %) args))
-            (is (some #(= "/compact" %) args))
-            (is (= "/Users/test/project" working-dir))))
-
-        (finally
-          (.delete temp-file))))))
+        (let [{:keys [cli-path args working-dir]} @called-args]
+          (is (= "/mock/claude" cli-path))
+          (is (some #(= "-p" %) args))
+          (is (some #(= "--resume" %) args))
+          (is (some #(= "test-session-id" %) args))
+          (is (some #(= "/compact" %) args))
+          (is (= "/Users/test/project" working-dir)))))))
 
 (deftest test-compact-session-without-working-directory
   (testing "Compact session works when session metadata has no working directory"
-    (let [temp-file (java.io.File/createTempFile "test-session" ".jsonl")
-          called-args (atom nil)]
-      (try
-        (spit temp-file "{\"message\":\"test\"}\n")
+    (let [called-args (atom nil)]
+      (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
+                    session-store/get-session-metadata
+                    (fn [_] {})
+                    voice-code.claude/run-process-with-file-redirection
+                    (fn [cli-path args working-dir timeout-ms]
+                      (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms})
+                      {:exit 0
+                       :out "[{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"preTokens\":0}}]"})]
 
-        (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
-                      claude/get-session-file-path (fn [_] (.getAbsolutePath temp-file))
-                      voice-code.replication/get-session-metadata
-                      (fn [_] {})
-                      voice-code.claude/run-process-with-file-redirection
-                      (fn [cli-path args working-dir timeout-ms]
-                        (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms})
-                        {:exit 0
-                         :out "[{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"preTokens\":0}}]"})]
+        (claude/compact-session "test-session-id")
 
-          (claude/compact-session "test-session-id")
-
-          (let [{:keys [cli-path args working-dir]} @called-args]
-            (is (= "/mock/claude" cli-path))
-            (is (some #(= "-p" %) args))
-            (is (some #(= "--resume" %) args))
-            (is (some #(= "test-session-id" %) args))
-            (is (some #(= "/compact" %) args))
-            (is (nil? working-dir))))
-
-        (finally
-          (.delete temp-file))))))
+        (let [{:keys [cli-path args working-dir]} @called-args]
+          (is (= "/mock/claude" cli-path))
+          (is (some #(= "-p" %) args))
+          (is (some #(= "--resume" %) args))
+          (is (some #(= "test-session-id" %) args))
+          (is (some #(= "/compact" %) args))
+          (is (nil? working-dir)))))))
 
 ;; Name Inference Tests
 

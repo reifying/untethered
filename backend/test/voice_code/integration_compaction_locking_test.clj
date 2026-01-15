@@ -2,48 +2,48 @@
   "Integration tests for session locking during compaction.
    Tests that verify the locking mechanism prevents concurrent compaction operations."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
-            [voice-code.replication :as repl]))
+            [voice-code.session-store :as session-store]))
 
 (use-fixtures :each
   (fn [f]
     ;; Reset session locks before each test
-    (reset! repl/session-locks #{})
+    (reset! session-store/session-locks #{})
     (f)
     ;; Clean up after test
-    (reset! repl/session-locks #{})))
+    (reset! session-store/session-locks #{})))
 
 (deftest test-compaction-handler-locking-simulation
   (testing "Simulating concurrent compaction requests to same session"
     (let [session-id "integration-test-compaction-123"]
 
       ;; First compaction: Should acquire lock
-      (is (true? (repl/acquire-session-lock! session-id))
+      (is (true? (session-store/acquire-session-lock! session-id))
           "First compaction should acquire lock")
 
       ;; Simulate second compaction arriving while first is still processing
-      (is (false? (repl/acquire-session-lock! session-id))
+      (is (false? (session-store/acquire-session-lock! session-id))
           "Second compaction should fail to acquire lock (session busy)")
 
       ;; Verify session is locked
-      (is (true? (repl/is-session-locked? session-id))
+      (is (true? (session-store/is-session-locked? session-id))
           "Session should be locked during compaction")
 
       ;; First compaction completes (lock released in finally block)
-      (repl/release-session-lock! session-id)
+      (session-store/release-session-lock! session-id)
 
       ;; Now second compaction can be retried
-      (is (true? (repl/acquire-session-lock! session-id))
+      (is (true? (session-store/acquire-session-lock! session-id))
           "After first compaction completes, can process second compaction"))))
 
 (deftest test-compaction-error-handling-with-locks
   (testing "Lock is released even when compaction fails"
     (let [session-id "compaction-error-handling-test"]
 
-      (is (true? (repl/acquire-session-lock! session-id)))
+      (is (true? (session-store/acquire-session-lock! session-id)))
 
       ;; Simulate the try/finally pattern used in server.clj
       (try
-        (is (true? (repl/is-session-locked? session-id)))
+        (is (true? (session-store/is-session-locked? session-id)))
         ;; Simulate Claude CLI compaction error
         (throw (Exception. "Compaction failed: invalid session"))
         (catch Exception e
@@ -51,10 +51,10 @@
           (is (= "Compaction failed: invalid session" (.getMessage e))))
         (finally
           ;; Lock MUST be released in finally block
-          (repl/release-session-lock! session-id)))
+          (session-store/release-session-lock! session-id)))
 
       ;; Verify lock was released despite error
-      (is (false? (repl/is-session-locked? session-id))
+      (is (false? (session-store/is-session-locked? session-id))
           "Lock must be released after error to prevent permanent lock"))))
 
 (deftest test-prompt-and-compaction-mutual-exclusion
@@ -62,27 +62,27 @@
     (let [session-id "mutual-exclusion-test"]
 
       ;; User sends a prompt, locks session
-      (is (true? (repl/acquire-session-lock! session-id)))
+      (is (true? (session-store/acquire-session-lock! session-id)))
 
       ;; User tries to compact while prompt is running (should fail)
-      (is (false? (repl/acquire-session-lock! session-id))
+      (is (false? (session-store/acquire-session-lock! session-id))
           "Cannot compact session while prompt is processing")
 
       ;; Prompt completes
-      (repl/release-session-lock! session-id)
+      (session-store/release-session-lock! session-id)
 
       ;; Now compaction can proceed
-      (is (true? (repl/acquire-session-lock! session-id)))
+      (is (true? (session-store/acquire-session-lock! session-id)))
 
       ;; While compacting, user tries to send prompt (should fail)
-      (is (false? (repl/acquire-session-lock! session-id))
+      (is (false? (session-store/acquire-session-lock! session-id))
           "Cannot send prompt while compaction is running")
 
       ;; Compaction completes
-      (repl/release-session-lock! session-id)
+      (session-store/release-session-lock! session-id)
 
       ;; Verify session is now unlocked
-      (is (false? (repl/is-session-locked? session-id))))))
+      (is (false? (session-store/is-session-locked? session-id))))))
 
 (deftest test-multi-session-concurrent-compaction
   (testing "Multiple sessions can be compacted concurrently"
@@ -91,29 +91,29 @@
           session-c "compaction-session-c"]
 
       ;; Start compaction on session A
-      (is (true? (repl/acquire-session-lock! session-a)))
+      (is (true? (session-store/acquire-session-lock! session-a)))
 
       ;; Start compaction on session B (different session, should work)
-      (is (true? (repl/acquire-session-lock! session-b))
+      (is (true? (session-store/acquire-session-lock! session-b))
           "Different session should be lockable while another is compacting")
 
       ;; Try to compact session A again (should fail)
-      (is (false? (repl/acquire-session-lock! session-a))
+      (is (false? (session-store/acquire-session-lock! session-a))
           "Cannot compact same session twice")
 
       ;; Start compaction on session C (should work)
-      (is (true? (repl/acquire-session-lock! session-c))
+      (is (true? (session-store/acquire-session-lock! session-c))
           "Third session can also be compacted concurrently")
 
       ;; Verify all 3 sessions are locked
-      (is (= 3 (count @repl/session-locks))
+      (is (= 3 (count @session-store/session-locks))
           "All 3 sessions should be independently locked")
 
       ;; Session A completes
-      (repl/release-session-lock! session-a)
+      (session-store/release-session-lock! session-a)
 
       ;; Now can compact session A again
-      (is (true? (repl/acquire-session-lock! session-a))
+      (is (true? (session-store/acquire-session-lock! session-a))
           "After completion, can compact same session again"))))
 
 (deftest test-compaction-race-condition-handling
@@ -123,12 +123,12 @@
           threads (doall
                    (for [i (range 10)]
                      (future
-                       (let [acquired? (repl/acquire-session-lock! session-id)]
+                       (let [acquired? (session-store/acquire-session-lock! session-id)]
                          (swap! results conj {:thread i :acquired acquired?})
                          (when acquired?
                            ;; Hold lock briefly (simulating compaction)
                            (Thread/sleep 20)
-                           (repl/release-session-lock! session-id))))))]
+                           (session-store/release-session-lock! session-id))))))]
 
       ;; Wait for all threads
       (doseq [t threads] @t)
@@ -139,7 +139,7 @@
             "At least one thread should have acquired lock")
 
         ;; Verify no session is left locked
-        (is (false? (repl/is-session-locked? session-id))
+        (is (false? (session-store/is-session-locked? session-id))
             "All locks should be released after threads complete")))))
 
 (deftest test-compaction-backend-frontend-contract
@@ -148,24 +148,24 @@
 
       ;; Frontend sends compact request
       ;; Backend receives request, tries to acquire lock
-      (is (true? (repl/acquire-session-lock! claude-session-id))
+      (is (true? (session-store/acquire-session-lock! claude-session-id))
           "Backend should acquire lock for compaction")
 
       ;; User tries to send prompt while compacting (should fail)
-      (is (false? (repl/acquire-session-lock! claude-session-id))
+      (is (false? (session-store/acquire-session-lock! claude-session-id))
           "Backend should reject prompt during compaction")
 
       ;; At this point, backend would send session_locked message
       ;; Frontend would disable compact button and prompt inputs
 
       ;; Compaction completes, backend sends compaction_complete
-      (repl/release-session-lock! claude-session-id)
+      (session-store/release-session-lock! claude-session-id)
 
       ;; Frontend receives compaction_complete, unlocks session
       ;; Frontend re-enables input controls
 
       ;; User can now send prompt or compact again
-      (is (true? (repl/acquire-session-lock! claude-session-id))
+      (is (true? (session-store/acquire-session-lock! claude-session-id))
           "After compaction completion, new operations are accepted"))))
 
 (comment

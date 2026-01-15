@@ -9,7 +9,6 @@
             [clojure.string :as str]
             [voice-code.auth :as auth]
             [voice-code.claude :as claude]
-            [voice-code.replication :as repl]
             [voice-code.worktree :as worktree]
             [voice-code.commands :as commands]
             [voice-code.commands-history :as cmd-history]
@@ -522,10 +521,10 @@
   (get @session-orchestration-state session-id))
 
 (defn session-exists?
-  "Check if a Claude session file exists for the given session ID.
-   Returns true if session metadata exists (implying .jsonl file exists)."
+  "Check if a session exists in our session store.
+   Returns true if session metadata exists."
   [session-id]
-  (some? (repl/get-session-metadata session-id)))
+  (some? (session-store/get-session-metadata session-id)))
 
 (defn start-recipe-for-session
   "Initialize orchestration state for a session.
@@ -741,7 +740,7 @@
                       (log/info "Recipe was exited while waiting for Claude response"
                                 {:session-id session-id})
                       ;; Recipe already exited, just release lock and send turn_complete
-                      (repl/release-session-lock! session-id)
+                      (session-store/release-session-lock! session-id)
                       (send-to-client! channel
                                        {:type :turn-complete
                                         :session-id session-id}))
@@ -769,7 +768,7 @@
                             (do
                               (log/warn "Orchestration state missing after step transition"
                                         {:session-id session-id})
-                              (repl/release-session-lock! session-id)
+                              (session-store/release-session-lock! session-id)
                               (send-to-client! channel
                                                {:type :turn-complete
                                                 :session-id session-id}))))
@@ -789,7 +788,7 @@
                             (do
                               (log/warn "Orchestration state missing before retry"
                                         {:session-id session-id})
-                              (repl/release-session-lock! session-id)
+                              (session-store/release-session-lock! session-id)
                               (send-to-client! channel
                                                {:type :turn-complete
                                                 :session-id session-id}))))
@@ -800,7 +799,7 @@
                           (log/info "Recipe exited"
                                     {:session-id session-id
                                      :reason (:reason result)})
-                          (repl/release-session-lock! session-id)
+                          (session-store/release-session-lock! session-id)
                           (send-to-client! channel
                                            {:type :turn-complete
                                             :session-id session-id}))
@@ -817,7 +816,7 @@
                                      :working-directory working-dir})
                           ;; Exit current recipe and release lock
                           (exit-recipe-for-session session-id "restart-new-session")
-                          (repl/release-session-lock! session-id)
+                          (session-store/release-session-lock! session-id)
                           (send-to-client! channel
                                            {:type :recipe-exited
                                             :session-id session-id
@@ -836,7 +835,7 @@
                                                 :current-step (:current-step new-orch-state)
                                                 :step-count (:step-count new-orch-state)})
                               ;; Acquire lock and start new recipe
-                              (if (repl/acquire-session-lock! new-session-id)
+                              (if (session-store/acquire-session-lock! new-session-id)
                                 (do
                                   (send-to-client! channel
                                                    {:type :ack
@@ -861,7 +860,7 @@
                         (do
                           (log/error "Unexpected orchestration action"
                                      {:action (:action result)})
-                          (repl/release-session-lock! session-id)
+                          (session-store/release-session-lock! session-id)
                           (send-to-client! channel
                                            {:type :turn-complete
                                             :session-id session-id}))))))
@@ -871,7 +870,7 @@
                   (log/error "Recipe step failed"
                              {:error (:error response) :session-id session-id})
                   (exit-recipe-for-session session-id "error")
-                  (repl/release-session-lock! session-id)
+                  (session-store/release-session-lock! session-id)
                   (send-to-client! channel
                                    {:type :recipe-exited
                                     :session-id session-id
@@ -886,7 +885,7 @@
                 (log/error e "Unexpected error in recipe step callback"
                            {:session-id session-id :step current-step})
                 (exit-recipe-for-session session-id "internal-error")
-                (repl/release-session-lock! session-id)
+                (session-store/release-session-lock! session-id)
                 (send-to-client! channel
                                  {:type :recipe-exited
                                   :session-id session-id
@@ -911,7 +910,7 @@
                      :recipe-id (:recipe-id orch-state)
                      :step current-step})
          (exit-recipe-for-session session-id "no-prompt")
-         (repl/release-session-lock! session-id)
+         (session-store/release-session-lock! session-id)
          (send-to-client! channel
                           {:type :recipe-exited
                            :session-id session-id
@@ -925,109 +924,12 @@
 
 ;; Removed duplicate comment here
 
-(defn on-session-created
-  "Called when a new session file is detected"
-  [session-metadata]
-  (let [session-id (:session-id session-metadata)
-        client-count (count @connected-clients)
-        eligible-clients (filter (fn [[channel _]]
-                                   (not (is-session-deleted-for-client? channel session-id)))
-                                 @connected-clients)
-        eligible-count (count eligible-clients)]
+;; NOTE: on-session-created, on-session-updated, and on-session-deleted callbacks
+;; have been removed as part of the hooks-based architecture migration.
+;; Session data is now stored in our own session-store, not from file watching.
+;; See docs/design/hooks-based-session-tracking.md for details.
 
-    (log/info "Session created callback invoked"
-              {:session-id session-id
-               :name (:name session-metadata)
-               :message-count (:message-count session-metadata)
-               :total-clients client-count
-               :eligible-clients eligible-count
-               :has-preview (boolean (seq (:preview session-metadata)))})
-
-    ;; Check if this is a pending new session and send session_ready first
-    (when-let [pending-channel (get @pending-new-sessions session-id)]
-      (log/info "Sending session_ready for pending new session"
-                {:session-id session-id})
-      (send-to-client! pending-channel
-                       {:type :session-ready
-                        :session-id session-id
-                        :message "Session is ready for subscription"})
-      ;; Remove from pending map
-      (swap! pending-new-sessions dissoc session-id))
-
-    ;; Broadcast to clients who haven't deleted this session
-    (doseq [[channel client-info] eligible-clients]
-      (log/debug "Sending session-created to client"
-                 {:session-id session-id
-                  :client-session-id (:session-id client-info)
-                  :channel-id (str channel)})
-      (send-to-client! channel
-                       {:type :session-created
-                        :session-id session-id
-                        :name (:name session-metadata)
-                        :working-directory (:working-directory session-metadata)
-                        :last-modified (:last-modified session-metadata)
-                        :message-count (:message-count session-metadata)
-                        :preview (:preview session-metadata)})
-
-      ;; Send updated recent sessions list to each client
-      (let [limit (get client-info :recent-sessions-limit 5)]
-        (send-recent-sessions! channel limit)))
-
-    ;; Also send messages if client is subscribed (handles new session race condition)
-    (when (repl/is-subscribed? session-id)
-      (let [file-path (:file session-metadata)
-            all-messages (repl/parse-jsonl-file file-path)
-            messages (repl/filter-internal-messages all-messages)]
-        (if (seq messages)
-          (do
-            (log/info "Sending initial messages for new subscribed session"
-                      {:session-id session-id
-                       :message-count (count messages)
-                       :client-count eligible-count})
-            (doseq [[channel client-info] eligible-clients]
-              (send-to-client! channel
-                               {:type :session-updated
-                                :session-id session-id
-                                :messages messages})))
-          (log/debug "No messages to send for new subscribed session"
-                     {:session-id session-id}))))))
-
-(defn on-session-updated
-  "Called when a subscribed session has new messages"
-  [session-id new-messages]
-  (let [client-count (count @connected-clients)
-        eligible-clients (filter (fn [[channel _]]
-                                   (not (is-session-deleted-for-client? channel session-id)))
-                                 @connected-clients)
-        eligible-count (count eligible-clients)]
-
-    (log/info "Session updated callback invoked"
-              {:session-id session-id
-               :new-message-count (count new-messages)
-               :total-clients client-count
-               :eligible-clients eligible-count})
-
-    ;; Send to all clients subscribed to this session (and haven't deleted it)
-    (doseq [[channel client-info] eligible-clients]
-      (log/debug "Sending session-updated to client"
-                 {:session-id session-id
-                  :client-session-id (:session-id client-info)
-                  :new-messages (count new-messages)
-                  :channel-id (str channel)})
-      (send-to-client! channel
-                       {:type :session-updated
-                        :session-id session-id
-                        :messages new-messages})
-
-      ;; Send updated recent sessions list to each client
-      (let [limit (get client-info :recent-sessions-limit 5)]
-        (send-recent-sessions! channel limit)))))
-
-(defn on-session-deleted
-  "Called when a session file is deleted from filesystem"
-  [session-id]
-  (log/info "Session deleted from filesystem" {:session-id session-id}))
-  ;; This is informational - we don't broadcast deletes since it's just local cleanup
+;; This is informational - we don't broadcast deletes since it's just local cleanup
 
 ;; Message handling
 (defn handle-message
@@ -1180,16 +1082,14 @@
             ;; Client stops watching a session
             (let [session-id (:session-id data)]
               (when session-id
-                (log/info "Client unsubscribing from session" {:session-id session-id})
-                (repl/unsubscribe-from-session! session-id)))
+                (log/info "Client unsubscribing from session" {:session-id session-id})))
 
             "session_deleted"
             ;; Client marks session as deleted locally
             (let [session-id (:session-id data)]
               (when session-id
                 (log/info "Client deleted session locally" {:session-id session-id})
-                (mark-session-deleted-for-client! channel session-id)
-                (repl/unsubscribe-from-session! session-id)))
+                (mark-session-deleted-for-client! channel session-id)))
 
             "prompt"
             ;; Updated to use new_session_id vs resume_session_id
@@ -1204,7 +1104,7 @@
                   ;; - For resumed sessions: Use stored working dir from session metadata (extracted from .jsonl cwd)
                   ;; - For new sessions: Use iOS-provided dir, with fallback if placeholder
                   working-dir (if resume-session-id
-                                (let [session-metadata (repl/get-session-metadata resume-session-id)]
+                                (let [session-metadata (session-store/get-session-metadata resume-session-id)]
                                   (if session-metadata
                                     (do
                                       (log/info "Using stored working directory for resumed session"
@@ -1222,7 +1122,7 @@
                                     (log/info "Converting placeholder to real path for new session"
                                               {:placeholder ios-working-dir
                                                :project-name project-name})
-                                    (repl/project-name->working-dir project-name))
+                                    (session-store/project-name->working-dir project-name))
                                   ios-working-dir))]
 
               (cond
@@ -1254,7 +1154,7 @@
                                             prompt-text)
                                           prompt-text)]
                   ;; Try to acquire lock for this session
-                  (if (repl/acquire-session-lock! claude-session-id)
+                  (if (session-store/acquire-session-lock! claude-session-id)
                     (do
                       (log/info "Received prompt"
                                 {:text (subs prompt-text 0 (min 50 (count prompt-text)))
@@ -1319,7 +1219,7 @@
                                                  :message (:error response)
                                                  :session-id claude-session-id})))
                            (finally
-                             (repl/release-session-lock! claude-session-id))))
+                             (session-store/release-session-lock! claude-session-id))))
                        :new-session-id new-session-id
                        :resume-session-id resume-session-id
                        :working-directory working-dir
@@ -1396,7 +1296,7 @@
                               :message "session_id required in compact_session message"}))
                 ;; New replication-based architecture: session-id IS the claude-session-id
                 ;; Try to acquire lock for this session (from bd2e367)
-                (if (repl/acquire-session-lock! session-id)
+                (if (session-store/acquire-session-lock! session-id)
                   (do
                     (log/info "Compacting session" {:session-id session-id})
                     ;; Compact asynchronously
@@ -1406,6 +1306,8 @@
                           (if (:success result)
                             (do
                               (log/info "Session compaction successful" {:session-id session-id})
+                              ;; Mark session as compacted in our store
+                              (session-store/mark-compacted! session-id :clear-history? true)
                               (send-to-client! channel
                                                {:type :compaction-complete
                                                 :session-id session-id}))
@@ -1422,7 +1324,7 @@
                                             :session-id session-id
                                             :error (str "Compaction failed: " (ex-message e))}))
                         (finally
-                          (repl/release-session-lock! session-id)))))
+                          (session-store/release-session-lock! session-id)))))
                   (do
                     ;; Session is locked, send session_locked message
                     (log/info "Session locked, rejecting compaction"
@@ -1443,7 +1345,7 @@
                     (if (:success result)
                       (do
                         ;; Release the session lock
-                        (repl/release-session-lock! session-id)
+                        (session-store/release-session-lock! session-id)
                         (log/info "Session killed successfully" {:session-id session-id})
                         (send-to-client! channel
                                          {:type :session-killed
@@ -1774,7 +1676,7 @@
                                       :step-count (:step-count orch-state)})
 
                     ;; Automatically start the orchestration loop
-                    (let [session-metadata (repl/get-session-metadata session-id)
+                    (let [session-metadata (session-store/get-session-metadata session-id)
                           working-dir (or working-directory
                                           (:working-directory session-metadata))]
                       (log/info "Starting recipe orchestration loop"
@@ -1783,7 +1685,7 @@
                                  :step (:current-step orch-state)
                                  :working-directory working-dir})
                       ;; Try to acquire lock and start orchestration loop
-                      (if (repl/acquire-session-lock! session-id)
+                      (if (session-store/acquire-session-lock! session-id)
                         (do
                           (send-to-client! channel
                                            {:type :ack
@@ -2051,19 +1953,9 @@
       (log/info "API key loaded successfully")
       (println "✓ API key ready. Run 'make show-key' to display."))
 
-    ;; Initialize replication system
-    (log/info "Initializing session replication system")
-    (repl/initialize-index!)
-
-    ;; Start filesystem watcher
-    (try
-      (repl/start-watcher!
-       :on-session-created on-session-created
-       :on-session-updated on-session-updated
-       :on-session-deleted on-session-deleted)
-      (log/info "Filesystem watcher started successfully")
-      (catch Exception e
-        (log/error e "Failed to start filesystem watcher")))
+    ;; Initialize session storage (hooks-based architecture)
+    (log/info "Initializing session storage")
+    (session-store/initialize!)
 
     (log/info "Starting voice-code server"
               {:port port
@@ -2078,10 +1970,6 @@
        (Runtime/getRuntime)
        (Thread. (fn []
                   (log/info "Shutting down voice-code server gracefully")
-                  ;; Stop filesystem watcher
-                  (repl/stop-watcher!)
-                  ;; Save session index
-                  (repl/save-index! @repl/session-index)
                   ;; Stop HTTP server with 100ms timeout
                   (when @server-state
                     (@server-state :timeout 100))
@@ -2089,6 +1977,7 @@
 
       (println (format "✓ Voice-code WebSocket server running on ws://%s:%d" host port))
       (println "  Authentication: ENABLED")
+      (println "  Session storage: ~/.voice-code/sessions/")
       (when default-dir
         (println (format "  Default working directory: %s" default-dir)))
       (println "  Ready for connections. Press Ctrl+C to stop.")

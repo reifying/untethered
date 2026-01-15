@@ -1,6 +1,7 @@
 (ns voice-code.available-commands-test
   (:require [clojure.test :refer :all]
             [voice-code.server :as server]
+            [voice-code.session-store :as session-store]
             [voice-code.commands :as commands]
             [cheshire.core :as json]
             [clojure.java.io :as io]))
@@ -22,7 +23,7 @@
 (deftest test-available-commands-sent-after-connected
   (testing "available_commands message sent after connect with no working directory"
     (reset! server/api-key test-api-key)
-    (with-redefs [voice-code.replication/get-all-sessions (fn [] [])]
+    (with-redefs [session-store/list-sessions (fn [& _] [])]
       (reset! server/connected-clients {})
       (let [sent-messages (atom [])]
         (with-redefs [org.httpkit.server/send!

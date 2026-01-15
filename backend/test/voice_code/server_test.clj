@@ -2,7 +2,6 @@
   (:require [clojure.test :refer :all]
             [clojure.string :as str]
             [voice-code.server :as server]
-            [voice-code.replication :as repl]
             [voice-code.session-store :as session-store]
             [voice-code.recipes :as recipes]
             [cheshire.core :as json]
@@ -202,66 +201,8 @@
     (is (server/is-session-deleted-for-client? :ch1 "session-1"))
     (is (not (server/is-session-deleted-for-client? :ch2 "session-1")))))
 
-(deftest test-watcher-callbacks
-  (testing "on-session-created broadcasts to all clients"
-    (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :recent-sessions-limit 5}
-                                      :ch2 {:deleted-sessions #{} :recent-sessions-limit 5}})
-    (let [sent-messages (atom [])]
-      (with-redefs [org.httpkit.server/send! (fn [channel msg]
-                                               (swap! sent-messages conj {:channel channel :msg msg}))]
-        (server/on-session-created {:session-id "new-session-123"
-                                    :name "Test Session"
-                                    :working-directory "/tmp"
-                                    :last-modified 1234567890
-                                    :message-count 0
-                                    :preview ""})
-
-        ;; Now sends 2 messages per client: session_created + recent_sessions
-        (is (= 4 (count @sent-messages)))
-
-        ;; Verify session_created messages
-        (let [created-msgs (filter #(= "session_created" (:type (json/parse-string (:msg %) true)))
-                                   @sent-messages)]
-          (is (= 2 (count created-msgs)))
-          (let [msg (json/parse-string (:msg (first created-msgs)) true)]
-            (is (= "session_created" (:type msg)))
-            (is (= "new-session-123" (:session_id msg)))
-            (is (= "Test Session" (:name msg)))))
-
-        ;; Verify recent_sessions messages were sent
-        (let [recent-msgs (filter #(= "recent_sessions" (:type (json/parse-string (:msg %) true)))
-                                  @sent-messages)]
-          (is (= 2 (count recent-msgs)))))))
-
-  (testing "on-session-updated respects deleted sessions"
-    (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :recent-sessions-limit 5}
-                                      :ch2 {:deleted-sessions #{} :recent-sessions-limit 5}})
-    (let [sent-messages (atom [])]
-      (with-redefs [org.httpkit.server/send! (fn [channel msg]
-                                               (swap! sent-messages conj {:channel channel :msg msg}))]
-        (server/on-session-updated "session-1" [{:role "user" :text "test"}])
-
-        ;; ch1 deleted it, should not receive any messages
-        (is (= 0 (count (filter #(= :ch1 (:channel %)) @sent-messages))))
-
-        ;; ch2 should receive 2 messages: session_updated + recent_sessions
-        (let [ch2-msgs (filter #(= :ch2 (:channel %)) @sent-messages)]
-          (is (= 2 (count ch2-msgs)))
-
-          ;; Verify session_updated message
-          (let [updated-msg (first (filter #(= "session_updated"
-                                               (:type (json/parse-string (:msg %) true)))
-                                           ch2-msgs))
-                msg (json/parse-string (:msg updated-msg) true)]
-            (is (= "session_updated" (:type msg)))
-            (is (= "session-1" (:session_id msg)))
-            (is (= 1 (count (:messages msg)))))
-
-          ;; Verify recent_sessions message
-          (let [recent-msg (first (filter #(= "recent_sessions"
-                                              (:type (json/parse-string (:msg %) true)))
-                                          ch2-msgs))]
-            (is (some? recent-msg))))))))
+;; test-watcher-callbacks removed - file watcher functionality has been removed
+;; Session updates are now handled via hooks-based session tracking
 
 (deftest test-new-protocol-connect
   (testing "Connect message returns session list and recent sessions"
@@ -432,7 +373,7 @@
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
     (let [working-dir-used (atom nil)]
-      (with-redefs [voice-code.replication/get-session-metadata
+      (with-redefs [session-store/get-session-metadata
                     (fn [session-id]
                       (when (= session-id "resume-456")
                         {:session-id "resume-456"
@@ -480,7 +421,7 @@
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
     (let [working-dir-used (atom nil)]
-      (with-redefs [voice-code.replication/project-name->working-dir
+      (with-redefs [session-store/project-name->working-dir
                     (fn [project-name]
                       (if (= project-name "-Users-test-real-path")
                         "/Users/test/real/path"
@@ -506,7 +447,7 @@
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
     (let [working-dir-used (atom nil)]
-      (with-redefs [voice-code.replication/get-session-metadata
+      (with-redefs [session-store/get-session-metadata
                     (fn [session-id] nil) ; Session not found
                     voice-code.claude/invoke-claude-async
                     (fn [prompt callback & {:keys [working-directory]}]
@@ -565,7 +506,7 @@
                     (fn [_ _] (reset! create-session-called true))
                     voice-code.session-store/append-message!
                     (fn [_ _] {:id "msg-1" :timestamp "2025-01-01T00:00:00Z"})
-                    voice-code.replication/get-session-metadata
+                    session-store/get-session-metadata
                     (fn [_] {:session-id "resume-456" :working-directory "/path"})
                     voice-code.claude/invoke-claude-async
                     (fn [prompt callback & opts]
@@ -1151,18 +1092,18 @@
           mock-channel :test-ch]
       ;; Setup
       (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
+      (reset! session-store/session-locks #{})
       (server/start-recipe-for-session session-id :implement-and-review false)
 
       ;; Acquire lock (simulating what start_recipe does)
-      (voice-code.replication/acquire-session-lock! session-id)
+      (session-store/acquire-session-lock! session-id)
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
         (let [orch-state (server/get-session-recipe-state session-id)
               recipe (recipes/get-recipe :implement-and-review)]
 
           ;; Verify lock is held before processing
-          (is (voice-code.replication/is-session-locked? session-id)
+          (is (session-store/is-session-locked? session-id)
               "Lock should be held before processing")
 
           ;; Process first response with complete -> transitions to code-review
@@ -1172,7 +1113,7 @@
             (is (= :next-step (:action result1)))
             (is (= :code-review (:step-name result1)))
             ;; Lock should STILL be held after step transition
-            (is (voice-code.replication/is-session-locked? session-id)
+            (is (session-store/is-session-locked? session-id)
                 "Lock should remain held during step transition"))
 
           ;; Process second response - triggers retry (no JSON)
@@ -1182,7 +1123,7 @@
                          session-id updated-state recipe response2 mock-channel)]
             (is (= :retry (:action result2)))
             ;; Lock should STILL be held during retry
-            (is (voice-code.replication/is-session-locked? session-id)
+            (is (session-store/is-session-locked? session-id)
                 "Lock should remain held during retry"))
 
           ;; Process no-issues response (code-review step has no-issues -> commit step)
@@ -1193,7 +1134,7 @@
             (is (= :next-step (:action result3)))
             (is (= :commit (:step-name result3)))
             ;; Lock should STILL be held after transition to commit
-            (is (voice-code.replication/is-session-locked? session-id)
+            (is (session-store/is-session-locked? session-id)
                 "Lock should remain held during transition to commit"))
 
           ;; Process committed response (commit step has committed -> exit)
@@ -1220,20 +1161,20 @@
       ;; This prevents concurrent prompts from forking the session
 
       (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
+      (reset! session-store/session-locks #{})
 
       ;; Simulate the recipe lifecycle
       (server/start-recipe-for-session session-id :implement-and-review false)
-      (voice-code.replication/acquire-session-lock! session-id)
+      (session-store/acquire-session-lock! session-id)
 
       ;; Lock should be held
-      (is (voice-code.replication/is-session-locked? session-id))
+      (is (session-store/is-session-locked? session-id))
 
       ;; Simulate what execute-recipe-step does on :exit
-      (voice-code.replication/release-session-lock! session-id)
+      (session-store/release-session-lock! session-id)
 
       ;; Lock should be released
-      (is (not (voice-code.replication/is-session-locked? session-id))))))
+      (is (not (session-store/is-session-locked? session-id))))))
 
 (deftest test-lock-released-on-nil-step-prompt
   (testing "Lock is released when step-prompt is nil (prevents lock leak)"
@@ -1242,7 +1183,7 @@
           mock-channel :test-ch]
       ;; Setup
       (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
+      (reset! session-store/session-locks #{})
 
       ;; Create orchestration state pointing to a non-existent step
       ;; This simulates a scenario where get-next-step-prompt returns nil
@@ -1254,8 +1195,8 @@
               :step-retry-counts {}})
 
       ;; Acquire lock (simulating what start_recipe does before calling execute-recipe-step)
-      (voice-code.replication/acquire-session-lock! session-id)
-      (is (voice-code.replication/is-session-locked? session-id)
+      (session-store/acquire-session-lock! session-id)
+      (is (session-store/is-session-locked? session-id)
           "Lock should be held initially")
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
@@ -1266,7 +1207,7 @@
           (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
 
           ;; Lock should be released even though step-prompt was nil
-          (is (not (voice-code.replication/is-session-locked? session-id))
+          (is (not (session-store/is-session-locked? session-id))
               "Lock should be released when step-prompt is nil")
 
           ;; Should have sent recipe-exited and turn-complete messages
@@ -1325,7 +1266,7 @@
           mock-channel :test-ch]
       ;; Setup
       (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
+      (reset! session-store/session-locks #{})
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
 
       ;; Start recipe at commit step (which has model "haiku")
@@ -1354,7 +1295,7 @@
           mock-channel :test-ch]
       ;; Setup
       (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
+      (reset! session-store/session-locks #{})
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
 
       ;; Start recipe at implement step (which has no model)
@@ -1382,7 +1323,7 @@
           mock-channel :test-ch]
       ;; Setup
       (reset! server/session-orchestration-state {})
-      (reset! repl/session-locks #{})
+      (reset! session-store/session-locks #{})
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
 
       ;; Start recipe with is-new-session?=true (sets :session-created? to false)
@@ -1415,7 +1356,7 @@
           mock-channel :test-ch]
       ;; Setup
       (reset! server/session-orchestration-state {})
-      (reset! repl/session-locks #{})
+      (reset! session-store/session-locks #{})
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
 
       ;; Start recipe with is-new-session?=false (sets :session-created? to true)
@@ -1447,7 +1388,7 @@
           mock-channel :test-ch]
       ;; Setup
       (reset! server/session-orchestration-state {})
-      (reset! repl/session-locks #{})
+      (reset! session-store/session-locks #{})
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
 
       ;; Start recipe with is-new-session?=true (sets :session-created? to false)
@@ -1490,16 +1431,16 @@
       ;; Setup
       (reset! server/api-key test-api-key)
       (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
+      (reset! session-store/session-locks #{})
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{} :authenticated true}})
 
       ;; Pre-lock the session to simulate another operation holding the lock
-      (voice-code.replication/acquire-session-lock! session-id)
-      (is (voice-code.replication/is-session-locked? session-id)
+      (session-store/acquire-session-lock! session-id)
+      (is (session-store/is-session-locked? session-id)
           "Session should be locked by another operation")
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
-                    voice-code.replication/get-session-metadata (fn [_] {:working-directory "/tmp"})]
+                    session-store/get-session-metadata (fn [_] {:working-directory "/tmp"})]
         ;; Handle start_recipe message when session is already locked
         (server/handle-message mock-channel
                                (json/generate-string {:type "start_recipe"
@@ -1517,21 +1458,21 @@
               "Should send session_locked message")))
 
       ;; Cleanup
-      (voice-code.replication/release-session-lock! session-id)
+      (session-store/release-session-lock! session-id)
       (reset! server/api-key nil))))
 
 (deftest test-session-exists?
   (testing "returns false when get-session-metadata returns nil"
-    (with-redefs [repl/get-session-metadata (constantly nil)]
+    (with-redefs [session-store/get-session-metadata (constantly nil)]
       (is (false? (server/session-exists? "unknown-session-id")))))
 
   (testing "returns true when get-session-metadata returns data"
-    (with-redefs [repl/get-session-metadata (constantly {:session-id "known-session"
-                                                         :working-directory "/test/path"})]
+    (with-redefs [session-store/get-session-metadata (constantly {:session-id "known-session"
+                                                                  :working-directory "/test/path"})]
       (is (true? (server/session-exists? "known-session-id")))))
 
   (testing "handles nil session-id gracefully"
-    (with-redefs [repl/get-session-metadata (constantly nil)]
+    (with-redefs [session-store/get-session-metadata (constantly nil)]
       (is (false? (server/session-exists? nil))))))
 
 (deftest test-start-recipe-new-session-requires-working-directory
@@ -1546,7 +1487,7 @@
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
                     ;; Session doesn't exist (new session)
-                    repl/get-session-metadata (constantly nil)]
+                    session-store/get-session-metadata (constantly nil)]
         ;; Handle start_recipe message for new session WITHOUT working_directory
         (server/handle-message mock-channel
                                (json/generate-string {:type "start_recipe"
@@ -1568,12 +1509,12 @@
       ;; Setup
       (reset! server/api-key test-api-key)
       (reset! server/session-orchestration-state {})
-      (reset! repl/session-locks #{})
+      (reset! session-store/session-locks #{})
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{} :authenticated true}})
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
                     ;; Session doesn't exist (new session)
-                    repl/get-session-metadata (constantly nil)
+                    session-store/get-session-metadata (constantly nil)
                     ;; Mock execute-recipe-step to prevent actual execution
                     server/execute-recipe-step (fn [& _] nil)]
         ;; Handle start_recipe message for new session WITH working_directory
@@ -1607,13 +1548,13 @@
       ;; Setup
       (reset! server/api-key test-api-key)
       (reset! server/session-orchestration-state {})
-      (reset! repl/session-locks #{})
+      (reset! session-store/session-locks #{})
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{} :authenticated true}})
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
                     ;; Session exists (existing session)
-                    repl/get-session-metadata (constantly {:session-id session-id
-                                                           :working-directory "/existing/project"})
+                    session-store/get-session-metadata (constantly {:session-id session-id
+                                                                    :working-directory "/existing/project"})
                     ;; Mock execute-recipe-step to prevent actual execution
                     server/execute-recipe-step (fn [& _] nil)]
         ;; Handle start_recipe message for existing session WITHOUT working_directory
