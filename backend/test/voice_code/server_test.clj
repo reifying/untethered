@@ -1648,30 +1648,21 @@
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
     (let [sent-messages (atom [])
           ;; Create small messages that easily fit in 100KB budget
+          ;; Uses session-store format (:id, :role, :text)
           mock-messages (vec (for [i (range 50)]
-                               {:uuid (str "uuid-" i)
-                                :type (if (even? i) "user" "assistant")
+                               {:id (str "id-" i)
+                                :role (if (even? i) "user" "assistant")
                                 :text (str "Message " i)
-                                :message {:role (if (even? i) "user" "assistant")
-                                          :content (str "Message " i)}}))]
+                                :timestamp "2025-01-14T12:00:00.000Z"}))]
       (with-redefs [org.httpkit.server/send!
                     (fn [ch msg]
                       (swap! sent-messages conj (json/parse-string msg true)))
-                    voice-code.replication/subscribe-to-session! (fn [_] nil)
-                    voice-code.replication/get-session-metadata
+                    ;; Mock session-store/load-session-history (new architecture)
+                    voice-code.session-store/load-session-history
                     (fn [session-id]
-                      {:session-id session-id
-                       :file "/tmp/test-session.jsonl"
-                       :message-count 50})
-                    voice-code.replication/parse-jsonl-file
-                    (fn [_] mock-messages)
-                    voice-code.replication/filter-internal-messages
-                    (fn [msgs] msgs) ;; No filtering for this test
-                    voice-code.replication/reset-file-position! (fn [_] nil)
-                    voice-code.replication/file-positions (atom {})
-                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
-                                                      (length [] 1000)
-                                                      (exists [] true)))]
+                      {:version 1
+                       :session-id session-id
+                       :messages mock-messages})]
 
         (server/handle-message :test-ch "{\"type\":\"subscribe\",\"session_id\":\"test-session-123\"}")
 
@@ -1683,7 +1674,7 @@
           (is (= 50 (count (:messages response)))
               "All messages should fit within size budget")
           (is (= 50 (:total_count response))
-              "total_count should reflect filtered messages")
+              "total_count should reflect all messages")
           ;; Verify messages are in chronological order (oldest first)
           (is (= "Message 0" (-> response :messages first :text))
               "First message should be Message 0")
@@ -1694,52 +1685,37 @@
               "is_complete should be true when all messages fit"))))
     (reset! server/api-key nil)))
 
-(deftest test-subscribe-filters-internal-messages
-  (testing "Subscribe filters out internal messages (sidechain, summary, system)"
+(deftest test-subscribe-returns-all-stored-messages
+  (testing "Subscribe returns all messages from session-store (no internal messages to filter)"
+    ;; In the hooks-based architecture, session-store only contains user/assistant messages
+    ;; so no filtering is needed (internal messages like sidechain, summary, system
+    ;; were only in Claude's JSONL files, which we no longer read)
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
     (let [sent-messages (atom [])
-          ;; Create mock messages including internal ones
-          mock-messages [{:uuid "uuid-1" :type "user" :text "Real message 1" :message {:role "user" :content "Real message 1"}}
-                         {:uuid "uuid-2" :type "summary" :summary "Error summary"}
-                         {:uuid "uuid-3" :type "assistant" :text "Real message 2" :message {:role "assistant" :content "Real message 2"}}
-                         {:uuid "uuid-4" :type "system" :content "System notification"}
-                         {:uuid "uuid-5" :type "user" :text "Real message 3" :isSidechain true}
-                         {:uuid "uuid-6" :type "user" :text "Real message 4" :message {:role "user" :content "Real message 4"}}]]
+          ;; Session-store format: only user/assistant messages
+          mock-messages [{:id "id-1" :role "user" :text "User message 1" :timestamp "2025-01-14T12:00:00.000Z"}
+                         {:id "id-2" :role "assistant" :text "Assistant response 1" :timestamp "2025-01-14T12:00:01.000Z"}
+                         {:id "id-3" :role "user" :text "User message 2" :timestamp "2025-01-14T12:00:02.000Z"}
+                         {:id "id-4" :role "assistant" :text "Assistant response 2" :timestamp "2025-01-14T12:00:03.000Z"}]]
       (with-redefs [org.httpkit.server/send!
                     (fn [ch msg]
                       (swap! sent-messages conj (json/parse-string msg true)))
-                    voice-code.replication/subscribe-to-session! (fn [_] nil)
-                    voice-code.replication/get-session-metadata
+                    voice-code.session-store/load-session-history
                     (fn [session-id]
-                      {:session-id session-id
-                       :file "/tmp/test-session.jsonl"
-                       :message-count 6})
-                    voice-code.replication/parse-jsonl-file
-                    (fn [_] mock-messages)
-                    voice-code.replication/filter-internal-messages
-                    ;; Use actual filtering logic
-                    (fn [msgs]
-                      (remove #(or (:isSidechain %)
-                                   (= "summary" (:type %))
-                                   (= "system" (:type %)))
-                              msgs))
-                    voice-code.replication/reset-file-position! (fn [_] nil)
-                    voice-code.replication/file-positions (atom {})
-                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
-                                                      (length [] 1000)
-                                                      (exists [] true)))]
+                      {:version 1
+                       :session-id session-id
+                       :messages mock-messages})]
 
         (server/handle-message :test-ch "{\"type\":\"subscribe\",\"session_id\":\"test-session-456\"}")
 
-        ;; Verify only non-internal messages are sent
+        ;; All messages should be returned (no filtering needed)
         (is (= 1 (count @sent-messages)))
         (let [response (first @sent-messages)]
           (is (= "session_history" (:type response)))
-          (is (= 3 (count (:messages response)))
-              "Should only send 3 real messages, filtering out summary, system, and sidechain")
-          ;; Total count reflects displayable (filtered) messages
-          (is (= 3 (:total_count response))))))
+          (is (= 4 (count (:messages response)))
+              "Should return all 4 messages")
+          (is (= 4 (:total_count response))))))
     (reset! server/api-key nil)))
 
 ;; Message Size Truncation Tests
@@ -1895,58 +1871,58 @@
 
 (deftest test-build-session-history-delta-sync
   (testing "Returns only messages newer than last-message-id"
-    (let [messages [{:uuid "msg-1" :text "old" :type "user"}
-                    {:uuid "msg-2" :text "middle" :type "assistant"}
-                    {:uuid "msg-3" :text "new" :type "user"}]
+    (let [messages [{:id "msg-1" :text "old" :type "user"}
+                    {:id "msg-2" :text "middle" :type "assistant"}
+                    {:id "msg-3" :text "new" :type "user"}]
           result (server/build-session-history-response messages "msg-1" 100000)]
       (is (= 2 (count (:messages result))))
-      (is (= "msg-2" (-> result :messages first :uuid)))
-      (is (= "msg-3" (-> result :messages last :uuid)))
+      (is (= "msg-2" (-> result :messages first :id)))
+      (is (= "msg-3" (-> result :messages last :id)))
       (is (true? (:is-complete result)))
       (is (= "msg-2" (:oldest-message-id result)))
       (is (= "msg-3" (:newest-message-id result))))))
 
 (deftest test-build-session-history-no-delta-sync
   (testing "Returns all messages when last-message-id not provided"
-    (let [messages [{:uuid "msg-1" :text "first" :type "user"}
-                    {:uuid "msg-2" :text "second" :type "assistant"}
-                    {:uuid "msg-3" :text "third" :type "user"}]
+    (let [messages [{:id "msg-1" :text "first" :type "user"}
+                    {:id "msg-2" :text "second" :type "assistant"}
+                    {:id "msg-3" :text "third" :type "user"}]
           result (server/build-session-history-response messages nil 100000)]
       (is (= 3 (count (:messages result))))
-      (is (= "msg-1" (-> result :messages first :uuid)))
-      (is (= "msg-3" (-> result :messages last :uuid)))
+      (is (= "msg-1" (-> result :messages first :id)))
+      (is (= "msg-3" (-> result :messages last :id)))
       (is (true? (:is-complete result)))
       (is (= "msg-1" (:oldest-message-id result)))
       (is (= "msg-3" (:newest-message-id result))))))
 
 (deftest test-build-session-history-unknown-last-message-id
   (testing "Returns all messages when last-message-id not found (backward compatible)"
-    (let [messages [{:uuid "msg-1" :text "first" :type "user"}
-                    {:uuid "msg-2" :text "second" :type "assistant"}]
+    (let [messages [{:id "msg-1" :text "first" :type "user"}
+                    {:id "msg-2" :text "second" :type "assistant"}]
           result (server/build-session-history-response messages "unknown-id" 100000)]
       (is (= 2 (count (:messages result))))
-      (is (= "msg-1" (-> result :messages first :uuid)))
-      (is (= "msg-2" (-> result :messages last :uuid)))
+      (is (= "msg-1" (-> result :messages first :id)))
+      (is (= "msg-2" (-> result :messages last :id)))
       (is (true? (:is-complete result))))))
 
 (deftest test-build-session-history-budget-exhausted
   (testing "Stops when budget exhausted, prioritizes newest messages"
     (let [;; Create messages of reasonable sizes
           messages (vec (for [i (range 10)]
-                          {:uuid (str "msg-" i)
+                          {:id (str "msg-" i)
                            :type "assistant"
                            :text (apply str (repeat 1000 "x"))}))
           ;; Budget that can only fit about 5 messages (~1KB each + overhead)
           result (server/build-session-history-response messages nil 6000)]
       ;; Should include newest messages, not oldest
-      (is (= "msg-9" (-> result :messages last :uuid)))
+      (is (= "msg-9" (-> result :messages last :id)))
       ;; is-complete should be false since budget was exhausted
       (is (false? (:is-complete result))))))
 
 (deftest test-build-session-history-preserves-small-messages
   (testing "Small messages are not truncated"
-    (let [messages [{:uuid "small" :type "user" :text "Hello world"}
-                    {:uuid "also-small" :type "assistant" :text "Hi there!"}]
+    (let [messages [{:id "small" :type "user" :text "Hello world"}
+                    {:id "also-small" :type "assistant" :text "Hi there!"}]
           result (server/build-session-history-response messages nil 100000)]
       ;; Small messages should be unchanged
       (is (= "Hello world" (-> result :messages first :text)))
@@ -1957,8 +1933,8 @@
   (testing "Large individual messages are truncated to per-message-max-bytes"
     (let [;; Create a message larger than per-message-max-bytes (20KB)
           large-text (apply str (repeat 50000 "x"))
-          messages [{:uuid "small" :type "user" :text "Hello"}
-                    {:uuid "large" :type "assistant" :text large-text}]
+          messages [{:id "small" :type "user" :text "Hello"}
+                    {:id "large" :type "assistant" :text large-text}]
           result (server/build-session-history-response messages nil 200000)]
       ;; Small message unchanged
       (is (= "Hello" (-> result :messages first :text)))
@@ -1969,8 +1945,8 @@
 
 (deftest test-build-session-history-no-new-messages
   (testing "Returns empty when last-message-id is the newest message"
-    (let [messages [{:uuid "msg-1" :text "first" :type "user"}
-                    {:uuid "msg-2" :text "second" :type "assistant"}]
+    (let [messages [{:id "msg-1" :text "first" :type "user"}
+                    {:id "msg-2" :text "second" :type "assistant"}]
           ;; last-message-id is the newest message
           result (server/build-session-history-response messages "msg-2" 100000)]
       (is (= 0 (count (:messages result))))
@@ -1980,43 +1956,35 @@
 
 (deftest test-build-session-history-maintains-chronological-order
   (testing "Messages are returned in chronological order (oldest first)"
-    (let [messages [{:uuid "msg-1" :text "first" :type "user"}
-                    {:uuid "msg-2" :text "second" :type "assistant"}
-                    {:uuid "msg-3" :text "third" :type "user"}
-                    {:uuid "msg-4" :text "fourth" :type "assistant"}
-                    {:uuid "msg-5" :text "fifth" :type "user"}]
+    (let [messages [{:id "msg-1" :text "first" :type "user"}
+                    {:id "msg-2" :text "second" :type "assistant"}
+                    {:id "msg-3" :text "third" :type "user"}
+                    {:id "msg-4" :text "fourth" :type "assistant"}
+                    {:id "msg-5" :text "fifth" :type "user"}]
           result (server/build-session-history-response messages "msg-2" 100000)]
       ;; Should return msg-3, msg-4, msg-5 in chronological order
       (is (= 3 (count (:messages result))))
-      (is (= "msg-3" (-> result :messages (nth 0) :uuid)))
-      (is (= "msg-4" (-> result :messages (nth 1) :uuid)))
-      (is (= "msg-5" (-> result :messages (nth 2) :uuid))))))
+      (is (= "msg-3" (-> result :messages (nth 0) :id)))
+      (is (= "msg-4" (-> result :messages (nth 1) :id)))
+      (is (= "msg-5" (-> result :messages (nth 2) :id))))))
 
 (deftest test-subscribe-with-delta-sync
   (testing "Subscribe with last_message_id triggers delta sync"
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
     (let [sent-messages (atom [])
-          mock-messages [{:uuid "msg-1" :type "user" :text "old message"}
-                         {:uuid "msg-2" :type "assistant" :text "older response"}
-                         {:uuid "msg-3" :type "user" :text "new message"}]]
+          ;; Session-store format uses :id and :role
+          mock-messages [{:id "msg-1" :role "user" :text "old message" :timestamp "2025-01-14T12:00:00.000Z"}
+                         {:id "msg-2" :role "assistant" :text "older response" :timestamp "2025-01-14T12:00:01.000Z"}
+                         {:id "msg-3" :role "user" :text "new message" :timestamp "2025-01-14T12:00:02.000Z"}]]
       (with-redefs [org.httpkit.server/send!
                     (fn [ch msg]
                       (swap! sent-messages conj (json/parse-string msg true)))
-                    voice-code.replication/subscribe-to-session! (fn [_] nil)
-                    voice-code.replication/get-session-metadata
+                    voice-code.session-store/load-session-history
                     (fn [session-id]
-                      {:session-id session-id
-                       :file "/tmp/test-session.jsonl"})
-                    voice-code.replication/parse-jsonl-file
-                    (fn [_] mock-messages)
-                    voice-code.replication/filter-internal-messages
-                    (fn [msgs] msgs)
-                    voice-code.replication/reset-file-position! (fn [_] nil)
-                    voice-code.replication/file-positions (atom {})
-                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
-                                                      (length [] 1000)
-                                                      (exists [] true)))]
+                      {:version 1
+                       :session-id session-id
+                       :messages mock-messages})]
 
         ;; Subscribe with last_message_id
         (server/handle-message :test-ch
@@ -2027,8 +1995,8 @@
           (is (= "session_history" (:type response)))
           ;; Should only return messages newer than msg-1
           (is (= 2 (count (:messages response))))
-          (is (= "msg-2" (-> response :messages first :uuid)))
-          (is (= "msg-3" (-> response :messages last :uuid)))
+          (is (= "msg-2" (-> response :messages first :id)))
+          (is (= "msg-3" (-> response :messages last :id)))
           ;; Should include new delta sync fields
           (is (contains? response :oldest_message_id))
           (is (contains? response :newest_message_id))
@@ -2043,25 +2011,17 @@
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
     (let [sent-messages (atom [])
-          mock-messages [{:uuid "msg-1" :type "user" :text "first"}
-                         {:uuid "msg-2" :type "assistant" :text "second"}]]
+          ;; Session-store format uses :id and :role
+          mock-messages [{:id "msg-1" :role "user" :text "first" :timestamp "2025-01-14T12:00:00.000Z"}
+                         {:id "msg-2" :role "assistant" :text "second" :timestamp "2025-01-14T12:00:01.000Z"}]]
       (with-redefs [org.httpkit.server/send!
                     (fn [ch msg]
                       (swap! sent-messages conj (json/parse-string msg true)))
-                    voice-code.replication/subscribe-to-session! (fn [_] nil)
-                    voice-code.replication/get-session-metadata
+                    voice-code.session-store/load-session-history
                     (fn [session-id]
-                      {:session-id session-id
-                       :file "/tmp/test-session.jsonl"})
-                    voice-code.replication/parse-jsonl-file
-                    (fn [_] mock-messages)
-                    voice-code.replication/filter-internal-messages
-                    (fn [msgs] msgs)
-                    voice-code.replication/reset-file-position! (fn [_] nil)
-                    voice-code.replication/file-positions (atom {})
-                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
-                                                      (length [] 1000)
-                                                      (exists [] true)))]
+                      {:version 1
+                       :session-id session-id
+                       :messages mock-messages})]
 
         ;; Subscribe WITHOUT last_message_id (backward compatible)
         (server/handle-message :test-ch
@@ -2072,10 +2032,31 @@
           (is (= "session_history" (:type response)))
           ;; Should return all messages
           (is (= 2 (count (:messages response))))
-          (is (= "msg-1" (-> response :messages first :uuid)))
+          (is (= "msg-1" (-> response :messages first :id)))
           ;; Should include new fields for backward compat
           (is (= "msg-1" (:oldest_message_id response)))
           (is (= "msg-2" (:newest_message_id response)))
           (is (true? (:is_complete response))))))
+    (reset! server/api-key nil)))
+
+(deftest test-subscribe-session-not-found
+  (testing "Subscribe returns error when session not found in session-store"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    ;; Session-store returns nil for non-existent session
+                    voice-code.session-store/load-session-history
+                    (fn [_session-id] nil)]
+
+        (server/handle-message :test-ch
+                               "{\"type\":\"subscribe\",\"session_id\":\"non-existent-session\"}")
+
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (str/includes? (:message response) "Session not found")))))
     (reset! server/api-key nil)))
 

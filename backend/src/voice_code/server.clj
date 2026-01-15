@@ -268,7 +268,7 @@
    5. Reverse to chronological order
 
    Parameters:
-   - messages: vector of message maps (must have :uuid field)
+   - messages: vector of message maps (must have :id field)
    - last-message-id: optional UUID string of the most recent message iOS has
    - max-total-bytes: maximum bytes for the response JSON
 
@@ -286,7 +286,7 @@
     (let [;; Find index of last known message
           last-idx (when last-message-id
                      (some (fn [[idx msg]]
-                             (when (= (:uuid msg) last-message-id) idx))
+                             (when (= (:id msg) last-message-id) idx))
                            (map-indexed vector messages)))
 
           ;; Get messages newer than last known (or all if not found)
@@ -325,8 +325,8 @@
                                 new-total)))))]
 
       (assoc result
-             :oldest-message-id (-> result :messages first :uuid)
-             :newest-message-id (-> result :messages last :uuid)))))
+             :oldest-message-id (-> result :messages first :id)
+             :newest-message-id (-> result :messages last :id)))))
 
 (defn truncate-response-text
   "Truncate the :text field of a response message if the total JSON would exceed max size.
@@ -1126,6 +1126,7 @@
           (case msg-type
             "subscribe"
             ;; Client requests session history with optional delta sync
+            ;; Uses session-store (hooks-based architecture) - no file watching
             (let [session-id (:session-id data)
                   last-message-id (:last-message-id data)] ;; Delta sync: UUID of newest message iOS has
               (if-not session-id
@@ -1139,35 +1140,24 @@
                              :last-message-id last-message-id
                              :has-delta-sync (some? last-message-id)})
 
-                  ;; Subscribe in replication system
-                  (repl/subscribe-to-session! session-id)
-
-                  ;; Get session metadata
-                  (if-let [metadata (repl/get-session-metadata session-id)]
-                    (let [file-path (:file metadata)
-                          ;; Get current file size to update position BEFORE reading
-                          file (io/file file-path)
-                          current-size (.length file)
-                          all-messages (repl/parse-jsonl-file file-path)
-                          ;; Filter internal messages (sidechain, summary, system)
-                          filtered (vec (repl/filter-internal-messages all-messages))
+                  ;; Load session history from session-store
+                  ;; No file watching or subscription needed - we own the data
+                  (if-let [history (session-store/load-session-history session-id)]
+                    (let [;; Get all messages from our store
+                          ;; No internal message filtering needed - our store only has user/assistant messages
+                          all-messages (vec (:messages history))
                           ;; Get client's max message size setting
                           max-bytes (get-client-max-message-size-bytes channel)
                           ;; Use delta sync algorithm for smart truncation
                           {:keys [messages is-complete oldest-message-id newest-message-id]}
-                          (build-session-history-response filtered last-message-id max-bytes)]
-                      ;; Update file position to current size so incremental parsing starts fresh
-                      ;; This ensures we only get NEW messages after this subscription
-                      (repl/reset-file-position! file-path)
-                      (swap! repl/file-positions assoc file-path current-size)
-                      (log/info "Sending session history"
+                          (build-session-history-response all-messages last-message-id max-bytes)]
+                      (log/info "Sending session history from session-store"
                                 {:session-id session-id
                                  :message-count (count messages)
-                                 :total (count filtered)
+                                 :total (count all-messages)
                                  :is-complete is-complete
-                                 :has-delta-sync (some? last-message-id)
-                                 :file-position current-size})
-                      ;; Send session history with new delta sync fields
+                                 :has-delta-sync (some? last-message-id)})
+                      ;; Send session history with delta sync fields
                       ;; Note: we bypass send-to-client! truncation since build-session-history-response
                       ;; already handled truncation with per-message limits
                       (http/send! channel
@@ -1175,12 +1165,12 @@
                                    {:type :session-history
                                     :session-id session-id
                                     :messages messages
-                                    :total-count (count filtered)
+                                    :total-count (count all-messages)
                                     :oldest-message-id oldest-message-id
                                     :newest-message-id newest-message-id
                                     :is-complete is-complete})))
                     (do
-                      (log/warn "Session not found" {:session-id session-id})
+                      (log/warn "Session not found in session-store" {:session-id session-id})
                       (http/send! channel
                                   (generate-json
                                    {:type :error
