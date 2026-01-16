@@ -3,6 +3,7 @@ package dev.labs910.voicecode.presentation.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.labs910.voicecode.data.local.ApiKeyManager
+import dev.labs910.voicecode.data.local.VoiceCodeNotificationManager
 import dev.labs910.voicecode.data.remote.*
 import dev.labs910.voicecode.data.repository.SessionRepository
 import dev.labs910.voicecode.domain.model.*
@@ -18,7 +19,8 @@ class MainViewModel(
     private val repository: SessionRepository,
     private val apiKeyManager: ApiKeyManager,
     private val voiceInput: VoiceInputManager,
-    private val voiceOutput: VoiceOutputManager
+    private val voiceOutput: VoiceOutputManager,
+    private val notificationManager: VoiceCodeNotificationManager? = null
 ) : ViewModel() {
 
     // ==========================================================================
@@ -97,6 +99,12 @@ class MainViewModel(
     }
 
     fun hasApiKey(): Boolean = apiKeyManager.hasApiKey()
+
+    fun clearApiKey() {
+        apiKeyManager.deleteApiKey()
+    }
+
+    fun getCurrentApiKey(): String? = apiKeyManager.getApiKey()
 
     // ==========================================================================
     // MARK: - Sessions
@@ -231,6 +239,10 @@ class MainViewModel(
         voiceOutput.setRespectSilentMode(respected)
     }
 
+    fun setAppInForeground(inForeground: Boolean) {
+        _uiState.update { it.copy(isAppInForeground = inForeground) }
+    }
+
     // ==========================================================================
     // MARK: - Session Actions
     // ==========================================================================
@@ -353,6 +365,17 @@ class MainViewModel(
                 }
             }
 
+            // Show notification if enabled and app is in background
+            if (_uiState.value.notificationsEnabled && !_uiState.value.isAppInForeground) {
+                val sessionName = _uiState.value.currentSession?.name ?: "Claude"
+                val preview = if (text.length > 100) {
+                    text.take(97) + "..."
+                } else {
+                    text
+                }
+                notificationManager?.showResponseNotification(sessionName, preview, sessionId)
+            }
+
             // Speak the response if voice output is enabled
             if (_uiState.value.autoSpeakResponses) {
                 speakResponse(text)
@@ -398,5 +421,6 @@ data class MainUiState(
     val notificationsEnabled: Boolean = true,
     val silentModeRespected: Boolean = true,
     val autoSpeakResponses: Boolean = false,
+    val isAppInForeground: Boolean = true,
     val error: String? = null
 )

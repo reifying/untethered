@@ -15,6 +15,7 @@ sealed class Screen {
     data object SessionList : Screen()
     data class Conversation(val sessionId: String) : Screen()
     data object Settings : Screen()
+    data object ApiKey : Screen()
     data object About : Screen()
     data object Commands : Screen()
     data object CommandHistory : Screen()
@@ -89,7 +90,9 @@ fun VoiceCodeNavHost(
     onCommandExecutionClick: (CommandExecution) -> Unit,
     onServerUrlChange: (String) -> Unit,
     onServerPortChange: (String) -> Unit,
-    onApiKeyClick: () -> Unit,
+    onApiKeyChange: (String) -> Unit,
+    onClearApiKey: () -> Unit,
+    currentApiKey: String?,
     onVoiceSettingsClick: () -> Unit,
     onNotificationsToggle: (Boolean) -> Unit,
     onSilentModeToggle: (Boolean) -> Unit,
@@ -143,11 +146,21 @@ fun VoiceCodeNavHost(
                 onBack = { navigationState.goBack() },
                 onServerUrlChange = onServerUrlChange,
                 onServerPortChange = onServerPortChange,
-                onApiKeyClick = onApiKeyClick,
+                onApiKeyClick = { navigationState.navigateTo(Screen.ApiKey) },
                 onVoiceSettingsClick = onVoiceSettingsClick,
                 onNotificationsToggle = onNotificationsToggle,
                 onSilentModeToggle = onSilentModeToggle,
                 onAboutClick = { navigationState.navigateTo(Screen.About) },
+                modifier = modifier
+            )
+        }
+
+        is Screen.ApiKey -> {
+            ApiKeyScreen(
+                currentApiKey = currentApiKey,
+                onApiKeyChange = onApiKeyChange,
+                onClearApiKey = onClearApiKey,
+                onBack = { navigationState.goBack() },
                 modifier = modifier
             )
         }
