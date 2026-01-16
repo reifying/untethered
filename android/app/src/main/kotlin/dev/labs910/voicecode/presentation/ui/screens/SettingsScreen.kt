@@ -34,6 +34,7 @@ fun SettingsScreen(
     onVoiceSettingsClick: () -> Unit,
     onNotificationsToggle: (Boolean) -> Unit,
     onSilentModeToggle: (Boolean) -> Unit,
+    onDebugLogsClick: () -> Unit,
     onAboutClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -116,6 +117,18 @@ fun SettingsScreen(
                 subtitle = "Notify when Claude responds",
                 checked = notificationsEnabled,
                 onCheckedChange = onNotificationsToggle
+            )
+
+            HorizontalDivider()
+
+            // Developer Section
+            SettingsSectionHeader("Developer")
+
+            SettingsClickableRow(
+                icon = Icons.Default.BugReport,
+                title = "Debug Logs",
+                subtitle = "View diagnostic logs",
+                onClick = onDebugLogsClick
             )
 
             HorizontalDivider()

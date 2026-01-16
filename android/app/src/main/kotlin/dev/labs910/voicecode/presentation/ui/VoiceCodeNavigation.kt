@@ -18,6 +18,7 @@ sealed class Screen {
     data object Settings : Screen()
     data object ApiKey : Screen()
     data object VoiceSettings : Screen()
+    data object DebugLogs : Screen()
     data object About : Screen()
     data object Commands : Screen()
     data object CommandHistory : Screen()
@@ -160,6 +161,7 @@ fun VoiceCodeNavHost(
                 onVoiceSettingsClick = { navigationState.navigateTo(Screen.VoiceSettings) },
                 onNotificationsToggle = onNotificationsToggle,
                 onSilentModeToggle = onSilentModeToggle,
+                onDebugLogsClick = { navigationState.navigateTo(Screen.DebugLogs) },
                 onAboutClick = { navigationState.navigateTo(Screen.About) },
                 modifier = modifier
             )
@@ -185,6 +187,13 @@ fun VoiceCodeNavHost(
                 onSpeechRateChange = onSpeechRateChange,
                 onPitchChange = onPitchChange,
                 onTestVoice = onTestVoice,
+                onBack = { navigationState.goBack() },
+                modifier = modifier
+            )
+        }
+
+        is Screen.DebugLogs -> {
+            DebugLogsScreen(
                 onBack = { navigationState.goBack() },
                 modifier = modifier
             )

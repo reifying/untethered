@@ -115,10 +115,10 @@ UUIDs are always lowercase.
 - [x] Notification manager integrated into ViewModel
 - [x] Voice selection screen (TTS voice, rate, pitch)
 - [x] Session compaction confirmation dialog
+- [x] Debug logs viewer (App, System, WebSocket)
 
 ### Planned
 - [ ] Priority queue support UI
-- [ ] Debug logs view
 - [ ] Instrumented tests
 
 ## Development
