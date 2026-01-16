@@ -15,6 +15,7 @@ import dev.labs910.voicecode.presentation.ui.screens.*
 sealed class Screen {
     data object SessionList : Screen()
     data class Conversation(val sessionId: String) : Screen()
+    data class SessionInfo(val sessionId: String) : Screen()
     data object Settings : Screen()
     data object ApiKey : Screen()
     data object VoiceSettings : Screen()
@@ -107,6 +108,11 @@ fun VoiceCodeNavHost(
     onTestVoice: () -> Unit,
     onNotificationsToggle: (Boolean) -> Unit,
     onSilentModeToggle: (Boolean) -> Unit,
+    // Priority queue
+    priorityQueueEnabled: Boolean,
+    onAddToPriorityQueue: (String, Int) -> Unit,
+    onRemoveFromPriorityQueue: (String) -> Unit,
+    onChangePriority: (String, Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     when (val screen = navigationState.currentScreen) {
@@ -141,6 +147,21 @@ fun VoiceCodeNavHost(
                     onSendMessage = onSendMessage,
                     onVoiceInput = onVoiceInput,
                     onCompact = onCompactSession,
+                    onSessionInfo = { navigationState.navigateTo(Screen.SessionInfo(currentSession.id)) },
+                    modifier = modifier
+                )
+            }
+        }
+
+        is Screen.SessionInfo -> {
+            if (currentSession != null) {
+                SessionInfoScreen(
+                    session = currentSession,
+                    priorityQueueEnabled = priorityQueueEnabled,
+                    onBack = { navigationState.goBack() },
+                    onAddToPriorityQueue = { priority -> onAddToPriorityQueue(currentSession.id, priority) },
+                    onRemoveFromPriorityQueue = { onRemoveFromPriorityQueue(currentSession.id) },
+                    onChangePriority = { priority -> onChangePriority(currentSession.id, priority) },
                     modifier = modifier
                 )
             }

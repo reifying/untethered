@@ -79,7 +79,11 @@ class SessionTest {
         assertFalse(session.isUserDeleted)
         assertFalse(session.isLocked)
         assertNull(session.backendSessionId)
-        assertNull(session.queuePosition)
+        // Priority queue defaults
+        assertFalse(session.isInPriorityQueue)
+        assertEquals(10, session.priority) // Default to Low
+        assertEquals(0.0, session.priorityOrder, 0.001)
+        assertNull(session.priorityQueuedAt)
     }
 
     @Test
@@ -99,5 +103,76 @@ class SessionTest {
 
         assertNull(params.workingDirectory)
         assertNull(params.name)
+    }
+
+    // ==========================================================================
+    // MARK: - Priority Queue Tests
+    // ==========================================================================
+
+    @Test
+    fun `Session can be added to priority queue`() {
+        val now = java.time.Instant.now()
+        val session = Session(
+            isInPriorityQueue = true,
+            priority = 5, // Medium
+            priorityOrder = 1.0,
+            priorityQueuedAt = now
+        )
+
+        assertTrue(session.isInPriorityQueue)
+        assertEquals(5, session.priority)
+        assertEquals(1.0, session.priorityOrder, 0.001)
+        assertEquals(now, session.priorityQueuedAt)
+    }
+
+    @Test
+    fun `Priority levels are High=1, Medium=5, Low=10`() {
+        val highPriority = Session(priority = 1)
+        val mediumPriority = Session(priority = 5)
+        val lowPriority = Session(priority = 10)
+
+        // Lower number = higher priority
+        assertTrue(highPriority.priority < mediumPriority.priority)
+        assertTrue(mediumPriority.priority < lowPriority.priority)
+    }
+
+    @Test
+    fun `Priority order allows for decimal positioning`() {
+        // Used for drag-and-drop reordering within a priority level
+        val session1 = Session(priority = 5, priorityOrder = 1.0)
+        val session2 = Session(priority = 5, priorityOrder = 1.5) // Inserted between 1 and 2
+        val session3 = Session(priority = 5, priorityOrder = 2.0)
+
+        assertTrue(session1.priorityOrder < session2.priorityOrder)
+        assertTrue(session2.priorityOrder < session3.priorityOrder)
+    }
+
+    @Test
+    fun `Session not in queue has default priority values`() {
+        val session = Session(isInPriorityQueue = false)
+
+        assertFalse(session.isInPriorityQueue)
+        assertEquals(10, session.priority) // Default Low
+        assertEquals(0.0, session.priorityOrder, 0.001)
+        assertNull(session.priorityQueuedAt)
+    }
+
+    @Test
+    fun `Session copy preserves priority queue fields`() {
+        val now = java.time.Instant.now()
+        val original = Session(
+            isInPriorityQueue = true,
+            priority = 1,
+            priorityOrder = 5.5,
+            priorityQueuedAt = now
+        )
+
+        val copy = original.copy(name = "Updated Name")
+
+        assertEquals(original.isInPriorityQueue, copy.isInPriorityQueue)
+        assertEquals(original.priority, copy.priority)
+        assertEquals(original.priorityOrder, copy.priorityOrder, 0.001)
+        assertEquals(original.priorityQueuedAt, copy.priorityQueuedAt)
+        assertEquals("Updated Name", copy.name)
     }
 }

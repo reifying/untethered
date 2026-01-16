@@ -279,6 +279,55 @@ class MainViewModel(
     }
 
     // ==========================================================================
+    // MARK: - Priority Queue
+    // ==========================================================================
+
+    val priorityQueueSessions: StateFlow<List<Session>> = repository.getPriorityQueueSessions()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun addToPriorityQueue(sessionId: String, priority: Int = 10) {
+        viewModelScope.launch {
+            repository.addToPriorityQueue(sessionId, priority)
+            // Update current session if it's the one being modified
+            if (_uiState.value.currentSession?.id == sessionId) {
+                repository.getSession(sessionId)?.let { updatedSession ->
+                    _uiState.update { it.copy(currentSession = updatedSession) }
+                }
+            }
+        }
+    }
+
+    fun removeFromPriorityQueue(sessionId: String) {
+        viewModelScope.launch {
+            repository.removeFromPriorityQueue(sessionId)
+            // Update current session if it's the one being modified
+            if (_uiState.value.currentSession?.id == sessionId) {
+                repository.getSession(sessionId)?.let { updatedSession ->
+                    _uiState.update { it.copy(currentSession = updatedSession) }
+                }
+            }
+        }
+    }
+
+    fun changeSessionPriority(sessionId: String, newPriority: Int) {
+        viewModelScope.launch {
+            repository.changeSessionPriority(sessionId, newPriority)
+            // Update current session if it's the one being modified
+            if (_uiState.value.currentSession?.id == sessionId) {
+                repository.getSession(sessionId)?.let { updatedSession ->
+                    _uiState.update { it.copy(currentSession = updatedSession) }
+                }
+            }
+        }
+    }
+
+    fun reorderSession(sessionId: String, newOrder: Double) {
+        viewModelScope.launch {
+            repository.reorderSession(sessionId, newOrder)
+        }
+    }
+
+    // ==========================================================================
     // MARK: - Error Handling
     // ==========================================================================
 

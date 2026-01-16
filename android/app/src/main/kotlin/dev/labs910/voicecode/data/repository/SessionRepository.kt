@@ -92,7 +92,10 @@ class SessionRepository(
             unreadCount = existing?.unreadCount ?: 0,
             isUserDeleted = existing?.isUserDeleted ?: false,
             customName = existing?.customName,
-            queuePosition = existing?.queuePosition
+            isInPriorityQueue = existing?.isInPriorityQueue ?: false,
+            priority = existing?.priority ?: 10,
+            priorityOrder = existing?.priorityOrder ?: 0.0,
+            priorityQueuedAt = existing?.priorityQueuedAt
         )
 
         sessionDao.insertSession(entity)
@@ -232,6 +235,58 @@ class SessionRepository(
     }
 
     // ==========================================================================
+    // MARK: - Priority Queue
+    // ==========================================================================
+
+    /**
+     * Get sessions in the priority queue, ordered by priority then priorityOrder.
+     */
+    fun getPriorityQueueSessions(): Flow<List<Session>> {
+        return sessionDao.getPriorityQueueSessions().map { entities ->
+            entities.map { it.toDomain() }
+        }
+    }
+
+    /**
+     * Add a session to the priority queue.
+     * Assigns default priority (10 = Low) and places it at the end of that priority level.
+     */
+    suspend fun addToPriorityQueue(sessionId: String, priority: Int = 10) {
+        // Get the max order for this priority level and add 1.0
+        val maxOrder = sessionDao.getMaxPriorityOrder(priority) ?: 0.0
+        val newOrder = maxOrder + 1.0
+
+        sessionDao.addToPriorityQueue(sessionId)
+        sessionDao.updateSessionPriority(sessionId, priority, newOrder)
+    }
+
+    /**
+     * Remove a session from the priority queue.
+     */
+    suspend fun removeFromPriorityQueue(sessionId: String) {
+        sessionDao.removeFromPriorityQueue(sessionId)
+    }
+
+    /**
+     * Change a session's priority level.
+     * Places it at the end of the new priority level.
+     */
+    suspend fun changeSessionPriority(sessionId: String, newPriority: Int) {
+        val maxOrder = sessionDao.getMaxPriorityOrder(newPriority) ?: 0.0
+        val newOrder = maxOrder + 1.0
+        sessionDao.updateSessionPriority(sessionId, newPriority, newOrder)
+    }
+
+    /**
+     * Reorder a session within its priority level.
+     * Used for drag-and-drop reordering.
+     */
+    suspend fun reorderSession(sessionId: String, newOrder: Double) {
+        val session = sessionDao.getSession(sessionId) ?: return
+        sessionDao.updateSessionPriority(sessionId, session.priority, newOrder)
+    }
+
+    // ==========================================================================
     // MARK: - Mappers
     // ==========================================================================
 
@@ -247,7 +302,10 @@ class SessionRepository(
             unreadCount = unreadCount,
             isUserDeleted = isUserDeleted,
             customName = customName,
-            queuePosition = queuePosition
+            isInPriorityQueue = isInPriorityQueue,
+            priority = priority,
+            priorityOrder = priorityOrder,
+            priorityQueuedAt = priorityQueuedAt?.let { Instant.ofEpochMilli(it) }
         )
     }
 
@@ -263,7 +321,10 @@ class SessionRepository(
             unreadCount = unreadCount,
             isUserDeleted = isUserDeleted,
             customName = customName,
-            queuePosition = queuePosition
+            isInPriorityQueue = isInPriorityQueue,
+            priority = priority,
+            priorityOrder = priorityOrder,
+            priorityQueuedAt = priorityQueuedAt?.toEpochMilli()
         )
     }
 

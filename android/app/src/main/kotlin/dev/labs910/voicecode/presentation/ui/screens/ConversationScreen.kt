@@ -38,6 +38,7 @@ fun ConversationScreen(
     onSendMessage: (String) -> Unit,
     onVoiceInput: () -> Unit,
     onCompact: () -> Unit,
+    onSessionInfo: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var inputText by remember { mutableStateOf("") }
@@ -80,6 +81,9 @@ fun ConversationScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onSessionInfo) {
+                        Icon(Icons.Default.Info, contentDescription = "Session Info")
+                    }
                     IconButton(onClick = { showCompactDialog = true }) {
                         Icon(Icons.Default.Compress, contentDescription = "Compact Session")
                     }

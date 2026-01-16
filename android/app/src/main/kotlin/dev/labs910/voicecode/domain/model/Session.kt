@@ -40,11 +40,24 @@ data class Session(
     /** Custom name set by user */
     val customName: String? = null,
 
-    /** Queue position if using priority queue */
-    val queuePosition: Int? = null,
-
     /** Whether this session is currently locked (processing a prompt) */
-    val isLocked: Boolean = false
+    val isLocked: Boolean = false,
+
+    // ==========================================================================
+    // MARK: - Priority Queue Fields
+    // ==========================================================================
+
+    /** Whether this session is in the priority queue */
+    val isInPriorityQueue: Boolean = false,
+
+    /** Priority level: 1 (High), 5 (Medium), 10 (Low). Lower = higher priority */
+    val priority: Int = 10,
+
+    /** Order within the priority level for drag-and-drop reordering */
+    val priorityOrder: Double = 0.0,
+
+    /** Timestamp when the session was added to the priority queue */
+    val priorityQueuedAt: Instant? = null
 ) {
     /**
      * Display name for the session.

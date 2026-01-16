@@ -101,8 +101,18 @@ data class SessionEntity(
     @ColumnInfo(name = "custom_name")
     val customName: String? = null,
 
-    @ColumnInfo(name = "queue_position")
-    val queuePosition: Int? = null
+    // Priority Queue Fields
+    @ColumnInfo(name = "is_in_priority_queue", defaultValue = "0")
+    val isInPriorityQueue: Boolean = false,
+
+    @ColumnInfo(name = "priority", defaultValue = "10")
+    val priority: Int = 10,
+
+    @ColumnInfo(name = "priority_order", defaultValue = "0.0")
+    val priorityOrder: Double = 0.0,
+
+    @ColumnInfo(name = "priority_queued_at")
+    val priorityQueuedAt: Long? = null
 )
 
 /**
@@ -148,6 +158,23 @@ interface SessionDao {
 
     @Query("UPDATE sessions SET backend_session_id = :backendSessionId WHERE id = :id")
     suspend fun updateBackendSessionId(id: String, backendSessionId: String)
+
+    // Priority Queue Queries
+
+    @Query("SELECT * FROM sessions WHERE is_in_priority_queue = 1 AND is_user_deleted = 0 ORDER BY priority ASC, priority_order ASC")
+    fun getPriorityQueueSessions(): Flow<List<SessionEntity>>
+
+    @Query("UPDATE sessions SET is_in_priority_queue = 1, priority_queued_at = :timestamp WHERE id = :id")
+    suspend fun addToPriorityQueue(id: String, timestamp: Long = System.currentTimeMillis())
+
+    @Query("UPDATE sessions SET is_in_priority_queue = 0, priority = 10, priority_order = 0.0, priority_queued_at = NULL WHERE id = :id")
+    suspend fun removeFromPriorityQueue(id: String)
+
+    @Query("UPDATE sessions SET priority = :priority, priority_order = :priorityOrder WHERE id = :id")
+    suspend fun updateSessionPriority(id: String, priority: Int, priorityOrder: Double)
+
+    @Query("SELECT MAX(priority_order) FROM sessions WHERE priority = :priority AND is_in_priority_queue = 1")
+    suspend fun getMaxPriorityOrder(priority: Int): Double?
 }
 
 // =============================================================================
