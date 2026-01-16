@@ -88,29 +88,38 @@ UUIDs are always lowercase.
 ## iOS Parity Status
 
 ### Implemented
-- [x] WebSocket protocol messages
+- [x] WebSocket protocol messages (all message types from STANDARDS.md)
 - [x] Domain models (Message, Session, Command)
-- [x] Room database schema
-- [x] API key secure storage
-- [x] Basic MainActivity with Compose UI
+- [x] Room database schema with DAOs
+- [x] API key secure storage (EncryptedSharedPreferences)
+- [x] VoiceInputManager (SpeechRecognizer wrapper)
+- [x] VoiceOutputManager (TextToSpeech wrapper)
+- [x] Session list UI with grouping by directory
+- [x] Conversation view with auto-scroll
+- [x] Command menu with hierarchical groups
+- [x] Command history screen
+- [x] Settings screen with all preferences
+- [x] About screen
+- [x] AppSettings persistence (SharedPreferences)
+- [x] SessionRepository for data coordination
+- [x] MainViewModel for state management
+- [x] Navigation with back stack
 - [x] Share receiver activity
 - [x] Foreground service structure
-- [x] Unit tests for core components
+- [x] Material 3 theming with dynamic colors
+- [x] Unit tests (32 Kotlin files, ~6,670 lines)
 
 ### In Progress
-- [ ] Voice input (SpeechRecognizer)
-- [ ] Text-to-speech output
-- [ ] Session list UI
-- [ ] Conversation view
-- [ ] Command menu
-- [ ] Settings screen
-
-### Planned
 - [ ] QR code scanner for API key
 - [ ] File upload via Share Intent
-- [ ] Priority queue support
-- [ ] Session compaction
-- [ ] Delta sync for message history
+- [ ] Notification manager
+
+### Planned
+- [ ] Priority queue support UI
+- [ ] Session compaction UI confirmation
+- [ ] Debug logs view
+- [ ] Voice selection UI
+- [ ] Instrumented tests
 
 ## Development
 
