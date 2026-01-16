@@ -62,6 +62,8 @@ class MainViewModel(
 
     val voiceOutputState: StateFlow<VoiceOutputState> = voiceOutput.state
     val isSpeaking: StateFlow<Boolean> = voiceOutput.isSpeaking
+    val availableVoices = voiceOutput.availableVoices
+    val selectedVoice = voiceOutput.selectedVoice
 
     init {
         observeWebSocketEvents()
@@ -216,6 +218,24 @@ class MainViewModel(
 
     fun stopSpeaking() {
         voiceOutput.stop()
+    }
+
+    fun setVoice(voice: android.speech.tts.Voice) {
+        voiceOutput.setVoice(voice)
+    }
+
+    fun setSpeechRate(rate: Float) {
+        voiceOutput.setSpeechRate(rate)
+        _uiState.update { it.copy(speechRate = rate) }
+    }
+
+    fun setPitch(pitch: Float) {
+        voiceOutput.setPitch(pitch)
+        _uiState.update { it.copy(pitch = pitch) }
+    }
+
+    fun testVoice() {
+        voiceOutput.speak("Hello! This is a test of the selected voice.", QueueMode.FLUSH)
     }
 
     // ==========================================================================
@@ -422,5 +442,7 @@ data class MainUiState(
     val silentModeRespected: Boolean = true,
     val autoSpeakResponses: Boolean = false,
     val isAppInForeground: Boolean = true,
+    val speechRate: Float = 1.0f,
+    val pitch: Float = 1.0f,
     val error: String? = null
 )

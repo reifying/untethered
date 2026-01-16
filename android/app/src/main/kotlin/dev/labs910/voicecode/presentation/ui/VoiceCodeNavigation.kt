@@ -1,5 +1,6 @@
 package dev.labs910.voicecode.presentation.ui
 
+import android.speech.tts.Voice
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import dev.labs910.voicecode.domain.model.Command
@@ -16,6 +17,7 @@ sealed class Screen {
     data class Conversation(val sessionId: String) : Screen()
     data object Settings : Screen()
     data object ApiKey : Screen()
+    data object VoiceSettings : Screen()
     data object About : Screen()
     data object Commands : Screen()
     data object CommandHistory : Screen()
@@ -93,7 +95,15 @@ fun VoiceCodeNavHost(
     onApiKeyChange: (String) -> Unit,
     onClearApiKey: () -> Unit,
     currentApiKey: String?,
-    onVoiceSettingsClick: () -> Unit,
+    // Voice settings
+    availableVoices: List<Voice>,
+    selectedVoice: Voice?,
+    speechRate: Float,
+    pitch: Float,
+    onVoiceSelected: (Voice) -> Unit,
+    onSpeechRateChange: (Float) -> Unit,
+    onPitchChange: (Float) -> Unit,
+    onTestVoice: () -> Unit,
     onNotificationsToggle: (Boolean) -> Unit,
     onSilentModeToggle: (Boolean) -> Unit,
     modifier: Modifier = Modifier
@@ -147,7 +157,7 @@ fun VoiceCodeNavHost(
                 onServerUrlChange = onServerUrlChange,
                 onServerPortChange = onServerPortChange,
                 onApiKeyClick = { navigationState.navigateTo(Screen.ApiKey) },
-                onVoiceSettingsClick = onVoiceSettingsClick,
+                onVoiceSettingsClick = { navigationState.navigateTo(Screen.VoiceSettings) },
                 onNotificationsToggle = onNotificationsToggle,
                 onSilentModeToggle = onSilentModeToggle,
                 onAboutClick = { navigationState.navigateTo(Screen.About) },
@@ -160,6 +170,21 @@ fun VoiceCodeNavHost(
                 currentApiKey = currentApiKey,
                 onApiKeyChange = onApiKeyChange,
                 onClearApiKey = onClearApiKey,
+                onBack = { navigationState.goBack() },
+                modifier = modifier
+            )
+        }
+
+        is Screen.VoiceSettings -> {
+            VoiceSettingsScreen(
+                availableVoices = availableVoices,
+                selectedVoice = selectedVoice,
+                speechRate = speechRate,
+                pitch = pitch,
+                onVoiceSelected = onVoiceSelected,
+                onSpeechRateChange = onSpeechRateChange,
+                onPitchChange = onPitchChange,
+                onTestVoice = onTestVoice,
                 onBack = { navigationState.goBack() },
                 modifier = modifier
             )

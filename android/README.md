@@ -107,18 +107,18 @@ UUIDs are always lowercase.
 - [x] Share receiver activity
 - [x] Foreground service structure
 - [x] Material 3 theming with dynamic colors
-- [x] Unit tests (37 Kotlin files, ~8,500 lines)
+- [x] Unit tests (39 Kotlin files, ~9,000 lines)
 - [x] QR code scanner composable (CameraX + ML Kit)
 - [x] File upload service for Share Intent
 - [x] Notification manager with channels
 - [x] API Key screen with QR scanner integration
 - [x] Notification manager integrated into ViewModel
+- [x] Voice selection screen (TTS voice, rate, pitch)
+- [x] Session compaction confirmation dialog
 
 ### Planned
 - [ ] Priority queue support UI
-- [ ] Session compaction UI confirmation
 - [ ] Debug logs view
-- [ ] Voice selection UI
 - [ ] Instrumented tests
 
 ## Development

@@ -41,6 +41,7 @@ fun ConversationScreen(
     modifier: Modifier = Modifier
 ) {
     var inputText by remember { mutableStateOf("") }
+    var showCompactDialog by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
@@ -79,7 +80,7 @@ fun ConversationScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = onCompact) {
+                    IconButton(onClick = { showCompactDialog = true }) {
                         Icon(Icons.Default.Compress, contentDescription = "Compact Session")
                     }
                 }
@@ -137,6 +138,18 @@ fun ConversationScreen(
                 }
             }
         }
+    }
+
+    // Compaction confirmation dialog
+    if (showCompactDialog) {
+        CompactSessionDialog(
+            sessionName = session.displayName,
+            onConfirm = {
+                onCompact()
+                showCompactDialog = false
+            },
+            onDismiss = { showCompactDialog = false }
+        )
     }
 }
 
@@ -371,4 +384,55 @@ private fun formatMessageTime(instant: java.time.Instant): String {
     val formatter = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)
         .withZone(ZoneId.systemDefault())
     return formatter.format(instant)
+}
+
+/**
+ * Confirmation dialog for session compaction.
+ * Shows a warning that this operation cannot be undone.
+ */
+@Composable
+fun CompactSessionDialog(
+    sessionName: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                imageVector = Icons.Default.Compress,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+        },
+        title = {
+            Text("Compact Session?")
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Compacting \"$sessionName\" will summarize the conversation history to reduce context usage."
+                )
+                Text(
+                    text = "This operation cannot be undone.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm
+            ) {
+                Text("Compact")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
