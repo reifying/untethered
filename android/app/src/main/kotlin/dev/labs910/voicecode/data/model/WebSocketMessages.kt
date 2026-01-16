@@ -167,11 +167,14 @@ data class AckMessage(
 
 /**
  * Usage statistics for a response.
+ * Includes cache token fields for Claude's Prompt Caching feature.
  */
 @Serializable
 data class UsageData(
     @SerialName("input_tokens") val inputTokens: Int,
-    @SerialName("output_tokens") val outputTokens: Int
+    @SerialName("output_tokens") val outputTokens: Int,
+    @SerialName("cache_read_input_tokens") val cacheReadTokens: Int? = null,
+    @SerialName("cache_creation_input_tokens") val cacheWriteTokens: Int? = null
 )
 
 /**

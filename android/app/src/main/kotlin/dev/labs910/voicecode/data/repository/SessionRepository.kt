@@ -188,7 +188,7 @@ class SessionRepository(
             text = text,
             timestamp = timestamp?.let { parseInstant(it) } ?: Instant.now(),
             status = MessageStatus.CONFIRMED,
-            usage = usage?.let { MessageUsage(it.inputTokens, it.outputTokens) },
+            usage = usage?.let { MessageUsage(it.inputTokens, it.outputTokens, it.cacheReadTokens, it.cacheWriteTokens) },
             cost = cost?.let { MessageCost(it.inputCost, it.outputCost, it.totalCost) }
         )
 

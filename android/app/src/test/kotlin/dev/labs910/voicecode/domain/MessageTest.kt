@@ -91,6 +91,58 @@ class MessageTest {
     }
 
     @Test
+    fun `MessageUsage cache tokens are optional`() {
+        val usageWithoutCache = MessageUsage(inputTokens = 100, outputTokens = 50)
+        assertNull(usageWithoutCache.cacheReadTokens)
+        assertNull(usageWithoutCache.cacheWriteTokens)
+        assertEquals(0, usageWithoutCache.totalCacheTokens)
+        assertFalse(usageWithoutCache.usedCache)
+    }
+
+    @Test
+    fun `MessageUsage cache read tokens indicate cache hit`() {
+        val usage = MessageUsage(
+            inputTokens = 100,
+            outputTokens = 50,
+            cacheReadTokens = 80,
+            cacheWriteTokens = null
+        )
+
+        assertEquals(80, usage.cacheReadTokens)
+        assertNull(usage.cacheWriteTokens)
+        assertEquals(80, usage.totalCacheTokens)
+        assertTrue(usage.usedCache)
+    }
+
+    @Test
+    fun `MessageUsage cache write tokens indicate cache creation`() {
+        val usage = MessageUsage(
+            inputTokens = 100,
+            outputTokens = 50,
+            cacheReadTokens = null,
+            cacheWriteTokens = 120
+        )
+
+        assertNull(usage.cacheReadTokens)
+        assertEquals(120, usage.cacheWriteTokens)
+        assertEquals(120, usage.totalCacheTokens)
+        assertFalse(usage.usedCache) // No read tokens means no cache hit
+    }
+
+    @Test
+    fun `MessageUsage calculates total cache tokens`() {
+        val usage = MessageUsage(
+            inputTokens = 100,
+            outputTokens = 50,
+            cacheReadTokens = 80,
+            cacheWriteTokens = 40
+        )
+
+        assertEquals(120, usage.totalCacheTokens)
+        assertTrue(usage.usedCache)
+    }
+
+    @Test
     fun `Message status defaults to CONFIRMED`() {
         val message = Message(
             sessionId = "session-123",

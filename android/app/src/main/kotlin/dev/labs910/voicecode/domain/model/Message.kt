@@ -65,12 +65,21 @@ enum class MessageStatus {
 
 /**
  * Token usage statistics for a message.
+ * Includes cache token fields for Claude's Prompt Caching feature.
  */
 data class MessageUsage(
     val inputTokens: Int,
-    val outputTokens: Int
+    val outputTokens: Int,
+    val cacheReadTokens: Int? = null,
+    val cacheWriteTokens: Int? = null
 ) {
     val totalTokens: Int get() = inputTokens + outputTokens
+
+    /** Total cache tokens (read + write) */
+    val totalCacheTokens: Int get() = (cacheReadTokens ?: 0) + (cacheWriteTokens ?: 0)
+
+    /** Whether this message used cached tokens */
+    val usedCache: Boolean get() = (cacheReadTokens ?: 0) > 0
 }
 
 /**
