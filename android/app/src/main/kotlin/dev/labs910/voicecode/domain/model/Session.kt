@@ -44,6 +44,19 @@ data class Session(
     val isLocked: Boolean = false,
 
     // ==========================================================================
+    // MARK: - FIFO Queue Fields
+    // ==========================================================================
+
+    /** Whether this session is in the FIFO queue */
+    val isInQueue: Boolean = false,
+
+    /** Position in FIFO queue (0-indexed) */
+    val queuePosition: Int = 0,
+
+    /** Timestamp when the session was added to the FIFO queue */
+    val queuedAt: Instant? = null,
+
+    // ==========================================================================
     // MARK: - Priority Queue Fields
     // ==========================================================================
 

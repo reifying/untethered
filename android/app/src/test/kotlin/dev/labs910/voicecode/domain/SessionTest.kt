@@ -79,6 +79,10 @@ class SessionTest {
         assertFalse(session.isUserDeleted)
         assertFalse(session.isLocked)
         assertNull(session.backendSessionId)
+        // FIFO queue defaults
+        assertFalse(session.isInQueue)
+        assertEquals(0, session.queuePosition)
+        assertNull(session.queuedAt)
         // Priority queue defaults
         assertFalse(session.isInPriorityQueue)
         assertEquals(10, session.priority) // Default to Low

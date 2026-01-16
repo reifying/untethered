@@ -5,11 +5,105 @@ import org.junit.Test
 import java.time.Instant
 
 /**
- * Tests for priority queue logic.
- * Tests the sorting, ordering, and priority assignment logic.
+ * Tests for FIFO and priority queue logic.
+ * Tests the sorting, ordering, and assignment logic.
  * Note: Full integration tests with Room require Android instrumentation.
  */
-class PriorityQueueTest {
+class QueueTest {
+
+    // ==========================================================================
+    // MARK: - FIFO Queue Tests
+    // ==========================================================================
+
+    @Test
+    fun `FIFO queue sessions are sorted by queue position`() {
+        data class MockSession(
+            val id: String,
+            val isInQueue: Boolean,
+            val queuePosition: Int
+        )
+
+        val sessions = listOf(
+            MockSession("third", true, 2),
+            MockSession("first", true, 0),
+            MockSession("second", true, 1),
+            MockSession("not-in-queue", false, 0)
+        )
+
+        val sorted = sessions
+            .filter { it.isInQueue }
+            .sortedBy { it.queuePosition }
+
+        assertEquals(3, sorted.size)
+        assertEquals("first", sorted[0].id)
+        assertEquals("second", sorted[1].id)
+        assertEquals("third", sorted[2].id)
+    }
+
+    @Test
+    fun `Adding to FIFO queue assigns next position`() {
+        // Current max position is 2, new item gets position 3
+        val currentMaxPosition = 2
+        val newPosition = currentMaxPosition + 1
+        assertEquals(3, newPosition)
+    }
+
+    @Test
+    fun `First item in FIFO queue gets position 0`() {
+        // When queue is empty, max position returns null
+        val currentMaxPosition: Int? = null
+        val newPosition = (currentMaxPosition ?: -1) + 1
+        assertEquals(0, newPosition)
+    }
+
+    @Test
+    fun `Removing from FIFO queue shifts positions down`() {
+        data class MockSession(var queuePosition: Int)
+
+        // Before removal: [0, 1, 2, 3]
+        // Remove position 1: [0, 2, 3] -> shift down -> [0, 1, 2]
+        val sessions = mutableListOf(
+            MockSession(0),
+            MockSession(2),
+            MockSession(3)
+        )
+
+        val removedPosition = 1
+        for (session in sessions) {
+            if (session.queuePosition > removedPosition) {
+                session.queuePosition -= 1
+            }
+        }
+
+        assertEquals(0, sessions[0].queuePosition)
+        assertEquals(1, sessions[1].queuePosition) // Was 2, now 1
+        assertEquals(2, sessions[2].queuePosition) // Was 3, now 2
+    }
+
+    @Test
+    fun `FIFO queue excludes deleted sessions`() {
+        data class MockSession(
+            val id: String,
+            val isInQueue: Boolean,
+            val isUserDeleted: Boolean
+        )
+
+        val sessions = listOf(
+            MockSession("a", true, false),
+            MockSession("b", true, true), // Deleted
+            MockSession("c", true, false)
+        )
+
+        // SQL: WHERE is_in_queue = 1 AND is_user_deleted = 0
+        val inQueue = sessions.filter { it.isInQueue && !it.isUserDeleted }
+
+        assertEquals(2, inQueue.size)
+        assertFalse(inQueue.any { it.id == "b" })
+    }
+
+    // ==========================================================================
+    // MARK: - Priority Queue Tests (existing)
+    // ==========================================================================
 
     // ==========================================================================
     // MARK: - Priority Sorting Tests

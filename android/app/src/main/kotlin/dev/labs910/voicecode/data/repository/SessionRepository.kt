@@ -92,6 +92,9 @@ class SessionRepository(
             unreadCount = existing?.unreadCount ?: 0,
             isUserDeleted = existing?.isUserDeleted ?: false,
             customName = existing?.customName,
+            isInQueue = existing?.isInQueue ?: false,
+            queuePosition = existing?.queuePosition ?: 0,
+            queuedAt = existing?.queuedAt,
             isInPriorityQueue = existing?.isInPriorityQueue ?: false,
             priority = existing?.priority ?: 10,
             priorityOrder = existing?.priorityOrder ?: 0.0,
@@ -235,6 +238,41 @@ class SessionRepository(
     }
 
     // ==========================================================================
+    // MARK: - FIFO Queue
+    // ==========================================================================
+
+    /**
+     * Get sessions in the FIFO queue, ordered by queue position.
+     */
+    fun getQueueSessions(): Flow<List<Session>> {
+        return sessionDao.getQueueSessions().map { entities ->
+            entities.map { it.toDomain() }
+        }
+    }
+
+    /**
+     * Add a session to the FIFO queue.
+     * Places it at the end of the queue.
+     */
+    suspend fun addToQueue(sessionId: String) {
+        val maxPosition = sessionDao.getMaxQueuePosition() ?: -1
+        sessionDao.addToQueue(sessionId, maxPosition + 1)
+    }
+
+    /**
+     * Remove a session from the FIFO queue.
+     * Reorders remaining sessions to close the gap.
+     */
+    suspend fun removeFromQueue(sessionId: String) {
+        val session = sessionDao.getSession(sessionId) ?: return
+        if (!session.isInQueue) return
+
+        val position = session.queuePosition
+        sessionDao.removeFromQueue(sessionId)
+        sessionDao.shiftQueuePositionsDown(position)
+    }
+
+    // ==========================================================================
     // MARK: - Priority Queue
     // ==========================================================================
 
@@ -302,6 +340,9 @@ class SessionRepository(
             unreadCount = unreadCount,
             isUserDeleted = isUserDeleted,
             customName = customName,
+            isInQueue = isInQueue,
+            queuePosition = queuePosition,
+            queuedAt = queuedAt?.let { Instant.ofEpochMilli(it) },
             isInPriorityQueue = isInPriorityQueue,
             priority = priority,
             priorityOrder = priorityOrder,
@@ -321,6 +362,9 @@ class SessionRepository(
             unreadCount = unreadCount,
             isUserDeleted = isUserDeleted,
             customName = customName,
+            isInQueue = isInQueue,
+            queuePosition = queuePosition,
+            queuedAt = queuedAt?.toEpochMilli(),
             isInPriorityQueue = isInPriorityQueue,
             priority = priority,
             priorityOrder = priorityOrder,

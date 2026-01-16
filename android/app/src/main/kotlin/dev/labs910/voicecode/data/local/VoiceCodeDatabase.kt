@@ -101,6 +101,16 @@ data class SessionEntity(
     @ColumnInfo(name = "custom_name")
     val customName: String? = null,
 
+    // FIFO Queue Fields
+    @ColumnInfo(name = "is_in_queue", defaultValue = "0")
+    val isInQueue: Boolean = false,
+
+    @ColumnInfo(name = "queue_position", defaultValue = "0")
+    val queuePosition: Int = 0,
+
+    @ColumnInfo(name = "queued_at")
+    val queuedAt: Long? = null,
+
     // Priority Queue Fields
     @ColumnInfo(name = "is_in_priority_queue", defaultValue = "0")
     val isInPriorityQueue: Boolean = false,
@@ -158,6 +168,23 @@ interface SessionDao {
 
     @Query("UPDATE sessions SET backend_session_id = :backendSessionId WHERE id = :id")
     suspend fun updateBackendSessionId(id: String, backendSessionId: String)
+
+    // FIFO Queue Queries
+
+    @Query("SELECT * FROM sessions WHERE is_in_queue = 1 AND is_user_deleted = 0 ORDER BY queue_position ASC")
+    fun getQueueSessions(): Flow<List<SessionEntity>>
+
+    @Query("SELECT MAX(queue_position) FROM sessions WHERE is_in_queue = 1")
+    suspend fun getMaxQueuePosition(): Int?
+
+    @Query("UPDATE sessions SET is_in_queue = 1, queue_position = :position, queued_at = :timestamp WHERE id = :id")
+    suspend fun addToQueue(id: String, position: Int, timestamp: Long = System.currentTimeMillis())
+
+    @Query("UPDATE sessions SET is_in_queue = 0, queue_position = 0, queued_at = NULL WHERE id = :id")
+    suspend fun removeFromQueue(id: String)
+
+    @Query("UPDATE sessions SET queue_position = queue_position - 1 WHERE is_in_queue = 1 AND queue_position > :position")
+    suspend fun shiftQueuePositionsDown(position: Int)
 
     // Priority Queue Queries
 
