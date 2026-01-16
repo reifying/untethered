@@ -434,6 +434,149 @@ data class CommandOutputFullMessage(
     @SerialName("working_directory") val workingDirectory: String
 )
 
+// =============================================================================
+// MARK: - Resource Messages
+// =============================================================================
+
+/**
+ * Resource data from backend.
+ */
+@Serializable
+data class ResourceData(
+    @SerialName("filename") val filename: String,
+    @SerialName("path") val path: String,
+    @SerialName("size") val size: Long,
+    @SerialName("timestamp") val timestamp: String? = null
+)
+
+/**
+ * Resources list response from backend.
+ */
+@Serializable
+data class ResourcesListMessage(
+    @SerialName("type") val type: String,
+    @SerialName("resources") val resources: List<ResourceData>,
+    @SerialName("working_directory") val workingDirectory: String? = null
+)
+
+/**
+ * Request resources list.
+ */
+@Serializable
+data class GetResourcesMessage(
+    @SerialName("type") val type: String = "get_resources",
+    @SerialName("working_directory") val workingDirectory: String? = null
+)
+
+/**
+ * Delete resource request.
+ */
+@Serializable
+data class DeleteResourceMessage(
+    @SerialName("type") val type: String = "delete_resource",
+    @SerialName("path") val path: String
+)
+
+/**
+ * Resource deleted confirmation.
+ */
+@Serializable
+data class ResourceDeletedMessage(
+    @SerialName("type") val type: String,
+    @SerialName("path") val path: String,
+    @SerialName("success") val success: Boolean
+)
+
+// =============================================================================
+// MARK: - Recipe/Orchestration Messages
+// =============================================================================
+
+/**
+ * Recipe definition from backend.
+ */
+@Serializable
+data class RecipeData(
+    @SerialName("id") val id: String,
+    @SerialName("label") val label: String,
+    @SerialName("description") val description: String
+)
+
+/**
+ * Available recipes response from backend.
+ */
+@Serializable
+data class AvailableRecipesMessage(
+    @SerialName("type") val type: String,
+    @SerialName("recipes") val recipes: List<RecipeData>
+)
+
+/**
+ * Request available recipes.
+ */
+@Serializable
+data class GetAvailableRecipesMessage(
+    @SerialName("type") val type: String = "get_available_recipes"
+)
+
+/**
+ * Execute a recipe.
+ */
+@Serializable
+data class ExecuteRecipeMessage(
+    @SerialName("type") val type: String = "execute_recipe",
+    @SerialName("recipe_id") val recipeId: String,
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("working_directory") val workingDirectory: String? = null
+)
+
+/**
+ * Active recipe state data.
+ */
+@Serializable
+data class ActiveRecipeData(
+    @SerialName("recipe_id") val recipeId: String,
+    @SerialName("recipe_label") val recipeLabel: String,
+    @SerialName("current_step") val currentStep: String,
+    @SerialName("step_count") val stepCount: Int
+)
+
+/**
+ * Active recipes response from backend.
+ */
+@Serializable
+data class ActiveRecipesMessage(
+    @SerialName("type") val type: String,
+    @SerialName("active_recipes") val activeRecipes: Map<String, ActiveRecipeData>
+)
+
+/**
+ * Recipe step update notification.
+ */
+@Serializable
+data class RecipeStepUpdateMessage(
+    @SerialName("type") val type: String,
+    @SerialName("session_id") val sessionId: String,
+    @SerialName("recipe_id") val recipeId: String,
+    @SerialName("current_step") val currentStep: String,
+    @SerialName("step_count") val stepCount: Int
+)
+
+/**
+ * Recipe completed notification.
+ */
+@Serializable
+data class RecipeCompletedMessage(
+    @SerialName("type") val type: String,
+    @SerialName("session_id") val sessionId: String,
+    @SerialName("recipe_id") val recipeId: String,
+    @SerialName("success") val success: Boolean,
+    @SerialName("error") val error: String? = null
+)
+
+// =============================================================================
+// MARK: - Generic Message
+// =============================================================================
+
 /**
  * Generic message type for parsing the type field first.
  */
