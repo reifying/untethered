@@ -99,6 +99,15 @@ dependencies {
     // Security for encrypted shared preferences (like Keychain)
     implementation(libs.androidx.security.crypto)
 
+    // ML Kit for QR code scanning
+    implementation(libs.mlkit.barcode.scanning)
+
+    // CameraX for camera preview
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+
     // Testing
     testImplementation(libs.junit)
     testImplementation(libs.mockk)
