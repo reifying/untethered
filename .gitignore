@@ -136,3 +136,21 @@ backend/server.out
 
 # Worktree-local beads database
 .beads-local/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/*.iml
+android/app/*.iml
+android/captures/
+android/.externalNativeBuild/
+android/.cxx/
+android/app/release/
+android/app/debug/
+*.apk
+*.aab
+*.ap_
+*.dex

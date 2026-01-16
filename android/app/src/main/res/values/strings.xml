@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VoiceCode</string>
+
+    <!-- Authentication -->
+    <string name="api_key_hint">Enter API key or scan QR code</string>
+    <string name="api_key_invalid">Invalid API key format. Expected: untethered-[32 hex characters]</string>
+    <string name="auth_required">Authentication Required</string>
+    <string name="auth_failed">Authentication failed. Please check your API key.</string>
+    <string name="scan_qr_code">Scan QR Code</string>
+
+    <!-- Connection -->
+    <string name="connecting">Connecting…</string>
+    <string name="connected">Connected</string>
+    <string name="disconnected">Disconnected</string>
+    <string name="reconnecting">Reconnecting…</string>
+    <string name="connection_error">Connection error</string>
+
+    <!-- Sessions -->
+    <string name="sessions">Sessions</string>
+    <string name="recent_sessions">Recent Sessions</string>
+    <string name="new_session">New Session</string>
+    <string name="delete_session">Delete Session</string>
+    <string name="session_locked">Session is processing a prompt…</string>
+    <string name="tap_to_unlock">Tap to unlock</string>
+
+    <!-- Messages -->
+    <string name="send">Send</string>
+    <string name="message_hint">Type a message…</string>
+    <string name="sending">Sending…</string>
+    <string name="send_failed">Failed to send message</string>
+
+    <!-- Voice -->
+    <string name="start_recording">Start Recording</string>
+    <string name="stop_recording">Stop Recording</string>
+    <string name="voice_permission_required">Microphone permission required for voice input</string>
+
+    <!-- Commands -->
+    <string name="commands">Commands</string>
+    <string name="command_history">Command History</string>
+    <string name="execute_command">Execute</string>
+    <string name="command_running">Running…</string>
+    <string name="command_complete">Complete</string>
+    <string name="command_failed">Failed</string>
+
+    <!-- Settings -->
+    <string name="settings">Settings</string>
+    <string name="server_url">Server URL</string>
+    <string name="server_port">Server Port</string>
+    <string name="voice_settings">Voice Settings</string>
+    <string name="notifications">Notifications</string>
+    <string name="about">About</string>
+    <string name="version">Version</string>
+
+    <!-- Actions -->
+    <string name="cancel">Cancel</string>
+    <string name="confirm">Confirm</string>
+    <string name="retry">Retry</string>
+    <string name="refresh">Refresh</string>
+    <string name="compact_session">Compact Session</string>
+</resources>
