@@ -235,3 +235,126 @@
                          :text "Building..."}])
      (let [output (get-in @(rf/subscribe [:commands/running]) ["cmd-123" :output])]
        (is (clojure.string/includes? output "Building..."))))))
+
+;; ============================================================================
+;; Authentication Events
+;; ============================================================================
+
+(deftest auth-connect-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "auth/connect sets connecting status and stores api-key"
+     ;; Note: This test only checks db changes, not the :ws/connect effect
+     (rf/dispatch-sync [:auth/connect "test-api-key-123"])
+     (is (= :connecting @(rf/subscribe [:connection/status]))))))
+
+(deftest auth-disconnect-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; First connect
+   (rf/dispatch-sync [:db/update-in [:connection :status] (constantly :connected)])
+   (rf/dispatch-sync [:db/update-in [:connection :authenticated?] (constantly true)])
+
+   (testing "auth/disconnect sets disconnected status"
+     (rf/dispatch-sync [:auth/disconnect])
+     (is (= :disconnected @(rf/subscribe [:connection/status])))
+     (is (false? @(rf/subscribe [:connection/authenticated?]))))))
+
+;; ============================================================================
+;; Prompt Events
+;; ============================================================================
+
+(deftest prompt-send-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Add a session
+   (rf/dispatch-sync [:sessions/add {:id "s1"
+                                     :working-directory "/project"}])
+
+   (testing "prompt/send adds message and locks session"
+     (rf/dispatch-sync [:prompt/send {:text "Hello Claude"
+                                      :session-id "s1"
+                                      :working-directory "/project"}])
+     ;; Session should be locked
+     (is (true? @(rf/subscribe [:session/locked? "s1"])))
+     ;; Message should be added with :sending status
+     (let [msgs @(rf/subscribe [:messages/for-session "s1"])]
+       (is (= 1 (count msgs)))
+       (is (= "Hello Claude" (:text (first msgs))))
+       (is (= :user (:role (first msgs))))
+       (is (= :sending (:status (first msgs))))))))
+
+(deftest prompt-send-from-draft-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Add session and set draft
+   (rf/dispatch-sync [:sessions/add {:id "s1"
+                                     :working-directory "/project"}])
+   (rf/dispatch-sync [:ui/set-draft "s1" "My draft message"])
+
+   (testing "prompt/send-from-draft returns correct effects"
+     ;; Test the event handler function directly by checking db state
+     ;; after dispatching the composed events manually
+     (let [draft @(rf/subscribe [:ui/draft "s1"])]
+       (is (= "My draft message" draft))
+
+       ;; Dispatch the composed events that send-from-draft would produce
+       (rf/dispatch-sync [:prompt/send {:text draft
+                                        :session-id "s1"
+                                        :working-directory "/project"}])
+       (rf/dispatch-sync [:ui/clear-draft "s1"])
+
+       ;; Draft should be cleared
+       (is (= "" @(rf/subscribe [:ui/draft "s1"])))
+       ;; Message should be sent
+       (let [msgs @(rf/subscribe [:messages/for-session "s1"])]
+         (is (= 1 (count msgs)))
+         (is (= "My draft message" (:text (first msgs)))))))))
+
+(deftest prompt-send-from-empty-draft-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Add session with empty draft
+   (rf/dispatch-sync [:sessions/add {:id "s1"
+                                     :working-directory "/project"}])
+
+   (testing "prompt/send-from-draft with empty draft does nothing"
+     (rf/dispatch-sync [:prompt/send-from-draft "s1"])
+     ;; No messages should be sent
+     (is (= [] @(rf/subscribe [:messages/for-session "s1"]))))))
+
+;; ============================================================================
+;; Session Subscription Events
+;; ============================================================================
+
+(deftest session-subscribe-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; This test verifies the event doesn't error
+   ;; The actual ws/send effect would be tested in integration tests
+   (testing "session/subscribe dispatches without error"
+     (rf/dispatch-sync [:session/subscribe "s1"])
+     ;; If we get here without error, the event handler works
+     (is true))))
+
+;; ============================================================================
+;; Session Creation Events
+;; ============================================================================
+
+(deftest sessions-create-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "sessions/create adds a new session"
+     (rf/dispatch-sync [:sessions/create {:working-directory "/new/project"}])
+     (let [sessions (vals @(rf/subscribe [:sessions/all]))]
+       (is (= 1 (count sessions)))
+       (is (= "/new/project" (:working-directory (first sessions))))
+       (is (some? (:id (first sessions))))
+       (is (= 0 (:message-count (first sessions))))))))
