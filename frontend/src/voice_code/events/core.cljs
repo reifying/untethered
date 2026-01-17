@@ -148,3 +148,109 @@
  :db/update-in
  (fn [db [_ path f & args]]
    (apply update-in db path f args)))
+
+;; ============================================================================
+;; Authentication
+;; ============================================================================
+
+(rf/reg-event-fx
+ :auth/connect
+ (fn [{:keys [db]} [_ api-key]]
+   {:db (-> db
+            (assoc-in [:connection :status] :connecting)
+            (assoc :api-key api-key))
+    :dispatch [:persistence/save-api-key api-key]
+    :ws/connect {:server-url (get-in db [:settings :server-url])
+                 :server-port (get-in db [:settings :server-port])
+                 :api-key api-key
+                 :session-id (:ios-session-id db)}}))
+
+(rf/reg-event-fx
+ :auth/disconnect
+ (fn [{:keys [db]} _]
+   {:db (-> db
+            (assoc-in [:connection :status] :disconnected)
+            (assoc-in [:connection :authenticated?] false)
+            (dissoc :api-key))
+    :dispatch [:persistence/delete-api-key]
+    :ws/disconnect nil}))
+
+(rf/reg-event-db
+ :auth/scan-qr
+ (fn [db _]
+   ;; QR scanning would be implemented with native module
+   ;; For now, this is a placeholder
+   db))
+
+;; ============================================================================
+;; Prompt Sending
+;; ============================================================================
+
+(rf/reg-event-fx
+ :prompt/send-from-draft
+ (fn [{:keys [db]} [_ session-id]]
+   (let [draft (get-in db [:ui :drafts session-id])
+         session (get-in db [:sessions session-id])]
+     (when (seq draft)
+       {:dispatch-n [[:prompt/send {:text draft
+                                    :session-id session-id
+                                    :working-directory (:working-directory session)}]
+                     [:ui/clear-draft session-id]]}))))
+
+(rf/reg-event-fx
+ :prompt/send
+ (fn [{:keys [db]} [_ {:keys [text session-id working-directory system-prompt]}]]
+   (let [ios-session-id (:ios-session-id db)
+         message {:id (str (random-uuid))
+                  :session-id session-id
+                  :role :user
+                  :text text
+                  :timestamp (js/Date.)
+                  :status :sending}]
+     {:db (-> db
+              (update :locked-sessions conj session-id)
+              (update-in [:messages session-id] (fnil conj []) message))
+      :ws/send {:type "prompt"
+                :text text
+                :ios_session_id ios-session-id
+                :session_id session-id
+                :working_directory working-directory
+                :system_prompt system-prompt}})))
+
+;; ============================================================================
+;; Session Subscription
+;; ============================================================================
+
+(rf/reg-event-fx
+ :session/subscribe
+ (fn [{:keys [db]} [_ session-id]]
+   (let [last-message-id (-> db :messages (get session-id) last :id)]
+     {:ws/send (cond-> {:type "subscribe"
+                        :session_id session-id}
+                 last-message-id
+                 (assoc :last_message_id last-message-id))})))
+
+(rf/reg-event-fx
+ :sessions/resubscribe-all
+ (fn [{:keys [db]} _]
+   (let [session-ids (keys (:sessions db))]
+     {:dispatch-n (mapv (fn [sid] [:session/subscribe sid]) session-ids)})))
+
+;; ============================================================================
+;; Session Creation
+;; ============================================================================
+
+(rf/reg-event-fx
+ :sessions/create
+ (fn [{:keys [db]} [_ {:keys [working-directory]}]]
+   (let [new-session {:id (str (random-uuid))
+                      :backend-name nil
+                      :custom-name nil
+                      :working-directory working-directory
+                      :last-modified (js/Date.)
+                      :message-count 0
+                      :preview nil
+                      :priority 10
+                      :is-user-deleted false}]
+     {:db (assoc-in db [:sessions (:id new-session)] new-session)
+      :dispatch [:persistence/save-session new-session]})))

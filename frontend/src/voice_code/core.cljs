@@ -12,33 +12,14 @@
             ;; WebSocket effect handlers
             [voice-code.websocket]
             ;; Persistence layer
-            [voice-code.persistence]))
-
-(defn root-view
-  "Root application view - placeholder for navigation."
-  []
-  (let [status @(rf/subscribe [:connection/status])
-        authenticated? @(rf/subscribe [:connection/authenticated?])]
-    [:> rn/View {:style {:flex 1
-                         :justify-content "center"
-                         :align-items "center"
-                         :background-color "#f5f5f5"}}
-     [:> rn/Text {:style {:font-size 24
-                          :font-weight "bold"
-                          :margin-bottom 16}}
-      "Voice Code"]
-     [:> rn/Text {:style {:font-size 16
-                          :color "#666"}}
-      (str "Status: " (name status))]
-     [:> rn/Text {:style {:font-size 14
-                          :color (if authenticated? "#4CAF50" "#999")
-                          :margin-top 8}}
-      (if authenticated? "Authenticated" "Not authenticated")]]))
+            [voice-code.persistence]
+            ;; Views
+            [voice-code.views.core :as views]))
 
 (defn app-root
-  "Main app component wrapped with error boundary."
+  "Main app component with navigation."
   []
-  (r/as-element [root-view]))
+  (r/as-element [views/app-root]))
 
 (defn ^:export init
   "Initialize the application.
