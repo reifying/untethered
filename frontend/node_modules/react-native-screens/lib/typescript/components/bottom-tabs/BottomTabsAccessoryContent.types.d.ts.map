@@ -1,0 +1,1 @@
+{"version":3,"file":"BottomTabsAccessoryContent.types.d.ts","sourceRoot":"","sources":["../../../../src/components/bottom-tabs/BottomTabsAccessoryContent.types.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,SAAS,EAAE,MAAM,cAAc,CAAC;AACzC,OAAO,EAAE,8BAA8B,EAAE,MAAM,6BAA6B,CAAC;AAE7E,MAAM,MAAM,+BAA+B,GAAG,SAAS,GAAG;IACxD,WAAW,CAAC,EAAE,8BAA8B,CAAC;CAC9C,CAAC"}

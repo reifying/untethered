@@ -1,0 +1,1 @@
+{"version":3,"names":["SplitViewHost","console","warn"],"sourceRoot":"../../../../../src","sources":["components/gamma/split-view/SplitViewHost.android.tsx"],"mappings":"AAAA,MAAMA,aAAa,GAAGA,CAAA,KAAM;EAC1BC,OAAO,CAACC,IAAI,CACV,oGACF,CAAC;EACD,OAAO,IAAI;AACb,CAAC;AAED,eAAeF,aAAa","ignoreList":[]}

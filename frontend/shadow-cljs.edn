@@ -1,0 +1,26 @@
+;; shadow-cljs configuration for React Native
+;; See: https://shadow-cljs.github.io/docs/UsersGuide.html#target-react-native
+
+{:source-paths ["src" "test"]
+
+ :dependencies [[reagent "1.2.0"]
+                [re-frame "1.4.3"]
+                [day8.re-frame/async-flow-fx "0.3.0"]
+                [day8.re-frame/test "0.1.5"]]
+
+ :builds
+ {:app
+  {:target :react-native
+   :init-fn voice-code.core/init
+   :output-dir "app"
+   :compiler-options {:infer-externs :auto
+                      :closure-defines {goog.DEBUG true}}
+   :devtools {:autoload true
+              :preloads [devtools.preload]}}
+
+  :test
+  {:target :node-test
+   :output-to "out/test.js"
+   :ns-regexp "-test$"
+   :autorun true
+   :compiler-options {:infer-externs :auto}}}}
