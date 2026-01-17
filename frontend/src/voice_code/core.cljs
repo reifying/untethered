@@ -10,7 +10,9 @@
             ;; Register all subscriptions
             [voice-code.subs]
             ;; WebSocket effect handlers
-            [voice-code.websocket]))
+            [voice-code.websocket]
+            ;; Persistence layer
+            [voice-code.persistence]))
 
 (defn root-view
   "Root application view - placeholder for navigation."
