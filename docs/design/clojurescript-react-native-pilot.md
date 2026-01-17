@@ -1140,6 +1140,16 @@ appId: dev.labs910.voicecode
 - REPL connection to device
 - clojure-mcp integration
 
+**Note: Native Project Requirement for REPL**
+
+ClojureScript code compiles to JavaScript via shadow-cljs, but `clojurescript_eval` requires a running JavaScript runtime. This means:
+
+1. **Native projects must exist** - Run `npx react-native init` or use the React Native CLI to generate `ios/` and `android/` directories with native build configurations
+2. **CocoaPods must be installed** - `cd ios && pod install`
+3. **App must be running** - The simulator/device must have the app loaded and connected to Metro
+
+Until native projects are created, clojure-mcp can read/edit/grep files but cannot evaluate ClojureScript code. File operations work immediately; REPL evaluation requires the full native setup.
+
 ### Phase 2: Core Protocol
 - WebSocket client
 - Message type handlers
