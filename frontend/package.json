@@ -21,7 +21,7 @@
     "react-native": "0.76.7",
     "react-native-keychain": "^9.2.2",
     "react-native-safe-area-context": "^5.1.0",
-    "react-native-screens": "^4.11.0",
+    "react-native-screens": "4.11.0",
     "react-native-sqlite-storage": "^6.0.1"
   },
   "devDependencies": {
@@ -37,5 +37,8 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "overrides": {
+    "@react-native-community/cli-server-api": "15.1.3"
   }
 }
