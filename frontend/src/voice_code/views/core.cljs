@@ -11,7 +11,9 @@
             [voice-code.views.conversation :refer [conversation-view]]
             [voice-code.views.settings :refer [settings-view]]
             [voice-code.views.command-menu :refer [command-menu-view]]
-            [voice-code.views.command-execution :refer [command-execution-view]]))
+            [voice-code.views.command-execution :refer [command-execution-view]]
+            [voice-code.views.resources :refer [resources-view]]
+            [voice-code.views.recipes :refer [recipes-view]]))
 
 (def Stack (createNativeStackNavigator))
 
@@ -79,6 +81,18 @@
        {:name "CommandExecution"
         :component (r/reactify-component command-execution-view)
         :options #js {:title "Running Command"}}]
+
+      ;; Resources (uploaded files)
+      [:> (.-Screen Stack)
+       {:name "Resources"
+        :component (r/reactify-component resources-view)
+        :options #js {:title "Resources"}}]
+
+      ;; Recipes (recipe orchestration)
+      [:> (.-Screen Stack)
+       {:name "Recipes"
+        :component (r/reactify-component recipes-view)
+        :options #js {:title "Recipes"}}]
 
       ;; Settings
       [:> (.-Screen Stack)
