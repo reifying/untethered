@@ -27,14 +27,28 @@ cd frontend && JAVA_HOME=/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/
 
 ### ClojureScript REPL: "No available JS runtime"
 
-If `clojurescript_eval` returns "No available JS runtime", this means shadow-cljs has no connected JavaScript runtime. To fix:
+If `clojurescript_eval` returns "No available JS runtime", this means shadow-cljs has no connected JavaScript runtime.
 
-1. **Start Metro bundler:**
+**Current Status:** The native iOS/Android projects haven't been created yet. The ClojureScript code compiles but cannot run until native projects are initialized.
+
+**To complete setup (one-time):**
+1. Create native iOS/Android projects in `frontend/`
+2. Install CocoaPods for iOS
+3. Configure native module linking
+
+**Once native projects exist, to run:**
+
+1. **Ensure shadow-cljs is compiling:**
    ```bash
-   cd frontend && npx react-native start
+   cd frontend && JAVA_HOME=/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home npx shadow-cljs watch app
    ```
 
-2. **Run the app on simulator/device:**
+2. **Start Metro bundler:**
+   ```bash
+   cd frontend && npx metro serve --config metro.config.js
+   ```
+
+3. **Run the app on simulator/device:**
    ```bash
    # iOS
    cd frontend && npx react-native run-ios
@@ -43,7 +57,7 @@ If `clojurescript_eval` returns "No available JS runtime", this means shadow-clj
    cd frontend && npx react-native run-android
    ```
 
-3. **Wait for app to load** - The shadow-cljs REPL will auto-connect when the app starts
+4. **Wait for app to load** - The shadow-cljs REPL will auto-connect when the app starts
 
 The ClojureScript REPL requires a running React Native app because it evaluates code in the actual JavaScript runtime (not a separate Node.js process).
 
