@@ -18,6 +18,12 @@ Both implementations duplicate the same WebSocket protocol, state management pat
 4. **AI-assisted development** via clojure-mcp integration with Claude
 5. **Simplified maintenance** through shared business logic and UI
 
+### Development Priority: REPL-First
+
+The primary development advantage of ClojureScript is REPL-driven development—evaluating code in a running app without restart cycles. Combined with clojure-mcp, this enables Claude to directly test and iterate on code in the live application.
+
+**This means native project setup (Phase 1) is the critical path.** Until the app runs on a simulator with shadow-cljs connected, we lose the core productivity benefit. Prioritize completing native setup before extensive ClojureScript development.
+
 ### Non-goals
 
 - Windows/Linux desktop support (defer to later phase)
