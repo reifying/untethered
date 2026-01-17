@@ -443,3 +443,20 @@
  (fn [_ [_ command-session-id]]
    {:ws/send {:type "get_command_output"
               :command-session-id command-session-id}}))
+
+;; ============================================================================
+;; Resource Actions
+;; ============================================================================
+
+(rf/reg-event-fx
+ :resources/delete
+ (fn [_ [_ filename]]
+   {:ws/send {:type "delete_resource"
+              :filename filename}}))
+
+(rf/reg-event-fx
+ :resources/upload
+ (fn [{:keys [db]} _]
+   ;; Note: Actual file upload requires native module integration
+   ;; This dispatches the intent; native code handles file selection
+   {:db (update-in db [:resources :pending-uploads] (fnil inc 0))}))
