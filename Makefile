@@ -15,7 +15,7 @@ WRAP := ./scripts/wrap-command
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 .PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
-.PHONY: rn-ios rn-android rn-build-ios rn-shadow rn-metro rn-pod-install rn-clean
+.PHONY: rn-ios rn-android rn-build-ios rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-boot-sim
 
 # React Native Configuration
 RN_DIR := frontend
@@ -445,10 +445,19 @@ rn-metro:
 	cd $(RN_DIR) && npx metro serve --config metro.config.js &
 	@echo "Metro started in background"
 
+# List available iOS simulators
+rn-list-sims:
+	@xcrun simctl list devices available | grep -E "iPhone|iPad"
+
+# Boot iPhone 16 Pro simulator
+rn-boot-sim:
+	@xcrun simctl boot "iPhone 16 Pro" 2>/dev/null || echo "Simulator already booted or not found"
+	@open -a Simulator
+
 # Build React Native iOS app with xcodebuild
 rn-build-ios:
 	@echo "Building React Native iOS app..."
-	cd $(RN_IOS_DIR) && xcodebuild -workspace VoiceCodeMobile.xcworkspace -scheme VoiceCodeMobile -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
+	cd $(RN_IOS_DIR) && xcodebuild -workspace VoiceCodeMobile.xcworkspace -scheme VoiceCodeMobile -configuration Debug -destination 'generic/platform=iOS Simulator' build 2>&1 | tee build.log | grep -E "error:|warning:|BUILD"
 
 # Run React Native iOS app
 rn-ios:
