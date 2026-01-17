@@ -1,0 +1,9 @@
+{
+"version":3,
+"file":"shadow.js.shim.module$react.js",
+"lineCount":5,
+"mappings":"AAAAA,IAAKC,CAAAA,OAAL,CAAa,6BAAb,CAAA;AACAD,IAAKC,CAAAA,OAAL,CAAa,oCAAb,CAAA;AACAC,MAAOC,CAAAA,EAAGC,CAAAA,IAAKC,CAAAA,YAAf,GAA8BH,MAAOC,CAAAA,EAAGG,CAAAA,cAAV,CAAyB,OAAzB,CAA9B,GAAkEC,OAAA,CAAQ,OAAR,CAAlE;AACAC,kCAAmCC,CAAAA,OAAnC,GAA6CP,MAAOC,CAAAA,EAAGC,CAAAA,IAAKC,CAAAA,YAA5D;;",
+"sources":["shadow.js.shim.module$react.js"],
+"sourcesContent":["goog.provide(\"shadow.js.shim.module$react\");\ngoog.provide(\"module$shadow_js_shim_module$react\");\nshadow.js.shim.module$react = shadow.js.nativeProvides[\"react\"] = require(\"react\");\nmodule$shadow_js_shim_module$react.default = shadow.js.shim.module$react;\n"],
+"names":["goog","provide","shadow","js","shim","module$react","nativeProvides","require","module$shadow_js_shim_module$react","default"]
+}

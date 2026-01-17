@@ -1,0 +1,40 @@
+{
+  "name": "voice-code-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "android": "react-native run-android",
+    "ios": "react-native run-ios",
+    "start": "react-native start",
+    "clean": "watchman watch-del-all && rm -rf node_modules && npm install",
+    "shadow:watch": "npx shadow-cljs watch app",
+    "shadow:release": "npx shadow-cljs release app",
+    "shadow:server": "npx shadow-cljs server",
+    "repl": "npx shadow-cljs cljs-repl app",
+    "test": "npx shadow-cljs compile test && node out/test.js",
+    "test:watch": "npx shadow-cljs watch test"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-native": "0.76.7",
+    "@react-navigation/native": "^7.0.14",
+    "@react-navigation/native-stack": "^7.2.0",
+    "react-native-screens": "^4.19.0",
+    "react-native-safe-area-context": "^5.1.0",
+    "react-native-sqlite-storage": "^6.0.1",
+    "react-native-keychain": "^9.2.2"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "@babel/preset-env": "^7.26.0",
+    "@babel/runtime": "^7.26.0",
+    "@react-native/babel-preset": "^0.76.7",
+    "@react-native/metro-config": "^0.76.7",
+    "@react-native/typescript-config": "^0.76.7",
+    "shadow-cljs": "^3.3.5",
+    "react-test-renderer": "18.3.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
