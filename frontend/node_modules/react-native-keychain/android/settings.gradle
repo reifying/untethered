@@ -1,4 +1,0 @@
-rootProject.name = 'react-native-keychain'
-
-include(":library")
-
