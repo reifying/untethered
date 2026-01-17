@@ -154,3 +154,14 @@ android/app/debug/
 *.aab
 *.ap_
 *.dex
+
+# React Native Frontend (ClojureScript)
+frontend/node_modules/
+frontend/.shadow-cljs/
+frontend/app/
+frontend/out/
+frontend/target/
+.cljs_rhino_repl/
+.nrepl-port
+*.swp
+*~
