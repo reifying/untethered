@@ -125,10 +125,18 @@
   (testing "creates database when missing"
     (let [temp-dir (create-temp-dir!)]
       (try
-        (let [result (env/ensure-beads-local! temp-dir "test-wt")]
-          (is (:success result))
-          (is (:created result))
-          (is (.exists (io/file temp-dir ".beads-local/local.db"))))
+        ;; Mock bd init to succeed and create the db file
+        (with-redefs [shell/sh (fn [& args]
+                                 (let [opts (apply hash-map (drop-while string? args))
+                                       db-path (get (:env opts) "BEADS_DB")]
+                                   ;; Simulate bd creating the database
+                                   (when db-path
+                                     (spit db-path ""))
+                                   {:exit 0 :out "" :err ""}))]
+          (let [result (env/ensure-beads-local! temp-dir "test-wt")]
+            (is (:success result))
+            (is (:created result))
+            (is (.exists (io/file temp-dir ".beads-local/local.db")))))
         (finally
           (cleanup-temp-dir! temp-dir))))))
 
@@ -136,9 +144,11 @@
   (testing "returns success when database already exists"
     (let [temp-dir (create-temp-dir!)]
       (try
-        ;; First call creates
-        (env/ensure-beads-local! temp-dir "test-wt")
-        ;; Second call should detect existing
+        ;; Pre-create the .beads-local directory with a db file
+        (let [beads-dir (io/file temp-dir ".beads-local")]
+          (.mkdirs beads-dir)
+          (spit (io/file beads-dir "local.db") ""))
+        ;; Now ensure-beads-local! should detect the existing db
         (let [result (env/ensure-beads-local! temp-dir "test-wt")]
           (is (:success result))
           (is (:existed result)))
