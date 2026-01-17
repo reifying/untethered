@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+app/
+.shadow-cljs/
+
+# iOS
+ios/Pods/
+ios/build/
+*.xcworkspace/xcuserdata/
+
+# Android
+android/.gradle/
+android/app/build/
+android/build/
+*.apk
+*.aab
+
+# Misc
+.DS_Store
+*.log
+.env.local
