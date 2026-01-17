@@ -27,39 +27,31 @@ cd frontend && JAVA_HOME=/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/
 
 ### ClojureScript REPL: "No available JS runtime"
 
-If `clojurescript_eval` returns "No available JS runtime", this means shadow-cljs has no connected JavaScript runtime.
+If `clojurescript_eval` returns "No available JS runtime", this means shadow-cljs has no connected JavaScript runtime. The ClojureScript REPL requires a running React Native app because it evaluates code in the actual JavaScript runtime (not a separate Node.js process).
 
-**Current Status:** The native iOS/Android projects haven't been created yet. The ClojureScript code compiles but cannot run until native projects are initialized.
+**To run the app and connect the REPL:**
 
-**To complete setup (one-time):**
-1. Create native iOS/Android projects in `frontend/`
-2. Install CocoaPods for iOS
-3. Configure native module linking
-
-**Once native projects exist, to run:**
-
-1. **Ensure shadow-cljs is compiling:**
+1. **Install iOS dependencies (first time only):**
    ```bash
-   cd frontend && JAVA_HOME=/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home npx shadow-cljs watch app
+   cd frontend/ios && /opt/homebrew/opt/ruby/bin/bundle install
+   cd frontend/ios && /opt/homebrew/opt/ruby/bin/bundle exec pod install
    ```
 
-2. **Start Metro bundler:**
+2. **Start shadow-cljs (compiles ClojureScript):**
    ```bash
-   cd frontend && npx metro serve --config metro.config.js
+   cd frontend && JAVA_HOME=/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home npx shadow-cljs watch app &
    ```
 
-3. **Run the app on simulator/device:**
+3. **Run the app on simulator:**
    ```bash
    # iOS
-   cd frontend && npx react-native run-ios
+   cd frontend && npm run ios
 
    # Android
-   cd frontend && npx react-native run-android
+   cd frontend && npm run android
    ```
 
 4. **Wait for app to load** - The shadow-cljs REPL will auto-connect when the app starts
-
-The ClojureScript REPL requires a running React Native app because it evaluates code in the actual JavaScript runtime (not a separate Node.js process).
 
 **Note:** File operations (read, edit, grep, glob) work without a JS runtime - only `clojurescript_eval` requires the app running.
 
