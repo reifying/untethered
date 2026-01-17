@@ -15,6 +15,13 @@ WRAP := ./scripts/wrap-command
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 .PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
+.PHONY: rn-ios rn-android rn-build-ios rn-shadow rn-metro rn-pod-install rn-clean
+
+# React Native Configuration
+RN_DIR := frontend
+RN_IOS_DIR := $(RN_DIR)/ios
+RUBY := /opt/homebrew/opt/ruby/bin
+JAVA_HOME := /opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home
 
 # Default target
 help:
@@ -95,6 +102,15 @@ help:
 	@echo "  show-key           - Display the current API key"
 	@echo "  show-key-qr        - Display API key with QR code for iOS scanning"
 	@echo "  regenerate-key     - Generate a new API key (invalidates old key)"
+	@echo ""
+	@echo "React Native Frontend:"
+	@echo "  rn-ios             - Build and run React Native iOS app"
+	@echo "  rn-android         - Build and run React Native Android app"
+	@echo "  rn-build-ios       - Build React Native iOS app with xcodebuild"
+	@echo "  rn-shadow          - Start shadow-cljs watch"
+	@echo "  rn-metro           - Start Metro bundler"
+	@echo "  rn-pod-install     - Install CocoaPods dependencies"
+	@echo "  rn-clean           - Clean React Native build artifacts"
 
 # Ensure simulator exists and is booted
 setup-simulator:
@@ -408,3 +424,46 @@ release-mac-notarize:
 # Create distribution zip from notarized app
 release-mac-package:
 	./scripts/publish-mac.sh package
+
+# React Native targets
+
+# Install CocoaPods dependencies for React Native
+rn-pod-install:
+	@echo "Installing CocoaPods dependencies..."
+	cd $(RN_IOS_DIR) && $(RUBY)/bundle install
+	cd $(RN_IOS_DIR) && $(RUBY)/bundle exec pod install
+
+# Start shadow-cljs watch (ClojureScript compilation)
+rn-shadow:
+	@echo "Starting shadow-cljs watch..."
+	cd $(RN_DIR) && JAVA_HOME=$(JAVA_HOME) npx shadow-cljs watch app &
+	@echo "shadow-cljs started in background"
+
+# Start Metro bundler
+rn-metro:
+	@echo "Starting Metro bundler..."
+	cd $(RN_DIR) && npx metro serve --config metro.config.js &
+	@echo "Metro started in background"
+
+# Build React Native iOS app with xcodebuild
+rn-build-ios:
+	@echo "Building React Native iOS app..."
+	cd $(RN_IOS_DIR) && xcodebuild -workspace VoiceCodeMobile.xcworkspace -scheme VoiceCodeMobile -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
+
+# Run React Native iOS app
+rn-ios:
+	@echo "Running React Native iOS app..."
+	cd $(RN_DIR) && npm run ios -- --no-packager
+
+# Run React Native Android app
+rn-android:
+	@echo "Running React Native Android app..."
+	cd $(RN_DIR) && npm run android
+
+# Clean React Native build artifacts
+rn-clean:
+	@echo "Cleaning React Native build artifacts..."
+	rm -rf $(RN_IOS_DIR)/build
+	rm -rf $(RN_IOS_DIR)/Pods
+	rm -rf $(RN_DIR)/node_modules/.cache
+	rm -rf ~/Library/Developer/Xcode/DerivedData/VoiceCodeMobile-*
