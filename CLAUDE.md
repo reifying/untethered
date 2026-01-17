@@ -41,3 +41,6 @@ Always log the actual invalid values with sufficient context (names, paths) when
 
 See @STANDARDS.md for coding conventions.
 
+## Test Philosophy
+
+We conform to the test pyramid philosophy for testing.
