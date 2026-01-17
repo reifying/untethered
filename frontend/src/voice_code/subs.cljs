@@ -134,6 +134,24 @@
  (fn [db _]
    (get-in db [:commands :history])))
 
+(rf/reg-sub
+ :commands/for-directory
+ :<- [:commands/available]
+ (fn [available [_ working-directory]]
+   (get available working-directory)))
+
+(rf/reg-sub
+ :commands/running-any?
+ :<- [:commands/running]
+ (fn [running _]
+   (seq running)))
+
+(rf/reg-sub
+ :commands/running-for-session
+ :<- [:commands/running]
+ (fn [running [_ command-session-id]]
+   (get running command-session-id)))
+
 ;; ============================================================================
 ;; Resources
 ;; ============================================================================

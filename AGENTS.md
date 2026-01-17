@@ -2,6 +2,53 @@
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
+## Clojure MCP Setup
+
+This project has two MCP servers configured:
+
+- **clojure-mcp** - Backend JVM Clojure (port 7894)
+- **clojure-mcp-frontend** - Frontend ClojureScript via shadow-cljs
+
+### Backend (clojure-mcp)
+
+The backend nREPL must be running on port 7894:
+
+```bash
+cd backend && nohup clojure -M:nrepl --port 7894 &
+```
+
+### Frontend (clojure-mcp-frontend)
+
+The frontend requires shadow-cljs watch running:
+
+```bash
+cd frontend && JAVA_HOME=/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home npx shadow-cljs watch app &
+```
+
+### ClojureScript REPL: "No available JS runtime"
+
+If `clojurescript_eval` returns "No available JS runtime", this means shadow-cljs has no connected JavaScript runtime. To fix:
+
+1. **Start Metro bundler:**
+   ```bash
+   cd frontend && npx react-native start
+   ```
+
+2. **Run the app on simulator/device:**
+   ```bash
+   # iOS
+   cd frontend && npx react-native run-ios
+
+   # Android
+   cd frontend && npx react-native run-android
+   ```
+
+3. **Wait for app to load** - The shadow-cljs REPL will auto-connect when the app starts
+
+The ClojureScript REPL requires a running React Native app because it evaluates code in the actual JavaScript runtime (not a separate Node.js process).
+
+**Note:** File operations (read, edit, grep, glob) work without a JS runtime - only `clojurescript_eval` requires the app running.
+
 ## Quick Reference
 
 ```bash

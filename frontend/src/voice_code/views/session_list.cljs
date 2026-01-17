@@ -123,6 +123,30 @@
                         :line-height 32}}
     "+"]])
 
+(defn- commands-button
+  "Button to open command menu."
+  [navigation directory]
+  [:> rn/TouchableOpacity
+   {:style {:position "absolute"
+            :bottom 24
+            :left 24
+            :width 56
+            :height 56
+            :border-radius 28
+            :background-color "#28a745"
+            :justify-content "center"
+            :align-items "center"
+            :shadow-color "#000"
+            :shadow-offset #js {:width 0 :height 2}
+            :shadow-opacity 0.25
+            :shadow-radius 4
+            :elevation 5}
+    :on-press #(.navigate navigation "CommandMenu"
+                          #js {:workingDirectory directory})}
+   [:> rn/Text {:style {:font-size 20
+                        :color "#FFF"}}
+    "⚡"]])
+
 (defn session-list-view
   "Main session list screen for a directory."
   [^js props]
@@ -149,9 +173,11 @@
                {:session session-data
                 :locked? (contains? locked-sessions session-id)
                 :on-press #(.navigate navigation "Conversation"
-                                       #js {:sessionId session-id
-                                            :sessionName (session-name session-data)})}])))
+                                      #js {:sessionId session-id
+                                           :sessionName (session-name session-data)})}])))
          :content-container-style {:padding-vertical 8}}])
 
-     ;; New session FAB
+     ;; Commands FAB (left)
+     [commands-button navigation directory]
+     ;; New session FAB (right)
      [new-session-button directory]]))

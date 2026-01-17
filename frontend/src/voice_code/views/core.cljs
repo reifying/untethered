@@ -9,7 +9,9 @@
             [voice-code.views.directory-list :refer [directory-list-view]]
             [voice-code.views.session-list :refer [session-list-view]]
             [voice-code.views.conversation :refer [conversation-view]]
-            [voice-code.views.settings :refer [settings-view]]))
+            [voice-code.views.settings :refer [settings-view]]
+            [voice-code.views.command-menu :refer [command-menu-view]]
+            [voice-code.views.command-execution :refer [command-execution-view]]))
 
 (def Stack (createNativeStackNavigator))
 
@@ -65,6 +67,18 @@
         :options (fn [^js props]
                    #js {:title (or (some-> props .-route .-params .-sessionName)
                                    "Chat")})}]
+
+      ;; Command menu (Makefile targets and git commands)
+      [:> (.-Screen Stack)
+       {:name "CommandMenu"
+        :component (r/reactify-component command-menu-view)
+        :options #js {:title "Commands"}}]
+
+      ;; Command execution (real-time output)
+      [:> (.-Screen Stack)
+       {:name "CommandExecution"
+        :component (r/reactify-component command-execution-view)
+        :options #js {:title "Running Command"}}]
 
       ;; Settings
       [:> (.-Screen Stack)

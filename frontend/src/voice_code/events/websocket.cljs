@@ -321,7 +321,7 @@
  (fn [db [_ {:keys [command-session-id exit-code duration-ms]}]]
    (let [cmd (get-in db [:commands :running command-session-id])]
      (-> db
-         (update :commands dissoc command-session-id)
+         (update-in [:commands :running] dissoc command-session-id)
          (update-in [:commands :history] conj
                     (assoc cmd
                            :exit-code exit-code
@@ -423,3 +423,23 @@
  (fn [{:keys [db]} [_ session-id]]
    {:ws/send {:type "compact_session"
               :session-id session-id}}))
+
+(rf/reg-event-fx
+ :commands/execute
+ (fn [{:keys [db]} [_ {:keys [command-id working-directory]}]]
+   {:ws/send {:type "execute_command"
+              :command-id command-id
+              :working-directory working-directory}}))
+
+(rf/reg-event-fx
+ :commands/get-history
+ (fn [{:keys [db]} [_ working-directory]]
+   {:ws/send (cond-> {:type "get_command_history"}
+               working-directory
+               (assoc :working-directory working-directory))}))
+
+(rf/reg-event-fx
+ :commands/get-output
+ (fn [_ [_ command-session-id]]
+   {:ws/send {:type "get_command_output"
+              :command-session-id command-session-id}}))

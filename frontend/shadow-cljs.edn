@@ -15,8 +15,7 @@
    :output-dir "app"
    :compiler-options {:infer-externs :auto
                       :closure-defines {goog.DEBUG true}}
-   :devtools {:autoload true
-              :preloads [devtools.preload]}}
+   :devtools {:autoload true}}
 
   :test
   {:target :node-test
