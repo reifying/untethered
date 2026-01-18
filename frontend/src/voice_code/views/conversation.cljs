@@ -177,10 +177,13 @@
 
 (defn conversation-view
   "Main conversation screen.
-   Uses Form-3 component pattern for proper Reagent reactivity with React Navigation."
-  [^js props]
-  (let [route (.-route props)
-        session-id (some-> route .-params .-sessionId)]
+   Uses Form-3 component pattern for proper Reagent reactivity with React Navigation.
+   Props is a ClojureScript map (converted by r/reactify-component)."
+  [props]
+  ;; Props is a CLJS map, use keyword access. The JS objects inside need .- access.
+  (let [route (:route props)
+        ;; route is a JS object, so use .- for its properties
+        session-id (when route (some-> route .-params .-sessionId))]
     ;; Form-3: create-class with subscriptions inside :reagent-render
     (r/create-class
      {:component-did-mount
