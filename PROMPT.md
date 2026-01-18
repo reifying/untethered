@@ -4,7 +4,13 @@ Study docs/design/clojurescript-react-native-pilot.md and and explore the codeba
 
 Use a subagent to run the tests. If the react-native test frameworks are not in place yet, it is your job to build them using subagents. If any tests are failing, it is your job to fix them by correcting the implementation or improving the test. If the tests are slow, it is your job to refactor the code or tests as needed to improve the speed of our feedback loop.
 
-You are responsible for determining whether the implementation has exceeded the design document and needs to be course-corrected. The design is attempting to achieve parity in the new platform-agnostic app with the original iOS/Mac app.
+You are responsible for determining whether the implementation has exceeded the design document and needs to be course-corrected. The design is attempting to achieve parity in the new platform-agnostic app with the original iOS/Mac app. Create new beads issues for any gaps you discover that aren't already tracked. Example questions you should be asking as you go along include:
+- What does the iOS app do that I haven't seen evidence of in the RN code?
+- Are there iOS views/features with no RN equivalent?
+- Are there subtle behaviors (edge cases, error handling, animations) that differ?
+- Do the existing beads issues actually capture all the gaps, or are there undiscovered ones?
+
+**Important** Do not trust previous assessments that the work is 'done' - verify independently
 
 You can add new libraries but have a subagent perform a security analysis to ensure that the libraries you have added are not going to compromise our application or dev environment.
 
