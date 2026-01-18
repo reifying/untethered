@@ -1,5 +1,31 @@
 [
   {
+    "id": "react-native-01x",
+    "title": "Simulator-testable: Implement and test session renaming",
+    "description": "This feature can be fully tested on iOS simulator - no physical device needed.\n\nImplement session renaming UI:\n1. Add tap handler on conversation title to show rename dialog\n2. Create rename modal/alert with text input\n3. Dispatch event to update session custom-name in state\n4. Persist custom name to SQLite\n5. Display custom name (fallback to backend-name) throughout app\n\nTesting approach:\n- Navigate to conversation via REPL\n- Tap title, enter new name\n- Verify name persists after navigation away and back\n- Verify name shows in session list\n- Take screenshots to verify UI\n\nParent: react-native-29r",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "task",
+    "created_at": "2026-01-18T14:37:49.313937-06:00",
+    "created_by": "travisbrown",
+    "updated_at": "2026-01-18T14:37:49.313937-06:00",
+    "dependency_count": 0,
+    "dependent_count": 1
+  },
+  {
+    "id": "react-native-uhm",
+    "title": "Simulator-testable: Implement and test unread message tracking",
+    "description": "This feature can be fully tested on iOS simulator - no physical device needed.\n\nImplement unread message tracking and badge display:\n1. Add unread-count field to session model in db.cljs\n2. Increment unread count when messages arrive for non-active sessions\n3. Clear unread count when session is opened (set-active)\n4. Display unread badge in SessionListView rows\n5. Display aggregate unread count in DirectoryListView\n\nTesting approach:\n- Use REPL to dispatch mock messages to non-active sessions\n- Verify badge appears and increments\n- Navigate to session, verify badge clears\n- Take screenshots to verify UI\n\nParent: react-native-ev5",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "task",
+    "created_at": "2026-01-18T14:37:40.898041-06:00",
+    "created_by": "travisbrown",
+    "updated_at": "2026-01-18T14:37:40.898041-06:00",
+    "dependency_count": 0,
+    "dependent_count": 1
+  },
+  {
     "id": "react-native-ev5",
     "title": "Unread message tracking and badge display",
     "description": "iOS tracks unread message counts per session and displays badges. React Native needs:\n1. Add unread-count field to session model\n2. Track unread counts when messages arrive while not viewing session\n3. Clear unread count when session is opened\n4. Display unread badge in DirectoryListView and SessionListView\n\nFiles to modify:\n- frontend/src/voice_code/db.cljs - Add unread-count to session schema\n- frontend/src/voice_code/events/websocket.cljs - Update unread count on message receive\n- frontend/src/voice_code/views/session_list.cljs - Show unread badge\n- frontend/src/voice_code/views/directory_list.cljs - Show aggregate unread count",
@@ -9,7 +35,7 @@
     "created_at": "2026-01-18T14:27:50.523242-06:00",
     "created_by": "travisbrown",
     "updated_at": "2026-01-18T14:27:50.523242-06:00",
-    "dependency_count": 0,
+    "dependency_count": 1,
     "dependent_count": 0
   },
   {
@@ -22,7 +48,7 @@
     "created_at": "2026-01-18T14:27:42.96413-06:00",
     "created_by": "travisbrown",
     "updated_at": "2026-01-18T14:27:42.96413-06:00",
-    "dependency_count": 0,
+    "dependency_count": 1,
     "dependent_count": 0
   },
   {
@@ -37,6 +63,45 @@
     "updated_at": "2026-01-18T14:21:24.887976-06:00",
     "dependency_count": 0,
     "dependent_count": 0
+  },
+  {
+    "id": "react-native-wj8",
+    "title": "Simulator-testable: Implement and test auto-speak responses",
+    "description": "This feature can be fully tested on iOS simulator - TTS works on simulator!\n\nImplement auto-speak for Claude responses:\n1. Add :auto-speak-responses setting to db.cljs defaults\n2. Add toggle in Settings view under Audio Playback section\n3. In websocket response handler, check setting and dispatch :voice/speak if enabled\n4. Ensure TTS doesn't speak when app is in voice input mode (prevent feedback)\n\nTesting approach:\n- Enable auto-speak in Settings\n- Send a prompt via text mode\n- Verify TTS speaks the response automatically\n- Disable auto-speak, verify silence on next response\n- Test that voice input mode suppresses auto-speak\n\nNote: Push notifications require physical device, track separately.\n\nParent: react-native-gzj",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "created_at": "2026-01-18T14:38:14.313567-06:00",
+    "created_by": "travisbrown",
+    "updated_at": "2026-01-18T14:38:14.313567-06:00",
+    "dependency_count": 0,
+    "dependent_count": 1
+  },
+  {
+    "id": "react-native-ij5",
+    "title": "Simulator-testable: Implement and test command history view",
+    "description": "This feature can be fully tested on iOS simulator - no physical device needed.\n\nImplement command history view:\n1. Create CommandHistory screen component\n2. Create CommandOutputDetail screen component  \n3. Add both screens to navigation in views/core.cljs\n4. Add 'History' button to CommandMenu view\n5. Fetch history via get_command_history WebSocket message\n6. Display list with timestamp, exit code (color-coded), duration, preview\n7. Navigate to detail view on tap, show full output\n\nTesting approach:\n- Execute some commands via CommandMenu first\n- Navigate to history via REPL or UI\n- Verify history list populates\n- Tap item, verify detail view shows full output\n- Take screenshots to verify UI\n\nParent: react-native-9sr",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "created_at": "2026-01-18T14:38:05.866659-06:00",
+    "created_by": "travisbrown",
+    "updated_at": "2026-01-18T14:38:05.866659-06:00",
+    "dependency_count": 0,
+    "dependent_count": 1
+  },
+  {
+    "id": "react-native-rm9",
+    "title": "Simulator-testable: Implement and test message truncation",
+    "description": "This feature can be fully tested on iOS simulator - no physical device needed.\n\nImplement message truncation for large responses:\n1. Add truncation logic: first 250 chars + '...[N chars truncated]...' + last 250 chars\n2. Add expanded state per message\n3. Add 'Show more'/'Show less' toggle button for truncated messages\n4. Keep full text in state, only truncate for rendering\n\nTesting approach:\n- Use REPL to add a very long message (\u003e1000 chars) to a session\n- Verify truncation appears with character count\n- Tap 'Show more', verify full text displays\n- Tap 'Show less', verify truncation returns\n- Take screenshots to verify UI\n\nParent: react-native-fxc",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "created_at": "2026-01-18T14:37:57.086807-06:00",
+    "created_by": "travisbrown",
+    "updated_at": "2026-01-18T14:37:57.086807-06:00",
+    "dependency_count": 0,
+    "dependent_count": 1
   },
   {
     "id": "react-native-b4g",
@@ -61,7 +126,7 @@
     "created_at": "2026-01-18T14:28:12.285466-06:00",
     "created_by": "travisbrown",
     "updated_at": "2026-01-18T14:28:12.285466-06:00",
-    "dependency_count": 0,
+    "dependency_count": 1,
     "dependent_count": 0
   },
   {
@@ -74,7 +139,7 @@
     "created_at": "2026-01-18T14:28:05.062761-06:00",
     "created_by": "travisbrown",
     "updated_at": "2026-01-18T14:28:05.062761-06:00",
-    "dependency_count": 0,
+    "dependency_count": 1,
     "dependent_count": 0
   },
   {
@@ -87,7 +152,7 @@
     "created_at": "2026-01-18T14:27:57.806716-06:00",
     "created_by": "travisbrown",
     "updated_at": "2026-01-18T14:27:57.806716-06:00",
-    "dependency_count": 0,
+    "dependency_count": 1,
     "dependent_count": 0
   },
   {
@@ -104,6 +169,84 @@
     "dependent_count": 0
   },
   {
+    "id": "react-native-v3y",
+    "title": "Simulator-testable: Implement and test git branch detection",
+    "description": "This feature can be tested on iOS simulator if backend provides branch info.\n\nImplement git branch detection in session info:\n1. Check if backend already sends branch info (may need backend change)\n2. If not, add git_branch field to session data from backend\n3. Display branch name in SessionInfoView with copy functionality\n4. Show 'Not a git repo' or similar when not applicable\n5. Style branch display (maybe with branch icon)\n\nTesting approach:\n- Open SessionInfoView for session with git repo working directory\n- Verify branch name displays\n- Tap to copy, verify clipboard\n- Test session with non-git directory\n- Take screenshots to verify UI\n\nNote: May require backend enhancement to send branch info.\n\nParent: react-native-dah",
+    "status": "open",
+    "priority": 3,
+    "issue_type": "task",
+    "created_at": "2026-01-18T14:39:02.707821-06:00",
+    "created_by": "travisbrown",
+    "updated_at": "2026-01-18T14:39:02.707821-06:00",
+    "dependency_count": 0,
+    "dependent_count": 1
+  },
+  {
+    "id": "react-native-0uw",
+    "title": "Simulator-testable: Implement and test message pruning",
+    "description": "This feature can be fully tested on iOS simulator - pure state management.\n\nImplement message pruning to limit storage:\n1. Add max-messages-per-session constant (50) to db.cljs\n2. Add prune-messages helper function\n3. Apply pruning after adding messages in websocket handlers\n4. Apply pruning when loading session history\n5. Prune oldest messages first, keep newest\n\nTesting approach:\n- Use REPL to add 60+ messages to a session\n- Verify only 50 messages retained in state\n- Subscribe to session, verify history limited to 50\n- Check SQLite directly if needed\n- Verify oldest messages pruned, newest kept\n\nParent: react-native-dxv",
+    "status": "open",
+    "priority": 3,
+    "issue_type": "task",
+    "created_at": "2026-01-18T14:38:54.165441-06:00",
+    "created_by": "travisbrown",
+    "updated_at": "2026-01-18T14:38:54.165441-06:00",
+    "dependency_count": 0,
+    "dependent_count": 1
+  },
+  {
+    "id": "react-native-id5",
+    "title": "Simulator-testable: Implement and test draft persistence",
+    "description": "This feature can be fully tested on iOS simulator - SQLite works on simulator.\n\nImplement draft persistence to storage:\n1. Add draft save function to persistence.cljs (use settings table or new drafts table)\n2. Add debounced save effect (300ms) when draft changes\n3. Load drafts on app startup and populate ui/drafts state\n4. Clear draft from storage when message sent\n5. Handle draft cleanup when session deleted\n\nTesting approach:\n- Type a draft message in conversation\n- Force-quit and restart app\n- Navigate back to same session\n- Verify draft text restored\n- Send message, verify draft cleared\n- Restart app, verify draft gone\n- Take screenshots to verify\n\nParent: react-native-jta",
+    "status": "open",
+    "priority": 3,
+    "issue_type": "task",
+    "created_at": "2026-01-18T14:38:46.121955-06:00",
+    "created_by": "travisbrown",
+    "updated_at": "2026-01-18T14:38:46.121955-06:00",
+    "dependency_count": 0,
+    "dependent_count": 1
+  },
+  {
+    "id": "react-native-eu0",
+    "title": "Simulator-testable: Implement and test infer session name",
+    "description": "This feature can be fully tested on iOS simulator - no physical device needed.\n\nImplement Claude-inferred session naming:\n1. Add handler for infer_name_response message type in websocket.cljs\n2. Add 'Suggest Name' button to SessionInfoView\n3. Send infer_name WebSocket message when button tapped\n4. Show loading state while waiting for response\n5. Apply suggested name to session (same as manual rename)\n\nTesting approach:\n- Open SessionInfoView for a session with some conversation history\n- Tap 'Suggest Name' button\n- Verify loading indicator appears\n- Verify name updates when response arrives\n- Verify name persists in session list\n- Take screenshots to verify UI\n\nParent: react-native-1kn",
+    "status": "open",
+    "priority": 3,
+    "issue_type": "task",
+    "created_at": "2026-01-18T14:38:38.227135-06:00",
+    "created_by": "travisbrown",
+    "updated_at": "2026-01-18T14:38:38.227135-06:00",
+    "dependency_count": 0,
+    "dependent_count": 1
+  },
+  {
+    "id": "react-native-2je",
+    "title": "Simulator-testable: Implement and test session deletion",
+    "description": "This feature can be fully tested on iOS simulator - no physical device needed.\n\nImplement session deletion UI:\n1. Add swipe-to-delete gesture on session rows in SessionListView\n2. Show confirmation dialog before delete\n3. Add 'Delete Session' button in SessionInfoView\n4. Dispatch event to mark session as is-user-deleted in state\n5. Persist deletion to SQLite\n6. Filter deleted sessions from all list subscriptions\n\nTesting approach:\n- Navigate to session list via REPL\n- Swipe on a session row, confirm delete\n- Verify session disappears from list\n- Restart app, verify session still hidden\n- Test delete from SessionInfoView as well\n- Take screenshots to verify UI\n\nParent: react-native-6g7",
+    "status": "open",
+    "priority": 3,
+    "issue_type": "task",
+    "created_at": "2026-01-18T14:38:30.794497-06:00",
+    "created_by": "travisbrown",
+    "updated_at": "2026-01-18T14:38:30.794497-06:00",
+    "dependency_count": 0,
+    "dependent_count": 1
+  },
+  {
+    "id": "react-native-acr",
+    "title": "Simulator-testable: Implement and test debug logs view",
+    "description": "This feature can be fully tested on iOS simulator - no physical device needed.\n\nImplement debug logs view:\n1. Create LogManager namespace with circular buffer (max 15KB)\n2. Capture console.log/warn/error output\n3. Create DebugLogs screen with ScrollView of log entries\n4. Add timestamp to each log entry\n5. Add 'Copy Logs' button using clipboard\n6. Add 'Clear Logs' button\n7. Add navigation link from Settings view\n\nTesting approach:\n- Trigger various app actions that log\n- Navigate to Debug Logs via Settings\n- Verify logs appear with timestamps\n- Tap Copy, verify clipboard contains logs\n- Tap Clear, verify logs cleared\n- Take screenshots to verify UI\n\nParent: react-native-6ra",
+    "status": "open",
+    "priority": 3,
+    "issue_type": "task",
+    "created_at": "2026-01-18T14:38:22.155552-06:00",
+    "created_by": "travisbrown",
+    "updated_at": "2026-01-18T14:38:22.155552-06:00",
+    "dependency_count": 0,
+    "dependent_count": 1
+  },
+  {
     "id": "react-native-dxv",
     "title": "Message pruning to limit storage",
     "description": "iOS limits messages to 50 per session in CoreData to prevent unbounded storage growth. React Native needs:\n1. Add max messages per session constant (50)\n2. Prune oldest messages when limit exceeded\n3. Apply pruning on message receive\n4. Apply pruning on session history load\n5. Consider making limit configurable in settings\n\nFiles to modify:\n- frontend/src/voice_code/db.cljs - Add max-messages-per-session constant\n- frontend/src/voice_code/events/websocket.cljs - Add pruning logic to message handlers\n- frontend/src/voice_code/persistence.cljs - Prune when saving to SQLite",
@@ -113,7 +256,7 @@
     "created_at": "2026-01-18T14:33:24.183839-06:00",
     "created_by": "travisbrown",
     "updated_at": "2026-01-18T14:33:24.183839-06:00",
-    "dependency_count": 0,
+    "dependency_count": 1,
     "dependent_count": 0
   },
   {
@@ -126,7 +269,7 @@
     "created_at": "2026-01-18T14:33:10.390429-06:00",
     "created_by": "travisbrown",
     "updated_at": "2026-01-18T14:33:10.390429-06:00",
-    "dependency_count": 0,
+    "dependency_count": 1,
     "dependent_count": 0
   },
   {
@@ -152,7 +295,7 @@
     "created_at": "2026-01-18T14:32:33.905576-06:00",
     "created_by": "travisbrown",
     "updated_at": "2026-01-18T14:32:33.905576-06:00",
-    "dependency_count": 0,
+    "dependency_count": 1,
     "dependent_count": 0
   },
   {
@@ -165,7 +308,7 @@
     "created_at": "2026-01-18T14:28:32.500607-06:00",
     "created_by": "travisbrown",
     "updated_at": "2026-01-18T14:28:32.500607-06:00",
-    "dependency_count": 0,
+    "dependency_count": 1,
     "dependent_count": 0
   },
   {
@@ -178,7 +321,7 @@
     "created_at": "2026-01-18T14:28:25.088844-06:00",
     "created_by": "travisbrown",
     "updated_at": "2026-01-18T14:28:25.088844-06:00",
-    "dependency_count": 0,
+    "dependency_count": 1,
     "dependent_count": 0
   },
   {
@@ -191,8 +334,21 @@
     "created_at": "2026-01-18T14:28:19.006242-06:00",
     "created_by": "travisbrown",
     "updated_at": "2026-01-18T14:28:19.006242-06:00",
-    "dependency_count": 0,
+    "dependency_count": 1,
     "dependent_count": 0
+  },
+  {
+    "id": "react-native-38l",
+    "title": "Simulator-testable: Implement and test render loop detection",
+    "description": "This feature can be fully tested on iOS simulator - pure JS monitoring.\n\nImplement render loop detection for performance monitoring:\n1. Create performance.cljs namespace\n2. Add render counter HOC or hook for key components\n3. Track renders per second with sliding window\n4. Log warning when \u003e50 renders/sec detected\n5. Optionally display in debug logs view\n6. Add to conversation view (most likely to have issues)\n\nTesting approach:\n- Add intentional infinite re-render bug temporarily\n- Verify warning logged\n- Remove bug, verify no warning\n- Check debug logs for performance entries\n\nParent: react-native-s81",
+    "status": "open",
+    "priority": 4,
+    "issue_type": "task",
+    "created_at": "2026-01-18T14:39:10.110283-06:00",
+    "created_by": "travisbrown",
+    "updated_at": "2026-01-18T14:39:10.110283-06:00",
+    "dependency_count": 0,
+    "dependent_count": 1
   },
   {
     "id": "react-native-s81",
@@ -204,7 +360,7 @@
     "created_at": "2026-01-18T14:33:16.859812-06:00",
     "created_by": "travisbrown",
     "updated_at": "2026-01-18T14:33:16.859812-06:00",
-    "dependency_count": 0,
+    "dependency_count": 1,
     "dependent_count": 0
   },
   {
