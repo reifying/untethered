@@ -308,6 +308,51 @@
      (rf/dispatch-sync [:sessions/rename "s1" "   "])
      (is (nil? (:custom-name @(rf/subscribe [:sessions/by-id "s1"])))))))
 
+(deftest sessions-delete-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Create sessions in two directories
+   (rf/dispatch-sync [:sessions/add {:id "s1"
+                                     :backend-name "Session 1"
+                                     :working-directory "/project/a"
+                                     :is-user-deleted false}])
+   (rf/dispatch-sync [:sessions/add {:id "s2"
+                                     :backend-name "Session 2"
+                                     :working-directory "/project/a"
+                                     :is-user-deleted false}])
+   (rf/dispatch-sync [:sessions/add {:id "s3"
+                                     :backend-name "Session 3"
+                                     :working-directory "/project/b"
+                                     :is-user-deleted false}])
+
+   (testing "sessions appear in subscriptions before deletion"
+     (let [directories @(rf/subscribe [:sessions/directories])
+           sessions-a @(rf/subscribe [:sessions/for-directory "/project/a"])]
+       (is (= 2 (count directories)))
+       (is (= 2 (count sessions-a)))))
+
+   (testing "sessions/delete marks session as deleted"
+     (rf/dispatch-sync [:sessions/delete "s1"])
+     (let [session @(rf/subscribe [:sessions/by-id "s1"])]
+       (is (true? (:is-user-deleted session)))))
+
+   (testing "deleted sessions are excluded from directory list"
+     (let [sessions-a @(rf/subscribe [:sessions/for-directory "/project/a"])]
+       (is (= 1 (count sessions-a)))
+       (is (= "s2" (:id (first sessions-a))))))
+
+   (testing "deleted sessions are excluded from directories subscription"
+     (let [directories @(rf/subscribe [:sessions/directories])
+           dir-a (first (filter #(= "/project/a" (:directory %)) directories))]
+       (is (= 1 (:session-count dir-a)))))
+
+   (testing "deleting all sessions in directory removes it from directories list"
+     (rf/dispatch-sync [:sessions/delete "s2"])
+     (let [directories @(rf/subscribe [:sessions/directories])]
+       (is (= 1 (count directories)))
+       (is (= "/project/b" (:directory (first directories))))))))
+
 ;; ============================================================================
 ;; WebSocket Events
 ;; ============================================================================

@@ -57,6 +57,7 @@
  :<- [:sessions/all]
  (fn [sessions _]
    (->> (vals sessions)
+        (remove :is-user-deleted)
         (group-by :working-directory)
         (map (fn [[dir sessions]]
                {:directory dir
@@ -72,6 +73,7 @@
  :<- [:sessions/all]
  (fn [sessions [_ directory]]
    (->> (vals sessions)
+        (remove :is-user-deleted)
         (filter #(= directory (:working-directory %)))
         (sort-by :last-modified >))))
 
@@ -85,6 +87,7 @@
  :<- [:sessions/all]
  (fn [sessions _]
    (->> (vals sessions)
+        (remove :is-user-deleted)
         (map #(get % :unread-count 0))
         (reduce + 0))))
 
@@ -93,6 +96,7 @@
  :<- [:sessions/all]
  (fn [sessions [_ directory]]
    (->> (vals sessions)
+        (remove :is-user-deleted)
         (filter #(= directory (:working-directory %)))
         (map #(get % :unread-count 0))
         (reduce + 0))))

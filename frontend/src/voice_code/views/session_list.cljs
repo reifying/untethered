@@ -2,7 +2,7 @@
   "Session list view showing sessions for a specific directory."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn]))
+            ["react-native" :as rn :refer [Alert]]))
 
 (defn- format-relative-time
   "Format a timestamp as relative time."
@@ -45,8 +45,9 @@
 
 (defn- session-item
   "Single session item in the list."
-  [{:keys [session locked? on-press]}]
-  (let [unread-count (get session :unread-count 0)]
+  [{:keys [session locked? on-press on-delete]}]
+  (let [unread-count (get session :unread-count 0)
+        session-display-name (session-name session)]
     [:> rn/TouchableOpacity
      {:style {:padding-horizontal 16
               :padding-vertical 14
@@ -54,6 +55,14 @@
               :border-bottom-color "#F0F0F0"
               :background-color "#FFFFFF"}
       :on-press on-press
+      :on-long-press (fn []
+                       (.alert Alert
+                               session-display-name
+                               "What would you like to do with this session?"
+                               (clj->js [{:text "Cancel" :style "cancel"}
+                                         {:text "Delete"
+                                          :style "destructive"
+                                          :onPress on-delete}])))
       :active-opacity 0.7}
      [:> rn/View {:style {:flex-direction "row"
                           :align-items "center"}}
@@ -74,7 +83,7 @@
                              :font-weight (if (pos? unread-count) "700" "600")
                              :color "#000"
                              :flex 1}}
-         (session-name session)]
+         session-display-name]
         [unread-badge unread-count]
         [:> rn/Text {:style {:font-size 12
                              :color "#999"
@@ -205,10 +214,12 @@
                       :on-press #(when navigation
                                    (.navigate navigation "Conversation"
                                               #js {:sessionId session-id
-                                                   :sessionName (session-name session-data)}))}])))
+                                                   :sessionName (session-name session-data)}))
+                      :on-delete #(rf/dispatch [:sessions/delete session-id])}])))
                :content-container-style {:padding-vertical 8}}])
 
            ;; Commands FAB (left)
            [commands-button navigation directory]
            ;; New session FAB (right)
            [new-session-button directory]]))})))
+

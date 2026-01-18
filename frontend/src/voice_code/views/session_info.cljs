@@ -5,10 +5,11 @@
    - Priority queue management
    - Recipe orchestration controls
    - Export conversation functionality
-   - Copy to clipboard with confirmation"
+   - Copy to clipboard with confirmation
+   - Session deletion"
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn]
+            ["react-native" :as rn :refer [Alert]]
             ["@react-native-clipboard/clipboard" :as Clipboard]))
 
 ;; ============================================================================
@@ -249,6 +250,23 @@
     [:> rn/Text {:style {:font-size 12 :color "#666"}}
      "Compaction summarizes conversation history to reduce context window usage."]]])
 
+(defn- danger-zone-section
+  "Danger zone with destructive actions."
+  [{:keys [on-delete]}]
+  [:> rn/View
+   [section-header "Danger Zone"]
+   [action-button {:label "Delete Session"
+                   :icon "🗑"
+                   :destructive? true
+                   :on-press on-delete}]
+   [:> rn/View {:style {:padding-horizontal 16
+                        :padding-vertical 8
+                        :background-color "#FFFFFF"
+                        :border-bottom-width 1
+                        :border-bottom-color "#F0F0F0"}}
+    [:> rn/Text {:style {:font-size 12 :color "#666"}}
+     "Deleting a session hides it from all lists. This cannot be undone."]]])
+
 ;; ============================================================================
 ;; Main View
 ;; ============================================================================
@@ -313,7 +331,18 @@
 
         handle-exit-recipe (fn []
                              (rf/dispatch [:recipes/exit session-id])
-                             (show-confirmation! "Recipe exited"))]
+                             (show-confirmation! "Recipe exited"))
+
+        handle-delete (fn []
+                        (.alert Alert
+                                "Delete Session"
+                                "Are you sure you want to delete this session? This cannot be undone."
+                                (clj->js [{:text "Cancel" :style "cancel"}
+                                          {:text "Delete"
+                                           :style "destructive"
+                                           :onPress (fn []
+                                                      (rf/dispatch [:sessions/delete session-id])
+                                                      (.goBack navigation))}])))]
 
     (fn []
       (let [{:keys [visible? message]} @confirmation-state]
@@ -335,4 +364,5 @@
                                             :on-start-recipe handle-start-recipe
                                             :on-exit-recipe handle-exit-recipe}]
              [actions-section {:on-export handle-export
-                               :on-compact handle-compact}]])]]))))
+                               :on-compact handle-compact}]
+             [danger-zone-section {:on-delete handle-delete}]])]]))))

@@ -265,6 +265,13 @@
      {:db (assoc-in db [:sessions session-id :custom-name] final-name)
       :dispatch [:persistence/save-session-name session-id final-name]})))
 
+(rf/reg-event-fx
+ :sessions/delete
+ (fn [{:keys [db]} [_ session-id]]
+   (let [session (get-in db [:sessions session-id])]
+     {:db (assoc-in db [:sessions session-id :is-user-deleted] true)
+      :dispatch [:persistence/save-session (assoc session :is-user-deleted true)]})))
+
 (rf/reg-event-db
  :sessions/remove
  (fn [db [_ session-id]]
