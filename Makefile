@@ -544,4 +544,4 @@ rn-e2e-nav:
 
 # Run Claude in non-interactive mode with PROMPT.md
 manual-ralph:
-	@cat $(PROJECT_ROOT)PROMPT.md | claude --print -
+	@cat $(PROJECT_ROOT)PROMPT.md | claude --print --dangerously-skip-permissions -
