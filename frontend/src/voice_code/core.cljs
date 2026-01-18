@@ -5,6 +5,7 @@
             [re-frame.core :as rf]
             [voice-code.events.core]
             [voice-code.subs]
+            [voice-code.persistence]
             [voice-code.views.core :refer [app-root]]))
 
 (defn ^:export init

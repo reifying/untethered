@@ -427,6 +427,11 @@
  (fn [db _]
    (assoc db :api-key nil)))
 
+(rf/reg-event-fx
+ :persistence/save-api-key
+ (fn [_ [_ api-key]]
+   {:persistence/store-api-key api-key}))
+
 ;; Placeholder events referenced in events/core.cljs
 (rf/reg-event-fx
  :persistence/load-api-key
