@@ -1,39 +1,37 @@
 ---
 name: cljs-repl
-description: Guide for using the ClojureScript REPL in this React Native project. Use when working with ClojureScript code, debugging, testing, or when needing to evaluate code in the running app.
+description: This skill should be used when the user asks to "evaluate ClojureScript", "use the REPL", "check app state", "debug via REPL", "inspect subscriptions", "dispatch events", or needs to interact with the running React Native app programmatically.
 ---
 
 # ClojureScript REPL Usage
 
-## Advantages
+## Overview
 
-The ClojureScript REPL provides significant advantages for development:
+The ClojureScript REPL enables direct interaction with the running React Native app's JavaScript runtime. Key advantages:
 
-1. **Live Code Evaluation** - Execute code directly in the running app's JavaScript runtime
-2. **Instant Feedback** - No rebuild/reload cycle for testing changes
-3. **State Inspection** - Examine re-frame app-db, subscriptions, and component state
-4. **Interactive Debugging** - Test functions, check values, trace issues in real-time
-5. **Hot Reloading** - Reload namespaces without restarting the app
+- **Live Code Evaluation** - Execute code directly in the app
+- **Instant Feedback** - No rebuild/reload cycle needed
+- **State Inspection** - Examine re-frame app-db and subscriptions
+- **Interactive Debugging** - Test functions and trace issues in real-time
+- **Hot Reloading** - Reload namespaces without restarting
 
 ## Prerequisites
 
-The REPL requires both shadow-cljs AND the React Native app running:
+Start both shadow-cljs and the React Native app:
 
 ```bash
-# 1. Start shadow-cljs compiler
+# Start shadow-cljs compiler
 cd frontend && JAVA_HOME=/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home npx shadow-cljs watch app &
 
-# 2. Run the app on simulator
+# Run the app on simulator
 cd frontend && npm run ios
 ```
 
 The REPL connects when the app loads and displays "shadow-cljs - ready!" in Metro logs.
 
-## Using the REPL
+## Evaluating Code
 
-### Via MCP Tool
-
-Use `clojurescript_eval` to evaluate ClojureScript code:
+Use `clojurescript_eval` MCP tool to evaluate ClojureScript:
 
 ```clojure
 ;; Simple evaluation
@@ -46,26 +44,30 @@ Use `clojurescript_eval` to evaluate ClojureScript code:
 @re-frame.db/app-db
 ```
 
-### Common Operations
+## Common Operations
 
-**Check connection state:**
+### Checking Connection State
+
 ```clojure
 @(re-frame.core/subscribe [:connection/status])
 ```
 
-**Dispatch events:**
+### Dispatching Events
+
 ```clojure
 (re-frame.core/dispatch [:some-event arg1 arg2])
 (re-frame.core/dispatch-sync [:some-event])  ; Synchronous
 ```
 
-**Inspect subscriptions:**
+### Inspecting Subscriptions
+
 ```clojure
 @(re-frame.core/subscribe [:sessions/all])
 @(re-frame.core/subscribe [:ui/loading?])
 ```
 
-**Modify app-db directly (for testing):**
+### Modifying app-db Directly
+
 ```clojure
 (swap! re-frame.db/app-db assoc :some-key "value")
 (swap! re-frame.db/app-db assoc-in [:nested :path] "value")
@@ -73,7 +75,7 @@ Use `clojurescript_eval` to evaluate ClojureScript code:
 
 ## Hot Reloading
 
-After editing a ClojureScript file, reload it in the REPL:
+After editing a ClojureScript file, reload the namespace:
 
 ```clojure
 ;; Reload a single namespace
@@ -83,29 +85,31 @@ After editing a ClojureScript file, reload it in the REPL:
 (require '[voice-code.views.core] :reload-all)
 ```
 
-**Note:** Hot reloading may reset certain app state. Core namespace reloads typically require re-authentication.
+**Note:** Hot reloading may reset app state. Core namespace reloads typically require re-authentication.
 
 ## Troubleshooting
 
 ### "No available JS runtime"
 
-The app isn't running or shadow-cljs lost connection:
-1. Check the simulator is running with the app visible
+The app is not running or shadow-cljs lost connection. To fix:
+
+1. Verify the simulator is running with the app visible
 2. Check Metro bundler is running
 3. Restart shadow-cljs watch if needed
 
-### Namespace not found
+### Namespace Not Found
+
+Require the namespace before using it:
 
 ```clojure
-;; Require the namespace first
 (require '[voice-code.some-ns :as ns])
-;; Then use it
 (ns/some-function)
 ```
 
-### Stale code after file edit
+### Stale Code After File Edit
 
-Always use `:reload` flag:
+Always use the `:reload` flag:
+
 ```clojure
 (require '[voice-code.some-ns] :reload)
 ```

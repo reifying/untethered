@@ -1,18 +1,18 @@
 ---
 name: repl-ui-testing
-description: Guide for testing React Native UI via the ClojureScript REPL. Use when testing navigation, UI interactions, verifying screens, or debugging UI issues without needing to simulate touch events.
+description: This skill should be used when the user asks to "test navigation", "take a screenshot", "test UI via REPL", "navigate programmatically", "verify a screen", "test authentication flow", or needs to test React Native UI without simulating touch events.
 ---
 
 # REPL-Based UI Testing
 
 ## Overview
 
-Testing UI via the REPL is more reliable than simulating touch events because:
+Testing UI via the REPL is more reliable than simulating touch events:
 
-1. **Direct Function Calls** - Call the same code that UI touches trigger
-2. **No Coordinate Guessing** - Avoid brittle x/y position calculations
-3. **Cross-Platform** - Works regardless of simulator/display configuration
-4. **Faster Iteration** - No need to install testing frameworks
+- **Direct Function Calls** - Call the same code that UI touches trigger
+- **No Coordinate Guessing** - Avoid brittle x/y position calculations
+- **Cross-Platform** - Works regardless of simulator/display configuration
+- **Faster Iteration** - No need for external testing frameworks
 
 ## Taking Screenshots
 
@@ -22,7 +22,7 @@ Capture the current simulator state:
 xcrun simctl io booted screenshot /tmp/app-screenshot.png
 ```
 
-Then view with the Read tool to see the current UI state.
+View with the Read tool to see current UI state.
 
 ## Authentication Testing
 
@@ -42,7 +42,8 @@ Connect to the backend via REPL:
   "Connecting...")
 ```
 
-Verify connection:
+Verify connection state:
+
 ```clojure
 {:status @(rf/subscribe [:connection/status])
  :authenticated? @(rf/subscribe [:connection/authenticated?])
@@ -51,14 +52,11 @@ Verify connection:
 
 Get the API key from: `~/.untethered/api-key`
 
-## Navigation Testing
+## Programmatic Navigation
 
-### Setup
-
-The app exposes a navigation ref for programmatic navigation:
+### Check Navigation Readiness
 
 ```clojure
-;; Check if navigation is ready
 (.isReady voice-code.views.core/nav-ref)
 ```
 
@@ -74,6 +72,12 @@ The app exposes a navigation ref for programmatic navigation:
 (voice-code.views.core/navigate! "Settings")
 ```
 
+### Go Back
+
+```clojure
+(.goBack voice-code.views.core/nav-ref)
+```
+
 ### Available Screens
 
 | Screen | Parameters |
@@ -87,26 +91,20 @@ The app exposes a navigation ref for programmatic navigation:
 | Recipes | none |
 | Settings | none |
 
-### Go Back
-
-```clojure
-(.goBack voice-code.views.core/nav-ref)
-```
-
 ## Testing Workflow
 
-1. **Take initial screenshot** to see current state
-2. **Authenticate via REPL** if needed
-3. **Navigate to target screen** using `navigate!`
-4. **Take screenshot** to verify navigation
-5. **Inspect state** via subscriptions
-6. **Perform actions** via dispatch or direct function calls
-7. **Take screenshot** to verify result
+1. Take initial screenshot to see current state
+2. Authenticate via REPL if needed
+3. Navigate to target screen using `navigate!`
+4. Take screenshot to verify navigation
+5. Inspect state via subscriptions
+6. Perform actions via dispatch or direct function calls
+7. Take screenshot to verify result
 
 ## Example: Full Navigation Test
 
 ```clojure
-;; 1. Verify we're authenticated
+;; 1. Verify authentication
 @(rf/subscribe [:connection/authenticated?])
 ;; => true
 
@@ -141,15 +139,12 @@ Dispatch events and verify state changes:
 
 ## Debugging UI Issues
 
-### Check Component Props
+### Check Component Data
 
-If a component isn't rendering correctly, check the data it receives:
+Verify the data a subscription returns:
 
 ```clojure
-;; Check what data a subscription returns
 @(rf/subscribe [:sessions/directories])
-
-;; Check specific session data
 (get-in @re-frame.db/app-db [:sessions "session-id"])
 ```
 
@@ -161,7 +156,7 @@ After fixing code, reload and trigger re-render:
 ;; Reload the namespace
 (require '[voice-code.views.some-view] :reload)
 
-;; Toggle a state to force re-render
+;; Toggle state to force re-render
 (rf/dispatch [:ui/set-loading true])
 (rf/dispatch [:ui/set-loading false])
 ```
