@@ -134,13 +134,16 @@
 
 (defn command-menu-view
   "Main command menu view showing project and general commands.
-   Uses Form-2 component pattern for proper Reagent reactivity with React Navigation."
-  [^js props]
-  (let [route (.-route props)
-        navigation (.-navigation props)
+   Uses Form-2 component pattern for proper Reagent reactivity with React Navigation.
+   Props is a ClojureScript map (converted by r/reactify-component)."
+  [props]
+  ;; Props is a CLJS map, use keyword access. The JS objects inside need .- access.
+  (let [route (:route props)
+        navigation (:navigation props)
+        ;; route is a JS object, so use .- for its properties
         working-directory (when route (-> route .-params .-workingDirectory))]
     ;; Form-2: Return a render function that reads subscriptions
-    (fn [^js _props]
+    (fn [_props]
       (let [commands @(rf/subscribe [:commands/for-directory working-directory])]
         [:> rn/SafeAreaView {:style {:flex 1 :background-color "#fff"}}
          [running-command-indicator]

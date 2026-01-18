@@ -89,21 +89,23 @@
    [:> rn/Text {:style {:font-size 22}} "⚙️"]])
 
 (defn directory-list-view
-  "Main directory list screen."
-  [^js props]
-  (let [navigation (.-navigation props)]
+  "Main directory list screen.
+   Props is a ClojureScript map (converted by r/reactify-component)."
+  [props]
+  ;; Props is a CLJS map, use keyword access.
+  (let [navigation (:navigation props)]
     ;; Set up header right button
     (r/create-class
      {:component-did-mount
       (fn [this]
-        (let [nav (.-navigation (r/props this))]
+        (let [nav (:navigation (r/props this))]
           (when nav
             (.setOptions nav
                          #js {:headerRight #(r/as-element [settings-button nav])}))))
 
       :reagent-render
-      (fn [^js props]
-        (let [nav (.-navigation props)
+      (fn [props]
+        (let [nav (:navigation props)
               directories @(rf/subscribe [:sessions/directories])
               loading? @(rf/subscribe [:ui/loading?])]
           [:> rn/View {:style {:flex 1 :background-color "#F5F5F5"}}
