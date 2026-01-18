@@ -6,54 +6,78 @@ description: This skill should be used when the user asks to "run UI tests", "te
 # Systematic REPL-Based UI Testing Agent
 
 ## Your Mission
-You are a QA testing agent for a React Native + ClojureScript app. Your job is to systematically navigate through every screen, verify UI renders correctly, and document any bugs found as P0 beads.
+You are an AGGRESSIVE QA testing agent. Your job is to BREAK the app by testing every interaction, edge case, and error path. Don't just verify screens render - TEST EVERY UNIQUE INTERACTION TYPE.
+
+## Testing Philosophy
+
+**Test ONE of each unique interaction type** - not all instances:
+- Tap ONE directory row (not all 6)
+- Tap ONE session (not all 18)
+- Tap ONE command (not all 5)
+- But DO test each DIFFERENT button type (Settings gear, Commands FAB, Disconnect, etc.)
+
+**REPL-first testing** (cheap, fast):
+- Use subscriptions to verify state changes
+- Check for errors in app-db after every action
+- Only screenshot on errors or for baseline (once per screen type)
+
+**Be destructive**:
+- Test with missing/invalid params
+- Test rapid repeated actions
+- Test during loading states
+
+## Important: Working Directory
+
+**ALWAYS run make commands from project root**, not subdirectories:
+```bash
+# CORRECT - from /Users/.../voice-code-react-native
+make rn-screenshot
+
+# WRONG - from frontend/ subdirectory
+make rn-screenshot  # Will fail!
+```
 
 ## Prerequisites Check
-First, verify the app is running and REPL is connected:
 
 ```clojure
 (+ 1 2)
 ```
 
-If you get "No available JS runtime", the app isn't running. Report this and stop.
+If you get "No available JS runtime":
+1. Check if app is running: `make rn-screenshot` to see current state
+2. If blank screen, run: `make rn-ios` (wait ~45 seconds)
+3. Retry REPL connection
 
-## Testing Tools
+## Authentication (Required First)
 
-### Take Screenshot
-```bash
-xcrun simctl io booted screenshot /tmp/test-screenshot-{N}.png
-```
-Then use Read tool to view the image. Number screenshots sequentially.
-
-### Check Authentication State
-```clojure
-(do
-  (require '[re-frame.core :as rf])
-  {:status @(rf/subscribe [:connection/status])
-   :authenticated? @(rf/subscribe [:connection/authenticated?])
-   :session-count (count @(rf/subscribe [:sessions/all]))})
-```
-
-### Authenticate (if needed)
-Read the API key from ~/.untethered/api-key first, then:
+Read API key and connect:
 ```clojure
 (do
   (require '[re-frame.core :as rf])
   (rf/dispatch-sync [:settings/update :server-port 8080])
-  (swap! re-frame.db/app-db assoc :api-key "untethered-<KEY>")
+  (swap! re-frame.db/app-db assoc :api-key "untethered-<KEY-FROM-~/.untethered/api-key>")
   (swap! re-frame.db/app-db assoc :ios-session-id (str (random-uuid)))
   (voice-code.websocket/connect! {:server-url "localhost" :server-port 8080})
   "Connecting...")
 ```
 
-### Check Navigation Ready
+Verify:
 ```clojure
-(.isReady voice-code.views.core/nav-ref)
+{:status @(rf/subscribe [:connection/status])
+ :authenticated? @(rf/subscribe [:connection/authenticated?])}
 ```
 
-### Navigate to Screen
+## Core Testing Commands
+
+### Check for Errors (RUN AFTER EVERY ACTION)
 ```clojure
-(voice-code.views.core/navigate! "ScreenName" {:param1 "value1"})
+{:ui-error (get-in @re-frame.db/app-db [:ui :current-error])
+ :conn-error (get-in @re-frame.db/app-db [:connection :error])}
+```
+
+### Navigate
+```clojure
+(voice-code.views.core/navigate! "ScreenName" {:param "value"})
 ```
 
 ### Go Back
@@ -61,105 +85,82 @@ Read the API key from ~/.untethered/api-key first, then:
 (.goBack voice-code.views.core/nav-ref)
 ```
 
-### Check App State
-```clojure
-@re-frame.db/app-db
+### Screenshot
+```bash
+make rn-screenshot
 ```
+Then `Read /tmp/simulator-screenshot.png`
 
-## Available Screens to Test
+## Required Unique Interactions
 
-| Screen | Parameters | Description |
-|--------|------------|-------------|
-| DirectoryList | none | Home screen - projects grouped by directory |
-| SessionList | `:directory`, `:directoryName` | Sessions within a project |
-| Conversation | `:sessionId`, `:sessionName` | Chat with Claude |
-| CommandMenu | none | Makefile targets and git commands |
-| CommandExecution | `:commandSessionId` | Real-time command output |
-| Resources | none | Uploaded files |
-| Recipes | none | Recipe orchestration |
-| Settings | none | App settings |
+Test ONE of each:
 
-## Testing Workflow
+| Interaction | How to Test |
+|------------|-------------|
+| Directory row tap | Navigate to SessionList with valid directory |
+| Settings gear | `(voice-code.views.core/navigate! "Settings")` |
+| Session row tap | Navigate to Conversation with valid sessionId |
+| Commands FAB | Navigate to CommandMenu with workingDirectory |
+| Command tap | `(rf/dispatch [:commands/execute {:command-id "git.status" :working-directory "/path"}])` |
+| Disconnect button | `(rf/dispatch [:auth/disconnect])` |
+| Voice buttons | Check if visible, dispatch voice events |
+| Text input | Verify renders with placeholder |
+| Back navigation | `(.goBack voice-code.views.core/nav-ref)` from each screen |
 
-### Phase 1: Authentication Flow
-1. Take screenshot of initial state
-2. Check if authenticated
-3. If not authenticated, verify auth screen renders correctly
-4. Authenticate via REPL
-5. Wait 2 seconds, take screenshot
-6. Verify navigation container is ready
-7. Document any issues
+## Edge Case Tests (MANDATORY)
 
-### Phase 2: Systematic Screen Testing
-For EACH screen:
-1. Navigate to the screen
-2. Take screenshot
-3. Verify:
-   - Screen renders without errors
-   - Expected UI elements visible
-   - No error messages or crash indicators
-4. Test any interactions available (e.g., list items)
-5. Go back to previous screen
-6. Document any bugs found
+```clojure
+;; Missing params
+(voice-code.views.core/navigate! "SessionList" {})
+(voice-code.views.core/navigate! "Conversation" {})
+(voice-code.views.core/navigate! "CommandExecution" {})
 
-### Phase 3: Edge Cases
-- Test navigation with missing/invalid params
-- Test rapid navigation
-- Test back button from each screen
-- Test deep linking paths
+;; Invalid params
+(voice-code.views.core/navigate! "Conversation" {:sessionId "nonexistent"})
+```
 
 ## Bug Documentation
 
-When you find a bug, IMMEDIATELY create a P0 bead:
+When you find a bug, IMMEDIATELY create a bead:
 ```bash
-bd create --title="[UI Bug] <Short description>" --type=bug --priority=0 --body="
-## Steps to Reproduce
-1. ...
-2. ...
-
-## Expected Behavior
-...
-
-## Actual Behavior
-...
-
-## Screenshot
-/tmp/test-screenshot-{N}.png
-
-## Additional Context
-- Screen: <screen name>
-- App state at time of bug: <relevant state>
-"
+bd create --title="[UI Bug] <description>" --type=bug --priority=<0-2> --body="..."
 ```
 
-## Testing Checklist
+Priority:
+- P0: Crashes, data loss, blocks core flow
+- P1: Broken feature, bad UX
+- P2: Minor visual issue
 
-Track your progress with the scratch_pad tool:
-- [ ] Auth screen (unauthenticated state)
-- [ ] Auth flow completion
-- [ ] DirectoryList (empty state)
-- [ ] DirectoryList (with data)
-- [ ] Settings screen
-- [ ] SessionList screen
-- [ ] Conversation screen
-- [ ] CommandMenu screen
-- [ ] CommandExecution screen
-- [ ] Resources screen
-- [ ] Recipes screen
+## Completion Checklist
+
+Testing is complete when you have tested:
+- [ ] ONE directory tap → SessionList
+- [ ] Settings navigation
+- [ ] ONE session tap → Conversation
+- [ ] Commands FAB → CommandMenu
+- [ ] ONE command execution
+- [ ] Disconnect button
+- [ ] Voice buttons (verify visibility)
+- [ ] Text input (verify renders)
 - [ ] Back navigation from each screen
-- [ ] Error states / edge cases
+- [ ] Navigation with missing/invalid params
+- [ ] Documented all bugs found
 
-## Important Notes
+## Common Issues
 
-1. **Screenshot every state** - Visual evidence is crucial
-2. **Document everything** - Even minor UI glitches should be logged
-3. **Be systematic** - Complete one screen fully before moving to next
-4. **Return to home** - After testing each path, go back to DirectoryList
-5. **Check console** - After actions, check for JS errors in app state
-6. **Use subagents** - If you need to investigate something deeply, spawn a subagent
+**REPL disconnects after app restart**: Wait 30-45 seconds, retry `(+ 1 2)`
 
-## Start Testing Now
+**"No available JS runtime"**: App not connected to shadow-cljs. Run `make rn-ios`
 
-Begin with Phase 1 (Authentication Flow). Take your first screenshot and proceed systematically through the testing workflow. Document all bugs found as you go.
+**Blank white screen**: Metro bundler issue. Check `curl http://localhost:8081/status`
 
-Remember: Your goal is to find and document ALL bugs, not just obvious ones. Check alignment, colors, text truncation, loading states, error states, empty states, etc.
+**Navigation state undefined**: App may be on Auth screen. Authenticate first.
+
+## Start Now
+
+1. Verify REPL connected: `(+ 1 2)`
+2. Authenticate if needed
+3. Start at DirectoryList
+4. Test ONE of each unique interaction
+5. Check errors after EVERY action
+6. Document bugs immediately
