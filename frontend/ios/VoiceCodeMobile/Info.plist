@@ -38,6 +38,8 @@
 	<string>Voice Code needs microphone access to transcribe your voice commands.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Voice Code needs speech recognition to convert your voice to text commands.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Voice Code needs camera access to scan QR codes for authentication.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIRequiredDeviceCapabilities</key>

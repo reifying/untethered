@@ -3,7 +3,8 @@
    Allows manual entry or QR code scanning."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn]))
+            ["react-native" :as rn]
+            [voice-code.qr-scanner :refer [qr-scanner-view]]))
 
 (defn- status-indicator
   "Shows connection status during authentication."
@@ -116,41 +117,47 @@
           :keyboard-type "number-pad"}]]])))
 
 (defn auth-view
-  "Main authentication screen."
+  "Main authentication screen.
+   Shows QR scanner when scanning mode is active."
   [_props]
-  [:> rn/SafeAreaView {:style {:flex 1 :background-color "#FFFFFF"}}
-   [:> rn/KeyboardAvoidingView
-    {:style {:flex 1}
-     :behavior "padding"}
-    [:> rn/ScrollView
-     {:content-container-style {:flex-grow 1
-                                :justify-content "center"
-                                :align-items "center"
-                                :padding-vertical 40}}
-     ;; Logo/Title
-     [:> rn/Text {:style {:font-size 32
-                          :font-weight "bold"
-                          :color "#333"
-                          :margin-bottom 8}}
-      "Voice Code"]
-     [:> rn/Text {:style {:font-size 16
-                          :color "#666"
-                          :margin-bottom 32}}
-      "Connect to your backend"]
+  (let [scanning? @(rf/subscribe [:qr/scanning?])]
+    (if scanning?
+      ;; Show QR scanner
+      [qr-scanner-view]
+      ;; Show normal auth view
+      [:> rn/SafeAreaView {:style {:flex 1 :background-color "#FFFFFF"}}
+       [:> rn/KeyboardAvoidingView
+        {:style {:flex 1}
+         :behavior "padding"}
+        [:> rn/ScrollView
+         {:content-container-style {:flex-grow 1
+                                    :justify-content "center"
+                                    :align-items "center"
+                                    :padding-vertical 40}}
+         ;; Logo/Title
+         [:> rn/Text {:style {:font-size 32
+                              :font-weight "bold"
+                              :color "#333"
+                              :margin-bottom 8}}
+          "Voice Code"]
+         [:> rn/Text {:style {:font-size 16
+                              :color "#666"
+                              :margin-bottom 32}}
+          "Connect to your backend"]
 
-     ;; Status indicator
-     [status-indicator]
+         ;; Status indicator
+         [status-indicator]
 
-     ;; Server configuration
-     [server-config]
+         ;; Server configuration
+         [server-config]
 
-     ;; API key input
-     [:> rn/View {:style {:margin-top 24 :width "100%"}}
-      [api-key-input]]
+         ;; API key input
+         [:> rn/View {:style {:margin-top 24 :width "100%"}}
+          [api-key-input]]
 
-     ;; QR code option
-     [:> rn/TouchableOpacity
-      {:style {:margin-top 24}
-       :on-press #(rf/dispatch [:auth/scan-qr])}
-      [:> rn/Text {:style {:color "#007AFF" :font-size 14}}
-       "Scan QR Code"]]]]])
+         ;; QR code option
+         [:> rn/TouchableOpacity
+          {:style {:margin-top 24}
+           :on-press #(rf/dispatch [:auth/scan-qr])}
+          [:> rn/Text {:style {:color "#007AFF" :font-size 14}}
+           "Scan QR Code"]]]]])))
