@@ -381,6 +381,70 @@
      (rf/dispatch-sync [:sessions/handle-locked {:session-id "session-456"}])
      (is (true? @(rf/subscribe [:session/locked? "session-456"]))))))
 
+(deftest handle-session-ready-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "marks session as ready on session_ready message"
+     ;; First create a session
+     (rf/dispatch-sync [:sessions/handle-created {:session-id "session-ready-1"
+                                                  :name "Test Session"
+                                                  :working-directory "/test"}])
+     ;; Then mark it ready
+     (rf/dispatch-sync [:sessions/handle-ready {:session-id "session-ready-1"}])
+     (let [session @(rf/subscribe [:sessions/by-id "session-ready-1"])]
+       (is (true? (:ready? session)))))))
+
+(deftest handle-session-killed-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "removes session on session_killed message"
+     ;; Create a session with messages
+     (rf/dispatch-sync [:sessions/handle-created {:session-id "session-kill-1"
+                                                  :name "Session to Kill"
+                                                  :working-directory "/test"}])
+     (rf/dispatch-sync [:messages/add "session-kill-1"
+                        {:id "msg-1" :role :user :text "test" :timestamp (js/Date.)}])
+     (rf/dispatch-sync [:sessions/handle-locked {:session-id "session-kill-1"}])
+
+     ;; Verify session exists
+     (is (some? @(rf/subscribe [:sessions/by-id "session-kill-1"])))
+     (is (true? @(rf/subscribe [:session/locked? "session-kill-1"])))
+
+     ;; Kill the session
+     (rf/dispatch-sync [:sessions/handle-killed {:session-id "session-kill-1"}])
+
+     ;; Verify session is removed
+     (is (nil? @(rf/subscribe [:sessions/by-id "session-kill-1"])))
+     (is (false? @(rf/subscribe [:session/locked? "session-kill-1"]))))))
+
+(deftest handle-session-name-inferred-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "updates session name on session_name_inferred message"
+     ;; Create a session
+     (rf/dispatch-sync [:sessions/handle-created {:session-id "session-infer-1"
+                                                  :name "Session 1"
+                                                  :working-directory "/test"}])
+     ;; Infer a new name
+     (rf/dispatch-sync [:sessions/handle-name-inferred {:session-id "session-infer-1"
+                                                        :name "Refactoring Auth Module"}])
+     (let [session @(rf/subscribe [:sessions/by-id "session-infer-1"])]
+       (is (= "Refactoring Auth Module" (:backend-name session)))
+       (is (true? (:name-inferred? session)))))))
+
+(deftest handle-infer-name-error-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "shows error on infer_name_error message"
+     (rf/dispatch-sync [:sessions/handle-infer-name-error {:session-id "session-err-1"
+                                                           :error "Context too short"}])
+     (is (= "Failed to infer session name: Context too short"
+            @(rf/subscribe [:ui/current-error]))))))
+
 (deftest handle-auth-error-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])

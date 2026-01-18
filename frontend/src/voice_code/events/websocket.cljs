@@ -74,8 +74,12 @@
      "session_created" {:dispatch [:sessions/handle-created msg]}
      "session_history" {:dispatch [:sessions/handle-history msg]}
      "session_updated" {:dispatch [:sessions/handle-updated msg]}
+     "session_ready" {:dispatch [:sessions/handle-ready msg]}
      "turn_complete" {:dispatch [:sessions/handle-turn-complete msg]}
      "session_locked" {:dispatch [:sessions/handle-locked msg]}
+     "session_killed" {:dispatch [:sessions/handle-killed msg]}
+     "session_name_inferred" {:dispatch [:sessions/handle-name-inferred msg]}
+     "infer_name_error" {:dispatch [:sessions/handle-infer-name-error msg]}
 
      ;; Commands
      "available_commands" {:dispatch [:commands/handle-available msg]}
@@ -311,6 +315,35 @@
    (update db :locked-sessions conj session-id)))
 
 (rf/reg-event-db
+ :sessions/handle-ready
+ (fn [db [_ {:keys [session-id]}]]
+   ;; Session is ready for interaction - update any pending state
+   (assoc-in db [:sessions session-id :ready?] true)))
+
+(rf/reg-event-db
+ :sessions/handle-killed
+ (fn [db [_ {:keys [session-id]}]]
+   ;; Session was killed/deleted from backend - remove from local state
+   (-> db
+       (update :sessions dissoc session-id)
+       (update :messages dissoc session-id)
+       (update :locked-sessions disj session-id))))
+
+(rf/reg-event-db
+ :sessions/handle-name-inferred
+ (fn [db [_ {:keys [session-id name]}]]
+   ;; Claude suggested a session name - apply it
+   (-> db
+       (assoc-in [:sessions session-id :backend-name] name)
+       (assoc-in [:sessions session-id :name-inferred?] true))))
+
+(rf/reg-event-db
+ :sessions/handle-infer-name-error
+ (fn [db [_ {:keys [session-id error]}]]
+   ;; Name inference failed - show error to user
+   (assoc-in db [:ui :current-error] (str "Failed to infer session name: " error))))
+
+(rf/reg-event-db
  :sessions/handle-compaction-complete
  (fn [db [_ {:keys [session-id]}]]
    ;; Compaction succeeded - refresh session
@@ -517,3 +550,13 @@
    ;; Note: Actual file upload requires native module integration
    ;; This dispatches the intent; native code handles file selection
    {:db (update-in db [:resources :pending-uploads] (fnil inc 0))}))
+
+;; ============================================================================
+;; Session Name Inference
+;; ============================================================================
+
+(rf/reg-event-fx
+ :session/infer-name
+ (fn [_ [_ session-id]]
+   {:ws/send {:type "infer_name"
+              :session-id session-id}}))
