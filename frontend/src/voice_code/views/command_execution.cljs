@@ -147,16 +147,19 @@
     "Select a command from the menu to execute it."]])
 
 (defn command-execution-view
-  "Main command execution view showing real-time output."
-  [^js props]
-  (let [running @(rf/subscribe [:commands/running])
-        ;; Get the most recent running command
-        [session-id cmd] (first running)]
-    [:> rn/SafeAreaView {:style {:flex 1 :background-color "#fff"}}
-     (if cmd
-       [:> rn/View {:style {:flex 1}}
-        [command-header cmd]
-        (when-not (:exit-code cmd)
-          [running-indicator])
-        [output-view {:output (:output cmd)}]]
-       [empty-state])]))
+  "Main command execution view showing real-time output.
+   Uses Form-2 component pattern for proper Reagent reactivity with React Navigation."
+  [^js _props]
+  ;; Form-2: Return a render function that reads subscriptions
+  (fn [^js _props]
+    (let [running @(rf/subscribe [:commands/running])
+          ;; Get the most recent running command
+          [session-id cmd] (first running)]
+      [:> rn/SafeAreaView {:style {:flex 1 :background-color "#fff"}}
+       (if cmd
+         [:> rn/View {:style {:flex 1}}
+          [command-header cmd]
+          (when-not (:exit-code cmd)
+            [running-indicator])
+          [output-view {:output (:output cmd)}]]
+         [empty-state])])))

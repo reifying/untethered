@@ -149,37 +149,39 @@
     "⚡"]])
 
 (defn session-list-view
-  "Main session list screen for a directory."
+  "Main session list screen for a directory.
+   Uses Form-2 component pattern for proper Reagent reactivity with React Navigation."
   [^js props]
   (let [navigation (.-navigation props)
         route (.-route props)
-        directory (some-> route .-params .-directory)
-        sessions @(rf/subscribe [:sessions/for-directory directory])
-        locked-sessions @(rf/subscribe [:locked-sessions])]
+        directory (some-> route .-params .-directory)]
+    ;; Form-2: Return a render function that reads subscriptions
+    (fn [^js _props]
+      (let [sessions @(rf/subscribe [:sessions/for-directory directory])
+            locked-sessions @(rf/subscribe [:locked-sessions])]
+        [:> rn/View {:style {:flex 1 :background-color "#F5F5F5"}}
+         (if (empty? sessions)
+           [empty-state]
+           [:> rn/FlatList
+            {:data (clj->js sessions)
+             :key-extractor (fn [item _idx]
+                              (or (.-id item) (str (random-uuid))))
+             :render-item
+             (fn [^js obj]
+               (let [item (.-item obj)
+                     session-data (js->clj item :keywordize-keys true)
+                     session-id (:id session-data)]
+                 (r/as-element
+                  [session-item
+                   {:session session-data
+                    :locked? (contains? locked-sessions session-id)
+                    :on-press #(when navigation
+                                 (.navigate navigation "Conversation"
+                                            #js {:sessionId session-id
+                                                 :sessionName (session-name session-data)}))}])))
+             :content-container-style {:padding-vertical 8}}])
 
-    [:> rn/View {:style {:flex 1 :background-color "#F5F5F5"}}
-     (if (empty? sessions)
-       [empty-state]
-       [:> rn/FlatList
-        {:data (clj->js sessions)
-         :key-extractor (fn [item _idx]
-                          (or (.-id item) (str (random-uuid))))
-         :render-item
-         (fn [^js obj]
-           (let [item (.-item obj)
-                 session-data (js->clj item :keywordize-keys true)
-                 session-id (:id session-data)]
-             (r/as-element
-              [session-item
-               {:session session-data
-                :locked? (contains? locked-sessions session-id)
-                :on-press #(when navigation
-                             (.navigate navigation "Conversation"
-                                        #js {:sessionId session-id
-                                             :sessionName (session-name session-data)}))}])))
-         :content-container-style {:padding-vertical 8}}])
-
-     ;; Commands FAB (left)
-     [commands-button navigation directory]
-     ;; New session FAB (right)
-     [new-session-button directory]]))
+         ;; Commands FAB (left)
+         [commands-button navigation directory]
+         ;; New session FAB (right)
+         [new-session-button directory]]))))
