@@ -311,15 +311,19 @@
    (rf/dispatch-sync [:initialize-db])
 
    (testing "session_history populates messages"
+     ;; Test with the actual Claude JSONL format that backend sends:
+     ;; User messages: {:type "user", :message {:role "user", :content "text"}, :uuid "...", :timestamp "..."}
+     ;; Assistant messages: {:type "assistant", :message {:role "assistant", :content [{:type "text", :text "..."}]}, :uuid "...", :timestamp "..."}
      (rf/dispatch-sync [:sessions/handle-history
                         {:session-id "s1"
-                         :messages [{:id "m1"
-                                     :role "user"
-                                     :text "Hello"
+                         :messages [{:type "user"
+                                     :uuid "m1"
+                                     :message {:role "user" :content "Hello"}
                                      :timestamp "2026-01-15T10:00:00Z"}
-                                    {:id "m2"
-                                     :role "assistant"
-                                     :text "Hi there!"
+                                    {:type "assistant"
+                                     :uuid "m2"
+                                     :message {:role "assistant"
+                                               :content [{:type "text" :text "Hi there!"}]}
                                      :timestamp "2026-01-15T10:00:01Z"}]}])
      (let [msgs @(rf/subscribe [:messages/for-session "s1"])]
        (is (= 2 (count msgs)))
