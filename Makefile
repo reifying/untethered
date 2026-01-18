@@ -513,7 +513,7 @@ rn-reload:
 # Run ClojureScript unit tests
 rn-test:
 	@echo "Running ClojureScript unit tests..."
-	cd $(RN_DIR) && npm test
+	$(WRAP) bash -c "cd $(RN_DIR) && JAVA_HOME=$(JAVA_HOME) npm test"
 
 # Maestro E2E Tests
 # Requires: maestro CLI installed, app running on simulator
