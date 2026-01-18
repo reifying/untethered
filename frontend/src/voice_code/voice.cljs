@@ -264,8 +264,16 @@
 
 (rf/reg-fx
  :voice/speak
- (fn [text]
-   (speak! text)))
+ (fn [params]
+   (let [{:keys [text on-complete]} (if (string? params)
+                                      {:text params}
+                                      params)]
+     (-> (speak! text)
+         (.then (fn [_]
+                  ;; Set a timeout to call on-complete after speech finishes
+                  ;; TTS events will fire, but we also provide this callback
+                  (when on-complete
+                    (js/setTimeout on-complete 8000))))))))
 
 (rf/reg-fx
  :voice/stop-speaking

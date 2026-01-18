@@ -9,6 +9,7 @@
             [voice-code.views.directory-list :refer [directory-list-view]]
             [voice-code.views.session-list :refer [session-list-view]]
             [voice-code.views.conversation :refer [conversation-view]]
+            [voice-code.views.session-info :refer [session-info-view]]
             [voice-code.views.settings :refer [settings-view]]
             [voice-code.views.command-menu :refer [command-menu-view]]
             [voice-code.views.command-execution :refer [command-execution-view]]
@@ -79,6 +80,13 @@
               :options (fn [^js props]
                          #js {:title (or (some-> props .-route .-params .-sessionName)
                                          "Chat")})}]
+
+            ;; Session info (session details and actions)
+            [:> (.-Screen Stack)
+             {:name "SessionInfo"
+              :component (r/reactify-component session-info-view)
+              :options #js {:title "Session Info"
+                            :presentation "modal"}}]
 
             ;; Command menu (Makefile targets and git commands)
             [:> (.-Screen Stack)

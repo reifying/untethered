@@ -99,6 +99,82 @@
    {:db (assoc-in db [:settings key] value)
     :dispatch [:persistence/save-setting key value]}))
 
+(rf/reg-event-db
+ :settings/toggle
+ (fn [db [_ key]]
+   (update-in db [:settings key] not)))
+
+;; ============================================================================
+;; Connection Testing
+;; ============================================================================
+
+(rf/reg-event-db
+ :connection-test/start
+ (fn [db _]
+   (-> db
+       (assoc-in [:ui :testing-connection?] true)
+       (assoc-in [:ui :connection-test-result] nil))))
+
+(rf/reg-event-db
+ :connection-test/complete
+ (fn [db [_ {:keys [success message]}]]
+   (-> db
+       (assoc-in [:ui :testing-connection?] false)
+       (assoc-in [:ui :connection-test-result] {:success success :message message}))))
+
+(rf/reg-event-fx
+ :settings/test-connection
+ (fn [{:keys [db]} _]
+   (let [server-url (get-in db [:settings :server-url])
+         server-port (get-in db [:settings :server-port])]
+     {:dispatch [:connection-test/start]
+      :test-connection {:server-url server-url
+                        :server-port server-port
+                        :on-success #(rf/dispatch [:connection-test/complete {:success true :message "Connection successful!"}])
+                        :on-error #(rf/dispatch [:connection-test/complete {:success false :message (str "Connection failed: " %)}])}})))
+
+;; Effect handler for testing connection
+(rf/reg-fx
+ :test-connection
+ (fn [{:keys [server-url server-port on-success on-error]}]
+   (let [url (str "ws://" server-url ":" server-port)
+         ws (js/WebSocket. url)]
+     (set! (.-onopen ws)
+           (fn [_]
+             (.close ws)
+             (on-success)))
+     (set! (.-onerror ws)
+           (fn [e]
+             (on-error (or (.-message e) "Connection error"))))
+     ;; Timeout after 5 seconds
+     (js/setTimeout
+      (fn []
+        (when (= (.-readyState ws) 0) ; CONNECTING
+          (.close ws)
+          (on-error "Connection timeout")))
+      5000))))
+
+;; ============================================================================
+;; Voice Preview
+;; ============================================================================
+
+(rf/reg-event-db
+ :voice-preview/start
+ (fn [db _]
+   (assoc-in db [:ui :previewing-voice?] true)))
+
+(rf/reg-event-db
+ :voice-preview/stop
+ (fn [db _]
+   (assoc-in db [:ui :previewing-voice?] false)))
+
+(rf/reg-event-fx
+ :settings/preview-voice
+ (fn [{:keys [db]} _]
+   {:dispatch [:voice-preview/start]
+    :voice/speak {:text "Hello! This is a preview of the selected voice. Premium voices sound more natural and expressive."
+                  :on-complete #(rf/dispatch [:voice-preview/stop])}}))
+
 ;; ============================================================================
 ;; Session Locking
 ;; ============================================================================
@@ -205,6 +281,54 @@
 ;; NOTE: :prompt/send, :prompt/send-from-draft, :session/subscribe, and
 ;; :sessions/resubscribe-all are defined in events/websocket.cljs to keep
 ;; WebSocket-related event handling consolidated in one namespace.
+
+;; ============================================================================
+;; Session Compaction
+;; ============================================================================
+
+(rf/reg-event-fx
+ :sessions/compact
+ (fn [{:keys [db]} [_ session-id]]
+   {:ws/send {:type "compact_session"
+              :session_id session-id}}))
+
+;; ============================================================================
+;; Priority Queue Management
+;; ============================================================================
+
+(rf/reg-event-db
+ :sessions/add-to-priority-queue
+ (fn [db [_ session-id]]
+   (-> db
+       (update-in [:sessions session-id] merge
+                  {:priority 10
+                   :priority-order 1.0
+                   :priority-queued-at (js/Date.)}))))
+
+(rf/reg-event-db
+ :sessions/remove-from-priority-queue
+ (fn [db [_ session-id]]
+   (-> db
+       (update-in [:sessions session-id] merge
+                  {:priority nil
+                   :priority-order nil
+                   :priority-queued-at nil}))))
+
+(rf/reg-event-db
+ :sessions/change-priority
+ (fn [db [_ session-id priority]]
+   (assoc-in db [:sessions session-id :priority] priority)))
+
+;; ============================================================================
+;; Recipe Management
+;; ============================================================================
+
+(rf/reg-event-fx
+ :recipes/exit
+ (fn [{:keys [db]} [_ session-id]]
+   {:db (update-in db [:recipes :active] dissoc session-id)
+    :ws/send {:type "exit_recipe"
+              :session_id session-id}}))
 
 ;; ============================================================================
 ;; Session Creation

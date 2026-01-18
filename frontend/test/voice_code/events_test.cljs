@@ -399,3 +399,142 @@
        (is (= "/new/project" (:working-directory (first sessions))))
        (is (some? (:id (first sessions))))
        (is (= 0 (:message-count (first sessions))))))))
+
+;; ============================================================================
+;; Settings Events
+;; ============================================================================
+
+(deftest settings-update-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "settings/update changes setting value"
+     (rf/dispatch-sync [:settings/update :server-url "192.168.1.100"])
+     (is (= "192.168.1.100" (:server-url @(rf/subscribe [:settings/all])))))
+
+   (testing "settings/update works for new settings fields"
+     (rf/dispatch-sync [:settings/update :system-prompt "Be concise"])
+     (is (= "Be concise" (:system-prompt @(rf/subscribe [:settings/all]))))
+
+     (rf/dispatch-sync [:settings/update :respect-silent-mode false])
+     (is (false? (:respect-silent-mode @(rf/subscribe [:settings/all]))))
+
+     (rf/dispatch-sync [:settings/update :queue-enabled true])
+     (is (true? (:queue-enabled @(rf/subscribe [:settings/all]))))
+
+     (rf/dispatch-sync [:settings/update :resource-storage-location "~/Documents"])
+     (is (= "~/Documents" (:resource-storage-location @(rf/subscribe [:settings/all])))))))
+
+(deftest settings-toggle-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "settings/toggle toggles boolean settings"
+     ;; Queue is disabled by default
+     (is (false? (:queue-enabled @(rf/subscribe [:settings/all]))))
+     (rf/dispatch-sync [:settings/toggle :queue-enabled])
+     (is (true? (:queue-enabled @(rf/subscribe [:settings/all]))))
+     (rf/dispatch-sync [:settings/toggle :queue-enabled])
+     (is (false? (:queue-enabled @(rf/subscribe [:settings/all])))))))
+
+(deftest connection-test-events-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "connection-test/start sets testing state"
+     (rf/dispatch-sync [:connection-test/start])
+     (is (true? @(rf/subscribe [:ui/testing-connection?])))
+     (is (nil? @(rf/subscribe [:ui/connection-test-result]))))
+
+   (testing "connection-test/complete sets result"
+     (rf/dispatch-sync [:connection-test/complete {:success true :message "Connected!"}])
+     (is (false? @(rf/subscribe [:ui/testing-connection?])))
+     (let [result @(rf/subscribe [:ui/connection-test-result])]
+       (is (true? (:success result)))
+       (is (= "Connected!" (:message result)))))
+
+   (testing "connection-test/complete handles failure"
+     (rf/dispatch-sync [:connection-test/complete {:success false :message "Timeout"}])
+     (let [result @(rf/subscribe [:ui/connection-test-result])]
+       (is (false? (:success result)))
+       (is (= "Timeout" (:message result)))))))
+
+(deftest voice-preview-events-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "voice-preview/start sets previewing state"
+     (rf/dispatch-sync [:voice-preview/start])
+     (is (true? @(rf/subscribe [:ui/previewing-voice?]))))
+
+   (testing "voice-preview/stop clears previewing state"
+     (rf/dispatch-sync [:voice-preview/stop])
+     (is (false? @(rf/subscribe [:ui/previewing-voice?]))))))
+
+;; ============================================================================
+;; Priority Queue Events
+;; ============================================================================
+
+(deftest priority-queue-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Create a test session
+   (rf/dispatch-sync [:sessions/add {:id "s1"
+                                     :backend-name "Test Session"
+                                     :working-directory "/project"}])
+
+   (testing "sessions/add-to-priority-queue adds session to queue"
+     (rf/dispatch-sync [:sessions/add-to-priority-queue "s1"])
+     (let [session @(rf/subscribe [:sessions/by-id "s1"])]
+       (is (= 10 (:priority session)))
+       (is (= 1.0 (:priority-order session)))
+       (is (some? (:priority-queued-at session)))))
+
+   (testing "sessions/change-priority updates priority"
+     (rf/dispatch-sync [:sessions/change-priority "s1" 5])
+     (is (= 5 (:priority @(rf/subscribe [:sessions/by-id "s1"])))))
+
+   (testing "sessions/remove-from-priority-queue removes session from queue"
+     (rf/dispatch-sync [:sessions/remove-from-priority-queue "s1"])
+     (let [session @(rf/subscribe [:sessions/by-id "s1"])]
+       (is (nil? (:priority session)))
+       (is (nil? (:priority-order session)))
+       (is (nil? (:priority-queued-at session)))))))
+
+;; ============================================================================
+;; Recipe Events
+;; ============================================================================
+
+(deftest recipes-subscription-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Manually set up recipe state for testing
+   (rf/dispatch-sync [:db/update-in [:recipes :active]
+                      assoc "s1" {:recipe-label "Code Review"
+                                  :current-step "Review changes"
+                                  :step-count 2}])
+
+   (testing "recipes/active-for-session returns active recipe"
+     (let [recipe @(rf/subscribe [:recipes/active-for-session "s1"])]
+       (is (= "Code Review" (:recipe-label recipe)))
+       (is (= "Review changes" (:current-step recipe)))
+       (is (= 2 (:step-count recipe)))))
+
+   (testing "recipes/active-for-session returns nil for inactive session"
+     (is (nil? @(rf/subscribe [:recipes/active-for-session "s2"]))))))
+
+(deftest recipes-exit-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Set up active recipe
+   (rf/dispatch-sync [:db/update-in [:recipes :active]
+                      assoc "s1" {:recipe-label "Code Review"
+                                  :current-step "Review changes"
+                                  :step-count 2}])
+
+   (testing "recipes/exit removes recipe from active"
+     (rf/dispatch-sync [:recipes/exit "s1"])
+     (is (nil? @(rf/subscribe [:recipes/active-for-session "s1"]))))))

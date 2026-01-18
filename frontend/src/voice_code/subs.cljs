@@ -167,6 +167,26 @@
    (get-in db [:resources :pending-uploads])))
 
 ;; ============================================================================
+;; Recipes
+;; ============================================================================
+
+(rf/reg-sub
+ :recipes/available
+ (fn [db _]
+   (get-in db [:recipes :available])))
+
+(rf/reg-sub
+ :recipes/active
+ (fn [db _]
+   (get-in db [:recipes :active])))
+
+(rf/reg-sub
+ :recipes/active-for-session
+ :<- [:recipes/active]
+ (fn [active [_ session-id]]
+   (get active session-id)))
+
+;; ============================================================================
 ;; Settings
 ;; ============================================================================
 
@@ -184,6 +204,41 @@
  :settings/server-port
  (fn [db _]
    (get-in db [:settings :server-port])))
+
+(rf/reg-sub
+ :settings/voice-identifier
+ (fn [db _]
+   (get-in db [:settings :voice-identifier])))
+
+(rf/reg-sub
+ :settings/system-prompt
+ (fn [db _]
+   (get-in db [:settings :system-prompt])))
+
+(rf/reg-sub
+ :settings/respect-silent-mode
+ (fn [db _]
+   (get-in db [:settings :respect-silent-mode])))
+
+(rf/reg-sub
+ :settings/continue-playback-when-locked
+ (fn [db _]
+   (get-in db [:settings :continue-playback-when-locked])))
+
+(rf/reg-sub
+ :settings/queue-enabled
+ (fn [db _]
+   (get-in db [:settings :queue-enabled])))
+
+(rf/reg-sub
+ :settings/priority-queue-enabled
+ (fn [db _]
+   (get-in db [:settings :priority-queue-enabled])))
+
+(rf/reg-sub
+ :settings/resource-storage-location
+ (fn [db _]
+   (get-in db [:settings :resource-storage-location])))
 
 ;; ============================================================================
 ;; UI State
@@ -224,3 +279,18 @@
  :ui/voice-mode?
  (fn [db _]
    (= :voice (get-in db [:ui :input-mode] :voice))))
+
+(rf/reg-sub
+ :ui/testing-connection?
+ (fn [db _]
+   (get-in db [:ui :testing-connection?] false)))
+
+(rf/reg-sub
+ :ui/connection-test-result
+ (fn [db _]
+   (get-in db [:ui :connection-test-result])))
+
+(rf/reg-sub
+ :ui/previewing-voice?
+ (fn [db _]
+   (get-in db [:ui :previewing-voice?] false)))

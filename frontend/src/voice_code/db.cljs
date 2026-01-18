@@ -43,17 +43,26 @@
 
    ;; Application settings
    :settings {:server-url "localhost"
-              :server-port 3000
-              :voice-identifier nil
+              :server-port 8080
+              :voice-identifier nil ; Selected voice for TTS
               :recent-sessions-limit 10
-              :max-message-size-kb 200}
+              :max-message-size-kb 200
+              :system-prompt "" ; Custom system prompt appended to Claude
+              :respect-silent-mode true ; iOS: silence when phone is on vibrate
+              :continue-playback-when-locked true ; Continue audio when screen locked
+              :queue-enabled false ; Show threads in queue
+              :priority-queue-enabled false ; Priority-based session ordering
+              :resource-storage-location "~/Downloads"} ; Upload destination
 
    ;; UI state
    :ui {:loading? false
         :current-error nil
         :drafts {} ; session-id -> draft text
         :auto-scroll? true
-        :input-mode :voice}}) ; session-id -> draft text
+        :input-mode :voice
+        :testing-connection? false
+        :connection-test-result nil
+        :previewing-voice? false}}) ; session-id -> draft text
 
 (defn session-locked?
   "Check if a session is currently locked (processing a prompt)."
