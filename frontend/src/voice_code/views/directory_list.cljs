@@ -91,45 +91,47 @@
 (defn directory-list-view
   "Main directory list screen."
   [^js props]
-  (let [navigation (.-navigation props)
-        directories @(rf/subscribe [:sessions/directories])
-        loading? @(rf/subscribe [:ui/loading?])]
-
+  (let [navigation (.-navigation props)]
     ;; Set up header right button
     (r/create-class
      {:component-did-mount
-      (fn [_]
-        (when navigation
-          (.setOptions navigation
-                       #js {:headerRight #(r/as-element [settings-button navigation])})))
+      (fn [this]
+        (let [nav (.-navigation (r/props this))]
+          (when nav
+            (.setOptions nav
+                         #js {:headerRight #(r/as-element [settings-button nav])}))))
 
       :reagent-render
-      (fn [_]
-        [:> rn/View {:style {:flex 1 :background-color "#F5F5F5"}}
-         (if loading?
-           ;; Loading state
-           [:> rn/View {:style {:flex 1
-                                :justify-content "center"
-                                :align-items "center"}}
-            [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]]
+      (fn [^js props]
+        (let [nav (.-navigation props)
+              directories @(rf/subscribe [:sessions/directories])
+              loading? @(rf/subscribe [:ui/loading?])]
+          [:> rn/View {:style {:flex 1 :background-color "#F5F5F5"}}
+           (if loading?
+             ;; Loading state
+             [:> rn/View {:style {:flex 1
+                                  :justify-content "center"
+                                  :align-items "center"}}
+              [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]]
 
-           ;; Directory list
-           (if (empty? directories)
-             [empty-state]
-             [:> rn/FlatList
-              {:data (clj->js directories)
-               :key-extractor (fn [item _idx]
-                                (or (.-directory item) (str (random-uuid))))
-               :render-item
-               (fn [^js obj]
-                 (let [item (.-item obj)
-                       dir-data {:directory (.-directory item)
-                                 :session-count (.-sessionCount item)
-                                 :last-modified (.-lastModified item)}]
-                   (r/as-element
-                    [directory-item
-                     (assoc dir-data
-                            :on-press #(.navigate navigation "SessionList"
-                                                  #js {:directory (.-directory item)
-                                                       :directoryName (directory-name (.-directory item))}))])))
-               :content-container-style {:padding-vertical 8}}]))])})))
+             ;; Directory list
+             (if (empty? directories)
+               [empty-state]
+               [:> rn/FlatList
+                {:data (clj->js directories)
+                 :key-extractor (fn [item _idx]
+                                  (or (.-directory item) (str (random-uuid))))
+                 :render-item
+                 (fn [^js obj]
+                   (let [item (.-item obj)
+                         dir-data {:directory (.-directory item)
+                                   :session-count (.-sessionCount item)
+                                   :last-modified (.-lastModified item)}]
+                     (r/as-element
+                      [directory-item
+                       (assoc dir-data
+                              :on-press #(when nav
+                                           (.navigate nav "SessionList"
+                                                      #js {:directory (.-directory item)
+                                                           :directoryName (directory-name (.-directory item))})))])))
+                 :content-container-style {:padding-vertical 8}}]))]))})))
