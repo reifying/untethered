@@ -186,28 +186,23 @@
              :else
              [:> rn/FlatList
               {:data (clj->js history)
-               :key-extractor (fn [item _idx]
-                                (or (.-command_session_id item)
-                                    (.-commandSessionId item)
-                                    (str (random-uuid))))
+               :key-extractor (fn [item idx]
+                                ;; clj->js converts :command-session-id to "command-session-id"
+                                (or (aget item "command-session-id")
+                                    (str "cmd-" idx)))
                :render-item
                (fn [^js obj]
                  (let [item (.-item obj)
-                       cmd {:command-session-id (or (.-command_session_id item)
-                                                    (.-commandSessionId item))
-                            :command-id (or (.-command_id item)
-                                            (.-commandId item))
-                            :shell-command (or (.-shell_command item)
-                                               (.-shellCommand item))
-                            :working-directory (or (.-working_directory item)
-                                                   (.-workingDirectory item))
-                            :timestamp (.-timestamp item)
-                            :exit-code (or (.-exit_code item)
-                                           (.-exitCode item))
-                            :duration-ms (or (.-duration_ms item)
-                                             (.-durationMs item))
-                            :output-preview (or (.-output_preview item)
-                                                (.-outputPreview item))}]
+                       ;; clj->js converts kebab-case keywords to hyphenated strings
+                       ;; e.g., :shell-command becomes "shell-command"
+                       cmd {:command-session-id (aget item "command-session-id")
+                            :command-id (aget item "command-id")
+                            :shell-command (aget item "shell-command")
+                            :working-directory (aget item "working-directory")
+                            :timestamp (aget item "timestamp")
+                            :exit-code (aget item "exit-code")
+                            :duration-ms (aget item "duration-ms")
+                            :output-preview (aget item "output-preview")}]
                    (r/as-element
                     [history-item
                      {:command cmd
