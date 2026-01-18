@@ -25,6 +25,8 @@
 #import "react/renderer/components/safeareacontext/RCTComponentViewHelpers.h"
 #import "react/renderer/components/safeareacontext/ShadowNodes.h"
 #import "react/renderer/components/safeareacontext/States.h"
+#import "rnclipboard/rnclipboard.h"
+#import "rnclipboardJSI.h"
 #import "RNKeychainSpec/RNKeychainSpec.h"
 #import "RNKeychainSpecJSI.h"
 #import "rnscreens/rnscreens.h"
