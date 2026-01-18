@@ -61,7 +61,10 @@
         (map (fn [[dir sessions]]
                {:directory dir
                 :session-count (count sessions)
-                :last-modified (apply max (map :last-modified sessions))}))
+                :last-modified (apply max (map :last-modified sessions))
+                :unread-count (->> sessions
+                                   (map #(get % :unread-count 0))
+                                   (reduce + 0))}))
         (sort-by :last-modified >))))
 
 (rf/reg-sub
@@ -71,6 +74,28 @@
    (->> (vals sessions)
         (filter #(= directory (:working-directory %)))
         (sort-by :last-modified >))))
+
+(rf/reg-sub
+ :sessions/unread-count
+ (fn [db [_ session-id]]
+   (get-in db [:sessions session-id :unread-count] 0)))
+
+(rf/reg-sub
+ :sessions/total-unread-count
+ :<- [:sessions/all]
+ (fn [sessions _]
+   (->> (vals sessions)
+        (map #(get % :unread-count 0))
+        (reduce + 0))))
+
+(rf/reg-sub
+ :sessions/unread-count-for-directory
+ :<- [:sessions/all]
+ (fn [sessions [_ directory]]
+   (->> (vals sessions)
+        (filter #(= directory (:working-directory %)))
+        (map #(get % :unread-count 0))
+        (reduce + 0))))
 
 ;; ============================================================================
 ;; Messages

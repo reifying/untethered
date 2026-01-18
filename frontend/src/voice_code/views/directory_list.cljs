@@ -27,9 +27,26 @@
   (when path
     (or (last (str/split path #"/")) path)))
 
+(defn- unread-badge
+  "Badge showing unread message count."
+  [count]
+  (when (and count (pos? count))
+    [:> rn/View {:style {:min-width 20
+                         :height 20
+                         :border-radius 10
+                         :background-color "#007AFF"
+                         :justify-content "center"
+                         :align-items "center"
+                         :padding-horizontal 6
+                         :margin-left 8}}
+     [:> rn/Text {:style {:color "#FFF"
+                          :font-size 12
+                          :font-weight "600"}}
+      (if (> count 99) "99+" (str count))]]))
+
 (defn- directory-item
   "Single directory item in the list."
-  [{:keys [directory session-count last-modified on-press]}]
+  [{:keys [directory session-count last-modified unread-count on-press]}]
   [:> rn/TouchableOpacity
    {:style {:padding-horizontal 16
             :padding-vertical 14
@@ -42,12 +59,15 @@
                         :justify-content "space-between"
                         :align-items "flex-start"}}
     [:> rn/View {:style {:flex 1 :margin-right 12}}
-     ;; Directory name
-     [:> rn/Text {:style {:font-size 17
-                          :font-weight "600"
-                          :color "#000"
+     ;; Directory name with optional unread badge
+     [:> rn/View {:style {:flex-direction "row"
+                          :align-items "center"
                           :margin-bottom 4}}
-      (directory-name directory)]
+      [:> rn/Text {:style {:font-size 17
+                           :font-weight (if (and unread-count (pos? unread-count)) "700" "600")
+                           :color "#000"}}
+       (directory-name directory)]
+      [unread-badge unread-count]]
      ;; Full path
      [:> rn/Text {:style {:font-size 13
                           :color "#666"

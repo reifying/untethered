@@ -5,6 +5,20 @@
             ["react-native" :as rn]
             [voice-code.voice :as voice]))
 
+(defn- show-rename-dialog
+  "Show an alert dialog to rename the session."
+  [session-id current-name on-rename]
+  (let [Alert (.-Alert rn)]
+    (.prompt Alert
+             "Rename Session"
+             "Enter a new name for this session"
+             (fn [new-name]
+               (when new-name
+                 (on-rename new-name)))
+             "plain-text"
+             (or current-name "")
+             "default")))
+
 (defn- format-time
   "Format timestamp for display."
   [timestamp]
@@ -324,13 +338,47 @@
                         :text-align "center"}}
     "Type a message below to begin chatting with Claude."]])
 
+(defn- session-display-name
+  "Get the display name for a session."
+  [session]
+  (or (:custom-name session)
+      (:backend-name session)
+      (when-let [id (:id session)]
+        (str "Session " (subs (str id) 0 8)))))
+
+(defn- header-title
+  "Custom header title component that can be tapped to rename."
+  [session-id navigation]
+  (let [session @(rf/subscribe [:sessions/by-id session-id])
+        display-name (session-display-name session)]
+    [:> rn/TouchableOpacity
+     {:style {:flex-direction "row"
+              :align-items "center"}
+      :on-press #(show-rename-dialog
+                  session-id
+                  (:custom-name session)
+                  (fn [new-name]
+                    (rf/dispatch [:sessions/rename session-id new-name])
+                    ;; Update navigation title
+                    (when navigation
+                      (.setOptions navigation #js {:title new-name}))))}
+     [:> rn/Text {:style {:font-size 17
+                          :font-weight "600"
+                          :color "#000"}}
+      display-name]
+     [:> rn/Text {:style {:font-size 12
+                          :color "#666"
+                          :margin-left 6}}
+      "✏️"]]))
+
 (defn conversation-view
   "Main conversation screen.
    Uses Form-3 component pattern for proper Reagent reactivity with React Navigation.
    Props is a ClojureScript map (converted by r/reactify-component)."
   [props]
   ;; Props is a CLJS map, use keyword access. The JS objects inside need .- access.
-  (let [route (:route props)
+  (let [navigation (:navigation props)
+        route (:route props)
         ;; route is a JS object, so use .- for its properties
         session-id (when route (some-> route .-params .-sessionId))]
     ;; Form-3: create-class with subscriptions inside :reagent-render
@@ -339,7 +387,13 @@
       (fn [_]
         (when session-id
           (rf/dispatch [:sessions/set-active session-id])
-          (rf/dispatch [:session/subscribe session-id])))
+          (rf/dispatch [:session/subscribe session-id])
+          ;; Set custom header title that's tappable
+          (when navigation
+            (.setOptions navigation
+                         #js {:headerTitle
+                              (fn [_]
+                                (r/as-element [header-title session-id navigation]))}))))
 
       :component-will-unmount
       (fn [_]

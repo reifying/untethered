@@ -132,6 +132,88 @@
      (rf/dispatch-sync [:messages/clear "s1"])
      (is (= [] @(rf/subscribe [:messages/for-session "s1"]))))))
 
+;; ============================================================================
+;; Unread Message Tracking
+;; ============================================================================
+
+(deftest unread-message-tracking-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Create sessions
+   (rf/dispatch-sync [:sessions/add {:id "s1" :backend-name "Session 1"
+                                     :working-directory "/project1"}])
+   (rf/dispatch-sync [:sessions/add {:id "s2" :backend-name "Session 2"
+                                     :working-directory "/project1"}])
+
+   (testing "assistant messages increment unread count for inactive sessions"
+     ;; s1 is not active, so assistant message should increment unread
+     (rf/dispatch-sync [:messages/add "s1" {:id "m1" :role :assistant :text "Hello"}])
+     (is (= 1 @(rf/subscribe [:sessions/unread-count "s1"]))))
+
+   (testing "user messages do not increment unread count"
+     (rf/dispatch-sync [:messages/add "s1" {:id "m2" :role :user :text "Hi"}])
+     ;; Still 1, user message doesn't increment
+     (is (= 1 @(rf/subscribe [:sessions/unread-count "s1"]))))
+
+   (testing "assistant messages on active session do not increment unread"
+     ;; Make s2 active
+     (rf/dispatch-sync [:sessions/set-active "s2"])
+     ;; Add assistant message to active session
+     (rf/dispatch-sync [:messages/add "s2" {:id "m3" :role :assistant :text "Hello active"}])
+     ;; Should still be 0 because session is active
+     (is (= 0 @(rf/subscribe [:sessions/unread-count "s2"]))))
+
+   (testing "set-active clears unread count"
+     ;; s1 has 1 unread
+     (is (= 1 @(rf/subscribe [:sessions/unread-count "s1"])))
+     ;; Make s1 active
+     (rf/dispatch-sync [:sessions/set-active "s1"])
+     ;; Unread should be cleared
+     (is (= 0 @(rf/subscribe [:sessions/unread-count "s1"]))))
+
+   (testing "total unread count aggregates all sessions"
+     ;; Reset: add some unread messages
+     (rf/dispatch-sync [:sessions/set-active nil])
+     (rf/dispatch-sync [:messages/add "s1" {:id "m4" :role :assistant :text "Msg 1"}])
+     (rf/dispatch-sync [:messages/add "s1" {:id "m5" :role :assistant :text "Msg 2"}])
+     (rf/dispatch-sync [:messages/add "s2" {:id "m6" :role :assistant :text "Msg 3"}])
+     ;; s1: 2 unread, s2: 1 unread = 3 total
+     (is (= 2 @(rf/subscribe [:sessions/unread-count "s1"])))
+     (is (= 1 @(rf/subscribe [:sessions/unread-count "s2"])))
+     (is (= 3 @(rf/subscribe [:sessions/total-unread-count]))))))
+
+(deftest unread-count-for-directory-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Create sessions in different directories
+   (rf/dispatch-sync [:sessions/add {:id "s1" :backend-name "Session 1"
+                                     :working-directory "/project1"}])
+   (rf/dispatch-sync [:sessions/add {:id "s2" :backend-name "Session 2"
+                                     :working-directory "/project1"}])
+   (rf/dispatch-sync [:sessions/add {:id "s3" :backend-name "Session 3"
+                                     :working-directory "/project2"}])
+
+   ;; Add unread messages to various sessions
+   (rf/dispatch-sync [:messages/add "s1" {:id "m1" :role :assistant :text "Msg"}])
+   (rf/dispatch-sync [:messages/add "s2" {:id "m2" :role :assistant :text "Msg"}])
+   (rf/dispatch-sync [:messages/add "s2" {:id "m3" :role :assistant :text "Msg"}])
+   (rf/dispatch-sync [:messages/add "s3" {:id "m4" :role :assistant :text "Msg"}])
+
+   (testing "unread count for directory aggregates sessions in that directory"
+     ;; project1: s1 (1) + s2 (2) = 3
+     (is (= 3 @(rf/subscribe [:sessions/unread-count-for-directory "/project1"])))
+     ;; project2: s3 (1) = 1
+     (is (= 1 @(rf/subscribe [:sessions/unread-count-for-directory "/project2"]))))
+
+   (testing "directories subscription includes unread count"
+     (let [dirs @(rf/subscribe [:sessions/directories])
+           project1 (first (filter #(= "/project1" (:directory %)) dirs))
+           project2 (first (filter #(= "/project2" (:directory %)) dirs))]
+       (is (= 3 (:unread-count project1)))
+       (is (= 1 (:unread-count project2)))))))
+
 (deftest sessions-events-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
@@ -157,6 +239,34 @@
      (rf/dispatch-sync [:sessions/remove "s1"])
      (is (nil? @(rf/subscribe [:sessions/by-id "s1"])))
      (is (= [] @(rf/subscribe [:messages/for-session "s1"]))))))
+
+(deftest sessions-rename-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Create a session
+   (rf/dispatch-sync [:sessions/add {:id "s1" :backend-name "Original Name"}])
+
+   (testing "sessions/rename sets custom name"
+     (rf/dispatch-sync [:sessions/rename "s1" "My Custom Name"])
+     (let [session @(rf/subscribe [:sessions/by-id "s1"])]
+       (is (= "My Custom Name" (:custom-name session)))
+       ;; Backend name should remain unchanged
+       (is (= "Original Name" (:backend-name session)))))
+
+   (testing "sessions/rename trims whitespace"
+     (rf/dispatch-sync [:sessions/rename "s1" "  Trimmed Name  "])
+     (is (= "Trimmed Name" (:custom-name @(rf/subscribe [:sessions/by-id "s1"])))))
+
+   (testing "sessions/rename with empty string clears custom name"
+     (rf/dispatch-sync [:sessions/rename "s1" ""])
+     (is (nil? (:custom-name @(rf/subscribe [:sessions/by-id "s1"])))))
+
+   (testing "sessions/rename with whitespace-only clears custom name"
+     (rf/dispatch-sync [:sessions/rename "s1" "Valid Name"])
+     (is (= "Valid Name" (:custom-name @(rf/subscribe [:sessions/by-id "s1"]))))
+     (rf/dispatch-sync [:sessions/rename "s1" "   "])
+     (is (nil? (:custom-name @(rf/subscribe [:sessions/by-id "s1"])))))))
 
 ;; ============================================================================
 ;; WebSocket Events

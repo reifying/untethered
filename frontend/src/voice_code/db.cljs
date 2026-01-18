@@ -12,7 +12,7 @@
    ;; Sessions indexed by session-id
    ;; Each session: {:id :backend-name :custom-name :working-directory
    ;;                :last-modified :message-count :preview :queue-position
-   ;;                :priority :priority-order :is-user-deleted}
+   ;;                :priority :priority-order :is-user-deleted :unread-count}
    :sessions {}
 
    ;; Messages indexed by session-id -> [message-vec]

@@ -603,6 +603,33 @@
  (fn [_ [_ session]]
    {:persistence/save-session session}))
 
+;; Save session custom name to SQLite
+(defn save-session-name!
+  "Update only the custom_name for a session. Returns a promise."
+  [session-id custom-name]
+  (if-let [db @db-atom]
+    (if (and use-real-sqlite? sqlite-module)
+      ;; Real SQLite
+      (execute-sql! db
+                    "UPDATE sessions SET custom_name = ? WHERE id = ?"
+                    [custom-name session-id])
+      ;; Stub mode
+      (do
+        (swap! db-atom assoc-in [:sessions session-id :custom-name] custom-name)
+        (js/console.log "Saved session name (stub):" session-id custom-name)
+        (js/Promise.resolve nil)))
+    (js/Promise.resolve nil)))
+
+(rf/reg-fx
+ :persistence/save-session-name
+ (fn [[session-id custom-name]]
+   (save-session-name! session-id custom-name)))
+
+(rf/reg-event-fx
+ :persistence/save-session-name
+ (fn [_ [_ session-id custom-name]]
+   {:persistence/save-session-name [session-id custom-name]}))
+
 ;; Event handler for :persistence/delete-api-key (dispatched from events/core.cljs)
 (rf/reg-event-fx
  :persistence/delete-api-key

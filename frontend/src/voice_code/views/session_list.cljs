@@ -27,60 +27,80 @@
       (:backend-name session)
       (str "Session " (subs (str (:id session)) 0 8))))
 
+(defn- unread-badge
+  "Badge showing unread message count."
+  [count]
+  (when (and count (pos? count))
+    [:> rn/View {:style {:min-width 20
+                         :height 20
+                         :border-radius 10
+                         :background-color "#007AFF"
+                         :justify-content "center"
+                         :align-items "center"
+                         :padding-horizontal 6}}
+     [:> rn/Text {:style {:color "#FFF"
+                          :font-size 12
+                          :font-weight "600"}}
+      (if (> count 99) "99+" (str count))]]))
+
 (defn- session-item
   "Single session item in the list."
   [{:keys [session locked? on-press]}]
-  [:> rn/TouchableOpacity
-   {:style {:padding-horizontal 16
-            :padding-vertical 14
-            :border-bottom-width 1
-            :border-bottom-color "#F0F0F0"
-            :background-color "#FFFFFF"}
-    :on-press on-press
-    :active-opacity 0.7}
-   [:> rn/View {:style {:flex-direction "row"
-                        :align-items "center"}}
-    ;; Locked indicator
-    (when locked?
-      [:> rn/View {:style {:width 8
-                           :height 8
-                           :border-radius 4
-                           :background-color "#FF9500"
-                           :margin-right 8}}])
-
-    [:> rn/View {:style {:flex 1}}
-     ;; Session name
+  (let [unread-count (get session :unread-count 0)]
+    [:> rn/TouchableOpacity
+     {:style {:padding-horizontal 16
+              :padding-vertical 14
+              :border-bottom-width 1
+              :border-bottom-color "#F0F0F0"
+              :background-color "#FFFFFF"}
+      :on-press on-press
+      :active-opacity 0.7}
      [:> rn/View {:style {:flex-direction "row"
-                          :align-items "center"
-                          :margin-bottom 4}}
-      [:> rn/Text {:style {:font-size 16
-                           :font-weight "600"
-                           :color "#000"
-                           :flex 1}}
-       (session-name session)]
-      [:> rn/Text {:style {:font-size 12
-                           :color "#999"}}
-       (format-relative-time (:last-modified session))]]
-
-     ;; Preview
-     (when-let [preview (:preview session)]
-       [:> rn/Text {:style {:font-size 14
-                            :color "#666"
-                            :line-height 20}
-                    :number-of-lines 2}
-        preview])
-
-     ;; Message count
-     [:> rn/View {:style {:flex-direction "row"
-                          :align-items "center"
-                          :margin-top 4}}
-      [:> rn/Text {:style {:font-size 12 :color "#999"}}
-       (str (:message-count session 0) " messages")]
+                          :align-items "center"}}
+      ;; Locked indicator
       (when locked?
+        [:> rn/View {:style {:width 8
+                             :height 8
+                             :border-radius 4
+                             :background-color "#FF9500"
+                             :margin-right 8}}])
+
+      [:> rn/View {:style {:flex 1}}
+       ;; Session name row with unread badge
+       [:> rn/View {:style {:flex-direction "row"
+                            :align-items "center"
+                            :margin-bottom 4}}
+        [:> rn/Text {:style {:font-size 16
+                             :font-weight (if (pos? unread-count) "700" "600")
+                             :color "#000"
+                             :flex 1}}
+         (session-name session)]
+        [unread-badge unread-count]
         [:> rn/Text {:style {:font-size 12
-                             :color "#FF9500"
+                             :color "#999"
                              :margin-left 8}}
-         "• Processing"])]]]])
+         (format-relative-time (:last-modified session))]]
+
+       ;; Preview
+       (when-let [preview (:preview session)]
+         [:> rn/Text {:style {:font-size 14
+                              :color (if (pos? unread-count) "#333" "#666")
+                              :font-weight (if (pos? unread-count) "500" "400")
+                              :line-height 20}
+                      :number-of-lines 2}
+          preview])
+
+       ;; Message count
+       [:> rn/View {:style {:flex-direction "row"
+                            :align-items "center"
+                            :margin-top 4}}
+        [:> rn/Text {:style {:font-size 12 :color "#999"}}
+         (str (:message-count session 0) " messages")]
+        (when locked?
+          [:> rn/Text {:style {:font-size 12
+                               :color "#FF9500"
+                               :margin-left 8}}
+           "• Processing"])]]]]))
 
 (defn- empty-state
   "Shown when there are no sessions for this directory."

@@ -245,14 +245,37 @@
  :sessions/handle-history
  (fn [db [_ {:keys [session-id messages]}]]
    (assoc-in db [:messages session-id]
-             (mapv (fn [msg]
-                     {:id (:id msg)
-                      :session-id session-id
-                      :role (keyword (:role msg))
-                      :text (:text msg)
-                      :timestamp (js/Date. (:timestamp msg))
-                      :status :confirmed})
-                   messages))))
+             (->> messages
+                  (map (fn [msg]
+                         ;; Claude JSONL format varies by message type:
+                         ;; User messages: {:type "user", :message {:role "user", :content "text"}, :uuid "...", :timestamp "..."}
+                         ;; Assistant messages: {:type "assistant", :message {:role "assistant", :content [{:type "text", :text "..."}]}, :uuid "...", :timestamp "..."}
+                         ;; Internal messages (queue-operation, summary, etc.) have no :message key or different structure
+                         (let [inner-msg (:message msg)
+                               ;; Role comes from inner message, or fallback to top-level type
+                               role (or (:role inner-msg)
+                                        (when (contains? #{"user" "assistant"} (:type msg))
+                                          (:type msg)))
+                               ;; Content can be a string (user) or array of content blocks (assistant)
+                               raw-content (:content inner-msg)
+                               ;; Extract text from content - handle both string and array formats
+                               text (cond
+                                      (string? raw-content) raw-content
+                                      (sequential? raw-content)
+                                      (->> raw-content
+                                           (filter #(= "text" (:type %)))
+                                           (map :text)
+                                           (clojure.string/join "\n\n"))
+                                      :else (:text msg))]
+                           {:id (or (:uuid msg) (:message-id msg) (:id msg))
+                            :session-id session-id
+                            :role (when role (keyword role))
+                            :text text
+                            :timestamp (js/Date. (:timestamp msg))
+                            :status :confirmed})))
+                  ;; Filter out internal messages (no role means it's not a user/assistant message)
+                  (filter :role)
+                  (vec)))))
 
 (rf/reg-event-db
  :sessions/handle-updated

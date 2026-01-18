@@ -26,7 +26,11 @@
 (rf/reg-event-db
  :sessions/set-active
  (fn [db [_ session-id]]
-   (assoc db :active-session-id session-id)))
+   (-> db
+       (assoc :active-session-id session-id)
+       ;; Clear unread count when session becomes active
+       (cond-> session-id
+         (assoc-in [:sessions session-id :unread-count] 0)))))
 
 (rf/reg-event-fx
  :sessions/select
@@ -196,7 +200,22 @@
 (rf/reg-event-db
  :messages/add
  (fn [db [_ session-id message]]
-   (update-in db [:messages session-id] (fnil conj []) message)))
+   (let [is-active? (= session-id (:active-session-id db))
+         is-assistant? (= :assistant (:role message))]
+     (cond-> (update-in db [:messages session-id] (fnil conj []) message)
+       ;; Increment unread count for assistant messages on non-active sessions
+       (and is-assistant? (not is-active?))
+       (update-in [:sessions session-id :unread-count] (fnil inc 0))))))
+
+(rf/reg-event-db
+ :sessions/clear-unread
+ (fn [db [_ session-id]]
+   (assoc-in db [:sessions session-id :unread-count] 0)))
+
+(rf/reg-event-db
+ :sessions/increment-unread
+ (fn [db [_ session-id]]
+   (update-in db [:sessions session-id :unread-count] (fnil inc 0))))
 
 (rf/reg-event-db
  :messages/add-many
@@ -229,6 +248,14 @@
  :sessions/update
  (fn [db [_ session-id updates]]
    (update-in db [:sessions session-id] merge updates)))
+
+(rf/reg-event-fx
+ :sessions/rename
+ (fn [{:keys [db]} [_ session-id new-name]]
+   (let [trimmed-name (when new-name (clojure.string/trim new-name))
+         final-name (when (seq trimmed-name) trimmed-name)]
+     {:db (assoc-in db [:sessions session-id :custom-name] final-name)
+      :dispatch [:persistence/save-session-name session-id final-name]})))
 
 (rf/reg-event-db
  :sessions/remove
