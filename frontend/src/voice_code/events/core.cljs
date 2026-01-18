@@ -17,7 +17,8 @@
  (fn [{:keys [db]} _]
    {:db (merge db/default-db db)
     :dispatch-n [[:persistence/load-settings]
-                 [:persistence/load-api-key]]}))
+                 [:persistence/load-api-key]
+                 [:persistence/load-drafts]]}))
 
 ;; ============================================================================
 ;; Session Selection
@@ -57,15 +58,33 @@
  (fn [db _]
    (assoc-in db [:ui :current-error] nil)))
 
-(rf/reg-event-db
- :ui/set-draft
- (fn [db [_ session-id text]]
-   (assoc-in db [:ui :drafts session-id] text)))
+;; Debounce timers for draft persistence (session-id -> timer-id)
+(defonce ^:private draft-save-timers (atom {}))
 
-(rf/reg-event-db
+(def ^:private draft-save-delay-ms 300)
+
+(rf/reg-event-fx
+ :ui/set-draft
+ (fn [{:keys [db]} [_ session-id text]]
+   ;; Cancel any pending save for this session
+   (when-let [timer-id (get @draft-save-timers session-id)]
+     (js/clearTimeout timer-id))
+   ;; Schedule debounced save
+   (let [timer-id (js/setTimeout
+                   #(rf/dispatch [:persistence/save-draft session-id text])
+                   draft-save-delay-ms)]
+     (swap! draft-save-timers assoc session-id timer-id))
+   {:db (assoc-in db [:ui :drafts session-id] text)}))
+
+(rf/reg-event-fx
  :ui/clear-draft
- (fn [db [_ session-id]]
-   (update-in db [:ui :drafts] dissoc session-id)))
+ (fn [{:keys [db]} [_ session-id]]
+   ;; Cancel any pending save for this session
+   (when-let [timer-id (get @draft-save-timers session-id)]
+     (js/clearTimeout timer-id)
+     (swap! draft-save-timers dissoc session-id))
+   {:db (update-in db [:ui :drafts] dissoc session-id)
+    :dispatch [:persistence/delete-draft session-id]}))
 
 (rf/reg-event-db
  :ui/toggle-auto-scroll
@@ -270,7 +289,12 @@
  (fn [{:keys [db]} [_ session-id]]
    (let [session (get-in db [:sessions session-id])]
      {:db (assoc-in db [:sessions session-id :is-user-deleted] true)
-      :dispatch [:persistence/save-session (assoc session :is-user-deleted true)]})))
+      :dispatch-n [[:persistence/save-session (assoc session :is-user-deleted true)]
+                   ;; Unsubscribe from session before notifying backend
+                   [:session/unsubscribe session-id]]
+      ;; Notify backend of deletion
+      :ws/send {:type "session_deleted"
+                :session_id session-id}})))
 
 (rf/reg-event-db
  :sessions/remove

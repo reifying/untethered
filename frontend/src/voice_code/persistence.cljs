@@ -3,7 +3,8 @@
    Provides SQLite storage for sessions/messages and Keychain for API key."
   (:require [re-frame.core :as rf]
             [voice-code.db :as db]
-            [clojure.edn :as edn]))
+            [clojure.edn :as edn]
+            [clojure.string :as str]))
 
 ;; ============================================================================
 ;; SQLite Database (stub implementation for Node.js testing)
@@ -635,3 +636,103 @@
  :persistence/delete-api-key
  (fn [_ _]
    {:persistence/delete-api-key nil}))
+
+;; ============================================================================
+;; Draft Persistence
+;; ============================================================================
+
+(declare delete-draft!)
+
+(defn save-draft!
+  "Save a draft to SQLite settings table.
+   Uses key format 'draft:<session-id>'. Returns a promise."
+  [session-id text]
+  (if (or (nil? text) (empty? text))
+    ;; Delete draft if empty
+    (delete-draft! session-id)
+    (save-setting! (str "draft:" session-id) text)))
+
+(defn delete-draft!
+  "Delete a draft from SQLite. Returns a promise."
+  [session-id]
+  (if-let [db @db-atom]
+    (if (and use-real-sqlite? sqlite-module)
+      (execute-sql! db
+                    "DELETE FROM settings WHERE key = ?"
+                    [(str "draft:" session-id)])
+      ;; Stub mode - use same key format as save-draft!
+      (do
+        (swap! db-atom update :settings dissoc (str "draft:" session-id))
+        (js/Promise.resolve nil)))
+    (js/Promise.resolve nil)))
+
+(defn load-all-drafts!
+  "Load all drafts from SQLite.
+   Returns a promise resolving to a map of session-id -> draft text."
+  []
+  (js/Promise.
+   (fn [resolve reject]
+     (if-let [db @db-atom]
+       (if (and use-real-sqlite? sqlite-module)
+         ;; Real SQLite
+         (-> (execute-sql! db "SELECT key, value FROM settings WHERE key LIKE 'draft:%'")
+             (.then (fn [results]
+                      (let [rows (-> results .-rows)
+                            len (.-length rows)
+                            drafts (into {}
+                                         (for [i (range len)]
+                                           (let [row (.item rows i)
+                                                 key (.-key row)
+                                                 session-id (subs key 6)] ; Remove "draft:" prefix
+                                             [session-id (edn/read-string (.-value row))])))]
+                        (resolve drafts))))
+             (.catch (fn [error]
+                       (js/console.error "Failed to load drafts:" error)
+                       (reject error))))
+         ;; Stub mode - keys are strings like "draft:session-id"
+         (let [drafts (->> (:settings db {})
+                           (filter (fn [[k _]]
+                                     (let [key-str (if (keyword? k) (name k) (str k))]
+                                       (str/starts-with? key-str "draft:"))))
+                           (map (fn [[k v]]
+                                  (let [key-str (if (keyword? k) (name k) (str k))]
+                                    [(subs key-str 6) v])))
+                           (into {}))]
+           (resolve drafts)))
+       (resolve {})))))
+
+(rf/reg-fx
+ :persistence/save-draft
+ (fn [[session-id text]]
+   (save-draft! session-id text)))
+
+(rf/reg-fx
+ :persistence/delete-draft
+ (fn [session-id]
+   (delete-draft! session-id)))
+
+(rf/reg-fx
+ :persistence/load-drafts
+ (fn [_]
+   (-> (load-all-drafts!)
+       (.then #(rf/dispatch [:persistence/drafts-loaded %])))))
+
+(rf/reg-event-db
+ :persistence/drafts-loaded
+ (fn [db [_ drafts]]
+   (assoc-in db [:ui :drafts] drafts)))
+
+(rf/reg-event-fx
+ :persistence/save-draft
+ (fn [_ [_ session-id text]]
+   {:persistence/save-draft [session-id text]}))
+
+(rf/reg-event-fx
+ :persistence/delete-draft
+ (fn [_ [_ session-id]]
+   {:persistence/delete-draft session-id}))
+
+(rf/reg-event-fx
+ :persistence/load-drafts
+ (fn [_ _]
+   {:persistence/load-drafts nil}))

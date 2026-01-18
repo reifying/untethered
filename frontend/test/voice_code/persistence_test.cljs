@@ -237,3 +237,70 @@
           session (#'persistence/row->session row)]
       (is (= "s1" (:id session)))
       (is (nil? (:last-modified session))))))
+
+;; ============================================================================
+;; Draft Persistence Tests
+;; ============================================================================
+
+(deftest draft-storage-test
+  (async done
+    (-> (persistence/init-db!)
+        (.then (fn [_]
+                 ;; Save a draft
+                 (persistence/save-draft! "session-1" "My draft message")))
+        (.then (fn [_]
+                 ;; Load all drafts
+                 (persistence/load-all-drafts!)))
+        (.then (fn [drafts]
+                 (is (map? drafts))
+                 (is (= "My draft message" (get drafts "session-1")))
+                 ;; Save another draft
+                 (persistence/save-draft! "session-2" "Another draft")))
+        (.then (fn [_]
+                 (persistence/load-all-drafts!)))
+        (.then (fn [drafts]
+                 (is (= 2 (count drafts)))
+                 (is (= "My draft message" (get drafts "session-1")))
+                 (is (= "Another draft" (get drafts "session-2")))
+                 ;; Delete first draft
+                 (persistence/delete-draft! "session-1")))
+        (.then (fn [_]
+                 (persistence/load-all-drafts!)))
+        (.then (fn [drafts]
+                 (is (= 1 (count drafts)))
+                 (is (nil? (get drafts "session-1")))
+                 (is (= "Another draft" (get drafts "session-2")))
+                 (done))))))
+
+(deftest draft-empty-clears-test
+  (async done
+    (-> (persistence/init-db!)
+        (.then (fn [_]
+                 ;; Save a draft
+                 (persistence/save-draft! "session-1" "Initial draft")))
+        (.then (fn [_]
+                 ;; Saving empty string should delete draft
+                 (persistence/save-draft! "session-1" "")))
+        (.then (fn [_]
+                 (persistence/load-all-drafts!)))
+        (.then (fn [drafts]
+                 (is (nil? (get drafts "session-1")))
+                 ;; Saving nil should also delete draft
+                 (persistence/save-draft! "session-2" "Another draft")))
+        (.then (fn [_]
+                 (persistence/save-draft! "session-2" nil)))
+        (.then (fn [_]
+                 (persistence/load-all-drafts!)))
+        (.then (fn [drafts]
+                 (is (nil? (get drafts "session-2")))
+                 (done))))))
+
+(deftest drafts-loaded-event-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "drafts-loaded event populates ui/drafts"
+     (rf/dispatch-sync [:persistence/drafts-loaded {"s1" "Draft 1"
+                                                    "s2" "Draft 2"}])
+     (is (= "Draft 1" @(rf/subscribe [:ui/draft "s1"])))
+     (is (= "Draft 2" @(rf/subscribe [:ui/draft "s2"]))))))

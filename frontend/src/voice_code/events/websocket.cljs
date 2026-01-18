@@ -337,6 +337,12 @@
                  last-message-id
                  (assoc :last-message-id last-message-id))})))
 
+(rf/reg-event-fx
+ :session/unsubscribe
+ (fn [_ [_ session-id]]
+   {:ws/send {:type "unsubscribe"
+              :session-id session-id}}))
+
 ;; ============================================================================
 ;; Command Handlers
 ;; ============================================================================
