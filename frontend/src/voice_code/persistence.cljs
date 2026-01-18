@@ -2,7 +2,8 @@
   "Persistence layer for voice-code app.
    Provides SQLite storage for sessions/messages and Keychain for API key."
   (:require [re-frame.core :as rf]
-            [voice-code.db :as db]))
+            [voice-code.db :as db]
+            [clojure.edn :as edn]))
 
 ;; ============================================================================
 ;; SQLite Database (stub implementation for Node.js testing)
@@ -10,6 +11,24 @@
 ;; ============================================================================
 
 (defonce ^:private db-atom (atom nil))
+
+;; Feature flag for using real SQLite vs stub (disabled in Node.js tests)
+(def ^:private use-real-sqlite?
+  (and (exists? js/navigator)
+       (not= "node" (.-product js/navigator))))
+
+;; Dynamically loaded SQLite module (only in React Native environment)
+(defonce ^:private sqlite-module
+  (when use-real-sqlite?
+    (try
+      (let [sqlite (js/require "react-native-sqlite-storage")]
+        ;; Enable debug mode for development
+        (when ^boolean goog.DEBUG
+          (.DEBUG sqlite true))
+        sqlite)
+      (catch :default e
+        (js/console.warn "react-native-sqlite-storage not available:" e)
+        nil))))
 
 (def ^:private create-sessions-sql
   "CREATE TABLE IF NOT EXISTS sessions (
@@ -48,31 +67,59 @@
 ;; ============================================================================
 
 (defn- execute-sql!
-  "Execute SQL on the database. Stub implementation stores in memory."
-  [db sql params]
-  ;; In real implementation, this would call:
-  ;; (.executeSql db sql (clj->js params))
-  ;; For now, we just log and track state
-  (js/console.log "SQL:" sql))
+  "Execute SQL on the database. Returns a promise.
+   In real mode, executes against SQLite.
+   In stub mode, logs and returns resolved promise."
+  ([db sql]
+   (execute-sql! db sql []))
+  ([db sql params]
+   (js/Promise.
+    (fn [resolve reject]
+      (if (and use-real-sqlite? sqlite-module db)
+        ;; Real SQLite execution
+        (.transaction db
+                      (fn [tx]
+                        (.executeSql tx sql (clj->js params)
+                                     (fn [_tx results]
+                                       (resolve results))
+                                     (fn [_tx error]
+                                       (js/console.error "SQL error:" error)
+                                       (reject error)))))
+        ;; Stub mode - just log
+        (do
+          (when ^boolean goog.DEBUG
+            (js/console.log "SQL (stub):" sql))
+          (resolve nil)))))))
 
 (defn init-db!
   "Initialize SQLite database with schema.
    Returns a promise that resolves when complete."
   []
   (js/Promise.
-   (fn [resolve _reject]
-     ;; In real implementation:
-     ;; (let [db (sqlite/openDatabase #js {:name "voicecode.db"})]
-     ;;   (execute-sql! db create-sessions-sql [])
-     ;;   (execute-sql! db create-messages-sql [])
-     ;;   (execute-sql! db create-settings-sql [])
-     ;;   (reset! db-atom db)
-     ;;   (resolve db))
-
-     ;; Stub: use in-memory storage
-     (reset! db-atom {:sessions {} :messages {} :settings {}})
-     (js/console.log "SQLite initialized (stub mode)")
-     (resolve @db-atom))))
+   (fn [resolve reject]
+     (if (and use-real-sqlite? sqlite-module)
+       ;; Real SQLite implementation
+       (try
+         (let [db (.openDatabase sqlite-module #js {:name "voicecode.db"
+                                                    :location "default"})]
+           (reset! db-atom db)
+           (-> (execute-sql! db create-sessions-sql)
+               (.then #(execute-sql! db create-messages-sql))
+               (.then #(execute-sql! db create-settings-sql))
+               (.then (fn [_]
+                        (js/console.log "SQLite initialized successfully")
+                        (resolve db)))
+               (.catch (fn [error]
+                         (js/console.error "SQLite schema creation failed:" error)
+                         (reject error)))))
+         (catch :default e
+           (js/console.error "SQLite open failed:" e)
+           (reject e)))
+       ;; Stub: use in-memory storage
+       (do
+         (reset! db-atom {:sessions {} :messages {} :settings {}})
+         (js/console.log "SQLite initialized (stub mode)")
+         (resolve @db-atom))))))
 
 ;; ============================================================================
 ;; Session Persistence
@@ -113,51 +160,69 @@
    :is-user-deleted (= is_user_deleted 1)})
 
 (defn save-session!
-  "Save a session to SQLite."
+  "Save a session to SQLite. Returns a promise."
   [session]
-  (when-let [db @db-atom]
-    ;; In real implementation:
-    ;; (let [row (session->row session)]
-    ;;   (execute-sql! db
-    ;;     "INSERT OR REPLACE INTO sessions (...) VALUES (...)"
-    ;;     (vals row)))
-
-    ;; Stub: store in memory
-    (swap! db-atom assoc-in [:sessions (:id session)] session)
-    (js/console.log "Saved session:" (:id session))))
+  (if-let [db @db-atom]
+    (if (and use-real-sqlite? sqlite-module)
+      ;; Real SQLite
+      (let [{:keys [id backend_name custom_name working_directory last_modified
+                    message_count preview queue_position priority priority_order
+                    is_user_deleted]} (session->row session)]
+        (execute-sql! db
+                      "INSERT OR REPLACE INTO sessions 
+                       (id, backend_name, custom_name, working_directory, last_modified,
+                        message_count, preview, queue_position, priority, priority_order, is_user_deleted)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                      [id backend_name custom_name working_directory last_modified
+                       message_count preview queue_position priority priority_order is_user_deleted]))
+      ;; Stub mode
+      (do
+        (swap! db-atom assoc-in [:sessions (:id session)] session)
+        (js/console.log "Saved session (stub):" (:id session))
+        (js/Promise.resolve nil)))
+    (js/Promise.resolve nil)))
 
 (defn load-sessions!
   "Load all sessions from SQLite.
    Returns a promise resolving to vector of sessions."
   []
   (js/Promise.
-   (fn [resolve _reject]
+   (fn [resolve reject]
      (if-let [db @db-atom]
-       ;; In real implementation:
-       ;; (execute-sql! db "SELECT * FROM sessions WHERE is_user_deleted = 0" []
-       ;;   (fn [_tx results]
-       ;;     (let [rows (-> results .-rows .-_array js->clj)
-       ;;           sessions (mapv row->session rows)]
-       ;;       (resolve sessions))))
-
-       ;; Stub: return from memory
-       (let [sessions (vals (:sessions db))]
-         (resolve (vec sessions)))
-
+       (if (and use-real-sqlite? sqlite-module)
+         ;; Real SQLite
+         (-> (execute-sql! db "SELECT * FROM sessions WHERE is_user_deleted = 0")
+             (.then (fn [results]
+                      (let [rows (-> results .-rows)
+                            len (.-length rows)
+                            sessions (for [i (range len)]
+                                       (-> (.item rows i)
+                                           (js->clj :keywordize-keys true)
+                                           row->session))]
+                        (resolve (vec sessions)))))
+             (.catch (fn [error]
+                       (js/console.error "Failed to load sessions:" error)
+                       (reject error))))
+         ;; Stub mode
+         (let [sessions (vals (:sessions db))]
+           (resolve (vec sessions))))
        (resolve [])))))
 
 (defn delete-session!
-  "Mark a session as deleted (soft delete)."
+  "Mark a session as deleted (soft delete). Returns a promise."
   [session-id]
-  (when-let [db @db-atom]
-    ;; In real implementation:
-    ;; (execute-sql! db
-    ;;   "UPDATE sessions SET is_user_deleted = 1 WHERE id = ?"
-    ;;   [session-id])
-
-    ;; Stub: remove from memory
-    (swap! db-atom update :sessions dissoc session-id)
-    (js/console.log "Deleted session:" session-id)))
+  (if-let [db @db-atom]
+    (if (and use-real-sqlite? sqlite-module)
+      ;; Real SQLite
+      (execute-sql! db
+                    "UPDATE sessions SET is_user_deleted = 1 WHERE id = ?"
+                    [session-id])
+      ;; Stub mode
+      (do
+        (swap! db-atom update :sessions dissoc session-id)
+        (js/console.log "Deleted session (stub):" session-id)
+        (js/Promise.resolve nil)))
+    (js/Promise.resolve nil)))
 
 ;; ============================================================================
 ;; Message Persistence
@@ -184,98 +249,118 @@
    :status (keyword status)})
 
 (defn save-message!
-  "Save a message to SQLite."
+  "Save a message to SQLite. Returns a promise."
   [message]
-  (when-let [db @db-atom]
-    ;; In real implementation:
-    ;; (let [row (message->row message)]
-    ;;   (execute-sql! db
-    ;;     "INSERT OR REPLACE INTO messages (...) VALUES (...)"
-    ;;     (vals row)))
-
-    ;; Stub: store in memory
-    (let [session-id (:session-id message)]
-      (swap! db-atom update-in [:messages session-id]
-             (fnil conj []) message))
-    (js/console.log "Saved message:" (:id message))))
+  (if-let [db @db-atom]
+    (if (and use-real-sqlite? sqlite-module)
+      ;; Real SQLite
+      (let [{:keys [id session_id role text timestamp status]} (message->row message)]
+        (execute-sql! db
+                      "INSERT OR REPLACE INTO messages 
+                       (id, session_id, role, text, timestamp, status)
+                       VALUES (?, ?, ?, ?, ?, ?)"
+                      [id session_id role text timestamp status]))
+      ;; Stub mode
+      (let [session-id (:session-id message)]
+        (swap! db-atom update-in [:messages session-id]
+               (fnil conj []) message)
+        (js/console.log "Saved message (stub):" (:id message))
+        (js/Promise.resolve nil)))
+    (js/Promise.resolve nil)))
 
 (defn save-messages!
-  "Save multiple messages to SQLite."
+  "Save multiple messages to SQLite. Returns a promise."
   [session-id messages]
-  (doseq [msg messages]
-    (save-message! (assoc msg :session-id session-id))))
+  (js/Promise.all
+   (clj->js (map #(save-message! (assoc % :session-id session-id)) messages))))
 
 (defn load-messages!
   "Load messages for a session from SQLite.
    Returns a promise resolving to vector of messages."
   [session-id]
   (js/Promise.
-   (fn [resolve _reject]
+   (fn [resolve reject]
      (if-let [db @db-atom]
-       ;; In real implementation:
-       ;; (execute-sql! db
-       ;;   "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp"
-       ;;   [session-id]
-       ;;   (fn [_tx results]
-       ;;     (let [rows (-> results .-rows .-_array js->clj)
-       ;;           messages (mapv row->message rows)]
-       ;;       (resolve messages))))
-
-       ;; Stub: return from memory
-       (let [messages (get-in db [:messages session-id] [])]
-         (resolve (vec messages)))
-
+       (if (and use-real-sqlite? sqlite-module)
+         ;; Real SQLite
+         (-> (execute-sql! db
+                           "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp"
+                           [session-id])
+             (.then (fn [results]
+                      (let [rows (-> results .-rows)
+                            len (.-length rows)
+                            messages (for [i (range len)]
+                                       (-> (.item rows i)
+                                           (js->clj :keywordize-keys true)
+                                           row->message))]
+                        (resolve (vec messages)))))
+             (.catch (fn [error]
+                       (js/console.error "Failed to load messages:" error)
+                       (reject error))))
+         ;; Stub mode
+         (let [messages (get-in db [:messages session-id] [])]
+           (resolve (vec messages))))
        (resolve [])))))
 
 (defn clear-messages!
-  "Delete all messages for a session."
+  "Delete all messages for a session. Returns a promise."
   [session-id]
-  (when-let [db @db-atom]
-    ;; In real implementation:
-    ;; (execute-sql! db
-    ;;   "DELETE FROM messages WHERE session_id = ?"
-    ;;   [session-id])
-
-    ;; Stub: clear from memory
-    (swap! db-atom update :messages dissoc session-id)
-    (js/console.log "Cleared messages for session:" session-id)))
+  (if-let [db @db-atom]
+    (if (and use-real-sqlite? sqlite-module)
+      ;; Real SQLite
+      (execute-sql! db
+                    "DELETE FROM messages WHERE session_id = ?"
+                    [session-id])
+      ;; Stub mode
+      (do
+        (swap! db-atom update :messages dissoc session-id)
+        (js/console.log "Cleared messages (stub) for session:" session-id)
+        (js/Promise.resolve nil)))
+    (js/Promise.resolve nil)))
 
 ;; ============================================================================
 ;; Settings Persistence
 ;; ============================================================================
 
 (defn save-setting!
-  "Save a setting to SQLite."
+  "Save a setting to SQLite. Returns a promise."
   [key value]
-  (when-let [db @db-atom]
-    ;; In real implementation:
-    ;; (execute-sql! db
-    ;;   "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)"
-    ;;   [(name key) (pr-str value)])
-
-    ;; Stub: store in memory
-    (swap! db-atom assoc-in [:settings key] value)
-    (js/console.log "Saved setting:" key)))
+  (if-let [db @db-atom]
+    (if (and use-real-sqlite? sqlite-module)
+      ;; Real SQLite - store value as EDN string
+      (execute-sql! db
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)"
+                    [(name key) (pr-str value)])
+      ;; Stub mode
+      (do
+        (swap! db-atom assoc-in [:settings key] value)
+        (js/console.log "Saved setting (stub):" key)
+        (js/Promise.resolve nil)))
+    (js/Promise.resolve nil)))
 
 (defn load-setting!
   "Load a setting from SQLite.
    Returns a promise resolving to the value or nil."
   [key]
   (js/Promise.
-   (fn [resolve _reject]
+   (fn [resolve reject]
      (if-let [db @db-atom]
-       ;; In real implementation:
-       ;; (execute-sql! db
-       ;;   "SELECT value FROM settings WHERE key = ?"
-       ;;   [(name key)]
-       ;;   (fn [_tx results]
-       ;;     (if (> (-> results .-rows .-length) 0)
-       ;;       (resolve (-> results .-rows .-_array first .-value cljs.reader/read-string))
-       ;;       (resolve nil))))
-
-       ;; Stub: return from memory
-       (resolve (get-in db [:settings key]))
-
+       (if (and use-real-sqlite? sqlite-module)
+         ;; Real SQLite
+         (-> (execute-sql! db
+                           "SELECT value FROM settings WHERE key = ?"
+                           [(name key)])
+             (.then (fn [results]
+                      (let [rows (-> results .-rows)]
+                        (if (> (.-length rows) 0)
+                          (let [value-str (.-value (.item rows 0))]
+                            (resolve (edn/read-string value-str)))
+                          (resolve nil)))))
+             (.catch (fn [error]
+                       (js/console.error "Failed to load setting:" error)
+                       (reject error))))
+         ;; Stub mode
+         (resolve (get-in db [:settings key])))
        (resolve nil)))))
 
 (defn load-all-settings!
@@ -283,10 +368,25 @@
    Returns a promise resolving to a map of settings."
   []
   (js/Promise.
-   (fn [resolve _reject]
+   (fn [resolve reject]
      (if-let [db @db-atom]
-       ;; Stub: return from memory
-       (resolve (:settings db {}))
+       (if (and use-real-sqlite? sqlite-module)
+         ;; Real SQLite
+         (-> (execute-sql! db "SELECT key, value FROM settings")
+             (.then (fn [results]
+                      (let [rows (-> results .-rows)
+                            len (.-length rows)
+                            settings (into {}
+                                           (for [i (range len)]
+                                             (let [row (.item rows i)]
+                                               [(keyword (.-key row))
+                                                (edn/read-string (.-value row))])))]
+                        (resolve settings))))
+             (.catch (fn [error]
+                       (js/console.error "Failed to load settings:" error)
+                       (reject error))))
+         ;; Stub mode
+         (resolve (:settings db {})))
        (resolve {})))))
 
 ;; ============================================================================
