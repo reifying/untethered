@@ -18,7 +18,7 @@ WRAP := ./scripts/wrap-command
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 .PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
-.PHONY: rn-ios rn-android rn-build-ios rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-boot-sim rn-screenshot rn-restart rn-reload
+.PHONY: rn-ios rn-android rn-build-ios rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-boot-sim rn-screenshot rn-restart rn-reload manual-ralph
 
 # React Native Configuration
 RN_DIR := $(PROJECT_ROOT)frontend
@@ -118,6 +118,9 @@ help:
 	@echo "  rn-screenshot      - Take screenshot of simulator"
 	@echo "  rn-restart         - Restart the iOS app (terminate and relaunch)"
 	@echo "  rn-reload          - Trigger JS bundle reload"
+	@echo ""
+	@echo "Claude automation:"
+	@echo "  manual-ralph       - Run Claude with PROMPT.md (non-interactive)"
 
 # Ensure simulator exists and is booted
 setup-simulator:
@@ -500,3 +503,7 @@ rn-restart:
 rn-reload:
 	@curl -s "http://localhost:8081/reload" >/dev/null 2>&1 || echo "Metro may not support reload endpoint"
 	@echo "Reload triggered (if Metro supports it)"
+
+# Run Claude in non-interactive mode with PROMPT.md
+manual-ralph:
+	@claude --print "$$(cat $(PROJECT_ROOT)PROMPT.md)"
