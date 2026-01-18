@@ -59,6 +59,25 @@
      (rf/dispatch-sync [:ui/clear-draft "s1"])
      (is (= "" @(rf/subscribe [:ui/draft "s1"]))))))
 
+(deftest auto-scroll-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "auto-scroll is enabled by default"
+     (is (true? @(rf/subscribe [:ui/auto-scroll?]))))
+
+   (testing "ui/toggle-auto-scroll toggles state"
+     (rf/dispatch-sync [:ui/toggle-auto-scroll])
+     (is (false? @(rf/subscribe [:ui/auto-scroll?])))
+     (rf/dispatch-sync [:ui/toggle-auto-scroll])
+     (is (true? @(rf/subscribe [:ui/auto-scroll?]))))
+
+   (testing "ui/set-auto-scroll sets specific value"
+     (rf/dispatch-sync [:ui/set-auto-scroll false])
+     (is (false? @(rf/subscribe [:ui/auto-scroll?])))
+     (rf/dispatch-sync [:ui/set-auto-scroll true])
+     (is (true? @(rf/subscribe [:ui/auto-scroll?]))))))
+
 (deftest session-locking-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])

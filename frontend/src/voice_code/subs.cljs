@@ -209,3 +209,8 @@
  :<- [:sessions/active-id]
  (fn [active-id _]
    (rf/subscribe [:ui/draft active-id])))
+
+(rf/reg-sub
+ :ui/auto-scroll?
+ (fn [db _]
+   (get-in db [:ui :auto-scroll?] true)))
