@@ -139,4 +139,4 @@
      (is (= "localhost" @(rf/subscribe [:settings/server-url]))))
 
    (testing "settings/server-port returns default"
-     (is (= 3000 @(rf/subscribe [:settings/server-port]))))))
+     (is (= 8080 @(rf/subscribe [:settings/server-port]))))))

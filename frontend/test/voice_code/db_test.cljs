@@ -31,7 +31,7 @@
   (testing "settings have sensible defaults"
     (let [settings (:settings db/default-db)]
       (is (= "localhost" (:server-url settings)))
-      (is (= 3000 (:server-port settings)))
+      (is (= 8080 (:server-port settings)))
       (is (= 10 (:recent-sessions-limit settings)))
       (is (= 200 (:max-message-size-kb settings))))))
 
