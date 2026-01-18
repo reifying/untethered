@@ -21,3 +21,5 @@ You can use up to 1000 tool calls to complete this work. Use up to 1000 parallel
 When tests pass, manually verify functionality on the simulator before committing. Use `/cljs-repl` for REPL-driven development, `/repl-ui-testing` for programmatic navigation and screenshots, and `/ui-test-agent` for systematic UI testing.
 
 When tests pass and manual verification is complete, have a haiku subagent commit, tag, and push.
+
+Your session should result in either: (a) new issues created from parity gaps discovered, (b) implementation of existing bead issues, or ideally (c) both.
