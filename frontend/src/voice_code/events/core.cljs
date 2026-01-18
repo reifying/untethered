@@ -182,59 +182,9 @@
    ;; For now, this is a placeholder
    db))
 
-;; ============================================================================
-;; Prompt Sending
-;; ============================================================================
-
-(rf/reg-event-fx
- :prompt/send-from-draft
- (fn [{:keys [db]} [_ session-id]]
-   (let [draft (get-in db [:ui :drafts session-id])
-         session (get-in db [:sessions session-id])]
-     (when (seq draft)
-       {:dispatch-n [[:prompt/send {:text draft
-                                    :session-id session-id
-                                    :working-directory (:working-directory session)}]
-                     [:ui/clear-draft session-id]]}))))
-
-(rf/reg-event-fx
- :prompt/send
- (fn [{:keys [db]} [_ {:keys [text session-id working-directory system-prompt]}]]
-   (let [ios-session-id (:ios-session-id db)
-         message {:id (str (random-uuid))
-                  :session-id session-id
-                  :role :user
-                  :text text
-                  :timestamp (js/Date.)
-                  :status :sending}]
-     {:db (-> db
-              (update :locked-sessions conj session-id)
-              (update-in [:messages session-id] (fnil conj []) message))
-      :ws/send {:type "prompt"
-                :text text
-                :ios_session_id ios-session-id
-                :session_id session-id
-                :working_directory working-directory
-                :system_prompt system-prompt}})))
-
-;; ============================================================================
-;; Session Subscription
-;; ============================================================================
-
-(rf/reg-event-fx
- :session/subscribe
- (fn [{:keys [db]} [_ session-id]]
-   (let [last-message-id (-> db :messages (get session-id) last :id)]
-     {:ws/send (cond-> {:type "subscribe"
-                        :session_id session-id}
-                 last-message-id
-                 (assoc :last_message_id last-message-id))})))
-
-(rf/reg-event-fx
- :sessions/resubscribe-all
- (fn [{:keys [db]} _]
-   (let [session-ids (keys (:sessions db))]
-     {:dispatch-n (mapv (fn [sid] [:session/subscribe sid]) session-ids)})))
+;; NOTE: :prompt/send, :prompt/send-from-draft, :session/subscribe, and
+;; :sessions/resubscribe-all are defined in events/websocket.cljs to keep
+;; WebSocket-related event handling consolidated in one namespace.
 
 ;; ============================================================================
 ;; Session Creation

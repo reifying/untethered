@@ -456,3 +456,15 @@
      (when last-msg
        {:persistence/save-message {:session-id session-id
                                    :message last-msg}}))))
+
+;; Event handler for :persistence/save-session (dispatched from events/core.cljs)
+(rf/reg-event-fx
+ :persistence/save-session
+ (fn [_ [_ session]]
+   {:persistence/save-session session}))
+
+;; Event handler for :persistence/delete-api-key (dispatched from events/core.cljs)
+(rf/reg-event-fx
+ :persistence/delete-api-key
+ (fn [_ _]
+   {:persistence/delete-api-key nil}))
