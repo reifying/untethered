@@ -19,6 +19,31 @@
              (or current-name "")
              "default")))
 
+;; ============================================================================
+;; Message Truncation Constants
+;; ============================================================================
+
+(def ^:private truncation-threshold 1000)
+(def ^:private truncation-preview-chars 250)
+
+(defn- truncate-text
+  "Truncate text with first N and last N chars, showing truncation count.
+   Returns {:truncated? bool :display-text string :full-text string :truncated-count int}"
+  [text]
+  (if (or (nil? text) (<= (count text) truncation-threshold))
+    {:truncated? false
+     :display-text text
+     :full-text text
+     :truncated-count 0}
+    (let [total-len (count text)
+          truncated-count (- total-len (* 2 truncation-preview-chars))
+          first-part (subs text 0 truncation-preview-chars)
+          last-part (subs text (- total-len truncation-preview-chars))]
+      {:truncated? true
+       :display-text (str first-part "\n\n...[" truncated-count " chars truncated]...\n\n" last-part)
+       :full-text text
+       :truncated-count truncated-count})))
+
 (defn- format-time
   "Format timestamp for display."
   [timestamp]
@@ -29,40 +54,58 @@
                               :minute "2-digit"})))
 
 (defn- message-bubble
-  "Single message bubble."
+  "Single message bubble with truncation support for long messages."
   [{:keys [role text timestamp status]}]
-  (let [is-user? (= role :user)
+  (let [expanded? (r/atom false)
+        {:keys [truncated? display-text full-text]} (truncate-text text)
+        is-user? (= role :user)
         is-sending? (= status :sending)]
-    [:> rn/View {:style {:align-self (if is-user? "flex-end" "flex-start")
-                         :max-width "85%"
-                         :margin-vertical 4
-                         :margin-horizontal 12}}
-     ;; Message bubble
-     [:> rn/View {:style {:background-color (if is-user? "#007AFF" "#E9E9EB")
-                          :border-radius 18
-                          :padding-horizontal 14
-                          :padding-vertical 10
-                          :border-bottom-right-radius (if is-user? 4 18)
-                          :border-bottom-left-radius (if is-user? 18 4)}}
-      [:> rn/Text {:style {:color (if is-user? "#FFF" "#000")
-                           :font-size 16
-                           :line-height 22}
-                   :selectable true}
-       text]]
+    (fn [{:keys [role text timestamp status]}]
+      (let [{:keys [truncated? display-text full-text]} (truncate-text text)
+            show-text (if (and truncated? (not @expanded?))
+                        display-text
+                        full-text)]
+        [:> rn/View {:style {:align-self (if is-user? "flex-end" "flex-start")
+                             :max-width "85%"
+                             :margin-vertical 4
+                             :margin-horizontal 12}}
+         ;; Message bubble
+         [:> rn/View {:style {:background-color (if is-user? "#007AFF" "#E9E9EB")
+                              :border-radius 18
+                              :padding-horizontal 14
+                              :padding-vertical 10
+                              :border-bottom-right-radius (if is-user? 4 18)
+                              :border-bottom-left-radius (if is-user? 18 4)}}
+          [:> rn/Text {:style {:color (if is-user? "#FFF" "#000")
+                               :font-size 16
+                               :line-height 22}
+                       :selectable true}
+           show-text]
 
-     ;; Timestamp and status
-     [:> rn/View {:style {:flex-direction "row"
-                          :align-items "center"
-                          :margin-top 2
-                          :padding-horizontal 4}}
-      [:> rn/Text {:style {:font-size 11
-                           :color "#999"}}
-       (format-time timestamp)]
-      (when is-sending?
-        [:> rn/Text {:style {:font-size 11
-                             :color "#999"
-                             :margin-left 4}}
-         " • Sending..."])]]))
+          ;; Show more/less toggle for truncated messages
+          (when truncated?
+            [:> rn/TouchableOpacity
+             {:style {:margin-top 8
+                      :padding-vertical 4}
+              :on-press #(swap! expanded? not)}
+             [:> rn/Text {:style {:color (if is-user? "#CCE5FF" "#007AFF")
+                                  :font-size 14
+                                  :font-weight "500"}}
+              (if @expanded? "Show less" "Show more")]])]
+
+         ;; Timestamp and status
+         [:> rn/View {:style {:flex-direction "row"
+                              :align-items "center"
+                              :margin-top 2
+                              :padding-horizontal 4}}
+          [:> rn/Text {:style {:font-size 11
+                               :color "#999"}}
+           (format-time timestamp)]
+          (when is-sending?
+            [:> rn/Text {:style {:font-size 11
+                                 :color "#999"
+                                 :margin-left 4}}
+             " • Sending..."])]]))))
 
 (defn- typing-indicator
   "Shows when Claude is processing."

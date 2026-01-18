@@ -132,6 +132,27 @@
                         :margin-top 8}}
     "Commands will appear here when you select a project with a Makefile."]])
 
+(defn- history-button
+  "Button to navigate to command history."
+  [{:keys [on-press]}]
+  [:> rn/TouchableOpacity
+   {:style {:flex-direction "row"
+            :align-items "center"
+            :justify-content "center"
+            :padding-vertical 12
+            :padding-horizontal 16
+            :margin 16
+            :background-color "#F5F5F5"
+            :border-radius 8
+            :border-width 1
+            :border-color "#E0E0E0"}
+    :on-press on-press}
+   [:> rn/Text {:style {:font-size 16 :margin-right 8}} "📜"]
+   [:> rn/Text {:style {:font-size 15
+                        :font-weight "500"
+                        :color "#333"}}
+    "View Command History"]])
+
 (defn command-menu-view
   "Main command menu view showing project and general commands.
    Uses Form-2 component pattern for proper Reagent reactivity with React Navigation.
@@ -149,6 +170,10 @@
          [running-command-indicator]
          (if (or (seq (:project commands)) (seq (:general commands)))
            [:> rn/ScrollView {:style {:flex 1}}
+            ;; History button at top
+            [history-button {:on-press #(when navigation
+                                          (.navigate navigation "CommandHistory"
+                                                     #js {:workingDirectory working-directory}))}]
             ;; Project commands
             (when (seq (:project commands))
               [:> rn/View

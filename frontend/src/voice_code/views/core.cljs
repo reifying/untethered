@@ -13,6 +13,8 @@
             [voice-code.views.settings :refer [settings-view]]
             [voice-code.views.command-menu :refer [command-menu-view]]
             [voice-code.views.command-execution :refer [command-execution-view]]
+            [voice-code.views.command-history :refer [command-history-view]]
+            [voice-code.views.command-output-detail :refer [command-output-detail-view]]
             [voice-code.views.resources :refer [resources-view]]
             [voice-code.views.recipes :refer [recipes-view]]))
 
@@ -99,6 +101,20 @@
              {:name "CommandExecution"
               :component (r/reactify-component command-execution-view)
               :options #js {:title "Running Command"}}]
+
+            ;; Command history (past command executions)
+            [:> (.-Screen Stack)
+             {:name "CommandHistory"
+              :component (r/reactify-component command-history-view)
+              :options #js {:title "Command History"}}]
+
+            ;; Command output detail (full output from history)
+            [:> (.-Screen Stack)
+             {:name "CommandOutputDetail"
+              :component (r/reactify-component command-output-detail-view)
+              :options (fn [^js props]
+                         #js {:title (or (some-> props .-route .-params .-shellCommand)
+                                         "Command Output")})}]
 
             ;; Resources (uploaded files)
             [:> (.-Screen Stack)
