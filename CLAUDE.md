@@ -44,3 +44,7 @@ See @STANDARDS.md for coding conventions.
 ## Test Philosophy
 
 We conform to the test pyramid philosophy for testing.
+
+## Manual Verification
+
+For changes involving native modules or platform-specific code, manually verify functionality on the simulator/emulator before committing. Use the ClojureScript REPL to test native integrations directly.
