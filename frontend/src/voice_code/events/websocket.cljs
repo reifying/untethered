@@ -201,16 +201,20 @@
 (rf/reg-event-db
  :sessions/handle-list
  (fn [db [_ {:keys [sessions]}]]
-   (reduce (fn [db session]
-             (assoc-in db [:sessions (:session-id session)]
-                       {:id (:session-id session)
-                        :backend-name (:name session)
-                        :working-directory (:working-directory session)
-                        :last-modified (js/Date. (:last-modified session))
-                        :message-count (:message-count session)
-                        :preview (:preview session)}))
-           db
-           sessions)))
+   ;; Receiving session list means we're authenticated
+   (-> (reduce (fn [db session]
+                 (assoc-in db [:sessions (:session-id session)]
+                           {:id (:session-id session)
+                            :backend-name (:name session)
+                            :working-directory (:working-directory session)
+                            :last-modified (js/Date. (:last-modified session))
+                            :message-count (:message-count session)
+                            :preview (:preview session)}))
+               db
+               sessions)
+       (assoc-in [:connection :status] :connected)
+       (assoc-in [:connection :authenticated?] true)
+       (assoc-in [:connection :reconnect-attempts] 0))))
 
 (rf/reg-event-db
  :sessions/handle-recent

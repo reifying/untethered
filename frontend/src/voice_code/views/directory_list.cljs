@@ -99,8 +99,9 @@
     (r/create-class
      {:component-did-mount
       (fn [_]
-        (.setOptions navigation
-                     #js {:headerRight #(r/as-element [settings-button navigation])}))
+        (when navigation
+          (.setOptions navigation
+                       #js {:headerRight #(r/as-element [settings-button navigation])})))
 
       :reagent-render
       (fn [_]
