@@ -12,4 +12,6 @@ Use beads (run `bd quickstart` to learn about beads) to track the work for your 
 
 You can use up to 1000 tool calls to complete this work. Use up to 1000 parallel subagents, but only use 1 subagent for compiling and running tests.
 
-When tests pass, have a haiku subagent commit, tag, and push.
+When tests pass, manually verify functionality on the simulator before committing. Use `/cljs-repl` for REPL-driven development, `/repl-ui-testing` for programmatic navigation and screenshots, and `/ui-test-agent` for systematic UI testing.
+
+When tests pass and manual verification is complete, have a haiku subagent commit, tag, and push.
