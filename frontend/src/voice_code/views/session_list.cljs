@@ -141,8 +141,9 @@
             :shadow-opacity 0.25
             :shadow-radius 4
             :elevation 5}
-    :on-press #(.navigate navigation "CommandMenu"
-                          #js {:workingDirectory directory})}
+    :on-press #(when navigation
+                 (.navigate navigation "CommandMenu"
+                            #js {:workingDirectory directory}))}
    [:> rn/Text {:style {:font-size 20
                         :color "#FFF"}}
     "⚡"]])
@@ -172,9 +173,10 @@
               [session-item
                {:session session-data
                 :locked? (contains? locked-sessions session-id)
-                :on-press #(.navigate navigation "Conversation"
-                                      #js {:sessionId session-id
-                                           :sessionName (session-name session-data)})}])))
+                :on-press #(when navigation
+                             (.navigate navigation "Conversation"
+                                        #js {:sessionId session-id
+                                             :sessionName (session-name session-data)}))}])))
          :content-container-style {:padding-vertical 8}}])
 
      ;; Commands FAB (left)

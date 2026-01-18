@@ -43,7 +43,10 @@
 (rf/reg-event-db
  :ws/error
  (fn [db [_ error]]
-   (assoc-in db [:connection :error] (str error))))
+   (let [error-msg (or (.-message error)
+                       (when (.-type error) "Connection error")
+                       "Unknown error")]
+     (assoc-in db [:connection :error] error-msg))))
 
 ;; ============================================================================
 ;; Message Dispatcher

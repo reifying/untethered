@@ -156,8 +156,9 @@
                                   (rf/dispatch [:commands/execute
                                                 {:command-id (:id %)
                                                  :working-directory working-directory}])
-                                  (.navigate navigation "CommandExecution"
-                                             #js {:workingDirectory working-directory}))}]
+                                  (when navigation
+                                    (.navigate navigation "CommandExecution"
+                                               #js {:workingDirectory working-directory})))}]
                ^{:key (:id cmd)}
                [command-item {:command cmd
                               :on-press
@@ -165,8 +166,9 @@
                                  (rf/dispatch [:commands/execute
                                                {:command-id (:id %)
                                                 :working-directory working-directory}])
-                                 (.navigate navigation "CommandExecution"
-                                            #js {:workingDirectory working-directory}))}]))])
+                                 (when navigation
+                                   (.navigate navigation "CommandExecution"
+                                              #js {:workingDirectory working-directory})))}]))])
         ;; General commands
         (when (seq (:general commands))
           [:> rn/View
@@ -179,6 +181,7 @@
                                (rf/dispatch [:commands/execute
                                              {:command-id (:id %)
                                               :working-directory working-directory}])
-                               (.navigate navigation "CommandExecution"
-                                          #js {:workingDirectory working-directory}))}])])]
+                               (when navigation
+                                 (.navigate navigation "CommandExecution"
+                                            #js {:workingDirectory working-directory})))}])])]
        [empty-state])]))
