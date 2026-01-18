@@ -126,37 +126,64 @@
         "Waiting for response..."])]))
 
 (defn- message-list
-  "Scrollable list of messages."
+  "Scrollable list of messages with auto-scroll support."
   [{:keys [messages session-id locked?]}]
-  (let [list-ref (r/atom nil)]
+  (let [list-ref (r/atom nil)
+        auto-scroll? @(rf/subscribe [:ui/auto-scroll?])]
     (r/create-class
      {:component-did-update
       (fn [this _]
-        ;; Auto-scroll to bottom on new messages
-        (when-let [ref @list-ref]
-          (js/setTimeout #(.scrollToEnd ref #js {:animated true}) 100)))
+        ;; Auto-scroll to bottom on new messages (if enabled)
+        (when (and auto-scroll? @list-ref)
+          (js/setTimeout #(.scrollToEnd @list-ref #js {:animated true}) 100)))
 
       :reagent-render
       (fn [{:keys [messages locked?]}]
-        [:> rn/FlatList
-         {:ref #(reset! list-ref %)
-          :data (clj->js messages)
-          :key-extractor (fn [item idx]
-                           (or (.-id item) (str idx)))
-          :render-item
-          (fn [^js obj]
-            (let [item (.-item obj)
-                  msg {:role (keyword (.-role item))
-                       :text (.-text item)
-                       :timestamp (.-timestamp item)
-                       :status (some-> item .-status keyword)}]
-              (r/as-element [message-bubble msg])))
-          :content-container-style {:padding-vertical 8}
-          :inverted false
-          :keyboard-dismiss-mode "interactive"
-          :list-footer-component
-          (when locked?
-            (r/as-element [typing-indicator]))}])})))
+        (let [auto-scroll? @(rf/subscribe [:ui/auto-scroll?])]
+          [:> rn/View {:style {:flex 1}}
+           ;; Auto-scroll toggle button
+           [:> rn/View {:style {:flex-direction "row"
+                                :justify-content "flex-end"
+                                :padding-horizontal 12
+                                :padding-vertical 4
+                                :border-bottom-width 1
+                                :border-bottom-color "#F0F0F0"}}
+            [:> rn/TouchableOpacity
+             {:style {:flex-direction "row"
+                      :align-items "center"
+                      :padding-horizontal 8
+                      :padding-vertical 4
+                      :background-color (if auto-scroll? "#E8F4FD" "#F5F5F5")
+                      :border-radius 12}
+              :on-press #(rf/dispatch [:ui/toggle-auto-scroll])}
+             [:> rn/Text {:style {:font-size 12
+                                  :color (if auto-scroll? "#007AFF" "#666")
+                                  :margin-right 4}}
+              "Auto-scroll"]
+             [:> rn/Text {:style {:font-size 10
+                                  :color (if auto-scroll? "#007AFF" "#999")}}
+              (if auto-scroll? "ON" "OFF")]]]
+           ;; Message list
+           [:> rn/FlatList
+            {:ref #(reset! list-ref %)
+             :style {:flex 1}
+             :data (clj->js messages)
+             :key-extractor (fn [item idx]
+                              (or (.-id item) (str idx)))
+             :render-item
+             (fn [^js obj]
+               (let [item (.-item obj)
+                     msg {:role (keyword (.-role item))
+                          :text (.-text item)
+                          :timestamp (.-timestamp item)
+                          :status (some-> item .-status keyword)}]
+                 (r/as-element [message-bubble msg])))
+             :content-container-style {:padding-vertical 8}
+             :inverted false
+             :keyboard-dismiss-mode "interactive"
+             :list-footer-component
+             (when locked?
+               (r/as-element [typing-indicator]))}]]))})))
 
 (defn- empty-conversation
   "Shown when there are no messages."

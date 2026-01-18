@@ -63,6 +63,16 @@
  (fn [db [_ session-id]]
    (update-in db [:ui :drafts] dissoc session-id)))
 
+(rf/reg-event-db
+ :ui/toggle-auto-scroll
+ (fn [db _]
+   (update-in db [:ui :auto-scroll?] not)))
+
+(rf/reg-event-db
+ :ui/set-auto-scroll
+ (fn [db [_ enabled?]]
+   (assoc-in db [:ui :auto-scroll?] enabled?)))
+
 ;; ============================================================================
 ;; Settings
 ;; ============================================================================
