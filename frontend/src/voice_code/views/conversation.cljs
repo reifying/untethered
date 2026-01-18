@@ -176,14 +176,12 @@
     "Type a message below to begin chatting with Claude."]])
 
 (defn conversation-view
-  "Main conversation screen."
+  "Main conversation screen.
+   Uses Form-3 component pattern for proper Reagent reactivity with React Navigation."
   [^js props]
   (let [route (.-route props)
-        session-id (some-> route .-params .-sessionId)
-        messages @(rf/subscribe [:messages/for-session session-id])
-        locked? @(rf/subscribe [:session/locked? session-id])]
-
-    ;; Subscribe to session when mounted
+        session-id (some-> route .-params .-sessionId)]
+    ;; Form-3: create-class with subscriptions inside :reagent-render
     (r/create-class
      {:component-did-mount
       (fn [_]
@@ -197,15 +195,18 @@
 
       :reagent-render
       (fn [_]
-        [:> rn/KeyboardAvoidingView
-         {:style {:flex 1 :background-color "#FFFFFF"}
-          :behavior "padding"
-          :keyboard-vertical-offset 90}
+        ;; Subscriptions MUST be inside :reagent-render for reactivity
+        (let [messages @(rf/subscribe [:messages/for-session session-id])
+              locked? @(rf/subscribe [:session/locked? session-id])]
+          [:> rn/KeyboardAvoidingView
+           {:style {:flex 1 :background-color "#FFFFFF"}
+            :behavior "padding"
+            :keyboard-vertical-offset 90}
 
-         (if (empty? messages)
-           [empty-conversation]
-           [message-list {:messages messages
-                          :session-id session-id
-                          :locked? locked?}])
+           (if (empty? messages)
+             [empty-conversation]
+             [message-list {:messages messages
+                            :session-id session-id
+                            :locked? locked?}])
 
-         [input-area {:session-id session-id}]])})))
+           [input-area {:session-id session-id}]]))})))

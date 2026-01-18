@@ -177,35 +177,38 @@
         (.toLocaleString (js/Date. started-at)))]]]])
 
 (defn recipes-view
-  "Main recipes screen showing available and active recipes."
+  "Main recipes screen showing available and active recipes.
+   Uses Form-2 component pattern for proper Reagent reactivity with React Navigation."
   [^js props]
   (let [route (.-route props)
-        session-id (when route (some-> route .-params .-sessionId))
-        available-recipes @(rf/subscribe [:recipes/available])
-        active-recipes @(rf/subscribe [:recipes/active])
-        active-for-session (get active-recipes session-id)]
-    [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
-     ;; Active recipe banner (if running for this session)
-     (when active-for-session
-       [active-recipe-banner
-        {:name (:name active-for-session)
-         :started-at (:started-at active-for-session)
-         :on-stop #(rf/dispatch [:recipes/stop session-id])}])
+        session-id (when route (some-> route .-params .-sessionId))]
+    ;; Form-2: Return a render function that reads subscriptions
+    (fn [^js _props]
+      (let [available-recipes @(rf/subscribe [:recipes/available])
+            active-recipes @(rf/subscribe [:recipes/active])
+            active-for-session (get active-recipes session-id)]
+        [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
+         ;; Active recipe banner (if running for this session)
+         (when active-for-session
+           [active-recipe-banner
+            {:name (:name active-for-session)
+             :started-at (:started-at active-for-session)
+             :on-stop #(rf/dispatch [:recipes/stop session-id])}])
 
-     ;; Recipe list
-     (if (empty? available-recipes)
-       [empty-state]
-       [:> rn/ScrollView {:style {:flex 1}}
-        [section-header "Available Recipes"]
-        (for [recipe available-recipes]
-          ^{:key (or (:id recipe) (:name recipe))}
-          [recipe-item
-           {:recipe recipe
-            :active? (= (:name active-for-session) (:name recipe))
-            :on-start #(rf/dispatch [:recipes/start
-                                     {:session-id session-id
-                                      :recipe-name (:name recipe)}])
-            :on-stop #(rf/dispatch [:recipes/stop session-id])}])])]))
+         ;; Recipe list
+         (if (empty? available-recipes)
+           [empty-state]
+           [:> rn/ScrollView {:style {:flex 1}}
+            [section-header "Available Recipes"]
+            (for [recipe available-recipes]
+              ^{:key (or (:id recipe) (:name recipe))}
+              [recipe-item
+               {:recipe recipe
+                :active? (= (:name active-for-session) (:name recipe))
+                :on-start #(rf/dispatch [:recipes/start
+                                         {:session-id session-id
+                                          :recipe-name (:name recipe)}])
+                :on-stop #(rf/dispatch [:recipes/stop session-id])}])])]))))
 
 ;; ============================================================================
 ;; Subscriptions for recipes (if not already defined)

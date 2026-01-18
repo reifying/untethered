@@ -133,55 +133,58 @@
     "Commands will appear here when you select a project with a Makefile."]])
 
 (defn command-menu-view
-  "Main command menu view showing project and general commands."
+  "Main command menu view showing project and general commands.
+   Uses Form-2 component pattern for proper Reagent reactivity with React Navigation."
   [^js props]
   (let [route (.-route props)
         navigation (.-navigation props)
-        working-directory (when route (-> route .-params .-workingDirectory))
-        commands @(rf/subscribe [:commands/for-directory working-directory])]
-    [:> rn/SafeAreaView {:style {:flex 1 :background-color "#fff"}}
-     [running-command-indicator]
-     (if (or (seq (:project commands)) (seq (:general commands)))
-       [:> rn/ScrollView {:style {:flex 1}}
-        ;; Project commands
-        (when (seq (:project commands))
-          [:> rn/View
-           [section-header "Project Commands"]
-           (for [cmd (:project commands)]
-             (if (= (:type cmd) "group")
-               ^{:key (:id cmd)}
-               [command-group {:group cmd
-                               :on-command-press
-                               #(do
-                                  (rf/dispatch [:commands/execute
-                                                {:command-id (:id %)
-                                                 :working-directory working-directory}])
-                                  (when navigation
-                                    (.navigate navigation "CommandExecution"
-                                               #js {:workingDirectory working-directory})))}]
-               ^{:key (:id cmd)}
-               [command-item {:command cmd
-                              :on-press
-                              #(do
-                                 (rf/dispatch [:commands/execute
-                                               {:command-id (:id %)
-                                                :working-directory working-directory}])
-                                 (when navigation
-                                   (.navigate navigation "CommandExecution"
-                                              #js {:workingDirectory working-directory})))}]))])
-        ;; General commands
-        (when (seq (:general commands))
-          [:> rn/View
-           [section-header "General Commands"]
-           (for [cmd (:general commands)]
-             ^{:key (:id cmd)}
-             [command-item {:command cmd
-                            :on-press
-                            #(do
-                               (rf/dispatch [:commands/execute
-                                             {:command-id (:id %)
-                                              :working-directory working-directory}])
-                               (when navigation
-                                 (.navigate navigation "CommandExecution"
-                                            #js {:workingDirectory working-directory})))}])])]
-       [empty-state])]))
+        working-directory (when route (-> route .-params .-workingDirectory))]
+    ;; Form-2: Return a render function that reads subscriptions
+    (fn [^js _props]
+      (let [commands @(rf/subscribe [:commands/for-directory working-directory])]
+        [:> rn/SafeAreaView {:style {:flex 1 :background-color "#fff"}}
+         [running-command-indicator]
+         (if (or (seq (:project commands)) (seq (:general commands)))
+           [:> rn/ScrollView {:style {:flex 1}}
+            ;; Project commands
+            (when (seq (:project commands))
+              [:> rn/View
+               [section-header "Project Commands"]
+               (for [cmd (:project commands)]
+                 (if (= (:type cmd) "group")
+                   ^{:key (:id cmd)}
+                   [command-group {:group cmd
+                                   :on-command-press
+                                   #(do
+                                      (rf/dispatch [:commands/execute
+                                                    {:command-id (:id %)
+                                                     :working-directory working-directory}])
+                                      (when navigation
+                                        (.navigate navigation "CommandExecution"
+                                                   #js {:workingDirectory working-directory})))}]
+                   ^{:key (:id cmd)}
+                   [command-item {:command cmd
+                                  :on-press
+                                  #(do
+                                     (rf/dispatch [:commands/execute
+                                                   {:command-id (:id %)
+                                                    :working-directory working-directory}])
+                                     (when navigation
+                                       (.navigate navigation "CommandExecution"
+                                                  #js {:workingDirectory working-directory})))}]))])
+            ;; General commands
+            (when (seq (:general commands))
+              [:> rn/View
+               [section-header "General Commands"]
+               (for [cmd (:general commands)]
+                 ^{:key (:id cmd)}
+                 [command-item {:command cmd
+                                :on-press
+                                #(do
+                                   (rf/dispatch [:commands/execute
+                                                 {:command-id (:id %)
+                                                  :working-directory working-directory}])
+                                   (when navigation
+                                     (.navigate navigation "CommandExecution"
+                                                #js {:workingDirectory working-directory})))}])])]
+           [empty-state])]))))

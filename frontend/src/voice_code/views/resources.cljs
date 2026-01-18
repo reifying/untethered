@@ -173,36 +173,39 @@
     "📤"]])
 
 (defn resources-view
-  "Main resources screen showing uploaded files."
+  "Main resources screen showing uploaded files.
+   Uses Form-2 component pattern for proper Reagent reactivity with React Navigation."
   [^js _props]
-  (let [resources @(rf/subscribe [:resources/list])
-        pending-uploads @(rf/subscribe [:resources/pending-uploads])]
-    [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
-     ;; Pending uploads banner
-     (when (and pending-uploads (> pending-uploads 0))
-       [pending-uploads-banner pending-uploads])
+  ;; Form-2: Return a render function that reads subscriptions
+  (fn [^js _props]
+    (let [resources @(rf/subscribe [:resources/list])
+          pending-uploads @(rf/subscribe [:resources/pending-uploads])]
+      [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
+       ;; Pending uploads banner
+       (when (and pending-uploads (> pending-uploads 0))
+         [pending-uploads-banner pending-uploads])
 
-     ;; Resources list
-     (if (empty? resources)
-       [empty-state]
-       [:> rn/FlatList
-        {:data (clj->js resources)
-         :key-extractor (fn [item _idx]
-                          (or (.-filename item)
-                              (.-path item)
-                              (str (random-uuid))))
-         :render-item
-         (fn [^js obj]
-           (let [item (.-item obj)
-                 resource {:filename (.-filename item)
-                           :path (.-path item)
-                           :size (.-size item)
-                           :timestamp (.-timestamp item)}]
-             (r/as-element
-              [resource-item
-               {:resource resource
-                :on-delete #(rf/dispatch [:resources/delete (:filename %)])}])))
-         :content-container-style {:padding-vertical 8}}])
+       ;; Resources list
+       (if (empty? resources)
+         [empty-state]
+         [:> rn/FlatList
+          {:data (clj->js resources)
+           :key-extractor (fn [item _idx]
+                            (or (.-filename item)
+                                (.-path item)
+                                (str (random-uuid))))
+           :render-item
+           (fn [^js obj]
+             (let [item (.-item obj)
+                   resource {:filename (.-filename item)
+                             :path (.-path item)
+                             :size (.-size item)
+                             :timestamp (.-timestamp item)}]
+               (r/as-element
+                [resource-item
+                 {:resource resource
+                  :on-delete #(rf/dispatch [:resources/delete (:filename %)])}])))
+           :content-container-style {:padding-vertical 8}}])
 
-     ;; Upload FAB
-     [upload-button #(rf/dispatch [:resources/upload])]]))
+       ;; Upload FAB
+       [upload-button #(rf/dispatch [:resources/upload])]])))
