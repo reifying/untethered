@@ -78,6 +78,28 @@
      (rf/dispatch-sync [:ui/set-auto-scroll true])
      (is (true? @(rf/subscribe [:ui/auto-scroll?]))))))
 
+(deftest input-mode-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "input mode defaults to voice"
+     (is (= :voice @(rf/subscribe [:ui/input-mode])))
+     (is (true? @(rf/subscribe [:ui/voice-mode?]))))
+
+   (testing "ui/toggle-input-mode toggles between voice and text"
+     (rf/dispatch-sync [:ui/toggle-input-mode])
+     (is (= :text @(rf/subscribe [:ui/input-mode])))
+     (is (false? @(rf/subscribe [:ui/voice-mode?])))
+     (rf/dispatch-sync [:ui/toggle-input-mode])
+     (is (= :voice @(rf/subscribe [:ui/input-mode])))
+     (is (true? @(rf/subscribe [:ui/voice-mode?]))))
+
+   (testing "ui/set-input-mode sets specific mode"
+     (rf/dispatch-sync [:ui/set-input-mode :text])
+     (is (= :text @(rf/subscribe [:ui/input-mode])))
+     (rf/dispatch-sync [:ui/set-input-mode :voice])
+     (is (= :voice @(rf/subscribe [:ui/input-mode]))))))
+
 (deftest session-locking-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])

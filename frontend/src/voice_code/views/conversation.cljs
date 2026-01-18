@@ -2,7 +2,8 @@
   "Conversation view for a single session showing messages and input."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn]))
+            ["react-native" :as rn]
+            [voice-code.voice :as voice]))
 
 (defn- format-time
   "Format timestamp for display."
@@ -67,21 +68,134 @@
                          :font-size 14}}
      "Claude is thinking..."]]])
 
-(defn- input-area
-  "Message input with send button."
+(defn- mode-toggle
+  "Toggle button for switching between voice and text input modes."
+  []
+  (let [voice-mode? @(rf/subscribe [:ui/voice-mode?])]
+    [:> rn/TouchableOpacity
+     {:style {:flex-direction "row"
+              :align-items "center"
+              :padding-horizontal 12
+              :padding-vertical 6
+              :background-color "#E8F4FD"
+              :border-radius 8}
+      :on-press #(rf/dispatch [:ui/toggle-input-mode])}
+     [:> rn/Text {:style {:font-size 16 :margin-right 6}}
+      (if voice-mode? "🎤" "⌨️")]
+     [:> rn/Text {:style {:font-size 13
+                          :color "#007AFF"
+                          :font-weight "500"}}
+      (if voice-mode? "Voice Mode" "Text Mode")]]))
+
+(defn- voice-input-area
+  "Voice input with microphone button."
+  [{:keys [session-id]}]
+  (let [listening? @(rf/subscribe [:voice/listening?])
+        partial-result @(rf/subscribe [:voice/partial-result])
+        locked? @(rf/subscribe [:session/locked? session-id])
+        session (when session-id @(rf/subscribe [:sessions/by-id session-id]))]
+    [:> rn/View {:style {:border-top-width 1
+                         :border-top-color "#E5E5E5"
+                         :background-color "#FFFFFF"
+                         :padding-vertical 12}}
+     ;; Mode toggle row
+     [:> rn/View {:style {:flex-direction "row"
+                          :justify-content "space-between"
+                          :align-items "center"
+                          :padding-horizontal 16
+                          :margin-bottom 12}}
+      [mode-toggle]
+      ;; Connection status indicator
+      (let [status @(rf/subscribe [:connection/status])]
+        [:> rn/View {:style {:flex-direction "row"
+                             :align-items "center"}}
+         [:> rn/View {:style {:width 8
+                              :height 8
+                              :border-radius 4
+                              :background-color (if (= status :connected) "#34C759" "#FF3B30")
+                              :margin-right 6}}]
+         [:> rn/Text {:style {:font-size 12 :color "#666"}}
+          (name status)]])]
+
+     ;; Partial transcription display
+     (when (and listening? partial-result)
+       [:> rn/View {:style {:padding-horizontal 16
+                            :padding-vertical 8
+                            :margin-horizontal 16
+                            :margin-bottom 12
+                            :background-color "#F5F5F5"
+                            :border-radius 12}}
+        [:> rn/Text {:style {:font-size 14 :color "#333" :font-style "italic"}}
+         partial-result]])
+
+     ;; Microphone button
+     [:> rn/View {:style {:align-items "center"}}
+      [:> rn/TouchableOpacity
+       {:style {:width 72
+                :height 72
+                :border-radius 36
+                :background-color (cond
+                                    locked? "#CCC"
+                                    listening? "#FF3B30"
+                                    :else "#007AFF")
+                :justify-content "center"
+                :align-items "center"
+                :shadow-color "#000"
+                :shadow-offset {:width 0 :height 2}
+                :shadow-opacity 0.25
+                :shadow-radius 4
+                :elevation 5}
+        :disabled locked?
+        :on-press (fn []
+                    (if listening?
+                      (rf/dispatch [:voice/stop-listening])
+                      (rf/dispatch [:voice/start-listening])))}
+       [:> rn/Text {:style {:font-size 32}}
+        (if listening? "⏹" "🎤")]]
+
+      ;; Status text
+      [:> rn/Text {:style {:font-size 12
+                           :color (cond locked? "#FF9500"
+                                        listening? "#FF3B30"
+                                        :else "#666")
+                           :margin-top 8}}
+       (cond
+         locked? "Waiting for response..."
+         listening? "Listening... Tap to stop"
+         :else "Tap to speak")]]]))
+
+(defn- text-input-area
+  "Text input with send button."
   [{:keys [session-id]}]
   (let [draft @(rf/subscribe [:ui/draft session-id])
         locked? @(rf/subscribe [:session/locked? session-id])
         can-send? (and (not locked?) (seq draft))]
-
     [:> rn/View {:style {:border-top-width 1
                          :border-top-color "#E5E5E5"
                          :background-color "#FFFFFF"
                          :padding-horizontal 12
                          :padding-vertical 8}}
+     ;; Mode toggle row
+     [:> rn/View {:style {:flex-direction "row"
+                          :justify-content "space-between"
+                          :align-items "center"
+                          :margin-bottom 8}}
+      [mode-toggle]
+      ;; Connection status indicator
+      (let [status @(rf/subscribe [:connection/status])]
+        [:> rn/View {:style {:flex-direction "row"
+                             :align-items "center"}}
+         [:> rn/View {:style {:width 8
+                              :height 8
+                              :border-radius 4
+                              :background-color (if (= status :connected) "#34C759" "#FF3B30")
+                              :margin-right 6}}]
+         [:> rn/Text {:style {:font-size 12 :color "#666"}}
+          (name status)]])]
+
+     ;; Text input row
      [:> rn/View {:style {:flex-direction "row"
                           :align-items "flex-end"}}
-      ;; Text input
       [:> rn/TextInput
        {:style {:flex 1
                 :border-width 1
@@ -124,6 +238,14 @@
                             :text-align "center"
                             :margin-top 4}}
         "Waiting for response..."])]))
+
+(defn- input-area
+  "Switches between voice and text input based on current mode."
+  [{:keys [session-id]}]
+  (let [voice-mode? @(rf/subscribe [:ui/voice-mode?])]
+    (if voice-mode?
+      [voice-input-area {:session-id session-id}]
+      [text-input-area {:session-id session-id}])))
 
 (defn- message-list
   "Scrollable list of messages with auto-scroll support."

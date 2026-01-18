@@ -214,3 +214,13 @@
  :ui/auto-scroll?
  (fn [db _]
    (get-in db [:ui :auto-scroll?] true)))
+
+(rf/reg-sub
+ :ui/input-mode
+ (fn [db _]
+   (get-in db [:ui :input-mode] :voice)))
+
+(rf/reg-sub
+ :ui/voice-mode?
+ (fn [db _]
+   (= :voice (get-in db [:ui :input-mode] :voice))))
