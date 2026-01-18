@@ -2,6 +2,12 @@
   "re-frame app-db schema and initialization.
    Mirrors iOS CoreData schema with idiomatic Clojure structures.")
 
+;; Maximum messages to retain per session to limit memory usage
+(def max-messages-per-session
+  "Maximum number of messages to keep per session.
+   Oldest messages are pruned first to keep newest."
+  50)
+
 (def default-db
   "Initial application state."
   {:connection {:status :disconnected ; :disconnected | :connecting | :connected
@@ -85,3 +91,11 @@
   [db]
   (when-let [id (:active-session-id db)]
     (get-session db id)))
+
+(defn prune-messages
+  "Prune messages to max-messages-per-session, keeping newest.
+   Returns the pruned message vector."
+  [messages]
+  (if (> (count messages) max-messages-per-session)
+    (vec (take-last max-messages-per-session messages))
+    messages))

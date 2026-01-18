@@ -2,7 +2,8 @@
   "re-frame event handlers for WebSocket messages.
    Implements all message types from STANDARDS.md protocol."
   (:require [re-frame.core :as rf]
-            [voice-code.websocket :as ws]))
+            [voice-code.websocket :as ws]
+            [voice-code.db :as db]))
 
 ;; ============================================================================
 ;; Connection Events
@@ -153,15 +154,19 @@
      (let [auto-speak? (get-in db [:settings :auto-speak-responses])
            voice-listening? (get-in db [:ui :voice-listening?])
            ;; Don't auto-speak if user is in voice input mode (prevent feedback)
-           should-speak? (and auto-speak? (not voice-listening?))]
+           should-speak? (and auto-speak? (not voice-listening?))
+           new-message {:id (random-uuid)
+                        :session-id session-id
+                        :role :assistant
+                        :text text
+                        :timestamp (js/Date.)
+                        :status :confirmed}]
        {:db (-> db
-                (update-in [:messages session-id] (fnil conj [])
-                           {:id (random-uuid)
-                            :session-id session-id
-                            :role :assistant
-                            :text text
-                            :timestamp (js/Date.)
-                            :status :confirmed})
+                (update-in [:messages session-id]
+                           (fn [msgs]
+                             (-> (or msgs [])
+                                 (conj new-message)
+                                 db/prune-messages)))
                 (update :locked-sessions disj session-id))
         :dispatch-n (cond-> [[:ws/send-message-ack message-id]
                              [:persistence/save-message session-id]]
@@ -193,14 +198,18 @@
 (rf/reg-event-fx
  :ws/handle-replay
  (fn [{:keys [db]} [_ {:keys [message-id message]}]]
-   (let [{:keys [session-id text role timestamp]} message]
-     {:db (update-in db [:messages session-id] (fnil conj [])
-                     {:id (or message-id (random-uuid))
+   (let [{:keys [session-id text role timestamp]} message
+         new-message {:id (or message-id (random-uuid))
                       :session-id session-id
                       :role (keyword role)
                       :text text
                       :timestamp (js/Date. timestamp)
-                      :status :confirmed})
+                      :status :confirmed}]
+     {:db (update-in db [:messages session-id]
+                     (fn [msgs]
+                       (-> (or msgs [])
+                           (conj new-message)
+                           db/prune-messages)))
       :dispatch [:ws/send-message-ack message-id]})))
 
 ;; ============================================================================
@@ -281,7 +290,9 @@
                             :status :confirmed})))
                   ;; Filter out internal messages (no role means it's not a user/assistant message)
                   (filter :role)
-                  (vec)))))
+                  (vec)
+                  ;; Apply message pruning to limit memory usage
+                  (db/prune-messages)))))
 
 (rf/reg-event-db
  :sessions/handle-updated
@@ -426,16 +437,20 @@
  :prompt/send
  (fn [{:keys [db]} [_ {:keys [text session-id working-directory system-prompt]}]]
    (let [ios-session-id (:ios-session-id db)
-         message-id (str (random-uuid))]
+         message-id (str (random-uuid))
+         new-message {:id message-id
+                      :session-id session-id
+                      :role :user
+                      :text text
+                      :timestamp (js/Date.)
+                      :status :sending}]
      {:db (-> db
               (update :locked-sessions conj session-id)
-              (update-in [:messages session-id] (fnil conj [])
-                         {:id message-id
-                          :session-id session-id
-                          :role :user
-                          :text text
-                          :timestamp (js/Date.)
-                          :status :sending}))
+              (update-in [:messages session-id]
+                         (fn [msgs]
+                           (-> (or msgs [])
+                               (conj new-message)
+                               db/prune-messages))))
       :ws/send {:type "prompt"
                 :text text
                 :ios-session-id ios-session-id

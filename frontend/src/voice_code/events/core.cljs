@@ -202,7 +202,11 @@
  (fn [db [_ session-id message]]
    (let [is-active? (= session-id (:active-session-id db))
          is-assistant? (= :assistant (:role message))]
-     (cond-> (update-in db [:messages session-id] (fnil conj []) message)
+     (cond-> (update-in db [:messages session-id]
+                        (fn [msgs]
+                          (-> (or msgs [])
+                              (conj message)
+                              db/prune-messages)))
        ;; Increment unread count for assistant messages on non-active sessions
        (and is-assistant? (not is-active?))
        (update-in [:sessions session-id :unread-count] (fnil inc 0))))))
@@ -220,7 +224,11 @@
 (rf/reg-event-db
  :messages/add-many
  (fn [db [_ session-id messages]]
-   (update-in db [:messages session-id] (fnil into []) messages)))
+   (update-in db [:messages session-id]
+              (fn [existing]
+                (-> (or existing [])
+                    (into messages)
+                    db/prune-messages)))))
 
 (rf/reg-event-db
  :messages/clear

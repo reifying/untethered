@@ -132,6 +132,46 @@
      (rf/dispatch-sync [:messages/clear "s1"])
      (is (= [] @(rf/subscribe [:messages/for-session "s1"]))))))
 
+(deftest message-pruning-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "messages/add prunes when over limit"
+     ;; Add max-messages-per-session + 10 messages
+     (doseq [i (range (+ db/max-messages-per-session 10))]
+       (rf/dispatch-sync [:messages/add "s1" {:id (str "m" i) :text (str "Message " i)}]))
+     (let [msgs @(rf/subscribe [:messages/for-session "s1"])]
+       ;; Should be pruned to max
+       (is (= db/max-messages-per-session (count msgs)))
+       ;; Should keep newest (last added)
+       (is (= "m10" (:id (first msgs))))
+       (is (= (str "m" (+ db/max-messages-per-session 9)) (:id (last msgs))))))
+
+   (testing "messages/add-many prunes when over limit"
+     (rf/dispatch-sync [:messages/clear "s1"])
+     ;; Add 60 messages at once
+     (let [messages (vec (for [i (range 60)]
+                           {:id (str "bulk" i) :text (str "Bulk " i)}))]
+       (rf/dispatch-sync [:messages/add-many "s1" messages]))
+     (let [msgs @(rf/subscribe [:messages/for-session "s1"])]
+       (is (= db/max-messages-per-session (count msgs)))
+       ;; Should keep newest
+       (is (= "bulk10" (:id (first msgs))))
+       (is (= "bulk59" (:id (last msgs))))))
+
+   (testing "messages stay under limit after pruning"
+     (rf/dispatch-sync [:messages/clear "s1"])
+     ;; Add exactly at limit
+     (let [messages (vec (for [i (range db/max-messages-per-session)]
+                           {:id (str "exact" i) :text (str "Exact " i)}))]
+       (rf/dispatch-sync [:messages/add-many "s1" messages]))
+     (is (= db/max-messages-per-session (count @(rf/subscribe [:messages/for-session "s1"]))))
+     ;; Add one more - should still be at limit
+     (rf/dispatch-sync [:messages/add "s1" {:id "one-more" :text "One more"}])
+     (is (= db/max-messages-per-session (count @(rf/subscribe [:messages/for-session "s1"]))))
+     ;; Newest should be the one we just added
+     (is (= "one-more" (:id (last @(rf/subscribe [:messages/for-session "s1"]))))))))
+
 ;; ============================================================================
 ;; Unread Message Tracking
 ;; ============================================================================

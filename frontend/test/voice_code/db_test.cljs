@@ -76,3 +76,35 @@
                  (assoc-in [:sessions "session-1"] session)
                  (assoc :active-session-id "session-1"))]
       (is (= session (db/active-session db))))))
+
+(deftest max-messages-per-session-test
+  (testing "max-messages-per-session is defined"
+    (is (number? db/max-messages-per-session))
+    (is (pos? db/max-messages-per-session))
+    (is (= 50 db/max-messages-per-session))))
+
+(deftest prune-messages-test
+  (testing "returns same messages when under limit"
+    (let [messages [{:id "m1"} {:id "m2"} {:id "m3"}]]
+      (is (= messages (db/prune-messages messages)))))
+
+  (testing "returns same messages when at limit"
+    (let [messages (vec (for [i (range db/max-messages-per-session)]
+                          {:id (str "m" i)}))]
+      (is (= db/max-messages-per-session (count (db/prune-messages messages))))
+      (is (= messages (db/prune-messages messages)))))
+
+  (testing "prunes oldest messages when over limit"
+    (let [messages (vec (for [i (range 60)]
+                          {:id (str "m" i)}))
+          pruned (db/prune-messages messages)]
+      (is (= db/max-messages-per-session (count pruned)))
+      ;; Should keep the newest (last) messages
+      (is (= "m10" (:id (first pruned))))
+      (is (= "m59" (:id (last pruned))))))
+
+  (testing "handles empty messages"
+    (is (= [] (db/prune-messages []))))
+
+  (testing "handles nil messages"
+    (is (= nil (db/prune-messages nil)))))
