@@ -73,6 +73,17 @@
  (fn [db [_ enabled?]]
    (assoc-in db [:ui :auto-scroll?] enabled?)))
 
+(rf/reg-event-db
+ :ui/toggle-input-mode
+ (fn [db _]
+   (update-in db [:ui :input-mode]
+              #(if (= % :voice) :text :voice))))
+
+(rf/reg-event-db
+ :ui/set-input-mode
+ (fn [db [_ mode]]
+   (assoc-in db [:ui :input-mode] mode)))
+
 ;; ============================================================================
 ;; Settings
 ;; ============================================================================

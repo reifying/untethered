@@ -52,7 +52,8 @@
    :ui {:loading? false
         :current-error nil
         :drafts {} ; session-id -> draft text
-        :auto-scroll? true}}) ; session-id -> draft text
+        :auto-scroll? true
+        :input-mode :voice}}) ; session-id -> draft text
 
 (defn session-locked?
   "Check if a session is currently locked (processing a prompt)."
