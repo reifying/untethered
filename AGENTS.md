@@ -55,6 +55,75 @@ If `clojurescript_eval` returns "No available JS runtime", this means shadow-clj
 
 **Note:** File operations (read, edit, grep, glob) work without a JS runtime - only `clojurescript_eval` requires the app running.
 
+## REPL Testing
+
+The ClojureScript REPL enables testing UI interactions without simulating touch events.
+
+### Taking Screenshots
+
+```bash
+xcrun simctl io booted screenshot /tmp/app-screenshot.png
+```
+
+Then use the Read tool to view the image.
+
+### Authenticating via REPL
+
+```clojure
+;; Set connection settings and connect
+(do
+  (require '[re-frame.core :as rf])
+  (rf/dispatch-sync [:settings/update :server-port 8080])
+  (swap! re-frame.db/app-db assoc :api-key "untethered-<key-from-~/.untethered/api-key>")
+  (swap! re-frame.db/app-db assoc :ios-session-id (str (random-uuid)))
+  (voice-code.websocket/connect! {:server-url "localhost" :server-port 8080})
+  "Connecting...")
+
+;; Check connection state
+{:status @(rf/subscribe [:connection/status])
+ :authenticated? @(rf/subscribe [:connection/authenticated?])
+ :session-count (count @(rf/subscribe [:sessions/all]))}
+```
+
+### Programmatic Navigation
+
+The `voice-code.views.core` namespace exposes a `nav-ref` and `navigate!` function:
+
+```clojure
+;; Navigate to a screen
+(voice-code.views.core/navigate! "SessionList" 
+  {:directory "/path/to/project" :directoryName "my-project"})
+
+;; Go back
+(.goBack voice-code.views.core/nav-ref)
+
+;; Check if navigation is ready
+(.isReady voice-code.views.core/nav-ref)
+```
+
+**Available screens:** DirectoryList, SessionList, Conversation, CommandMenu, CommandExecution, Resources, Recipes, Settings
+
+### Checking App State
+
+```clojure
+;; View entire app-db
+@re-frame.db/app-db
+
+;; Check specific subscriptions
+@(rf/subscribe [:sessions/all])
+@(rf/subscribe [:connection/status])
+(get-in @re-frame.db/app-db [:connection :error])
+```
+
+### Hot Reload After Code Changes
+
+```clojure
+;; Reload a namespace after editing
+(require '[voice-code.views.directory-list] :reload)
+```
+
+Note: Hot reloading may reset app state. You'll need to re-authenticate after reloading core namespaces.
+
 ## Quick Reference
 
 ```bash
