@@ -59,6 +59,18 @@ If `clojurescript_eval` returns "No available JS runtime", this means shadow-clj
 
 The ClojureScript REPL enables testing UI interactions without simulating touch events.
 
+### Prefer REPL State Over Screenshots
+
+Use REPL inspection instead of screenshots when verifying app state:
+
+```clojure
+(.getCurrentRoute voice-code.views.core/nav-ref)  ;; Current screen
+(count (get-in @re-frame.db/app-db [:messages "session-id"]))  ;; Message count
+@(rf/subscribe [:connection/status])  ;; Connection state
+```
+
+Reserve screenshots for verifying visual appearance only.
+
 ### Taking Screenshots
 
 ```bash
@@ -157,7 +169,7 @@ bd sync               # Sync with git
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
+   bd sync  # Ignore "git status failed" warning in worktrees - it's a known issue
    git push
    git status  # MUST show "up to date with origin"
    ```
