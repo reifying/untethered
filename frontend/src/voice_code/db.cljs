@@ -50,6 +50,7 @@
               :system-prompt "" ; Custom system prompt appended to Claude
               :respect-silent-mode true ; iOS: silence when phone is on vibrate
               :continue-playback-when-locked true ; Continue audio when screen locked
+              :auto-speak-responses false ; Auto-speak Claude responses via TTS
               :queue-enabled false ; Show threads in queue
               :priority-queue-enabled false ; Priority-based session ordering
               :resource-storage-location "~/Downloads"} ; Upload destination

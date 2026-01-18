@@ -226,6 +226,10 @@
     (when (= "ios" (.-OS Platform))
       [:> rn/View
        [section-header "Audio Playback"]
+       [toggle-row {:label "Auto-speak responses"
+                    :value (:auto-speak-responses settings)
+                    :on-change #(rf/dispatch [:settings/update :auto-speak-responses %])
+                    :description "Automatically speak Claude's responses using text-to-speech"}]
        [toggle-row {:label "Silence speech when on vibrate"
                     :value (:respect-silent-mode settings)
                     :on-change #(rf/dispatch [:settings/update :respect-silent-mode %])

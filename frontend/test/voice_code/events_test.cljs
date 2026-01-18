@@ -652,3 +652,63 @@
    (testing "recipes/exit removes recipe from active"
      (rf/dispatch-sync [:recipes/exit "s1"])
      (is (nil? @(rf/subscribe [:recipes/active-for-session "s1"]))))))
+
+;; ============================================================================
+;; Auto-Speak Response Events
+;; ============================================================================
+
+(deftest auto-speak-responses-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "auto-speak setting defaults to false"
+     (is (false? (:auto-speak-responses @(rf/subscribe [:settings/all])))))
+
+   (testing "auto-speak can be enabled in settings"
+     (rf/dispatch-sync [:settings/update :auto-speak-responses true])
+     (is (true? (:auto-speak-responses @(rf/subscribe [:settings/all])))))
+
+   (testing "handle-response adds message when auto-speak disabled"
+     ;; First disable auto-speak
+     (rf/dispatch-sync [:settings/update :auto-speak-responses false])
+
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Hello from Claude"
+                         :session-id "s1"
+                         :message-id "msg-1"}])
+
+     (let [msgs @(rf/subscribe [:messages/for-session "s1"])]
+       (is (= 1 (count msgs)))
+       (is (= "Hello from Claude" (:text (first msgs))))))
+
+   (testing "handle-response with auto-speak enabled adds message"
+     ;; Clear messages and enable auto-speak
+     (rf/dispatch-sync [:db/update-in [:messages] (constantly {})])
+     (rf/dispatch-sync [:settings/update :auto-speak-responses true])
+
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Auto-spoken response"
+                         :session-id "s2"
+                         :message-id "msg-2"}])
+
+     (let [msgs @(rf/subscribe [:messages/for-session "s2"])]
+       (is (= 1 (count msgs)))
+       (is (= "Auto-spoken response" (:text (first msgs))))))
+
+   (testing "auto-speak suppressed when voice listening"
+     ;; Set voice-listening state
+     (rf/dispatch-sync [:db/update-in [:ui :voice-listening?] (constantly true)])
+     (rf/dispatch-sync [:settings/update :auto-speak-responses true])
+
+     ;; The event handler checks voice-listening? to suppress TTS
+     ;; This test verifies the message is still added (TTS dispatch is an effect we can't test here)
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Should not speak"
+                         :session-id "s3"
+                         :message-id "msg-3"}])
+
+     (let [msgs @(rf/subscribe [:messages/for-session "s3"])]
+       (is (= 1 (count msgs)))))))

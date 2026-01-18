@@ -150,17 +150,23 @@
  :ws/handle-response
  (fn [{:keys [db]} [_ {:keys [success text session-id message-id usage cost error]}]]
    (if success
-     {:db (-> db
-              (update-in [:messages session-id] (fnil conj [])
-                         {:id (random-uuid)
-                          :session-id session-id
-                          :role :assistant
-                          :text text
-                          :timestamp (js/Date.)
-                          :status :confirmed})
-              (update :locked-sessions disj session-id))
-      :dispatch-n [[:ws/send-message-ack message-id]
-                   [:persistence/save-message session-id]]}
+     (let [auto-speak? (get-in db [:settings :auto-speak-responses])
+           voice-listening? (get-in db [:ui :voice-listening?])
+           ;; Don't auto-speak if user is in voice input mode (prevent feedback)
+           should-speak? (and auto-speak? (not voice-listening?))]
+       {:db (-> db
+                (update-in [:messages session-id] (fnil conj [])
+                           {:id (random-uuid)
+                            :session-id session-id
+                            :role :assistant
+                            :text text
+                            :timestamp (js/Date.)
+                            :status :confirmed})
+                (update :locked-sessions disj session-id))
+        :dispatch-n (cond-> [[:ws/send-message-ack message-id]
+                             [:persistence/save-message session-id]]
+                      should-speak?
+                      (conj [:voice/speak-response text]))})
      {:db (-> db
               (assoc-in [:ui :current-error] error)
               (update :locked-sessions disj session-id))})))
