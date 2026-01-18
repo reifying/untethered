@@ -393,21 +393,40 @@
    [setting-row {:label "Platform"
                  :value (.-OS Platform)}]])
 
+(defn- debug-section
+  "Debug tools section with link to debug logs."
+  [navigation]
+  [:> rn/View
+   [section-header "Debug"]
+   [setting-row {:label "Debug Logs"
+                 :on-press #(when navigation (.navigate navigation "DebugLogs"))
+                 :accessory [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "→"]}]
+   [:> rn/View {:style {:padding-horizontal 16
+                        :padding-bottom 8
+                        :background-color "#FFFFFF"
+                        :border-bottom-width 1
+                        :border-bottom-color "#F0F0F0"}}
+    [:> rn/Text {:style {:font-size 12 :color "#666"}}
+     "View captured console logs for debugging"]]])
+
 (defn settings-view
-  "Main settings screen with full feature parity to iOS SettingsView."
-  [_props]
-  [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
-   [:> rn/ScrollView {:content-container-style {:padding-bottom 40}}
-    [connection-status-section]
-    [server-settings-section]
-    [voice-settings-section]
-    [audio-playback-section]
-    [recent-sessions-section]
-    [queue-settings-section]
-    [resources-section]
-    [message-size-section]
-    [system-prompt-section]
-    [connection-test-section]
-    [account-section]
-    [help-section]
-    [about-section]]])
+  "Main settings screen with full feature parity to iOS SettingsView.
+   Props is a ClojureScript map (converted by r/reactify-component)."
+  [props]
+  (let [navigation (:navigation props)]
+    [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
+     [:> rn/ScrollView {:content-container-style {:padding-bottom 40}}
+      [connection-status-section]
+      [server-settings-section]
+      [voice-settings-section]
+      [audio-playback-section]
+      [recent-sessions-section]
+      [queue-settings-section]
+      [resources-section]
+      [message-size-section]
+      [system-prompt-section]
+      [connection-test-section]
+      [account-section]
+      [debug-section navigation]
+      [help-section]
+      [about-section]]]))

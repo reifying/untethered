@@ -16,7 +16,8 @@
             [voice-code.views.command-history :refer [command-history-view]]
             [voice-code.views.command-output-detail :refer [command-output-detail-view]]
             [voice-code.views.resources :refer [resources-view]]
-            [voice-code.views.recipes :refer [recipes-view]]))
+            [voice-code.views.recipes :refer [recipes-view]]
+            [voice-code.views.debug-logs :refer [debug-logs-view]]))
 
 (def Stack (createNativeStackNavigator))
 
@@ -132,7 +133,13 @@
             [:> (.-Screen Stack)
              {:name "Settings"
               :component (r/reactify-component settings-view)
-              :options #js {:title "Settings"}}]]])))}))
+              :options #js {:title "Settings"}}]
+
+            ;; Debug logs
+            [:> (.-Screen Stack)
+             {:name "DebugLogs"
+              :component (r/reactify-component debug-logs-view)
+              :options #js {:title "Debug Logs"}}]]])))}))
 
 (defn navigate!
   "Navigate to a screen programmatically. Useful for REPL testing.
