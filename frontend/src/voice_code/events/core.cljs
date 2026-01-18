@@ -178,9 +178,8 @@
 (rf/reg-event-db
  :auth/scan-qr
  (fn [db _]
-   ;; QR scanning would be implemented with native module
-   ;; For now, this is a placeholder
-   db))
+   ;; Enable QR scanning mode - the auth view will show the scanner
+   (assoc-in db [:qr :scanning?] true)))
 
 ;; NOTE: :prompt/send, :prompt/send-from-draft, :session/subscribe, and
 ;; :sessions/resubscribe-all are defined in events/websocket.cljs to keep
