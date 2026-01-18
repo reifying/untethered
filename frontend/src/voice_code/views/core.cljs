@@ -26,7 +26,11 @@
                     :card "#FFFFFF"
                     :text "#000000"
                     :border "#E5E5E5"
-                    :notification "#FF3B30"}})
+                    :notification "#FF3B30"}
+       :fonts #js {:regular #js {:fontFamily "System" :fontWeight "400"}
+                   :medium #js {:fontFamily "System" :fontWeight "500"}
+                   :bold #js {:fontFamily "System" :fontWeight "700"}
+                   :heavy #js {:fontFamily "System" :fontWeight "900"}}})
 
 (defn root-navigator
   "Main navigation stack.
