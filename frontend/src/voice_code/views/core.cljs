@@ -3,7 +3,7 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn]
-            ["@react-navigation/native" :refer [NavigationContainer]]
+            ["@react-navigation/native" :refer [NavigationContainer createNavigationContainerRef]]
             ["@react-navigation/native-stack" :refer [createNativeStackNavigator]]
             [voice-code.views.auth :refer [auth-view]]
             [voice-code.views.directory-list :refer [directory-list-view]]
@@ -16,6 +16,9 @@
             [voice-code.views.recipes :refer [recipes-view]]))
 
 (def Stack (createNativeStackNavigator))
+
+;; Navigation ref for programmatic navigation (e.g., from REPL)
+(defonce nav-ref (createNavigationContainerRef))
 
 (defn navigation-theme
   "Theme configuration for React Navigation."
@@ -41,7 +44,8 @@
       ;; Show auth view directly when not authenticated
       [auth-view]
       ;; Show full navigation when authenticated
-      [:> NavigationContainer {:theme (navigation-theme)}
+      [:> NavigationContainer {:ref nav-ref
+                               :theme (navigation-theme)}
        [:> (.-Navigator Stack)
         {:initial-route-name "DirectoryList"
          :screen-options #js {:headerShown true
@@ -101,6 +105,15 @@
          {:name "Settings"
           :component (r/reactify-component settings-view)
           :options #js {:title "Settings"}}]]])))
+
+(defn navigate!
+  "Navigate to a screen programmatically. Useful for REPL testing.
+   Example: (navigate! \"SessionList\" {:directory \"/path/to/dir\" :directoryName \"my-project\"})"
+  ([screen-name]
+   (navigate! screen-name nil))
+  ([screen-name params]
+   (when (.isReady nav-ref)
+     (.navigate nav-ref screen-name (clj->js params)))))
 
 (defn app-root
   "Main app component with navigation."
