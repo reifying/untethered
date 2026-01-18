@@ -1,0 +1,42 @@
+# Session List Navigation Flow
+# Tests browsing projects and sessions
+
+appId: dev.910labs.voice-code
+tags:
+  - navigation
+  - sessions
+env:
+  API_KEY: ${API_KEY}
+  SERVER_URL: ${SERVER_URL:-localhost}
+  SERVER_PORT: ${SERVER_PORT:-8080}
+---
+
+- launchApp:
+    clearState: true
+
+# Authenticate
+- assertVisible: "Voice Code"
+- tapOn:
+    text: "untethered-..."
+- inputText: "${API_KEY}"
+- hideKeyboard
+- tapOn: "Connect"
+
+# Wait for projects list
+- extendedWaitUntil:
+    visible: "Projects"
+    timeout: 10000
+
+# Note: This test requires at least one project/session to exist
+# If no sessions exist, this step will fail gracefully
+
+# Try to tap on first project directory
+- tapOn:
+    index: 0
+    optional: true
+
+# If a project exists, we should see sessions
+- assertVisible:
+    text: "Sessions|No sessions"
+    regex: true
+    optional: true

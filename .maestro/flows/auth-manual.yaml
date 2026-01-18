@@ -1,0 +1,51 @@
+# Manual Authentication Flow
+# Tests entering API key manually and connecting
+
+appId: dev.910labs.voice-code
+tags:
+  - auth
+env:
+  # These should be set via `maestro test --env API_KEY=xxx`
+  API_KEY: ${API_KEY}
+  SERVER_URL: ${SERVER_URL:-localhost}
+  SERVER_PORT: ${SERVER_PORT:-8080}
+---
+
+- launchApp:
+    clearState: true
+
+# Wait for auth screen
+- assertVisible: "Voice Code"
+
+# Configure server URL (clear default and enter custom)
+- tapOn:
+    text: "Server URL"
+    optional: true
+- clearText
+- inputText: "${SERVER_URL}"
+- hideKeyboard
+
+# Configure port
+- tapOn:
+    text: "Port"
+    optional: true
+- clearText
+- inputText: "${SERVER_PORT}"
+- hideKeyboard
+
+# Enter API key
+- tapOn:
+    text: "untethered-..."
+- inputText: "${API_KEY}"
+- hideKeyboard
+
+# Tap connect
+- tapOn: "Connect"
+
+# Wait for connection
+- extendedWaitUntil:
+    visible: "Projects"
+    timeout: 10000
+
+# Verify we reached the main app (directory list)
+- assertVisible: "Projects"

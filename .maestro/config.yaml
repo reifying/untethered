@@ -1,0 +1,32 @@
+# Maestro E2E Test Configuration for Voice Code Mobile
+# See: https://maestro.mobile.dev/
+
+# App identifiers
+appId: dev.910labs.voice-code
+
+# Default flows directory
+flows: flows/
+
+# Test environment settings
+onFlowStart:
+  - launchApp:
+      clearState: true
+      clearKeychain: true
+
+# Tags for organizing test suites
+tags:
+  smoke:
+    - flows/app-launch.yaml
+    - flows/auth-manual.yaml
+  auth:
+    - flows/auth-manual.yaml
+    - flows/auth-qr-scan.yaml
+  navigation:
+    - flows/navigation-basic.yaml
+    - flows/session-list.yaml
+  conversation:
+    - flows/send-prompt.yaml
+  commands:
+    - flows/command-execution.yaml
+  full:
+    - flows/*.yaml

@@ -19,6 +19,7 @@ WRAP := ./scripts/wrap-command
 .PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
 .PHONY: rn-ios rn-android rn-build-ios rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-boot-sim rn-screenshot rn-restart rn-reload manual-ralph
+.PHONY: rn-test rn-e2e rn-e2e-smoke rn-e2e-auth rn-e2e-nav
 
 # React Native Configuration
 RN_DIR := $(PROJECT_ROOT)frontend
@@ -118,6 +119,11 @@ help:
 	@echo "  rn-screenshot      - Take screenshot of simulator"
 	@echo "  rn-restart         - Restart the iOS app (terminate and relaunch)"
 	@echo "  rn-reload          - Trigger JS bundle reload"
+	@echo "  rn-test            - Run ClojureScript unit tests"
+	@echo "  rn-e2e             - Run all Maestro E2E tests (requires app + backend)"
+	@echo "  rn-e2e-smoke       - Run smoke E2E tests (no backend required)"
+	@echo "  rn-e2e-auth        - Run auth E2E tests"
+	@echo "  rn-e2e-nav         - Run navigation E2E tests"
 	@echo ""
 	@echo "Claude automation:"
 	@echo "  manual-ralph       - Run Claude with PROMPT.md (non-interactive)"
@@ -504,6 +510,38 @@ rn-reload:
 	@curl -s "http://localhost:8081/reload" >/dev/null 2>&1 || echo "Metro may not support reload endpoint"
 	@echo "Reload triggered (if Metro supports it)"
 
+# Run ClojureScript unit tests
+rn-test:
+	@echo "Running ClojureScript unit tests..."
+	cd $(RN_DIR) && npm test
+
+# Maestro E2E Tests
+# Requires: maestro CLI installed, app running on simulator
+
+# Run all Maestro E2E tests
+rn-e2e:
+	@echo "Running all Maestro E2E tests..."
+	@echo "Note: Requires app running and backend started"
+	maestro test $(PROJECT_ROOT).maestro/
+
+# Run smoke tests (no backend required)
+rn-e2e-smoke:
+	@echo "Running smoke E2E tests..."
+	maestro test $(PROJECT_ROOT).maestro/flows/app-launch.yaml
+	maestro test $(PROJECT_ROOT).maestro/flows/auth-qr-scan.yaml
+
+# Run auth tests
+rn-e2e-auth:
+	@echo "Running auth E2E tests..."
+	maestro test $(PROJECT_ROOT).maestro/flows/auth-manual.yaml
+	maestro test $(PROJECT_ROOT).maestro/flows/auth-qr-scan.yaml
+
+# Run navigation tests
+rn-e2e-nav:
+	@echo "Running navigation E2E tests..."
+	maestro test $(PROJECT_ROOT).maestro/flows/navigation-basic.yaml
+	maestro test $(PROJECT_ROOT).maestro/flows/session-list.yaml
+
 # Run Claude in non-interactive mode with PROMPT.md
 manual-ralph:
-	@claude --print "$$(cat $(PROJECT_ROOT)PROMPT.md)"
+	@cat $(PROJECT_ROOT)PROMPT.md | claude --print -
