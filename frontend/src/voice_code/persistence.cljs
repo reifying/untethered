@@ -293,50 +293,90 @@
 ;; Keychain Storage (API Key)
 ;; ============================================================================
 
+;; Keychain atom for fallback/test mode only
 (defonce ^:private keychain-atom (atom nil))
+
+;; Feature flag for using real keychain vs stub (disabled in Node.js tests)
+(def ^:private use-real-keychain?
+  (and (exists? js/navigator)
+       (not= "node" (.-product js/navigator))))
+
+;; Dynamically loaded keychain module (only in React Native environment)
+(defonce ^:private keychain-module
+  (when use-real-keychain?
+    (try
+      (js/require "react-native-keychain")
+      (catch :default e
+        (js/console.warn "react-native-keychain not available:" e)
+        nil))))
 
 (defn store-api-key!
   "Store API key securely in Keychain.
    Returns a promise."
   [api-key]
-  (js/Promise.
-   (fn [resolve reject]
-     ;; In real implementation:
-     ;; (.setGenericPassword keychain "voicecode" api-key)
-
-     ;; Stub: store in memory
-     (reset! keychain-atom api-key)
-     (js/console.log "API key stored (stub mode)")
-     (resolve true))))
+  (if (and use-real-keychain? keychain-module)
+    ;; Real implementation using react-native-keychain
+    (-> (.setGenericPassword keychain-module "voicecode" api-key)
+        (.then (fn [result]
+                 (js/console.log "API key stored in Keychain")
+                 result))
+        (.catch (fn [error]
+                  (js/console.error "Failed to store API key:" error)
+                  ;; Fall back to memory
+                  (reset! keychain-atom api-key)
+                  true)))
+    ;; Stub: store in memory (for Node.js tests)
+    (js/Promise.
+     (fn [resolve _reject]
+       (reset! keychain-atom api-key)
+       (js/console.log "API key stored (stub mode)")
+       (resolve true)))))
 
 (defn retrieve-api-key!
   "Retrieve API key from Keychain.
    Returns a promise resolving to the API key or nil."
   []
-  (js/Promise.
-   (fn [resolve _reject]
-     ;; In real implementation:
-     ;; (-> (.getGenericPassword keychain)
-     ;;     (.then #(if % (.-password %) nil))
-     ;;     (.then resolve)
-     ;;     (.catch #(resolve nil)))
-
-     ;; Stub: return from memory
-     (resolve @keychain-atom))))
+  (if (and use-real-keychain? keychain-module)
+    ;; Real implementation using react-native-keychain
+    (-> (.getGenericPassword keychain-module)
+        (.then (fn [credentials]
+                 (if credentials
+                   (do
+                     (js/console.log "API key retrieved from Keychain")
+                     (.-password credentials))
+                   (do
+                     (js/console.log "No API key found in Keychain")
+                     nil))))
+        (.catch (fn [error]
+                  (js/console.error "Failed to retrieve API key:" error)
+                  ;; Fall back to memory
+                  @keychain-atom)))
+    ;; Stub: return from memory (for Node.js tests)
+    (js/Promise.
+     (fn [resolve _reject]
+       (resolve @keychain-atom)))))
 
 (defn delete-api-key!
   "Delete API key from Keychain.
    Returns a promise."
   []
-  (js/Promise.
-   (fn [resolve _reject]
-     ;; In real implementation:
-     ;; (.resetGenericPassword keychain)
-
-     ;; Stub: clear from memory
-     (reset! keychain-atom nil)
-     (js/console.log "API key deleted (stub mode)")
-     (resolve true))))
+  (if (and use-real-keychain? keychain-module)
+    ;; Real implementation using react-native-keychain
+    (-> (.resetGenericPassword keychain-module)
+        (.then (fn [result]
+                 (js/console.log "API key deleted from Keychain")
+                 (reset! keychain-atom nil)
+                 result))
+        (.catch (fn [error]
+                  (js/console.error "Failed to delete API key:" error)
+                  (reset! keychain-atom nil)
+                  true)))
+    ;; Stub: clear from memory (for Node.js tests)
+    (js/Promise.
+     (fn [resolve _reject]
+       (reset! keychain-atom nil)
+       (js/console.log "API key deleted (stub mode)")
+       (resolve true)))))
 
 ;; ============================================================================
 ;; re-frame Effect Handlers
