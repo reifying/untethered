@@ -43,8 +43,19 @@ REPL-driven development for React Native + ClojureScript.
 
 ### Navigate Programmatically
 ```clojure
-(voice-code.views.core/navigate! "ScreenName" {:param "value"})
+(voice-code.views.core/navigate! "ScreenName" #js {:param "value"})
 (.goBack voice-code.views.core/nav-ref)
+```
+
+### Common Events
+```clojure
+;; Add message to conversation
+(rf/dispatch [:messages/add "session-id" 
+              {:role :assistant :text "Hello" :timestamp (js/Date.) :id (str (random-uuid))}])
+
+;; Lock/unlock session
+(rf/dispatch [:sessions/lock "session-id"])
+(rf/dispatch [:sessions/unlock "session-id"])
 ```
 
 ## Workflow

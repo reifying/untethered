@@ -90,9 +90,9 @@ Then use the Read tool to view the image.
 The `voice-code.views.core` namespace exposes a `nav-ref` and `navigate!` function:
 
 ```clojure
-;; Navigate to a screen
+;; Navigate to a screen (note: params must be #js object)
 (voice-code.views.core/navigate! "SessionList" 
-  {:directory "/path/to/project" :directoryName "my-project"})
+  #js {:directory "/path/to/project" :directoryName "my-project"})
 
 ;; Go back
 (.goBack voice-code.views.core/nav-ref)
@@ -123,6 +123,17 @@ The `voice-code.views.core` namespace exposes a `nav-ref` and `navigate!` functi
 ```
 
 Note: Hot reloading may reset app state. You'll need to re-authenticate after reloading core namespaces.
+
+### Adding Test Data
+
+```clojure
+;; Add a long message to test truncation
+(rf/dispatch [:messages/add "session-id" 
+              {:role :assistant
+               :text (apply str (repeat 150 "Test. "))
+               :timestamp (js/Date.)
+               :id (str (random-uuid))}])
+```
 
 ## Quick Reference
 
