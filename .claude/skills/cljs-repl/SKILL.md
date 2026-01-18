@@ -1,67 +1,56 @@
 ---
 name: cljs-repl
 description: This skill should be used when the user asks to "evaluate ClojureScript", "use the REPL", "check app state", "debug via REPL", "inspect subscriptions", "dispatch events", or needs to interact with the running React Native app programmatically.
+version: 0.1.0
 ---
 
 # ClojureScript REPL Development
 
-You are in REPL-driven development mode for this React Native + ClojureScript project.
+REPL-driven development for React Native + ClojureScript.
 
 ## Available REPLs
 
-- **Frontend (ClojureScript)**: shadow-cljs - Use `clojurescript_eval` via `mcp__clojure-mcp-frontend`
-- **Backend (Clojure)**: JVM nREPL on port 7894 - Use `clojure_eval` via `mcp__clojure-mcp`
+| REPL | Tool | Port |
+|------|------|------|
+| Frontend (ClojureScript) | `clojurescript_eval` via `mcp__clojure-mcp-frontend` | shadow-cljs |
+| Backend (Clojure) | `clojure_eval` via `mcp__clojure-mcp` | 7894 |
 
-## Quick Reference
+## Essential Operations
 
-### Check REPL Connectivity
+### Verify Connectivity
 ```clojure
-;; Frontend (ClojureScript)
 (+ 1 2)
-
-;; If "No available JS runtime" - app isn't running
 ```
+"No available JS runtime" means the app isn't running.
 
 ### Check App State
-```clojure
-(do
-  (require '[re-frame.core :as rf])
-  {:status @(rf/subscribe [:connection/status])
-   :authenticated? @(rf/subscribe [:connection/authenticated?])
-   :session-count (count @(rf/subscribe [:sessions/all]))})
-```
-
-### View Full App DB
 ```clojure
 @re-frame.db/app-db
 ```
 
-### Hot Reload After Code Changes
+### Check Connection Status
+```clojure
+(do
+  (require '[re-frame.core :as rf])
+  {:status @(rf/subscribe [:connection/status])
+   :authenticated? @(rf/subscribe [:connection/authenticated?])})
+```
+
+### Hot Reload After Edits
 ```clojure
 (require '[voice-code.views.directory-list] :reload)
 ```
 
 ### Navigate Programmatically
 ```clojure
-;; Navigate to screen
-(voice-code.views.core/navigate! "SessionList"
-  {:directory "/path/to/project" :directoryName "my-project"})
-
-;; Go back
+(voice-code.views.core/navigate! "ScreenName" {:param "value"})
 (.goBack voice-code.views.core/nav-ref)
-
-;; Check navigation ready
-(.isReady voice-code.views.core/nav-ref)
 ```
 
-### Available Screens
-- DirectoryList, SessionList, Conversation, CommandMenu
-- CommandExecution, Resources, Recipes, Settings
+## Workflow
 
-## REPL-Driven Workflow
-
-1. **EXPLORE** - Use tools to understand the codebase
-2. **DEVELOP** - Evaluate small pieces in REPL to verify
+1. **EXPLORE** - Read code, check state via REPL
+2. **DEVELOP** - Evaluate small pieces to verify
 3. **EDIT** - Use `clojure_edit` tools for file changes
 4. **VERIFY** - Re-evaluate after editing
 
@@ -70,4 +59,10 @@ You are in REPL-driven development mode for this React Native + ClojureScript pr
 - Tiny steps with rich feedback
 - Build solutions incrementally
 - Test in REPL before committing to files
-- Use structural editing tools (`clojure_edit`, `clojure_edit_replace_sexp`)
+
+## Additional Resources
+
+See `@AGENTS.md` for:
+- Full authentication workflow
+- Screen parameters reference
+- Screenshot and testing procedures
