@@ -1,0 +1,26 @@
+# App Launch Flow
+# Verifies the app launches and displays the auth screen
+
+appId: dev.910labs.voice-code
+tags:
+  - smoke
+  - auth
+---
+
+# Launch the app fresh
+- launchApp:
+    clearState: true
+
+# Verify the auth screen appears
+- assertVisible: "Voice Code"
+- assertVisible: "Connect to your backend"
+
+# Verify server configuration fields
+- assertVisible: "Server"
+- assertVisible: "API Key"
+
+# Verify the QR code option is available
+- assertVisible: "Scan QR Code"
+
+# Verify the connect button exists
+- assertVisible: "Connect"

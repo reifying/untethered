@@ -1,0 +1,44 @@
+# Basic Navigation Flow
+# Tests navigating between main screens after authentication
+
+appId: dev.910labs.voice-code
+tags:
+  - navigation
+env:
+  API_KEY: ${API_KEY}
+  SERVER_URL: ${SERVER_URL:-localhost}
+  SERVER_PORT: ${SERVER_PORT:-8080}
+---
+
+- launchApp:
+    clearState: true
+
+# Authenticate first
+- assertVisible: "Voice Code"
+- tapOn:
+    text: "untethered-..."
+- inputText: "${API_KEY}"
+- hideKeyboard
+- tapOn: "Connect"
+
+# Wait for projects list
+- extendedWaitUntil:
+    visible: "Projects"
+    timeout: 10000
+
+# Verify we're on the directory list
+- assertVisible: "Projects"
+
+# Navigate to Settings
+- tapOn: "Settings"
+- assertVisible: "Settings"
+
+# Verify settings content
+- assertVisible: "Server"
+- assertVisible: "Voice"
+
+# Go back to directory list
+- back
+
+# Verify we returned to projects
+- assertVisible: "Projects"

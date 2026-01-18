@@ -1,0 +1,55 @@
+# Settings Flow
+# Tests viewing and modifying settings
+
+appId: dev.910labs.voice-code
+tags:
+  - settings
+env:
+  API_KEY: ${API_KEY}
+  SERVER_URL: ${SERVER_URL:-localhost}
+  SERVER_PORT: ${SERVER_PORT:-8080}
+---
+
+- launchApp:
+    clearState: true
+
+# Authenticate
+- assertVisible: "Voice Code"
+- tapOn:
+    text: "untethered-..."
+- inputText: "${API_KEY}"
+- hideKeyboard
+- tapOn: "Connect"
+
+# Wait for projects list
+- extendedWaitUntil:
+    visible: "Projects"
+    timeout: 10000
+
+# Navigate to Settings
+- tapOn: "Settings"
+
+# Verify settings screen
+- assertVisible: "Settings"
+
+# Verify Server section
+- assertVisible: "Server"
+
+# Verify Voice section
+- assertVisible:
+    text: "Voice|Voice & Audio"
+    regex: true
+
+# Scroll to see more settings
+- scroll:
+    direction: DOWN
+
+# Verify API Key section
+- assertVisible:
+    text: "API Key|Authenticated"
+    regex: true
+    optional: true
+
+# Go back
+- back
+- assertVisible: "Projects"

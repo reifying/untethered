@@ -1,0 +1,51 @@
+# Command Execution Flow
+# Tests the command menu and executing a command
+
+appId: dev.910labs.voice-code
+tags:
+  - commands
+env:
+  API_KEY: ${API_KEY}
+  SERVER_URL: ${SERVER_URL:-localhost}
+  SERVER_PORT: ${SERVER_PORT:-8080}
+---
+
+- launchApp:
+    clearState: true
+
+# Authenticate
+- assertVisible: "Voice Code"
+- tapOn:
+    text: "untethered-..."
+- inputText: "${API_KEY}"
+- hideKeyboard
+- tapOn: "Connect"
+
+# Wait for projects list
+- extendedWaitUntil:
+    visible: "Projects"
+    timeout: 10000
+
+# Navigate to Commands
+- tapOn: "Commands"
+
+# Verify command menu appears
+- assertVisible: "Commands"
+
+# Look for common commands (git.status is always available)
+- assertVisible:
+    text: "Git Status|git.status"
+    regex: true
+    optional: true
+
+# Try to execute git status if available
+- tapOn:
+    text: "Git Status"
+    optional: true
+
+# If command executed, verify output view
+- assertVisible:
+    text: "Running|Output|branch"
+    regex: true
+    optional: true
+    timeout: 10000

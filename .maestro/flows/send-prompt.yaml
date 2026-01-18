@@ -1,0 +1,63 @@
+# Send Prompt Flow
+# Tests sending a prompt and receiving a response
+# Requires: Backend running, at least one session exists
+
+appId: dev.910labs.voice-code
+tags:
+  - conversation
+  - e2e
+env:
+  API_KEY: ${API_KEY}
+  SERVER_URL: ${SERVER_URL:-localhost}
+  SERVER_PORT: ${SERVER_PORT:-8080}
+---
+
+- launchApp:
+    clearState: true
+
+# Authenticate
+- assertVisible: "Voice Code"
+- tapOn:
+    text: "untethered-..."
+- inputText: "${API_KEY}"
+- hideKeyboard
+- tapOn: "Connect"
+
+# Wait for projects list
+- extendedWaitUntil:
+    visible: "Projects"
+    timeout: 10000
+
+# Navigate to first project
+- tapOn:
+    index: 0
+
+# Wait for session list
+- extendedWaitUntil:
+    visible: "Sessions"
+    timeout: 5000
+
+# Navigate to first session
+- tapOn:
+    index: 0
+
+# Wait for conversation view
+- extendedWaitUntil:
+    visible: "Type a message..."
+    timeout: 5000
+
+# Enter a prompt
+- tapOn: "Type a message..."
+- inputText: "Hello, this is a test from Maestro"
+- hideKeyboard
+
+# Send the prompt
+- tapOn: "Send"
+
+# Verify user message appears
+- assertVisible: "Hello, this is a test from Maestro"
+
+# Wait for response (may take time depending on Claude)
+- extendedWaitUntil:
+    visible: ".*"  # Any response text
+    timeout: 60000

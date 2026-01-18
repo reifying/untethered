@@ -1,0 +1,29 @@
+# QR Code Authentication Flow
+# Tests the QR scanner UI (note: actual scanning requires physical device)
+
+appId: dev.910labs.voice-code
+tags:
+  - auth
+---
+
+- launchApp:
+    clearState: true
+
+# Wait for auth screen
+- assertVisible: "Voice Code"
+
+# Tap the QR code option
+- tapOn: "Scan QR Code"
+
+# Verify scanner overlay appears
+# Note: On simulator without camera, we'll see the fallback view
+- assertVisible:
+    text: "Scan QR Code|Camera not available"
+    regex: true
+
+# Cancel the scanner
+- tapOn: "Cancel"
+
+# Verify we're back at auth screen
+- assertVisible: "Voice Code"
+- assertVisible: "Connect to your backend"
