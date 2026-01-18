@@ -1,6 +1,9 @@
 # Makefile for voice-code project
 # iOS and Backend targets
 
+# Project root directory (allows running make from any directory)
+PROJECT_ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+
 # iOS Configuration
 SCHEME := VoiceCode
 SIMULATOR_NAME := iPhone 16 Pro
@@ -15,13 +18,14 @@ WRAP := ./scripts/wrap-command
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 .PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
-.PHONY: rn-ios rn-android rn-build-ios rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-boot-sim
+.PHONY: rn-ios rn-android rn-build-ios rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-boot-sim rn-screenshot rn-restart rn-reload
 
 # React Native Configuration
-RN_DIR := frontend
+RN_DIR := $(PROJECT_ROOT)frontend
 RN_IOS_DIR := $(RN_DIR)/ios
 RUBY := /opt/homebrew/opt/ruby/bin
 JAVA_HOME := /opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home
+RN_BUNDLE_ID := org.reactjs.native.example.VoiceCodeMobile
 
 # Default target
 help:
@@ -111,6 +115,9 @@ help:
 	@echo "  rn-metro           - Start Metro bundler"
 	@echo "  rn-pod-install     - Install CocoaPods dependencies"
 	@echo "  rn-clean           - Clean React Native build artifacts"
+	@echo "  rn-screenshot      - Take screenshot of simulator"
+	@echo "  rn-restart         - Restart the iOS app (terminate and relaunch)"
+	@echo "  rn-reload          - Trigger JS bundle reload"
 
 # Ensure simulator exists and is booted
 setup-simulator:
@@ -476,3 +483,20 @@ rn-clean:
 	rm -rf $(RN_IOS_DIR)/Pods
 	rm -rf $(RN_DIR)/node_modules/.cache
 	rm -rf ~/Library/Developer/Xcode/DerivedData/VoiceCodeMobile-*
+
+# Take screenshot of running simulator
+rn-screenshot:
+	@xcrun simctl io booted screenshot /tmp/simulator-screenshot.png
+	@echo "Screenshot saved to /tmp/simulator-screenshot.png"
+
+# Restart the React Native iOS app (terminate and relaunch)
+rn-restart:
+	@xcrun simctl terminate booted $(RN_BUNDLE_ID) 2>/dev/null || true
+	@sleep 1
+	@xcrun simctl launch booted $(RN_BUNDLE_ID)
+	@echo "App restarted"
+
+# Reload JS bundle in the running app (Cmd+R equivalent)
+rn-reload:
+	@curl -s "http://localhost:8081/reload" >/dev/null 2>&1 || echo "Metro may not support reload endpoint"
+	@echo "Reload triggered (if Metro supports it)"
