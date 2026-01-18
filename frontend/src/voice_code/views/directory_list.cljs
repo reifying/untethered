@@ -85,7 +85,7 @@
   [navigation]
   [:> rn/TouchableOpacity
    {:style {:padding 8}
-    :on-press #(.navigate navigation "Settings")}
+    :on-press #(when navigation (.navigate navigation "Settings"))}
    [:> rn/Text {:style {:font-size 22}} "⚙️"]])
 
 (defn directory-list-view
@@ -123,15 +123,13 @@
                                   (or (.-directory item) (str (random-uuid))))
                  :render-item
                  (fn [^js obj]
-                   (let [item (.-item obj)
-                         dir-data {:directory (.-directory item)
-                                   :session-count (.-sessionCount item)
-                                   :last-modified (.-lastModified item)}]
+                   (let [item (js->clj (.-item obj) :keywordize-keys true)
+                         directory (:directory item)]
                      (r/as-element
                       [directory-item
-                       (assoc dir-data
+                       (assoc item
                               :on-press #(when nav
                                            (.navigate nav "SessionList"
-                                                      #js {:directory (.-directory item)
-                                                           :directoryName (directory-name (.-directory item))})))])))
+                                                      #js {:directory directory
+                                                           :directoryName (directory-name directory)})))])))
                  :content-container-style {:padding-vertical 8}}]))]))})))
