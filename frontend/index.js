@@ -1,9 +1,5 @@
 /**
  * React Native entry point
- * This file loads the shadow-cljs compiled ClojureScript application
+ * Just loads the shadow-cljs bundle which registers the app via init()
  */
-import {AppRegistry} from 'react-native';
-import App from './app/index';
-import {name as appName} from './app.json';
-
-AppRegistry.registerComponent(appName, () => App);
+import './app/index';
