@@ -6,7 +6,8 @@
             [voice-code.db :as db]
             [voice-code.events.core]
             [voice-code.events.websocket]
-            [voice-code.subs]))
+            [voice-code.subs]
+            [voice-code.voice]))
 
 (use-fixtures :each
   {:before (fn [] (rf/dispatch-sync [:initialize-db]))})
@@ -861,3 +862,49 @@
 
      (let [msgs @(rf/subscribe [:messages/for-session "s3"])]
        (is (= 1 (count msgs)))))))
+
+;; ============================================================================
+;; Voice Auto-Stop TTS Tests
+;; ============================================================================
+
+(deftest voice-auto-stop-tts-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "voice/speaking? subscription reflects state"
+     ;; Initially not speaking
+     (is (false? @(rf/subscribe [:voice/speaking?])))
+
+     ;; Simulate TTS started
+     (rf/dispatch-sync [:voice/tts-started])
+     (is (true? @(rf/subscribe [:voice/speaking?])))
+
+     ;; Simulate TTS stopped
+     (rf/dispatch-sync [:voice/speech-finished])
+     (is (false? @(rf/subscribe [:voice/speaking?]))))
+
+   (testing "voice/listening? subscription reflects state"
+     ;; Initially not listening
+     (is (false? @(rf/subscribe [:voice/listening?])))
+
+     ;; Simulate speech recognition started
+     (rf/dispatch-sync [:voice/speech-started])
+     (is (true? @(rf/subscribe [:voice/listening?])))
+
+     ;; Simulate speech recognition stopped
+     (rf/dispatch-sync [:voice/speech-ended])
+     (is (false? @(rf/subscribe [:voice/listening?]))))
+
+   (testing "auto-speak is suppressed when voice listening"
+     ;; Set voice-listening to true
+     (rf/dispatch-sync [:voice/speech-started])
+     (is (true? @(rf/subscribe [:voice/listening?])))
+
+     ;; Enable auto-speak
+     (rf/dispatch-sync [:settings/update :auto-speak-responses true])
+
+     ;; When response comes in while listening, TTS should be suppressed
+     ;; (The actual TTS dispatch is an effect we can't test, but the logic
+     ;; in handle-response checks voice-listening? before dispatching speak)
+     ;; Verify the state is correctly set so the suppression logic can work
+     (is (true? (get-in @re-frame.db/app-db [:ui :voice-listening?]))))))

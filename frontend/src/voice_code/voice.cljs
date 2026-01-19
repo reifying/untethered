@@ -3,6 +3,9 @@
    Provides speech recognition (input) and text-to-speech (output)."
   (:require [re-frame.core :as rf]))
 
+;; Forward declarations for TTS functions used in voice recognition
+(declare speaking?* stop-speaking!)
+
 ;; ============================================================================
 ;; Feature Detection
 ;; ============================================================================
@@ -78,10 +81,20 @@
 
 (defn start-listening!
   "Start speech recognition.
+   Stops any ongoing TTS first to prevent echo/feedback.
    Returns a promise."
   []
   (if-let [Voice (get-voice-default)]
-    (-> (.start Voice "en-US")
+    (-> (if (speaking?*)
+          ;; Stop TTS first, then wait a bit for audio session to settle
+          (-> (stop-speaking!)
+              (.then (fn [_]
+                       ;; Short delay to let audio session reconfigure
+                       (js/Promise. (fn [resolve _]
+                                      (js/setTimeout resolve 150))))))
+          (js/Promise.resolve nil))
+        (.then (fn [_]
+                 (.start Voice "en-US")))
         (.then (fn [_]
                  (reset! listening? true)
                  (js/console.log "Voice recognition started")))
