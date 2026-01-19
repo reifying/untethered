@@ -162,7 +162,9 @@
   (let [^js route (:route props)
         navigation (:navigation props)
         ;; route is a JS object, so use .- for its properties
-        working-directory (when route (-> route .-params .-workingDirectory))]
+        ;; Safely access params - may be null/undefined
+        ^js params (when route (.-params route))
+        working-directory (when params (.-workingDirectory params))]
     ;; Form-2: Return a render function that reads subscriptions
     (fn [_props]
       (let [commands @(rf/subscribe [:commands/for-directory working-directory])]
