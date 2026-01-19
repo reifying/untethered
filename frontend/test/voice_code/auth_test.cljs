@@ -119,3 +119,138 @@
 (deftest api-key-total-length-test
   (testing "Total length constant is correct"
     (is (= 43 api-key-total-length))))
+
+;; ============================================================================
+;; Detailed Validation Status Tests (for real-time feedback UI)
+;; ============================================================================
+
+(defn api-key-validation-status
+  "Get detailed validation status for API key input.
+   Mirrors implementation in settings.cljs for testing without RN deps."
+  [key]
+  (let [len (count (or key ""))
+        expected api-key-total-length
+        prefix-len (count api-key-prefix)
+        hex-part (when (and key (> len prefix-len))
+                   (subs key prefix-len))]
+    (cond
+      ;; Empty input
+      (empty? key)
+      {:valid? false
+       :message nil
+       :char-count 0
+       :expected-count expected}
+
+      ;; Too short
+      (< len expected)
+      {:valid? false
+       :message (str "Too short (" (- expected len) " more characters needed)")
+       :char-count len
+       :expected-count expected}
+
+      ;; Too long
+      (> len expected)
+      {:valid? false
+       :message (str "Too long (" (- len expected) " extra characters)")
+       :char-count len
+       :expected-count expected}
+
+      ;; Missing prefix
+      (not (str/starts-with? key api-key-prefix))
+      {:valid? false
+       :message (str "Must start with '" api-key-prefix "'")
+       :char-count len
+       :expected-count expected}
+
+      ;; Contains uppercase hex letters
+      (re-find #"[A-F]" (or hex-part ""))
+      {:valid? false
+       :message "Must use lowercase letters (a-f), not uppercase"
+       :char-count len
+       :expected-count expected}
+
+      ;; Contains non-hex characters after prefix
+      (not (re-matches #"[a-f0-9]*" (or hex-part "")))
+      {:valid? false
+       :message "Characters after prefix must be lowercase hex (0-9, a-f)"
+       :char-count len
+       :expected-count expected}
+
+      ;; Valid
+      :else
+      {:valid? true
+       :message nil
+       :char-count len
+       :expected-count expected})))
+
+(deftest validation-status-valid-key-test
+  (testing "Valid key shows correct status"
+    (let [result (api-key-validation-status "untethered-a1b2c3d4e5f678901234567890abcdef")]
+      (is (:valid? result))
+      (is (nil? (:message result)))
+      (is (= 43 (:char-count result)))
+      (is (= 43 (:expected-count result))))))
+
+(deftest validation-status-empty-input-test
+  (testing "Empty string returns no message"
+    (let [result (api-key-validation-status "")]
+      (is (not (:valid? result)))
+      (is (nil? (:message result)))
+      (is (= 0 (:char-count result)))))
+
+  (testing "Nil input returns no message"
+    (let [result (api-key-validation-status nil)]
+      (is (not (:valid? result)))
+      (is (nil? (:message result)))
+      (is (= 0 (:char-count result))))))
+
+(deftest validation-status-too-short-test
+  (testing "Too short input shows specific message"
+    (let [result (api-key-validation-status "untethered-")]
+      (is (not (:valid? result)))
+      (is (str/includes? (:message result) "32 more characters needed"))
+      (is (= 11 (:char-count result)))))
+
+  (testing "Partial hex shows remaining chars needed"
+    (let [result (api-key-validation-status "untethered-abc")]
+      (is (str/includes? (:message result) "29 more characters needed"))
+      (is (= 14 (:char-count result))))))
+
+(deftest validation-status-too-long-test
+  (testing "Too long input shows extra chars"
+    (let [result (api-key-validation-status "untethered-a1b2c3d4e5f678901234567890abcdef0")]
+      (is (not (:valid? result)))
+      (is (str/includes? (:message result) "1 extra characters"))
+      (is (= 44 (:char-count result)))))
+
+  (testing "Multiple extra chars"
+    (let [result (api-key-validation-status "untethered-a1b2c3d4e5f678901234567890abcdef012")]
+      (is (str/includes? (:message result) "3 extra characters"))
+      (is (= 46 (:char-count result))))))
+
+(deftest validation-status-uppercase-test
+  (testing "Uppercase hex letters detected"
+    (let [result (api-key-validation-status "untethered-A1b2c3d4e5f678901234567890abcdef")]
+      (is (not (:valid? result)))
+      (is (str/includes? (:message result) "lowercase letters"))
+      (is (str/includes? (:message result) "not uppercase")))))
+
+(deftest validation-status-invalid-chars-test
+  (testing "Non-hex characters detected"
+    (let [result (api-key-validation-status "untethered-g1b2c3d4e5f678901234567890abcdef")]
+      (is (not (:valid? result)))
+      (is (str/includes? (:message result) "lowercase hex"))))
+
+  (testing "Special characters detected"
+    (let [result (api-key-validation-status "untethered-!1b2c3d4e5f678901234567890abcdef")]
+      (is (not (:valid? result)))
+      (is (str/includes? (:message result) "lowercase hex")))))
+
+(deftest validation-status-wrong-prefix-test
+  (testing "Wrong prefix detected (correct length)"
+    ;; Key has correct length (43 chars) but wrong prefix
+    ;; "wrongprefix-a1b2c3d4e5f67890123456789012345" = 43 chars
+    (let [result (api-key-validation-status "wrongprefix-a1b2c3d4e5f67890123456789012345")]
+      (is (not (:valid? result)))
+      (is (= 43 (:char-count result)))
+      (is (str/includes? (:message result) "Must start with 'untethered-'")))))

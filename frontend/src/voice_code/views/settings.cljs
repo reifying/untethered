@@ -26,12 +26,109 @@
          (.startsWith key api-key-prefix)
          (re-matches #"^untethered-[a-f0-9]{32}$" key))))
 
+(defn api-key-validation-status
+  "Get detailed validation status for API key input.
+   Returns a map with:
+   - :valid? - true if key is valid
+   - :message - specific validation message (nil if valid)
+   - :char-count - current character count
+   - :expected-count - expected character count"
+  [key]
+  (let [len (count (or key ""))
+        expected api-key-total-length
+        prefix-len (count api-key-prefix)
+        hex-part (when (and key (> len prefix-len))
+                   (subs key prefix-len))]
+    (cond
+      ;; Empty input
+      (empty? key)
+      {:valid? false
+       :message nil
+       :char-count 0
+       :expected-count expected}
+
+      ;; Too short
+      (< len expected)
+      {:valid? false
+       :message (str "Too short (" (- expected len) " more characters needed)")
+       :char-count len
+       :expected-count expected}
+
+      ;; Too long
+      (> len expected)
+      {:valid? false
+       :message (str "Too long (" (- len expected) " extra characters)")
+       :char-count len
+       :expected-count expected}
+
+      ;; Missing prefix
+      (not (.startsWith key api-key-prefix))
+      {:valid? false
+       :message (str "Must start with '" api-key-prefix "'")
+       :char-count len
+       :expected-count expected}
+
+      ;; Contains uppercase hex letters (common mistake)
+      (re-find #"[A-F]" (or hex-part ""))
+      {:valid? false
+       :message "Must use lowercase letters (a-f), not uppercase"
+       :char-count len
+       :expected-count expected}
+
+      ;; Contains non-hex characters after prefix
+      (not (re-matches #"[a-f0-9]*" (or hex-part "")))
+      {:valid? false
+       :message "Characters after prefix must be lowercase hex (0-9, a-f)"
+       :char-count len
+       :expected-count expected}
+
+      ;; Valid
+      :else
+      {:valid? true
+       :message nil
+       :char-count len
+       :expected-count expected})))
+
 (defn mask-api-key
   "Mask API key showing first 4 and last 4 characters.
    Format: 'unte...89ab'"
   [key]
   (when (and key (> (count key) 8))
     (str (subs key 0 4) "..." (subs key (- (count key) 4)))))
+
+(defn- validation-status-row
+  "Real-time validation status display for API key input.
+   Shows character count, validation icon, and specific error messages."
+  [{:keys [key-input]}]
+  (let [{:keys [valid? message char-count expected-count]} (api-key-validation-status key-input)
+        has-input? (pos? char-count)]
+    (when has-input?
+      [:> rn/View {:style {:flex-direction "row"
+                           :align-items "center"
+                           :padding-horizontal 16
+                           :padding-top 8
+                           :padding-bottom (if message 4 8)}}
+       ;; Status icon
+       [:> rn/Text {:style {:font-size 16
+                            :margin-right 8}}
+        (if valid? "✓" "✗")]
+
+       ;; Character count
+       [:> rn/Text {:style {:font-size 14
+                            :font-family (when (= "ios" (.-OS Platform)) "Menlo")
+                            :color (cond
+                                     valid? "#34C759"
+                                     (> char-count expected-count) "#FF3B30"
+                                     :else "#666")
+                            :margin-right 8}}
+        (str char-count "/" expected-count)]
+
+       ;; Validation message
+       (when message
+         [:> rn/Text {:style {:font-size 13
+                              :color "#FF3B30"
+                              :flex 1}}
+          message])])))
 
 (defn- section-header
   "Section header for settings groups."
@@ -191,13 +288,22 @@
                      :value error}])]))
 
 (defn- api-key-section
-  "API key management section showing key status and management options."
+  "API key management section showing key status and management options.
+   Features real-time validation feedback with character count and specific error messages."
   [navigation]
-  (let [api-key-input (r/atom "")
-        validation-error (r/atom nil)]
+  (let [api-key-input (r/atom "")]
     (fn [navigation]
       (let [api-key @(rf/subscribe [:auth/api-key])
-            has-key? (some? api-key)]
+            has-key? (some? api-key)
+            current-input @api-key-input
+            validation (api-key-validation-status current-input)
+            {:keys [valid? char-count]} validation
+            has-input? (pos? char-count)
+            ;; Dynamic border color based on validation state
+            input-border-color (cond
+                                 (not has-input?) "#DDD"
+                                 valid? "#34C759"
+                                 :else "#FF3B30")]
         [:> rn/View
          [section-header "Authentication"]
          (if has-key?
@@ -255,61 +361,48 @@
                           :on-press #(when navigation (.navigate navigation "QRScanner"))
                           :accessory [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "📷"]}]
 
-            ;; Manual entry field
+            ;; Manual entry field with real-time validation
             [:> rn/View {:style {:background-color "#FFFFFF"
                                  :border-bottom-width 1
                                  :border-bottom-color "#F0F0F0"
                                  :padding-horizontal 16
-                                 :padding-vertical 10}}
+                                 :padding-top 10
+                                 :padding-bottom (if has-input? 0 10)}}
              [:> rn/TextInput
               {:style {:font-size 14
                        :font-family (when (= "ios" (.-OS Platform)) "Menlo")
                        :color "#000"
                        :padding-vertical 8
                        :border-width 1
-                       :border-color "#DDD"
+                       :border-color input-border-color
                        :border-radius 8
                        :padding-horizontal 12}
-               :value @api-key-input
-               :placeholder "Paste API key"
-               :on-change-text (fn [text]
-                                 (reset! api-key-input text)
-                                 (reset! validation-error nil))
+               :value current-input
+               :placeholder "Paste API key (untethered-...)"
+               :on-change-text #(reset! api-key-input %)
                :auto-capitalize "none"
                :auto-correct false
                :secure-text-entry false}]
 
-             ;; Save button
-             (when (seq @api-key-input)
+             ;; Real-time validation status
+             [validation-status-row {:key-input current-input}]
+
+             ;; Save button - enabled only when valid
+             (when has-input?
                [:> rn/TouchableOpacity
-                {:style {:margin-top 8
-                         :background-color "#007AFF"
+                {:style {:margin-top 4
+                         :margin-bottom 10
+                         :background-color (if valid? "#007AFF" "#CCC")
                          :padding-vertical 10
                          :border-radius 8
                          :align-items "center"}
+                 :disabled (not valid?)
                  :on-press (fn []
-                             (let [key @api-key-input]
-                               (if (valid-api-key-format? key)
-                                 (do
-                                   (rf/dispatch [:auth/connect key])
-                                   (reset! api-key-input "")
-                                   (reset! validation-error nil))
-                                 (reset! validation-error
-                                         (str "Invalid format. Must start with '"
-                                              api-key-prefix
-                                              "' and be "
-                                              api-key-total-length
-                                              " characters.")))))}
+                             (when valid?
+                               (rf/dispatch [:auth/connect current-input])
+                               (reset! api-key-input "")))}
                 [:> rn/Text {:style {:color "#FFF" :font-size 16 :font-weight "600"}}
                  "Save API Key"]])]
-
-            ;; Validation error
-            (when @validation-error
-              [:> rn/View {:style {:padding-horizontal 16
-                                   :padding-vertical 8
-                                   :background-color "#FFFFFF"}}
-               [:> rn/Text {:style {:font-size 12 :color "#FF3B30"}}
-                @validation-error]])
 
             ;; Help text
             [:> rn/View {:style {:padding-horizontal 16
