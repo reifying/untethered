@@ -295,8 +295,11 @@
                                 :text text
                                 :timestamp (js/Date. (:timestamp msg))
                                 :status :confirmed})))
-                      ;; Filter out internal messages (no role means it's not a user/assistant message)
-                      (filter :role)
+                      ;; Filter out internal messages (no role) and messages with no displayable text
+                      ;; This prevents empty bubbles from tool_use-only or thinking-only content
+                      (filter (fn [m]
+                                (and (:role m)
+                                     (not (clojure.string/blank? (:text m))))))
                       (vec)
                       ;; Apply message pruning to limit memory usage
                       (db/prune-messages))))))

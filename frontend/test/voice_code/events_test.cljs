@@ -492,6 +492,82 @@
        (is (= :assistant (:role (second msgs))))
        (is (= :confirmed (:status (first msgs))))))))
 
+(deftest handle-session-history-filters-empty-messages-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "session_history filters out messages with no displayable text"
+     ;; Test that tool_use-only messages (no text content) are filtered out
+     ;; This prevents empty bubbles in the conversation view
+     (rf/dispatch-sync [:sessions/handle-history
+                        {:session-id "s1"
+                         :messages [{:type "user"
+                                     :uuid "m1"
+                                     :message {:role "user" :content "Read the file"}
+                                     :timestamp "2026-01-15T10:00:00Z"}
+                                    ;; Tool use only - no text content, should be filtered
+                                    {:type "assistant"
+                                     :uuid "m2"
+                                     :message {:role "assistant"
+                                               :content [{:type "tool_use"
+                                                          :id "toolu_123"
+                                                          :name "read_file"
+                                                          :input {:path "/test.txt"}}]}
+                                     :timestamp "2026-01-15T10:00:01Z"}
+                                    ;; Text response - should be included
+                                    {:type "assistant"
+                                     :uuid "m3"
+                                     :message {:role "assistant"
+                                               :content [{:type "text" :text "Here is the file content."}]}
+                                     :timestamp "2026-01-15T10:00:02Z"}
+                                    ;; Mixed content - has text, should be included
+                                    {:type "assistant"
+                                     :uuid "m4"
+                                     :message {:role "assistant"
+                                               :content [{:type "text" :text "Let me check that."}
+                                                         {:type "tool_use"
+                                                          :id "toolu_456"
+                                                          :name "grep"
+                                                          :input {:pattern "test"}}]}
+                                     :timestamp "2026-01-15T10:00:03Z"}]}])
+     (let [msgs @(rf/subscribe [:messages/for-session "s1"])]
+       ;; Should have 3 messages: user, assistant with text, assistant with mixed content
+       ;; The tool_use-only message (m2) should be filtered out
+       (is (= 3 (count msgs)) "Tool-use-only messages should be filtered out")
+       (is (= "m1" (:id (first msgs))))
+       (is (= "m3" (:id (second msgs))))
+       (is (= "m4" (:id (nth msgs 2))))))
+
+   (testing "session_history filters messages with empty string text"
+     (rf/dispatch-sync [:sessions/handle-history
+                        {:session-id "s2"
+                         :messages [{:type "user"
+                                     :uuid "u1"
+                                     :message {:role "user" :content "Hello"}
+                                     :timestamp "2026-01-15T10:00:00Z"}
+                                    ;; Empty text content - should be filtered
+                                    {:type "assistant"
+                                     :uuid "a1"
+                                     :message {:role "assistant"
+                                               :content [{:type "text" :text ""}]}
+                                     :timestamp "2026-01-15T10:00:01Z"}
+                                    ;; Whitespace-only text - should be filtered  
+                                    {:type "assistant"
+                                     :uuid "a2"
+                                     :message {:role "assistant"
+                                               :content [{:type "text" :text "   "}]}
+                                     :timestamp "2026-01-15T10:00:02Z"}
+                                    ;; Normal response
+                                    {:type "assistant"
+                                     :uuid "a3"
+                                     :message {:role "assistant"
+                                               :content [{:type "text" :text "Hi!"}]}
+                                     :timestamp "2026-01-15T10:00:03Z"}]}])
+     (let [msgs @(rf/subscribe [:messages/for-session "s2"])]
+       (is (= 2 (count msgs)) "Empty/whitespace messages should be filtered")
+       (is (= "u1" (:id (first msgs))))
+       (is (= "a3" (:id (second msgs))))))))
+
 (deftest handle-session-list-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
