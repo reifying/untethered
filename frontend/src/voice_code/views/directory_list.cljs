@@ -524,6 +524,45 @@
                                             #js {:directory (:directory dir)
                                                  :directoryName (directory-name (:directory dir))})))])])])))
 
+(defn- debug-section
+  "Debug section with link to debug logs view."
+  [{:keys [navigation]}]
+  [:> rn/View
+   [:> rn/View {:style {:flex-direction "row"
+                        :align-items "center"
+                        :justify-content "space-between"
+                        :padding-horizontal 16
+                        :padding-vertical 10
+                        :background-color "#F0F0F0"}}
+    [:> rn/Text {:style {:font-size 13
+                         :font-weight "600"
+                         :color "#666"
+                         :text-transform "uppercase"
+                         :letter-spacing 0.5}}
+     "Debug"]]
+   [:> rn/TouchableOpacity
+    {:style {:flex-direction "row"
+             :align-items "center"
+             :padding-horizontal 16
+             :padding-vertical 14
+             :background-color "#FFFFFF"
+             :border-bottom-width 1
+             :border-bottom-color "#F0F0F0"}
+     :on-press #(when navigation (.navigate navigation "DebugLogs"))
+     :active-opacity 0.7}
+    [:> rn/Text {:style {:font-size 18
+                         :color "#FF9500"
+                         :margin-right 12}}
+     "🐞"]
+    [:> rn/View {:style {:flex 1}}
+     [:> rn/Text {:style {:font-size 16 :color "#000"}}
+      "Debug Logs"]]]
+   [:> rn/View {:style {:padding-horizontal 16
+                        :padding-vertical 8
+                        :background-color "#F5F5F5"}}
+    [:> rn/Text {:style {:font-size 12 :color "#999"}}
+     "View and copy app logs for troubleshooting"]]])
+
 (defn directory-list-view
   "Main directory list screen.
    Props is a ClojureScript map (converted by r/reactify-component)."
@@ -594,8 +633,10 @@
               (when (seq recent-sessions)
                 [recent-sessions-section {:sessions recent-sessions
                                           :navigation nav}])
-              ;; Projects/Directories section
+;; Projects/Directories section
               (when (seq directories)
                 [directories-section {:directories directories
-                                      :navigation nav}])])]))})))
+                                      :navigation nav}])
+              ;; Debug section - always shown when server configured
+              [debug-section {:navigation nav}]])]))})))
 
