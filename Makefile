@@ -503,6 +503,11 @@ rn-clean:
 	rm -rf $(RN_DIR)/node_modules/.cache
 	rm -rf ~/Library/Developer/Xcode/DerivedData/VoiceCodeMobile-*
 
+# Go to simulator home screen (via launch SpringBoard)
+rn-home:
+	@xcrun simctl launch booted com.apple.springboard 2>/dev/null || true
+	@echo "Returned to home screen"
+
 # Take screenshot of running simulator
 rn-screenshot:
 	@xcrun simctl io booted screenshot /tmp/simulator-screenshot.png
