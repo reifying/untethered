@@ -10,7 +10,8 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [Alert]]
-            ["react-native" :refer [Platform]]))
+            ["react-native" :refer [Platform]]
+            [voice-code.views.voice-picker :refer [voice-picker-modal]]))
 
 (defn- section-header
   "Section header for settings groups."
@@ -195,29 +196,40 @@
 (defn- voice-settings-section
   "Voice selection and preview."
   []
-  (let [settings @(rf/subscribe [:settings/all])
-        previewing? @(rf/subscribe [:ui/previewing-voice?])
-        voice-id (:voice-identifier settings)]
-    [:> rn/View
-     [section-header "Voice Selection"]
-     [setting-row {:label "Voice"
-                   :value (or voice-id "System Default")
-                   :on-press #(js/console.log "TODO: Voice picker")}]
-     [:> rn/View {:style {:padding-horizontal 16
-                          :padding-bottom 8
-                          :background-color "#FFFFFF"
-                          :border-bottom-width 1
-                          :border-bottom-color "#F0F0F0"}}
-      [:> rn/Text {:style {:font-size 12 :color "#666"}}
-       "Premium voices require download in Settings → Accessibility → Spoken Content → Voices"]]
-     [setting-row {:label "Preview Voice"
-                   :disabled? previewing?
-                   :on-press #(rf/dispatch [:settings/preview-voice])
-                   :accessory [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-                               (if previewing?
-                                 [:> rn/ActivityIndicator {:size "small" :color "#007AFF"}]
-                                 [:> rn/Text {:style {:font-size 16 :color "#007AFF"}}
-                                  "▶"])]}]]))
+  (let [picker-visible? (r/atom false)]
+    (fn []
+      (let [settings @(rf/subscribe [:settings/all])
+            previewing? @(rf/subscribe [:ui/previewing-voice?])
+            voice-id (:voice-identifier settings)
+            ;; Get selected voice name from available voices
+            voices @(rf/subscribe [:voice/available-voices])
+            selected-voice (some #(when (= (:id %) voice-id) %) voices)
+            display-name (or (:name selected-voice)
+                             (when voice-id "Custom Voice")
+                             "System Default")]
+        [:> rn/View
+         [section-header "Voice Selection"]
+         [setting-row {:label "Voice"
+                       :value display-name
+                       :on-press #(reset! picker-visible? true)}]
+         [:> rn/View {:style {:padding-horizontal 16
+                              :padding-bottom 8
+                              :background-color "#FFFFFF"
+                              :border-bottom-width 1
+                              :border-bottom-color "#F0F0F0"}}
+          [:> rn/Text {:style {:font-size 12 :color "#666"}}
+           "Premium voices require download in Settings → Accessibility → Spoken Content → Voices"]]
+         [setting-row {:label "Preview Voice"
+                       :disabled? previewing?
+                       :on-press #(rf/dispatch [:settings/preview-voice])
+                       :accessory [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+                                   (if previewing?
+                                     [:> rn/ActivityIndicator {:size "small" :color "#007AFF"}]
+                                     [:> rn/Text {:style {:font-size 16 :color "#007AFF"}}
+                                      "▶"])]}]
+         ;; Voice picker modal
+         [voice-picker-modal {:visible @picker-visible?
+                              :on-close #(reset! picker-visible? false)}]]))))
 
 (defn- audio-playback-section
   "Audio playback settings (iOS only)."

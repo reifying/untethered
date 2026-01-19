@@ -241,6 +241,39 @@
   (when-let [^js Tts (get-tts-default)]
     (.setDefaultPitch Tts pitch)))
 
+(defn get-available-voices!
+  "Get list of available TTS voices.
+   Returns a promise that resolves to a vector of voice maps.
+   Each voice has :id, :name, :language, and optionally :quality."
+  []
+  (if-let [Tts (get-tts-default)]
+    (-> (.voices Tts)
+        (.then (fn [voices]
+                 (->> (js->clj voices :keywordize-keys true)
+                      ;; Filter to English voices that are installed
+                      (filter (fn [v]
+                                (and (clojure.string/starts-with? (or (:language v) "") "en")
+                                     (not (:notInstalled v))
+                                     (not (:networkConnectionRequired v)))))
+                      ;; Sort by quality (higher is better) then by name
+                      (sort-by (juxt (comp - (fnil identity 0) :quality) :name))
+                      vec)))
+        (.catch (fn [error]
+                  (js/console.error "Failed to get voices:" error)
+                  [])))
+    (js/Promise.resolve [])))
+
+(defn set-default-voice!
+  "Set the default TTS voice by voice ID.
+   Returns a promise."
+  [voice-id]
+  (when-let [Tts (get-tts-default)]
+    (-> (.setDefaultVoice Tts voice-id)
+        (.then (fn [_]
+                 (js/console.log "Set default voice:" voice-id)))
+        (.catch (fn [error]
+                  (js/console.error "Failed to set voice:" error))))))
+
 ;; ============================================================================
 ;; Combined Setup
 ;; ============================================================================
@@ -391,3 +424,57 @@
  :voice/error
  (fn [db _]
    (get-in db [:ui :voice-error])))
+
+(rf/reg-sub
+ :voice/available-voices
+ (fn [db _]
+   (get-in db [:ui :available-voices] [])))
+
+(rf/reg-sub
+ :voice/loading-voices?
+ (fn [db _]
+   (get-in db [:ui :loading-voices?] false)))
+
+;; ============================================================================
+;; Voice Picker Events
+;; ============================================================================
+
+(rf/reg-fx
+ :voice/load-voices
+ (fn [_]
+   (-> (get-available-voices!)
+       (.then (fn [voices]
+                (rf/dispatch [:voice/voices-loaded voices])))
+       (.catch (fn [error]
+                 (rf/dispatch [:voice/voices-load-error error]))))))
+
+(rf/reg-fx
+ :voice/set-voice
+ (fn [voice-id]
+   (set-default-voice! voice-id)))
+
+(rf/reg-event-fx
+ :voice/load-available-voices
+ (fn [{:keys [db]} _]
+   {:db (assoc-in db [:ui :loading-voices?] true)
+    :voice/load-voices nil}))
+
+(rf/reg-event-db
+ :voice/voices-loaded
+ (fn [db [_ voices]]
+   (-> db
+       (assoc-in [:ui :available-voices] voices)
+       (assoc-in [:ui :loading-voices?] false))))
+
+(rf/reg-event-db
+ :voice/voices-load-error
+ (fn [db [_ error]]
+   (js/console.error "Failed to load voices:" error)
+   (assoc-in db [:ui :loading-voices?] false)))
+
+(rf/reg-event-fx
+ :voice/select-voice
+ (fn [{:keys [db]} [_ voice-id]]
+   {:db (assoc-in db [:settings :voice-identifier] voice-id)
+    :voice/set-voice voice-id
+    :dispatch [:settings/save]}))
