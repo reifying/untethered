@@ -1291,3 +1291,46 @@
      ;; Change a different setting - should not trigger send-max-message-size
      (rf/dispatch-sync [:settings/save :recent-sessions-limit 15])
      (is (= 15 (get-in @re-frame.db/app-db [:settings :recent-sessions-limit]))))))
+
+;; ============================================================================
+;; Force Reconnect Events
+;; ============================================================================
+
+(deftest force-reconnect-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "ws/force-reconnect sets status to connecting and resets reconnect-attempts"
+     ;; Set initial state as if already connected or disconnected
+     (rf/dispatch-sync [:db/update-in [:connection :status] (constantly :connected)])
+     (rf/dispatch-sync [:db/update-in [:connection :reconnect-attempts] (constantly 5)])
+
+     ;; Force reconnect
+     (rf/dispatch-sync [:ws/force-reconnect])
+
+     ;; Should set status to :connecting
+     (is (= :connecting @(rf/subscribe [:connection/status])))
+     ;; Should reset reconnect-attempts to 0
+     (is (= 0 (get-in @re-frame.db/app-db [:connection :reconnect-attempts]))))
+
+   (testing "ws/force-reconnect works from disconnected state"
+     ;; Set disconnected state
+     (rf/dispatch-sync [:db/update-in [:connection :status] (constantly :disconnected)])
+
+     ;; Force reconnect
+     (rf/dispatch-sync [:ws/force-reconnect])
+
+     ;; Should still set status to :connecting
+     (is (= :connecting @(rf/subscribe [:connection/status]))))))
+
+(deftest connect-now-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "ws/connect-now dispatches without error"
+     ;; This test verifies the event doesn't error
+     ;; The actual ws/connect effect would be tested in integration tests
+     (rf/dispatch-sync [:ws/connect-now {:server-url "localhost"
+                                          :server-port 8080}])
+     ;; If we get here without error, the event handler works
+     (is true))))

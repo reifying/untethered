@@ -19,6 +19,24 @@
                    :server-port server-port}})))
 
 (rf/reg-event-fx
+ :ws/force-reconnect
+ (fn [{:keys [db]} _]
+   "Force a WebSocket reconnection. Closes existing connection and reconnects."
+   (let [{:keys [server-url server-port]} (:settings db)]
+     {:db (-> db
+              (assoc-in [:connection :status] :connecting)
+              (assoc-in [:connection :reconnect-attempts] 0))
+      :ws/disconnect nil
+      :dispatch-later [{:ms 100
+                        :dispatch [:ws/connect-now {:server-url server-url
+                                                    :server-port server-port}]}]})))
+
+(rf/reg-event-fx
+ :ws/connect-now
+ (fn [_ [_ config]]
+   {:ws/connect config}))
+
+(rf/reg-event-fx
  :ws/connected
  (fn [{:keys [db]} _]
    {:db (assoc-in db [:connection :status] :connected)}))

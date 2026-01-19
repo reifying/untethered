@@ -238,6 +238,47 @@
                           :font-weight "500"}}
       (if voice-mode? "Voice Mode" "Text Mode")]]))
 
+(defn- tappable-connection-status
+  "Connection status indicator that can be tapped to force reconnection.
+   Shows a colored dot and status text. Tapping when disconnected triggers reconnection."
+  []
+  (let [status @(rf/subscribe [:connection/status])
+        connected? (= status :connected)
+        connecting? (= status :connecting)]
+    [:> rn/TouchableOpacity
+     {:style {:flex-direction "row"
+              :align-items "center"
+              :padding-horizontal 8
+              :padding-vertical 4
+              :border-radius 12
+              :background-color (cond
+                                  connecting? "#FFF3E0"
+                                  connected? "transparent"
+                                  :else "#FFF3F3")}
+      :active-opacity 0.7
+      :on-press (when-not connecting?
+                  #(rf/dispatch [:ws/force-reconnect]))}
+     ;; Status dot
+     [:> rn/View {:style {:width 8
+                          :height 8
+                          :border-radius 4
+                          :background-color (cond
+                                              connecting? "#FF9500"
+                                              connected? "#34C759"
+                                              :else "#FF3B30")
+                          :margin-right 6}}]
+     ;; Status text
+     [:> rn/Text {:style {:font-size 12
+                          :color (cond
+                                   connecting? "#FF9500"
+                                   connected? "#666"
+                                   :else "#FF3B30")}}
+      (case status
+        :connected "Connected"
+        :connecting "Connecting..."
+        :authenticating "Authenticating..."
+        "Tap to reconnect")]]))
+
 (defn- voice-input-area
   "Voice input with microphone button."
   [{:keys [session-id]}]
@@ -256,17 +297,8 @@
                           :padding-horizontal 16
                           :margin-bottom 12}}
       [mode-toggle]
-      ;; Connection status indicator
-      (let [status @(rf/subscribe [:connection/status])]
-        [:> rn/View {:style {:flex-direction "row"
-                             :align-items "center"}}
-         [:> rn/View {:style {:width 8
-                              :height 8
-                              :border-radius 4
-                              :background-color (if (= status :connected) "#34C759" "#FF3B30")
-                              :margin-right 6}}]
-         [:> rn/Text {:style {:font-size 12 :color "#666"}}
-          (name status)]])]
+      ;; Tappable connection status indicator
+      [tappable-connection-status]]
 
      ;; Partial transcription display
      (when (and listening? partial-result)
@@ -343,17 +375,8 @@
                           :align-items "center"
                           :margin-bottom 8}}
       [mode-toggle]
-      ;; Connection status indicator
-      (let [status @(rf/subscribe [:connection/status])]
-        [:> rn/View {:style {:flex-direction "row"
-                             :align-items "center"}}
-         [:> rn/View {:style {:width 8
-                              :height 8
-                              :border-radius 4
-                              :background-color (if (= status :connected) "#34C759" "#FF3B30")
-                              :margin-right 6}}]
-         [:> rn/Text {:style {:font-size 12 :color "#666"}}
-          (name status)]])]
+      ;; Tappable connection status indicator
+      [tappable-connection-status]]
 
      ;; Text input row
      [:> rn/View {:style {:flex-direction "row"
