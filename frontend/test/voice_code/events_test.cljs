@@ -1241,17 +1241,18 @@
    (rf/dispatch-sync [:initialize-db])
 
    (testing "git/handle-branch stores branch by working directory"
-     (rf/dispatch-sync [:git/handle-branch {:working_directory "/project/path"
+     ;; Note: After JSON parsing, keys are kebab-case (working-directory, not working_directory)
+     (rf/dispatch-sync [:git/handle-branch {:working-directory "/project/path"
                                             :branch "main"}])
      (is (= "main" (get-in @re-frame.db/app-db [:git-branches "/project/path"]))))
 
    (testing "git/handle-branch handles nil branch for non-git directories"
-     (rf/dispatch-sync [:git/handle-branch {:working_directory "/non-git/path"
+     (rf/dispatch-sync [:git/handle-branch {:working-directory "/non-git/path"
                                             :branch nil}])
      (is (nil? (get-in @re-frame.db/app-db [:git-branches "/non-git/path"]))))
 
    (testing "git/handle-branch stores multiple directories"
-     (rf/dispatch-sync [:git/handle-branch {:working_directory "/other/project"
+     (rf/dispatch-sync [:git/handle-branch {:working-directory "/other/project"
                                             :branch "feature/test"}])
      ;; Both branches should be stored
      (is (= "main" (get-in @re-frame.db/app-db [:git-branches "/project/path"])))
@@ -1331,6 +1332,6 @@
      ;; This test verifies the event doesn't error
      ;; The actual ws/connect effect would be tested in integration tests
      (rf/dispatch-sync [:ws/connect-now {:server-url "localhost"
-                                          :server-port 8080}])
+                                         :server-port 8080}])
      ;; If we get here without error, the event handler works
      (is true))))

@@ -304,8 +304,8 @@
    (testing "git/branch returns nil when no branch stored"
      (is (nil? @(rf/subscribe [:git/branch "/some/path"]))))
 
-   ;; Simulate receiving git branch from backend
-   (rf/dispatch-sync [:git/handle-branch {:working_directory "/project/path"
+   ;; Simulate receiving git branch from backend (note: kebab-case after JSON parsing)
+   (rf/dispatch-sync [:git/handle-branch {:working-directory "/project/path"
                                           :branch "main"}])
 
    (testing "git/branch returns stored branch for directory"
@@ -315,7 +315,7 @@
      (is (nil? @(rf/subscribe [:git/branch "/other/path"]))))
 
    ;; Store another branch
-   (rf/dispatch-sync [:git/handle-branch {:working_directory "/other/path"
+   (rf/dispatch-sync [:git/handle-branch {:working-directory "/other/path"
                                           :branch "feature/test"}])
 
    (testing "git/branch returns correct branch for each directory"
@@ -323,7 +323,7 @@
      (is (= "feature/test" @(rf/subscribe [:git/branch "/other/path"]))))
 
    ;; Test nil branch (non-git directory)
-   (rf/dispatch-sync [:git/handle-branch {:working_directory "/non-git/path"
+   (rf/dispatch-sync [:git/handle-branch {:working-directory "/non-git/path"
                                           :branch nil}])
 
    (testing "git/branch stores nil for non-git directories"

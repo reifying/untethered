@@ -740,9 +740,9 @@
 
 (rf/reg-event-db
  :git/handle-branch
- (fn [db [_ {:keys [working_directory branch]}]]
+ (fn [db [_ {:keys [working-directory branch]}]]
    ;; Store git branch by working directory
-   (assoc-in db [:git-branches working_directory] branch)))
+   (assoc-in db [:git-branches working-directory] branch)))
 
 (rf/reg-event-fx
  :git/request-branch
