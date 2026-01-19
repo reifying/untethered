@@ -572,12 +572,12 @@
 
 (defn- header-recipe-button
   "Recipe button for the conversation header.
-   When a recipe is active, shows recipe label with step count and exit button.
+   When a recipe is active, shows recipe label with current step and exit button.
    When no recipe is active, shows clipboard icon to navigate to Recipes screen."
   [session-id working-directory ^js navigation]
   (let [active-recipe @(rf/subscribe [:recipes/active-for-session session-id])]
     (if active-recipe
-      ;; Active recipe: show status with exit button
+      ;; Active recipe: show status with step info and exit button
       [:> rn/View {:style {:flex-direction "row"
                            :align-items "center"
                            :background-color "#E8F5E9"
@@ -589,25 +589,38 @@
         {:on-press #(.navigate navigation "Recipes"
                                #js {:sessionId session-id
                                     :workingDirectory working-directory})}
-        [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-         [:> rn/Text {:style {:font-size 12 :margin-right 4}} "📋"]
-         [:> rn/Text {:style {:font-size 12
-                              :color "#2E7D32"
-                              :font-weight "500"
-                              :max-width 100}
-                      :number-of-lines 1}
-          (or (:label active-recipe) "Recipe")]
-         (when (:step-count active-recipe)
-           [:> rn/Text {:style {:font-size 11
-                                :color "#558B2F"
-                                :margin-left 4}}
-            (str "(" (:step-count active-recipe) ")")])]]
+        [:> rn/View {:style {:flex-direction "column" :align-items "flex-start"}}
+         ;; Top row: recipe label
+         [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+          [:> rn/Text {:style {:font-size 12 :margin-right 4}} "📋"]
+          [:> rn/Text {:style {:font-size 12
+                               :color "#2E7D32"
+                               :font-weight "600"
+                               :max-width 100}
+                       :number-of-lines 1}
+           (or (:label active-recipe) "Recipe")]]
+         ;; Bottom row: current step info
+         [:> rn/View {:style {:flex-direction "row" :align-items "center" :margin-top 2}}
+          (when (:step-count active-recipe)
+            [:> rn/Text {:style {:font-size 10
+                                 :color "#558B2F"
+                                 :margin-right 4}}
+             (str "Step " (:step-count active-recipe))])
+          (when (:current-step active-recipe)
+            [:> rn/Text {:style {:font-size 10
+                                 :color "#689F38"
+                                 :max-width 80
+                                 :font-style "italic"}
+                         :number-of-lines 1}
+             (:current-step active-recipe)])]]]
        ;; Exit button
        [:> rn/TouchableOpacity
         {:style {:margin-left 6
-                 :padding 2}
+                 :padding 4
+                 :background-color "#FFCDD2"
+                 :border-radius 4}
          :on-press #(rf/dispatch [:recipes/exit session-id])}
-        [:> rn/Text {:style {:font-size 12 :color "#C62828"}} "✕"]]]
+        [:> rn/Text {:style {:font-size 10 :color "#C62828" :font-weight "600"}} "Exit"]]]
       ;; No active recipe: show icon to open recipes
       [:> rn/TouchableOpacity
        {:style {:padding 8}
