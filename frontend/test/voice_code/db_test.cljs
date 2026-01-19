@@ -108,3 +108,48 @@
 
   (testing "handles nil messages"
     (is (= nil (db/prune-messages nil)))))
+
+(deftest merge-messages-test
+  (testing "appends new messages to existing"
+    (let [existing [{:id "m1" :text "First"} {:id "m2" :text "Second"}]
+          new-msgs [{:id "m3" :text "Third"} {:id "m4" :text "Fourth"}]
+          result (db/merge-messages existing new-msgs)]
+      (is (= 4 (count result)))
+      (is (= "m1" (:id (first result))))
+      (is (= "m4" (:id (last result))))))
+
+  (testing "deduplicates by message ID"
+    (let [existing [{:id "m1" :text "First"} {:id "m2" :text "Second"}]
+          new-msgs [{:id "m2" :text "Second (dupe)"} {:id "m3" :text "Third"}]
+          result (db/merge-messages existing new-msgs)]
+      (is (= 3 (count result)))
+      (is (= ["m1" "m2" "m3"] (mapv :id result)))
+      ;; Should keep existing message, not the duplicate
+      (is (= "Second" (:text (second result))))))
+
+  (testing "handles empty existing messages"
+    (let [new-msgs [{:id "m1" :text "First"}]
+          result (db/merge-messages [] new-msgs)]
+      (is (= 1 (count result)))
+      (is (= "m1" (:id (first result))))))
+
+  (testing "handles empty new messages"
+    (let [existing [{:id "m1" :text "First"}]
+          result (db/merge-messages existing [])]
+      (is (= 1 (count result)))
+      (is (= "m1" (:id (first result))))))
+
+  (testing "prunes when over limit after merge"
+    (let [existing (vec (for [i (range 45)] {:id (str "e" i)}))
+          new-msgs (vec (for [i (range 20)] {:id (str "n" i)}))
+          result (db/merge-messages existing new-msgs)]
+      ;; Should be pruned to max-messages-per-session
+      (is (= db/max-messages-per-session (count result)))
+      ;; Should keep newest messages
+      (is (= "n19" (:id (last result))))))
+
+  (testing "preserves order - existing first, then new"
+    (let [existing [{:id "m1"} {:id "m2"}]
+          new-msgs [{:id "m3"} {:id "m4"}]
+          result (db/merge-messages existing new-msgs)]
+      (is (= ["m1" "m2" "m3" "m4"] (mapv :id result))))))

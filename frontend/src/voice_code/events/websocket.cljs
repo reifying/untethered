@@ -349,46 +349,53 @@
 (rf/reg-event-db
  :sessions/handle-history
  (fn [db [_ {:keys [session-id messages]}]]
-   (-> db
-       ;; Clear refreshing state when history is received
-       (assoc-in [:ui :refreshing-session?] false)
-       (assoc-in [:messages session-id]
-                 (->> messages
-                      (map (fn [msg]
-                             ;; Claude JSONL format varies by message type:
-                             ;; User messages: {:type "user", :message {:role "user", :content "text"}, :uuid "...", :timestamp "..."}
-                             ;; Assistant messages: {:type "assistant", :message {:role "assistant", :content [{:type "text", :text "..."}]}, :uuid "...", :timestamp "..."}
-                             ;; Internal messages (queue-operation, summary, etc.) have no :message key or different structure
-                             (let [inner-msg (:message msg)
-                                   ;; Role comes from inner message, or fallback to top-level type
-                                   role (or (:role inner-msg)
-                                            (when (contains? #{"user" "assistant"} (:type msg))
-                                              (:type msg)))
-                                   ;; Content can be a string (user) or array of content blocks (assistant)
-                                   raw-content (:content inner-msg)
-                                   ;; Extract text from content - handle both string and array formats
-                                   text (cond
-                                          (string? raw-content) raw-content
-                                          (sequential? raw-content)
-                                          (->> raw-content
-                                               (filter #(= "text" (:type %)))
-                                               (map :text)
-                                               (clojure.string/join "\n\n"))
-                                          :else (:text msg))]
-                               {:id (or (:uuid msg) (:message-id msg) (:id msg))
-                                :session-id session-id
-                                :role (when role (keyword role))
-                                :text text
-                                :timestamp (js/Date. (:timestamp msg))
-                                :status :confirmed})))
-                      ;; Filter out internal messages (no role) and messages with no displayable text
-                      ;; This prevents empty bubbles from tool_use-only or thinking-only content
-                      (filter (fn [m]
-                                (and (:role m)
-                                     (not (clojure.string/blank? (:text m))))))
-                      (vec)
-                      ;; Apply message pruning to limit memory usage
-                      (db/prune-messages))))))
+   (let [is-delta-sync? (contains? (:pending-delta-syncs db) session-id)
+         existing-messages (get-in db [:messages session-id] [])
+         parsed-messages (->> messages
+                              (map (fn [msg]
+                                     ;; Claude JSONL format varies by message type:
+                                     ;; User messages: {:type "user", :message {:role "user", :content "text"}, :uuid "...", :timestamp "..."}
+                                     ;; Assistant messages: {:type "assistant", :message {:role "assistant", :content [{:type "text", :text "..."}]}, :uuid "...", :timestamp "..."}
+                                     ;; Internal messages (queue-operation, summary, etc.) have no :message key or different structure
+                                     (let [inner-msg (:message msg)
+                                           ;; Role comes from inner message, or fallback to top-level type
+                                           role (or (:role inner-msg)
+                                                    (when (contains? #{"user" "assistant"} (:type msg))
+                                                      (:type msg)))
+                                           ;; Content can be a string (user) or array of content blocks (assistant)
+                                           raw-content (:content inner-msg)
+                                           ;; Extract text from content - handle both string and array formats
+                                           text (cond
+                                                  (string? raw-content) raw-content
+                                                  (sequential? raw-content)
+                                                  (->> raw-content
+                                                       (filter #(= "text" (:type %)))
+                                                       (map :text)
+                                                       (clojure.string/join "\n\n"))
+                                                  :else (:text msg))]
+                                       {:id (or (:uuid msg) (:message-id msg) (:id msg))
+                                        :session-id session-id
+                                        :role (when role (keyword role))
+                                        :text text
+                                        :timestamp (js/Date. (:timestamp msg))
+                                        :status :confirmed})))
+                              ;; Filter out internal messages (no role) and messages with no displayable text
+                              ;; This prevents empty bubbles from tool_use-only or thinking-only content
+                              (filter (fn [m]
+                                        (and (:role m)
+                                             (not (clojure.string/blank? (:text m))))))
+                              (vec))
+         ;; For delta sync, merge with existing; for full sync, replace
+         final-messages (if is-delta-sync?
+                          (db/merge-messages existing-messages parsed-messages)
+                          (db/prune-messages parsed-messages))]
+     (-> db
+         ;; Clear refreshing state when history is received
+         (assoc-in [:ui :refreshing-session?] false)
+         ;; Clear the pending delta sync flag
+         (update :pending-delta-syncs disj session-id)
+         ;; Set the messages (merged or replaced based on sync type)
+         (assoc-in [:messages session-id] final-messages)))))
 
 (rf/reg-event-db
  :sessions/handle-updated
@@ -505,8 +512,12 @@
 (rf/reg-event-fx
  :session/subscribe
  (fn [{:keys [db]} [_ session-id]]
-   (let [last-message-id (-> db :messages (get session-id) last :id)]
-     {:ws/send (cond-> {:type "subscribe"
+   (let [last-message-id (-> db :messages (get session-id) last :id)
+         is-delta-sync? (boolean last-message-id)]
+     {:db (if is-delta-sync?
+            (update db :pending-delta-syncs conj session-id)
+            db)
+      :ws/send (cond-> {:type "subscribe"
                         :session-id session-id}
                  last-message-id
                  (assoc :last-message-id last-message-id))})))

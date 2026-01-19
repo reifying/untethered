@@ -1501,3 +1501,104 @@
                                          :server-port 8080}])
      ;; If we get here without error, the event handler works
      (is true))))
+
+(deftest delta-sync-subscribe-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "subscribe without existing messages does not set delta sync flag"
+     (rf/dispatch-sync [:session/subscribe "s1"])
+     (is (not (contains? (:pending-delta-syncs @re-frame.db/app-db) "s1"))))
+
+   (testing "subscribe with existing messages sets delta sync flag"
+     ;; First add some messages
+     (rf/dispatch-sync [:messages/add "s2"
+                        {:id "m1" :session-id "s2" :role :user
+                         :text "Hello" :timestamp (js/Date.) :status :confirmed}])
+     ;; Now subscribe - should be a delta sync
+     (rf/dispatch-sync [:session/subscribe "s2"])
+     (is (contains? (:pending-delta-syncs @re-frame.db/app-db) "s2")))))
+
+(deftest delta-sync-history-merge-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "full sync (no delta flag) replaces all messages"
+     ;; Add existing messages directly to app-db
+     (swap! re-frame.db/app-db assoc-in [:messages "s1"]
+            [{:id "old1" :session-id "s1" :role :user :text "Old message"
+              :timestamp (js/Date.) :status :confirmed}])
+
+     ;; Handle history without delta flag - should replace
+     (rf/dispatch-sync [:sessions/handle-history
+                        {:session-id "s1"
+                         :messages [{:type "user"
+                                     :uuid "new1"
+                                     :message {:role "user" :content "New message"}
+                                     :timestamp "2026-01-15T10:00:00Z"}]}])
+
+     (let [msgs @(rf/subscribe [:messages/for-session "s1"])]
+       (is (= 1 (count msgs)))
+       (is (= "new1" (:id (first msgs))))
+       (is (= "New message" (:text (first msgs))))))
+
+   (testing "delta sync (with flag) merges messages"
+     ;; Set up: add existing messages and mark pending delta sync
+     (swap! re-frame.db/app-db assoc-in [:messages "s2"]
+            [{:id "existing1" :session-id "s2" :role :user :text "Existing message"
+              :timestamp (js/Date.) :status :confirmed}])
+     (swap! re-frame.db/app-db update :pending-delta-syncs conj "s2")
+
+     ;; Handle history with delta flag set - should merge
+     (rf/dispatch-sync [:sessions/handle-history
+                        {:session-id "s2"
+                         :messages [{:type "assistant"
+                                     :uuid "new1"
+                                     :message {:role "assistant"
+                                               :content [{:type "text" :text "New response"}]}
+                                     :timestamp "2026-01-15T10:00:01Z"}]}])
+
+     (let [msgs @(rf/subscribe [:messages/for-session "s2"])]
+       (is (= 2 (count msgs)))
+       ;; Existing message preserved
+       (is (= "existing1" (:id (first msgs))))
+       (is (= "Existing message" (:text (first msgs))))
+       ;; New message appended
+       (is (= "new1" (:id (second msgs))))
+       (is (= "New response" (:text (second msgs))))))
+
+   (testing "delta sync clears pending flag after handling"
+     ;; Flag should be cleared after delta sync
+     (is (not (contains? (:pending-delta-syncs @re-frame.db/app-db) "s2"))))))
+
+(deftest delta-sync-deduplication-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "delta sync deduplicates by message ID"
+     ;; Set up: add existing messages and mark pending delta sync
+     (swap! re-frame.db/app-db assoc-in [:messages "s1"]
+            [{:id "m1" :session-id "s1" :role :user :text "First"
+              :timestamp (js/Date.) :status :confirmed}
+             {:id "m2" :session-id "s1" :role :assistant :text "Second"
+              :timestamp (js/Date.) :status :confirmed}])
+     (swap! re-frame.db/app-db update :pending-delta-syncs conj "s1")
+
+     ;; Handle history with some duplicate IDs
+     (rf/dispatch-sync [:sessions/handle-history
+                        {:session-id "s1"
+                         :messages [{:type "assistant"
+                                     :uuid "m2" ;; Duplicate!
+                                     :message {:role "assistant"
+                                               :content [{:type "text" :text "Second (duplicate)"}]}
+                                     :timestamp "2026-01-15T10:00:01Z"}
+                                    {:type "user"
+                                     :uuid "m3" ;; New message
+                                     :message {:role "user" :content "Third"}
+                                     :timestamp "2026-01-15T10:00:02Z"}]}])
+
+     (let [msgs @(rf/subscribe [:messages/for-session "s1"])]
+       (is (= 3 (count msgs)))
+       (is (= ["m1" "m2" "m3"] (mapv :id msgs)))
+       ;; Original message text preserved (not replaced by duplicate)
+       (is (= "Second" (:text (second msgs))))))))

@@ -34,6 +34,10 @@
    ;; Set of session IDs currently processing prompts
    :locked-sessions #{}
 
+   ;; Tracks pending delta sync requests (session-id -> true when delta sync in progress)
+   ;; Used to determine whether to merge or replace messages on history response
+   :pending-delta-syncs #{}
+
    ;; Command execution state
    :commands {:available {} ; working-dir -> command tree
               :running {} ; command-session-id -> command state
@@ -103,3 +107,13 @@
   (if (> (count messages) max-messages-per-session)
     (vec (take-last max-messages-per-session messages))
     messages))
+
+(defn merge-messages
+  "Merge new messages with existing messages, deduplicating by ID.
+   New messages are appended, maintaining chronological order.
+   Returns the merged and pruned message vector."
+  [existing-messages new-messages]
+  (let [existing-ids (into #{} (map :id existing-messages))
+        unique-new (remove #(contains? existing-ids (:id %)) new-messages)]
+    (-> (into (vec existing-messages) unique-new)
+        (prune-messages))))
