@@ -112,3 +112,30 @@
    (testing "set-respect-silent-mode updates setting back to true"
      (rf/dispatch-sync [:voice/set-respect-silent-mode true])
      (is (true? @(rf/subscribe [:settings/respect-silent-mode]))))))
+
+(deftest voice-stop-speaking-event
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "stop-speaking dispatches effect"
+     ;; First, set speaking state
+     (rf/dispatch-sync [:voice/tts-started])
+     (is (true? @(rf/subscribe [:voice/speaking?])))
+
+     ;; Dispatch stop-speaking (the effect won't actually run in tests,
+     ;; but we verify the event handler is registered and can be dispatched)
+     (rf/dispatch-sync [:voice/stop-speaking])
+     ;; Note: The actual speaking? state is controlled by the TTS module callbacks,
+     ;; not directly by stop-speaking. In tests we verify the event doesn't throw.
+     )))
+
+(deftest voice-tts-cancelled-event
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "tts-cancelled clears speaking state"
+     (rf/dispatch-sync [:voice/tts-started])
+     (is (true? @(rf/subscribe [:voice/speaking?])))
+
+     (rf/dispatch-sync [:voice/tts-cancelled])
+     (is (false? @(rf/subscribe [:voice/speaking?]))))))

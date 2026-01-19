@@ -312,21 +312,31 @@
       label]]))
 
 (defn- session-toolbar
-  "Toolbar with action buttons for Commands, History, Resources, and Recipes.
+  "Toolbar with action buttons for Commands, History, Resources, Recipes, and Stop Speech.
    Commands shows badge with available command count.
-   History shows green indicator when commands are running."
+   History shows green indicator when commands are running.
+   Stop Speech shows only when TTS is actively speaking."
   [{:keys [navigation directory on-new-session]}]
   (let [running-commands @(rf/subscribe [:commands/running-any?])
         running-count @(rf/subscribe [:commands/running-count])
         command-count @(rf/subscribe [:commands/count-for-directory directory])
         pending-uploads @(rf/subscribe [:resources/pending-uploads])
-        active-recipe @(rf/subscribe [:recipes/active-for-session nil])]
+        active-recipe @(rf/subscribe [:recipes/active-for-session nil])
+        speaking? @(rf/subscribe [:voice/speaking?])]
     [:> rn/View {:style {:flex-direction "row"
                          :background-color "#FFFFFF"
                          :border-bottom-width 1
                          :border-bottom-color "#E5E5E5"
                          :padding-horizontal 8
                          :padding-vertical 4}}
+     ;; Stop Speech button - only shown when TTS is speaking
+     (when speaking?
+       [toolbar-button
+        {:icon "🔇"
+         :label "Stop"
+         :active? true
+         :active-color :green
+         :on-press #(rf/dispatch [:voice/stop-speaking])}])
      ;; Commands button - badge shows available command count
      [toolbar-button
       {:icon "⚡"

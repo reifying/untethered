@@ -445,12 +445,20 @@
    [:> rn/Text {:style {:font-size 22}} "⚙️"]])
 
 (defn- header-right-buttons
-  "Combined header buttons: Resources and Settings."
+  "Combined header buttons: Stop Speech, Resources and Settings.
+   Stop Speech button shows only when TTS is actively speaking."
   [navigation]
-  [:> rn/View {:style {:flex-direction "row"
-                       :align-items "center"}}
-   [resources-button navigation]
-   [settings-button navigation]])
+  (let [speaking? @(rf/subscribe [:voice/speaking?])]
+    [:> rn/View {:style {:flex-direction "row"
+                         :align-items "center"}}
+     ;; Stop Speech button - only shown when TTS is speaking
+     (when speaking?
+       [:> rn/TouchableOpacity
+        {:style {:padding 8 :margin-right 4}
+         :on-press #(rf/dispatch [:voice/stop-speaking])}
+        [:> rn/Text {:style {:font-size 20}} "🔇"]])
+     [resources-button navigation]
+     [settings-button navigation]]))
 
 (defn- directories-section
   "Collapsible directories (Projects) section."
