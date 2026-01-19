@@ -100,11 +100,11 @@
 
 (deftest init-db-test
   (async done
-    (testing "init-db! returns a promise that resolves"
-      (-> (persistence/init-db!)
-          (.then (fn [db]
-                   (is (some? db))
-                   (done)))))))
+         (testing "init-db! returns a promise that resolves"
+           (-> (persistence/init-db!)
+               (.then (fn [db]
+                        (is (some? db))
+                        (done)))))))
 
 ;; ============================================================================
 ;; Session Storage Tests (using stub)
@@ -112,20 +112,20 @@
 
 (deftest session-storage-test
   (async done
-    (-> (persistence/init-db!)
-        (.then (fn [_]
-                 (testing "save-session! stores session"
-                   (persistence/save-session!
-                    {:id "test-s1"
-                     :backend-name "Test"
-                     :working-directory "/test"}))
+         (-> (persistence/init-db!)
+             (.then (fn [_]
+                      (testing "save-session! stores session"
+                        (persistence/save-session!
+                         {:id "test-s1"
+                          :backend-name "Test"
+                          :working-directory "/test"}))
 
                  ;; Load and verify
-                 (persistence/load-sessions!)))
-        (.then (fn [sessions]
-                 (is (vector? sessions))
-                 (is (some #(= "test-s1" (:id %)) sessions))
-                 (done))))))
+                      (persistence/load-sessions!)))
+             (.then (fn [sessions]
+                      (is (vector? sessions))
+                      (is (some #(= "test-s1" (:id %)) sessions))
+                      (done))))))
 
 ;; ============================================================================
 ;; Message Storage Tests (using stub)
@@ -133,24 +133,24 @@
 
 (deftest message-storage-test
   (async done
-    (-> (persistence/init-db!)
-        (.then (fn [_]
-                 (testing "save-message! stores message"
-                   (persistence/save-message!
-                    {:id "test-m1"
-                     :session-id "test-s1"
-                     :role :user
-                     :text "Test message"
-                     :timestamp (js/Date.)
-                     :status :confirmed}))
+         (-> (persistence/init-db!)
+             (.then (fn [_]
+                      (testing "save-message! stores message"
+                        (persistence/save-message!
+                         {:id "test-m1"
+                          :session-id "test-s1"
+                          :role :user
+                          :text "Test message"
+                          :timestamp (js/Date.)
+                          :status :confirmed}))
 
                  ;; Load and verify
-                 (persistence/load-messages! "test-s1")))
-        (.then (fn [messages]
-                 (is (vector? messages))
-                 (is (= 1 (count messages)))
-                 (is (= "Test message" (-> messages first :text)))
-                 (done))))))
+                      (persistence/load-messages! "test-s1")))
+             (.then (fn [messages]
+                      (is (vector? messages))
+                      (is (= 1 (count messages)))
+                      (is (= "Test message" (-> messages first :text)))
+                      (done))))))
 
 ;; ============================================================================
 ;; Settings Storage Tests (using stub)
@@ -158,13 +158,13 @@
 
 (deftest settings-storage-test
   (async done
-    (-> (persistence/init-db!)
-        (.then (fn [_]
-                 (persistence/save-setting! :server-url "example.com")
-                 (persistence/load-setting! :server-url)))
-        (.then (fn [value]
-                 (is (= "example.com" value))
-                 (done))))))
+         (-> (persistence/init-db!)
+             (.then (fn [_]
+                      (persistence/save-setting! :server-url "example.com")
+                      (persistence/load-setting! :server-url)))
+             (.then (fn [value]
+                      (is (= "example.com" value))
+                      (done))))))
 
 ;; ============================================================================
 ;; Keychain Tests (using stub)
@@ -172,18 +172,18 @@
 
 (deftest api-key-storage-test
   (async done
-    (let [test-key "untethered-test123456789012345678901234"]
-      (-> (persistence/store-api-key! test-key)
-          (.then (fn [_]
-                   (persistence/retrieve-api-key!)))
-          (.then (fn [retrieved]
-                   (is (= test-key retrieved))
-                   (persistence/delete-api-key!)))
-          (.then (fn [_]
-                   (persistence/retrieve-api-key!)))
-          (.then (fn [retrieved]
-                   (is (nil? retrieved))
-                   (done)))))))
+         (let [test-key "untethered-test123456789012345678901234"]
+           (-> (persistence/store-api-key! test-key)
+               (.then (fn [_]
+                        (persistence/retrieve-api-key!)))
+               (.then (fn [retrieved]
+                        (is (= test-key retrieved))
+                        (persistence/delete-api-key!)))
+               (.then (fn [_]
+                        (persistence/retrieve-api-key!)))
+               (.then (fn [retrieved]
+                        (is (nil? retrieved))
+                        (done)))))))
 
 ;; ============================================================================
 ;; re-frame Integration Tests
@@ -225,7 +225,7 @@
       (is (= "s1" (:id row)))
       (is (nil? (:last_modified row)))
       (is (= 0 (:message_count row))) ; defaults to 0
-      (is (= 10 (:priority row)))     ; defaults to 10
+      (is (= 10 (:priority row))) ; defaults to 10
       (is (= 0 (:is_user_deleted row))))) ; false -> 0
 
   (testing "row->session handles nil values gracefully"
@@ -244,56 +244,56 @@
 
 (deftest draft-storage-test
   (async done
-    (-> (persistence/init-db!)
-        (.then (fn [_]
+         (-> (persistence/init-db!)
+             (.then (fn [_]
                  ;; Save a draft
-                 (persistence/save-draft! "session-1" "My draft message")))
-        (.then (fn [_]
+                      (persistence/save-draft! "session-1" "My draft message")))
+             (.then (fn [_]
                  ;; Load all drafts
-                 (persistence/load-all-drafts!)))
-        (.then (fn [drafts]
-                 (is (map? drafts))
-                 (is (= "My draft message" (get drafts "session-1")))
+                      (persistence/load-all-drafts!)))
+             (.then (fn [drafts]
+                      (is (map? drafts))
+                      (is (= "My draft message" (get drafts "session-1")))
                  ;; Save another draft
-                 (persistence/save-draft! "session-2" "Another draft")))
-        (.then (fn [_]
-                 (persistence/load-all-drafts!)))
-        (.then (fn [drafts]
-                 (is (= 2 (count drafts)))
-                 (is (= "My draft message" (get drafts "session-1")))
-                 (is (= "Another draft" (get drafts "session-2")))
+                      (persistence/save-draft! "session-2" "Another draft")))
+             (.then (fn [_]
+                      (persistence/load-all-drafts!)))
+             (.then (fn [drafts]
+                      (is (= 2 (count drafts)))
+                      (is (= "My draft message" (get drafts "session-1")))
+                      (is (= "Another draft" (get drafts "session-2")))
                  ;; Delete first draft
-                 (persistence/delete-draft! "session-1")))
-        (.then (fn [_]
-                 (persistence/load-all-drafts!)))
-        (.then (fn [drafts]
-                 (is (= 1 (count drafts)))
-                 (is (nil? (get drafts "session-1")))
-                 (is (= "Another draft" (get drafts "session-2")))
-                 (done))))))
+                      (persistence/delete-draft! "session-1")))
+             (.then (fn [_]
+                      (persistence/load-all-drafts!)))
+             (.then (fn [drafts]
+                      (is (= 1 (count drafts)))
+                      (is (nil? (get drafts "session-1")))
+                      (is (= "Another draft" (get drafts "session-2")))
+                      (done))))))
 
 (deftest draft-empty-clears-test
   (async done
-    (-> (persistence/init-db!)
-        (.then (fn [_]
+         (-> (persistence/init-db!)
+             (.then (fn [_]
                  ;; Save a draft
-                 (persistence/save-draft! "session-1" "Initial draft")))
-        (.then (fn [_]
+                      (persistence/save-draft! "session-1" "Initial draft")))
+             (.then (fn [_]
                  ;; Saving empty string should delete draft
-                 (persistence/save-draft! "session-1" "")))
-        (.then (fn [_]
-                 (persistence/load-all-drafts!)))
-        (.then (fn [drafts]
-                 (is (nil? (get drafts "session-1")))
+                      (persistence/save-draft! "session-1" "")))
+             (.then (fn [_]
+                      (persistence/load-all-drafts!)))
+             (.then (fn [drafts]
+                      (is (nil? (get drafts "session-1")))
                  ;; Saving nil should also delete draft
-                 (persistence/save-draft! "session-2" "Another draft")))
-        (.then (fn [_]
-                 (persistence/save-draft! "session-2" nil)))
-        (.then (fn [_]
-                 (persistence/load-all-drafts!)))
-        (.then (fn [drafts]
-                 (is (nil? (get drafts "session-2")))
-                 (done))))))
+                      (persistence/save-draft! "session-2" "Another draft")))
+             (.then (fn [_]
+                      (persistence/save-draft! "session-2" nil)))
+             (.then (fn [_]
+                      (persistence/load-all-drafts!)))
+             (.then (fn [drafts]
+                      (is (nil? (get drafts "session-2")))
+                      (done))))))
 
 (deftest drafts-loaded-event-test
   (rf-test/run-test-sync
@@ -304,3 +304,27 @@
                                                     "s2" "Draft 2"}])
      (is (= "Draft 1" @(rf/subscribe [:ui/draft "s1"])))
      (is (= "Draft 2" @(rf/subscribe [:ui/draft "s2"]))))))
+
+(deftest settings-save-event-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "settings/save updates db and triggers persistence"
+     ;; Verify default value
+     (is (= "localhost" (:server-url @(rf/subscribe [:settings/all]))))
+     ;; Save a new value
+     (rf/dispatch-sync [:settings/save :server-url "192.168.1.100"])
+     ;; Verify db is updated
+     (is (= "192.168.1.100" (:server-url @(rf/subscribe [:settings/all])))))
+     ;; Note: persistence effect is tested separately via async tests))
+
+   (testing "settings/save works for all setting types"
+     ;; Integer setting
+     (rf/dispatch-sync [:settings/save :server-port 3000])
+     (is (= 3000 (:server-port @(rf/subscribe [:settings/all]))))
+     ;; Boolean setting
+     (rf/dispatch-sync [:settings/save :auto-speak-responses true])
+     (is (true? (:auto-speak-responses @(rf/subscribe [:settings/all]))))
+     ;; String setting
+     (rf/dispatch-sync [:settings/save :system-prompt "Be concise"])
+     (is (= "Be concise" (:system-prompt @(rf/subscribe [:settings/all])))))))

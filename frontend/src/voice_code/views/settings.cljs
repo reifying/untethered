@@ -178,12 +178,12 @@
      [text-input-row {:label "Server Address"
                       :value (:server-url settings)
                       :placeholder "192.168.1.100"
-                      :on-change #(rf/dispatch [:settings/update :server-url %])}]
+                      :on-change #(rf/dispatch [:settings/save :server-url %])}]
      [text-input-row {:label "Port"
                       :value (:server-port settings)
                       :placeholder "8080"
                       :keyboard-type "number-pad"
-                      :on-change #(rf/dispatch [:settings/update :server-port (js/parseInt %)])}]
+                      :on-change #(rf/dispatch [:settings/save :server-port (js/parseInt %)])}]
      [:> rn/View {:style {:padding-horizontal 16
                           :padding-vertical 8
                           :background-color "#FFFFFF"
@@ -228,15 +228,15 @@
        [section-header "Audio Playback"]
        [toggle-row {:label "Auto-speak responses"
                     :value (:auto-speak-responses settings)
-                    :on-change #(rf/dispatch [:settings/update :auto-speak-responses %])
+                    :on-change #(rf/dispatch [:settings/save :auto-speak-responses %])
                     :description "Automatically speak Claude's responses using text-to-speech"}]
        [toggle-row {:label "Silence speech when on vibrate"
                     :value (:respect-silent-mode settings)
-                    :on-change #(rf/dispatch [:settings/update :respect-silent-mode %])
+                    :on-change #(rf/dispatch [:settings/save :respect-silent-mode %])
                     :description "When enabled, speech will not play when your phone's ringer switch is on silent/vibrate"}]
        [toggle-row {:label "Continue playback when locked"
                     :value (:continue-playback-when-locked settings)
-                    :on-change #(rf/dispatch [:settings/update :continue-playback-when-locked %])
+                    :on-change #(rf/dispatch [:settings/save :continue-playback-when-locked %])
                     :description "When enabled, audio will continue playing even when you lock your screen"}]])))
 
 (defn- recent-sessions-section
@@ -247,7 +247,7 @@
      [section-header "Recent"]
      [stepper-row {:label "Show sessions"
                    :value (:recent-sessions-limit settings)
-                   :on-change #(rf/dispatch [:settings/update :recent-sessions-limit %])
+                   :on-change #(rf/dispatch [:settings/save :recent-sessions-limit %])
                    :min-value 1
                    :max-value 20
                    :description "Number of recent sessions to display in the Projects view"}]]))
@@ -260,11 +260,11 @@
      [section-header "Queue"]
      [toggle-row {:label "Enable Queue"
                   :value (:queue-enabled settings)
-                  :on-change #(rf/dispatch [:settings/update :queue-enabled %])
+                  :on-change #(rf/dispatch [:settings/save :queue-enabled %])
                   :description "Show threads in queue on the Projects view. Threads are added when you send a message and removed manually."}]
      [toggle-row {:label "Enable Priority Queue"
                   :value (:priority-queue-enabled settings)
-                  :on-change #(rf/dispatch [:settings/update :priority-queue-enabled %])
+                  :on-change #(rf/dispatch [:settings/save :priority-queue-enabled %])
                   :description "Track sessions in priority-based queue. Add sessions manually via toolbar button and adjust priorities to control sort order."}]]))
 
 (defn- resources-section
@@ -276,7 +276,7 @@
      [text-input-row {:label "Storage Location"
                       :value (:resource-storage-location settings)
                       :placeholder "~/Downloads"
-                      :on-change #(rf/dispatch [:settings/update :resource-storage-location %])}]
+                      :on-change #(rf/dispatch [:settings/save :resource-storage-location %])}]
      [:> rn/View {:style {:padding-horizontal 16
                           :padding-bottom 8
                           :background-color "#FFFFFF"
@@ -293,7 +293,7 @@
      [section-header "Message Size Limit"]
      [stepper-row {:label "Max size"
                    :value (:max-message-size-kb settings)
-                   :on-change #(rf/dispatch [:settings/update :max-message-size-kb %])
+                   :on-change #(rf/dispatch [:settings/save :max-message-size-kb %])
                    :min-value 50
                    :max-value 250
                    :step 10
@@ -310,7 +310,7 @@
                       :value (:system-prompt settings)
                       :placeholder "Optional instructions to append..."
                       :multiline true
-                      :on-change #(rf/dispatch [:settings/update :system-prompt %])}]
+                      :on-change #(rf/dispatch [:settings/save :system-prompt %])}]
      [:> rn/View {:style {:padding-horizontal 16
                           :padding-bottom 8
                           :background-color "#FFFFFF"

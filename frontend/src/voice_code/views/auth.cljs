@@ -98,7 +98,7 @@
           :placeholder "Server URL"
           :value @server-url
           :on-change-text #(reset! server-url %)
-          :on-blur #(rf/dispatch [:settings/update :server-url @server-url])
+          :on-blur #(rf/dispatch [:settings/save :server-url @server-url])
           :auto-capitalize "none"
           :auto-correct false}]
         [:> rn/TextInput
@@ -113,7 +113,7 @@
           :placeholder "Port"
           :value @server-port
           :on-change-text #(reset! server-port %)
-          :on-blur #(rf/dispatch [:settings/update :server-port (js/parseInt @server-port)])
+          :on-blur #(rf/dispatch [:settings/save :server-port (js/parseInt @server-port)])
           :keyboard-type "number-pad"}]]])))
 
 (defn auth-view

@@ -18,6 +18,8 @@
   (log-manager/install-console-capture!)
   (js/console.log "voice-code init")
   (rf/dispatch-sync [:initialize-db])
+  ;; Load persisted settings, API key, and drafts
+  (rf/dispatch [:app/initialize])
   (.registerComponent AppRegistry
                       "VoiceCodeMobile"
                       (fn [] (r/reactify-component app-root))))
