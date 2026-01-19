@@ -269,45 +269,56 @@
              "Session name is required when creating a git worktree."]])]]])))
 
 (defn- toolbar-button
-  "Single toolbar button with icon and label."
-  [{:keys [icon label on-press active? badge-count]}]
-  [:> rn/TouchableOpacity
-   {:style {:flex 1
-            :align-items "center"
-            :justify-content "center"
-            :padding-vertical 8
-            :background-color (if active? "#E8F4FD" "transparent")
-            :border-radius 8
-            :margin-horizontal 4}
-    :on-press on-press
-    :active-opacity 0.7}
-   [:> rn/View {:style {:position "relative"}}
-    [:> rn/Text {:style {:font-size 20}} icon]
-    (when (and badge-count (pos? badge-count))
-      [:> rn/View {:style {:position "absolute"
-                           :top -4
-                           :right -8
-                           :min-width 16
-                           :height 16
-                           :border-radius 8
-                           :background-color "#FF3B30"
-                           :justify-content "center"
-                           :align-items "center"
-                           :padding-horizontal 4}}
-       [:> rn/Text {:style {:color "#FFF"
-                            :font-size 10
-                            :font-weight "600"}}
-        (if (> badge-count 99) "99+" (str badge-count))]])]
-   [:> rn/Text {:style {:font-size 11
-                        :color (if active? "#007AFF" "#666")
-                        :margin-top 2
-                        :font-weight (if active? "600" "400")}}
-    label]])
+  "Single toolbar button with icon and label.
+   active? shows highlighted background (green for running state, blue otherwise).
+   badge-count shows red badge with count (or green if active).
+   active-color can be :green (for running commands) or :blue (default)."
+  [{:keys [icon label on-press active? badge-count active-color]}]
+  (let [is-green? (= active-color :green)
+        active-bg (if is-green? "#E8F8E8" "#E8F4FD")
+        active-text (if is-green? "#34C759" "#007AFF")
+        badge-bg (if active? "#34C759" "#FF3B30")]
+    [:> rn/TouchableOpacity
+     {:style {:flex 1
+              :align-items "center"
+              :justify-content "center"
+              :padding-vertical 8
+              :background-color (if active? active-bg "transparent")
+              :border-radius 8
+              :margin-horizontal 4}
+      :on-press on-press
+      :active-opacity 0.7}
+     [:> rn/View {:style {:position "relative"}}
+      [:> rn/Text {:style {:font-size 20}} icon]
+      (when (and badge-count (pos? badge-count))
+        [:> rn/View {:style {:position "absolute"
+                             :top -4
+                             :right -8
+                             :min-width 16
+                             :height 16
+                             :border-radius 8
+                             :background-color badge-bg
+                             :justify-content "center"
+                             :align-items "center"
+                             :padding-horizontal 4}}
+         [:> rn/Text {:style {:color "#FFF"
+                              :font-size 10
+                              :font-weight "600"}}
+          (if (> badge-count 99) "99+" (str badge-count))]])]
+     [:> rn/Text {:style {:font-size 11
+                          :color (if active? active-text "#666")
+                          :margin-top 2
+                          :font-weight (if active? "600" "400")}}
+      label]]))
 
 (defn- session-toolbar
-  "Toolbar with action buttons for Commands, Resources, and Recipes."
+  "Toolbar with action buttons for Commands, History, Resources, and Recipes.
+   Commands shows badge with available command count.
+   History shows green indicator when commands are running."
   [{:keys [navigation directory on-new-session]}]
   (let [running-commands @(rf/subscribe [:commands/running-any?])
+        running-count @(rf/subscribe [:commands/running-count])
+        command-count @(rf/subscribe [:commands/count-for-directory directory])
         pending-uploads @(rf/subscribe [:resources/pending-uploads])
         active-recipe @(rf/subscribe [:recipes/active-for-session nil])]
     [:> rn/View {:style {:flex-direction "row"
@@ -316,13 +327,23 @@
                          :border-bottom-color "#E5E5E5"
                          :padding-horizontal 8
                          :padding-vertical 4}}
-     ;; Commands button
+     ;; Commands button - badge shows available command count
      [toolbar-button
       {:icon "⚡"
        :label "Commands"
-       :active? running-commands
+       :badge-count command-count
        :on-press #(when navigation
                     (.navigate navigation "CommandMenu"
+                               #js {:workingDirectory directory}))}]
+     ;; History button - green indicator when commands are running
+     [toolbar-button
+      {:icon "📜"
+       :label "History"
+       :active? running-commands
+       :active-color :green
+       :badge-count (when running-commands running-count)
+       :on-press #(when navigation
+                    (.navigate navigation "CommandHistory"
                                #js {:workingDirectory directory}))}]
      ;; Resources button
      [toolbar-button

@@ -328,3 +328,57 @@
 
    (testing "git/branch stores nil for non-git directories"
      (is (nil? @(rf/subscribe [:git/branch "/non-git/path"]))))))
+
+(deftest commands-count-subs
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "commands/count-for-directory returns nil when no commands available"
+     (is (nil? @(rf/subscribe [:commands/count-for-directory "/project"]))))
+
+   ;; Add available commands for a directory
+   (swap! re-frame.db/app-db assoc-in [:commands :available "/project"]
+          {:project [{:id "build" :label "Build" :type "command"}
+                     {:id "test" :label "Test" :type "command"}
+                     {:id "docker" :label "Docker" :type "group"
+                      :children [{:id "docker.up" :label "Up" :type "command"}
+                                 {:id "docker.down" :label "Down" :type "command"}
+                                 {:id "docker.logs" :label "Logs" :type "command"}]}]
+           :general [{:id "git.status" :label "Git Status" :type "command"}
+                     {:id "git.pull" :label "Git Pull" :type "command"}]})
+
+   (testing "commands/count-for-directory counts flat commands and group children"
+     ;; 2 flat project commands + 3 group children + 2 general = 7 total
+     (is (= 7 @(rf/subscribe [:commands/count-for-directory "/project"]))))
+
+   (testing "commands/count-for-directory returns nil for different directory"
+     (is (nil? @(rf/subscribe [:commands/count-for-directory "/other"]))))
+
+   ;; Add commands for different directory (no groups)
+   (swap! re-frame.db/app-db assoc-in [:commands :available "/other"]
+          {:project [{:id "make" :label "Make" :type "command"}]
+           :general []})
+
+   (testing "commands/count-for-directory works with empty general commands"
+     (is (= 1 @(rf/subscribe [:commands/count-for-directory "/other"]))))))
+
+(deftest commands-running-count-subs
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "commands/running-count returns 0 when no commands running"
+     (is (= 0 @(rf/subscribe [:commands/running-count]))))
+
+   ;; Add running commands
+   (swap! re-frame.db/app-db assoc-in [:commands :running "cmd-123"]
+          {:command-id "build" :status :running})
+
+   (testing "commands/running-count returns 1 with one running command"
+     (is (= 1 @(rf/subscribe [:commands/running-count]))))
+
+   ;; Add another running command
+   (swap! re-frame.db/app-db assoc-in [:commands :running "cmd-456"]
+          {:command-id "test" :status :running})
+
+   (testing "commands/running-count returns correct count for multiple commands"
+     (is (= 2 @(rf/subscribe [:commands/running-count]))))))

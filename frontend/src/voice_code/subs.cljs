@@ -226,11 +226,35 @@
      {:project (sort-command-tree-by-mru (:project cmds) mru)
       :general (sort-commands-by-mru (:general cmds) mru)})))
 
+(defn- count-commands
+  "Count total commands in a command tree (including children in groups)."
+  [commands]
+  (reduce (fn [acc cmd]
+            (if (= (:type cmd) "group")
+              (+ acc (count (:children cmd)))
+              (inc acc)))
+          0
+          commands))
+
+(rf/reg-sub
+ :commands/count-for-directory
+ :<- [:commands/available]
+ (fn [available [_ working-directory]]
+   (when-let [cmds (get available working-directory)]
+     (+ (count-commands (:project cmds))
+        (count (:general cmds))))))
+
 (rf/reg-sub
  :commands/running-any?
  :<- [:commands/running]
  (fn [running _]
    (seq running)))
+
+(rf/reg-sub
+ :commands/running-count
+ :<- [:commands/running]
+ (fn [running _]
+   (count running)))
 
 (rf/reg-sub
  :commands/running-for-session
