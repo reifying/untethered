@@ -346,6 +346,11 @@
     :ws/disconnect nil}))
 
 (rf/reg-event-db
+ :connection/set-authenticated
+ (fn [db [_ authenticated?]]
+   (assoc-in db [:connection :authenticated?] authenticated?)))
+
+(rf/reg-event-db
  :auth/scan-qr
  (fn [db _]
    ;; Enable QR scanning mode - the auth view will show the scanner

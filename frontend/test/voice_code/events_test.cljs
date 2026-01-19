@@ -747,6 +747,18 @@
      (is (= :disconnected @(rf/subscribe [:connection/status])))
      (is (false? @(rf/subscribe [:connection/authenticated?]))))))
 
+(deftest connection-set-authenticated-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "connection/set-authenticated sets authenticated to true"
+     (rf/dispatch-sync [:connection/set-authenticated true])
+     (is (true? @(rf/subscribe [:connection/authenticated?]))))
+
+   (testing "connection/set-authenticated sets authenticated to false"
+     (rf/dispatch-sync [:connection/set-authenticated false])
+     (is (false? @(rf/subscribe [:connection/authenticated?]))))))
+
 ;; ============================================================================
 ;; Prompt Events
 ;; ============================================================================
