@@ -3,8 +3,38 @@
    Allows manual entry or QR code scanning."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
+            [clojure.string :as str]
             ["react-native" :as rn]
             [voice-code.qr-scanner :refer [qr-scanner-view]]))
+
+;; ============================================================================
+;; API Key Validation
+;; ============================================================================
+
+(def ^:private api-key-prefix "untethered-")
+(def ^:private api-key-hex-length 32)
+(def ^:private api-key-total-length (+ (count api-key-prefix) api-key-hex-length))
+
+(defn validate-api-key
+  "Validate API key format.
+   Expected format: untethered-<32 hex characters>
+   Returns {:valid? true} or {:valid? false :error \"message\"}"
+  [key]
+  (cond
+    (str/blank? key)
+    {:valid? false :error nil}  ; Empty is not an error, just invalid
+
+    (not (str/starts-with? key api-key-prefix))
+    {:valid? false :error "API key must start with 'untethered-'"}
+
+    (not= (count key) api-key-total-length)
+    {:valid? false :error (str "API key must be " api-key-total-length " characters")}
+
+    (not (re-matches #"^untethered-[a-f0-9]{32}$" key))
+    {:valid? false :error "API key must contain only lowercase hex characters after prefix"}
+
+    :else
+    {:valid? true :error nil}))
 
 (defn- status-indicator
   "Shows connection status during authentication."
@@ -29,46 +59,69 @@
           (str "Error: " error)]))]))
 
 (defn- api-key-input
-  "Input field for API key with connect button."
+  "Input field for API key with connect button and validation feedback."
   []
   (let [api-key (r/atom "")
-        status @(rf/subscribe [:connection/status])
-        connecting? (= status :connecting)]
+        touched? (r/atom false)]
     (fn []
-      [:> rn/View {:style {:width "100%" :padding-horizontal 24}}
-       [:> rn/Text {:style {:font-size 14
-                            :color "#666"
-                            :margin-bottom 8}}
-        "API Key"]
-       [:> rn/TextInput
-        {:style {:border-width 1
-                 :border-color "#DDD"
-                 :border-radius 8
-                 :padding-horizontal 16
-                 :padding-vertical 12
-                 :font-size 16
-                 :background-color "#F9F9F9"}
-         :placeholder "untethered-..."
-         :value @api-key
-         :on-change-text #(reset! api-key %)
-         :editable (not connecting?)
-         :auto-capitalize "none"
-         :auto-correct false
-         :secure-text-entry true}]
+      (let [status @(rf/subscribe [:connection/status])
+            connecting? (= status :connecting)
+            validation (validate-api-key @api-key)
+            valid? (:valid? validation)
+            validation-error (:error validation)
+            show-error? (and @touched? (seq @api-key) (not valid?) validation-error)
+            can-connect? (and valid? (not connecting?))]
+        [:> rn/View {:style {:width "100%" :padding-horizontal 24}}
+         [:> rn/Text {:style {:font-size 14
+                              :color "#666"
+                              :margin-bottom 8}}
+          "API Key"]
+         [:> rn/TextInput
+          {:style {:border-width 1
+                   :border-color (cond
+                                   show-error? "#FF3B30"
+                                   (and @touched? valid?) "#4CAF50"
+                                   :else "#DDD")
+                   :border-radius 8
+                   :padding-horizontal 16
+                   :padding-vertical 12
+                   :font-size 16
+                   :background-color "#F9F9F9"}
+           :placeholder "untethered-..."
+           :value @api-key
+           :on-change-text #(reset! api-key %)
+           :on-blur #(reset! touched? true)
+           :editable (not connecting?)
+           :auto-capitalize "none"
+           :auto-correct false
+           :secure-text-entry true}]
 
-       [:> rn/TouchableOpacity
-        {:style {:background-color (if connecting? "#CCC" "#007AFF")
-                 :border-radius 8
-                 :padding-vertical 14
-                 :margin-top 16
-                 :align-items "center"}
-         :disabled connecting?
-         :on-press #(when (seq @api-key)
-                      (rf/dispatch [:auth/connect @api-key]))}
-        [:> rn/Text {:style {:color "#FFF"
-                             :font-size 16
-                             :font-weight "600"}}
-         (if connecting? "Connecting..." "Connect")]]])))
+         ;; Validation error message
+         (when show-error?
+           [:> rn/Text {:style {:font-size 12
+                                :color "#FF3B30"
+                                :margin-top 4}}
+            validation-error])
+
+         ;; Valid indicator
+         (when (and @touched? valid?)
+           [:> rn/Text {:style {:font-size 12
+                                :color "#4CAF50"
+                                :margin-top 4}}
+            "Valid API key format"])
+
+         [:> rn/TouchableOpacity
+          {:style {:background-color (if can-connect? "#007AFF" "#CCC")
+                   :border-radius 8
+                   :padding-vertical 14
+                   :margin-top 16
+                   :align-items "center"}
+           :disabled (not can-connect?)
+           :on-press #(rf/dispatch [:auth/connect @api-key])}
+          [:> rn/Text {:style {:color "#FFF"
+                               :font-size 16
+                               :font-weight "600"}}
+           (if connecting? "Connecting..." "Connect")]]]))))
 
 (defn- server-config
   "Server URL and port configuration."
