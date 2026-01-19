@@ -3,6 +3,28 @@
    Provides speech recognition (input) and text-to-speech (output)."
   (:require [re-frame.core :as rf]))
 
+;; ============================================================================
+;; Voice Rotation Constants
+;; ============================================================================
+
+(def all-premium-voices-identifier
+  "Special identifier for 'All Premium Voices' rotation mode.
+   When selected, the app rotates through premium voices based on working directory."
+  "com.voicecode.all-premium-voices")
+
+(defn- stable-hash
+  "Compute a stable hash for a string that remains consistent across app launches.
+   Returns a non-negative integer hash value."
+  [s]
+  (let [len (.-length s)]
+    (loop [i 0
+           hash 0]
+      (if (< i len)
+        (let [char-code (.charCodeAt s i)
+              new-hash (bit-and (+ (* hash 31) char-code) 0x7FFFFFFF)]
+          (recur (inc i) new-hash))
+        hash))))
+
 ;; Forward declarations for TTS functions used in voice recognition
 (declare speaking?* stop-speaking!)
 
@@ -221,19 +243,31 @@
      (js/console.log "Text-to-speech initialized"))))
 
 (defn speak!
-  "Speak the given text.
+  "Speak the given text, optionally with a specific voice.
+   Parameters:
+     text - The text to speak
+     voice-id - Optional voice identifier to use for this speech
    Returns a promise."
-  [text]
-  (if-let [Tts (get-tts-default)]
-    (-> (.speak Tts text)
-        (.then (fn [_]
-                 (reset! speaking? true)
-                 (js/console.log "Speaking:" (subs text 0 50) "...")))
-        (.catch (fn [error]
-                  (js/console.error "Failed to speak:" error)
-                  (rf/dispatch [:voice/error {:type :speak-failed
-                                              :message (.-message error)}]))))
-    (js/Promise.resolve nil)))
+  ([text]
+   (speak! text nil))
+  ([text voice-id]
+   (if-let [Tts (get-tts-default)]
+     (let [;; If a specific voice is requested, set it temporarily
+           set-voice-promise (if voice-id
+                               (-> (.setDefaultVoice Tts voice-id)
+                                   (.catch (fn [_] nil))) ; Ignore errors, use current voice
+                               (js/Promise.resolve nil))]
+       (-> set-voice-promise
+           (.then (fn [_] (.speak Tts text)))
+           (.then (fn [_]
+                    (reset! speaking? true)
+                    (js/console.log "Speaking:" (subs text 0 50) "..."
+                                    (when voice-id (str " (voice: " voice-id ")")))))
+           (.catch (fn [error]
+                     (js/console.error "Failed to speak:" error)
+                     (rf/dispatch [:voice/error {:type :speak-failed
+                                                 :message (.-message error)}])))))
+     (js/Promise.resolve nil))))
 
 (defn stop-speaking!
   "Stop any current speech.
@@ -287,6 +321,60 @@
                   [])))
     (js/Promise.resolve [])))
 
+(defn get-premium-voices
+  "Filter a list of voices to only include premium quality voices.
+   Premium voices have :quality >= 300 (or :quality = 'premium' on some platforms)."
+  [voices]
+  (->> voices
+       (filter (fn [v]
+                 (let [quality (:quality v)]
+                   ;; On iOS, premium voices typically have quality >= 300
+                   ;; The react-native-tts library returns quality as a number
+                   (and quality (>= quality 300)))))
+       vec))
+
+(defn resolve-voice-identifier
+  "Resolve the actual voice identifier to use for speech.
+   
+   Parameters:
+     selected-voice-id - The user's selected voice identifier (may be all-premium-voices-identifier)
+     premium-voices - Vector of premium voice maps (each has :id key)
+     working-directory - Optional working directory for deterministic voice rotation
+   
+   Returns: Voice identifier to use, or nil for system default."
+  [selected-voice-id premium-voices working-directory]
+  (cond
+    ;; No voice selected - use system default
+    (nil? selected-voice-id)
+    nil
+
+    ;; Not using 'All Premium Voices' mode - return selected voice directly
+    (not= selected-voice-id all-premium-voices-identifier)
+    selected-voice-id
+
+    ;; All Premium Voices mode but no premium voices available
+    (empty? premium-voices)
+    nil
+
+    ;; Only one premium voice - use it
+    (= 1 (count premium-voices))
+    (:id (first premium-voices))
+
+    ;; Multiple premium voices - rotate based on working directory hash
+    :else
+    (if (or (nil? working-directory) (empty? working-directory))
+      ;; No working directory - use first premium voice
+      (:id (first premium-voices))
+      ;; Use stable hash of working directory to select voice
+      (let [hash-value (stable-hash working-directory)
+            index (mod hash-value (count premium-voices))
+            selected-voice (nth premium-voices index)]
+        (js/console.log "🎙️ Voice rotation: project"
+                        (last (clojure.string/split working-directory #"/"))
+                        "→" (:name selected-voice)
+                        (str "(index " index " of " (count premium-voices) ")"))
+        (:id selected-voice)))))
+
 (defn set-default-voice!
   "Set the default TTS voice by voice ID.
    Returns a promise."
@@ -333,10 +421,10 @@
 (rf/reg-fx
  :voice/speak
  (fn [params]
-   (let [{:keys [text on-complete]} (if (string? params)
-                                      {:text params}
-                                      params)]
-     (-> (speak! text)
+   (let [{:keys [text voice-id on-complete]} (if (string? params)
+                                               {:text params}
+                                               params)]
+     (-> (speak! text voice-id)
          (.then (fn [_]
                   ;; Set a timeout to call on-complete after speech finishes
                   ;; TTS events will fire, but we also provide this callback
@@ -374,8 +462,11 @@
 
 (rf/reg-event-fx
  :voice/speak-response
- (fn [_ [_ text]]
-   {:voice/speak text}))
+ (fn [{:keys [db]} [_ text working-directory]]
+   (let [selected-voice-id (get-in db [:settings :voice-identifier])
+         premium-voices (get-premium-voices (get-in db [:ui :available-voices] []))
+         resolved-voice-id (resolve-voice-identifier selected-voice-id premium-voices working-directory)]
+     {:voice/speak {:text text :voice-id resolved-voice-id}})))
 
 (rf/reg-event-fx
  :voice/stop-speaking
@@ -465,6 +556,12 @@
  :voice/loading-voices?
  (fn [db _]
    (get-in db [:ui :loading-voices?] false)))
+
+(rf/reg-sub
+ :voice/premium-voices
+ :<- [:voice/available-voices]
+ (fn [voices _]
+   (get-premium-voices voices)))
 
 ;; ============================================================================
 ;; Voice Picker Events

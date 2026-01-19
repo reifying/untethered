@@ -194,6 +194,9 @@
      (let [auto-speak? (get-in db [:settings :auto-speak-responses])
            voice-listening? (get-in db [:ui :voice-listening?])
            active-session-id (:active-session-id db)
+           ;; Get working directory for voice rotation
+           session (get-in db [:sessions session-id])
+           working-directory (:working-directory session)
            ;; Only auto-speak if:
            ;; 1. Auto-speak is enabled in settings
            ;; 2. User is not currently using voice input (prevent feedback)
@@ -217,7 +220,7 @@
         :dispatch-n (cond-> [[:ws/send-message-ack message-id]
                              [:persistence/save-message session-id]]
                       should-speak?
-                      (conj [:voice/speak-response text]))})
+                      (conj [:voice/speak-response text working-directory]))})
      {:db (-> db
               (assoc-in [:ui :current-error] error)
               (update :locked-sessions disj session-id))})))

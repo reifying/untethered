@@ -6,7 +6,7 @@
             [voice-code.db :as db]
             [voice-code.subs]
             [voice-code.events.core]
-            [voice-code.voice]))
+            [voice-code.voice :as voice]))
 
 (use-fixtures :each
   {:before (fn [] (rf/dispatch-sync [:initialize-db]))})
@@ -124,10 +124,9 @@
 
      ;; Dispatch stop-speaking (the effect won't actually run in tests,
      ;; but we verify the event handler is registered and can be dispatched)
-     (rf/dispatch-sync [:voice/stop-speaking])
      ;; Note: The actual speaking? state is controlled by the TTS module callbacks,
      ;; not directly by stop-speaking. In tests we verify the event doesn't throw.
-     )))
+     (rf/dispatch-sync [:voice/stop-speaking]))))
 
 (deftest voice-tts-cancelled-event
   (rf-test/run-test-sync
@@ -139,3 +138,131 @@
 
      (rf/dispatch-sync [:voice/tts-cancelled])
      (is (false? @(rf/subscribe [:voice/speaking?]))))))
+
+;; ============================================================================
+;; Voice Rotation Tests
+;; ============================================================================
+
+(deftest stable-hash-test
+  (testing "stable-hash returns consistent values"
+    (is (= (voice/stable-hash "/Users/test/project-a")
+           (voice/stable-hash "/Users/test/project-a")))
+    (is (= (voice/stable-hash "")
+           (voice/stable-hash ""))))
+
+  (testing "stable-hash returns different values for different strings"
+    (is (not= (voice/stable-hash "/Users/test/project-a")
+              (voice/stable-hash "/Users/test/project-b"))))
+
+  (testing "stable-hash returns non-negative integers"
+    (is (>= (voice/stable-hash "/Users/test/project") 0))
+    (is (>= (voice/stable-hash "a") 0))
+    (is (>= (voice/stable-hash "") 0))))
+
+(deftest get-premium-voices-test
+  (testing "filters to only premium voices (quality >= 300)"
+    (let [voices [{:id "v1" :name "Voice 1" :quality 500}
+                  {:id "v2" :name "Voice 2" :quality 300}
+                  {:id "v3" :name "Voice 3" :quality 200}
+                  {:id "v4" :name "Voice 4" :quality 100}]
+          premium (voice/get-premium-voices voices)]
+      (is (= 2 (count premium)))
+      (is (= "v1" (:id (first premium))))
+      (is (= "v2" (:id (second premium))))))
+
+  (testing "returns empty vector when no premium voices"
+    (let [voices [{:id "v1" :name "Voice 1" :quality 100}
+                  {:id "v2" :name "Voice 2" :quality 200}]]
+      (is (empty? (voice/get-premium-voices voices)))))
+
+  (testing "handles nil quality gracefully"
+    (let [voices [{:id "v1" :name "Voice 1" :quality nil}
+                  {:id "v2" :name "Voice 2"}]]
+      (is (empty? (voice/get-premium-voices voices))))))
+
+(deftest resolve-voice-identifier-test
+  (let [premium-voices [{:id "premium-1" :name "Premium 1" :quality 500}
+                        {:id "premium-2" :name "Premium 2" :quality 500}
+                        {:id "premium-3" :name "Premium 3" :quality 500}]]
+
+    (testing "returns nil when no voice selected"
+      (is (nil? (voice/resolve-voice-identifier nil premium-voices "/some/dir"))))
+
+    (testing "returns selected voice directly when not 'all premium' mode"
+      (is (= "specific-voice-id"
+             (voice/resolve-voice-identifier "specific-voice-id" premium-voices "/some/dir"))))
+
+    (testing "returns nil when 'all premium' mode but no premium voices"
+      (is (nil? (voice/resolve-voice-identifier
+                 voice/all-premium-voices-identifier [] "/some/dir"))))
+
+    (testing "returns single premium voice when only one available"
+      (is (= "only-voice"
+             (voice/resolve-voice-identifier
+              voice/all-premium-voices-identifier
+              [{:id "only-voice" :name "Only Voice"}]
+              "/some/dir"))))
+
+    (testing "returns first premium voice when no working directory"
+      (is (= "premium-1"
+             (voice/resolve-voice-identifier
+              voice/all-premium-voices-identifier
+              premium-voices
+              nil)))
+      (is (= "premium-1"
+             (voice/resolve-voice-identifier
+              voice/all-premium-voices-identifier
+              premium-voices
+              ""))))
+
+    (testing "rotates voices deterministically based on working directory"
+      ;; Same directory should always return same voice
+      (let [voice-for-dir-a (voice/resolve-voice-identifier
+                             voice/all-premium-voices-identifier
+                             premium-voices
+                             "/Users/test/project-a")
+            voice-for-dir-a-again (voice/resolve-voice-identifier
+                                   voice/all-premium-voices-identifier
+                                   premium-voices
+                                   "/Users/test/project-a")]
+        (is (= voice-for-dir-a voice-for-dir-a-again))
+        (is (some #{voice-for-dir-a} ["premium-1" "premium-2" "premium-3"]))))
+
+    (testing "different directories can get different voices"
+      ;; Test with enough directories that at least some should differ
+      (let [dirs (map #(str "/Users/test/project-" %) (range 100))
+            voices-for-dirs (map #(voice/resolve-voice-identifier
+                                   voice/all-premium-voices-identifier
+                                   premium-voices
+                                   %)
+                                 dirs)
+            unique-voices (set voices-for-dirs)]
+        ;; With 100 directories and 3 voices, we should see all 3 voices used
+        (is (= 3 (count unique-voices)))))))
+
+(deftest premium-voices-subscription-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "premium-voices subscription filters available voices"
+     (let [test-voices [{:id "v1" :name "Premium" :language "en-US" :quality 500}
+                        {:id "v2" :name "Enhanced" :language "en-US" :quality 300}
+                        {:id "v3" :name "Default" :language "en-US" :quality 100}]]
+       (rf/dispatch-sync [:voice/voices-loaded test-voices])
+
+       (is (= 3 (count @(rf/subscribe [:voice/available-voices]))))
+       (is (= 2 (count @(rf/subscribe [:voice/premium-voices]))))
+
+       ;; Verify only quality >= 300 voices are returned
+       (let [premium @(rf/subscribe [:voice/premium-voices])]
+         (is (every? #(>= (:quality %) 300) premium)))))
+
+   (testing "premium-voices returns empty when no premium available"
+     (rf/dispatch-sync [:initialize-db])
+     (rf/dispatch-sync [:voice/voices-loaded [{:id "v1" :quality 100}]])
+     (is (empty? @(rf/subscribe [:voice/premium-voices]))))))
+
+(deftest all-premium-voices-identifier-test
+  (testing "all-premium-voices-identifier constant is defined"
+    (is (string? voice/all-premium-voices-identifier))
+    (is (= "com.voicecode.all-premium-voices" voice/all-premium-voices-identifier))))

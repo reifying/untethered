@@ -105,12 +105,12 @@
   "Single message bubble with truncation support for long messages.
    Tap to speak message text aloud (TTS).
    Long-press to copy message text to clipboard."
-  [{:keys [role text timestamp status]}]
+  [{:keys [role text timestamp status working-directory]}]
   (let [expanded? (r/atom false)
         {:keys [truncated? display-text full-text]} (truncate-text text)
         is-user? (= role :user)
         is-sending? (= status :sending)]
-    (fn [{:keys [role text timestamp status]}]
+    (fn [{:keys [role text timestamp status working-directory]}]
       (let [{:keys [truncated? display-text full-text]} (truncate-text text)
             show-text (if (and truncated? (not @expanded?))
                         display-text
@@ -122,7 +122,7 @@
                   :margin-vertical 4
                   :margin-horizontal 12}
           :active-opacity 0.8
-          :on-press #(rf/dispatch [:voice/speak-response full-text])
+          :on-press #(rf/dispatch [:voice/speak-response full-text working-directory])
           :on-long-press #(copy-to-clipboard! full-text "Message copied")}
          ;; Message bubble
          [:> rn/View {:style {:background-color (if is-user? "#007AFF" "#E9E9EB")
@@ -452,7 +452,7 @@
 
 (defn- message-list
   "Scrollable list of messages with auto-scroll support."
-  [{:keys [messages session-id locked?]}]
+  [{:keys [messages session-id locked? working-directory]}]
   (let [list-ref (r/atom nil)
         auto-scroll? @(rf/subscribe [:ui/auto-scroll?])]
     (r/create-class
@@ -463,7 +463,7 @@
           (js/setTimeout #(.scrollToEnd ^js @list-ref #js {:animated true}) 100)))
 
       :reagent-render
-      (fn [{:keys [messages locked?]}]
+      (fn [{:keys [messages locked? working-directory]}]
         (let [auto-scroll? @(rf/subscribe [:ui/auto-scroll?])]
           [:> rn/View {:style {:flex 1}}
            ;; Auto-scroll toggle button
@@ -501,7 +501,8 @@
                      msg {:role (keyword (.-role item))
                           :text (.-text item)
                           :timestamp (.-timestamp item)
-                          :status (some-> item .-status keyword)}]
+                          :status (some-> item .-status keyword)
+                          :working-directory working-directory}]
                  (r/as-element [message-bubble msg])))
              :content-container-style {:padding-vertical 8}
              :inverted false
@@ -697,7 +698,9 @@
       (fn [_]
         ;; Subscriptions MUST be inside :reagent-render for reactivity
         (let [messages @(rf/subscribe [:messages/for-session session-id])
-              locked? @(rf/subscribe [:session/locked? session-id])]
+              locked? @(rf/subscribe [:session/locked? session-id])
+              session @(rf/subscribe [:sessions/by-id session-id])
+              working-directory (:working-directory session)]
           [:> rn/KeyboardAvoidingView
            {:style {:flex 1 :background-color "#FFFFFF"}
             :behavior "padding"
@@ -713,6 +716,7 @@
              [empty-conversation]
              [message-list {:messages messages
                             :session-id session-id
-                            :locked? locked?}])
+                            :locked? locked?
+                            :working-directory working-directory}])
 
            [input-area {:session-id session-id}]]))})))
