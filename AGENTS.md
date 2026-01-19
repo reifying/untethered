@@ -2,6 +2,20 @@
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
+## Makefile Hook (Important)
+
+A hook blocks direct use of Xcode/simulator commands to reduce syntax fumbling:
+
+- `xcodebuild`, `agvtool`
+- `xcrun simctl`, `xcrun xcodebuild`, `xcrun agvtool`
+
+**What to do:** Use `make help` to find existing targets. If no target exists for what you need, **add a new Make target** to the Makefile, then use it.
+
+```bash
+make help              # List all available targets
+make help | grep ios   # Find iOS-related targets
+```
+
 ## Clojure MCP Setup
 
 This project has two MCP servers configured:
@@ -76,10 +90,10 @@ Reserve screenshots for verifying visual appearance only.
 ### Taking Screenshots
 
 ```bash
-xcrun simctl io booted screenshot /tmp/app-screenshot.png
+make rn-screenshot
 ```
 
-Then use the Read tool to view the image.
+Then use the Read tool to view `/tmp/simulator-screenshot.png`.
 
 ### Authenticating via REPL
 
