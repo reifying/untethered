@@ -128,6 +128,84 @@
                         :text-align "center"}}
     "Start a new conversation from Claude Code to create a session."]])
 
+(defn- toolbar-button
+  "Single toolbar button with icon and label."
+  [{:keys [icon label on-press active? badge-count]}]
+  [:> rn/TouchableOpacity
+   {:style {:flex 1
+            :align-items "center"
+            :justify-content "center"
+            :padding-vertical 8
+            :background-color (if active? "#E8F4FD" "transparent")
+            :border-radius 8
+            :margin-horizontal 4}
+    :on-press on-press
+    :active-opacity 0.7}
+   [:> rn/View {:style {:position "relative"}}
+    [:> rn/Text {:style {:font-size 20}} icon]
+    (when (and badge-count (pos? badge-count))
+      [:> rn/View {:style {:position "absolute"
+                           :top -4
+                           :right -8
+                           :min-width 16
+                           :height 16
+                           :border-radius 8
+                           :background-color "#FF3B30"
+                           :justify-content "center"
+                           :align-items "center"
+                           :padding-horizontal 4}}
+       [:> rn/Text {:style {:color "#FFF"
+                            :font-size 10
+                            :font-weight "600"}}
+        (if (> badge-count 99) "99+" (str badge-count))]])]
+   [:> rn/Text {:style {:font-size 11
+                        :color (if active? "#007AFF" "#666")
+                        :margin-top 2
+                        :font-weight (if active? "600" "400")}}
+    label]])
+
+(defn- session-toolbar
+  "Toolbar with action buttons for Commands, Resources, and Recipes."
+  [{:keys [navigation directory]}]
+  (let [running-commands @(rf/subscribe [:commands/running-any?])
+        pending-uploads @(rf/subscribe [:resources/pending-uploads])
+        active-recipe @(rf/subscribe [:recipes/active-for-session nil])]
+    [:> rn/View {:style {:flex-direction "row"
+                         :background-color "#FFFFFF"
+                         :border-bottom-width 1
+                         :border-bottom-color "#E5E5E5"
+                         :padding-horizontal 8
+                         :padding-vertical 4}}
+     ;; Commands button
+     [toolbar-button
+      {:icon "⚡"
+       :label "Commands"
+       :active? running-commands
+       :on-press #(when navigation
+                    (.navigate navigation "CommandMenu"
+                               #js {:workingDirectory directory}))}]
+     ;; Resources button
+     [toolbar-button
+      {:icon "📎"
+       :label "Resources"
+       :badge-count pending-uploads
+       :on-press #(when navigation
+                    (.navigate navigation "Resources"
+                               #js {:workingDirectory directory}))}]
+     ;; Recipes button
+     [toolbar-button
+      {:icon "📋"
+       :label "Recipes"
+       :active? (some? active-recipe)
+       :on-press #(when navigation
+                    (.navigate navigation "Recipes"
+                               #js {:workingDirectory directory}))}]
+     ;; New Session button
+     [toolbar-button
+      {:icon "+"
+       :label "New"
+       :on-press #(rf/dispatch [:sessions/create {:working-directory directory}])}]]))
+
 (defn- new-session-button
   "Button to create a new session."
   [directory]
@@ -196,6 +274,10 @@
         (let [sessions @(rf/subscribe [:sessions/for-directory directory])
               locked-sessions @(rf/subscribe [:locked-sessions])]
           [:> rn/View {:style {:flex 1 :background-color "#F5F5F5"}}
+           ;; Toolbar at top
+           [session-toolbar {:navigation navigation :directory directory}]
+
+           ;; Session list content
            (if (empty? sessions)
              [empty-state]
              [:> rn/FlatList
@@ -216,10 +298,5 @@
                                               #js {:sessionId session-id
                                                    :sessionName (session-name session-data)}))
                       :on-delete #(rf/dispatch [:sessions/delete session-id])}])))
-               :content-container-style {:padding-vertical 8}}])
-
-           ;; Commands FAB (left)
-           [commands-button navigation directory]
-           ;; New session FAB (right)
-           [new-session-button directory]]))})))
+               :content-container-style {:padding-vertical 8}}])]))})))
 

@@ -210,16 +210,27 @@
        [:> rn/Text {:style {:font-size 32}}
         (if listening? "⏹" "🎤")]]
 
-      ;; Status text
-      [:> rn/Text {:style {:font-size 12
-                           :color (cond locked? "#FF9500"
-                                        listening? "#FF3B30"
-                                        :else "#666")
-                           :margin-top 8}}
-       (cond
-         locked? "Waiting for response..."
-         listening? "Listening... Tap to stop"
-         :else "Tap to speak")]]]))
+      ;; Status text - tappable unlock when locked
+      (if locked?
+        [:> rn/TouchableOpacity
+         {:style {:margin-top 8
+                  :padding-horizontal 12
+                  :padding-vertical 6
+                  :background-color "#FFF3E0"
+                  :border-radius 12
+                  :border-width 1
+                  :border-color "#FF9500"}
+          :on-press #(rf/dispatch [:sessions/unlock session-id])}
+         [:> rn/Text {:style {:font-size 12
+                              :color "#FF9500"
+                              :font-weight "500"}}
+          "Tap to Unlock"]]
+        [:> rn/Text {:style {:font-size 12
+                             :color (if listening? "#FF3B30" "#666")
+                             :margin-top 8}}
+         (if listening?
+           "Listening... Tap to stop"
+           "Tap to speak")])]]))
 
 (defn- text-input-area
   "Text input with send button."
@@ -288,13 +299,23 @@
                             :font-weight "bold"}}
         "↑"]]]
 
-     ;; Locked state hint
+     ;; Locked state hint - tappable unlock button
      (when locked?
-       [:> rn/Text {:style {:font-size 12
-                            :color "#FF9500"
-                            :text-align "center"
-                            :margin-top 4}}
-        "Waiting for response..."])]))
+       [:> rn/TouchableOpacity
+        {:style {:margin-top 8
+                 :padding-horizontal 12
+                 :padding-vertical 6
+                 :align-self "center"
+                 :background-color "#FFF3E0"
+                 :border-radius 12
+                 :border-width 1
+                 :border-color "#FF9500"}
+         :on-press #(rf/dispatch [:sessions/unlock session-id])}
+        [:> rn/Text {:style {:font-size 12
+                             :color "#FF9500"
+                             :font-weight "500"
+                             :text-align "center"}}
+         "Tap to Unlock"]])]))
 
 (defn- input-area
   "Switches between voice and text input based on current mode."
