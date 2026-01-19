@@ -14,7 +14,18 @@ You are responsible for determining whether the implementation has exceeded the 
 
 You can add new libraries but have a subagent perform a security analysis to ensure that the libraries you have added are not going to compromise our application or dev environment.
 
-Use beads (run `bd quickstart` to learn about beads) to track the work for your session. Open beads for the work you will perform. Make sure the beads are updated before your turn is finished.
+Before implementing any feature:
+1. Find the iOS implementation - Locate the equivalent Swift file in `ios/VoiceCode/`
+2. Verify it's wired up - Model stubs don't count. The feature must be:
+   - Parsed from WebSocket responses
+   - Stored in CoreData (if persistent)
+   - Displayed in the UI
+3. Match exactly - Don't enhance or "complete" partially-implemented iOS features
+4. If iOS is incomplete - Create a parity gap issue, don't implement the RN version
+
+The iOS app is the reference implementation. If a field exists in iOS models but isn't displayed in iOS views, it's not ready for RN implementation.
+
+Use beads (run `bd quickstart` to learn about beads) to track the work for your session. Open beads for the work you will perform. Make sure the beads are updated before your turn is finished. Cite the `ios/VoiceCode/` used as a refernence for your implementation in your updates to the bead task before closing.
 
 You can use up to 1000 tool calls to complete this work. Use up to 1000 parallel subagents, but only use 1 subagent for compiling and running tests.
 
