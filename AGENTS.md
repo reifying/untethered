@@ -17,6 +17,8 @@ The backend nREPL must be running on port 7894:
 cd backend && nohup clojure -M:nrepl --port 7894 &
 ```
 
+**Note:** The nREPL server (for MCP tools) is separate from the Untethered backend server. To restart the backend: `make backend-restart` from root.
+
 ### Frontend (clojure-mcp-frontend)
 
 The frontend requires shadow-cljs watch running:
