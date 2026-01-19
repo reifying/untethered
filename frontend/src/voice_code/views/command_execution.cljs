@@ -93,9 +93,9 @@
           :on-content-size-change
           (fn [_ _]
             (when (and @auto-scroll? @scroll-ref)
-              (.scrollToEnd @scroll-ref #js {:animated true})))
+              (.scrollToEnd ^js @scroll-ref #js {:animated true})))
           :on-scroll
-          (fn [e]
+          (fn [^js e]
             (let [offset (-> e .-nativeEvent .-contentOffset .-y)
                   content-height (-> e .-nativeEvent .-contentSize .-height)
                   layout-height (-> e .-nativeEvent .-layoutMeasurement .-height)

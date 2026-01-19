@@ -277,7 +277,9 @@
 (defn session-info-view
   "Modal view displaying session context information and actions."
   [{:keys [route navigation]}]
-  (let [session-id (-> route .-params .-sessionId)
+  (let [^js route route
+        ^js navigation navigation
+        session-id (-> route .-params .-sessionId)
         session @(rf/subscribe [:sessions/by-id session-id])
         settings @(rf/subscribe [:settings/all])
         active-recipe @(rf/subscribe [:recipes/active-for-session session-id])

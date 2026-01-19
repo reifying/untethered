@@ -73,16 +73,20 @@
              {:name "SessionList"
               :component (r/reactify-component session-list-view)
               :options (fn [^js props]
-                         #js {:title (or (some-> props .-route .-params .-directoryName)
-                                         "Sessions")})}]
+                         (let [^js route (.-route props)
+                               ^js params (when route (.-params route))]
+                           #js {:title (or (when params (.-directoryName params))
+                                           "Sessions")}))}]
 
             ;; Conversation view (individual session)
             [:> (.-Screen Stack)
              {:name "Conversation"
               :component (r/reactify-component conversation-view)
               :options (fn [^js props]
-                         #js {:title (or (some-> props .-route .-params .-sessionName)
-                                         "Chat")})}]
+                         (let [^js route (.-route props)
+                               ^js params (when route (.-params route))]
+                           #js {:title (or (when params (.-sessionName params))
+                                           "Chat")}))}]
 
             ;; Session info (session details and actions)
             [:> (.-Screen Stack)
@@ -114,8 +118,10 @@
              {:name "CommandOutputDetail"
               :component (r/reactify-component command-output-detail-view)
               :options (fn [^js props]
-                         #js {:title (or (some-> props .-route .-params .-shellCommand)
-                                         "Command Output")})}]
+                         (let [^js route (.-route props)
+                               ^js params (when route (.-params route))]
+                           #js {:title (or (when params (.-shellCommand params))
+                                           "Command Output")}))}]
 
             ;; Resources (uploaded files)
             [:> (.-Screen Stack)

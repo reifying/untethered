@@ -126,7 +126,7 @@
    Uses hooks via :f> for functional component."
   []
   (let [device (useCameraDevice "back")
-        permission (useCameraPermission)
+        ^js permission (useCameraPermission)
         has-permission (.-hasPermission permission)
         request-permission (.-requestPermission permission)
         on-codes-scanned (fn [codes]

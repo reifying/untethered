@@ -168,7 +168,7 @@
   "Main command output detail screen showing full command output.
    Uses Form-2 component pattern for proper Reagent reactivity."
   [props]
-  (let [route (:route props)
+  (let [^js route (:route props)
         command-session-id (when route (some-> route .-params .-commandSessionId))
         shell-command (when route (some-> route .-params .-shellCommand))]
     (fn [_props]

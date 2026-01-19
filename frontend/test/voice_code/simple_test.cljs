@@ -17,7 +17,7 @@
 (deftest clj->js-test
   (testing "clj->js works"
     (let [m {"foo" "bar"}
-          js-obj (clj->js m)]
+          ^js js-obj (clj->js m)]
       (is (object? js-obj))
       (is (= "bar" (.-foo js-obj))))))
 

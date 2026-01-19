@@ -228,7 +228,7 @@
     (r/create-class
      {:component-did-mount
       (fn [this]
-        (let [nav (:navigation (r/props this))]
+        (let [^js nav (:navigation (r/props this))]
           (when nav
             (.setOptions nav
                          #js {:headerRight #(r/as-element [settings-button nav])}))))

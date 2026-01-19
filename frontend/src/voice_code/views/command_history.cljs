@@ -162,7 +162,7 @@
   "Main command history screen showing list of executed commands.
    Uses Form-2 component pattern for proper Reagent reactivity."
   [props]
-  (let [route (:route props)
+  (let [^js route (:route props)
         navigation (:navigation props)
         working-directory (when route (some-> route .-params .-workingDirectory))]
     ;; Fetch history on mount

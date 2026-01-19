@@ -314,7 +314,7 @@
       (fn [this _]
         ;; Auto-scroll to bottom on new messages (if enabled)
         (when (and auto-scroll? @list-ref)
-          (js/setTimeout #(.scrollToEnd @list-ref #js {:animated true}) 100)))
+          (js/setTimeout #(.scrollToEnd ^js @list-ref #js {:animated true}) 100)))
 
       :reagent-render
       (fn [{:keys [messages locked?]}]
@@ -403,7 +403,7 @@
 
 (defn- header-title
   "Custom header title component that can be tapped to rename."
-  [session-id navigation]
+  [session-id ^js navigation]
   (let [session @(rf/subscribe [:sessions/by-id session-id])
         display-name (session-display-name session)]
     [:> rn/TouchableOpacity
@@ -432,8 +432,8 @@
    Props is a ClojureScript map (converted by r/reactify-component)."
   [props]
   ;; Props is a CLJS map, use keyword access. The JS objects inside need .- access.
-  (let [navigation (:navigation props)
-        route (:route props)
+  (let [^js navigation (:navigation props)
+        ^js route (:route props)
         ;; route is a JS object, so use .- for its properties
         session-id (when route (some-> route .-params .-sessionId))]
     ;; Form-3: create-class with subscriptions inside :reagent-render

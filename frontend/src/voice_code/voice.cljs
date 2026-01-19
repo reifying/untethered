@@ -39,10 +39,10 @@
   "Initialize voice recognition event handlers.
    Must be called once at app startup."
   []
-  (when-let [Voice (get-voice-default)]
+  (when-let [^js Voice (get-voice-default)]
     ;; Speech recognition results
     (set! (.-onSpeechResults Voice)
-          (fn [e]
+          (fn [^js e]
             (let [results (.-value e)
                   text (first results)]
               (when text
@@ -50,7 +50,7 @@
 
     ;; Partial results (while speaking)
     (set! (.-onSpeechPartialResults Voice)
-          (fn [e]
+          (fn [^js e]
             (let [results (.-value e)
                   text (first results)]
               (when text
@@ -70,7 +70,7 @@
 
     ;; Error handling
     (set! (.-onSpeechError Voice)
-          (fn [e]
+          (fn [^js e]
             (reset! listening? false)
             (let [error (.-error e)]
               (rf/dispatch [:voice/error {:type :recognition
@@ -134,7 +134,7 @@
   "Clean up voice recognition resources.
    Call when component unmounts."
   []
-  (when-let [Voice (get-voice-default)]
+  (when-let [^js Voice (get-voice-default)]
     (.destroy Voice)
     (reset! listening? false)))
 
@@ -167,7 +167,7 @@
   "Initialize text-to-speech event handlers.
    Must be called once at app startup."
   []
-  (when-let [Tts (get-tts-default)]
+  (when-let [^js Tts (get-tts-default)]
     ;; Set default language
     (-> (.setDefaultLanguage Tts "en-US")
         (.catch (fn [error]
@@ -236,13 +236,13 @@
 (defn set-speech-rate!
   "Set the speech rate. Default is 0.5 (range 0.0 to 1.0)."
   [rate]
-  (when-let [Tts (get-tts-default)]
+  (when-let [^js Tts (get-tts-default)]
     (.setDefaultRate Tts rate)))
 
 (defn set-speech-pitch!
   "Set the speech pitch. Default is 1.0."
   [pitch]
-  (when-let [Tts (get-tts-default)]
+  (when-let [^js Tts (get-tts-default)]
     (.setDefaultPitch Tts pitch)))
 
 ;; ============================================================================

@@ -159,7 +159,7 @@
    Props is a ClojureScript map (converted by r/reactify-component)."
   [props]
   ;; Props is a CLJS map, use keyword access. The JS objects inside need .- access.
-  (let [route (:route props)
+  (let [^js route (:route props)
         navigation (:navigation props)
         ;; route is a JS object, so use .- for its properties
         working-directory (when route (-> route .-params .-workingDirectory))]

@@ -183,10 +183,10 @@
    Props is a ClojureScript map (converted by r/reactify-component)."
   [props]
   ;; Props is a CLJS map, use keyword access. The JS objects inside need .- access.
-  (let [navigation (:navigation props)
-        route (:route props)
+  (let [^js navigation (:navigation props)
+        ^js route (:route props)
         ;; route is a JS object, so use .- for its properties
-        params (when route (.-params route))
+        ^js params (when route (.-params route))
         directory (when params (.-directory params))]
     ;; Form-3: create-class with subscriptions inside :reagent-render
     (r/create-class
