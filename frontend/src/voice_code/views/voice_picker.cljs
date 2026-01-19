@@ -3,7 +3,8 @@
    Displays available English voices with quality indicators."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn]))
+            ["react-native" :as rn]
+            [voice-code.voice :as voice]))
 
 (def ^:private quality-labels
   "Map quality values to human-readable labels.
@@ -102,6 +103,41 @@
    (when selected?
      [:> rn/Text {:style {:font-size 20 :color "#007AFF"}} "✓"])])
 
+(defn- all-premium-voices-item
+  "The 'All Premium Voices' rotation option.
+   When selected, rotates through premium voices based on working directory."
+  [{:keys [selected? on-select premium-count]}]
+  [:> rn/TouchableOpacity
+   {:style {:flex-direction "row"
+            :align-items "center"
+            :padding-vertical 12
+            :padding-horizontal 16
+            :background-color (if selected? "#F2F2F7" "#FFFFFF")
+            :border-bottom-width 1
+            :border-bottom-color "#F0F0F0"}
+    :on-press #(on-select voice/all-premium-voices-identifier)}
+   [:> rn/View {:style {:flex 1}}
+    [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+     [:> rn/Text {:style {:font-size 16
+                          :font-weight (if selected? "600" "400")
+                          :color "#000000"}}
+      "All Premium Voices"]
+     [:> rn/View {:style {:margin-left 8
+                          :background-color "#34C759"
+                          :padding-horizontal 8
+                          :padding-vertical 2
+                          :border-radius 4}}
+      [:> rn/Text {:style {:font-size 10
+                           :font-weight "600"
+                           :color "#FFFFFF"}}
+       "Rotation"]]]
+    [:> rn/Text {:style {:font-size 12
+                         :color "#8E8E93"
+                         :margin-top 2}}
+     (str "Rotates between " premium-count " premium voices per project")]]
+   (when selected?
+     [:> rn/Text {:style {:font-size 20 :color "#007AFF"}} "✓"])])
+
 (defn- loading-indicator
   "Loading spinner while fetching voices."
   []
@@ -137,6 +173,7 @@
         loading? @(rf/subscribe [:voice/loading-voices?])
         current-voice @(rf/subscribe [:settings/voice-identifier])
         previewing-voice @(rf/subscribe [:voice/previewing-voice])
+        premium-voices @(rf/subscribe [:voice/premium-voices])
         handle-select (fn [voice-id]
                         (rf/dispatch [:voice/select-voice voice-id])
                         (when on-close (on-close)))]
@@ -154,7 +191,8 @@
 
       :reagent-render
       (fn [{:keys [visible on-close]}]
-        (let [previewing-voice @(rf/subscribe [:voice/previewing-voice])]
+        (let [previewing-voice @(rf/subscribe [:voice/previewing-voice])
+              premium-voices @(rf/subscribe [:voice/premium-voices])]
           [:> rn/Modal
            {:visible visible
             :animation-type "slide"
@@ -192,11 +230,19 @@
 
               :else
               [:> rn/ScrollView {:style {:flex 1}}
+               ;; System Default option
                [system-default-item {:selected? (nil? current-voice)
                                      :on-select handle-select}]
-               (for [voice voices]
-                 ^{:key (:id voice)}
-                 [voice-item {:voice voice
-                              :selected? (= (:id voice) current-voice)
-                              :previewing? (= (:id voice) previewing-voice)
+               ;; All Premium Voices option (only show if we have premium voices)
+               (when (seq premium-voices)
+                 [all-premium-voices-item
+                  {:selected? (= current-voice voice/all-premium-voices-identifier)
+                   :on-select handle-select
+                   :premium-count (count premium-voices)}])
+               ;; Individual voices
+               (for [v voices]
+                 ^{:key (:id v)}
+                 [voice-item {:voice v
+                              :selected? (= (:id v) current-voice)
+                              :previewing? (= (:id v) previewing-voice)
                               :on-select handle-select}])])]]))})))
