@@ -231,7 +231,7 @@
                       should-speak?
                       (conj [:voice/speak-response text working-directory]))})
      ;; On error, mark the most recent :sending message as :error
-    (let [updated-messages (update-in db [:messages session-id]
+     (let [updated-messages (update-in db [:messages session-id]
                                        (fn [msgs]
                                          (when msgs
                                            (let [;; Find the last message with :sending status
@@ -242,9 +242,9 @@
                                              (if idx
                                                (assoc-in (vec msgs) [idx :status] :error)
                                                msgs)))))]
-      {:db (-> updated-messages
-               (assoc-in [:ui :current-error] error)
-               (update :locked-sessions disj session-id))}))))
+       {:db (-> updated-messages
+                (assoc-in [:ui :current-error] error)
+                (update :locked-sessions disj session-id))}))))
 
 (rf/reg-event-fx
  :ws/send-message-ack
@@ -435,16 +435,23 @@
    ;; Name inference failed - show error to user
    (assoc-in db [:ui :current-error] (str "Failed to infer session name: " error))))
 
-(rf/reg-event-db
+(rf/reg-event-fx
  :sessions/handle-compaction-complete
- (fn [db [_ {:keys [session-id]}]]
-   ;; Compaction succeeded - refresh session
-   db))
+ (fn [{:keys [db]} [_ {:keys [session-id]}]]
+   ;; Compaction succeeded - update state and show feedback
+   {:db (-> db
+            (update-in [:ui :compacting-sessions] disj session-id)
+            (assoc-in [:ui :compaction-timestamps session-id] (js/Date.))
+            (assoc-in [:ui :compaction-success] "Session compacted"))
+    :dispatch-later [{:ms 3000 :dispatch [:ui/clear-compaction-success]}]}))
 
 (rf/reg-event-db
  :sessions/handle-compaction-error
  (fn [db [_ {:keys [session-id error]}]]
-   (assoc-in db [:ui :current-error] (str "Compaction failed: " error))))
+   ;; Compaction failed - clear compacting state and show error
+   (-> db
+       (update-in [:ui :compacting-sessions] disj session-id)
+       (assoc-in [:ui :current-error] (str "Compaction failed: " error)))))
 
 ;; ============================================================================
 ;; Worktree Handlers
@@ -690,7 +697,9 @@
 (rf/reg-event-fx
  :session/compact
  (fn [{:keys [db]} [_ session-id]]
-   {:ws/send {:type "compact_session"
+   ;; Track compacting state and send compact message to backend
+   {:db (update-in db [:ui :compacting-sessions] (fnil conj #{}) session-id)
+    :ws/send {:type "compact_session"
               :session-id session-id}}))
 
 (rf/reg-event-fx

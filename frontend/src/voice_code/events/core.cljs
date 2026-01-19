@@ -61,6 +61,11 @@
  (fn [db _]
    (assoc-in db [:ui :current-error] nil)))
 
+(rf/reg-event-db
+ :ui/clear-compaction-success
+ (fn [db _]
+   (assoc-in db [:ui :compaction-success] nil)))
+
 ;; Debounce timers for draft persistence (session-id -> timer-id)
 (defonce ^:private draft-save-timers (atom {}))
 

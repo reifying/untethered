@@ -70,7 +70,10 @@
         :input-mode :voice
         :testing-connection? false
         :connection-test-result nil
-        :previewing-voice? false}}) ; session-id -> draft text
+        :previewing-voice? false
+        :compacting-sessions #{} ; Set of session IDs currently being compacted
+        :compaction-timestamps {} ; session-id -> timestamp of last compaction
+        :compaction-success nil}}) ; Temporary success message
 
 (defn session-locked?
   "Check if a session is currently locked (processing a prompt)."

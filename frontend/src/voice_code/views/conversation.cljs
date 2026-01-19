@@ -53,6 +53,32 @@
                              :font-weight "500"}}
          message]]])))
 
+(defn- compaction-success-toast
+  "Toast notification shown when session is compacted."
+  []
+  (let [message @(rf/subscribe [:ui/compaction-success])]
+    (when message
+      [:> rn/View {:style {:position "absolute"
+                           :top 60
+                           :left 0
+                           :right 0
+                           :align-items "center"
+                           :z-index 1000
+                           :pointer-events "none"}}
+       [:> rn/View {:style {:background-color "rgba(52, 199, 89, 0.95)"
+                            :padding-horizontal 16
+                            :padding-vertical 10
+                            :border-radius 8
+                            :shadow-color "#000"
+                            :shadow-offset {:width 0 :height 2}
+                            :shadow-opacity 0.25
+                            :shadow-radius 4
+                            :elevation 5}}
+        [:> rn/Text {:style {:font-size 14
+                             :color "#FFFFFF"
+                             :font-weight "500"}}
+         message]]])))
+
 (defn- show-rename-dialog
   "Show an alert dialog to rename the session."
   [session-id current-name on-rename]
@@ -629,8 +655,49 @@
                                                (rf/dispatch [:session/kill session-id]))}]))}
      [:> rn/Text {:style {:font-size 16 :color "#FF3B30"}} "⏹"]]))
 
+(defn- header-compact-button
+  "Compact button for compressing session history.
+   Shows loading state during compaction, green checkmark if recently compacted.
+   Disabled when session is locked or currently compacting."
+  [session-id]
+  (let [compacting? @(rf/subscribe [:ui/compacting-session? session-id])
+        recently-compacted? @(rf/subscribe [:ui/session-recently-compacted? session-id])
+        locked? @(rf/subscribe [:session/locked? session-id])
+        Alert (.-Alert rn)]
+    [:> rn/TouchableOpacity
+     {:style {:padding 8}
+      :disabled (or compacting? locked?)
+      :on-press (fn []
+                  (if recently-compacted?
+                    ;; Show confirmation for re-compaction
+                    (.alert Alert
+                            "Session Already Compacted"
+                            "This session was recently compacted. Compact again?"
+                            (clj->js [{:text "Cancel" :style "cancel"}
+                                      {:text "Compact Again"
+                                       :style "destructive"
+                                       :onPress #(rf/dispatch [:session/compact session-id])}]))
+                    ;; First time compaction confirmation
+                    (.alert Alert
+                            "Compact Session?"
+                            "This will summarize conversation history to reduce context window usage."
+                            (clj->js [{:text "Cancel" :style "cancel"}
+                                      {:text "Compact"
+                                       :style "destructive"
+                                       :onPress #(rf/dispatch [:session/compact session-id])}]))))}
+     (cond
+       compacting?
+       [:> rn/ActivityIndicator {:size "small" :color "#007AFF"}]
+
+       recently-compacted?
+       [:> rn/Text {:style {:font-size 16 :color "#34C759"}} "⚡"]
+
+       :else
+       [:> rn/Text {:style {:font-size 16
+                            :color (if locked? "#999" "#007AFF")}} "⚡"])]))
+
 (defn- header-right-buttons
-  "Combined header right buttons: Kill (when locked), Recipe, Info, Refresh."
+  "Combined header right buttons: Kill (when locked), Compact, Recipe, Info, Refresh."
   [session-id working-directory ^js navigation]
   (let [locked? @(rf/subscribe [:session/locked? session-id])]
     [:> rn/View {:style {:flex-direction "row"
@@ -638,6 +705,8 @@
      ;; Kill button only visible when session is locked
      (when locked?
        [header-kill-button session-id])
+     ;; Compact button always visible (shows state via color)
+     [header-compact-button session-id]
      [header-recipe-button session-id working-directory navigation]
      [header-info-button session-id navigation]
      [header-refresh-button session-id]]))
@@ -721,8 +790,9 @@
             :behavior "padding"
             :keyboard-vertical-offset 90}
 
-           ;; Copy confirmation toast (floats above content)
+;; Toast notifications (float above content)
            [copy-confirmation-toast]
+           [compaction-success-toast]
 
            ;; Error banner at top (dismissable, copyable)
            [error-banner]

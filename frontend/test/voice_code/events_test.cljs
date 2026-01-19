@@ -1417,6 +1417,50 @@
 ;; Force Reconnect Events
 ;; ============================================================================
 
+(deftest session-compact-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "session/compact sets compacting state and sends ws message"
+     (rf/dispatch-sync [:session/compact "session-123"])
+
+     ;; Should add session to compacting-sessions set
+     (is (contains? (get-in @re-frame.db/app-db [:ui :compacting-sessions]) "session-123")))
+
+   (testing "handle-compaction-complete removes from compacting and sets timestamp"
+     ;; First set a session as compacting
+     (rf/dispatch-sync [:db/update-in [:ui :compacting-sessions] (constantly #{"session-456"})])
+
+     ;; Handle completion
+     (rf/dispatch-sync [:sessions/handle-compaction-complete {:session-id "session-456"}])
+
+     ;; Should remove from compacting set
+     (is (not (contains? (get-in @re-frame.db/app-db [:ui :compacting-sessions]) "session-456")))
+     ;; Should set compaction timestamp
+     (is (some? (get-in @re-frame.db/app-db [:ui :compaction-timestamps "session-456"])))
+     ;; Should set success message
+     (is (= "Session compacted" (get-in @re-frame.db/app-db [:ui :compaction-success]))))
+
+   (testing "handle-compaction-error removes from compacting and sets error"
+     ;; First set a session as compacting
+     (rf/dispatch-sync [:db/update-in [:ui :compacting-sessions] (constantly #{"session-789"})])
+
+     ;; Handle error
+     (rf/dispatch-sync [:sessions/handle-compaction-error {:session-id "session-789"
+                                                           :error "Test error"}])
+
+     ;; Should remove from compacting set
+     (is (not (contains? (get-in @re-frame.db/app-db [:ui :compacting-sessions]) "session-789")))
+     ;; Should set error message
+     (is (= "Compaction failed: Test error" @(rf/subscribe [:ui/current-error]))))
+
+   (testing "clear-compaction-success clears the success message"
+     (rf/dispatch-sync [:db/update-in [:ui :compaction-success] (constantly "Test message")])
+     (is (= "Test message" (get-in @re-frame.db/app-db [:ui :compaction-success])))
+
+     (rf/dispatch-sync [:ui/clear-compaction-success])
+     (is (nil? (get-in @re-frame.db/app-db [:ui :compaction-success]))))))
+
 (deftest force-reconnect-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])

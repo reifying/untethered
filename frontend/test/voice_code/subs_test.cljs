@@ -401,3 +401,37 @@
 
    (testing "commands/running-count returns correct count for multiple commands"
      (is (= 2 @(rf/subscribe [:commands/running-count]))))))
+
+(deftest compaction-subs
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "ui/compacting-session? returns false for non-compacting session"
+     (is (false? @(rf/subscribe [:ui/compacting-session? "session-123"]))))
+
+   (testing "ui/compacting-session? returns true when session is compacting"
+     (swap! re-frame.db/app-db assoc-in [:ui :compacting-sessions] #{"session-123"})
+     (is (true? @(rf/subscribe [:ui/compacting-session? "session-123"])))
+     (is (false? @(rf/subscribe [:ui/compacting-session? "other-session"]))))
+
+   (testing "ui/session-recently-compacted? returns false when no timestamp"
+     (swap! re-frame.db/app-db assoc-in [:ui :compaction-timestamps] {})
+     (is (false? @(rf/subscribe [:ui/session-recently-compacted? "session-456"]))))
+
+   (testing "ui/session-recently-compacted? returns true when timestamp exists"
+     (swap! re-frame.db/app-db assoc-in [:ui :compaction-timestamps "session-456"] (js/Date.))
+     (is (true? @(rf/subscribe [:ui/session-recently-compacted? "session-456"])))
+     (is (false? @(rf/subscribe [:ui/session-recently-compacted? "other-session"]))))
+
+   (testing "ui/compaction-timestamp returns the timestamp for a session"
+     (let [ts (js/Date.)]
+       (swap! re-frame.db/app-db assoc-in [:ui :compaction-timestamps "session-789"] ts)
+       (is (= ts @(rf/subscribe [:ui/compaction-timestamp "session-789"])))
+       (is (nil? @(rf/subscribe [:ui/compaction-timestamp "no-such-session"])))))
+
+   (testing "ui/compaction-success returns the success message"
+     (swap! re-frame.db/app-db assoc-in [:ui :compaction-success] "Session compacted")
+     (is (= "Session compacted" @(rf/subscribe [:ui/compaction-success])))
+
+     (swap! re-frame.db/app-db assoc-in [:ui :compaction-success] nil)
+     (is (nil? @(rf/subscribe [:ui/compaction-success]))))))

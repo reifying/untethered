@@ -465,6 +465,26 @@
  (fn [db _]
    (get-in db [:ui :refreshing-session?] false)))
 
+(rf/reg-sub
+ :ui/compacting-session?
+ (fn [db [_ session-id]]
+   (contains? (get-in db [:ui :compacting-sessions] #{}) session-id)))
+
+(rf/reg-sub
+ :ui/session-recently-compacted?
+ (fn [db [_ session-id]]
+   (contains? (get-in db [:ui :compaction-timestamps] {}) session-id)))
+
+(rf/reg-sub
+ :ui/compaction-timestamp
+ (fn [db [_ session-id]]
+   (get-in db [:ui :compaction-timestamps session-id])))
+
+(rf/reg-sub
+ :ui/compaction-success
+ (fn [db _]
+   (get-in db [:ui :compaction-success])))
+
 ;; ============================================================================
 ;; Git
 ;; ============================================================================
