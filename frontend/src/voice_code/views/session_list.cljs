@@ -268,7 +268,14 @@
         directory (when params (.-directory params))]
     ;; Form-3: create-class with subscriptions inside :reagent-render
     (r/create-class
-     {:reagent-render
+     {:component-did-mount
+      (fn [_this]
+        ;; Set the working directory on the backend when this view mounts.
+        ;; This ensures available_commands are stored under the correct directory key.
+        (when directory
+          (rf/dispatch [:directory/set directory])))
+
+      :reagent-render
       (fn [_]
         ;; Subscriptions MUST be inside :reagent-render for reactivity
         (let [sessions @(rf/subscribe [:sessions/for-directory directory])

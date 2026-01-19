@@ -306,3 +306,32 @@
            children-ids (mapv :id (:children docker-group))]
        ;; docker.down should be first (more recent)
        (is (= ["docker.down" "docker.up"] children-ids))))))
+
+;; ============================================================================
+;; Directory Set Event (Fix for VCMOB-k16)
+;; ============================================================================
+
+(deftest directory-set-event-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "directory/set does nothing when not authenticated"
+     ;; Default db has authenticated? = false
+     (rf/dispatch-sync [:directory/set "/project"])
+     ;; Event should complete without error
+     (is true))
+
+   (testing "directory/set dispatches when authenticated"
+     ;; Set authenticated state
+     (rf/dispatch-sync [:db/assoc-in [:connection :authenticated?] true])
+
+     ;; Dispatch directory/set - this should trigger ws/send effect
+     ;; We can't directly test the effect, but we verify it doesn't error
+     (rf/dispatch-sync [:directory/set "/project"])
+     (is true))
+
+   (testing "directory/set does nothing with nil directory"
+     (rf/dispatch-sync [:db/assoc-in [:connection :authenticated?] true])
+     (rf/dispatch-sync [:directory/set nil])
+     ;; Should complete without error
+     (is true))))

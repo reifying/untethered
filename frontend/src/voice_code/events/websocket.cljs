@@ -652,6 +652,15 @@
               :session-id session-id}}))
 
 (rf/reg-event-fx
+ :directory/set
+ (fn [{:keys [db]} [_ working-directory]]
+   ;; Send set_directory to backend so it knows the current context.
+   ;; Backend will respond with available_commands for this directory.
+   (when (and working-directory (get-in db [:connection :authenticated?]))
+     {:ws/send {:type "set_directory"
+                :path working-directory}})))
+
+(rf/reg-event-fx
  :commands/execute
  (fn [{:keys [db]} [_ {:keys [command-id working-directory]}]]
    (let [now (.getTime (js/Date.))
