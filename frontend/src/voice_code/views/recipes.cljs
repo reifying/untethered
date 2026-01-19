@@ -1,9 +1,13 @@
 (ns voice-code.views.recipes
   "Recipes view for recipe orchestration.
-   Displays available recipes and active recipe status."
+   Displays available recipes and active recipe status.
+   Features:
+   - Recipe start confirmation for new sessions
+   - 15-second timeout with error feedback
+   - Loading state during recipe start"
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn]))
+            ["react-native" :as rn :refer [Alert]]))
 
 (defn- format-duration
   "Format duration since start time."
@@ -19,8 +23,9 @@
 
 (defn- recipe-item
   "Single recipe item in the available list.
-   Recipe data has :id, :label, :description from backend."
-  [{:keys [recipe active? on-start on-stop]}]
+   Recipe data has :id, :label, :description from backend.
+   Supports disabled state during recipe start."
+  [{:keys [recipe active? disabled? on-start on-stop]}]
   (let [{:keys [label description]} recipe]
     [:> rn/View {:style {:padding-horizontal 16
                          :padding-vertical 14
@@ -67,11 +72,19 @@
        {:style {:padding-horizontal 16
                 :padding-vertical 8
                 :border-radius 6
-                :background-color (if active? "#FFEBEE" "#E3F2FD")}
+                :background-color (cond
+                                    disabled? "#E5E5E5"
+                                    active? "#FFEBEE"
+                                    :else "#E3F2FD")
+                :opacity (if disabled? 0.6 1)}
+        :disabled disabled?
         :on-press (if active? on-stop on-start)}
        [:> rn/Text {:style {:font-size 14
                             :font-weight "500"
-                            :color (if active? "#C62828" "#1565C0")}}
+                            :color (cond
+                                     disabled? "#999"
+                                     active? "#C62828"
+                                     :else "#1565C0")}}
         (if active? "Stop" "Start")]]]]))
 
 (defn- active-recipe-banner
@@ -205,13 +218,23 @@
 (defn recipes-view
   "Main recipes screen showing available and active recipes.
    Uses Form-2 component pattern for proper Reagent reactivity with React Navigation.
-   Includes toggle to start recipe in a new session.
+   Features:
+   - Toggle to start recipe in a new session
+   - 15-second timeout with error feedback
+   - Confirmation alert for new session starts
+   - Loading state during recipe start
    Requests available recipes from backend on mount."
   [^js props]
   (let [route (.-route props)
+        navigation (.-navigation props)
         session-id (when route (some-> route .-params .-sessionId))
         working-directory (when route (some-> route .-params .-workingDirectory))
-        use-new-session? (r/atom false)]
+        ;; Local state
+        use-new-session? (r/atom false)
+        starting-recipe? (r/atom false)
+        start-error (r/atom nil)
+        pending-session-id (r/atom nil)
+        timeout-handle (r/atom nil)]
     ;; Request recipes from backend on mount
     (rf/dispatch [:recipes/request-available])
     ;; Form-2: Return a render function that reads subscriptions
@@ -219,37 +242,126 @@
       (let [available-recipes @(rf/subscribe [:recipes/available])
             active-recipes @(rf/subscribe [:recipes/active])
             active-for-session (get active-recipes session-id)
-            active-recipe-id (:recipe-id active-for-session)]
+            active-recipe-id (:recipe-id active-for-session)
+            ;; Check if our pending recipe has started
+            pending-active (when @pending-session-id
+                             (get active-recipes @pending-session-id))]
+
+        ;; Handle recipe start success
+        (when (and @starting-recipe? pending-active)
+          (reset! starting-recipe? false)
+          (when @timeout-handle
+            (js/clearTimeout @timeout-handle)
+            (reset! timeout-handle nil))
+          ;; Show confirmation if started in new session
+          (when (and @use-new-session? (not= @pending-session-id session-id))
+            (.alert Alert
+                    "Recipe Started"
+                    "Recipe is running in a new session. Go to Sessions to view it."
+                    (clj->js [{:text "OK"
+                               :onPress #(when navigation
+                                           (.goBack navigation))}])))
+          ;; If started in same session, just dismiss
+          (when (= @pending-session-id session-id)
+            (when navigation
+              (.goBack navigation)))
+          (reset! pending-session-id nil))
+
         [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
+         ;; Error state
+         (when @start-error
+           [:> rn/View {:style {:flex 1
+                                :justify-content "center"
+                                :align-items "center"
+                                :padding 32}}
+            [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "⚠️"]
+            [:> rn/Text {:style {:font-size 18
+                                 :font-weight "600"
+                                 :color "#333"
+                                 :text-align "center"}}
+             "Recipe Error"]
+            [:> rn/Text {:style {:font-size 14
+                                 :color "#666"
+                                 :text-align "center"
+                                 :margin-top 12
+                                 :margin-horizontal 32}}
+             @start-error]
+            [:> rn/TouchableOpacity
+             {:style {:margin-top 24
+                      :padding-horizontal 24
+                      :padding-vertical 12
+                      :background-color "#007AFF"
+                      :border-radius 8}
+              :on-press #(reset! start-error nil)}
+             [:> rn/Text {:style {:color "#FFF"
+                                  :font-size 16
+                                  :font-weight "500"}}
+              "Dismiss"]]])
+
+         ;; Loading state (starting recipe)
+         (when (and @starting-recipe? (not @start-error))
+           [:> rn/View {:style {:position "absolute"
+                                :top 0 :left 0 :right 0 :bottom 0
+                                :background-color "rgba(255,255,255,0.9)"
+                                :justify-content "center"
+                                :align-items "center"
+                                :z-index 999}}
+            [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]
+            [:> rn/Text {:style {:font-size 16
+                                 :color "#333"
+                                 :margin-top 16}}
+             "Starting recipe..."]])
+
          ;; Active recipe banner (if running for this session)
-         (when active-for-session
+         (when (and active-for-session (not @start-error))
            [active-recipe-banner
             {:name (:label active-for-session)
              :started-at (:started-at active-for-session)
              :on-stop #(rf/dispatch [:recipes/stop session-id])}])
 
          ;; Recipe list
-         (if (empty? available-recipes)
-           [empty-state]
-           [:> rn/ScrollView {:style {:flex 1}}
-            ;; New session toggle (only show when no recipe is running)
-            (when-not active-for-session
-              [new-session-toggle
-               {:enabled? @use-new-session?
-                :on-change #(reset! use-new-session? %)}])
+         (when-not @start-error
+           (if (empty? available-recipes)
+             [empty-state]
+             [:> rn/ScrollView {:style {:flex 1}}
+              ;; New session toggle (only show when no recipe is running)
+              (when-not active-for-session
+                [new-session-toggle
+                 {:enabled? @use-new-session?
+                  :on-change #(reset! use-new-session? %)}])
 
-            [section-header "Available Recipes"]
-            (for [recipe available-recipes]
-              ^{:key (:id recipe)}
-              [recipe-item
-               {:recipe recipe
-                :active? (= active-recipe-id (:id recipe))
-                :on-start #(let [target-session-id (if @use-new-session?
-                                                     (str (random-uuid))
-                                                     session-id)]
-                             (rf/dispatch [:recipes/start
-                                           {:session-id target-session-id
-                                            :recipe-id (:id recipe)
-                                            :working-directory working-directory
-                                            :is-new-session @use-new-session?}]))
-                :on-stop #(rf/dispatch [:recipes/stop session-id])}])])]))))
+              [section-header "Available Recipes"]
+              (for [recipe available-recipes]
+                ^{:key (:id recipe)}
+                [recipe-item
+                 {:recipe recipe
+                  :active? (= active-recipe-id (:id recipe))
+                  :disabled? @starting-recipe?
+                  :on-start (fn []
+                              (let [target-session-id (if @use-new-session?
+                                                        (str (random-uuid))
+                                                        session-id)]
+                                ;; Set loading state
+                                (reset! starting-recipe? true)
+                                (reset! start-error nil)
+                                (reset! pending-session-id target-session-id)
+
+                                ;; Start 15-second timeout
+                                (reset! timeout-handle
+                                        (js/setTimeout
+                                         (fn []
+                                           (when @starting-recipe?
+                                             (reset! starting-recipe? false)
+                                             (reset! pending-session-id nil)
+                                             (reset! start-error
+                                                     "Recipe start timeout. Please check your connection and try again.")))
+                                         15000))
+
+                                ;; Dispatch start event
+                                (rf/dispatch [:recipes/start
+                                              {:session-id target-session-id
+                                               :recipe-id (:id recipe)
+                                               :working-directory working-directory
+                                               :is-new-session @use-new-session?}])))
+                  :on-stop #(rf/dispatch [:recipes/stop session-id])}])]))]))))
+
