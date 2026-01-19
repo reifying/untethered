@@ -476,6 +476,16 @@
    (get-in db [:ui :refreshing-session?] false)))
 
 (rf/reg-sub
+ :ui/refreshing-command-history?
+ (fn [db _]
+   (get-in db [:ui :refreshing-command-history?] false)))
+
+(rf/reg-sub
+ :ui/refreshing-resources?
+ (fn [db _]
+   (get-in db [:ui :refreshing-resources?] false)))
+
+(rf/reg-sub
  :ui/compacting-session?
  (fn [db [_ session-id]]
    (contains? (get-in db [:ui :compacting-sessions] #{}) session-id)))

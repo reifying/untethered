@@ -3,7 +3,7 @@
    Provides list of recent commands with exit codes, duration, and output preview."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn]))
+            ["react-native" :as rn :refer [RefreshControl]]))
 
 ;; ============================================================================
 ;; Helper Functions
@@ -174,6 +174,7 @@
       :reagent-render
       (fn [_props]
         (let [history @(rf/subscribe [:commands/history])
+              refreshing? @(rf/subscribe [:ui/refreshing-command-history?])
               loading? false] ; Could track loading state if needed
           [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
            (cond
@@ -212,4 +213,11 @@
                                     (.navigate navigation "CommandOutputDetail"
                                                #js {:commandSessionId (:command-session-id c)
                                                     :shellCommand (:shell-command c)})))}])))
+               :refresh-control
+               (r/as-element
+                [:> RefreshControl
+                 {:refreshing (boolean refreshing?)
+                  :on-refresh #(rf/dispatch [:commands/refresh-history working-directory])
+                  :tint-color "#007AFF"
+                  :colors #js ["#007AFF"]}])
                :content-container-style {:padding-vertical 8}}])]))})))

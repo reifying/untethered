@@ -578,7 +578,9 @@
 (rf/reg-event-db
  :commands/handle-history
  (fn [db [_ {:keys [sessions]}]]
-   (assoc-in db [:commands :history] sessions)))
+   (-> db
+       (assoc-in [:commands :history] sessions)
+       (assoc-in [:ui :refreshing-command-history?] false))))
 
 (rf/reg-event-db
  :commands/handle-output-full
@@ -597,7 +599,9 @@
 (rf/reg-event-db
  :resources/handle-list
  (fn [db [_ {:keys [resources]}]]
-   (assoc-in db [:resources :list] resources)))
+   (-> db
+       (assoc-in [:resources :list] resources)
+       (assoc-in [:ui :refreshing-resources?] false))))
 
 (rf/reg-event-db
  :resources/handle-uploaded
@@ -762,6 +766,14 @@
                (assoc :working-directory working-directory))}))
 
 (rf/reg-event-fx
+ :commands/refresh-history
+ (fn [{:keys [db]} [_ working-directory]]
+   {:db (assoc-in db [:ui :refreshing-command-history?] true)
+    :ws/send (cond-> {:type "get_command_history"}
+               working-directory
+               (assoc :working-directory working-directory))}))
+
+(rf/reg-event-fx
  :commands/get-output
  (fn [_ [_ command-session-id]]
    {:ws/send {:type "get_command_output"
@@ -783,6 +795,17 @@
    ;; Note: Actual file upload requires native module integration
    ;; This dispatches the intent; native code handles file selection
    {:db (update-in db [:resources :pending-uploads] (fnil inc 0))}))
+
+(rf/reg-event-fx
+ :resources/refresh
+ (fn [{:keys [db]} _]
+   (let [storage-location (get-in db [:settings :resource-storage-location])]
+     (if storage-location
+       {:db (assoc-in db [:ui :refreshing-resources?] true)
+        :ws/send {:type "list_resources"
+                  :storage-location storage-location}}
+       ;; No storage location configured - just clear refreshing state
+       {:db (assoc-in db [:ui :refreshing-resources?] false)}))))
 
 ;; ============================================================================
 ;; Session Name Inference

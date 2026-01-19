@@ -3,7 +3,7 @@
    Displays list of uploaded resources with delete functionality."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn]))
+            ["react-native" :as rn :refer [RefreshControl]]))
 
 (defn- format-file-size
   "Format file size in bytes to human-readable string."
@@ -179,7 +179,8 @@
   ;; Form-2: Return a render function that reads subscriptions
   (fn [^js _props]
     (let [resources @(rf/subscribe [:resources/list])
-          pending-uploads @(rf/subscribe [:resources/pending-uploads])]
+          pending-uploads @(rf/subscribe [:resources/pending-uploads])
+          refreshing? @(rf/subscribe [:ui/refreshing-resources?])]
       [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
        ;; Pending uploads banner
        (when (and pending-uploads (> pending-uploads 0))
@@ -205,6 +206,13 @@
                 [resource-item
                  {:resource resource
                   :on-delete #(rf/dispatch [:resources/delete (:filename %)])}])))
+           :refresh-control
+           (r/as-element
+            [:> RefreshControl
+             {:refreshing (boolean refreshing?)
+              :on-refresh #(rf/dispatch [:resources/refresh])
+              :tint-color "#007AFF"
+              :colors #js ["#007AFF"]}])
            :content-container-style {:padding-vertical 8}}])
 
        ;; Upload FAB
