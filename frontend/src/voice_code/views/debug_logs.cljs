@@ -30,14 +30,34 @@
     "info" "#F0F7FF"
     "#F8F8F8"))
 
+(defn- copy-to-clipboard!
+  "Copy text to clipboard and show toast."
+  [text on-copied]
+  (let [clipboard (or (.-default Clipboard) Clipboard)]
+    (.setString clipboard text)
+    (when on-copied (on-copied))))
+
+(defn- format-log-for-copy
+  "Format a log entry for copying to clipboard."
+  [{:keys [timestamp level message]}]
+  (str "[" timestamp "] [" (.toUpperCase level) "] " message))
+
 (defn- log-entry-item
-  "Single log entry display."
-  [{:keys [timestamp level message id]}]
-  [:> rn/View {:style {:padding-horizontal 12
-                       :padding-vertical 8
-                       :background-color (level-background level)
-                       :border-bottom-width 1
-                       :border-bottom-color "#E0E0E0"}}
+  "Single log entry display with long-press to copy."
+  [{:keys [timestamp level message id on-copy-toast]}]
+  [:> rn/TouchableOpacity
+   {:style {:padding-horizontal 12
+            :padding-vertical 8
+            :background-color (level-background level)
+            :border-bottom-width 1
+            :border-bottom-color "#E0E0E0"}
+    :on-long-press (fn []
+                     (copy-to-clipboard!
+                      (format-log-for-copy {:timestamp timestamp
+                                            :level level
+                                            :message message})
+                      #(when on-copy-toast (on-copy-toast "Entry copied"))))
+    :active-opacity 0.7}
    ;; Header row with timestamp and level
    [:> rn/View {:style {:flex-direction "row"
                         :align-items "center"
@@ -55,7 +75,12 @@
                           :font-weight "600"
                           :color "#FFFFFF"
                           :text-transform "uppercase"}}
-      level]]]
+      level]]
+    ;; Copy hint
+    [:> rn/Text {:style {:font-size 10
+                         :color "#999"
+                         :margin-left "auto"}}
+     "Long-press to copy"]]
    ;; Message
    [:> rn/Text {:style {:font-size 13
                         :font-family "Menlo"
@@ -173,26 +198,50 @@
   "Main debug logs screen showing captured console output.
    Uses Form-2 component pattern for proper Reagent reactivity with React Navigation."
   [_props]
-  (fn [_props]
-    (let [entries @(rf/subscribe [:logs/entries])
-          scroll-ref (r/atom nil)]
-      [:> rn/SafeAreaView {:style {:flex 1 :background-color "#FFFFFF"}}
-       ;; Stats header
-       [header-stats]
+  (let [toast-visible? (r/atom false)
+        toast-message (r/atom "")
+        show-toast! (fn [message]
+                      (reset! toast-message message)
+                      (reset! toast-visible? true)
+                      (js/setTimeout #(reset! toast-visible? false) 2000))]
+    (fn [_props]
+      (let [entries @(rf/subscribe [:logs/entries])
+            scroll-ref (r/atom nil)]
+        [:> rn/SafeAreaView {:style {:flex 1 :background-color "#FFFFFF"}}
+         ;; Stats header
+         [header-stats]
 
-       ;; Log list
-       (if (empty? entries)
-         [empty-state]
-         [:> rn/FlatList
-          {:ref #(reset! scroll-ref %)
-           :data (clj->js (reverse entries)) ; Show newest first
-           :key-extractor (fn [item _idx]
-                            (or (.-id item) (str (random-uuid))))
-           :render-item (fn [^js obj]
-                          (let [item (js->clj (.-item obj) :keywordize-keys true)]
-                            (r/as-element [log-entry-item item])))
-           :inverted false
-           :content-container-style {:padding-bottom 8}}])
+         ;; Log list
+         (if (empty? entries)
+           [empty-state]
+           [:> rn/FlatList
+            {:ref #(reset! scroll-ref %)
+             :data (clj->js (reverse entries)) ; Show newest first
+             :key-extractor (fn [item _idx]
+                              (or (.-id item) (str (random-uuid))))
+             :render-item (fn [^js obj]
+                            (let [item (js->clj (.-item obj) :keywordize-keys true)]
+                              (r/as-element [log-entry-item (assoc item :on-copy-toast show-toast!)])))
+             :inverted false
+             :content-container-style {:padding-bottom 8}}])
 
-       ;; Action buttons
-       [action-buttons]])))
+         ;; Action buttons (they have their own toast management)
+         [action-buttons]
+
+         ;; Global toast for individual entry copies
+         (when @toast-visible?
+           [:> rn/View {:style {:position "absolute"
+                                :bottom 100
+                                :left 0
+                                :right 0
+                                :align-items "center"
+                                :z-index 1000}}
+            [:> rn/View {:style {:background-color "rgba(52, 199, 89, 0.95)"
+                                 :padding-horizontal 20
+                                 :padding-vertical 10
+                                 :border-radius 20}}
+             [:> rn/Text {:style {:color "#FFFFFF"
+                                  :font-size 14
+                                  :font-weight "500"}}
+              @toast-message]]])]))))
+
