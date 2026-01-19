@@ -230,9 +230,21 @@
                              [:persistence/save-message session-id]]
                       should-speak?
                       (conj [:voice/speak-response text working-directory]))})
-     {:db (-> db
-              (assoc-in [:ui :current-error] error)
-              (update :locked-sessions disj session-id))})))
+     ;; On error, mark the most recent :sending message as :error
+    (let [updated-messages (update-in db [:messages session-id]
+                                       (fn [msgs]
+                                         (when msgs
+                                           (let [;; Find the last message with :sending status
+                                                 idx (some (fn [i]
+                                                             (when (= :sending (:status (nth msgs i)))
+                                                               i))
+                                                           (range (dec (count msgs)) -1 -1))]
+                                             (if idx
+                                               (assoc-in (vec msgs) [idx :status] :error)
+                                               msgs)))))]
+      {:db (-> updated-messages
+               (assoc-in [:ui :current-error] error)
+               (update :locked-sessions disj session-id))}))))
 
 (rf/reg-event-fx
  :ws/send-message-ack

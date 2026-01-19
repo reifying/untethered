@@ -109,13 +109,15 @@
   (let [expanded? (r/atom false)
         {:keys [truncated? display-text full-text]} (truncate-text text)
         is-user? (= role :user)
-        is-sending? (= status :sending)]
+        is-sending? (= status :sending)
+        is-error? (= status :error)]
     (fn [{:keys [role text timestamp status working-directory]}]
       (let [{:keys [truncated? display-text full-text]} (truncate-text text)
             show-text (if (and truncated? (not @expanded?))
                         display-text
                         full-text)
-            speaking? @(rf/subscribe [:voice/speaking?])]
+            speaking? @(rf/subscribe [:voice/speaking?])
+            is-error? (= status :error)]
         [:> rn/TouchableOpacity
          {:style {:align-self (if is-user? "flex-end" "flex-start")
                   :max-width "85%"
@@ -156,7 +158,13 @@
           [:> rn/Text {:style {:font-size 11
                                :color "#999"}}
            (format-time timestamp)]
-          (when is-sending?
+          (cond
+            is-error?
+            [:> rn/Text {:style {:font-size 11
+                                 :color "#FF3B30"
+                                 :margin-left 4}}
+             " • ⚠️ Failed to send"]
+            is-sending?
             [:> rn/Text {:style {:font-size 11
                                  :color "#999"
                                  :margin-left 4}}

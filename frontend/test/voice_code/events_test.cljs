@@ -1236,6 +1236,81 @@
        (is (= "Now active response" (:text (second msgs))))))))
 
 ;; ============================================================================
+;; Response Error Status Tests
+;; ============================================================================
+
+(deftest handle-response-error-marks-message-test
+  "Tests that when a response fails, the sending message is marked as :error"
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "successful response does not mark messages as error"
+     ;; Add a user message with :sending status
+     (rf/dispatch-sync [:db/update-in [:messages "s1"]
+                        (constantly [{:id "msg-1"
+                                      :session-id "s1"
+                                      :role :user
+                                      :text "Hello"
+                                      :status :sending}])])
+
+     ;; Simulate successful response
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Response"
+                         :session-id "s1"
+                         :message-id "msg-resp"}])
+
+     ;; Original message should still have :sending status (not changed by success)
+     (let [msgs @(rf/subscribe [:messages/for-session "s1"])
+           user-msg (first (filter #(= :user (:role %)) msgs))]
+       (is (= :sending (:status user-msg)))))
+
+   (testing "failed response marks sending message as error"
+     ;; Clear and set up a new scenario
+     (rf/dispatch-sync [:db/update-in [:messages "s2"]
+                        (constantly [{:id "msg-2"
+                                      :session-id "s2"
+                                      :role :user
+                                      :text "Test prompt"
+                                      :status :sending}])])
+
+     ;; Simulate failed response
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success false
+                         :error "Backend error"
+                         :session-id "s2"}])
+
+     ;; The sending message should now be marked as :error
+     (let [msgs @(rf/subscribe [:messages/for-session "s2"])
+           user-msg (first msgs)]
+       (is (= :error (:status user-msg)))))
+
+   (testing "error sets ui/current-error banner"
+     (is (= "Backend error" @(rf/subscribe [:ui/current-error]))))
+
+   (testing "error unlocks the session"
+     ;; First lock the session
+     (rf/dispatch-sync [:db/update-in [:locked-sessions] conj "s3"])
+     (is (contains? @(rf/subscribe [:locked-sessions]) "s3"))
+
+     ;; Add a sending message
+     (rf/dispatch-sync [:db/update-in [:messages "s3"]
+                        (constantly [{:id "msg-3"
+                                      :session-id "s3"
+                                      :role :user
+                                      :text "Another prompt"
+                                      :status :sending}])])
+
+     ;; Simulate error
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success false
+                         :error "Error"
+                         :session-id "s3"}])
+
+     ;; Session should be unlocked
+     (is (not (contains? @(rf/subscribe [:locked-sessions]) "s3"))))))
+
+;; ============================================================================
 ;; Voice Auto-Stop TTS Tests
 ;; ============================================================================
 
