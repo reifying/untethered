@@ -19,7 +19,8 @@
    {:db (merge db/default-db db)
     :dispatch-n [[:persistence/load-settings]
                  [:persistence/load-api-key]
-                 [:persistence/load-drafts]]
+                 [:persistence/load-drafts]
+                 [:persistence/load-command-mru]]
     :voice/setup nil}))
 
 ;; ============================================================================

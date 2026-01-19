@@ -176,10 +176,55 @@
    (get-in db [:commands :history])))
 
 (rf/reg-sub
+ :commands/mru
+ (fn [db _]
+   (get-in db [:commands :mru] {})))
+
+(defn- sort-commands-by-mru
+  "Sort commands by MRU timestamp (most recent first), then by label.
+   Commands not in MRU are sorted after those that are."
+  [commands mru]
+  (sort-by (fn [cmd]
+             (let [timestamp (get mru (:id cmd) 0)]
+               ;; Negate timestamp so higher (more recent) sorts first
+               ;; Commands with no MRU history (0) sort last
+               [(if (zero? timestamp) 1 0)
+                (- timestamp)
+                (:label cmd)]))
+           commands))
+
+(defn- sort-command-tree-by-mru
+  "Sort a command tree (with groups) by MRU.
+   Groups are sorted by the most recent command within them.
+   Children within groups are also sorted."
+  [commands mru]
+  (let [;; For groups, get the max MRU timestamp of any child
+        get-group-mru (fn [cmd]
+                        (if (= (:type cmd) "group")
+                          (apply max 0 (map #(get mru (:id %) 0) (:children cmd)))
+                          (get mru (:id cmd) 0)))
+        ;; Sort top-level commands/groups
+        sorted-top-level (sort-by (fn [cmd]
+                                    (let [timestamp (get-group-mru cmd)]
+                                      [(if (zero? timestamp) 1 0)
+                                       (- timestamp)
+                                       (:label cmd)]))
+                                  commands)]
+    ;; Also sort children within groups
+    (mapv (fn [cmd]
+            (if (= (:type cmd) "group")
+              (update cmd :children sort-commands-by-mru mru)
+              cmd))
+          sorted-top-level)))
+
+(rf/reg-sub
  :commands/for-directory
  :<- [:commands/available]
- (fn [available [_ working-directory]]
-   (get available working-directory)))
+ :<- [:commands/mru]
+ (fn [[available mru] [_ working-directory]]
+   (when-let [cmds (get available working-directory)]
+     {:project (sort-command-tree-by-mru (:project cmds) mru)
+      :general (sort-commands-by-mru (:general cmds) mru)})))
 
 (rf/reg-sub
  :commands/running-any?

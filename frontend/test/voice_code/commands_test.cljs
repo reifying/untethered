@@ -195,3 +195,114 @@
    (testing "commands/get-output dispatches without error"
      (rf/dispatch-sync [:commands/get-output "cmd-123"])
      (is true))))
+
+;; ============================================================================
+;; Command MRU (Most Recently Used) Sorting
+;; ============================================================================
+
+(deftest commands-mru-subscription-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "commands/mru returns empty map initially"
+     (is (= {} @(rf/subscribe [:commands/mru]))))
+
+   (testing "commands/mru-loaded populates MRU data"
+     (rf/dispatch-sync [:commands/mru-loaded {"build" 1000 "test" 2000}])
+     (is (= {"build" 1000 "test" 2000} @(rf/subscribe [:commands/mru]))))))
+
+(deftest commands-execute-updates-mru-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "executing a command updates its MRU timestamp"
+     (rf/dispatch-sync [:commands/execute
+                        {:command-id "build"
+                         :working-directory "/project"}])
+     (let [mru @(rf/subscribe [:commands/mru])]
+       (is (contains? mru "build"))
+       (is (pos? (get mru "build")))))
+
+   (testing "executing same command again updates timestamp"
+     (let [old-timestamp (get @(rf/subscribe [:commands/mru]) "build")]
+       ;; Execute the same command
+       (rf/dispatch-sync [:commands/execute
+                          {:command-id "build"
+                           :working-directory "/project"}])
+       (let [new-timestamp (get @(rf/subscribe [:commands/mru]) "build")]
+         ;; New timestamp should be >= old (same ms or later)
+         (is (>= new-timestamp old-timestamp)))))
+
+   (testing "executing another command adds to MRU"
+     (rf/dispatch-sync [:commands/execute
+                        {:command-id "test"
+                         :working-directory "/project"}])
+     (let [mru @(rf/subscribe [:commands/mru])]
+       (is (contains? mru "build"))
+       (is (contains? mru "test"))
+       ;; Both should have valid timestamps
+       (is (pos? (get mru "build")))
+       (is (pos? (get mru "test")))))))
+
+(deftest commands-for-directory-mru-sorting-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Set up commands
+   (rf/dispatch-sync [:commands/handle-available
+                      {:working-directory "/project"
+                       :project-commands [{:id "aaa" :label "AAA" :type "command"}
+                                          {:id "bbb" :label "BBB" :type "command"}
+                                          {:id "ccc" :label "CCC" :type "command"}]
+                       :general-commands [{:id "git.status" :label "Git Status"}
+                                          {:id "git.pull" :label "Git Pull"}]}])
+
+   (testing "without MRU, commands sorted alphabetically"
+     (let [cmds @(rf/subscribe [:commands/for-directory "/project"])]
+       (is (= ["aaa" "bbb" "ccc"] (mapv :id (:project cmds))))
+       (is (= ["git.pull" "git.status"] (mapv :id (:general cmds))))))
+
+   (testing "with MRU, recently used commands sorted first"
+     ;; Set MRU: ccc used most recently, then aaa
+     (rf/dispatch-sync [:commands/mru-loaded {"ccc" 3000 "aaa" 2000 "git.status" 1000}])
+     (let [cmds @(rf/subscribe [:commands/for-directory "/project"])]
+       ;; ccc (most recent) first, then aaa, then bbb (unused)
+       (is (= ["ccc" "aaa" "bbb"] (mapv :id (:project cmds))))
+       ;; git.status used, git.pull not
+       (is (= ["git.status" "git.pull"] (mapv :id (:general cmds))))))))
+
+(deftest commands-for-directory-group-mru-sorting-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Set up commands with groups
+   (rf/dispatch-sync [:commands/handle-available
+                      {:working-directory "/project"
+                       :project-commands [{:id "build" :label "Build" :type "command"}
+                                          {:id "docker"
+                                           :label "Docker"
+                                           :type "group"
+                                           :children [{:id "docker.up" :label "Up" :type "command"}
+                                                      {:id "docker.down" :label "Down" :type "command"}]}
+                                          {:id "test" :label "Test" :type "command"}]
+                       :general-commands []}])
+
+   (testing "groups sorted by most recent child command"
+     ;; docker.up used most recently
+     (rf/dispatch-sync [:commands/mru-loaded {"docker.up" 5000 "test" 3000 "build" 1000}])
+     (let [cmds @(rf/subscribe [:commands/for-directory "/project"])
+           project-ids (mapv :id (:project cmds))]
+       ;; docker group should be first (child docker.up has highest MRU)
+       ;; then test, then build
+       (is (= "docker" (first project-ids)))
+       (is (= "test" (second project-ids)))
+       (is (= "build" (nth project-ids 2)))))
+
+   (testing "children within groups sorted by MRU"
+     ;; docker.down now used most recently
+     (rf/dispatch-sync [:commands/mru-loaded {"docker.down" 6000 "docker.up" 5000}])
+     (let [cmds @(rf/subscribe [:commands/for-directory "/project"])
+           docker-group (first (filter #(= "docker" (:id %)) (:project cmds)))
+           children-ids (mapv :id (:children docker-group))]
+       ;; docker.down should be first (more recent)
+       (is (= ["docker.down" "docker.up"] children-ids))))))

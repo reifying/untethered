@@ -37,7 +37,8 @@
    ;; Command execution state
    :commands {:available {} ; working-dir -> command tree
               :running {} ; command-session-id -> command state
-              :history []} ; Recent command executions
+              :history [] ; Recent command executions
+              :mru {}} ; command-id -> timestamp (ms) for MRU sorting
 
    ;; Resource/file upload state
    :resources {:list [] ; Uploaded files

@@ -736,3 +736,42 @@
  :persistence/load-drafts
  (fn [_ _]
    {:persistence/load-drafts nil}))
+
+;; ============================================================================
+;; Command MRU Persistence
+;; ============================================================================
+
+(defn save-command-mru!
+  "Save command MRU data to SQLite settings table.
+   MRU is stored as a map of command-id -> timestamp (ms).
+   Returns a promise."
+  [mru-data]
+  (save-setting! "command-mru" mru-data))
+
+(defn load-command-mru!
+  "Load command MRU data from SQLite.
+   Returns a promise resolving to a map of command-id -> timestamp."
+  []
+  (load-setting! "command-mru"))
+
+(rf/reg-fx
+ :persistence/save-command-mru
+ (fn [mru-data]
+   (save-command-mru! mru-data)))
+
+(rf/reg-fx
+ :persistence/load-command-mru
+ (fn [_]
+   (-> (load-command-mru!)
+       (.then #(when %
+                 (rf/dispatch [:commands/mru-loaded %]))))))
+
+(rf/reg-event-fx
+ :persistence/save-command-mru
+ (fn [_ [_ mru-data]]
+   {:persistence/save-command-mru mru-data}))
+
+(rf/reg-event-fx
+ :persistence/load-command-mru
+ (fn [_ _]
+   {:persistence/load-command-mru nil}))

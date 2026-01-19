@@ -600,9 +600,18 @@
 (rf/reg-event-fx
  :commands/execute
  (fn [{:keys [db]} [_ {:keys [command-id working-directory]}]]
-   {:ws/send {:type "execute_command"
-              :command-id command-id
-              :working-directory working-directory}}))
+   (let [now (.getTime (js/Date.))
+         updated-mru (assoc (get-in db [:commands :mru] {}) command-id now)]
+     {:db (assoc-in db [:commands :mru] updated-mru)
+      :ws/send {:type "execute_command"
+                :command-id command-id
+                :working-directory working-directory}
+      :dispatch [:persistence/save-command-mru updated-mru]})))
+
+(rf/reg-event-db
+ :commands/mru-loaded
+ (fn [db [_ mru-data]]
+   (assoc-in db [:commands :mru] (or mru-data {}))))
 
 (rf/reg-event-fx
  :commands/get-history
