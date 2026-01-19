@@ -191,12 +191,8 @@
                          (reset! speaking? false)
                          (rf/dispatch [:voice/tts-cancelled])))
 
-    ;; TTS error
-    (.addEventListener Tts "tts-error"
-                       (fn [e]
-                         (reset! speaking? false)
-                         (rf/dispatch [:voice/error {:type :tts
-                                                     :message (str e)}])))
+    ;; Note: react-native-tts does not support a 'tts-error' event.
+    ;; Errors are handled via promise rejection in speak! function.
 
     (js/console.log "Text-to-speech initialized")))
 

@@ -18,9 +18,10 @@
         (str minutes "m " (mod seconds 60) "s")))))
 
 (defn- recipe-item
-  "Single recipe item in the available list."
+  "Single recipe item in the available list.
+   Recipe data has :id, :label, :description from backend."
   [{:keys [recipe active? on-start on-stop]}]
-  (let [{:keys [name description]} recipe]
+  (let [{:keys [label description]} recipe]
     [:> rn/View {:style {:padding-horizontal 16
                          :padding-vertical 14
                          :background-color "#FFFFFF"
@@ -45,7 +46,7 @@
                             :font-weight "600"
                             :color "#000"
                             :margin-bottom 4}}
-        name]
+        label]
        (when description
          [:> rn/Text {:style {:font-size 14
                               :color "#666"
@@ -204,22 +205,26 @@
 (defn recipes-view
   "Main recipes screen showing available and active recipes.
    Uses Form-2 component pattern for proper Reagent reactivity with React Navigation.
-   Includes toggle to start recipe in a new session."
+   Includes toggle to start recipe in a new session.
+   Requests available recipes from backend on mount."
   [^js props]
   (let [route (.-route props)
         session-id (when route (some-> route .-params .-sessionId))
         working-directory (when route (some-> route .-params .-workingDirectory))
         use-new-session? (r/atom false)]
+    ;; Request recipes from backend on mount
+    (rf/dispatch [:recipes/request-available])
     ;; Form-2: Return a render function that reads subscriptions
     (fn [^js _props]
       (let [available-recipes @(rf/subscribe [:recipes/available])
             active-recipes @(rf/subscribe [:recipes/active])
-            active-for-session (get active-recipes session-id)]
+            active-for-session (get active-recipes session-id)
+            active-recipe-id (:recipe-id active-for-session)]
         [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
          ;; Active recipe banner (if running for this session)
          (when active-for-session
            [active-recipe-banner
-            {:name (:name active-for-session)
+            {:name (:label active-for-session)
              :started-at (:started-at active-for-session)
              :on-stop #(rf/dispatch [:recipes/stop session-id])}])
 
@@ -235,16 +240,16 @@
 
             [section-header "Available Recipes"]
             (for [recipe available-recipes]
-              ^{:key (or (:id recipe) (:name recipe))}
+              ^{:key (:id recipe)}
               [recipe-item
                {:recipe recipe
-                :active? (= (:name active-for-session) (:name recipe))
+                :active? (= active-recipe-id (:id recipe))
                 :on-start #(let [target-session-id (if @use-new-session?
                                                      (str (random-uuid))
                                                      session-id)]
                              (rf/dispatch [:recipes/start
                                            {:session-id target-session-id
-                                            :recipe-name (:name recipe)
+                                            :recipe-id (:id recipe)
                                             :working-directory working-directory
                                             :is-new-session @use-new-session?}]))
                 :on-stop #(rf/dispatch [:recipes/stop session-id])}])])]))))

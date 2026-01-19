@@ -491,10 +491,10 @@
 ;; Recipe action events (outbound messages)
 (rf/reg-event-fx
  :recipes/start
- (fn [_ [_ {:keys [session-id recipe-name working-directory is-new-session]}]]
+ (fn [_ [_ {:keys [session-id recipe-id working-directory is-new-session]}]]
    {:ws/send (cond-> {:type "start_recipe"
                       :session-id session-id
-                      :recipe-name recipe-name}
+                      :recipe-id recipe-id}
                ;; Include working-directory for new sessions (required by backend)
                (and is-new-session working-directory)
                (assoc :working-directory working-directory))}))
@@ -511,6 +511,11 @@
    {:db (update-in db [:recipes :active] dissoc session-id)
     :ws/send {:type "exit_recipe"
               :session-id session-id}}))
+
+(rf/reg-event-fx
+ :recipes/request-available
+ (fn [_ _]
+   {:ws/send {:type "get_available_recipes"}}))
 
 ;; ============================================================================
 ;; Outbound Messages

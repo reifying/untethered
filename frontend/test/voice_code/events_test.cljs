@@ -824,13 +824,13 @@
        (rf/reg-fx :ws/send (fn [msg] (swap! sent-messages conj msg)))
 
        (rf/dispatch-sync [:recipes/start {:session-id "existing-session"
-                                          :recipe-name "code-review"}])
+                                          :recipe-id "code-review"}])
 
        (is (= 1 (count @sent-messages)))
        (let [msg (first @sent-messages)]
          (is (= "start_recipe" (:type msg)))
          (is (= "existing-session" (:session-id msg)))
-         (is (= "code-review" (:recipe-name msg)))
+         (is (= "code-review" (:recipe-id msg)))
          ;; Should NOT include working-directory when not a new session
          (is (not (contains? msg :working-directory))))))
 
@@ -840,7 +840,7 @@
        (rf/reg-fx :ws/send (fn [msg] (swap! sent-messages conj msg)))
 
        (rf/dispatch-sync [:recipes/start {:session-id "new-session-uuid"
-                                          :recipe-name "code-review"
+                                          :recipe-id "code-review"
                                           :working-directory "/path/to/project"
                                           :is-new-session true}])
 
@@ -848,7 +848,7 @@
        (let [msg (first @sent-messages)]
          (is (= "start_recipe" (:type msg)))
          (is (= "new-session-uuid" (:session-id msg)))
-         (is (= "code-review" (:recipe-name msg)))
+         (is (= "code-review" (:recipe-id msg)))
          ;; Should include working-directory for new sessions
          (is (= "/path/to/project" (:working-directory msg))))))))
 
