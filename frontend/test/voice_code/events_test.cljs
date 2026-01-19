@@ -661,13 +661,15 @@
        (is (contains? running "cmd-123"))
        (is (= "make build" (get-in running ["cmd-123" :shell-command])))))
 
-   (testing "command_output appends output"
+   (testing "command_output appends output with stream type"
      (rf/dispatch-sync [:commands/handle-output
                         {:command-session-id "cmd-123"
                          :stream "stdout"
                          :text "Building..."}])
-     (let [output (get-in @(rf/subscribe [:commands/running]) ["cmd-123" :output])]
-       (is (clojure.string/includes? output "Building..."))))))
+     (let [output-lines (get-in @(rf/subscribe [:commands/running]) ["cmd-123" :output-lines])]
+       (is (= 1 (count output-lines)))
+       (is (= "Building..." (:text (first output-lines))))
+       (is (= "stdout" (:stream (first output-lines))))))))
 
 (deftest handle-command-error-test
   (rf-test/run-test-sync

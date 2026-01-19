@@ -63,54 +63,69 @@
                            :margin-left 16}}
        (str "Duration: " (format-duration duration-ms))])]])
 
+(defn- stream-indicator
+  "Small colored dot indicating stream type (stdout=blue, stderr=orange)."
+  [stream]
+  (let [is-stderr? (= stream "stderr")]
+    [:> rn/View {:style {:width 6
+                         :height 6
+                         :border-radius 3
+                         :margin-top 7
+                         :margin-right 8
+                         :background-color (if is-stderr? "#FF9500" "#007AFF")}}]))
+
 (defn- output-line
-  "Single line of command output."
+  "Single line of command output with stream type indicator."
   [{:keys [text stream index]}]
   (let [is-stderr? (= stream "stderr")]
-    [:> rn/Text {:style {:font-family "monospace"
-                         :font-size 13
-                         :line-height 20
-                         :color (if is-stderr? "#dc3545" "#212529")
-                         :background-color (if is-stderr? "#fff5f5" "transparent")
-                         :padding-horizontal 16
-                         :padding-vertical 2}
-                 :selectable true}
-     text]))
+    [:> rn/View {:style {:flex-direction "row"
+                         :align-items "flex-start"
+                         :padding-horizontal 12
+                         :padding-vertical 2}}
+     [stream-indicator stream]
+     [:> rn/Text {:style {:flex 1
+                          :font-family "monospace"
+                          :font-size 13
+                          :line-height 20
+                          :color (if is-stderr? "#FF9500" "#212529")}
+                  :selectable true}
+      text]]))
 
 (defn- output-view
-  "Scrollable output display with auto-scroll."
-  [{:keys [output]}]
+  "Scrollable output display with auto-scroll.
+   Renders output-lines with stream type indicators."
+  [{:keys [output-lines]}]
   (let [scroll-ref (r/atom nil)
         auto-scroll? (r/atom true)]
-    (fn [{:keys [output]}]
-      (let [lines (when output
-                    (clojure.string/split-lines output))]
-        [:> rn/ScrollView
-         {:ref #(reset! scroll-ref %)
-          :style {:flex 1
-                  :background-color "#fff"}
-          :content-container-style {:padding-vertical 8}
-          :on-content-size-change
-          (fn [_ _]
-            (when (and @auto-scroll? @scroll-ref)
-              (.scrollToEnd ^js @scroll-ref #js {:animated true})))
-          :on-scroll
-          (fn [^js e]
-            (let [offset (-> e .-nativeEvent .-contentOffset .-y)
-                  content-height (-> e .-nativeEvent .-contentSize .-height)
-                  layout-height (-> e .-nativeEvent .-layoutMeasurement .-height)
-                  at-bottom? (> (+ offset layout-height 50) content-height)]
-              (reset! auto-scroll? at-bottom?)))
-          :scroll-event-throttle 100}
-         (if (seq lines)
-           (for [[idx line] (map-indexed vector lines)]
-             ^{:key idx}
-             [output-line {:text line :index idx}])
-           [:> rn/View {:style {:padding 16
-                                :align-items "center"}}
-            [:> rn/Text {:style {:color "#6c757d"
-                                 :font-style "italic"}}
-             "Waiting for output..."]])]))))
+    (fn [{:keys [output-lines]}]
+      [:> rn/ScrollView
+       {:ref #(reset! scroll-ref %)
+        :style {:flex 1
+                :background-color "#fff"}
+        :content-container-style {:padding-vertical 8}
+        :on-content-size-change
+        (fn [_ _]
+          (when (and @auto-scroll? @scroll-ref)
+            (.scrollToEnd ^js @scroll-ref #js {:animated true})))
+        :on-scroll
+        (fn [^js e]
+          (let [offset (-> e .-nativeEvent .-contentOffset .-y)
+                content-height (-> e .-nativeEvent .-contentSize .-height)
+                layout-height (-> e .-nativeEvent .-layoutMeasurement .-height)
+                at-bottom? (> (+ offset layout-height 50) content-height)]
+            (reset! auto-scroll? at-bottom?)))
+        :scroll-event-throttle 100}
+       (if (seq output-lines)
+         (for [[idx line] (map-indexed vector output-lines)]
+           ^{:key idx}
+           [output-line {:text (:text line)
+                         :stream (:stream line)
+                         :index idx}])
+         [:> rn/View {:style {:padding 16
+                              :align-items "center"}}
+          [:> rn/Text {:style {:color "#6c757d"
+                               :font-style "italic"}}
+           "Waiting for output..."]])])))
 
 (defn- running-indicator
   "Shows command is still running."
@@ -161,5 +176,5 @@
           [command-header cmd]
           (when-not (:exit-code cmd)
             [running-indicator])
-          [output-view {:output (:output cmd)}]]
+          [output-view {:output-lines (:output-lines cmd)}]]
          [empty-state])])))

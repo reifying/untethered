@@ -90,7 +90,7 @@
      (let [running @(rf/subscribe [:commands/running])]
        (is (contains? running "cmd-456"))
        (is (= "npm test" (get-in running ["cmd-456" :shell-command])))
-       (is (= "" (get-in running ["cmd-456" :output])))))))
+       (is (= [] (get-in running ["cmd-456" :output-lines])))))))
 
 (deftest handle-command-output-test
   (rf-test/run-test-sync
@@ -102,21 +102,25 @@
                        :command-id "build"
                        :shell-command "make build"}])
 
-   (testing "command_output appends stdout"
+   (testing "command_output appends stdout with stream type"
      (rf/dispatch-sync [:commands/handle-output
                         {:command-session-id "cmd-789"
                          :stream "stdout"
                          :text "Building..."}])
-     (let [output (get-in @(rf/subscribe [:commands/running]) ["cmd-789" :output])]
-       (is (clojure.string/includes? output "Building..."))))
+     (let [output-lines (get-in @(rf/subscribe [:commands/running]) ["cmd-789" :output-lines])]
+       (is (= 1 (count output-lines)))
+       (is (= "Building..." (:text (first output-lines))))
+       (is (= "stdout" (:stream (first output-lines))))))
 
-   (testing "command_output appends stderr"
+   (testing "command_output appends stderr with stream type"
      (rf/dispatch-sync [:commands/handle-output
                         {:command-session-id "cmd-789"
                          :stream "stderr"
                          :text "Warning: deprecated"}])
-     (let [output (get-in @(rf/subscribe [:commands/running]) ["cmd-789" :output])]
-       (is (clojure.string/includes? output "Warning: deprecated"))))))
+     (let [output-lines (get-in @(rf/subscribe [:commands/running]) ["cmd-789" :output-lines])]
+       (is (= 2 (count output-lines)))
+       (is (= "Warning: deprecated" (:text (second output-lines))))
+       (is (= "stderr" (:stream (second output-lines))))))))
 
 (deftest handle-command-complete-test
   (rf-test/run-test-sync

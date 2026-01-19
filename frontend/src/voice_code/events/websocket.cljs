@@ -534,14 +534,17 @@
    (assoc-in db [:commands :running command-session-id]
              {:command-id command-id
               :shell-command shell-command
-              :output ""
+              :output-lines [] ; Vector of {:text :stream} maps for stream type indicators
               :started-at (js/Date.)})))
 
 (rf/reg-event-db
  :commands/handle-output
  (fn [db [_ {:keys [command-session-id stream text]}]]
-   (update-in db [:commands :running command-session-id :output]
-              str text "\n")))
+   ;; Store each output line with its stream type (stdout/stderr)
+   (update-in db [:commands :running command-session-id :output-lines]
+              (fnil conj [])
+              {:text text
+               :stream (or stream "stdout")})))
 
 (rf/reg-event-db
  :commands/handle-complete
@@ -569,7 +572,12 @@
 (rf/reg-event-db
  :commands/handle-output-full
  (fn [db [_ {:keys [command-session-id output]}]]
-   (assoc-in db [:commands :running command-session-id :output] output)))
+   ;; Full output comes as a plain string - parse into lines without stream info
+   ;; This is used for historical output which doesn't preserve stream markers
+   (let [lines (when output
+                 (mapv (fn [text] {:text text :stream "stdout"})
+                       (clojure.string/split-lines output)))]
+     (assoc-in db [:commands :running command-session-id :output-lines] lines))))
 
 ;; ============================================================================
 ;; Resource Handlers
