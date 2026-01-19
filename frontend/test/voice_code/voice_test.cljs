@@ -97,3 +97,18 @@
      (is (false? @(rf/subscribe [:voice/listening?])))
      (is (false? @(rf/subscribe [:voice/speaking?])))
      (is (= :test-error (:type @(rf/subscribe [:voice/error])))))))
+
+(deftest voice-respect-silent-mode-event
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "respect-silent-mode defaults to true"
+     (is (true? @(rf/subscribe [:settings/respect-silent-mode]))))
+
+   (testing "set-respect-silent-mode updates setting to false"
+     (rf/dispatch-sync [:voice/set-respect-silent-mode false])
+     (is (false? @(rf/subscribe [:settings/respect-silent-mode]))))
+
+   (testing "set-respect-silent-mode updates setting back to true"
+     (rf/dispatch-sync [:voice/set-respect-silent-mode true])
+     (is (true? @(rf/subscribe [:settings/respect-silent-mode]))))))

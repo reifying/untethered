@@ -244,7 +244,7 @@
                     :description "Automatically speak Claude's responses using text-to-speech"}]
        [toggle-row {:label "Silence speech when on vibrate"
                     :value (:respect-silent-mode settings)
-                    :on-change #(rf/dispatch [:settings/save :respect-silent-mode %])
+                    :on-change #(rf/dispatch [:voice/set-respect-silent-mode %])
                     :description "When enabled, speech will not play when your phone's ringer switch is on silent/vibrate"}]
        [toggle-row {:label "Continue playback when locked"
                     :value (:continue-playback-when-locked settings)

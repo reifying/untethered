@@ -163,38 +163,62 @@
   (when tts-module
     (or (.-default tts-module) tts-module)))
 
+(defn configure-silent-switch!
+  "Configure iOS silent switch behavior for TTS.
+   When respect-silent? is true, TTS respects the device silent/vibrate switch (ambient mode).
+   When false, TTS plays through even when device is silenced (playback mode).
+   This mirrors iOS DeviceAudioSessionManager behavior.
+   
+   iOS audio session categories:
+   - 'ignore' = .playback category - audio plays regardless of silent switch
+   - 'obey' = .ambient category - respects silent switch"
+  [respect-silent?]
+  (when-let [^js Tts (get-tts-default)]
+    (let [mode (if respect-silent? "obey" "ignore")]
+      (try
+        (.setIgnoreSilentSwitch Tts mode)
+        (js/console.log "TTS silent switch configured:" mode)
+        (catch :default e
+          (js/console.warn "Failed to configure silent switch:" e))))))
+
 (defn setup-tts!
   "Initialize text-to-speech event handlers.
-   Must be called once at app startup."
-  []
-  (when-let [^js Tts (get-tts-default)]
-    ;; Set default language
-    (-> (.setDefaultLanguage Tts "en-US")
-        (.catch (fn [error]
-                  (js/console.warn "Failed to set TTS language:" error))))
+   Must be called once at app startup.
+   Optionally accepts settings map to configure audio behavior."
+  ([]
+   (setup-tts! {}))
+  ([{:keys [respect-silent-mode] :or {respect-silent-mode true}}]
+   (when-let [^js Tts (get-tts-default)]
+     ;; Set default language
+     (-> (.setDefaultLanguage Tts "en-US")
+         (.catch (fn [error]
+                   (js/console.warn "Failed to set TTS language:" error))))
 
-    ;; TTS finished speaking
-    (.addEventListener Tts "tts-finish"
-                       (fn [_]
-                         (reset! speaking? false)
-                         (rf/dispatch [:voice/speech-finished])))
+     ;; Configure silent switch behavior based on setting
+     (configure-silent-switch! respect-silent-mode)
 
-    ;; TTS started speaking
-    (.addEventListener Tts "tts-start"
-                       (fn [_]
-                         (reset! speaking? true)
-                         (rf/dispatch [:voice/tts-started])))
+     ;; TTS finished speaking
+     (.addEventListener Tts "tts-finish"
+                        (fn [_]
+                          (reset! speaking? false)
+                          (rf/dispatch [:voice/speech-finished])))
 
-    ;; TTS cancelled
-    (.addEventListener Tts "tts-cancel"
-                       (fn [_]
-                         (reset! speaking? false)
-                         (rf/dispatch [:voice/tts-cancelled])))
+     ;; TTS started speaking
+     (.addEventListener Tts "tts-start"
+                        (fn [_]
+                          (reset! speaking? true)
+                          (rf/dispatch [:voice/tts-started])))
 
-    ;; Note: react-native-tts does not support a 'tts-error' event.
-    ;; Errors are handled via promise rejection in speak! function.
+     ;; TTS cancelled
+     (.addEventListener Tts "tts-cancel"
+                        (fn [_]
+                          (reset! speaking? false)
+                          (rf/dispatch [:voice/tts-cancelled])))
 
-    (js/console.log "Text-to-speech initialized")))
+     ;; Note: react-native-tts does not support a 'tts-error' event.
+     ;; Errors are handled via promise rejection in speak! function.
+
+     (js/console.log "Text-to-speech initialized"))))
 
 (defn speak!
   "Speak the given text.
@@ -280,10 +304,12 @@
 
 (defn setup-voice!
   "Initialize both voice recognition and text-to-speech.
-   Call once at app startup."
-  []
-  (setup-voice-recognition!)
-  (setup-tts!))
+   Call once at app startup. Optionally accepts settings map."
+  ([]
+   (setup-voice! {}))
+  ([settings]
+   (setup-voice-recognition!)
+   (setup-tts! settings)))
 
 ;; ============================================================================
 ;; re-frame Effect Handlers
@@ -324,8 +350,13 @@
 
 (rf/reg-fx
  :voice/setup
- (fn [_]
-   (setup-voice!)))
+ (fn [settings]
+   (setup-voice! (or settings {}))))
+
+(rf/reg-fx
+ :voice/configure-silent-switch
+ (fn [respect-silent?]
+   (configure-silent-switch! respect-silent?)))
 
 ;; ============================================================================
 ;; re-frame Event Handlers
@@ -477,4 +508,11 @@
  (fn [{:keys [db]} [_ voice-id]]
    {:db (assoc-in db [:settings :voice-identifier] voice-id)
     :voice/set-voice voice-id
+    :dispatch [:settings/save]}))
+
+(rf/reg-event-fx
+ :voice/set-respect-silent-mode
+ (fn [{:keys [db]} [_ respect-silent?]]
+   {:db (assoc-in db [:settings :respect-silent-mode] respect-silent?)
+    :voice/configure-silent-switch respect-silent?
     :dispatch [:settings/save]}))

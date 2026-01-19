@@ -520,8 +520,12 @@
  :persistence/load-settings
  (fn [_]
    (-> (load-all-settings!)
-       (.then #(doseq [[k v] %]
-                 (rf/dispatch [:settings/update k v]))))))
+       (.then (fn [settings]
+                ;; Update each setting in the db
+                (doseq [[k v] settings]
+                  (rf/dispatch [:settings/update k v]))
+                ;; Dispatch completion event with all settings for post-load configuration
+                (rf/dispatch [:persistence/settings-loaded settings]))))))
 
 (rf/reg-fx
  :persistence/store-api-key
@@ -551,6 +555,14 @@
  (fn [db _]
    (js/console.log "Database initialized")
    db))
+
+(rf/reg-event-fx
+ :persistence/settings-loaded
+ (fn [{:keys [db]} [_ settings]]
+   (js/console.log "Settings loaded, configuring voice with respect-silent-mode:"
+                   (get settings :respect-silent-mode true))
+   ;; Configure voice with loaded settings (especially respect-silent-mode for TTS)
+   {:voice/configure-silent-switch (get settings :respect-silent-mode true)}))
 
 (rf/reg-event-db
  :persistence/api-key-stored
