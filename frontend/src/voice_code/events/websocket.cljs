@@ -157,8 +157,14 @@
    (if success
      (let [auto-speak? (get-in db [:settings :auto-speak-responses])
            voice-listening? (get-in db [:ui :voice-listening?])
-           ;; Don't auto-speak if user is in voice input mode (prevent feedback)
-           should-speak? (and auto-speak? (not voice-listening?))
+           active-session-id (:active-session-id db)
+           ;; Only auto-speak if:
+           ;; 1. Auto-speak is enabled in settings
+           ;; 2. User is not currently using voice input (prevent feedback)
+           ;; 3. This response is for the active session (prevents surprise TTS from background sessions)
+           should-speak? (and auto-speak?
+                              (not voice-listening?)
+                              (= session-id active-session-id))
            new-message {:id (random-uuid)
                         :session-id session-id
                         :role :assistant

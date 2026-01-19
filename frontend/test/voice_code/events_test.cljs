@@ -988,6 +988,59 @@
      (let [msgs @(rf/subscribe [:messages/for-session "s3"])]
        (is (= 1 (count msgs)))))))
 
+(deftest auto-speak-active-session-only-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "auto-speak only triggers for active session"
+     ;; Enable auto-speak and set active session
+     (rf/dispatch-sync [:settings/update :auto-speak-responses true])
+     (rf/dispatch-sync [:sessions/set-active "active-session"])
+
+     ;; Response for active session should trigger speak
+     ;; (We can't test the effect directly, but we verify message is added)
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Active session response"
+                         :session-id "active-session"
+                         :message-id "msg-active"}])
+
+     (let [msgs @(rf/subscribe [:messages/for-session "active-session"])]
+       (is (= 1 (count msgs)))
+       (is (= "Active session response" (:text (first msgs))))))
+
+   (testing "auto-speak suppressed for inactive session"
+     ;; Response for different session should NOT trigger speak
+     ;; Active session is still "active-session"
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Background session response"
+                         :session-id "background-session"
+                         :message-id "msg-bg"}])
+
+     ;; Message should still be added
+     (let [msgs @(rf/subscribe [:messages/for-session "background-session"])]
+       (is (= 1 (count msgs)))
+       (is (= "Background session response" (:text (first msgs)))))
+
+     ;; Verify active session is unchanged
+     (is (= "active-session" @(rf/subscribe [:sessions/active-id]))))
+
+   (testing "auto-speak works when active session changes"
+     ;; Switch active session
+     (rf/dispatch-sync [:sessions/set-active "background-session"])
+
+     ;; Now responses for background-session should trigger speak
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Now active response"
+                         :session-id "background-session"
+                         :message-id "msg-now-active"}])
+
+     (let [msgs @(rf/subscribe [:messages/for-session "background-session"])]
+       (is (= 2 (count msgs)))
+       (is (= "Now active response" (:text (second msgs))))))))
+
 ;; ============================================================================
 ;; Voice Auto-Stop TTS Tests
 ;; ============================================================================
