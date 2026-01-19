@@ -207,7 +207,18 @@
      (is (= "localhost" @(rf/subscribe [:settings/server-url]))))
 
    (testing "settings/server-port returns default"
-     (is (= 8080 @(rf/subscribe [:settings/server-port]))))))
+     (is (= 8080 @(rf/subscribe [:settings/server-port]))))
+
+   (testing "settings/server-configured? returns false without API key"
+     (is (false? @(rf/subscribe [:settings/server-configured?]))))
+
+   (testing "settings/server-configured? returns true with API key"
+     (rf/dispatch-sync [:db/update-in [:api-key] (constantly "test-api-key")])
+     (is (true? @(rf/subscribe [:settings/server-configured?]))))
+
+   (testing "settings/server-configured? returns false after API key removed"
+     (rf/dispatch-sync [:db/update-in [:api-key] (constantly nil)])
+     (is (false? @(rf/subscribe [:settings/server-configured?]))))))
 
 (deftest queue-subs
   (rf-test/run-test-sync

@@ -411,6 +411,48 @@
                         :text-align "center"}}
     "Sessions will appear here grouped by their working directory."]])
 
+(defn- configure-server-state
+  "Shown when server is not yet configured (first-run experience)."
+  [navigation]
+  [:> rn/View {:style {:flex 1
+                       :justify-content "center"
+                       :align-items "center"
+                       :padding 40}}
+   [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "🔧"]
+   [:> rn/Text {:style {:font-size 22
+                        :font-weight "700"
+                        :color "#333"
+                        :margin-bottom 8
+                        :text-align "center"}}
+    "Welcome to Voice Code"]
+   [:> rn/Text {:style {:font-size 15
+                        :color "#666"
+                        :text-align "center"
+                        :margin-bottom 24
+                        :line-height 22}}
+    "Connect to your backend server to get started. You'll need your server URL and API key."]
+   [:> rn/TouchableOpacity
+    {:style {:background-color "#007AFF"
+             :border-radius 12
+             :padding-horizontal 32
+             :padding-vertical 14
+             :shadow-color "#007AFF"
+             :shadow-offset #js {:width 0 :height 4}
+             :shadow-opacity 0.3
+             :shadow-radius 8
+             :elevation 4}
+     :on-press #(when navigation (.navigate navigation "Settings"))}
+    [:> rn/Text {:style {:color "#FFF"
+                         :font-size 16
+                         :font-weight "600"}}
+     "Configure Server"]]
+   [:> rn/Text {:style {:font-size 12
+                        :color "#999"
+                        :text-align "center"
+                        :margin-top 24
+                        :line-height 18}}
+    "Tip: You can scan a QR code or manually enter your API key in Settings."]])
+
 (defn- resources-button
   "Resources button with badge for pending uploads."
   [navigation]
@@ -500,6 +542,7 @@
       :reagent-render
       (fn [props]
         (let [nav (:navigation props)
+              server-configured? @(rf/subscribe [:settings/server-configured?])
               directories @(rf/subscribe [:sessions/directories])
               recent-sessions @(rf/subscribe [:sessions/recent])
               queue-sessions @(rf/subscribe [:sessions/queued])
@@ -511,39 +554,48 @@
                                (seq queue-sessions)
                                (seq priority-queue-sessions))]
           [:> rn/View {:style {:flex 1 :background-color "#F5F5F5"}}
-           (if loading?
+           (cond
              ;; Loading state
+             loading?
              [:> rn/View {:style {:flex 1
                                   :justify-content "center"
                                   :align-items "center"}}
               [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]]
 
-             ;; Content
-             (if (not has-content?)
-               [empty-state]
-               [:> rn/ScrollView
-                {:style {:flex 1}
-                 :content-container-style {:padding-bottom 16}
-                 :refresh-control
-                 (r/as-element
-                  [:> RefreshControl
-                   {:refreshing (boolean refreshing?)
-                    :on-refresh #(rf/dispatch [:sessions/refresh])
-                    :tint-color "#007AFF"
-                    :colors #js ["#007AFF"]}])}
-                ;; Queue section (FIFO, if enabled and has sessions)
-                (when (seq queue-sessions)
-                  [queue-section {:sessions queue-sessions
-                                  :navigation nav}])
-                ;; Priority Queue section (if enabled and has sessions)
-                (when (seq priority-queue-sessions)
-                  [priority-queue-section {:sessions priority-queue-sessions
-                                           :navigation nav}])
-                ;; Recent sessions section (if any)
-                (when (seq recent-sessions)
-                  [recent-sessions-section {:sessions recent-sessions
-                                            :navigation nav}])
-                ;; Projects/Directories section
-                (when (seq directories)
-                  [directories-section {:directories directories
-                                        :navigation nav}])]))]))})))
+             ;; First-run: Server not configured
+             (not server-configured?)
+             [configure-server-state nav]
+
+             ;; No content yet (but server is configured)
+             (not has-content?)
+             [empty-state]
+
+             ;; Normal content view
+             :else
+             [:> rn/ScrollView
+              {:style {:flex 1}
+               :content-container-style {:padding-bottom 16}
+               :refresh-control
+               (r/as-element
+                [:> RefreshControl
+                 {:refreshing (boolean refreshing?)
+                  :on-refresh #(rf/dispatch [:sessions/refresh])
+                  :tint-color "#007AFF"
+                  :colors #js ["#007AFF"]}])}
+              ;; Queue section (FIFO, if enabled and has sessions)
+              (when (seq queue-sessions)
+                [queue-section {:sessions queue-sessions
+                                :navigation nav}])
+              ;; Priority Queue section (if enabled and has sessions)
+              (when (seq priority-queue-sessions)
+                [priority-queue-section {:sessions priority-queue-sessions
+                                         :navigation nav}])
+              ;; Recent sessions section (if any)
+              (when (seq recent-sessions)
+                [recent-sessions-section {:sessions recent-sessions
+                                          :navigation nav}])
+              ;; Projects/Directories section
+              (when (seq directories)
+                [directories-section {:directories directories
+                                      :navigation nav}])])]))})))
+

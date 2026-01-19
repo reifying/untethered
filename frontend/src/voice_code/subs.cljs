@@ -400,6 +400,16 @@
  (fn [db _]
    (get-in db [:settings :auto-speak-responses])))
 
+(rf/reg-sub
+ :settings/server-configured?
+ (fn [db _]
+   ;; Server is considered "configured" when:
+   ;; 1. We have an API key stored (user has gone through auth flow), OR
+   ;; 2. We are currently authenticated
+   ;; This determines whether to show the "Configure Server" help UI in directory list
+   (or (boolean (get db :api-key))
+       (get-in db [:connection :authenticated?]))))
+
 ;; ============================================================================
 ;; UI State
 ;; ============================================================================
