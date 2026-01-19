@@ -2,7 +2,8 @@
   "Directory list view showing sessions grouped by working directory."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn :refer [RefreshControl]]
+            ["react-native" :as rn :refer [RefreshControl Alert]]
+            ["@react-native-clipboard/clipboard" :as Clipboard]
             [clojure.string :as str]))
 
 (defn- format-relative-time
@@ -44,8 +45,15 @@
                           :font-weight "600"}}
       (if (> count 99) "99+" (str count))]]))
 
+(defn- copy-to-clipboard!
+  "Copy text to clipboard."
+  [text]
+  (let [clipboard (or (.-default Clipboard) Clipboard)]
+    (.setString clipboard text)))
+
 (defn- directory-item
-  "Single directory item in the list."
+  "Single directory item in the list.
+   Long-press shows context menu to copy directory path."
   [{:keys [directory session-count last-modified unread-count on-press]}]
   [:> rn/TouchableOpacity
    {:style {:padding-horizontal 16
@@ -54,6 +62,14 @@
             :border-bottom-color "#F0F0F0"
             :background-color "#FFFFFF"}
     :on-press on-press
+    :on-long-press (fn []
+                     (.alert Alert
+                             (directory-name directory)
+                             "Directory actions"
+                             (clj->js [{:text "Copy Directory Path"
+                                        :onPress #(do (copy-to-clipboard! directory)
+                                                      (.alert Alert "Copied" "Directory path copied to clipboard"))}
+                                       {:text "Cancel" :style "cancel"}])))
     :active-opacity 0.7}
    [:> rn/View {:style {:flex-direction "row"
                         :justify-content "space-between"
@@ -91,9 +107,12 @@
       (str "Session " (subs (str (:id session)) 0 8))))
 
 (defn- recent-session-item
-  "Single recent session item."
+  "Single recent session item.
+   Long-press shows context menu with copy options."
   [{:keys [session on-press]}]
-  (let [unread-count (get session :unread-count 0)]
+  (let [unread-count (get session :unread-count 0)
+        session-id (str (:id session))
+        working-directory (:working-directory session)]
     [:> rn/TouchableOpacity
      {:style {:padding-horizontal 16
               :padding-vertical 12
@@ -101,6 +120,17 @@
               :border-bottom-color "#F0F0F0"
               :background-color "#FFFFFF"}
       :on-press on-press
+      :on-long-press (fn []
+                       (.alert Alert
+                               (session-name session)
+                               "Session actions"
+                               (clj->js [{:text "Copy Session ID"
+                                          :onPress #(do (copy-to-clipboard! session-id)
+                                                        (.alert Alert "Copied" "Session ID copied to clipboard"))}
+                                         {:text "Copy Directory Path"
+                                          :onPress #(do (copy-to-clipboard! working-directory)
+                                                        (.alert Alert "Copied" "Directory path copied to clipboard"))}
+                                         {:text "Cancel" :style "cancel"}])))
       :active-opacity 0.7}
      [:> rn/View {:style {:flex-direction "row"
                           :justify-content "space-between"
@@ -133,9 +163,12 @@
     "transparent")) ; Low (10) or default - no tint
 
 (defn- queue-session-item
-  "Single session item in the queue section."
+  "Single session item in the queue section.
+   Long-press shows context menu with copy options."
   [{:keys [session on-press on-remove]}]
-  (let [unread-count (get session :unread-count 0)]
+  (let [unread-count (get session :unread-count 0)
+        session-id (str (:id session))
+        working-directory (:working-directory session)]
     [:> rn/View {:style {:flex-direction "row"
                          :align-items "center"
                          :background-color "#FFFFFF"
@@ -146,6 +179,17 @@
                :padding-horizontal 16
                :padding-vertical 12}
        :on-press on-press
+       :on-long-press (fn []
+                        (.alert Alert
+                                (session-name session)
+                                "Session actions"
+                                (clj->js [{:text "Copy Session ID"
+                                           :onPress #(do (copy-to-clipboard! session-id)
+                                                         (.alert Alert "Copied" "Session ID copied to clipboard"))}
+                                          {:text "Copy Directory Path"
+                                           :onPress #(do (copy-to-clipboard! working-directory)
+                                                         (.alert Alert "Copied" "Directory path copied to clipboard"))}
+                                          {:text "Cancel" :style "cancel"}])))
        :active-opacity 0.7}
       [:> rn/View {:style {:flex-direction "row"
                            :justify-content "space-between"
@@ -177,11 +221,14 @@
         [:> rn/Text {:style {:font-size 18 :color "#FF3B30"}} "✕"]])]))
 
 (defn- priority-queue-session-item
-  "Single session item in the priority queue section with priority tinting."
+  "Single session item in the priority queue section with priority tinting.
+   Long-press shows context menu with copy options."
   [{:keys [session on-press on-remove]}]
   (let [unread-count (get session :unread-count 0)
         priority (or (:priority session) 10)
-        tint-color (priority-tint-color priority)]
+        tint-color (priority-tint-color priority)
+        session-id (str (:id session))
+        working-directory (:working-directory session)]
     [:> rn/View {:style {:flex-direction "row"
                          :align-items "center"
                          :background-color tint-color
@@ -197,6 +244,17 @@
                :padding-horizontal 8
                :padding-vertical 12}
        :on-press on-press
+       :on-long-press (fn []
+                        (.alert Alert
+                                (session-name session)
+                                "Session actions"
+                                (clj->js [{:text "Copy Session ID"
+                                           :onPress #(do (copy-to-clipboard! session-id)
+                                                         (.alert Alert "Copied" "Session ID copied to clipboard"))}
+                                          {:text "Copy Directory Path"
+                                           :onPress #(do (copy-to-clipboard! working-directory)
+                                                         (.alert Alert "Copied" "Directory path copied to clipboard"))}
+                                          {:text "Cancel" :style "cancel"}])))
        :active-opacity 0.7}
       [:> rn/View {:style {:flex-direction "row"
                            :justify-content "space-between"

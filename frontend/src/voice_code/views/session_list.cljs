@@ -3,7 +3,8 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             [clojure.string :as str]
-            ["react-native" :as rn :refer [Alert RefreshControl Modal Switch]]))
+            ["react-native" :as rn :refer [Alert RefreshControl Modal Switch]]
+            ["@react-native-clipboard/clipboard" :as Clipboard]))
 
 (defn- format-relative-time
   "Format a timestamp as relative time."
@@ -28,6 +29,12 @@
       (:backend-name session)
       (str "Session " (subs (str (:id session)) 0 8))))
 
+(defn- copy-to-clipboard!
+  "Copy text to clipboard."
+  [text]
+  (let [clipboard (or (.-default Clipboard) Clipboard)]
+    (.setString clipboard text)))
+
 (defn- unread-badge
   "Badge showing unread message count."
   [count]
@@ -45,10 +52,13 @@
       (if (> count 99) "99+" (str count))]]))
 
 (defn- session-item
-  "Single session item in the list."
+  "Single session item in the list.
+   Long-press shows context menu with copy and delete options."
   [{:keys [session locked? on-press on-delete]}]
   (let [unread-count (get session :unread-count 0)
-        session-display-name (session-name session)]
+        session-display-name (session-name session)
+        session-id (str (:id session))
+        working-directory (:working-directory session)]
     [:> rn/TouchableOpacity
      {:style {:padding-horizontal 16
               :padding-vertical 14
@@ -59,11 +69,17 @@
       :on-long-press (fn []
                        (.alert Alert
                                session-display-name
-                               "What would you like to do with this session?"
-                               (clj->js [{:text "Cancel" :style "cancel"}
+                               "Session actions"
+                               (clj->js [{:text "Copy Session ID"
+                                          :onPress #(do (copy-to-clipboard! session-id)
+                                                        (.alert Alert "Copied" "Session ID copied to clipboard"))}
+                                         {:text "Copy Directory Path"
+                                          :onPress #(do (copy-to-clipboard! working-directory)
+                                                        (.alert Alert "Copied" "Directory path copied to clipboard"))}
                                          {:text "Delete"
                                           :style "destructive"
-                                          :onPress on-delete}])))
+                                          :onPress on-delete}
+                                         {:text "Cancel" :style "cancel"}])))
       :active-opacity 0.7}
      [:> rn/View {:style {:flex-direction "row"
                           :align-items "center"}}
