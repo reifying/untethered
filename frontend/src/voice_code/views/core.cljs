@@ -19,6 +19,15 @@
             [voice-code.views.recipes :refer [recipes-view]]
             [voice-code.views.debug-logs :refer [debug-logs-view]]))
 
+(defn- reactify-with-name
+  "Create a React component from a Reagent component with proper displayName.
+   This eliminates React Navigation warnings about component names not starting
+   with uppercase letters."
+  [reagent-component display-name]
+  (let [react-comp (r/reactify-component reagent-component)]
+    (set! (.-displayName react-comp) display-name)
+    react-comp))
+
 (def Stack (createNativeStackNavigator))
 
 ;; Navigation ref for programmatic navigation (e.g., from REPL)
@@ -65,13 +74,13 @@
             ;; Directory list (grouped sessions by working directory)
             [:> (.-Screen Stack)
              {:name "DirectoryList"
-              :component (r/reactify-component directory-list-view)
+              :component (reactify-with-name directory-list-view "DirectoryListView")
               :options #js {:title "Projects"}}]
 
             ;; Session list (sessions within a directory)
             [:> (.-Screen Stack)
              {:name "SessionList"
-              :component (r/reactify-component session-list-view)
+              :component (reactify-with-name session-list-view "SessionListView")
               :options (fn [^js props]
                          (let [^js route (.-route props)
                                ^js params (when route (.-params route))]
@@ -81,7 +90,7 @@
             ;; Conversation view (individual session)
             [:> (.-Screen Stack)
              {:name "Conversation"
-              :component (r/reactify-component conversation-view)
+              :component (reactify-with-name conversation-view "ConversationView")
               :options (fn [^js props]
                          (let [^js route (.-route props)
                                ^js params (when route (.-params route))]
@@ -91,32 +100,32 @@
             ;; Session info (session details and actions)
             [:> (.-Screen Stack)
              {:name "SessionInfo"
-              :component (r/reactify-component session-info-view)
+              :component (reactify-with-name session-info-view "SessionInfoView")
               :options #js {:title "Session Info"
                             :presentation "modal"}}]
 
             ;; Command menu (Makefile targets and git commands)
             [:> (.-Screen Stack)
              {:name "CommandMenu"
-              :component (r/reactify-component command-menu-view)
+              :component (reactify-with-name command-menu-view "CommandMenuView")
               :options #js {:title "Commands"}}]
 
             ;; Command execution (real-time output)
             [:> (.-Screen Stack)
              {:name "CommandExecution"
-              :component (r/reactify-component command-execution-view)
+              :component (reactify-with-name command-execution-view "CommandExecutionView")
               :options #js {:title "Running Command"}}]
 
             ;; Command history (past command executions)
             [:> (.-Screen Stack)
              {:name "CommandHistory"
-              :component (r/reactify-component command-history-view)
+              :component (reactify-with-name command-history-view "CommandHistoryView")
               :options #js {:title "Command History"}}]
 
             ;; Command output detail (full output from history)
             [:> (.-Screen Stack)
              {:name "CommandOutputDetail"
-              :component (r/reactify-component command-output-detail-view)
+              :component (reactify-with-name command-output-detail-view "CommandOutputDetailView")
               :options (fn [^js props]
                          (let [^js route (.-route props)
                                ^js params (when route (.-params route))]
@@ -126,25 +135,25 @@
             ;; Resources (uploaded files)
             [:> (.-Screen Stack)
              {:name "Resources"
-              :component (r/reactify-component resources-view)
+              :component (reactify-with-name resources-view "ResourcesView")
               :options #js {:title "Resources"}}]
 
             ;; Recipes (recipe orchestration)
             [:> (.-Screen Stack)
              {:name "Recipes"
-              :component (r/reactify-component recipes-view)
+              :component (reactify-with-name recipes-view "RecipesView")
               :options #js {:title "Recipes"}}]
 
             ;; Settings
             [:> (.-Screen Stack)
              {:name "Settings"
-              :component (r/reactify-component settings-view)
+              :component (reactify-with-name settings-view "SettingsView")
               :options #js {:title "Settings"}}]
 
             ;; Debug logs
             [:> (.-Screen Stack)
              {:name "DebugLogs"
-              :component (r/reactify-component debug-logs-view)
+              :component (reactify-with-name debug-logs-view "DebugLogsView")
               :options #js {:title "Debug Logs"}}]]])))}))
 
 (defn navigate!
