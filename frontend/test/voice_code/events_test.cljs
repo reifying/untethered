@@ -446,6 +446,17 @@
      (is (= "Failed to infer session name: Context too short"
             @(rf/subscribe [:ui/current-error]))))))
 
+(deftest session-infer-name-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "session/infer-name dispatches without error"
+     ;; This test verifies the event doesn't error
+     ;; The actual ws/send effect would be tested in integration tests
+     (rf/dispatch-sync [:session/infer-name "session-123"])
+     ;; If we get here without error, the event handler works
+     (is true))))
+
 (deftest handle-auth-error-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])

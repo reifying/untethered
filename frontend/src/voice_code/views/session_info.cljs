@@ -233,9 +233,12 @@
 
 (defn- actions-section
   "Session actions section."
-  [{:keys [on-export on-compact]}]
+  [{:keys [on-export on-compact on-infer-name]}]
   [:> rn/View
    [section-header "Actions"]
+   [action-button {:label "Infer Session Name"
+                   :icon "✨"
+                   :on-press on-infer-name}]
    [action-button {:label "Export Conversation"
                    :icon "↗"
                    :on-press on-export}]
@@ -248,7 +251,7 @@
                         :border-bottom-width 1
                         :border-bottom-color "#F0F0F0"}}
     [:> rn/Text {:style {:font-size 12 :color "#666"}}
-     "Compaction summarizes conversation history to reduce context window usage."]]])
+     "Infer Name asks Claude to generate a session name. Compaction summarizes conversation history to reduce context window usage."]]])
 
 (defn- danger-zone-section
   "Danger zone with destructive actions."
@@ -333,6 +336,10 @@
                              (rf/dispatch [:recipes/exit session-id])
                              (show-confirmation! "Recipe exited"))
 
+        handle-infer-name (fn []
+                            (rf/dispatch [:session/infer-name session-id])
+                            (show-confirmation! "Inferring session name..."))
+
         handle-delete (fn []
                         (.alert Alert
                                 "Delete Session"
@@ -364,5 +371,6 @@
                                             :on-start-recipe handle-start-recipe
                                             :on-exit-recipe handle-exit-recipe}]
              [actions-section {:on-export handle-export
-                               :on-compact handle-compact}]
+                               :on-compact handle-compact
+                               :on-infer-name handle-infer-name}]
              [danger-zone-section {:on-delete handle-delete}]])]]))))
