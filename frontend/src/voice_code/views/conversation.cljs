@@ -3,6 +3,7 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn]
+            ["@react-native-clipboard/clipboard" :as Clipboard]
             [voice-code.voice :as voice]))
 
 (defn- show-rename-dialog
@@ -124,6 +125,48 @@
                          :margin-left 8
                          :font-size 14}}
      "Claude is thinking..."]]])
+
+(defn- error-banner
+  "Displays error message with copy-to-clipboard and dismiss options.
+   Tapping the error text copies it to clipboard."
+  []
+  (let [error @(rf/subscribe [:ui/current-error])]
+    (when error
+      [:> rn/View {:style {:background-color "#FFF3F3"
+                           :border-width 1
+                           :border-color "#FF3B30"
+                           :border-radius 8
+                           :margin-horizontal 12
+                           :margin-vertical 8
+                           :padding 12
+                           :flex-direction "row"
+                           :align-items "flex-start"}}
+       ;; Error icon
+       [:> rn/Text {:style {:font-size 16 :margin-right 8}} "⚠️"]
+       ;; Error content (tappable to copy)
+       [:> rn/TouchableOpacity
+        {:style {:flex 1}
+         :on-press (fn []
+                     (.setString Clipboard error)
+                     (js/console.log "Error copied to clipboard"))}
+        [:> rn/Text {:style {:color "#FF3B30"
+                             :font-size 14
+                             :font-weight "500"}}
+         "Error"]
+        [:> rn/Text {:style {:color "#333"
+                             :font-size 13
+                             :margin-top 4}}
+         error]
+        [:> rn/Text {:style {:color "#666"
+                             :font-size 11
+                             :margin-top 4
+                             :font-style "italic"}}
+         "Tap to copy"]]
+       ;; Dismiss button
+       [:> rn/TouchableOpacity
+        {:style {:padding 4}
+         :on-press #(rf/dispatch [:ui/clear-error])}
+        [:> rn/Text {:style {:font-size 18 :color "#999"}} "×"]]])))
 
 (defn- mode-toggle
   "Toggle button for switching between voice and text input modes."
@@ -556,6 +599,9 @@
            {:style {:flex 1 :background-color "#FFFFFF"}
             :behavior "padding"
             :keyboard-vertical-offset 90}
+
+           ;; Error banner at top (dismissable, copyable)
+           [error-banner]
 
            (if (empty? messages)
              [empty-conversation]
