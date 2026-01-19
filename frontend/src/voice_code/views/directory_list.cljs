@@ -83,6 +83,95 @@
                          :color "#999"}}
      (format-relative-time last-modified)]]])
 
+(defn- session-name
+  "Get display name for a session."
+  [session]
+  (or (:custom-name session)
+      (:backend-name session)
+      (str "Session " (subs (str (:id session)) 0 8))))
+
+(defn- recent-session-item
+  "Single recent session item."
+  [{:keys [session on-press]}]
+  (let [unread-count (get session :unread-count 0)]
+    [:> rn/TouchableOpacity
+     {:style {:padding-horizontal 16
+              :padding-vertical 12
+              :border-bottom-width 1
+              :border-bottom-color "#F0F0F0"
+              :background-color "#FFFFFF"}
+      :on-press on-press
+      :active-opacity 0.7}
+     [:> rn/View {:style {:flex-direction "row"
+                          :justify-content "space-between"
+                          :align-items "center"}}
+      [:> rn/View {:style {:flex 1 :margin-right 12}}
+       ;; Session name with optional unread badge
+       [:> rn/View {:style {:flex-direction "row"
+                            :align-items "center"
+                            :margin-bottom 2}}
+        [:> rn/Text {:style {:font-size 15
+                             :font-weight (if (pos? unread-count) "600" "500")
+                             :color "#000"}}
+         (session-name session)]
+        [unread-badge unread-count]]
+       ;; Directory name (last component)
+       [:> rn/Text {:style {:font-size 12
+                            :color "#666"}
+                    :number-of-lines 1}
+        (directory-name (:working-directory session))]]
+      ;; Timestamp
+      [:> rn/Text {:style {:font-size 12 :color "#999"}}
+       (format-relative-time (:last-modified session))]]]))
+
+(defn- section-header
+  "Collapsible section header."
+  [{:keys [title expanded? on-toggle count]}]
+  [:> rn/TouchableOpacity
+   {:style {:flex-direction "row"
+            :align-items "center"
+            :justify-content "space-between"
+            :padding-horizontal 16
+            :padding-vertical 10
+            :background-color "#F0F0F0"}
+    :on-press on-toggle
+    :active-opacity 0.7}
+   [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+    [:> rn/Text {:style {:font-size 13
+                         :font-weight "600"
+                         :color "#666"
+                         :text-transform "uppercase"
+                         :letter-spacing 0.5}}
+     title]
+    (when (and count (pos? count))
+      [:> rn/Text {:style {:font-size 12
+                           :color "#999"
+                           :margin-left 8}}
+       (str "(" count ")")])]
+   [:> rn/Text {:style {:font-size 14 :color "#999"}}
+    (if expanded? "▼" "▶")]])
+
+(defn- recent-sessions-section
+  "Collapsible recent sessions section."
+  [{:keys [sessions navigation]}]
+  (let [expanded? (r/atom true)]
+    (fn [{:keys [sessions navigation]}]
+      [:> rn/View
+       [section-header {:title "Recent"
+                        :expanded? @expanded?
+                        :on-toggle #(swap! expanded? not)
+                        :count (count sessions)}]
+       (when @expanded?
+         [:> rn/View
+          (for [session sessions]
+            ^{:key (:id session)}
+            [recent-session-item
+             {:session session
+              :on-press #(when navigation
+                           (.navigate navigation "Conversation"
+                                      #js {:sessionId (:id session)
+                                           :sessionName (session-name session)}))}])])])))
+
 (defn- empty-state
   "Shown when there are no directories/sessions."
   []
@@ -108,6 +197,27 @@
     :on-press #(when navigation (.navigate navigation "Settings"))}
    [:> rn/Text {:style {:font-size 22}} "⚙️"]])
 
+(defn- directories-section
+  "Collapsible directories (Projects) section."
+  [{:keys [directories navigation]}]
+  (let [expanded? (r/atom true)]
+    (fn [{:keys [directories navigation]}]
+      [:> rn/View
+       [section-header {:title "Projects"
+                        :expanded? @expanded?
+                        :on-toggle #(swap! expanded? not)
+                        :count (count directories)}]
+       (when @expanded?
+         [:> rn/View
+          (for [dir directories]
+            ^{:key (:directory dir)}
+            [directory-item
+             (assoc dir
+                    :on-press #(when navigation
+                                 (.navigate navigation "SessionList"
+                                            #js {:directory (:directory dir)
+                                                 :directoryName (directory-name (:directory dir))})))])])])))
+
 (defn directory-list-view
   "Main directory list screen.
    Props is a ClojureScript map (converted by r/reactify-component)."
@@ -127,6 +237,7 @@
       (fn [props]
         (let [nav (:navigation props)
               directories @(rf/subscribe [:sessions/directories])
+              recent-sessions @(rf/subscribe [:sessions/recent])
               loading? @(rf/subscribe [:ui/loading?])]
           [:> rn/View {:style {:flex 1 :background-color "#F5F5F5"}}
            (if loading?
@@ -136,22 +247,17 @@
                                   :align-items "center"}}
               [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]]
 
-             ;; Directory list
-             (if (empty? directories)
+             ;; Content
+             (if (and (empty? directories) (empty? recent-sessions))
                [empty-state]
-               [:> rn/FlatList
-                {:data (clj->js directories)
-                 :key-extractor (fn [item _idx]
-                                  (or (.-directory item) (str (random-uuid))))
-                 :render-item
-                 (fn [^js obj]
-                   (let [item (js->clj (.-item obj) :keywordize-keys true)
-                         directory (:directory item)]
-                     (r/as-element
-                      [directory-item
-                       (assoc item
-                              :on-press #(when nav
-                                           (.navigate nav "SessionList"
-                                                      #js {:directory directory
-                                                           :directoryName (directory-name directory)})))])))
-                 :content-container-style {:padding-vertical 8}}]))]))})))
+               [:> rn/ScrollView
+                {:style {:flex 1}
+                 :content-container-style {:padding-bottom 16}}
+                ;; Recent sessions section (if any)
+                (when (seq recent-sessions)
+                  [recent-sessions-section {:sessions recent-sessions
+                                            :navigation nav}])
+                ;; Projects/Directories section
+                (when (seq directories)
+                  [directories-section {:directories directories
+                                        :navigation nav}])]))]))})))

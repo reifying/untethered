@@ -73,6 +73,55 @@
        (is (= 1 (:session-count (first dirs))))
        (is (= 2 (:session-count (second dirs))))))))
 
+(deftest sessions-recent-sub
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "sessions/recent returns empty vector when no sessions"
+     (is (= [] @(rf/subscribe [:sessions/recent]))))
+
+   ;; Add sessions across different directories with different timestamps
+   (rf/dispatch-sync [:sessions/add {:id "s1"
+                                     :backend-name "Oldest Session"
+                                     :working-directory "/project-a"
+                                     :last-modified 1000}])
+   (rf/dispatch-sync [:sessions/add {:id "s2"
+                                     :backend-name "Middle Session"
+                                     :working-directory "/project-b"
+                                     :last-modified 2000}])
+   (rf/dispatch-sync [:sessions/add {:id "s3"
+                                     :backend-name "Newest Session"
+                                     :working-directory "/project-c"
+                                     :last-modified 3000}])
+
+   (testing "sessions/recent returns sessions sorted by last-modified desc"
+     (let [recent @(rf/subscribe [:sessions/recent])]
+       (is (= 3 (count recent)))
+       (is (= "s3" (:id (first recent))))
+       (is (= "s2" (:id (second recent))))
+       (is (= "s1" (:id (nth recent 2))))))
+
+   ;; Add a deleted session
+   (rf/dispatch-sync [:sessions/add {:id "s4"
+                                     :backend-name "Deleted Session"
+                                     :working-directory "/project-d"
+                                     :last-modified 4000
+                                     :is-user-deleted true}])
+
+   (testing "sessions/recent excludes deleted sessions"
+     (let [recent @(rf/subscribe [:sessions/recent])]
+       (is (= 3 (count recent)))
+       (is (not (some #(= "s4" (:id %)) recent)))))
+
+   ;; Test limit via settings
+   (rf/dispatch-sync [:settings/update :recent-sessions-limit 2])
+
+   (testing "sessions/recent respects recent-sessions-limit setting"
+     (let [recent @(rf/subscribe [:sessions/recent])]
+       (is (= 2 (count recent)))
+       (is (= "s3" (:id (first recent))))
+       (is (= "s2" (:id (second recent))))))))
+
 (deftest messages-subs
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])

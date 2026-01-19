@@ -78,6 +78,18 @@
         (sort-by :last-modified >))))
 
 (rf/reg-sub
+ :sessions/recent
+ :<- [:sessions/all]
+ :<- [:settings/all]
+ (fn [[sessions settings] _]
+   (let [limit (get settings :recent-sessions-limit 10)]
+     (->> (vals sessions)
+          (remove :is-user-deleted)
+          (sort-by :last-modified >)
+          (take limit)
+          (vec)))))
+
+(rf/reg-sub
  :sessions/unread-count
  (fn [db [_ session-id]]
    (get-in db [:sessions session-id :unread-count] 0)))
