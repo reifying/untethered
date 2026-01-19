@@ -266,3 +266,54 @@
   (testing "all-premium-voices-identifier constant is defined"
     (is (string? voice/all-premium-voices-identifier))
     (is (= "com.voicecode.all-premium-voices" voice/all-premium-voices-identifier))))
+
+;; ============================================================================
+;; Code Block Removal Tests (for TTS)
+;; ============================================================================
+
+(deftest remove-code-blocks-test
+  (testing "removes fenced code blocks with placeholder"
+    (is (= "Here is some code:\n\n[code block]\n\nAnd more text."
+           (voice/remove-code-blocks
+            "Here is some code:\n\n```javascript\nconst x = 1;\n```\n\nAnd more text.")))
+
+    (is (= "Multiple blocks:\n\n[code block]\n\nand\n\n[code block]"
+           (voice/remove-code-blocks
+            "Multiple blocks:\n\n```python\nprint('hello')\n```\n\nand\n\n```clojure\n(+ 1 2)\n```"))))
+
+  (testing "removes inline code backticks but preserves content"
+    (is (= "Run the npm install command"
+           (voice/remove-code-blocks "Run the `npm install` command")))
+
+    (is (= "Use foo and bar variables"
+           (voice/remove-code-blocks "Use `foo` and `bar` variables"))))
+
+  (testing "handles mixed fenced and inline code"
+    (is (= "Use myFunc like this:\n\n[code block]\n\nIt returns a string."
+           (voice/remove-code-blocks
+            "Use `myFunc` like this:\n\n```\nmyFunc(42)\n```\n\nIt returns a `string`."))))
+
+  (testing "cleans up excessive newlines"
+    (is (= "Before\n\nAfter"
+           (voice/remove-code-blocks "Before\n\n\n\n\nAfter"))))
+
+  (testing "handles nil and empty input"
+    (is (nil? (voice/remove-code-blocks nil)))
+    (is (= "" (voice/remove-code-blocks ""))))
+
+  (testing "trims leading/trailing whitespace"
+    (is (= "Hello world"
+           (voice/remove-code-blocks "  Hello world  "))))
+
+  (testing "handles text without code blocks"
+    (is (= "Just plain text with no code."
+           (voice/remove-code-blocks "Just plain text with no code."))))
+
+  (testing "handles code blocks with language specifier"
+    (is (= "Example:\n\n[code block]"
+           (voice/remove-code-blocks "Example:\n\n```clojure\n(defn hello [] (println \"hi\"))\n```"))))
+
+  (testing "preserves multiline inline code content"
+    ;; Inline code doesn't span lines, so newlines in content won't match
+    (is (= "Use `multi\nline` carefully"
+           (voice/remove-code-blocks "Use `multi\nline` carefully")))))

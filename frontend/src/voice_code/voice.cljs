@@ -1,7 +1,8 @@
 (ns voice-code.voice
   "Voice integration for voice-code app.
    Provides speech recognition (input) and text-to-speech (output)."
-  (:require [re-frame.core :as rf]))
+  (:require [re-frame.core :as rf]
+            [clojure.string :as str]))
 
 ;; ============================================================================
 ;; Voice Rotation Constants
@@ -24,6 +25,28 @@
               new-hash (bit-and (+ (* hash 31) char-code) 0x7FFFFFFF)]
           (recur (inc i) new-hash))
         hash))))
+
+(defn remove-code-blocks
+  "Remove code blocks from markdown text for better text-to-speech experience.
+   Removes both fenced code blocks (```...```) and inline code (`...`).
+   Replaces fenced code blocks with '[code block]' spoken placeholder.
+   Removes backticks from inline code but preserves the content.
+   
+   Parameters:
+     markdown - The markdown text to process
+   
+   Returns: Text suitable for text-to-speech."
+  [markdown]
+  (when markdown
+    (-> markdown
+        ;; Replace fenced code blocks (```language\ncode\n```) with spoken placeholder
+        (str/replace #"```[\s\S]*?```" "[code block]")
+        ;; Remove inline code backticks but keep content
+        (str/replace #"`([^`\n]+?)`" "$1")
+        ;; Clean up multiple consecutive newlines left by code block removal
+        (str/replace #"\n{3,}" "\n\n")
+        ;; Trim whitespace
+        str/trim)))
 
 ;; Forward declarations for TTS functions used in voice recognition
 (declare speaking?* stop-speaking!)
@@ -465,8 +488,10 @@
  (fn [{:keys [db]} [_ text working-directory]]
    (let [selected-voice-id (get-in db [:settings :voice-identifier])
          premium-voices (get-premium-voices (get-in db [:ui :available-voices] []))
-         resolved-voice-id (resolve-voice-identifier selected-voice-id premium-voices working-directory)]
-     {:voice/speak {:text text :voice-id resolved-voice-id}})))
+         resolved-voice-id (resolve-voice-identifier selected-voice-id premium-voices working-directory)
+         ;; Process text to remove code blocks before TTS
+         processed-text (remove-code-blocks text)]
+     {:voice/speak {:text processed-text :voice-id resolved-voice-id}})))
 
 (rf/reg-event-fx
  :voice/stop-speaking
