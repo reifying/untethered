@@ -76,3 +76,28 @@
   (testing "returns nil on invalid JSON"
     (is (nil? (json/parse-json-safe "not valid json")))
     (is (nil? (json/parse-json-safe "{invalid}")))))
+
+(deftest normalize-session-id-test
+  (testing "returns nil for nil input"
+    (is (nil? (json/normalize-session-id nil))))
+
+  (testing "lowercases uppercase UUIDs"
+    (is (= "abc123de-4567-89ab-cdef-0123456789ab"
+           (json/normalize-session-id "ABC123DE-4567-89AB-CDEF-0123456789AB"))))
+
+  (testing "preserves lowercase UUIDs"
+    (is (= "abc123de-4567-89ab-cdef-0123456789ab"
+           (json/normalize-session-id "abc123de-4567-89ab-cdef-0123456789ab"))))
+
+  (testing "handles mixed case"
+    (is (= "abc123de-4567-89ab-cdef-0123456789ab"
+           (json/normalize-session-id "AbC123dE-4567-89Ab-CdEf-0123456789aB"))))
+
+  (testing "converts non-string types to lowercase string"
+    ;; Keywords include colon prefix when stringified
+    ;; In practice, session IDs are always strings from JSON
+    (is (= ":test-session"
+           (json/normalize-session-id :TEST-SESSION)))
+    ;; Numbers also get stringified and lowercased (no-op for numbers)
+    (is (= "12345"
+           (json/normalize-session-id 12345)))))

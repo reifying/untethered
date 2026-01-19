@@ -3,7 +3,8 @@
    Implements all message types from STANDARDS.md protocol."
   (:require [re-frame.core :as rf]
             [voice-code.websocket :as ws]
-            [voice-code.db :as db]))
+            [voice-code.db :as db]
+            [voice-code.json :as json]))
 
 ;; ============================================================================
 ;; Connection Events
@@ -240,14 +241,16 @@
  (fn [db [_ {:keys [sessions]}]]
    ;; Receiving session list means we're authenticated
    ;; Also clears refreshing state if a refresh was in progress
+   ;; Note: Per STANDARDS.md, all session IDs must be lowercase
    (-> (reduce (fn [db session]
-                 (assoc-in db [:sessions (:session-id session)]
-                           {:id (:session-id session)
-                            :backend-name (:name session)
-                            :working-directory (:working-directory session)
-                            :last-modified (js/Date. (:last-modified session))
-                            :message-count (:message-count session)
-                            :preview (:preview session)}))
+                 (let [session-id (json/normalize-session-id (:session-id session))]
+                   (assoc-in db [:sessions session-id]
+                             {:id session-id
+                              :backend-name (:name session)
+                              :working-directory (:working-directory session)
+                              :last-modified (js/Date. (:last-modified session))
+                              :message-count (:message-count session)
+                              :preview (:preview session)})))
                db
                sessions)
        (assoc-in [:connection :status] :connected)
@@ -259,12 +262,14 @@
  :sessions/handle-recent
  (fn [db [_ {:keys [sessions]}]]
    ;; Also clears refreshing state if a refresh was in progress
+   ;; Note: Per STANDARDS.md, all session IDs must be lowercase
    (-> (reduce (fn [db session]
-                 (assoc-in db [:sessions (:session-id session)]
-                           {:id (:session-id session)
-                            :backend-name (:name session)
-                            :working-directory (:working-directory session)
-                            :last-modified (js/Date. (:last-modified session))}))
+                 (let [session-id (json/normalize-session-id (:session-id session))]
+                   (assoc-in db [:sessions session-id]
+                             {:id session-id
+                              :backend-name (:name session)
+                              :working-directory (:working-directory session)
+                              :last-modified (js/Date. (:last-modified session))})))
                db
                sessions)
        (assoc-in [:ui :refreshing?] false))))
@@ -282,12 +287,14 @@
 (rf/reg-event-db
  :sessions/handle-created
  (fn [db [_ {:keys [session-id name working-directory]}]]
-   (assoc-in db [:sessions session-id]
-             {:id session-id
-              :backend-name name
-              :working-directory working-directory
-              :last-modified (js/Date.)
-              :message-count 0})))
+   ;; Note: Per STANDARDS.md, all session IDs must be lowercase
+   (let [session-id (json/normalize-session-id session-id)]
+     (assoc-in db [:sessions session-id]
+               {:id session-id
+                :backend-name name
+                :working-directory working-directory
+                :last-modified (js/Date.)
+                :message-count 0}))))
 
 (rf/reg-event-db
  :sessions/handle-history

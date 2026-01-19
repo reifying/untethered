@@ -62,6 +62,14 @@
         kebab-map (transform-keys snake->kebab clj-map)]
     kebab-map))
 
+(defn normalize-session-id
+  "Normalize session ID to lowercase for consistent comparison.
+   Per STANDARDS.md, all UUIDs must be lowercase across the system.
+   Returns nil for nil input, lowercase string otherwise."
+  [session-id]
+  (when session-id
+    (str/lower-case (str session-id))))
+
 (defn parse-json-safe
   "Parse JSON string safely, returning nil on error."
   [s]
