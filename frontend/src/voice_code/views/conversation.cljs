@@ -603,14 +603,35 @@
        [:> rn/ActivityIndicator {:size "small" :color "#007AFF"}]
        [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "↻"])]))
 
+(defn- header-kill-button
+  "Kill button for canceling stuck prompts.
+   Only shows when the session is locked (processing a prompt)."
+  [session-id]
+  (let [Alert (.-Alert rn)]
+    [:> rn/TouchableOpacity
+     {:style {:padding 8}
+      :on-press #(.alert Alert
+                         "Stop Session?"
+                         "This will terminate the current Claude process. The session will be unlocked and you can send a new prompt."
+                         (clj->js [{:text "Cancel" :style "cancel"}
+                                   {:text "Stop"
+                                    :style "destructive"
+                                    :onPress (fn []
+                                               (rf/dispatch [:session/kill session-id]))}]))}
+     [:> rn/Text {:style {:font-size 16 :color "#FF3B30"}} "⏹"]]))
+
 (defn- header-right-buttons
-  "Combined header right buttons: Recipe, Info, Refresh."
+  "Combined header right buttons: Kill (when locked), Recipe, Info, Refresh."
   [session-id working-directory ^js navigation]
-  [:> rn/View {:style {:flex-direction "row"
-                       :align-items "center"}}
-   [header-recipe-button session-id working-directory navigation]
-   [header-info-button session-id navigation]
-   [header-refresh-button session-id]])
+  (let [locked? @(rf/subscribe [:session/locked? session-id])]
+    [:> rn/View {:style {:flex-direction "row"
+                         :align-items "center"}}
+     ;; Kill button only visible when session is locked
+     (when locked?
+       [header-kill-button session-id])
+     [header-recipe-button session-id working-directory navigation]
+     [header-info-button session-id navigation]
+     [header-refresh-button session-id]]))
 
 (defn- header-title
   "Custom header title component that can be tapped to rename."

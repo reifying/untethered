@@ -670,6 +670,14 @@
               :session-id session-id}}))
 
 (rf/reg-event-fx
+ :session/kill
+ (fn [{:keys [db]} [_ session-id]]
+   ;; Send kill_session message to backend to terminate the Claude process.
+   ;; The backend will respond with session_killed which unlocks the session.
+   {:ws/send {:type "kill_session"
+              :session-id session-id}}))
+
+(rf/reg-event-fx
  :directory/set
  (fn [{:keys [db]} [_ working-directory]]
    ;; Send set_directory to backend so it knows the current context.
