@@ -488,6 +488,30 @@
  (fn [db [_ {:keys [session-id]}]]
    (update-in db [:recipes :active] dissoc session-id)))
 
+;; Recipe action events (outbound messages)
+(rf/reg-event-fx
+ :recipes/start
+ (fn [_ [_ {:keys [session-id recipe-name working-directory is-new-session]}]]
+   {:ws/send (cond-> {:type "start_recipe"
+                      :session-id session-id
+                      :recipe-name recipe-name}
+               ;; Include working-directory for new sessions (required by backend)
+               (and is-new-session working-directory)
+               (assoc :working-directory working-directory))}))
+
+(rf/reg-event-fx
+ :recipes/stop
+ (fn [_ [_ session-id]]
+   {:ws/send {:type "stop_recipe"
+              :session-id session-id}}))
+
+(rf/reg-event-fx
+ :recipes/exit
+ (fn [{:keys [db]} [_ session-id]]
+   {:db (update-in db [:recipes :active] dissoc session-id)
+    :ws/send {:type "exit_recipe"
+              :session-id session-id}}))
+
 ;; ============================================================================
 ;; Outbound Messages
 ;; ============================================================================

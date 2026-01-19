@@ -332,7 +332,9 @@
                                  (show-confirmation! (str "Priority changed to " priority)))
 
         handle-start-recipe (fn []
-                              (.navigate navigation "Recipes" #js {:sessionId session-id}))
+                              (.navigate navigation "Recipes"
+                                         #js {:sessionId session-id
+                                              :workingDirectory (:working-directory session)}))
 
         handle-exit-recipe (fn []
                              (rf/dispatch [:recipes/exit session-id])

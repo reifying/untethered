@@ -814,6 +814,44 @@
      (rf/dispatch-sync [:recipes/exit "s1"])
      (is (nil? @(rf/subscribe [:recipes/active-for-session "s1"]))))))
 
+(deftest recipes-start-new-session-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "recipes/start without new session flag sends basic message"
+     (let [sent-messages (atom [])]
+       ;; Mock the ws/send effect
+       (rf/reg-fx :ws/send (fn [msg] (swap! sent-messages conj msg)))
+
+       (rf/dispatch-sync [:recipes/start {:session-id "existing-session"
+                                          :recipe-name "code-review"}])
+
+       (is (= 1 (count @sent-messages)))
+       (let [msg (first @sent-messages)]
+         (is (= "start_recipe" (:type msg)))
+         (is (= "existing-session" (:session-id msg)))
+         (is (= "code-review" (:recipe-name msg)))
+         ;; Should NOT include working-directory when not a new session
+         (is (not (contains? msg :working-directory))))))
+
+   (testing "recipes/start with new session flag includes working-directory"
+     (let [sent-messages (atom [])]
+       ;; Mock the ws/send effect
+       (rf/reg-fx :ws/send (fn [msg] (swap! sent-messages conj msg)))
+
+       (rf/dispatch-sync [:recipes/start {:session-id "new-session-uuid"
+                                          :recipe-name "code-review"
+                                          :working-directory "/path/to/project"
+                                          :is-new-session true}])
+
+       (is (= 1 (count @sent-messages)))
+       (let [msg (first @sent-messages)]
+         (is (= "start_recipe" (:type msg)))
+         (is (= "new-session-uuid" (:session-id msg)))
+         (is (= "code-review" (:recipe-name msg)))
+         ;; Should include working-directory for new sessions
+         (is (= "/path/to/project" (:working-directory msg))))))))
+
 ;; ============================================================================
 ;; Auto-Speak Response Events
 ;; ============================================================================
