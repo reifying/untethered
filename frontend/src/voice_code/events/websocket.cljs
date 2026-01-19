@@ -39,14 +39,23 @@
 (rf/reg-event-fx
  :ws/connected
  (fn [{:keys [db]} _]
-   {:db (assoc-in db [:connection :status] :connected)}))
+   {:db (-> db
+            (assoc-in [:connection :status] :connected)
+            ;; Mark that we've successfully connected at least once
+            ;; This enables auto-reconnect on future disconnections
+            (assoc-in [:connection :was-connected?] true))}))
 
 (rf/reg-event-fx
  :ws/disconnected
  (fn [{:keys [db]} [_ {:keys [code reason]}]]
    (let [attempts (get-in db [:connection :reconnect-attempts] 0)
          max-attempts 20
-         should-reconnect? (< attempts max-attempts)
+         ;; Only auto-reconnect if we've successfully connected at least once
+         ;; This prevents infinite reconnection loops when the server is unreachable
+         was-ever-connected? (get-in db [:connection :was-connected?] false)
+         should-reconnect? (and (< attempts max-attempts)
+                                was-ever-connected?)
+         ;; Exponential backoff: 1s, 2s, 4s, 8s... up to 30s max
          delay-ms (when should-reconnect?
                     (min (* 1000 (Math/pow 2 attempts)) 30000))]
      (cond-> {:db (-> db

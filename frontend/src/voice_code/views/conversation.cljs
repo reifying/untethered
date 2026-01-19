@@ -634,6 +634,14 @@
      [header-info-button session-id navigation]
      [header-refresh-button session-id]]))
 
+(defn- header-right-buttons-wrapper
+  "Wrapper that subscribes to session data and passes working-directory to header buttons.
+   This ensures subscriptions are in a reactive context (inside a component render)."
+  [session-id ^js navigation]
+  (let [session @(rf/subscribe [:sessions/by-id session-id])
+        working-directory (:working-directory session)]
+    [header-right-buttons session-id working-directory navigation]))
+
 (defn- header-title
   "Custom header title component that can be tapped to rename."
   [session-id ^js navigation]
@@ -677,18 +685,17 @@
           (rf/dispatch [:sessions/set-active session-id])
           (rf/dispatch [:session/subscribe session-id])
           ;; Set custom header title and right buttons
-          ;; Note: We need to get working-directory from session for recipe navigation
+          ;; Note: header-right-buttons internally subscribes to session data for working-directory
+          ;; We don't subscribe here to avoid "outside reactive context" warnings
           (when navigation
-            (let [session @(rf/subscribe [:sessions/by-id session-id])
-                  working-directory (:working-directory session)]
-              (.setOptions navigation
-                           #js {:headerTitle
-                                (fn [_]
-                                  (r/as-element [header-title session-id navigation]))
-                                :headerRight
-                                (fn [_]
-                                  (r/as-element
-                                   [header-right-buttons session-id working-directory navigation]))})))))
+            (.setOptions navigation
+                         #js {:headerTitle
+                              (fn [_]
+                                (r/as-element [header-title session-id navigation]))
+                              :headerRight
+                              (fn [_]
+                                (r/as-element
+                                 [header-right-buttons-wrapper session-id navigation]))}))))
 
       :component-will-unmount
       (fn [_]

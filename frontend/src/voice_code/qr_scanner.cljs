@@ -121,6 +121,15 @@
 ;; Camera Scanner Component
 ;; ============================================================================
 
+(defn- open-settings!
+  "Open app settings so user can enable camera permission."
+  []
+  (let [Linking (.-Linking rn)]
+    (.openSettings Linking)))
+
+;; Track permission request state globally since the scanner hook resets on unmount
+(defonce ^:private permission-requested? (r/atom false))
+
 (defn- scanner-camera
   "Camera component with QR code scanning.
    Uses hooks via :f> for functional component."
@@ -139,7 +148,7 @@
                       #js {:codeTypes #js ["qr"]
                            :onCodeScanned on-codes-scanned})]
     (cond
-      ;; Permission not yet determined
+      ;; Permission not yet determined (loading)
       (nil? has-permission)
       [:> rn/View {:style {:flex 1 :justify-content "center" :align-items "center"}}
        [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]]
@@ -149,14 +158,31 @@
       [:> rn/View {:style {:flex 1 :justify-content "center" :align-items "center" :padding 24}}
        [:> rn/Text {:style {:font-size 18 :text-align "center" :margin-bottom 16}}
         "Camera permission is required to scan QR codes"]
-       [:> rn/TouchableOpacity
-        {:style {:background-color "#007AFF"
-                 :padding-horizontal 24
-                 :padding-vertical 12
-                 :border-radius 8}
-         :on-press request-permission}
-        [:> rn/Text {:style {:color "#FFFFFF" :font-size 16}}
-         "Grant Permission"]]]
+       ;; Show "Grant Permission" button first time, then "Open Settings" if already requested
+       (if @permission-requested?
+         ;; User already tried granting - permission was denied, need to go to Settings
+         [:> rn/View {:style {:align-items "center"}}
+          [:> rn/Text {:style {:font-size 14 :text-align "center" :color "#666" :margin-bottom 16}}
+           "Camera access was denied. Please enable it in Settings."]
+          [:> rn/TouchableOpacity
+           {:style {:background-color "#007AFF"
+                    :padding-horizontal 24
+                    :padding-vertical 12
+                    :border-radius 8}
+            :on-press open-settings!}
+           [:> rn/Text {:style {:color "#FFFFFF" :font-size 16}}
+            "Open Settings"]]]
+         ;; First attempt - request permission
+         [:> rn/TouchableOpacity
+          {:style {:background-color "#007AFF"
+                   :padding-horizontal 24
+                   :padding-vertical 12
+                   :border-radius 8}
+           :on-press (fn []
+                       (reset! permission-requested? true)
+                       (request-permission))}
+          [:> rn/Text {:style {:color "#FFFFFF" :font-size 16}}
+           "Grant Permission"]])]
 
       ;; No camera device
       (nil? device)

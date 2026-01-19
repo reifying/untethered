@@ -77,28 +77,32 @@
   "Establish a WebSocket connection to the backend."
   [{:keys [server-url server-port]}]
   (disconnect!)
-  (let [url (str "ws://" server-url ":" server-port "/ws")
-        ws (js/WebSocket. url)]
+  (try
+    (let [url (str "ws://" server-url ":" server-port "/ws")
+          ws (js/WebSocket. url)]
 
-    (set! (.-onopen ws)
-          (fn [_]
-            (rf/dispatch [:ws/connected])))
+      (set! (.-onopen ws)
+            (fn [_]
+              (rf/dispatch [:ws/connected])))
 
-    (set! (.-onmessage ws)
-          (fn [event]
-            (when-let [msg (json/parse-json-safe (.-data event))]
-              (rf/dispatch [:ws/message-received msg]))))
+      (set! (.-onmessage ws)
+            (fn [event]
+              (when-let [msg (json/parse-json-safe (.-data event))]
+                (rf/dispatch [:ws/message-received msg]))))
 
-    (set! (.-onclose ws)
-          (fn [event]
-            (rf/dispatch [:ws/disconnected {:code (.-code event)
-                                            :reason (.-reason event)}])))
+      (set! (.-onclose ws)
+            (fn [event]
+              (rf/dispatch [:ws/disconnected {:code (.-code event)
+                                              :reason (.-reason event)}])))
 
-    (set! (.-onerror ws)
-          (fn [error]
-            (rf/dispatch [:ws/error error])))
+      (set! (.-onerror ws)
+            (fn [error]
+              (rf/dispatch [:ws/error error])))
 
-    (reset! ws-atom ws)))
+      (reset! ws-atom ws))
+    (catch :default e
+      (js/console.error "WebSocket creation failed:" e)
+      (rf/dispatch [:ws/error e]))))
 
 ;; ============================================================================
 ;; Effect Handlers
