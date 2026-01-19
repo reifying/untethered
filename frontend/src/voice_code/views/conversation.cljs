@@ -2,7 +2,7 @@
   "Conversation view for a single session showing messages and input."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn]
+            ["react-native" :as rn :refer [Modal]]
             ["@react-native-clipboard/clipboard" :as Clipboard]
             [voice-code.voice :as voice]))
 
@@ -94,6 +94,126 @@
              "default")))
 
 ;; ============================================================================
+;; Message Detail Modal
+;; ============================================================================
+
+;; Global state for currently selected message (shown in modal)
+(defonce ^:private selected-message-state
+  (r/atom {:visible? false
+           :message nil
+           :session-id nil
+           :working-directory nil}))
+
+(defn- show-message-detail!
+  "Show the message detail modal for a message."
+  [message session-id working-directory]
+  (reset! selected-message-state
+          {:visible? true
+           :message message
+           :session-id session-id
+           :working-directory working-directory}))
+
+(defn- hide-message-detail!
+  "Hide the message detail modal."
+  []
+  (swap! selected-message-state assoc :visible? false))
+
+(defn- action-button
+  "Action button for message detail modal."
+  [{:keys [icon label on-press color]}]
+  [:> rn/TouchableOpacity
+   {:style {:align-items "center"
+            :padding-vertical 12
+            :padding-horizontal 16
+            :min-width 80}
+    :on-press on-press
+    :active-opacity 0.7}
+   [:> rn/Text {:style {:font-size 28 :margin-bottom 6}} icon]
+   [:> rn/Text {:style {:font-size 13
+                        :color (or color "#007AFF")
+                        :font-weight "500"}}
+    label]])
+
+(defn message-detail-modal
+  "Modal showing full message content with actions.
+   Features: Copy, Read Aloud, Infer Name (for assistant messages)."
+  []
+  (let [{:keys [visible? message session-id working-directory]} @selected-message-state
+        {:keys [role text]} (or message {})
+        speaking? @(rf/subscribe [:voice/speaking?])
+        is-assistant? (= role :assistant)]
+    [:> Modal
+     {:visible visible?
+      :animation-type "slide"
+      :presentation-style "pageSheet"
+      :on-request-close hide-message-detail!}
+     [:> rn/SafeAreaView {:style {:flex 1 :background-color "#FFFFFF"}}
+      ;; Header
+      [:> rn/View {:style {:flex-direction "row"
+                           :justify-content "space-between"
+                           :align-items "center"
+                           :padding-horizontal 16
+                           :padding-vertical 12
+                           :border-bottom-width 1
+                           :border-bottom-color "#E5E5E5"}}
+       [:> rn/Text {:style {:font-size 17
+                            :font-weight "600"
+                            :color "#000"}}
+        (if (= role :user) "Your Message" "Claude's Response")]
+       [:> rn/TouchableOpacity
+        {:on-press hide-message-detail!
+         :style {:padding 8}}
+        [:> rn/Text {:style {:font-size 17 :color "#007AFF"}} "Done"]]]
+
+      ;; Message content - scrollable
+      [:> rn/ScrollView {:style {:flex 1}
+                         :content-container-style {:padding 16}}
+       [:> rn/Text {:style {:font-size 16
+                            :line-height 24
+                            :color "#000"}
+                    :selectable true}
+        text]]
+
+      ;; Action buttons row
+      [:> rn/View {:style {:flex-direction "row"
+                           :justify-content "space-evenly"
+                           :align-items "center"
+                           :padding-vertical 16
+                           :padding-horizontal 8
+                           :border-top-width 1
+                           :border-top-color "#E5E5E5"
+                           :background-color "#F9F9F9"}}
+       ;; Copy button
+       [action-button
+        {:icon "📋"
+         :label "Copy"
+         :on-press (fn []
+                     (copy-to-clipboard! text "Message copied")
+                     (hide-message-detail!))}]
+
+       ;; Read Aloud / Stop button
+       [action-button
+        {:icon (if speaking? "⏹" "🔊")
+         :label (if speaking? "Stop" "Read Aloud")
+         :color (if speaking? "#FF3B30" "#007AFF")
+         :on-press (fn []
+                     (if speaking?
+                       (rf/dispatch [:voice/stop-speaking])
+                       (do
+                         (rf/dispatch [:voice/speak-response text working-directory])
+                         (hide-message-detail!))))}]
+
+       ;; Infer Name button (only for assistant messages)
+       (when is-assistant?
+         [action-button
+          {:icon "✨"
+           :label "Infer Name"
+           :on-press (fn []
+                       (rf/dispatch [:session/infer-name session-id])
+                       (show-copy-toast! "Inferring session name...")
+                       (hide-message-detail!))}])]]]))
+
+;; ============================================================================
 ;; Message Truncation Constants
 ;; ============================================================================
 
@@ -129,15 +249,15 @@
 
 (defn- message-bubble
   "Single message bubble with truncation support for long messages.
-   Tap to speak message text aloud (TTS).
-   Long-press to copy message text to clipboard."
-  [{:keys [role text timestamp status working-directory]}]
+   Tap to open message detail modal with Copy, Read Aloud, and Infer Name actions.
+   Long-press to quickly copy message text to clipboard."
+  [{:keys [role text timestamp status working-directory session-id]}]
   (let [expanded? (r/atom false)
         {:keys [truncated? display-text full-text]} (truncate-text text)
         is-user? (= role :user)
         is-sending? (= status :sending)
         is-error? (= status :error)]
-    (fn [{:keys [role text timestamp status working-directory]}]
+    (fn [{:keys [role text timestamp status working-directory session-id]}]
       (let [{:keys [truncated? display-text full-text]} (truncate-text text)
             show-text (if (and truncated? (not @expanded?))
                         display-text
@@ -150,7 +270,7 @@
                   :margin-vertical 4
                   :margin-horizontal 12}
           :active-opacity 0.8
-          :on-press #(rf/dispatch [:voice/speak-response full-text working-directory])
+          :on-press #(show-message-detail! {:role role :text full-text} session-id working-directory)
           :on-long-press #(copy-to-clipboard! full-text "Message copied")}
          ;; Message bubble
          [:> rn/View {:style {:background-color (if is-user? "#007AFF" "#E9E9EB")
@@ -195,11 +315,11 @@
                                  :color "#999"
                                  :margin-left 4}}
              " • Sending..."])
-          ;; Tap hint with speaker icon
+          ;; Tap hint - ellipsis indicates actions available
           [:> rn/Text {:style {:font-size 11
                                :color "#999"
                                :margin-left 8}}
-           "🔊"]]]))))
+           "•••"]]]))))
 
 (defn- typing-indicator
   "Shows when Claude is processing."
@@ -497,7 +617,7 @@
           (js/setTimeout #(.scrollToEnd ^js @list-ref #js {:animated true}) 100)))
 
       :reagent-render
-      (fn [{:keys [messages locked? working-directory]}]
+      (fn [{:keys [messages session-id locked? working-directory]}]
         (let [auto-scroll? @(rf/subscribe [:ui/auto-scroll?])]
           [:> rn/View {:style {:flex 1}}
            ;; Auto-scroll toggle button
@@ -536,7 +656,8 @@
                           :text (.-text item)
                           :timestamp (.-timestamp item)
                           :status (some-> item .-status keyword)
-                          :working-directory working-directory}]
+                          :working-directory working-directory
+                          :session-id session-id}]
                  (r/as-element [message-bubble msg])))
              :content-container-style {:padding-vertical 8}
              :inverted false
@@ -798,23 +919,27 @@
               locked? @(rf/subscribe [:session/locked? session-id])
               session @(rf/subscribe [:sessions/by-id session-id])
               working-directory (:working-directory session)]
-          [:> rn/KeyboardAvoidingView
-           {:style {:flex 1 :background-color "#FFFFFF"}
-            :behavior "padding"
-            :keyboard-vertical-offset 90}
+          [:> rn/View {:style {:flex 1 :background-color "#FFFFFF"}}
+           ;; Message detail modal (rendered at root for proper overlay)
+           [message-detail-modal]
 
-;; Toast notifications (float above content)
-           [copy-confirmation-toast]
-           [compaction-success-toast]
+           [:> rn/KeyboardAvoidingView
+            {:style {:flex 1}
+             :behavior "padding"
+             :keyboard-vertical-offset 90}
 
-           ;; Error banner at top (dismissable, copyable)
-           [error-banner]
+            ;; Toast notifications (float above content)
+            [copy-confirmation-toast]
+            [compaction-success-toast]
 
-           (if (empty? messages)
-             [empty-conversation]
-             [message-list {:messages messages
-                            :session-id session-id
-                            :locked? locked?
-                            :working-directory working-directory}])
+            ;; Error banner at top (dismissable, copyable)
+            [error-banner]
 
-           [input-area {:session-id session-id}]]))})))
+            (if (empty? messages)
+              [empty-conversation]
+              [message-list {:messages messages
+                             :session-id session-id
+                             :locked? locked?
+                             :working-directory working-directory}])
+
+            [input-area {:session-id session-id}]]]))})))
