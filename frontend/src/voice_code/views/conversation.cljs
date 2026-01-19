@@ -103,6 +103,7 @@
 
 (defn- message-bubble
   "Single message bubble with truncation support for long messages.
+   Tap to speak message text aloud (TTS).
    Long-press to copy message text to clipboard."
   [{:keys [role text timestamp status]}]
   (let [expanded? (r/atom false)
@@ -113,13 +114,15 @@
       (let [{:keys [truncated? display-text full-text]} (truncate-text text)
             show-text (if (and truncated? (not @expanded?))
                         display-text
-                        full-text)]
+                        full-text)
+            speaking? @(rf/subscribe [:voice/speaking?])]
         [:> rn/TouchableOpacity
          {:style {:align-self (if is-user? "flex-end" "flex-start")
                   :max-width "85%"
                   :margin-vertical 4
                   :margin-horizontal 12}
           :active-opacity 0.8
+          :on-press #(rf/dispatch [:voice/speak-response full-text])
           :on-long-press #(copy-to-clipboard! full-text "Message copied")}
          ;; Message bubble
          [:> rn/View {:style {:background-color (if is-user? "#007AFF" "#E9E9EB")
@@ -145,7 +148,7 @@
                                   :font-weight "500"}}
               (if @expanded? "Show less" "Show more")]])]
 
-         ;; Timestamp, status, and copy hint
+         ;; Timestamp, status, and interaction hints
          [:> rn/View {:style {:flex-direction "row"
                               :align-items "center"
                               :margin-top 2
@@ -157,7 +160,12 @@
             [:> rn/Text {:style {:font-size 11
                                  :color "#999"
                                  :margin-left 4}}
-             " • Sending..."])]]))))
+             " • Sending..."])
+          ;; Tap hint with speaker icon
+          [:> rn/Text {:style {:font-size 11
+                               :color "#999"
+                               :margin-left 8}}
+           "🔊"]]]))))
 
 (defn- typing-indicator
   "Shows when Claude is processing."
