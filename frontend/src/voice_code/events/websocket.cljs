@@ -147,7 +147,15 @@
             (assoc-in [:connection :authenticated?] true)
             (assoc-in [:connection :reconnect-attempts] 0))
     :ws/start-ping-timer nil
-    :dispatch [:sessions/resubscribe-all]}))
+    :dispatch-n [[:sessions/resubscribe-all]
+                 [:ws/send-max-message-size]]}))
+
+(rf/reg-event-fx
+ :ws/send-max-message-size
+ (fn [{:keys [db]} _]
+   (let [size-kb (get-in db [:settings :max-message-size-kb] 200)]
+     {:ws/send {:type "set_max_message_size"
+                :size-kb size-kb}})))
 
 (rf/reg-event-db
  :ws/handle-auth-error

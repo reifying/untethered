@@ -122,8 +122,12 @@
 (rf/reg-event-fx
  :settings/save
  (fn [{:keys [db]} [_ key value]]
-   {:db (assoc-in db [:settings key] value)
-    :dispatch [:persistence/save-setting key value]}))
+   (let [connected? (= :connected (get-in db [:connection :status]))]
+     {:db (assoc-in db [:settings key] value)
+      :dispatch-n (cond-> [[:persistence/save-setting key value]]
+                    ;; Send updated max message size to backend when setting changes and connected
+                    (and connected? (= key :max-message-size-kb))
+                    (conj [:ws/send-max-message-size]))})))
 
 (rf/reg-event-db
  :settings/toggle

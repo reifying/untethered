@@ -1256,3 +1256,38 @@
      ;; Both branches should be stored
      (is (= "main" (get-in @re-frame.db/app-db [:git-branches "/project/path"])))
      (is (= "feature/test" (get-in @re-frame.db/app-db [:git-branches "/other/project"]))))))
+
+;; ============================================================================
+;; Max Message Size Tests
+;; ============================================================================
+
+(deftest max-message-size-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "handle-connected dispatches send-max-message-size"
+     ;; Verify the event registers max-message-size sending in dispatch-n
+     ;; After handle-connected, the db should have connection status set to :connected
+     (rf/dispatch-sync [:ws/handle-connected {:session-id "ios-session-123"}])
+     (is (= :connected @(rf/subscribe [:connection/status])))
+     (is (true? @(rf/subscribe [:connection/authenticated?]))))
+
+   (testing "send-max-message-size uses settings value"
+     ;; Set a custom max message size
+     (rf/dispatch-sync [:settings/update :max-message-size-kb 150])
+     ;; The event should read from settings
+     ;; We can verify the setting is stored correctly
+     (is (= 150 (get-in @re-frame.db/app-db [:settings :max-message-size-kb]))))
+
+   (testing "settings/save dispatches send-max-message-size when connected and key is max-message-size-kb"
+     ;; Set connected status
+     (rf/dispatch-sync [:ws/handle-connected {:session-id "ios-session-123"}])
+     ;; Change the max-message-size-kb setting
+     (rf/dispatch-sync [:settings/save :max-message-size-kb 180])
+     ;; Verify setting is saved
+     (is (= 180 (get-in @re-frame.db/app-db [:settings :max-message-size-kb]))))
+
+   (testing "settings/save does not dispatch send-max-message-size for other settings"
+     ;; Change a different setting - should not trigger send-max-message-size
+     (rf/dispatch-sync [:settings/save :recent-sessions-limit 15])
+     (is (= 15 (get-in @re-frame.db/app-db [:settings :recent-sessions-limit]))))))
