@@ -1,7 +1,8 @@
 (ns voice-code.events.core
   "Core re-frame events for app initialization and general state management."
   (:require [re-frame.core :as rf]
-            [voice-code.db :as db]))
+            [voice-code.db :as db]
+            [voice-code.voice :as voice]))
 
 ;; ============================================================================
 ;; Initialization
@@ -18,7 +19,8 @@
    {:db (merge db/default-db db)
     :dispatch-n [[:persistence/load-settings]
                  [:persistence/load-api-key]
-                 [:persistence/load-drafts]]}))
+                 [:persistence/load-drafts]]
+    :voice/setup nil}))
 
 ;; ============================================================================
 ;; Session Selection
