@@ -122,7 +122,8 @@
                  :align-items "center"}
          :on-press (fn []
                      (let [text (log-manager/get-logs-as-text)]
-                       (.setString Clipboard text)
+                       (let [clipboard (or (.-default Clipboard) Clipboard)]
+                         (.setString clipboard text))
                        (reset! toast-message "Logs copied to clipboard")
                        (reset! toast-visible? true)
                        (js/setTimeout #(reset! toast-visible? false) 2000)))}

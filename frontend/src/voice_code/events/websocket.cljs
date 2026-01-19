@@ -750,9 +750,19 @@
 
 (rf/reg-event-fx
  :session/infer-name
- (fn [_ [_ session-id]]
-   {:ws/send {:type "infer_name"
-              :session-id session-id}}))
+ (fn [{:keys [db]} [_ session-id]]
+   ;; Get the first user message to use for name inference
+   (let [messages (get-in db [:messages session-id] [])
+         first-user-message (->> messages
+                                 (filter #(= (:role %) :user))
+                                 first
+                                 :text)]
+     (if first-user-message
+       {:ws/send {:type "infer_session_name"
+                  :session-id session-id
+                  :message-text first-user-message}}
+       ;; No user messages - show error
+       {:db (assoc-in db [:ui :current-error] "No messages to infer name from")}))))
 
 ;; ============================================================================
 ;; Git Branch Detection

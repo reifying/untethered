@@ -206,7 +206,7 @@
        [:> rn/TouchableOpacity
         {:style {:flex 1}
          :on-press (fn []
-                     (.setString Clipboard error)
+                     (copy-to-clipboard! error "Error copied")
                      (js/console.log "Error copied to clipboard"))}
         [:> rn/Text {:style {:color "#FF3B30"
                              :font-size 14

@@ -3,7 +3,8 @@
    Displays complete stdout/stderr with metadata."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn]))
+            ["react-native" :as rn]
+            ["@react-native-clipboard/clipboard" :as Clipboard]))
 
 ;; ============================================================================
 ;; Helper Functions
@@ -143,8 +144,8 @@
             :background-color "rgba(255,255,255,0.1)"
             :border-radius 6}
     :on-press (fn []
-                (when-let [Clipboard (.-Clipboard rn)]
-                  (.setString Clipboard output)))}
+                (let [clipboard (or (.-default Clipboard) Clipboard)]
+                  (.setString clipboard output)))}
    [:> rn/Text {:style {:font-size 14 :color "#D4D4D4"}}
     "📋 Copy"]])
 
