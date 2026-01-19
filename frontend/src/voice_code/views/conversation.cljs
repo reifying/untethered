@@ -6,6 +6,53 @@
             ["@react-native-clipboard/clipboard" :as Clipboard]
             [voice-code.voice :as voice]))
 
+;; ============================================================================
+;; Copy Confirmation Toast
+;; ============================================================================
+
+(defonce ^:private copy-toast-state (r/atom {:visible? false :message ""}))
+
+(defn- show-copy-toast!
+  "Show a temporary toast notification for copy confirmation."
+  [message]
+  (reset! copy-toast-state {:visible? true :message message})
+  (js/setTimeout
+   #(swap! copy-toast-state assoc :visible? false)
+   1500))
+
+(defn- copy-to-clipboard!
+  "Copy text to clipboard and show confirmation."
+  [text message]
+  (let [clipboard (or (.-default Clipboard) Clipboard)]
+    (.setString clipboard text)
+    (show-copy-toast! message)))
+
+(defn- copy-confirmation-toast
+  "Toast notification shown when text is copied."
+  []
+  (let [{:keys [visible? message]} @copy-toast-state]
+    (when visible?
+      [:> rn/View {:style {:position "absolute"
+                           :top 60
+                           :left 0
+                           :right 0
+                           :align-items "center"
+                           :z-index 1000
+                           :pointer-events "none"}}
+       [:> rn/View {:style {:background-color "rgba(52, 199, 89, 0.95)"
+                            :padding-horizontal 16
+                            :padding-vertical 10
+                            :border-radius 8
+                            :shadow-color "#000"
+                            :shadow-offset {:width 0 :height 2}
+                            :shadow-opacity 0.25
+                            :shadow-radius 4
+                            :elevation 5}}
+        [:> rn/Text {:style {:font-size 14
+                             :color "#FFFFFF"
+                             :font-weight "500"}}
+         message]]])))
+
 (defn- show-rename-dialog
   "Show an alert dialog to rename the session."
   [session-id current-name on-rename]
@@ -55,7 +102,8 @@
                               :minute "2-digit"})))
 
 (defn- message-bubble
-  "Single message bubble with truncation support for long messages."
+  "Single message bubble with truncation support for long messages.
+   Long-press to copy message text to clipboard."
   [{:keys [role text timestamp status]}]
   (let [expanded? (r/atom false)
         {:keys [truncated? display-text full-text]} (truncate-text text)
@@ -66,10 +114,13 @@
             show-text (if (and truncated? (not @expanded?))
                         display-text
                         full-text)]
-        [:> rn/View {:style {:align-self (if is-user? "flex-end" "flex-start")
-                             :max-width "85%"
-                             :margin-vertical 4
-                             :margin-horizontal 12}}
+        [:> rn/TouchableOpacity
+         {:style {:align-self (if is-user? "flex-end" "flex-start")
+                  :max-width "85%"
+                  :margin-vertical 4
+                  :margin-horizontal 12}
+          :active-opacity 0.8
+          :on-long-press #(copy-to-clipboard! full-text "Message copied")}
          ;; Message bubble
          [:> rn/View {:style {:background-color (if is-user? "#007AFF" "#E9E9EB")
                               :border-radius 18
@@ -94,7 +145,7 @@
                                   :font-weight "500"}}
               (if @expanded? "Show less" "Show more")]])]
 
-         ;; Timestamp and status
+         ;; Timestamp, status, and copy hint
          [:> rn/View {:style {:flex-direction "row"
                               :align-items "center"
                               :margin-top 2
@@ -599,6 +650,9 @@
            {:style {:flex 1 :background-color "#FFFFFF"}
             :behavior "padding"
             :keyboard-vertical-offset 90}
+
+           ;; Copy confirmation toast (floats above content)
+           [copy-confirmation-toast]
 
            ;; Error banner at top (dismissable, copyable)
            [error-banner]
