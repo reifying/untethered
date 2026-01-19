@@ -213,12 +213,16 @@
            should-speak? (and auto-speak?
                               (not voice-listening?)
                               (= session-id active-session-id))
-           new-message {:id (random-uuid)
-                        :session-id session-id
-                        :role :assistant
-                        :text text
-                        :timestamp (js/Date.)
-                        :status :confirmed}]
+           new-message (cond-> {:id (random-uuid)
+                               :session-id session-id
+                               :role :assistant
+                               :text text
+                               :timestamp (js/Date.)
+                               :status :confirmed}
+                        ;; Include usage if present (input-tokens, output-tokens, etc.)
+                        usage (assoc :usage usage)
+                        ;; Include cost if present (input-cost, output-cost, total-cost)
+                        cost (assoc :cost cost))]
        {:db (-> db
                 (update-in [:messages session-id]
                            (fn [msgs]

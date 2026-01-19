@@ -1602,3 +1602,91 @@
        (is (= ["m1" "m2" "m3"] (mapv :id msgs)))
        ;; Original message text preserved (not replaced by duplicate)
        (is (= "Second" (:text (second msgs))))))))
+
+;; ============================================================================
+;; Token Usage and Cost Display Tests (VCMOB-2onn)
+;; ============================================================================
+
+(deftest handle-response-with-usage-cost-test
+  "Tests that ws/handle-response stores usage and cost metadata in messages"
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "response with usage and cost stores metadata in message"
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Here is the file content"
+                         :session-id "s1"
+                         :message-id "msg-1"
+                         :usage {:input-tokens 150
+                                 :output-tokens 50
+                                 :cache-creation-tokens 0
+                                 :cache-read-tokens 100}
+                         :cost {:input-cost 0.0015
+                                :output-cost 0.0010
+                                :total-cost 0.0025}}])
+
+     (let [msgs @(rf/subscribe [:messages/for-session "s1"])
+           msg (first msgs)]
+       (is (= 1 (count msgs)))
+       (is (= "Here is the file content" (:text msg)))
+       ;; Verify usage is stored
+       (is (some? (:usage msg)))
+       (is (= 150 (get-in msg [:usage :input-tokens])))
+       (is (= 50 (get-in msg [:usage :output-tokens])))
+       (is (= 100 (get-in msg [:usage :cache-read-tokens])))
+       ;; Verify cost is stored
+       (is (some? (:cost msg)))
+       (is (= 0.0015 (get-in msg [:cost :input-cost])))
+       (is (= 0.0010 (get-in msg [:cost :output-cost])))
+       (is (= 0.0025 (get-in msg [:cost :total-cost])))))
+
+   (testing "response without usage and cost still works"
+     (rf/dispatch-sync [:db/update-in [:messages] (constantly {})])
+
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Simple response"
+                         :session-id "s2"
+                         :message-id "msg-2"}])
+
+     (let [msgs @(rf/subscribe [:messages/for-session "s2"])
+           msg (first msgs)]
+       (is (= 1 (count msgs)))
+       (is (= "Simple response" (:text msg)))
+       ;; No usage/cost should be present
+       (is (nil? (:usage msg)))
+       (is (nil? (:cost msg)))))
+
+   (testing "response with only usage (no cost) stores partial metadata"
+     (rf/dispatch-sync [:db/update-in [:messages] (constantly {})])
+
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Usage only response"
+                         :session-id "s3"
+                         :message-id "msg-3"
+                         :usage {:input-tokens 200
+                                 :output-tokens 100}}])
+
+     (let [msgs @(rf/subscribe [:messages/for-session "s3"])
+           msg (first msgs)]
+       (is (some? (:usage msg)))
+       (is (= 200 (get-in msg [:usage :input-tokens])))
+       (is (nil? (:cost msg)))))
+
+   (testing "response with only cost (no usage) stores partial metadata"
+     (rf/dispatch-sync [:db/update-in [:messages] (constantly {})])
+
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Cost only response"
+                         :session-id "s4"
+                         :message-id "msg-4"
+                         :cost {:total-cost 0.01}}])
+
+     (let [msgs @(rf/subscribe [:messages/for-session "s4"])
+           msg (first msgs)]
+       (is (nil? (:usage msg)))
+       (is (some? (:cost msg)))
+       (is (= 0.01 (get-in msg [:cost :total-cost])))))))

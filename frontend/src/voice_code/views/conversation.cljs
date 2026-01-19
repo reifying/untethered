@@ -247,23 +247,62 @@
                          #js {:hour "numeric"
                               :minute "2-digit"})))
 
+(defn- format-number
+  "Format a number with locale-appropriate separators."
+  [n]
+  (when n
+    (.toLocaleString n "en-US")))
+
+(defn- format-cost
+  "Format cost as currency with appropriate precision."
+  [cost]
+  (when (and cost (pos? cost))
+    (if (< cost 0.01)
+      (str "$" (.toFixed cost 4))
+      (str "$" (.toFixed cost 2)))))
+
+(defn- format-usage-summary
+  "Format usage/cost into a compact display string.
+   Shows tokens and cost in a compact format like '1.2K in / 890 out • $0.02'"
+  [usage cost]
+  (when (or usage cost)
+    (let [input-tokens (or (:input-tokens usage) 0)
+          output-tokens (or (:output-tokens usage) 0)
+          total-cost (:total-cost cost)
+          ;; Format tokens with K suffix for thousands
+          format-tokens (fn [n]
+                          (if (>= n 1000)
+                            (str (.toFixed (/ n 1000) 1) "K")
+                            (str n)))
+          parts (cond-> []
+                  (pos? (+ input-tokens output-tokens))
+                  (conj (str (format-tokens input-tokens) " in / "
+                             (format-tokens output-tokens) " out"))
+                  total-cost
+                  (conj (format-cost total-cost)))]
+      (when (seq parts)
+        (clojure.string/join " • " parts)))))
+
 (defn- message-bubble
   "Single message bubble with truncation support for long messages.
    Tap to open message detail modal with Copy, Read Aloud, and Infer Name actions.
-   Long-press to quickly copy message text to clipboard."
-  [{:keys [role text timestamp status working-directory session-id]}]
+   Long-press to quickly copy message text to clipboard.
+   For assistant messages, shows token usage and cost metadata."
+  [{:keys [role text timestamp status working-directory session-id usage cost]}]
   (let [expanded? (r/atom false)
         {:keys [truncated? display-text full-text]} (truncate-text text)
         is-user? (= role :user)
         is-sending? (= status :sending)
         is-error? (= status :error)]
-    (fn [{:keys [role text timestamp status working-directory session-id]}]
+    (fn [{:keys [role text timestamp status working-directory session-id usage cost]}]
       (let [{:keys [truncated? display-text full-text]} (truncate-text text)
             show-text (if (and truncated? (not @expanded?))
                         display-text
                         full-text)
             speaking? @(rf/subscribe [:voice/speaking?])
-            is-error? (= status :error)]
+            is-error? (= status :error)
+            is-assistant? (= role :assistant)
+            usage-summary (when is-assistant? (format-usage-summary usage cost))]
         [:> rn/TouchableOpacity
          {:style {:align-self (if is-user? "flex-end" "flex-start")
                   :max-width "85%"
@@ -296,9 +335,10 @@
                                   :font-weight "500"}}
               (if @expanded? "Show less" "Show more")]])]
 
-         ;; Timestamp, status, and interaction hints
+         ;; Timestamp, status, usage/cost, and interaction hints
          [:> rn/View {:style {:flex-direction "row"
                               :align-items "center"
+                              :flex-wrap "wrap"
                               :margin-top 2
                               :padding-horizontal 4}}
           [:> rn/Text {:style {:font-size 11
@@ -315,6 +355,12 @@
                                  :color "#999"
                                  :margin-left 4}}
              " • Sending..."])
+          ;; Usage/cost display for assistant messages
+          (when usage-summary
+            [:> rn/Text {:style {:font-size 11
+                                 :color "#888"
+                                 :margin-left 6}}
+             (str " • " usage-summary)])
           ;; Tap hint - ellipsis indicates actions available
           [:> rn/Text {:style {:font-size 11
                                :color "#999"
@@ -652,12 +698,19 @@
              :render-item
              (fn [^js obj]
                (let [item (.-item obj)
+                     ;; Convert JS item to Clojure map, including usage/cost for assistant messages
                      msg {:role (keyword (.-role item))
                           :text (.-text item)
                           :timestamp (.-timestamp item)
                           :status (some-> item .-status keyword)
                           :working-directory working-directory
-                          :session-id session-id}]
+                          :session-id session-id
+                          ;; Usage data from backend response (input-tokens, output-tokens, etc.)
+                          :usage (when-let [u (.-usage item)]
+                                   (js->clj u :keywordize-keys true))
+                          ;; Cost data from backend response (input-cost, output-cost, total-cost)
+                          :cost (when-let [c (.-cost item)]
+                                  (js->clj c :keywordize-keys true))}]
                  (r/as-element [message-bubble msg])))
              :content-container-style {:padding-vertical 8}
              :inverted false
