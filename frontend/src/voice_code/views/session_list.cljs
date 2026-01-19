@@ -4,7 +4,8 @@
             [re-frame.core :as rf]
             [clojure.string :as str]
             ["react-native" :as rn :refer [Alert RefreshControl Modal Switch]]
-            ["@react-native-clipboard/clipboard" :as Clipboard]))
+            ["@react-native-clipboard/clipboard" :as Clipboard]
+            [voice-code.views.components :refer [relative-time-text]]))
 
 (defn- format-relative-time
   "Format a timestamp as relative time."
@@ -102,10 +103,12 @@
                              :flex 1}}
          session-display-name]
         [unread-badge unread-count]
-        [:> rn/Text {:style {:font-size 12
-                             :color "#999"
-                             :margin-left 8}}
-         (format-relative-time (:last-modified session))]]
+        ;; Timestamp - auto-updating
+        [relative-time-text {:timestamp (:last-modified session)
+                             :short? true
+                             :style {:font-size 12
+                                     :color "#999"
+                                     :margin-left 8}}]]
 
        ;; Preview
        (when-let [preview (:preview session)]

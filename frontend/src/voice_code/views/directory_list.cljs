@@ -4,7 +4,8 @@
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [RefreshControl Alert]]
             ["@react-native-clipboard/clipboard" :as Clipboard]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [voice-code.views.components :refer [relative-time-text]]))
 
 (defn- format-relative-time
   "Format a timestamp as relative time (e.g., '2 hours ago')."
@@ -94,10 +95,10 @@
      [:> rn/Text {:style {:font-size 12 :color "#999"}}
       (str session-count " session" (when (not= session-count 1) "s"))]]
 
-    ;; Last modified time
-    [:> rn/Text {:style {:font-size 12
-                         :color "#999"}}
-     (format-relative-time last-modified)]]])
+    ;; Last modified time - auto-updating
+    [relative-time-text {:timestamp last-modified
+                         :style {:font-size 12
+                                 :color "#999"}}]]])
 
 (defn- session-name
   "Get display name for a session."
@@ -150,9 +151,9 @@
                             :color "#666"}
                     :number-of-lines 1}
         (directory-name (:working-directory session))]]
-      ;; Timestamp
-      [:> rn/Text {:style {:font-size 12 :color "#999"}}
-       (format-relative-time (:last-modified session))]]]))
+      ;; Timestamp - auto-updating
+      [relative-time-text {:timestamp (:last-modified session)
+                           :style {:font-size 12 :color "#999"}}]]]))
 
 (defn- priority-tint-color
   "Get background color based on priority level (like iOS)."
@@ -209,9 +210,9 @@
                              :color "#666"}
                      :number-of-lines 1}
          (directory-name (:working-directory session))]]
-       ;; Timestamp
-       [:> rn/Text {:style {:font-size 12 :color "#999"}}
-        (format-relative-time (:last-modified session))]]]
+       ;; Timestamp - auto-updating
+       [relative-time-text {:timestamp (:last-modified session)
+                            :style {:font-size 12 :color "#999"}}]]]
      ;; Remove button
      (when on-remove
        [:> rn/TouchableOpacity
@@ -286,9 +287,9 @@
                              :color "#666"}
                      :number-of-lines 1}
          (directory-name (:working-directory session))]]
-       ;; Timestamp
-       [:> rn/Text {:style {:font-size 12 :color "#999"}}
-        (format-relative-time (:last-modified session))]]]
+       ;; Timestamp - auto-updating
+       [relative-time-text {:timestamp (:last-modified session)
+                            :style {:font-size 12 :color "#999"}}]]]
      ;; Remove button
      (when on-remove
        [:> rn/TouchableOpacity
