@@ -669,6 +669,42 @@
      (let [output (get-in @(rf/subscribe [:commands/running]) ["cmd-123" :output])]
        (is (clojure.string/includes? output "Building..."))))))
 
+(deftest handle-command-error-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "command_error sets error message"
+     (rf/dispatch-sync [:commands/handle-error
+                        {:command-id "build"
+                         :error "Command not found: make"}])
+     (is (= "Command failed: Command not found: make"
+            @(rf/subscribe [:ui/current-error]))))))
+
+(deftest handle-worktree-created-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "worktree_session_created stores worktree info"
+     (rf/dispatch-sync [:worktree/handle-created
+                        {:session-id "wt-session-123"
+                         :worktree-path "/Users/test/project-feature-branch"
+                         :branch-name "feature-branch"}])
+     (let [worktree (get-in @re-frame.db/app-db [:worktrees "wt-session-123"])]
+       (is (= "wt-session-123" (:session-id worktree)))
+       (is (= "/Users/test/project-feature-branch" (:worktree-path worktree)))
+       (is (= "feature-branch" (:branch-name worktree)))
+       (is (some? (:created-at worktree)))))))
+
+(deftest handle-worktree-error-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "worktree_session_error sets error message"
+     (rf/dispatch-sync [:worktree/handle-error
+                        {:error "Failed to create worktree: branch already exists"}])
+     (is (= "Failed to create worktree: branch already exists"
+            @(rf/subscribe [:ui/current-error]))))))
+
 ;; ============================================================================
 ;; Authentication Events
 ;; ============================================================================

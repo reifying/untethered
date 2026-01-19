@@ -81,11 +81,16 @@
      "session_name_inferred" {:dispatch [:sessions/handle-name-inferred msg]}
      "infer_name_error" {:dispatch [:sessions/handle-infer-name-error msg]}
 
+     ;; Worktree session management
+     "worktree_session_created" {:dispatch [:worktree/handle-created msg]}
+     "worktree_session_error" {:dispatch [:worktree/handle-error msg]}
+
      ;; Commands
      "available_commands" {:dispatch [:commands/handle-available msg]}
      "command_started" {:dispatch [:commands/handle-started msg]}
      "command_output" {:dispatch [:commands/handle-output msg]}
      "command_complete" {:dispatch [:commands/handle-complete msg]}
+     "command_error" {:dispatch [:commands/handle-error msg]}
      "command_history" {:dispatch [:commands/handle-history msg]}
      "command_output_full" {:dispatch [:commands/handle-output-full msg]}
 
@@ -381,6 +386,31 @@
  (fn [db [_ {:keys [session-id error]}]]
    (assoc-in db [:ui :current-error] (str "Compaction failed: " error))))
 
+;; ============================================================================
+;; Worktree Handlers
+;; ============================================================================
+
+(rf/reg-event-db
+ :worktree/handle-created
+ (fn [db [_ {:keys [session-id worktree-path branch-name]}]]
+   ;; Log worktree creation - session will arrive via session_created
+   ;; when backend filesystem watcher detects the new session
+   (js/console.log "✨ Worktree session created:" session-id)
+   (js/console.log "   Path:" worktree-path)
+   (js/console.log "   Branch:" branch-name)
+   ;; Store worktree info in case we need it before session_created arrives
+   (assoc-in db [:worktrees session-id]
+             {:session-id session-id
+              :worktree-path worktree-path
+              :branch-name branch-name
+              :created-at (js/Date.)})))
+
+(rf/reg-event-db
+ :worktree/handle-error
+ (fn [db [_ {:keys [error]}]]
+   (js/console.error "❌ Worktree session error:" error)
+   (assoc-in db [:ui :current-error] error)))
+
 (rf/reg-event-fx
  :sessions/resubscribe-all
  (fn [{:keys [db]} _]
@@ -457,6 +487,12 @@
                            :exit-code exit-code
                            :duration-ms duration-ms
                            :completed-at (js/Date.)))))))
+
+(rf/reg-event-db
+ :commands/handle-error
+ (fn [db [_ {:keys [command-id error]}]]
+   (js/console.error "❌ Command error:" command-id error)
+   (assoc-in db [:ui :current-error] (str "Command failed: " error))))
 
 (rf/reg-event-db
  :commands/handle-history
