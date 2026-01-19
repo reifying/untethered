@@ -658,6 +658,56 @@ The branch is now rebased on main and ready for further work or pushing."
 
    :guardrails default-guardrails})
 
+(defn retrospective-recipe
+  "Returns the retrospective recipe definition.
+   A simple prompt asking the agent to reflect on the session and identify friction points."
+  []
+  {:id :retrospective
+   :label "Retrospective"
+   :description "Reflect on the session and identify areas for improvement"
+   :initial-step :reflect
+   :steps
+   {:reflect
+    {:prompt "Perform a retrospective on the session that just took place.
+
+## Important Constraints
+- Do NOT make any changes to files
+- Do NOT run any commands or tests
+- This is purely investigative and reflective
+- Be concise - bullet points preferred over prose
+
+## Focus Areas (Friction Only)
+
+### Tool Issues
+- Which tools didn't work as expected?
+- What tool calls failed or produced unexpected results?
+- What tools were missing that would have helped?
+
+### Development Friction
+- What slowed down the development process?
+- Where were requirements unclear or context missing?
+- What work had to be repeated or backtracked?
+
+### Testing Friction
+- What problems occurred running or writing tests?
+- Where did test failures lack clear feedback?
+- What was unreliable in the test infrastructure?
+
+### Process Friction
+- What workflow inefficiencies occurred?
+- What documentation or context was missing?
+
+## Output Format
+- List only friction points and potential improvements
+- Do NOT include what worked well or positive observations
+- Be specific with examples from this session
+- Keep it brief and actionable"
+     :outcomes #{:complete :other}
+     :on-outcome
+     {:complete {:action :exit :reason "retrospective-complete"}
+      :other {:action :exit :reason "user-provided-other"}}}}
+   :guardrails default-guardrails})
+
 (def all-recipes
   "Registry of all available recipes"
   {:document-design (document-design-recipe)
@@ -665,7 +715,8 @@ The branch is now rebased on main and ready for further work or pushing."
    :review-and-commit (review-and-commit-recipe)
    :implement-and-review (implement-and-review-recipe)
    :implement-and-review-all (implement-and-review-all-recipe)
-   :rebase (rebase-recipe)})
+   :rebase (rebase-recipe)
+   :retrospective (retrospective-recipe)})
 
 (defn get-recipe
   "Get a recipe by ID. Returns nil if not found."
