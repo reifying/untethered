@@ -337,8 +337,8 @@
                         :count (count sessions)}]
        (when @expanded?
          [:> rn/View
-          (for [session sessions]
-            ^{:key (:id session)}
+          (for [[idx session] (map-indexed vector sessions)]
+            ^{:key (or (:id session) (str "recent-" idx))}
             [recent-session-item
              {:session session
               :on-press #(when navigation
@@ -359,8 +359,8 @@
                           :count (count sessions)}]
          (when @expanded?
            [:> rn/View
-            (for [session sessions]
-              ^{:key (:id session)}
+            (for [[idx session] (map-indexed vector sessions)]
+              ^{:key (or (:id session) (str "queue-" idx))}
               [queue-session-item
                {:session session
                 :on-press #(when navigation
@@ -384,8 +384,8 @@
            [:> rn/View
             ;; Note: Drag-to-reorder would require react-native-draggable-flatlist
             ;; For now, show sessions with priority tinting and drag handle visual
-            (for [session sessions]
-              ^{:key (str (:id session) "-P" (:priority session))}
+            (for [[idx session] (map-indexed vector sessions)]
+              ^{:key (or (:id session) (str "priority-" idx))}
               [priority-queue-session-item
                {:session session
                 :on-press #(when navigation
@@ -473,8 +473,8 @@
                         :count (count directories)}]
        (when @expanded?
          [:> rn/View
-          (for [dir directories]
-            ^{:key (:directory dir)}
+          (for [[idx dir] (map-indexed vector directories)]
+            ^{:key (or (:directory dir) (str "unknown-dir-" idx))}
             [directory-item
              (assoc dir
                     :on-press #(when navigation
