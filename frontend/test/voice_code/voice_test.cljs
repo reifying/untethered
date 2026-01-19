@@ -317,3 +317,33 @@
     ;; Inline code doesn't span lines, so newlines in content won't match
     (is (= "Use `multi\nline` carefully"
            (voice/remove-code-blocks "Use `multi\nline` carefully")))))
+
+(deftest voice-preview-event-test
+  (testing "voice preview sets previewing-voice state"
+    (rf-test/run-test-sync
+     (rf/dispatch-sync [:initialize-db])
+     ;; Initially no preview
+     (is (nil? @(rf/subscribe [:voice/previewing-voice])))
+     ;; Dispatch preview event - it will set db state
+     (rf/dispatch-sync [:voice/preview "com.apple.voice.premium.en-US.Zoe"])
+     ;; Check previewing state is set
+     (is (= "com.apple.voice.premium.en-US.Zoe"
+            @(rf/subscribe [:voice/previewing-voice])))))
+
+  (testing "voice preview ended clears previewing state"
+    (rf-test/run-test-sync
+     (rf/dispatch-sync [:initialize-db])
+     ;; Set a preview state first
+     (rf/dispatch-sync [:voice/preview "com.apple.voice.premium.en-US.Zoe"])
+     (is (some? @(rf/subscribe [:voice/previewing-voice])))
+     ;; End preview
+     (rf/dispatch-sync [:voice/preview-ended])
+     (is (nil? @(rf/subscribe [:voice/previewing-voice])))))
+
+  (testing "stop preview clears state"
+    (rf-test/run-test-sync
+     (rf/dispatch-sync [:initialize-db])
+     (rf/dispatch-sync [:voice/preview "com.apple.voice.premium.en-US.Zoe"])
+     (is (some? @(rf/subscribe [:voice/previewing-voice])))
+     (rf/dispatch-sync [:voice/stop-preview])
+     (is (nil? @(rf/subscribe [:voice/previewing-voice]))))))

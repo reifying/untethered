@@ -638,3 +638,40 @@
    {:db (assoc-in db [:settings :respect-silent-mode] respect-silent?)
     :voice/configure-silent-switch respect-silent?
     :dispatch [:settings/save]}))
+
+;; ============================================================================
+;; Voice Preview
+;; ============================================================================
+
+(def ^:private preview-text
+  "Sample text used for voice preview."
+  "Hello! This is a preview of this voice.")
+
+(rf/reg-sub
+ :voice/previewing-voice
+ (fn [db _]
+   (get-in db [:ui :previewing-voice])))
+
+(rf/reg-event-fx
+ :voice/preview
+ (fn [{:keys [db]} [_ voice-id]]
+   (let [currently-previewing (get-in db [:ui :previewing-voice])
+         ;; Stop any current preview first
+         stop-fx (when currently-previewing {:voice/stop-speaking nil})]
+     (merge
+      {:db (assoc-in db [:ui :previewing-voice] voice-id)
+       :voice/speak {:text preview-text
+                     :voice-id voice-id
+                     :on-complete #(rf/dispatch [:voice/preview-ended])}}
+      stop-fx))))
+
+(rf/reg-event-db
+ :voice/preview-ended
+ (fn [db _]
+   (assoc-in db [:ui :previewing-voice] nil)))
+
+(rf/reg-event-fx
+ :voice/stop-preview
+ (fn [{:keys [db]} _]
+   {:db (assoc-in db [:ui :previewing-voice] nil)
+    :voice/stop-speaking nil}))

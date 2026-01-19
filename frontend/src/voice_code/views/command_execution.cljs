@@ -93,39 +93,64 @@
 
 (defn- output-view
   "Scrollable output display with auto-scroll.
-   Renders output-lines with stream type indicators."
-  [{:keys [output-lines]}]
+   Renders output-lines with stream type indicators.
+   auto-scroll-state is [atom-auto-scroll? set-auto-scroll-fn]."
+  [{:keys [output-lines auto-scroll-state]}]
   (let [scroll-ref (r/atom nil)
-        auto-scroll? (r/atom true)]
-    (fn [{:keys [output-lines]}]
-      [:> rn/ScrollView
-       {:ref #(reset! scroll-ref %)
-        :style {:flex 1
-                :background-color "#fff"}
-        :content-container-style {:padding-vertical 8}
-        :on-content-size-change
-        (fn [_ _]
-          (when (and @auto-scroll? @scroll-ref)
-            (.scrollToEnd ^js @scroll-ref #js {:animated true})))
-        :on-scroll
-        (fn [^js e]
-          (let [offset (-> e .-nativeEvent .-contentOffset .-y)
-                content-height (-> e .-nativeEvent .-contentSize .-height)
-                layout-height (-> e .-nativeEvent .-layoutMeasurement .-height)
-                at-bottom? (> (+ offset layout-height 50) content-height)]
-            (reset! auto-scroll? at-bottom?)))
-        :scroll-event-throttle 100}
-       (if (seq output-lines)
-         (for [[idx line] (map-indexed vector output-lines)]
-           ^{:key idx}
-           [output-line {:text (:text line)
-                         :stream (:stream line)
-                         :index idx}])
-         [:> rn/View {:style {:padding 16
-                              :align-items "center"}}
-          [:> rn/Text {:style {:color "#6c757d"
-                               :font-style "italic"}}
-           "Waiting for output..."]])])))
+        [auto-scroll? set-auto-scroll!] auto-scroll-state]
+    (fn [{:keys [output-lines auto-scroll-state]}]
+      (let [[auto-scroll? set-auto-scroll!] auto-scroll-state]
+        [:> rn/ScrollView
+         {:ref #(reset! scroll-ref %)
+          :style {:flex 1
+                  :background-color "#fff"}
+          :content-container-style {:padding-vertical 8}
+          :on-content-size-change
+          (fn [_ _]
+            (when (and @auto-scroll? @scroll-ref)
+              (.scrollToEnd ^js @scroll-ref #js {:animated true})))
+          :on-scroll
+          (fn [^js e]
+            (let [offset (-> e .-nativeEvent .-contentOffset .-y)
+                  content-height (-> e .-nativeEvent .-contentSize .-height)
+                  layout-height (-> e .-nativeEvent .-layoutMeasurement .-height)
+                  at-bottom? (> (+ offset layout-height 50) content-height)]
+              (set-auto-scroll! at-bottom?)))
+          :scroll-event-throttle 100}
+         (if (seq output-lines)
+           (for [[idx line] (map-indexed vector output-lines)]
+             ^{:key idx}
+             [output-line {:text (:text line)
+                           :stream (:stream line)
+                           :index idx}])
+           [:> rn/View {:style {:padding 16
+                                :align-items "center"}}
+            [:> rn/Text {:style {:color "#6c757d"
+                                 :font-style "italic"}}
+             "Waiting for output..."]])]))))
+
+(defn- auto-scroll-toggle
+  "Toggle button for auto-scroll functionality."
+  [{:keys [enabled? on-toggle]}]
+  [:> rn/TouchableOpacity
+   {:style {:flex-direction "row"
+            :align-items "center"
+            :padding-horizontal 12
+            :padding-vertical 8
+            :background-color (if enabled? "#e7f3ff" "#f8f9fa")
+            :border-bottom-width 1
+            :border-bottom-color (if enabled? "#b8daff" "#dee2e6")}
+    :on-press on-toggle}
+   [:> rn/Text {:style {:font-size 16
+                        :margin-right 8}}
+    (if enabled? "⬇️" "⏸️")]
+   [:> rn/Text {:style {:font-size 14
+                        :color (if enabled? "#004085" "#6c757d")}}
+    (if enabled? "Auto-scroll ON" "Auto-scroll OFF")]
+   [:> rn/Text {:style {:font-size 12
+                        :color "#999"
+                        :margin-left 8}}
+    "(tap to toggle)"]])
 
 (defn- running-indicator
   "Shows command is still running."
@@ -165,16 +190,22 @@
   "Main command execution view showing real-time output.
    Uses Form-2 component pattern for proper Reagent reactivity with React Navigation."
   [^js _props]
-  ;; Form-2: Return a render function that reads subscriptions
-  (fn [^js _props]
-    (let [running @(rf/subscribe [:commands/running])
-          ;; Get the most recent running command
-          [session-id cmd] (first running)]
-      [:> rn/SafeAreaView {:style {:flex 1 :background-color "#fff"}}
-       (if cmd
-         [:> rn/View {:style {:flex 1}}
-          [command-header cmd]
-          (when-not (:exit-code cmd)
-            [running-indicator])
-          [output-view {:output-lines (:output-lines cmd)}]]
-         [empty-state])])))
+  ;; Create auto-scroll state at component level so it persists across renders
+  (let [auto-scroll? (r/atom true)
+        set-auto-scroll! (fn [v] (reset! auto-scroll? v))]
+    ;; Form-2: Return a render function that reads subscriptions
+    (fn [^js _props]
+      (let [running @(rf/subscribe [:commands/running])
+            ;; Get the most recent running command
+            [session-id cmd] (first running)]
+        [:> rn/SafeAreaView {:style {:flex 1 :background-color "#fff"}}
+         (if cmd
+           [:> rn/View {:style {:flex 1}}
+            [command-header cmd]
+            (when-not (:exit-code cmd)
+              [running-indicator])
+            [auto-scroll-toggle {:enabled? @auto-scroll?
+                                 :on-toggle #(swap! auto-scroll? not)}]
+            [output-view {:output-lines (:output-lines cmd)
+                          :auto-scroll-state [auto-scroll? set-auto-scroll!]}]]
+           [empty-state])]))))

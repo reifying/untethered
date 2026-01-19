@@ -36,20 +36,32 @@
       label]]))
 
 (defn- voice-item
-  "A single voice item in the list."
-  [{:keys [voice selected? on-select]}]
+  "A single voice item in the list with preview button."
+  [{:keys [voice selected? on-select previewing?]}]
   (let [{:keys [id name language quality]} voice
         display-name (or name id)]
-    [:> rn/TouchableOpacity
+    [:> rn/View
      {:style {:flex-direction "row"
               :align-items "center"
               :padding-vertical 12
               :padding-horizontal 16
               :background-color (if selected? "#F2F2F7" "#FFFFFF")
               :border-bottom-width 1
-              :border-bottom-color "#F0F0F0"}
-      :on-press #(on-select id)}
-     [:> rn/View {:style {:flex 1}}
+              :border-bottom-color "#F0F0F0"}}
+     ;; Preview button
+     [:> rn/TouchableOpacity
+      {:style {:padding 8
+               :margin-right 8}
+       :on-press #(if previewing?
+                    (rf/dispatch [:voice/stop-preview])
+                    (rf/dispatch [:voice/preview id]))}
+      [:> rn/Text {:style {:font-size 20
+                           :color (if previewing? "#FF3B30" "#007AFF")}}
+       (if previewing? "⏹" "▶️")]]
+     ;; Main content - tappable to select
+     [:> rn/TouchableOpacity
+      {:style {:flex 1}
+       :on-press #(on-select id)}
       [:> rn/View {:style {:flex-direction "row"
                            :align-items "center"}}
        [:> rn/Text {:style {:font-size 16
@@ -124,6 +136,7 @@
   (let [voices @(rf/subscribe [:voice/available-voices])
         loading? @(rf/subscribe [:voice/loading-voices?])
         current-voice @(rf/subscribe [:settings/voice-identifier])
+        previewing-voice @(rf/subscribe [:voice/previewing-voice])
         handle-select (fn [voice-id]
                         (rf/dispatch [:voice/select-voice voice-id])
                         (when on-close (on-close)))]
@@ -141,47 +154,49 @@
 
       :reagent-render
       (fn [{:keys [visible on-close]}]
-        [:> rn/Modal
-         {:visible visible
-          :animation-type "slide"
-          :presentation-style "pageSheet"
-          :on-request-close on-close}
-         [:> rn/SafeAreaView {:style {:flex 1 :background-color "#FFFFFF"}}
-          ;; Header
-          [:> rn/View {:style {:flex-direction "row"
-                               :align-items "center"
-                               :justify-content "space-between"
-                               :padding-horizontal 16
-                               :padding-vertical 12
-                               :border-bottom-width 1
-                               :border-bottom-color "#E5E5EA"}}
-           [:> rn/View {:style {:width 60}}]
-           [:> rn/Text {:style {:font-size 17
-                                :font-weight "600"
-                                :color "#000000"}}
-            "Select Voice"]
-           [:> rn/TouchableOpacity
-            {:style {:width 60 :align-items "flex-end"}
-             :on-press on-close}
-            [:> rn/Text {:style {:font-size 17
-                                 :color "#007AFF"
-                                 :font-weight "500"}}
-             "Done"]]]
+        (let [previewing-voice @(rf/subscribe [:voice/previewing-voice])]
+          [:> rn/Modal
+           {:visible visible
+            :animation-type "slide"
+            :presentation-style "pageSheet"
+            :on-request-close on-close}
+           [:> rn/SafeAreaView {:style {:flex 1 :background-color "#FFFFFF"}}
+            ;; Header
+            [:> rn/View {:style {:flex-direction "row"
+                                 :align-items "center"
+                                 :justify-content "space-between"
+                                 :padding-horizontal 16
+                                 :padding-vertical 12
+                                 :border-bottom-width 1
+                                 :border-bottom-color "#E5E5EA"}}
+             [:> rn/View {:style {:width 60}}]
+             [:> rn/Text {:style {:font-size 17
+                                  :font-weight "600"
+                                  :color "#000000"}}
+              "Select Voice"]
+             [:> rn/TouchableOpacity
+              {:style {:width 60 :align-items "flex-end"}
+               :on-press on-close}
+              [:> rn/Text {:style {:font-size 17
+                                   :color "#007AFF"
+                                   :font-weight "500"}}
+               "Done"]]]
 
-          ;; Content
-          (cond
-            loading?
-            [loading-indicator]
+            ;; Content
+            (cond
+              loading?
+              [loading-indicator]
 
-            (empty? voices)
-            [empty-voices]
+              (empty? voices)
+              [empty-voices]
 
-            :else
-            [:> rn/ScrollView {:style {:flex 1}}
-             [system-default-item {:selected? (nil? current-voice)
-                                   :on-select handle-select}]
-             (for [voice voices]
-               ^{:key (:id voice)}
-               [voice-item {:voice voice
-                            :selected? (= (:id voice) current-voice)
-                            :on-select handle-select}])])]])})))
+              :else
+              [:> rn/ScrollView {:style {:flex 1}}
+               [system-default-item {:selected? (nil? current-voice)
+                                     :on-select handle-select}]
+               (for [voice voices]
+                 ^{:key (:id voice)}
+                 [voice-item {:voice voice
+                              :selected? (= (:id voice) current-voice)
+                              :previewing? (= (:id voice) previewing-voice)
+                              :on-select handle-select}])])]]))})))
