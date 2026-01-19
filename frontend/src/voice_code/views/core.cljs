@@ -17,7 +17,8 @@
             [voice-code.views.command-output-detail :refer [command-output-detail-view]]
             [voice-code.views.resources :refer [resources-view]]
             [voice-code.views.recipes :refer [recipes-view]]
-            [voice-code.views.debug-logs :refer [debug-logs-view]]))
+            [voice-code.views.debug-logs :refer [debug-logs-view]]
+            [voice-code.views.new-session :refer [new-session-view]]))
 
 (defn- reactify-with-name
   "Create a React component from a Reagent component with proper displayName.
@@ -76,6 +77,13 @@
              {:name "DirectoryList"
               :component (reactify-with-name directory-list-view "DirectoryListView")
               :options #js {:title "Projects"}}]
+
+            ;; New session creation
+            [:> (.-Screen Stack)
+             {:name "NewSession"
+              :component (reactify-with-name new-session-view "NewSessionView")
+              :options #js {:title "New Session"
+                            :presentation "modal"}}]
 
             ;; Session list (sessions within a directory)
             [:> (.-Screen Stack)

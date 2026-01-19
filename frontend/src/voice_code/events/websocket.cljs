@@ -214,15 +214,15 @@
                               (not voice-listening?)
                               (= session-id active-session-id))
            new-message (cond-> {:id (random-uuid)
-                               :session-id session-id
-                               :role :assistant
-                               :text text
-                               :timestamp (js/Date.)
-                               :status :confirmed}
+                                :session-id session-id
+                                :role :assistant
+                                :text text
+                                :timestamp (js/Date.)
+                                :status :confirmed}
                         ;; Include usage if present (input-tokens, output-tokens, etc.)
-                        usage (assoc :usage usage)
+                         usage (assoc :usage usage)
                         ;; Include cost if present (input-cost, output-cost, total-cost)
-                        cost (assoc :cost cost))]
+                         cost (assoc :cost cost))]
        {:db (-> db
                 (update-in [:messages session-id]
                            (fn [msgs]
@@ -488,6 +488,34 @@
  (fn [db [_ {:keys [error]}]]
    (js/console.error "❌ Worktree session error:" error)
    (assoc-in db [:ui :current-error] error)))
+
+(rf/reg-event-fx
+ :session/create-new
+ (fn [{:keys [db]} [_ {:keys [session-id session-name working-directory]}]]
+   ;; Create a new session locally and prepare for first prompt.
+   ;; The session will be created on the backend when the first prompt is sent.
+   ;; This mimics iOS behavior: CoreData session created first, then sent to Claude.
+   (let [now (js/Date.)]
+     {:db (-> db
+              (assoc-in [:sessions session-id]
+                        {:id session-id
+                         :backend-name session-id ;; Backend ID = iOS UUID for new sessions
+                         :custom-name session-name
+                         :working-directory (or working-directory "")
+                         :last-modified now
+                         :message-count 0
+                         :preview ""
+                         :is-locally-created true})
+              (assoc :active-session-id session-id))})))
+
+(rf/reg-event-fx
+ :session/create-worktree
+ (fn [_ [_ {:keys [session-name parent-directory]}]]
+   ;; Send WebSocket message to backend to create worktree session.
+   ;; Backend will respond with worktree_session_created or worktree_session_error.
+   {:ws/send {:type "create_worktree_session"
+              :session-name session-name
+              :parent-directory parent-directory}}))
 
 (rf/reg-event-fx
  :sessions/resubscribe-all

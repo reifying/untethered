@@ -875,6 +875,54 @@
        (is (some? empty-name-session))
        (is (nil? (:custom-name empty-name-session)))))))
 
+(deftest session-create-new-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "session/create-new creates a locally-created session"
+     (rf/dispatch-sync [:session/create-new
+                        {:session-id "new-session-123"
+                         :session-name "My New Session"
+                         :working-directory "/projects/myapp"}])
+     (let [session (get-in @re-frame.db/app-db [:sessions "new-session-123"])]
+       (is (some? session))
+       (is (= "new-session-123" (:id session)))
+       (is (= "new-session-123" (:backend-name session)))
+       (is (= "My New Session" (:custom-name session)))
+       (is (= "/projects/myapp" (:working-directory session)))
+       (is (= 0 (:message-count session)))
+       (is (= "" (:preview session)))
+       (is (= true (:is-locally-created session)))
+       (is (some? (:last-modified session)))))
+
+   (testing "session/create-new sets active-session-id"
+     (is (= "new-session-123" (:active-session-id @re-frame.db/app-db))))
+
+   (testing "session/create-new with empty working directory uses empty string"
+     (rf/dispatch-sync [:session/create-new
+                        {:session-id "no-dir-session"
+                         :session-name "No Dir"
+                         :working-directory nil}])
+     (let [session (get-in @re-frame.db/app-db [:sessions "no-dir-session"])]
+       (is (= "" (:working-directory session)))))))
+
+(deftest session-create-worktree-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+   (let [sent-messages (atom [])]
+     ;; Mock the ws/send effect
+     (rf/reg-fx :ws/send (fn [msg] (swap! sent-messages conj msg)))
+
+     (testing "session/create-worktree sends WebSocket message"
+       (rf/dispatch-sync [:session/create-worktree
+                          {:session-name "feature-xyz"
+                           :parent-directory "/Users/dev/project"}])
+       (is (= 1 (count @sent-messages)))
+       (let [msg (first @sent-messages)]
+         (is (= "create_worktree_session" (:type msg)))
+         (is (= "feature-xyz" (:session-name msg)))
+         (is (= "/Users/dev/project" (:parent-directory msg))))))))
+
 ;; ============================================================================
 ;; Settings Events
 ;; ============================================================================

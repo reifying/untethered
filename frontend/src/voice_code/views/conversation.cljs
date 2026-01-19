@@ -825,6 +825,17 @@
        [:> rn/ActivityIndicator {:size "small" :color "#007AFF"}]
        [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "↻"])]))
 
+(defn- header-stop-speech-button
+  "Stop Speaking button for the conversation header.
+   Only shows when TTS is actively speaking."
+  []
+  (let [speaking? @(rf/subscribe [:voice/speaking?])]
+    (when speaking?
+      [:> rn/TouchableOpacity
+       {:style {:padding 8}
+        :on-press #(rf/dispatch [:voice/stop-speaking])}
+       [:> rn/Text {:style {:font-size 16 :color "#FF3B30"}} "🔇"]])))
+
 (defn- header-kill-button
   "Kill button for canceling stuck prompts.
    Only shows when the session is locked (processing a prompt)."
@@ -884,11 +895,13 @@
                             :color (if locked? "#999" "#007AFF")}} "⚡"])]))
 
 (defn- header-right-buttons
-  "Combined header right buttons: Kill (when locked), Compact, Recipe, Info, Refresh."
+  "Combined header right buttons: Stop Speech, Kill (when locked), Compact, Recipe, Info, Refresh."
   [session-id working-directory ^js navigation]
   (let [locked? @(rf/subscribe [:session/locked? session-id])]
     [:> rn/View {:style {:flex-direction "row"
                          :align-items "center"}}
+     ;; Stop Speech button only visible when TTS is speaking
+     [header-stop-speech-button]
      ;; Kill button only visible when session is locked
      (when locked?
        [header-kill-button session-id])

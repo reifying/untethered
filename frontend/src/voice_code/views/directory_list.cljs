@@ -488,12 +488,17 @@
    [:> rn/Text {:style {:font-size 22}} "⚙️"]])
 
 (defn- header-right-buttons
-  "Combined header buttons: Stop Speech, Resources and Settings.
+  "Combined header buttons: New Session, Stop Speech, Resources and Settings.
    Stop Speech button shows only when TTS is actively speaking."
   [navigation]
   (let [speaking? @(rf/subscribe [:voice/speaking?])]
     [:> rn/View {:style {:flex-direction "row"
                          :align-items "center"}}
+     ;; New Session button
+     [:> rn/TouchableOpacity
+      {:style {:padding 8 :margin-right 4}
+       :on-press #(.navigate navigation "NewSession")}
+      [:> rn/Text {:style {:font-size 22 :color "#007AFF"}} "+"]]
      ;; Stop Speech button - only shown when TTS is speaking
      (when speaking?
        [:> rn/TouchableOpacity
