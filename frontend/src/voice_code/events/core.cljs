@@ -430,10 +430,10 @@
 
 (rf/reg-event-fx
  :sessions/create
- (fn [{:keys [db]} [_ {:keys [working-directory]}]]
+ (fn [{:keys [db]} [_ {:keys [working-directory name]}]]
    (let [new-session {:id (str (random-uuid))
                       :backend-name nil
-                      :custom-name nil
+                      :custom-name (when-not (empty? name) name)
                       :working-directory working-directory
                       :last-modified (js/Date.)
                       :message-count 0
@@ -442,3 +442,16 @@
                       :is-user-deleted false}]
      {:db (assoc-in db [:sessions (:id new-session)] new-session)
       :dispatch [:persistence/save-session new-session]})))
+
+;; ============================================================================
+;; Worktree Session Creation
+;; ============================================================================
+
+(rf/reg-event-fx
+ :worktree/create
+ (fn [_ [_ {:keys [session-name parent-directory]}]]
+   ;; Send WebSocket message to create worktree session
+   ;; Backend will respond with worktree_session_created or worktree_session_error
+   {:ws/send {:type "create_worktree_session"
+              :session-name session-name
+              :parent-directory parent-directory}}))

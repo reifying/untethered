@@ -705,6 +705,22 @@
      (is (= "Failed to create worktree: branch already exists"
             @(rf/subscribe [:ui/current-error]))))))
 
+(deftest worktree-create-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+   (let [sent-messages (atom [])]
+     ;; Mock the ws/send effect
+     (rf/reg-fx :ws/send (fn [msg] (swap! sent-messages conj msg)))
+
+     (testing "worktree/create sends WebSocket message"
+       (rf/dispatch-sync [:worktree/create {:session-name "feature-branch"
+                                            :parent-directory "/Users/test/project"}])
+       (is (= 1 (count @sent-messages)))
+       (let [msg (first @sent-messages)]
+         (is (= "create_worktree_session" (:type msg)))
+         (is (= "feature-branch" (:session-name msg)))
+         (is (= "/Users/test/project" (:parent-directory msg))))))))
+
 ;; ============================================================================
 ;; Authentication Events
 ;; ============================================================================
@@ -826,7 +842,24 @@
        (is (= 1 (count sessions)))
        (is (= "/new/project" (:working-directory (first sessions))))
        (is (some? (:id (first sessions))))
-       (is (= 0 (:message-count (first sessions))))))))
+       (is (= 0 (:message-count (first sessions))))))
+
+   (testing "sessions/create with name sets custom-name"
+     (rf/dispatch-sync [:sessions/create {:working-directory "/another/project"
+                                          :name "My Custom Session"}])
+     (let [sessions (vals @(rf/subscribe [:sessions/all]))
+           named-session (first (filter #(= "My Custom Session" (:custom-name %)) sessions))]
+       (is (some? named-session))
+       (is (= "My Custom Session" (:custom-name named-session)))
+       (is (= "/another/project" (:working-directory named-session)))))
+
+   (testing "sessions/create with empty name does not set custom-name"
+     (rf/dispatch-sync [:sessions/create {:working-directory "/empty/name"
+                                          :name ""}])
+     (let [sessions (vals @(rf/subscribe [:sessions/all]))
+           empty-name-session (first (filter #(= "/empty/name" (:working-directory %)) sessions))]
+       (is (some? empty-name-session))
+       (is (nil? (:custom-name empty-name-session)))))))
 
 ;; ============================================================================
 ;; Settings Events
