@@ -335,3 +335,8 @@
  :ui/previewing-voice?
  (fn [db _]
    (get-in db [:ui :previewing-voice?] false)))
+
+(rf/reg-sub
+ :ui/refreshing-session?
+ (fn [db _]
+   (get-in db [:ui :refreshing-session?] false)))

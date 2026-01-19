@@ -389,6 +389,18 @@
       (when-let [id (:id session)]
         (str "Session " (subs (str id) 0 8)))))
 
+(defn- header-refresh-button
+  "Refresh button for the conversation header."
+  [session-id]
+  (let [refreshing? @(rf/subscribe [:ui/refreshing-session?])]
+    [:> rn/TouchableOpacity
+     {:style {:padding 8}
+      :disabled refreshing?
+      :on-press #(rf/dispatch [:session/refresh session-id])}
+     (if refreshing?
+       [:> rn/ActivityIndicator {:size "small" :color "#007AFF"}]
+       [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "↻"])]))
+
 (defn- header-title
   "Custom header title component that can be tapped to rename."
   [session-id navigation]
@@ -436,7 +448,10 @@
             (.setOptions navigation
                          #js {:headerTitle
                               (fn [_]
-                                (r/as-element [header-title session-id navigation]))}))))
+                                (r/as-element [header-title session-id navigation]))
+                              :headerRight
+                              (fn [_]
+                                (r/as-element [header-refresh-button session-id]))}))))
 
       :component-will-unmount
       (fn [_]

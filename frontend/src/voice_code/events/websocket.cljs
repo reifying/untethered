@@ -263,40 +263,43 @@
 (rf/reg-event-db
  :sessions/handle-history
  (fn [db [_ {:keys [session-id messages]}]]
-   (assoc-in db [:messages session-id]
-             (->> messages
-                  (map (fn [msg]
-                         ;; Claude JSONL format varies by message type:
-                         ;; User messages: {:type "user", :message {:role "user", :content "text"}, :uuid "...", :timestamp "..."}
-                         ;; Assistant messages: {:type "assistant", :message {:role "assistant", :content [{:type "text", :text "..."}]}, :uuid "...", :timestamp "..."}
-                         ;; Internal messages (queue-operation, summary, etc.) have no :message key or different structure
-                         (let [inner-msg (:message msg)
-                               ;; Role comes from inner message, or fallback to top-level type
-                               role (or (:role inner-msg)
-                                        (when (contains? #{"user" "assistant"} (:type msg))
-                                          (:type msg)))
-                               ;; Content can be a string (user) or array of content blocks (assistant)
-                               raw-content (:content inner-msg)
-                               ;; Extract text from content - handle both string and array formats
-                               text (cond
-                                      (string? raw-content) raw-content
-                                      (sequential? raw-content)
-                                      (->> raw-content
-                                           (filter #(= "text" (:type %)))
-                                           (map :text)
-                                           (clojure.string/join "\n\n"))
-                                      :else (:text msg))]
-                           {:id (or (:uuid msg) (:message-id msg) (:id msg))
-                            :session-id session-id
-                            :role (when role (keyword role))
-                            :text text
-                            :timestamp (js/Date. (:timestamp msg))
-                            :status :confirmed})))
-                  ;; Filter out internal messages (no role means it's not a user/assistant message)
-                  (filter :role)
-                  (vec)
-                  ;; Apply message pruning to limit memory usage
-                  (db/prune-messages)))))
+   (-> db
+       ;; Clear refreshing state when history is received
+       (assoc-in [:ui :refreshing-session?] false)
+       (assoc-in [:messages session-id]
+                 (->> messages
+                      (map (fn [msg]
+                             ;; Claude JSONL format varies by message type:
+                             ;; User messages: {:type "user", :message {:role "user", :content "text"}, :uuid "...", :timestamp "..."}
+                             ;; Assistant messages: {:type "assistant", :message {:role "assistant", :content [{:type "text", :text "..."}]}, :uuid "...", :timestamp "..."}
+                             ;; Internal messages (queue-operation, summary, etc.) have no :message key or different structure
+                             (let [inner-msg (:message msg)
+                                   ;; Role comes from inner message, or fallback to top-level type
+                                   role (or (:role inner-msg)
+                                            (when (contains? #{"user" "assistant"} (:type msg))
+                                              (:type msg)))
+                                   ;; Content can be a string (user) or array of content blocks (assistant)
+                                   raw-content (:content inner-msg)
+                                   ;; Extract text from content - handle both string and array formats
+                                   text (cond
+                                          (string? raw-content) raw-content
+                                          (sequential? raw-content)
+                                          (->> raw-content
+                                               (filter #(= "text" (:type %)))
+                                               (map :text)
+                                               (clojure.string/join "\n\n"))
+                                          :else (:text msg))]
+                               {:id (or (:uuid msg) (:message-id msg) (:id msg))
+                                :session-id session-id
+                                :role (when role (keyword role))
+                                :text text
+                                :timestamp (js/Date. (:timestamp msg))
+                                :status :confirmed})))
+                      ;; Filter out internal messages (no role means it's not a user/assistant message)
+                      (filter :role)
+                      (vec)
+                      ;; Apply message pruning to limit memory usage
+                      (db/prune-messages))))))
 
 (rf/reg-event-db
  :sessions/handle-updated
@@ -360,6 +363,23 @@
    ;; Resubscribe to active session after reconnection
    (when-let [session-id (:active-session-id db)]
      {:dispatch [:session/subscribe session-id]})))
+
+(rf/reg-event-fx
+ :session/refresh
+ (fn [{:keys [db]} [_ session-id]]
+   ;; Refresh a session by unsubscribing and re-subscribing
+   ;; This fetches the latest messages from the backend
+   {:db (assoc-in db [:ui :refreshing-session?] true)
+    :dispatch-n [[:session/unsubscribe session-id]]
+    :dispatch-later [{:ms 100
+                      :dispatch [:session/subscribe-after-refresh session-id]}]}))
+
+(rf/reg-event-fx
+ :session/subscribe-after-refresh
+ (fn [{:keys [db]} [_ session-id]]
+   ;; Clear last-message-id to get full history on refresh
+   {:db (assoc-in db [:messages session-id] [])
+    :dispatch [:session/subscribe session-id]}))
 
 (rf/reg-event-fx
  :session/subscribe
