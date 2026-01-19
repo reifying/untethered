@@ -903,6 +903,35 @@
 ;; Priority Queue Events
 ;; ============================================================================
 
+(deftest queue-events-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Create test sessions
+   (rf/dispatch-sync [:sessions/add {:id "s1"
+                                     :backend-name "Session 1"
+                                     :working-directory "/project"}])
+   (rf/dispatch-sync [:sessions/add {:id "s2"
+                                     :backend-name "Session 2"
+                                     :working-directory "/project"}])
+
+   (testing "sessions/add-to-queue adds session with incrementing position"
+     (rf/dispatch-sync [:sessions/add-to-queue "s1"])
+     (let [session @(rf/subscribe [:sessions/by-id "s1"])]
+       (is (= 1 (:queue-position session)))
+       (is (some? (:queued-at session))))
+
+     ;; Add second session - should get position 2
+     (rf/dispatch-sync [:sessions/add-to-queue "s2"])
+     (let [session @(rf/subscribe [:sessions/by-id "s2"])]
+       (is (= 2 (:queue-position session)))))
+
+   (testing "sessions/remove-from-queue clears queue fields"
+     (rf/dispatch-sync [:sessions/remove-from-queue "s1"])
+     (let [session @(rf/subscribe [:sessions/by-id "s1"])]
+       (is (nil? (:queue-position session)))
+       (is (nil? (:queued-at session)))))))
+
 (deftest priority-queue-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])

@@ -124,6 +124,121 @@
       [:> rn/Text {:style {:font-size 12 :color "#999"}}
        (format-relative-time (:last-modified session))]]]))
 
+(defn- priority-tint-color
+  "Get background color based on priority level (like iOS)."
+  [priority]
+  (case priority
+    1 "rgba(0, 122, 255, 0.18)" ; High - darker blue tint
+    5 "rgba(0, 122, 255, 0.10)" ; Medium - lighter blue tint
+    "transparent")) ; Low (10) or default - no tint
+
+(defn- queue-session-item
+  "Single session item in the queue section."
+  [{:keys [session on-press on-remove]}]
+  (let [unread-count (get session :unread-count 0)]
+    [:> rn/View {:style {:flex-direction "row"
+                         :align-items "center"
+                         :background-color "#FFFFFF"
+                         :border-bottom-width 1
+                         :border-bottom-color "#F0F0F0"}}
+     [:> rn/TouchableOpacity
+      {:style {:flex 1
+               :padding-horizontal 16
+               :padding-vertical 12}
+       :on-press on-press
+       :active-opacity 0.7}
+      [:> rn/View {:style {:flex-direction "row"
+                           :justify-content "space-between"
+                           :align-items "center"}}
+       [:> rn/View {:style {:flex 1 :margin-right 12}}
+        ;; Session name with optional unread badge
+        [:> rn/View {:style {:flex-direction "row"
+                             :align-items "center"
+                             :margin-bottom 2}}
+         [:> rn/Text {:style {:font-size 15
+                              :font-weight (if (pos? unread-count) "600" "500")
+                              :color "#000"}}
+          (session-name session)]
+         [unread-badge unread-count]]
+        ;; Directory name (last component)
+        [:> rn/Text {:style {:font-size 12
+                             :color "#666"}
+                     :number-of-lines 1}
+         (directory-name (:working-directory session))]]
+       ;; Timestamp
+       [:> rn/Text {:style {:font-size 12 :color "#999"}}
+        (format-relative-time (:last-modified session))]]]
+     ;; Remove button
+     (when on-remove
+       [:> rn/TouchableOpacity
+        {:style {:padding 12
+                 :justify-content "center"}
+         :on-press on-remove}
+        [:> rn/Text {:style {:font-size 18 :color "#FF3B30"}} "✕"]])]))
+
+(defn- priority-queue-session-item
+  "Single session item in the priority queue section with priority tinting."
+  [{:keys [session on-press on-remove]}]
+  (let [unread-count (get session :unread-count 0)
+        priority (or (:priority session) 10)
+        tint-color (priority-tint-color priority)]
+    [:> rn/View {:style {:flex-direction "row"
+                         :align-items "center"
+                         :background-color tint-color
+                         :border-bottom-width 1
+                         :border-bottom-color "#F0F0F0"}}
+     ;; Drag handle placeholder (visual indicator)
+     [:> rn/View {:style {:padding-left 12
+                          :padding-vertical 12
+                          :justify-content "center"}}
+      [:> rn/Text {:style {:font-size 16 :color "#999"}} "☰"]]
+     [:> rn/TouchableOpacity
+      {:style {:flex 1
+               :padding-horizontal 8
+               :padding-vertical 12}
+       :on-press on-press
+       :active-opacity 0.7}
+      [:> rn/View {:style {:flex-direction "row"
+                           :justify-content "space-between"
+                           :align-items "center"}}
+       [:> rn/View {:style {:flex 1 :margin-right 12}}
+        ;; Session name with optional unread badge
+        [:> rn/View {:style {:flex-direction "row"
+                             :align-items "center"
+                             :margin-bottom 2}}
+         [:> rn/Text {:style {:font-size 15
+                              :font-weight (if (pos? unread-count) "600" "500")
+                              :color "#000"}}
+          (session-name session)]
+         [unread-badge unread-count]
+         ;; Priority indicator
+         [:> rn/Text {:style {:font-size 10
+                              :color "#666"
+                              :margin-left 8
+                              :background-color (if (= priority 1) "#E3F2FD" "#F5F5F5")
+                              :padding-horizontal 6
+                              :padding-vertical 2
+                              :border-radius 4}}
+          (case priority
+            1 "HIGH"
+            5 "MED"
+            "LOW")]]
+        ;; Directory name (last component)
+        [:> rn/Text {:style {:font-size 12
+                             :color "#666"}
+                     :number-of-lines 1}
+         (directory-name (:working-directory session))]]
+       ;; Timestamp
+       [:> rn/Text {:style {:font-size 12 :color "#999"}}
+        (format-relative-time (:last-modified session))]]]
+     ;; Remove button
+     (when on-remove
+       [:> rn/TouchableOpacity
+        {:style {:padding 12
+                 :justify-content "center"}
+         :on-press on-remove}
+        [:> rn/Text {:style {:font-size 18 :color "#FF3B30"}} "✕"]])]))
+
 (defn- section-header
   "Collapsible section header."
   [{:keys [title expanded? on-toggle count]}]
@@ -171,6 +286,54 @@
                            (.navigate navigation "Conversation"
                                       #js {:sessionId (:id session)
                                            :sessionName (session-name session)}))}])])])))
+
+(defn- queue-section
+  "Collapsible FIFO queue section."
+  [{:keys [sessions navigation]}]
+  (let [expanded? (r/atom true)]
+    (fn [{:keys [sessions navigation]}]
+      (when (seq sessions)
+        [:> rn/View
+         [section-header {:title "Queue"
+                          :expanded? @expanded?
+                          :on-toggle #(swap! expanded? not)
+                          :count (count sessions)}]
+         (when @expanded?
+           [:> rn/View
+            (for [session sessions]
+              ^{:key (:id session)}
+              [queue-session-item
+               {:session session
+                :on-press #(when navigation
+                             (.navigate navigation "Conversation"
+                                        #js {:sessionId (:id session)
+                                             :sessionName (session-name session)}))
+                :on-remove #(rf/dispatch [:sessions/remove-from-queue (:id session)])}])])]))))
+
+(defn- priority-queue-section
+  "Collapsible priority queue section with visual priority indicators."
+  [{:keys [sessions navigation]}]
+  (let [expanded? (r/atom true)]
+    (fn [{:keys [sessions navigation]}]
+      (when (seq sessions)
+        [:> rn/View
+         [section-header {:title "Priority Queue"
+                          :expanded? @expanded?
+                          :on-toggle #(swap! expanded? not)
+                          :count (count sessions)}]
+         (when @expanded?
+           [:> rn/View
+            ;; Note: Drag-to-reorder would require react-native-draggable-flatlist
+            ;; For now, show sessions with priority tinting and drag handle visual
+            (for [session sessions]
+              ^{:key (str (:id session) "-P" (:priority session))}
+              [priority-queue-session-item
+               {:session session
+                :on-press #(when navigation
+                             (.navigate navigation "Conversation"
+                                        #js {:sessionId (:id session)
+                                             :sessionName (session-name session)}))
+                :on-remove #(rf/dispatch [:sessions/remove-from-priority-queue (:id session)])}])])]))))
 
 (defn- empty-state
   "Shown when there are no directories/sessions."
@@ -238,8 +401,14 @@
         (let [nav (:navigation props)
               directories @(rf/subscribe [:sessions/directories])
               recent-sessions @(rf/subscribe [:sessions/recent])
+              queue-sessions @(rf/subscribe [:sessions/queued])
+              priority-queue-sessions @(rf/subscribe [:sessions/priority-queued])
               loading? @(rf/subscribe [:ui/loading?])
-              refreshing? @(rf/subscribe [:ui/refreshing?])]
+              refreshing? @(rf/subscribe [:ui/refreshing?])
+              has-content? (or (seq directories)
+                               (seq recent-sessions)
+                               (seq queue-sessions)
+                               (seq priority-queue-sessions))]
           [:> rn/View {:style {:flex 1 :background-color "#F5F5F5"}}
            (if loading?
              ;; Loading state
@@ -249,7 +418,7 @@
               [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]]
 
              ;; Content
-             (if (and (empty? directories) (empty? recent-sessions))
+             (if (not has-content?)
                [empty-state]
                [:> rn/ScrollView
                 {:style {:flex 1}
@@ -261,6 +430,14 @@
                     :on-refresh #(rf/dispatch [:sessions/refresh])
                     :tint-color "#007AFF"
                     :colors #js ["#007AFF"]}])}
+                ;; Queue section (FIFO, if enabled and has sessions)
+                (when (seq queue-sessions)
+                  [queue-section {:sessions queue-sessions
+                                  :navigation nav}])
+                ;; Priority Queue section (if enabled and has sessions)
+                (when (seq priority-queue-sessions)
+                  [priority-queue-section {:sessions priority-queue-sessions
+                                           :navigation nav}])
                 ;; Recent sessions section (if any)
                 (when (seq recent-sessions)
                   [recent-sessions-section {:sessions recent-sessions

@@ -327,6 +327,46 @@
    (get-in db [:settings :resource-storage-location])))
 
 ;; ============================================================================
+;; Queue and Priority Queue
+;; ============================================================================
+
+(rf/reg-sub
+ :sessions/queued
+ :<- [:sessions/all]
+ :<- [:locked-sessions]
+ :<- [:settings/queue-enabled]
+ (fn [[sessions locked-sessions queue-enabled] _]
+   (when queue-enabled
+     (->> (vals sessions)
+          (remove :is-user-deleted)
+          (filter :queue-position) ; In queue if has queue-position
+          (remove #(contains? locked-sessions (:id %))) ; Exclude locked
+          (sort-by :queue-position) ; FIFO order
+          (vec)))))
+
+(rf/reg-sub
+ :sessions/priority-queued
+ :<- [:sessions/all]
+ :<- [:locked-sessions]
+ :<- [:settings/priority-queue-enabled]
+ (fn [[sessions locked-sessions priority-queue-enabled] _]
+   (when priority-queue-enabled
+     (->> (vals sessions)
+          (remove :is-user-deleted)
+          (filter :priority-queued-at) ; In priority queue if has queued timestamp
+          (remove #(contains? locked-sessions (:id %))) ; Exclude locked
+          ;; Three-level sort: priority (asc) -> priority-order (asc) -> id (tiebreaker)
+          (sort-by (juxt #(or (:priority %) 10)
+                         #(or (:priority-order %) 1.0)
+                         :id))
+          (vec)))))
+
+(rf/reg-sub
+ :settings/auto-speak-responses
+ (fn [db _]
+   (get-in db [:settings :auto-speak-responses])))
+
+;; ============================================================================
 ;; UI State
 ;; ============================================================================
 

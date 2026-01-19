@@ -189,3 +189,110 @@
 
    (testing "settings/server-port returns default"
      (is (= 8080 @(rf/subscribe [:settings/server-port]))))))
+
+(deftest queue-subs
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "sessions/queued returns nil when queue disabled"
+     (is (nil? @(rf/subscribe [:sessions/queued]))))
+
+   ;; Enable queue
+   (rf/dispatch-sync [:settings/update :queue-enabled true])
+
+   (testing "sessions/queued returns empty vector when enabled but no sessions"
+     (is (= [] @(rf/subscribe [:sessions/queued]))))
+
+   ;; Add sessions - some in queue, some not
+   (rf/dispatch-sync [:sessions/add {:id "s1"
+                                     :backend-name "Session 1"
+                                     :working-directory "/project"
+                                     :queue-position 2}])
+   (rf/dispatch-sync [:sessions/add {:id "s2"
+                                     :backend-name "Session 2"
+                                     :working-directory "/project"
+                                     :queue-position 1}])
+   (rf/dispatch-sync [:sessions/add {:id "s3"
+                                     :backend-name "Not Queued"
+                                     :working-directory "/project"}])
+
+   (testing "sessions/queued returns only queued sessions in FIFO order"
+     (let [queued @(rf/subscribe [:sessions/queued])]
+       (is (= 2 (count queued)))
+       (is (= "s2" (:id (first queued)))) ; position 1
+       (is (= "s1" (:id (second queued)))))) ; position 2
+
+   ;; Lock a session
+   (rf/dispatch-sync [:sessions/lock "s2"])
+
+   (testing "sessions/queued excludes locked sessions"
+     (let [queued @(rf/subscribe [:sessions/queued])]
+       (is (= 1 (count queued)))
+       (is (= "s1" (:id (first queued))))))))
+
+(deftest priority-queue-subs
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "sessions/priority-queued returns nil when priority queue disabled"
+     (is (nil? @(rf/subscribe [:sessions/priority-queued]))))
+
+   ;; Enable priority queue
+   (rf/dispatch-sync [:settings/update :priority-queue-enabled true])
+
+   (testing "sessions/priority-queued returns empty vector when enabled but no sessions"
+     (is (= [] @(rf/subscribe [:sessions/priority-queued]))))
+
+   ;; Add sessions with different priorities
+   (rf/dispatch-sync [:sessions/add {:id "s1"
+                                     :backend-name "Low Priority"
+                                     :working-directory "/project"
+                                     :priority 10
+                                     :priority-order 1.0
+                                     :priority-queued-at (js/Date.)}])
+   (rf/dispatch-sync [:sessions/add {:id "s2"
+                                     :backend-name "High Priority"
+                                     :working-directory "/project"
+                                     :priority 1
+                                     :priority-order 1.0
+                                     :priority-queued-at (js/Date.)}])
+   (rf/dispatch-sync [:sessions/add {:id "s3"
+                                     :backend-name "Medium Priority"
+                                     :working-directory "/project"
+                                     :priority 5
+                                     :priority-order 1.0
+                                     :priority-queued-at (js/Date.)}])
+   (rf/dispatch-sync [:sessions/add {:id "s4"
+                                     :backend-name "Not In Queue"
+                                     :working-directory "/project"}])
+
+   (testing "sessions/priority-queued returns sessions sorted by priority"
+     (let [queued @(rf/subscribe [:sessions/priority-queued])]
+       (is (= 3 (count queued)))
+       (is (= "s2" (:id (first queued)))) ; priority 1 (high)
+       (is (= "s3" (:id (second queued)))) ; priority 5 (medium)
+       (is (= "s1" (:id (nth queued 2)))))) ; priority 10 (low)
+
+   ;; Add another high priority session with different order
+   (rf/dispatch-sync [:sessions/add {:id "s5"
+                                     :backend-name "High Priority 2"
+                                     :working-directory "/project"
+                                     :priority 1
+                                     :priority-order 2.0
+                                     :priority-queued-at (js/Date.)}])
+
+   (testing "sessions/priority-queued sorts by priority then priority-order"
+     (let [queued @(rf/subscribe [:sessions/priority-queued])]
+       (is (= 4 (count queued)))
+       (is (= "s2" (:id (first queued)))) ; priority 1, order 1.0
+       (is (= "s5" (:id (second queued)))) ; priority 1, order 2.0
+       (is (= "s3" (:id (nth queued 2)))) ; priority 5
+       (is (= "s1" (:id (nth queued 3)))))) ; priority 10
+
+   ;; Lock a session
+   (rf/dispatch-sync [:sessions/lock "s2"])
+
+   (testing "sessions/priority-queued excludes locked sessions"
+     (let [queued @(rf/subscribe [:sessions/priority-queued])]
+       (is (= 3 (count queued)))
+       (is (not (some #(= "s2" (:id %)) queued)))))))

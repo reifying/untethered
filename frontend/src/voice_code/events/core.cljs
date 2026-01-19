@@ -366,6 +366,27 @@
 ;; ============================================================================
 
 (rf/reg-event-db
+ :sessions/add-to-queue
+ (fn [db [_ session-id]]
+   (let [;; Find the highest queue position and add 1
+         max-position (->> (vals (:sessions db))
+                           (map :queue-position)
+                           (filter some?)
+                           (apply max 0))]
+     (-> db
+         (update-in [:sessions session-id] merge
+                    {:queue-position (inc max-position)
+                     :queued-at (js/Date.)})))))
+
+(rf/reg-event-db
+ :sessions/remove-from-queue
+ (fn [db [_ session-id]]
+   (-> db
+       (update-in [:sessions session-id] merge
+                  {:queue-position nil
+                   :queued-at nil}))))
+
+(rf/reg-event-db
  :sessions/add-to-priority-queue
  (fn [db [_ session-id]]
    (-> db
