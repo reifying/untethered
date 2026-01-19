@@ -170,3 +170,49 @@
           (is (contains? @captured-env "BEADS_DB")))
         (finally
           (cleanup-temp-dir! temp-dir))))))
+
+(deftest test-detect-git-branch-main-repo
+  (testing "detects branch in regular git repo"
+    (let [temp-dir (create-test-git-repo!)]
+      (try
+        ;; Initial commit creates default branch (main or master)
+        (let [branch (env/detect-git-branch temp-dir)]
+          (is (some? branch) "Should detect a branch")
+          (is (or (= branch "main") (= branch "master"))
+              "Should be on main or master branch"))
+        (finally
+          (cleanup-temp-dir! temp-dir))))))
+
+(deftest test-detect-git-branch-non-git-dir
+  (testing "returns nil for non-git directory"
+    (let [temp-dir (create-temp-dir!)]
+      (try
+        (let [branch (env/detect-git-branch temp-dir)]
+          (is (nil? branch) "Should return nil for non-git directory"))
+        (finally
+          (cleanup-temp-dir! temp-dir))))))
+
+(deftest test-detect-git-branch-custom-branch
+  (testing "detects custom branch name"
+    (let [temp-dir (create-test-git-repo!)]
+      (try
+        ;; Create and checkout a new branch
+        (shell/sh "git" "checkout" "-b" "feature/test-branch" :dir temp-dir)
+        (let [branch (env/detect-git-branch temp-dir)]
+          (is (= "feature/test-branch" branch)))
+        (finally
+          (cleanup-temp-dir! temp-dir))))))
+
+(deftest test-detect-git-branch-detached-head
+  (testing "returns nil for detached HEAD"
+    (let [temp-dir (create-test-git-repo!)]
+      (try
+        ;; Get current commit SHA and checkout detached
+        (let [sha (-> (shell/sh "git" "rev-parse" "HEAD" :dir temp-dir)
+                      :out
+                      clojure.string/trim)]
+          (shell/sh "git" "checkout" sha :dir temp-dir)
+          (let [branch (env/detect-git-branch temp-dir)]
+            (is (nil? branch) "Should return nil for detached HEAD")))
+        (finally
+          (cleanup-temp-dir! temp-dir))))))

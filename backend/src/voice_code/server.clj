@@ -1866,6 +1866,19 @@
                                {:type :available-recipes
                                 :recipes (get-available-recipes-list)}))
 
+            "get_git_branch"
+            (let [working-directory (:working-directory data)]
+              (if-not working-directory
+                (send-to-client! channel
+                                 {:type :error
+                                  :message "working_directory required in get_git_branch message"})
+                (let [branch (env/detect-git-branch working-directory)]
+                  (log/info "Git branch detected" {:working-directory working-directory :branch branch})
+                  (send-to-client! channel
+                                   {:type :git-branch
+                                    :working-directory working-directory
+                                    :branch branch}))))
+
             ;; Unknown message type
             (do
               (log/warn "Unknown message type" {:type msg-type})

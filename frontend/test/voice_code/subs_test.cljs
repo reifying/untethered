@@ -296,3 +296,35 @@
      (let [queued @(rf/subscribe [:sessions/priority-queued])]
        (is (= 3 (count queued)))
        (is (not (some #(= "s2" (:id %)) queued)))))))
+
+(deftest git-branch-subs
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "git/branch returns nil when no branch stored"
+     (is (nil? @(rf/subscribe [:git/branch "/some/path"]))))
+
+   ;; Simulate receiving git branch from backend
+   (rf/dispatch-sync [:git/handle-branch {:working_directory "/project/path"
+                                          :branch "main"}])
+
+   (testing "git/branch returns stored branch for directory"
+     (is (= "main" @(rf/subscribe [:git/branch "/project/path"]))))
+
+   (testing "git/branch returns nil for different directory"
+     (is (nil? @(rf/subscribe [:git/branch "/other/path"]))))
+
+   ;; Store another branch
+   (rf/dispatch-sync [:git/handle-branch {:working_directory "/other/path"
+                                          :branch "feature/test"}])
+
+   (testing "git/branch returns correct branch for each directory"
+     (is (= "main" @(rf/subscribe [:git/branch "/project/path"])))
+     (is (= "feature/test" @(rf/subscribe [:git/branch "/other/path"]))))
+
+   ;; Test nil branch (non-git directory)
+   (rf/dispatch-sync [:git/handle-branch {:working_directory "/non-git/path"
+                                          :branch nil}])
+
+   (testing "git/branch stores nil for non-git directories"
+     (is (nil? @(rf/subscribe [:git/branch "/non-git/path"]))))))

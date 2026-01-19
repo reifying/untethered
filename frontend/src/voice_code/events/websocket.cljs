@@ -109,6 +109,9 @@
      "recipe_step_started" {:dispatch [:recipes/handle-step-started msg]}
      "recipe_exited" {:dispatch [:recipes/handle-exited msg]}
 
+;; Git
+     "git_branch" {:dispatch [:git/handle-branch msg]}
+
      ;; Keepalive
      "pong" nil
 
@@ -688,3 +691,20 @@
  (fn [_ [_ session-id]]
    {:ws/send {:type "infer_name"
               :session-id session-id}}))
+
+;; ============================================================================
+;; Git Branch Detection
+;; ============================================================================
+
+(rf/reg-event-db
+ :git/handle-branch
+ (fn [db [_ {:keys [working_directory branch]}]]
+   ;; Store git branch by working directory
+   (assoc-in db [:git-branches working_directory] branch)))
+
+(rf/reg-event-fx
+ :git/request-branch
+ (fn [_ [_ working-directory]]
+   (when working-directory
+     {:ws/send {:type "get_git_branch"
+                :working-directory working-directory}})))

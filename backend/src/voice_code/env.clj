@@ -86,6 +86,37 @@
         (log/info "Not a worktree, no env vars" {:dir dir})
         {}))))
 
+(defn detect-git-branch
+  "Detect the current git branch for a directory.
+   Reads .git/HEAD file directly for efficiency (same approach as iOS).
+   Returns branch name string if on a branch, nil if:
+   - Not a git repository
+   - Detached HEAD state
+   - File read error"
+  [dir]
+  (try
+    (let [;; First check if this is a worktree (git-dir is different location)
+          git-dir-result (shell/sh "git" "rev-parse" "--git-dir" :dir dir)
+          git-dir (when (zero? (:exit git-dir-result))
+                    (str/trim (:out git-dir-result)))
+          ;; Build path to HEAD file
+          head-path (when git-dir
+                      (if (str/starts-with? git-dir "/")
+                        (str git-dir "/HEAD")
+                        (str dir "/" git-dir "/HEAD")))
+          head-file (when head-path (io/file head-path))]
+      (if (and head-file (.exists head-file))
+        (let [content (str/trim (slurp head-file))
+              ;; HEAD format: "ref: refs/heads/<branch>" for branches
+              ;; or commit SHA for detached HEAD
+              prefix "ref: refs/heads/"]
+          (when (str/starts-with? content prefix)
+            (subs content (count prefix))))
+        nil))
+    (catch Exception e
+      (log/debug "Git branch detection failed" {:dir dir :error (ex-message e)})
+      nil)))
+
 (defn clear-cache!
   "Clear the worktree detection cache. Primarily for testing."
   []

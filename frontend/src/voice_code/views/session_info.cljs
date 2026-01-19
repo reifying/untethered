@@ -128,7 +128,7 @@
 
 (defn- session-info-section
   "Session information section."
-  [{:keys [session on-copy]}]
+  [{:keys [session git-branch on-copy]}]
   (let [{:keys [id backend-name custom-name working-directory]} session
         display-name (or custom-name backend-name (str "Session " (subs id 0 8)))]
     [:> rn/View
@@ -139,6 +139,11 @@
      [info-row {:label "Working Directory"
                 :value (or working-directory "Not set")
                 :on-copy #(on-copy % "Directory copied")}]
+     ;; Git branch row - only shown if branch is detected
+     (when git-branch
+       [info-row {:label "Git Branch"
+                  :value git-branch
+                  :on-copy #(on-copy % "Branch copied")}])
      [info-row {:label "Session ID"
                 :value id
                 :on-copy #(on-copy % "Session ID copied")}]
@@ -284,6 +289,8 @@
         settings @(rf/subscribe [:settings/all])
         active-recipe @(rf/subscribe [:recipes/active-for-session session-id])
         messages @(rf/subscribe [:messages/for-session session-id])
+        working-directory (:working-directory session)
+        git-branch @(rf/subscribe [:git/branch working-directory])
 
         ;; Local state for copy confirmation
         confirmation-state (r/atom {:visible? false :message ""})
@@ -304,6 +311,8 @@
                               export-text (str "# " display-name "\n"
                                                "Session ID: " id "\n"
                                                "Working Directory: " (or working-directory "Not set") "\n"
+                                               (when git-branch
+                                                 (str "Git Branch: " git-branch "\n"))
                                                "Exported: " (.toISOString (js/Date.)) "\n"
                                                "\n---\n\n"
                                                "Message Count: " (count messages) "\n\n"
@@ -355,6 +364,10 @@
                                                       (rf/dispatch [:sessions/delete session-id])
                                                       (.goBack navigation))}])))]
 
+    ;; Request git branch when component mounts
+    (when working-directory
+      (rf/dispatch [:git/request-branch working-directory]))
+
     (fn []
       (let [{:keys [visible? message]} @confirmation-state]
         [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
@@ -363,6 +376,7 @@
           (when session
             [:> rn/View
              [session-info-section {:session session
+                                    :git-branch git-branch
                                     :on-copy handle-copy}]
              [priority-queue-section {:session session
                                       :settings settings

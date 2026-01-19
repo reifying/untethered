@@ -430,3 +430,12 @@
  :ui/refreshing-session?
  (fn [db _]
    (get-in db [:ui :refreshing-session?] false)))
+
+;; ============================================================================
+;; Git
+;; ============================================================================
+
+(rf/reg-sub
+ :git/branch
+ (fn [db [_ working-directory]]
+   (get-in db [:git-branches working-directory])))

@@ -1235,3 +1235,24 @@
      ;; in handle-response checks voice-listening? before dispatching speak)
      ;; Verify the state is correctly set so the suppression logic can work
      (is (true? (get-in @re-frame.db/app-db [:ui :voice-listening?]))))))
+
+(deftest git-branch-events-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "git/handle-branch stores branch by working directory"
+     (rf/dispatch-sync [:git/handle-branch {:working_directory "/project/path"
+                                            :branch "main"}])
+     (is (= "main" (get-in @re-frame.db/app-db [:git-branches "/project/path"]))))
+
+   (testing "git/handle-branch handles nil branch for non-git directories"
+     (rf/dispatch-sync [:git/handle-branch {:working_directory "/non-git/path"
+                                            :branch nil}])
+     (is (nil? (get-in @re-frame.db/app-db [:git-branches "/non-git/path"]))))
+
+   (testing "git/handle-branch stores multiple directories"
+     (rf/dispatch-sync [:git/handle-branch {:working_directory "/other/project"
+                                            :branch "feature/test"}])
+     ;; Both branches should be stored
+     (is (= "main" (get-in @re-frame.db/app-db [:git-branches "/project/path"])))
+     (is (= "feature/test" (get-in @re-frame.db/app-db [:git-branches "/other/project"]))))))
