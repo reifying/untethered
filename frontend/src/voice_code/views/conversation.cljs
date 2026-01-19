@@ -389,6 +389,30 @@
       (when-let [id (:id session)]
         (str "Session " (subs (str id) 0 8)))))
 
+(defn- header-recipe-button
+  "Recipe button for the conversation header.
+   Shows clipboard icon, navigates to Recipes screen."
+  [session-id working-directory ^js navigation]
+  (let [active-recipe @(rf/subscribe [:recipes/active-for-session session-id])]
+    [:> rn/TouchableOpacity
+     {:style {:padding 8}
+      :on-press #(.navigate navigation "Recipes"
+                            #js {:sessionId session-id
+                                 :workingDirectory working-directory})}
+     [:> rn/Text {:style {:font-size 16
+                          :color (if active-recipe "#34C759" "#007AFF")}}
+      (if active-recipe "📋" "📝")]]))
+
+(defn- header-info-button
+  "Info button for the conversation header.
+   Opens SessionInfo modal."
+  [session-id ^js navigation]
+  [:> rn/TouchableOpacity
+   {:style {:padding 8}
+    :on-press #(.navigate navigation "SessionInfo"
+                          #js {:sessionId session-id})}
+   [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "ℹ️"]])
+
 (defn- header-refresh-button
   "Refresh button for the conversation header."
   [session-id]
@@ -400,6 +424,15 @@
      (if refreshing?
        [:> rn/ActivityIndicator {:size "small" :color "#007AFF"}]
        [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "↻"])]))
+
+(defn- header-right-buttons
+  "Combined header right buttons: Recipe, Info, Refresh."
+  [session-id working-directory ^js navigation]
+  [:> rn/View {:style {:flex-direction "row"
+                       :align-items "center"}}
+   [header-recipe-button session-id working-directory navigation]
+   [header-info-button session-id navigation]
+   [header-refresh-button session-id]])
 
 (defn- header-title
   "Custom header title component that can be tapped to rename."
@@ -443,15 +476,19 @@
         (when session-id
           (rf/dispatch [:sessions/set-active session-id])
           (rf/dispatch [:session/subscribe session-id])
-          ;; Set custom header title that's tappable
+          ;; Set custom header title and right buttons
+          ;; Note: We need to get working-directory from session for recipe navigation
           (when navigation
-            (.setOptions navigation
-                         #js {:headerTitle
-                              (fn [_]
-                                (r/as-element [header-title session-id navigation]))
-                              :headerRight
-                              (fn [_]
-                                (r/as-element [header-refresh-button session-id]))}))))
+            (let [session @(rf/subscribe [:sessions/by-id session-id])
+                  working-directory (:working-directory session)]
+              (.setOptions navigation
+                           #js {:headerTitle
+                                (fn [_]
+                                  (r/as-element [header-title session-id navigation]))
+                                :headerRight
+                                (fn [_]
+                                  (r/as-element
+                                   [header-right-buttons session-id working-directory navigation]))})))))
 
       :component-will-unmount
       (fn [_]
