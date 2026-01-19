@@ -2,7 +2,7 @@
   "Directory list view showing sessions grouped by working directory."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn]
+            ["react-native" :as rn :refer [RefreshControl]]
             [clojure.string :as str]))
 
 (defn- format-relative-time
@@ -238,7 +238,8 @@
         (let [nav (:navigation props)
               directories @(rf/subscribe [:sessions/directories])
               recent-sessions @(rf/subscribe [:sessions/recent])
-              loading? @(rf/subscribe [:ui/loading?])]
+              loading? @(rf/subscribe [:ui/loading?])
+              refreshing? @(rf/subscribe [:ui/refreshing?])]
           [:> rn/View {:style {:flex 1 :background-color "#F5F5F5"}}
            (if loading?
              ;; Loading state
@@ -252,7 +253,14 @@
                [empty-state]
                [:> rn/ScrollView
                 {:style {:flex 1}
-                 :content-container-style {:padding-bottom 16}}
+                 :content-container-style {:padding-bottom 16}
+                 :refresh-control
+                 (r/as-element
+                  [:> RefreshControl
+                   {:refreshing (boolean refreshing?)
+                    :on-refresh #(rf/dispatch [:sessions/refresh])
+                    :tint-color "#007AFF"
+                    :colors #js ["#007AFF"]}])}
                 ;; Recent sessions section (if any)
                 (when (seq recent-sessions)
                   [recent-sessions-section {:sessions recent-sessions

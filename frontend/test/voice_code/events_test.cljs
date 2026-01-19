@@ -583,7 +583,48 @@
      (let [session @(rf/subscribe [:sessions/by-id "s1"])]
        (is (= "Session 1" (:backend-name session)))
        (is (= "/project" (:working-directory session)))
-       (is (= 5 (:message-count session)))))))
+       (is (= 5 (:message-count session)))))
+
+   (testing "session_list clears refreshing state"
+     ;; Set refreshing state
+     (rf/dispatch-sync [:db/update-in [:ui :refreshing?] (constantly true)])
+     (is (true? @(rf/subscribe [:ui/refreshing?])))
+
+     ;; Receiving session list should clear it
+     (rf/dispatch-sync [:sessions/handle-list
+                        {:sessions [{:session-id "s2"
+                                     :name "Session 2"
+                                     :working-directory "/project2"
+                                     :last-modified "2026-01-15T11:00:00Z"}]}])
+     (is (false? @(rf/subscribe [:ui/refreshing?]))))))
+
+(deftest sessions-refresh-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "sessions/refresh sets refreshing state and sends ws message"
+     ;; Verify not refreshing initially
+     (is (nil? @(rf/subscribe [:ui/refreshing?])))
+
+     ;; Dispatch refresh - note: ws/send effect won't actually send in tests
+     ;; but we can verify the db state change
+     (rf/dispatch-sync [:sessions/refresh])
+
+     ;; Should now be refreshing
+     (is (true? @(rf/subscribe [:ui/refreshing?]))))
+
+   (testing "sessions/handle-recent clears refreshing state"
+     ;; Set refreshing state
+     (rf/dispatch-sync [:db/update-in [:ui :refreshing?] (constantly true)])
+     (is (true? @(rf/subscribe [:ui/refreshing?])))
+
+     ;; Receiving recent sessions should clear it
+     (rf/dispatch-sync [:sessions/handle-recent
+                        {:sessions [{:session-id "r1"
+                                     :name "Recent 1"
+                                     :working-directory "/recent-project"
+                                     :last-modified "2026-01-15T12:00:00Z"}]}])
+     (is (false? @(rf/subscribe [:ui/refreshing?]))))))
 
 (deftest handle-error-with-session-test
   (rf-test/run-test-sync

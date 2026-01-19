@@ -2,7 +2,7 @@
   "Session list view showing sessions for a specific directory."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn :refer [Alert]]))
+            ["react-native" :as rn :refer [Alert RefreshControl]]))
 
 (defn- format-relative-time
   "Format a timestamp as relative time."
@@ -272,7 +272,8 @@
       (fn [_]
         ;; Subscriptions MUST be inside :reagent-render for reactivity
         (let [sessions @(rf/subscribe [:sessions/for-directory directory])
-              locked-sessions @(rf/subscribe [:locked-sessions])]
+              locked-sessions @(rf/subscribe [:locked-sessions])
+              refreshing? @(rf/subscribe [:ui/refreshing?])]
           [:> rn/View {:style {:flex 1 :background-color "#F5F5F5"}}
            ;; Toolbar at top
            [session-toolbar {:navigation navigation :directory directory}]
@@ -284,6 +285,13 @@
               {:data (clj->js sessions)
                :key-extractor (fn [item _idx]
                                 (or (.-id item) (str (random-uuid))))
+               :refresh-control
+               (r/as-element
+                [:> RefreshControl
+                 {:refreshing (boolean refreshing?)
+                  :on-refresh #(rf/dispatch [:sessions/refresh])
+                  :tint-color "#007AFF"
+                  :colors #js ["#007AFF"]}])
                :render-item
                (fn [^js obj]
                  (let [item (.-item obj)

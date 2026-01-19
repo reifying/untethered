@@ -9,7 +9,7 @@
    - Connection testing"
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn]
+            ["react-native" :as rn :refer [Alert]]
             ["react-native" :refer [Platform]]))
 
 (defn- section-header
@@ -357,7 +357,14 @@
   [:> rn/View
    [section-header "Account"]
    [setting-row {:label "Disconnect"
-                 :on-press #(rf/dispatch [:auth/disconnect])
+                 :on-press (fn []
+                             (.alert Alert
+                                     "Disconnect"
+                                     "Are you sure you want to disconnect? Your API key will be deleted."
+                                     (clj->js [{:text "Cancel" :style "cancel"}
+                                               {:text "Disconnect"
+                                                :style "destructive"
+                                                :onPress #(rf/dispatch [:auth/disconnect])}])))
                  :accessory [:> rn/Text {:style {:font-size 16 :color "#FF3B30"}}
                              "Disconnect"]}]])
 

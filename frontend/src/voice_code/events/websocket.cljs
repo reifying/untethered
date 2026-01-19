@@ -231,6 +231,7 @@
  :sessions/handle-list
  (fn [db [_ {:keys [sessions]}]]
    ;; Receiving session list means we're authenticated
+   ;; Also clears refreshing state if a refresh was in progress
    (-> (reduce (fn [db session]
                  (assoc-in db [:sessions (:session-id session)]
                            {:id (:session-id session)
@@ -243,19 +244,32 @@
                sessions)
        (assoc-in [:connection :status] :connected)
        (assoc-in [:connection :authenticated?] true)
-       (assoc-in [:connection :reconnect-attempts] 0))))
+       (assoc-in [:connection :reconnect-attempts] 0)
+       (assoc-in [:ui :refreshing?] false))))
 
 (rf/reg-event-db
  :sessions/handle-recent
  (fn [db [_ {:keys [sessions]}]]
-   (reduce (fn [db session]
-             (assoc-in db [:sessions (:session-id session)]
-                       {:id (:session-id session)
-                        :backend-name (:name session)
-                        :working-directory (:working-directory session)
-                        :last-modified (js/Date. (:last-modified session))}))
-           db
-           sessions)))
+   ;; Also clears refreshing state if a refresh was in progress
+   (-> (reduce (fn [db session]
+                 (assoc-in db [:sessions (:session-id session)]
+                           {:id (:session-id session)
+                            :backend-name (:name session)
+                            :working-directory (:working-directory session)
+                            :last-modified (js/Date. (:last-modified session))}))
+               db
+               sessions)
+       (assoc-in [:ui :refreshing?] false))))
+
+(rf/reg-event-fx
+ :sessions/refresh
+ (fn [{:keys [db]} _]
+   ;; Send refresh_sessions message to backend to reload session list
+   ;; This is used for pull-to-refresh on directory and session lists
+   (let [{:keys [recent-sessions-limit]} (:settings db)]
+     {:db (assoc-in db [:ui :refreshing?] true)
+      :ws/send {:type "refresh_sessions"
+                :recent-sessions-limit (or recent-sessions-limit 10)}})))
 
 (rf/reg-event-db
  :sessions/handle-created

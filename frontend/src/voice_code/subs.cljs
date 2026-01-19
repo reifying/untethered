@@ -291,6 +291,11 @@
    (get-in db [:ui :loading?])))
 
 (rf/reg-sub
+ :ui/refreshing?
+ (fn [db _]
+   (get-in db [:ui :refreshing?])))
+
+(rf/reg-sub
  :ui/current-error
  (fn [db _]
    (get-in db [:ui :current-error])))
