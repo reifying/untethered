@@ -307,3 +307,49 @@
       (is (or (string? (:working_directory parsed)) (nil? (:working_directory parsed))))
       (is (vector? (:project_commands parsed)))
       (is (vector? (:general_commands parsed))))))
+
+(deftest test-single-child-groups-flattened
+  (testing "Groups with only one child are flattened to single commands"
+    (let [commands [{:id "docker.up" :label "Up" :type :command :group "docker"}]]
+      ;; A single docker-up should become "Docker Up" command, not a Docker group with one child
+      (let [result (commands/group-commands commands)]
+        (is (= 1 (count result)) "Should have exactly one item")
+        (let [cmd (first result)]
+          (is (= :command (:type cmd)) "Should be a command, not a group")
+          (is (= "docker.up" (:id cmd)) "Should preserve the full command ID")
+          (is (= "Docker Up" (:label cmd)) "Should combine group and command labels")))))
+
+  (testing "Groups with multiple children remain as groups"
+    (let [commands [{:id "docker.up" :label "Up" :type :command :group "docker"}
+                    {:id "docker.down" :label "Down" :type :command :group "docker"}]]
+      (let [result (commands/group-commands commands)]
+        (is (= 1 (count result)) "Should have one group")
+        (let [grp (first result)]
+          (is (= :group (:type grp)) "Should be a group")
+          (is (= "docker" (:id grp)))
+          (is (= 2 (count (:children grp))) "Group should have two children")))))
+
+  (testing "Mixed single and multi-child groups"
+    (let [commands [{:id "docker.up" :label "Up" :type :command :group "docker"}
+                    {:id "test.unit" :label "Unit" :type :command :group "test"}
+                    {:id "test.integration" :label "Integration" :type :command :group "test"}]]
+      (let [result (commands/group-commands commands)
+            by-id (into {} (map (juxt :id identity) result))]
+        (is (= 2 (count result)) "Should have two items")
+        ;; docker should be flattened
+        (is (contains? by-id "docker.up") "Docker should be flattened to docker.up command")
+        (is (= :command (:type (get by-id "docker.up"))))
+        ;; test should remain a group
+        (is (contains? by-id "test") "Test should remain a group")
+        (is (= :group (:type (get by-id "test"))))
+        (is (= 2 (count (:children (get by-id "test"))))))))
+
+  (testing "Nested single-child groups are fully flattened"
+    ;; docker-compose-up alone should become "Docker Compose Up" not Docker > Compose > Up
+    (let [commands [{:id "docker.compose.up" :label "Up" :type :command :group "docker.compose"}]]
+      (let [result (commands/group-commands commands)]
+        (is (= 1 (count result)))
+        (let [cmd (first result)]
+          (is (= :command (:type cmd)) "Should be flattened to a command")
+          (is (= "docker.compose.up" (:id cmd)))
+          (is (= "Docker Compose Up" (:label cmd))))))))

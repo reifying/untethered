@@ -250,6 +250,29 @@
                       :type :group
                       :children (add-command-to-group-tree [] remaining command)}))))))
 
+(defn flatten-single-child-groups
+  "Recursively flatten groups that have only one child.
+   A single-child group becomes a command with combined label.
+   E.g., Docker group with only 'Up' child becomes 'Docker Up' command."
+  [commands]
+  (mapv (fn [cmd]
+          (if (= :group (:type cmd))
+            (let [flattened-children (flatten-single-child-groups (:children cmd))]
+              (if (= 1 (count flattened-children))
+                ;; Single child - flatten by promoting child with combined label
+                (let [child (first flattened-children)
+                      combined-label (str (capitalize-label (:id cmd)) " " (:label child))]
+                  (if (= :group (:type child))
+                    ;; Child is also a group - merge labels and continue flattening
+                    (assoc child :label combined-label)
+                    ;; Child is a command - promote it with combined label
+                    (assoc child :label combined-label)))
+                ;; Multiple children - keep as group with flattened children
+                (assoc cmd :children flattened-children)))
+            ;; Not a group - return as-is
+            cmd))
+        commands))
+
 (defn group-commands
   "Group commands by their :group key.
    Commands without :group remain at top level.
@@ -286,7 +309,7 @@
                                     commands-with-main)))
                         []
                         with-groups)]
-        (vec (concat truly-ungrouped group-tree))))))
+        (flatten-single-child-groups (vec (concat truly-ungrouped group-tree)))))))
 
 (defn parse-makefile
   "Parse Makefile in the given directory and return a list of commands.
