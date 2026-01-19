@@ -352,6 +352,32 @@
                         :text-align "center"}}
     "Sessions will appear here grouped by their working directory."]])
 
+(defn- resources-button
+  "Resources button with badge for pending uploads."
+  [navigation]
+  (let [pending-count @(rf/subscribe [:resources/pending-uploads])]
+    [:> rn/TouchableOpacity
+     {:style {:padding 8 :margin-right 4}
+      :on-press #(when navigation (.navigate navigation "Resources"))}
+     [:> rn/View
+      [:> rn/Text {:style {:font-size 20}} "📄"]
+      ;; Red badge for pending uploads
+      (when (and pending-count (pos? pending-count))
+        [:> rn/View {:style {:position "absolute"
+                             :top -2
+                             :right -2
+                             :min-width 16
+                             :height 16
+                             :border-radius 8
+                             :background-color "#FF3B30"
+                             :justify-content "center"
+                             :align-items "center"
+                             :padding-horizontal 4}}
+         [:> rn/Text {:style {:color "#FFF"
+                              :font-size 10
+                              :font-weight "600"}}
+          (if (> pending-count 99) "99+" (str pending-count))]])]]))
+
 (defn- settings-button
   "Settings button for the header."
   [navigation]
@@ -359,6 +385,14 @@
    {:style {:padding 8}
     :on-press #(when navigation (.navigate navigation "Settings"))}
    [:> rn/Text {:style {:font-size 22}} "⚙️"]])
+
+(defn- header-right-buttons
+  "Combined header buttons: Resources and Settings."
+  [navigation]
+  [:> rn/View {:style {:flex-direction "row"
+                       :align-items "center"}}
+   [resources-button navigation]
+   [settings-button navigation]])
 
 (defn- directories-section
   "Collapsible directories (Projects) section."
@@ -394,7 +428,7 @@
         (let [^js nav (:navigation (r/props this))]
           (when nav
             (.setOptions nav
-                         #js {:headerRight #(r/as-element [settings-button nav])}))))
+                         #js {:headerRight #(r/as-element [header-right-buttons nav])}))))
 
       :reagent-render
       (fn [props]
