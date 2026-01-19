@@ -928,6 +928,49 @@
          ;; Should include working-directory for new sessions
          (is (= "/path/to/project" (:working-directory msg))))))))
 
+(deftest recipes-handle-started-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "recipes/handle-started stores full recipe state"
+     (rf/dispatch-sync [:recipes/handle-started
+                        {:session-id "s1"
+                         :recipe-id "implement-feature"
+                         :recipe-label "Implement Feature"
+                         :current-step "analyze"
+                         :step-count 3}])
+
+     (let [recipe @(rf/subscribe [:recipes/active-for-session "s1"])]
+       (is (= "implement-feature" (:recipe-id recipe)))
+       (is (= "Implement Feature" (:label recipe)))
+       (is (= "analyze" (:current-step recipe)))
+       (is (= 3 (:step-count recipe)))
+       (is (some? (:started-at recipe)))))))
+
+(deftest recipes-handle-step-started-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Set up active recipe first
+   (rf/dispatch-sync [:recipes/handle-started
+                      {:session-id "s1"
+                       :recipe-id "implement-feature"
+                       :recipe-label "Implement Feature"
+                       :current-step "analyze"
+                       :step-count 3}])
+
+   (testing "recipes/handle-step-started updates current step"
+     (rf/dispatch-sync [:recipes/handle-step-started
+                        {:session-id "s1"
+                         :step "implement"
+                         :step-count 3}])
+
+     (let [recipe @(rf/subscribe [:recipes/active-for-session "s1"])]
+       (is (= "implement" (:current-step recipe)))
+       (is (= 3 (:step-count recipe)))
+       ;; Label should be preserved
+       (is (= "Implement Feature" (:label recipe)))))))
+
 ;; ============================================================================
 ;; Auto-Speak Response Events
 ;; ============================================================================

@@ -101,6 +101,7 @@
      ;; Recipes
      "available_recipes" {:dispatch [:recipes/handle-available msg]}
      "recipe_started" {:dispatch [:recipes/handle-started msg]}
+     "recipe_step_started" {:dispatch [:recipes/handle-step-started msg]}
      "recipe_exited" {:dispatch [:recipes/handle-exited msg]}
 
      ;; Keepalive
@@ -487,10 +488,20 @@
 
 (rf/reg-event-db
  :recipes/handle-started
- (fn [db [_ {:keys [session-id recipe-name]}]]
+ (fn [db [_ {:keys [session-id recipe-id recipe-label current-step step-count]}]]
    (assoc-in db [:recipes :active session-id]
-             {:name recipe-name
+             {:recipe-id recipe-id
+              :label recipe-label
+              :current-step current-step
+              :step-count step-count
               :started-at (js/Date.)})))
+
+(rf/reg-event-db
+ :recipes/handle-step-started
+ (fn [db [_ {:keys [session-id step step-count]}]]
+   (-> db
+       (assoc-in [:recipes :active session-id :current-step] step)
+       (assoc-in [:recipes :active session-id :step-count] step-count))))
 
 (rf/reg-event-db
  :recipes/handle-exited

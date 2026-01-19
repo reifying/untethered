@@ -412,17 +412,49 @@
 
 (defn- header-recipe-button
   "Recipe button for the conversation header.
-   Shows clipboard icon, navigates to Recipes screen."
+   When a recipe is active, shows recipe label with step count and exit button.
+   When no recipe is active, shows clipboard icon to navigate to Recipes screen."
   [session-id working-directory ^js navigation]
   (let [active-recipe @(rf/subscribe [:recipes/active-for-session session-id])]
-    [:> rn/TouchableOpacity
-     {:style {:padding 8}
-      :on-press #(.navigate navigation "Recipes"
-                            #js {:sessionId session-id
-                                 :workingDirectory working-directory})}
-     [:> rn/Text {:style {:font-size 16
-                          :color (if active-recipe "#34C759" "#007AFF")}}
-      (if active-recipe "📋" "📝")]]))
+    (if active-recipe
+      ;; Active recipe: show status with exit button
+      [:> rn/View {:style {:flex-direction "row"
+                           :align-items "center"
+                           :background-color "#E8F5E9"
+                           :border-radius 8
+                           :padding-horizontal 8
+                           :padding-vertical 4
+                           :margin-right 4}}
+       [:> rn/TouchableOpacity
+        {:on-press #(.navigate navigation "Recipes"
+                               #js {:sessionId session-id
+                                    :workingDirectory working-directory})}
+        [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+         [:> rn/Text {:style {:font-size 12 :margin-right 4}} "📋"]
+         [:> rn/Text {:style {:font-size 12
+                              :color "#2E7D32"
+                              :font-weight "500"
+                              :max-width 100}
+                      :number-of-lines 1}
+          (or (:label active-recipe) "Recipe")]
+         (when (:step-count active-recipe)
+           [:> rn/Text {:style {:font-size 11
+                                :color "#558B2F"
+                                :margin-left 4}}
+            (str "(" (:step-count active-recipe) ")")])]]
+       ;; Exit button
+       [:> rn/TouchableOpacity
+        {:style {:margin-left 6
+                 :padding 2}
+         :on-press #(rf/dispatch [:recipes/exit session-id])}
+        [:> rn/Text {:style {:font-size 12 :color "#C62828"}} "✕"]]]
+      ;; No active recipe: show icon to open recipes
+      [:> rn/TouchableOpacity
+       {:style {:padding 8}
+        :on-press #(.navigate navigation "Recipes"
+                              #js {:sessionId session-id
+                                   :workingDirectory working-directory})}
+       [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "📝"]])))
 
 (defn- header-info-button
   "Info button for the conversation header.
