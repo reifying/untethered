@@ -350,6 +350,16 @@
  (fn [db _]
    (get-in db [:settings :resource-storage-location])))
 
+(rf/reg-sub
+ :auth/api-key
+ (fn [db _]
+   (:api-key db)))
+
+(rf/reg-sub
+ :auth/has-api-key?
+ (fn [db _]
+   (some? (:api-key db))))
+
 ;; ============================================================================
 ;; Queue and Priority Queue
 ;; ============================================================================

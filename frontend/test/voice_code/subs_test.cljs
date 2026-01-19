@@ -20,6 +20,25 @@
    (testing "connection/authenticated? returns auth state"
      (is (false? @(rf/subscribe [:connection/authenticated?]))))))
 
+(deftest api-key-subs
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "auth/api-key returns nil when no key set"
+     (is (nil? @(rf/subscribe [:auth/api-key]))))
+
+   (testing "auth/has-api-key? returns false when no key"
+     (is (false? @(rf/subscribe [:auth/has-api-key?]))))
+
+   (testing "auth/api-key returns key when set"
+     (rf/dispatch-sync [:db/update-in [:api-key]
+                        (constantly "untethered-a1b2c3d4e5f678901234567890abcdef")])
+     (is (= "untethered-a1b2c3d4e5f678901234567890abcdef"
+            @(rf/subscribe [:auth/api-key]))))
+
+   (testing "auth/has-api-key? returns true when key set"
+     (is (true? @(rf/subscribe [:auth/has-api-key?]))))))
+
 (deftest sessions-subs
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])

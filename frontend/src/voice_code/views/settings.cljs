@@ -13,6 +13,26 @@
             ["react-native" :refer [Platform]]
             [voice-code.views.voice-picker :refer [voice-picker-modal]]))
 
+;; API Key validation and formatting
+(def api-key-prefix "untethered-")
+(def api-key-total-length 43) ;; "untethered-" (11) + 32 hex chars
+
+(defn valid-api-key-format?
+  "Check if API key matches expected format: untethered-<32 hex chars>"
+  [key]
+  (when key
+    (and (string? key)
+         (= (count key) api-key-total-length)
+         (.startsWith key api-key-prefix)
+         (re-matches #"^untethered-[a-f0-9]{32}$" key))))
+
+(defn mask-api-key
+  "Mask API key showing first 4 and last 4 characters.
+   Format: 'unte...89ab'"
+  [key]
+  (when (and key (> (count key) 8))
+    (str (subs key 0 4) "..." (subs key (- (count key) 4)))))
+
 (defn- section-header
   "Section header for settings groups."
   [title]
@@ -169,6 +189,136 @@
      (when error
        [setting-row {:label "Error"
                      :value error}])]))
+
+(defn- api-key-section
+  "API key management section showing key status and management options."
+  [navigation]
+  (let [api-key-input (r/atom "")
+        validation-error (r/atom nil)]
+    (fn [navigation]
+      (let [api-key @(rf/subscribe [:auth/api-key])
+            has-key? (some? api-key)]
+        [:> rn/View
+         [section-header "Authentication"]
+         (if has-key?
+           ;; Key is configured - show status and management
+           [:<>
+            ;; Status row with checkmark
+            [:> rn/View {:style {:flex-direction "row"
+                                 :align-items "center"
+                                 :padding-horizontal 16
+                                 :padding-vertical 14
+                                 :background-color "#FFFFFF"
+                                 :border-bottom-width 1
+                                 :border-bottom-color "#F0F0F0"}}
+             [:> rn/Text {:style {:font-size 18 :color "#34C759" :margin-right 8}} "✓"]
+             [:> rn/Text {:style {:font-size 16 :color "#000" :flex 1}}
+              "API Key Configured"]
+             [:> rn/Text {:style {:font-size 14
+                                  :font-family (when (= "ios" (.-OS Platform)) "Menlo")
+                                  :color "#999"}}
+              (mask-api-key api-key)]]
+
+            ;; Update key button (navigates to QR scanner)
+            [setting-row {:label "Update Key"
+                          :on-press #(when navigation (.navigate navigation "QRScanner"))
+                          :accessory [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "📷"]}]
+
+            ;; Delete key button
+            [setting-row {:label "Delete Key"
+                          :on-press (fn []
+                                      (.alert Alert
+                                              "Delete API Key?"
+                                              "You will need to re-scan the QR code to connect to the backend."
+                                              (clj->js [{:text "Cancel" :style "cancel"}
+                                                        {:text "Delete"
+                                                         :style "destructive"
+                                                         :onPress #(rf/dispatch [:auth/disconnect])}])))
+                          :accessory [:> rn/Text {:style {:font-size 16 :color "#FF3B30"}} "🗑"]}]]
+
+           ;; Key not configured - show warning and entry options
+           [:<>
+            ;; Warning status
+            [:> rn/View {:style {:flex-direction "row"
+                                 :align-items "center"
+                                 :padding-horizontal 16
+                                 :padding-vertical 14
+                                 :background-color "#FFFFFF"
+                                 :border-bottom-width 1
+                                 :border-bottom-color "#F0F0F0"}}
+             [:> rn/Text {:style {:font-size 18 :color "#FF9500" :margin-right 8}} "⚠️"]
+             [:> rn/Text {:style {:font-size 16 :color "#000"}}
+              "API Key Required"]]
+
+            ;; Scan QR button
+            [setting-row {:label "Scan QR Code"
+                          :on-press #(when navigation (.navigate navigation "QRScanner"))
+                          :accessory [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "📷"]}]
+
+            ;; Manual entry field
+            [:> rn/View {:style {:background-color "#FFFFFF"
+                                 :border-bottom-width 1
+                                 :border-bottom-color "#F0F0F0"
+                                 :padding-horizontal 16
+                                 :padding-vertical 10}}
+             [:> rn/TextInput
+              {:style {:font-size 14
+                       :font-family (when (= "ios" (.-OS Platform)) "Menlo")
+                       :color "#000"
+                       :padding-vertical 8
+                       :border-width 1
+                       :border-color "#DDD"
+                       :border-radius 8
+                       :padding-horizontal 12}
+               :value @api-key-input
+               :placeholder "Paste API key"
+               :on-change-text (fn [text]
+                                 (reset! api-key-input text)
+                                 (reset! validation-error nil))
+               :auto-capitalize "none"
+               :auto-correct false
+               :secure-text-entry false}]
+
+             ;; Save button
+             (when (seq @api-key-input)
+               [:> rn/TouchableOpacity
+                {:style {:margin-top 8
+                         :background-color "#007AFF"
+                         :padding-vertical 10
+                         :border-radius 8
+                         :align-items "center"}
+                 :on-press (fn []
+                             (let [key @api-key-input]
+                               (if (valid-api-key-format? key)
+                                 (do
+                                   (rf/dispatch [:auth/connect key])
+                                   (reset! api-key-input "")
+                                   (reset! validation-error nil))
+                                 (reset! validation-error
+                                         (str "Invalid format. Must start with '"
+                                              api-key-prefix
+                                              "' and be "
+                                              api-key-total-length
+                                              " characters.")))))}
+                [:> rn/Text {:style {:color "#FFF" :font-size 16 :font-weight "600"}}
+                 "Save API Key"]])]
+
+            ;; Validation error
+            (when @validation-error
+              [:> rn/View {:style {:padding-horizontal 16
+                                   :padding-vertical 8
+                                   :background-color "#FFFFFF"}}
+               [:> rn/Text {:style {:font-size 12 :color "#FF3B30"}}
+                @validation-error]])
+
+            ;; Help text
+            [:> rn/View {:style {:padding-horizontal 16
+                                 :padding-vertical 8
+                                 :background-color "#FFFFFF"
+                                 :border-bottom-width 1
+                                 :border-bottom-color "#F0F0F0"}}
+             [:> rn/Text {:style {:font-size 12 :color "#666"}}
+              "Run 'make show-key-qr' on your server to display the QR code"]]])]))))
 
 (defn- server-settings-section
   "Server URL and port configuration."
@@ -436,6 +586,7 @@
     [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
      [:> rn/ScrollView {:content-container-style {:padding-bottom 40}}
       [connection-status-section]
+      [api-key-section navigation]
       [server-settings-section]
       [voice-settings-section]
       [audio-playback-section]
