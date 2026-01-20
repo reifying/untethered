@@ -325,8 +325,14 @@
                           (show-confirmation! "Conversation exported")))
 
         handle-compact (fn []
-                         (rf/dispatch [:sessions/compact session-id])
-                         (show-confirmation! "Compaction started"))
+                         (.alert Alert
+                                 "Compact Session"
+                                 "This will summarize the conversation history to reduce context window usage. This cannot be undone."
+                                 (clj->js [{:text "Cancel" :style "cancel"}
+                                           {:text "Compact"
+                                            :onPress (fn []
+                                                       (rf/dispatch [:sessions/compact session-id])
+                                                       (show-confirmation! "Compaction started"))}])))
 
         handle-add-to-queue (fn []
                               (rf/dispatch [:sessions/add-to-priority-queue session-id])
