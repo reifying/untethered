@@ -221,6 +221,7 @@
      (let [auto-speak? (get-in db [:settings :auto-speak-responses])
            voice-listening? (get-in db [:ui :voice-listening?])
            active-session-id (:active-session-id db)
+           is-active-session? (= session-id active-session-id)
            ;; Get working directory for voice rotation
            session (get-in db [:sessions session-id])
            working-directory (:working-directory session)
@@ -230,7 +231,7 @@
            ;; 3. This response is for the active session (prevents surprise TTS from background sessions)
            should-speak? (and auto-speak?
                               (not voice-listening?)
-                              (= session-id active-session-id))
+                              is-active-session?)
            new-message (cond-> {:id (random-uuid)
                                 :session-id session-id
                                 :role :assistant
@@ -247,7 +248,11 @@
                              (-> (or msgs [])
                                  (conj new-message)
                                  db/prune-messages)))
-                (update :locked-sessions disj session-id))
+                (update :locked-sessions disj session-id)
+                ;; Increment unread count for assistant messages on non-active sessions
+                ;; This matches iOS SessionSyncManager behavior
+                (cond-> (not is-active-session?)
+                  (update-in [:sessions session-id :unread-count] (fnil inc 0))))
         :dispatch-n (cond-> [[:ws/send-message-ack message-id]
                              [:persistence/save-message session-id]]
                       should-speak?
@@ -291,17 +296,25 @@
  :ws/handle-replay
  (fn [{:keys [db]} [_ {:keys [message-id message]}]]
    (let [{:keys [session-id text role timestamp]} message
+         active-session-id (:active-session-id db)
+         is-active-session? (= session-id active-session-id)
+         is-assistant? (= role "assistant")
          new-message {:id (or message-id (random-uuid))
                       :session-id session-id
                       :role (keyword role)
                       :text text
                       :timestamp (js/Date. timestamp)
                       :status :confirmed}]
-     {:db (update-in db [:messages session-id]
-                     (fn [msgs]
-                       (-> (or msgs [])
-                           (conj new-message)
-                           db/prune-messages)))
+     {:db (-> db
+              (update-in [:messages session-id]
+                         (fn [msgs]
+                           (-> (or msgs [])
+                               (conj new-message)
+                               db/prune-messages)))
+              ;; Increment unread count for assistant messages on non-active sessions
+              ;; Replayed messages are messages that were buffered during disconnection
+              (cond-> (and is-assistant? (not is-active-session?))
+                (update-in [:sessions session-id :unread-count] (fnil inc 0))))
       :dispatch [:ws/send-message-ack message-id]})))
 
 ;; ============================================================================

@@ -1316,6 +1316,116 @@
        (is (= 2 (count msgs)))
        (is (= "Now active response" (:text (second msgs))))))))
 
+(deftest handle-response-unread-count-test
+  "Tests that ws/handle-response increments unread count for non-active sessions.
+   This matches iOS SessionSyncManager behavior."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Create sessions
+   (rf/dispatch-sync [:sessions/add {:id "active-session" :backend-name "Active"
+                                     :working-directory "/project"}])
+   (rf/dispatch-sync [:sessions/add {:id "background-session" :backend-name "Background"
+                                     :working-directory "/project"}])
+
+   (testing "handle-response increments unread for non-active session"
+     ;; Set active session
+     (rf/dispatch-sync [:sessions/set-active "active-session"])
+
+     ;; Receive response for background session
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Background response"
+                         :session-id "background-session"
+                         :message-id "msg-1"}])
+
+     ;; Unread should be incremented for background session
+     (is (= 1 @(rf/subscribe [:sessions/unread-count "background-session"])))
+     ;; Active session should have no unread
+     (is (= 0 @(rf/subscribe [:sessions/unread-count "active-session"]))))
+
+   (testing "handle-response does NOT increment unread for active session"
+     ;; Receive response for active session
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Active response"
+                         :session-id "active-session"
+                         :message-id "msg-2"}])
+
+     ;; Active session should still have 0 unread
+     (is (= 0 @(rf/subscribe [:sessions/unread-count "active-session"])))
+     ;; Background should still be 1
+     (is (= 1 @(rf/subscribe [:sessions/unread-count "background-session"]))))
+
+   (testing "multiple responses accumulate unread count"
+     ;; More responses for background session
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Another background response"
+                         :session-id "background-session"
+                         :message-id "msg-3"}])
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Yet another"
+                         :session-id "background-session"
+                         :message-id "msg-4"}])
+
+     ;; Should be 3 now
+     (is (= 3 @(rf/subscribe [:sessions/unread-count "background-session"]))))
+
+   (testing "switching to session clears unread count"
+     ;; Switch to background session
+     (rf/dispatch-sync [:sessions/set-active "background-session"])
+
+     ;; Unread should be cleared
+     (is (= 0 @(rf/subscribe [:sessions/unread-count "background-session"]))))))
+
+(deftest handle-replay-unread-count-test
+  "Tests that ws/handle-replay increments unread count for assistant messages on non-active sessions."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Create sessions
+   (rf/dispatch-sync [:sessions/add {:id "s1" :backend-name "Session 1"
+                                     :working-directory "/project"}])
+   (rf/dispatch-sync [:sessions/add {:id "s2" :backend-name "Session 2"
+                                     :working-directory "/project"}])
+
+   ;; Set s1 as active
+   (rf/dispatch-sync [:sessions/set-active "s1"])
+
+   (testing "replay of assistant message increments unread for non-active session"
+     (rf/dispatch-sync [:ws/handle-replay
+                        {:message-id "replay-1"
+                         :message {:session-id "s2"
+                                   :text "Replayed assistant message"
+                                   :role "assistant"
+                                   :timestamp "2024-01-01T00:00:00Z"}}])
+
+     (is (= 1 @(rf/subscribe [:sessions/unread-count "s2"]))))
+
+   (testing "replay of user message does NOT increment unread"
+     (rf/dispatch-sync [:ws/handle-replay
+                        {:message-id "replay-2"
+                         :message {:session-id "s2"
+                                   :text "Replayed user message"
+                                   :role "user"
+                                   :timestamp "2024-01-01T00:00:01Z"}}])
+
+     ;; Still 1, user message doesn't increment
+     (is (= 1 @(rf/subscribe [:sessions/unread-count "s2"]))))
+
+   (testing "replay for active session does NOT increment unread"
+     (rf/dispatch-sync [:ws/handle-replay
+                        {:message-id "replay-3"
+                         :message {:session-id "s1"
+                                   :text "Replayed to active"
+                                   :role "assistant"
+                                   :timestamp "2024-01-01T00:00:02Z"}}])
+
+     ;; Active session should have 0 unread
+     (is (= 0 @(rf/subscribe [:sessions/unread-count "s1"]))))))
+
 ;; ============================================================================
 ;; Response Error Status Tests
 ;; ============================================================================
