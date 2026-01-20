@@ -3,7 +3,7 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             [clojure.string :as str]
-            ["react-native" :as rn :refer [Alert RefreshControl Modal Switch]]
+            ["react-native" :as rn :refer [Alert RefreshControl Modal Switch Animated PanResponder]]
             ["@react-native-clipboard/clipboard" :as Clipboard]
             [voice-code.views.components :refer [relative-time-text]]))
 
@@ -51,6 +51,153 @@
                           :font-size 12
                           :font-weight "600"}}
       (if (> count 99) "99+" (str count))]]))
+
+(def ^:private swipe-threshold
+  "Minimum swipe distance to trigger delete action."
+  -80)
+
+(def ^:private delete-button-width
+  "Width of the delete button revealed on swipe."
+  80)
+
+(defn- swipeable-session-item
+  "Session item with swipe-to-delete functionality.
+   Swipe left to reveal delete button, or swipe far left to delete immediately.
+   Uses React Native's Animated and PanResponder for gesture handling."
+  [{:keys [session locked? on-press on-delete]}]
+  (let [;; Animated value for horizontal translation
+        translate-x (Animated.Value. 0)
+        ;; Track if item is open (showing delete button)
+        is-open (r/atom false)
+
+        ;; Create pan responder for gesture handling
+        pan-responder
+        (.create PanResponder
+                 #js {:onStartShouldSetPanResponder (fn [] false)
+                      :onMoveShouldSetPanResponder
+                      (fn [_ gesture-state]
+                        ;; Only respond to horizontal swipes
+                        (and (> (js/Math.abs (.-dx gesture-state)) 10)
+                             (> (js/Math.abs (.-dx gesture-state))
+                                (js/Math.abs (.-dy gesture-state)))))
+
+                      :onPanResponderGrant
+                      (fn [_ _]
+                        ;; Store current offset
+                        (.setOffset translate-x (.-_value translate-x))
+                        (.setValue translate-x 0))
+
+                      :onPanResponderMove
+                      (fn [_ gesture-state]
+                        ;; Only allow left swipe (negative dx), clamp to delete button width
+                        (let [dx (.-dx gesture-state)
+                              current-offset (.-_offset translate-x)
+                              new-value (+ current-offset dx)
+                              ;; Clamp between -delete-button-width and 0
+                              clamped (max (- delete-button-width) (min 0 new-value))]
+                          (.setValue translate-x (- clamped current-offset))))
+
+                      :onPanResponderRelease
+                      (fn [_ gesture-state]
+                        ;; Flatten offset into value
+                        (.flattenOffset translate-x)
+                        (let [current-value (.-_value translate-x)
+                              velocity-x (.-vx gesture-state)]
+                          (cond
+                            ;; Fast swipe or past threshold - show delete button
+                            (or (< velocity-x -0.5) (< current-value swipe-threshold))
+                            (do
+                              (reset! is-open true)
+                              (.start
+                               (Animated.spring translate-x
+                                                #js {:toValue (- delete-button-width)
+                                                     :useNativeDriver true
+                                                     :friction 8})))
+
+                            ;; Otherwise snap back to closed
+                            :else
+                            (do
+                              (reset! is-open false)
+                              (.start
+                               (Animated.spring translate-x
+                                                #js {:toValue 0
+                                                     :useNativeDriver true
+                                                     :friction 8}))))))
+
+                      :onPanResponderTerminate
+                      (fn [_ _]
+                        ;; Reset to closed on termination
+                        (.flattenOffset translate-x)
+                        (reset! is-open false)
+                        (.start
+                         (Animated.spring translate-x
+                                          #js {:toValue 0
+                                               :useNativeDriver true
+                                               :friction 8})))})
+
+        ;; Close the swipe when tapped elsewhere
+        close-swipe (fn []
+                      (when @is-open
+                        (reset! is-open false)
+                        (.start
+                         (Animated.spring translate-x
+                                          #js {:toValue 0
+                                               :useNativeDriver true
+                                               :friction 8}))))
+
+        ;; Handle delete with confirmation
+        handle-delete (fn []
+                        (.alert Alert
+                                "Delete Session"
+                                "Are you sure you want to delete this session?"
+                                (clj->js [{:text "Cancel"
+                                           :style "cancel"
+                                           :onPress close-swipe}
+                                          {:text "Delete"
+                                           :style "destructive"
+                                           :onPress (fn []
+                                                      ;; Animate out before deleting
+                                                      (.start
+                                                       (Animated.timing translate-x
+                                                                        #js {:toValue -500
+                                                                             :duration 200
+                                                                             :useNativeDriver true})
+                                                       on-delete))}])))]
+    (fn [{:keys [session locked? on-press on-delete]}]
+      [:> rn/View {:style {:overflow "hidden"}}
+       ;; Delete button background (revealed on swipe)
+       [:> rn/View {:style {:position "absolute"
+                            :right 0
+                            :top 0
+                            :bottom 0
+                            :width delete-button-width
+                            :background-color "#FF3B30"
+                            :justify-content "center"
+                            :align-items "center"}}
+        [:> rn/TouchableOpacity
+         {:style {:flex 1
+                  :width "100%"
+                  :justify-content "center"
+                  :align-items "center"}
+          :on-press handle-delete}
+         [:> rn/Text {:style {:color "#FFF"
+                              :font-size 14
+                              :font-weight "600"}}
+          "Delete"]]]
+
+       ;; Animated session item container
+       [:> (.-View Animated)
+        (merge
+         {:style #js {:transform #js [#js {:translateX translate-x}]
+                      :background-color "#FFFFFF"}}
+         (js->clj (.-panHandlers pan-responder)))
+        [session-item {:session session
+                       :locked? locked?
+                       :on-press (fn []
+                                   (if @is-open
+                                     (close-swipe)
+                                     (on-press)))
+                       :on-delete on-delete}]]])))
 
 (defn- session-item
   "Single session item in the list.
@@ -435,7 +582,7 @@
                        session-data (js->clj item :keywordize-keys true)
                        session-id (:id session-data)]
                    (r/as-element
-                    [session-item
+                    [swipeable-session-item
                      {:session session-data
                       :locked? (contains? locked-sessions session-id)
                       :on-press #(when navigation
