@@ -18,7 +18,7 @@ WRAP := ./scripts/wrap-command
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 .PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
-.PHONY: rn-ios rn-android rn-build-ios rn-deploy-device rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-list-apps rn-boot-sim rn-screenshot rn-restart rn-reload manual-ralph
+.PHONY: rn-ios rn-android rn-build-ios rn-deploy-device rn-deploy-device-release rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-list-apps rn-boot-sim rn-screenshot rn-restart rn-reload manual-ralph
 .PHONY: rn-test rn-e2e rn-e2e-smoke rn-e2e-auth rn-e2e-nav
 
 # React Native Configuration
@@ -112,7 +112,8 @@ help:
 	@echo "  rn-ios             - Build and run React Native iOS app"
 	@echo "  rn-android         - Build and run React Native Android app"
 	@echo "  rn-build-ios       - Build React Native iOS app with xcodebuild"
-	@echo "  rn-deploy-device   - Build and install to connected iPhone"
+	@echo "  rn-deploy-device   - Build and install to connected iPhone (Debug)"
+	@echo "  rn-deploy-device-release - Build and install Release build to iPhone (faster startup)"
 	@echo "  rn-shadow          - Start shadow-cljs watch"
 	@echo "  rn-metro           - Start Metro bundler"
 	@echo "  rn-pod-install     - Install CocoaPods dependencies"
@@ -488,6 +489,16 @@ rn-deploy-device:
 	@echo "Installing to device..."
 	cd $(RN_IOS_DIR) && xcrun devicectl device install app --device $$(xcrun devicectl list devices | grep -i "iphone" | grep -E "(connected|available)" | grep -o '[0-9A-F]\{8\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{12\}' | head -1) build/Build/Products/Debug-iphoneos/VoiceCodeMobile.app
 	@echo "✅ Deployed to iPhone! Launch the app manually."
+
+# Build and install Release build to connected iPhone (faster startup, no Metro needed)
+rn-deploy-device-release:
+	@echo "Building RELEASE React Native iOS app for connected iPhone..."
+	@echo "Make sure your iPhone is connected via USB and unlocked"
+	@echo "Note: Release builds have faster startup but no hot reload"
+	$(WRAP) bash -c "cd $(RN_IOS_DIR) && xcodebuild build -workspace VoiceCodeMobile.xcworkspace -scheme VoiceCodeMobile -configuration Release -destination 'generic/platform=iOS' -allowProvisioningUpdates -derivedDataPath build CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM=$(DEVELOPMENT_TEAM)"
+	@echo "Installing to device..."
+	cd $(RN_IOS_DIR) && xcrun devicectl device install app --device $$(xcrun devicectl list devices | grep -i "iphone" | grep -E "(connected|available)" | grep -o '[0-9A-F]\{8\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{12\}' | head -1) build/Build/Products/Release-iphoneos/VoiceCodeMobile.app
+	@echo "✅ Release build deployed to iPhone! Launch the app manually."
 
 # Run React Native iOS app
 rn-ios:
