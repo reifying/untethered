@@ -96,7 +96,14 @@
 
      (is (false? @(rf/subscribe [:voice/listening?])))
      (is (false? @(rf/subscribe [:voice/speaking?])))
-     (is (= :test-error (:type @(rf/subscribe [:voice/error])))))))
+     (is (= :test-error (:type @(rf/subscribe [:voice/error])))))
+
+   (testing "clear-error clears the voice error"
+     (is (some? @(rf/subscribe [:voice/error])))
+
+     (rf/dispatch-sync [:voice/clear-error])
+
+     (is (nil? @(rf/subscribe [:voice/error]))))))
 
 (deftest voice-respect-silent-mode-event
   (rf-test/run-test-sync

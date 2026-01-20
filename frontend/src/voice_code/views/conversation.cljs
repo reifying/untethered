@@ -490,10 +490,12 @@
         "Tap to reconnect")]]))
 
 (defn- voice-input-area
-  "Voice input with microphone button."
+  "Voice input with microphone button.
+   Shows error state with retry option when voice recognition fails."
   [{:keys [session-id]}]
   (let [listening? @(rf/subscribe [:voice/listening?])
         partial-result @(rf/subscribe [:voice/partial-result])
+        voice-error @(rf/subscribe [:voice/error])
         locked? @(rf/subscribe [:session/locked? session-id])
         session (when session-id @(rf/subscribe [:sessions/by-id session-id]))]
     [:> rn/View {:style {:border-top-width 1
@@ -509,6 +511,57 @@
       [mode-toggle]
       ;; Tappable connection status indicator
       [tappable-connection-status]]
+
+     ;; Voice error display with retry
+     (when voice-error
+       [:> rn/View {:style {:margin-horizontal 16
+                            :margin-bottom 12
+                            :padding 12
+                            :background-color "#FFF5F5"
+                            :border-radius 12
+                            :border-width 1
+                            :border-color "#FFCDD2"}}
+        [:> rn/View {:style {:flex-direction "row"
+                             :align-items "center"
+                             :margin-bottom 8}}
+         [:> rn/Text {:style {:font-size 16 :margin-right 8}} "⚠️"]
+         [:> rn/Text {:style {:font-size 14
+                              :color "#D32F2F"
+                              :font-weight "500"
+                              :flex 1}}
+          (case (:type voice-error)
+            :recognition "Voice recognition failed"
+            :start-failed "Couldn't start listening"
+            :speak-failed "Speech playback failed"
+            "Voice error occurred")]]
+        [:> rn/Text {:style {:font-size 12
+                             :color "#666"
+                             :margin-bottom 12}}
+         (or (:message voice-error) "Please try again")]
+        [:> rn/View {:style {:flex-direction "row"
+                             :justify-content "flex-end"}}
+         [:> rn/TouchableOpacity
+          {:style {:padding-horizontal 16
+                   :padding-vertical 8
+                   :background-color "#FFEBEE"
+                   :border-radius 8
+                   :margin-right 8}
+           :on-press #(rf/dispatch [:voice/clear-error])}
+          [:> rn/Text {:style {:font-size 13
+                               :color "#D32F2F"}}
+           "Dismiss"]]
+         [:> rn/TouchableOpacity
+          {:style {:padding-horizontal 16
+                   :padding-vertical 8
+                   :background-color "#D32F2F"
+                   :border-radius 8}
+           :on-press (fn []
+                       (rf/dispatch [:voice/clear-error])
+                       (rf/dispatch [:voice/start-listening]))}
+          [:> rn/Text {:style {:font-size 13
+                               :color "#FFFFFF"
+                               :font-weight "500"}}
+           "Retry"]]]])
 
      ;; Partial transcription display
      (when (and listening? partial-result)
@@ -540,6 +593,8 @@
                 :elevation 5}
         :disabled locked?
         :on-press (fn []
+                    (when voice-error
+                      (rf/dispatch [:voice/clear-error]))
                     (if listening?
                       (rf/dispatch [:voice/stop-listening])
                       (rf/dispatch [:voice/start-listening])))}

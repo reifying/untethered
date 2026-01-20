@@ -548,6 +548,11 @@
        (assoc-in [:ui :voice-speaking?] false)
        (assoc-in [:ui :voice-error] error))))
 
+(rf/reg-event-db
+ :voice/clear-error
+ (fn [db _]
+   (assoc-in db [:ui :voice-error] nil)))
+
 ;; ============================================================================
 ;; re-frame Subscriptions
 ;; ============================================================================
