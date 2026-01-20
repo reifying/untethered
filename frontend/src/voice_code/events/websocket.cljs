@@ -459,8 +459,11 @@
 (rf/reg-event-db
  :sessions/handle-ready
  (fn [db [_ {:keys [session-id]}]]
-   ;; Session is ready for interaction - update any pending state
-   (assoc-in db [:sessions session-id :ready?] true)))
+   ;; Session is ready for interaction - unlock session and update state
+   ;; iOS also unlocks session on session_ready (VoiceCodeClient.swift line 861)
+   (-> db
+       (update :locked-sessions disj session-id)
+       (assoc-in [:sessions session-id :ready?] true))))
 
 (rf/reg-event-db
  :sessions/handle-killed
@@ -488,8 +491,10 @@
 (rf/reg-event-fx
  :sessions/handle-compaction-complete
  (fn [{:keys [db]} [_ {:keys [session-id]}]]
-   ;; Compaction succeeded - update state, cancel timeout, and show feedback
+   ;; Compaction succeeded - unlock session, update state, cancel timeout, and show feedback
+   ;; iOS also unlocks session on compaction_complete (VoiceCodeClient.swift line 794)
    {:db (-> db
+            (update :locked-sessions disj session-id)
             (update-in [:ui :compacting-sessions] disj session-id)
             (assoc-in [:ui :compaction-timestamps session-id] (js/Date.))
             (assoc-in [:ui :compaction-success] "Session compacted"))
@@ -499,8 +504,10 @@
 (rf/reg-event-fx
  :sessions/handle-compaction-error
  (fn [{:keys [db]} [_ {:keys [session-id error]}]]
-   ;; Compaction failed - clear compacting state, cancel timeout, and show error
+   ;; Compaction failed - unlock session, clear compacting state, cancel timeout, and show error
+   ;; iOS also unlocks session on compaction_error (VoiceCodeClient.swift line 808)
    {:db (-> db
+            (update :locked-sessions disj session-id)
             (update-in [:ui :compacting-sessions] disj session-id)
             (assoc-in [:ui :current-error] (str "Compaction failed: " error)))
     :timeout/cancel [:compaction session-id]}))

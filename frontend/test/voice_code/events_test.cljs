@@ -433,7 +433,16 @@
      ;; Then mark it ready
      (rf/dispatch-sync [:sessions/handle-ready {:session-id "session-ready-1"}])
      (let [session @(rf/subscribe [:sessions/by-id "session-ready-1"])]
-       (is (true? (:ready? session)))))))
+       (is (true? (:ready? session)))))
+
+   (testing "unlocks session on session_ready message (iOS parity)"
+     ;; Lock a session first
+     (rf/dispatch-sync [:db/update-in [:locked-sessions] conj "session-ready-2"])
+     (is (contains? @(rf/subscribe [:locked-sessions]) "session-ready-2"))
+
+     ;; Handle session_ready should unlock it
+     (rf/dispatch-sync [:sessions/handle-ready {:session-id "session-ready-2"}])
+     (is (not (contains? @(rf/subscribe [:locked-sessions]) "session-ready-2"))))))
 
 (deftest handle-session-killed-test
   (rf-test/run-test-sync
@@ -1723,6 +1732,16 @@
      ;; Should set success message
      (is (= "Session compacted" (get-in @re-frame.db/app-db [:ui :compaction-success]))))
 
+   (testing "handle-compaction-complete unlocks session (iOS parity)"
+     ;; Lock a session first
+     (rf/dispatch-sync [:db/update-in [:locked-sessions] conj "session-compact-unlock"])
+     (rf/dispatch-sync [:db/update-in [:ui :compacting-sessions] conj "session-compact-unlock"])
+     (is (contains? @(rf/subscribe [:locked-sessions]) "session-compact-unlock"))
+
+     ;; Handle compaction_complete should unlock it
+     (rf/dispatch-sync [:sessions/handle-compaction-complete {:session-id "session-compact-unlock"}])
+     (is (not (contains? @(rf/subscribe [:locked-sessions]) "session-compact-unlock"))))
+
    (testing "handle-compaction-error removes from compacting and sets error"
      ;; First set a session as compacting
      (rf/dispatch-sync [:db/update-in [:ui :compacting-sessions] (constantly #{"session-789"})])
@@ -1735,6 +1754,17 @@
      (is (not (contains? (get-in @re-frame.db/app-db [:ui :compacting-sessions]) "session-789")))
      ;; Should set error message
      (is (= "Compaction failed: Test error" @(rf/subscribe [:ui/current-error]))))
+
+   (testing "handle-compaction-error unlocks session (iOS parity)"
+     ;; Lock a session first
+     (rf/dispatch-sync [:db/update-in [:locked-sessions] conj "session-compact-error-unlock"])
+     (rf/dispatch-sync [:db/update-in [:ui :compacting-sessions] conj "session-compact-error-unlock"])
+     (is (contains? @(rf/subscribe [:locked-sessions]) "session-compact-error-unlock"))
+
+     ;; Handle compaction_error should unlock it
+     (rf/dispatch-sync [:sessions/handle-compaction-error {:session-id "session-compact-error-unlock"
+                                                           :error "Some error"}])
+     (is (not (contains? @(rf/subscribe [:locked-sessions]) "session-compact-error-unlock"))))
 
    (testing "clear-compaction-success clears the success message"
      (rf/dispatch-sync [:db/update-in [:ui :compaction-success] (constantly "Test message")])
