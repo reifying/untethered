@@ -35,6 +35,11 @@
    ;; Set of session IDs currently processing prompts
    :locked-sessions #{}
 
+   ;; Set of session IDs that have been subscribed in this view cycle
+   ;; Guards against duplicate subscribe requests (matches iOS hasSubscribedThisAppear pattern)
+   ;; Cleared when session becomes inactive or on reconnection
+   :subscribed-sessions #{}
+
    ;; Tracks pending delta sync requests (session-id -> true when delta sync in progress)
    ;; Used to determine whether to merge or replace messages on history response
    :pending-delta-syncs #{}

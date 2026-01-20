@@ -184,7 +184,10 @@
             ;; Clear reauthentication flag on successful authentication
             (assoc-in [:connection :requires-reauthentication?] false)
             (assoc-in [:connection :error] nil)
-            (assoc-in [:connection :reconnect-attempts] 0))
+            (assoc-in [:connection :reconnect-attempts] 0)
+            ;; Clear subscribed-sessions on reconnection so sessions can re-subscribe
+            ;; This is important for delta sync to work correctly after reconnection
+            (assoc :subscribed-sessions #{}))
     :ws/start-ping-timer nil
     :dispatch-n [[:sessions/resubscribe-all]
                  [:ws/send-max-message-size]]}))
@@ -567,15 +570,22 @@
 (rf/reg-event-fx
  :session/subscribe
  (fn [{:keys [db]} [_ session-id]]
-   (let [last-message-id (-> db :messages (get session-id) last :id)
-         is-delta-sync? (boolean last-message-id)]
-     {:db (if is-delta-sync?
-            (update db :pending-delta-syncs conj session-id)
-            db)
-      :ws/send (cond-> {:type "subscribe"
-                        :session-id session-id}
-                 last-message-id
-                 (assoc :last-message-id last-message-id))})))
+   ;; Guard against duplicate subscribes in same view cycle (matches iOS hasSubscribedThisAppear)
+   ;; This prevents multiple subscribe requests when component re-renders or navigates back
+   (if (contains? (:subscribed-sessions db) session-id)
+     ;; Already subscribed in this cycle - do nothing
+     {}
+     ;; First subscribe for this session - proceed
+     (let [last-message-id (-> db :messages (get session-id) last :id)
+           is-delta-sync? (boolean last-message-id)]
+       {:db (-> db
+                (update :subscribed-sessions conj session-id)
+                (cond-> is-delta-sync?
+                  (update :pending-delta-syncs conj session-id)))
+        :ws/send (cond-> {:type "subscribe"
+                          :session-id session-id}
+                   last-message-id
+                   (assoc :last-message-id last-message-id))}))))
 
 (rf/reg-event-fx
  :session/unsubscribe

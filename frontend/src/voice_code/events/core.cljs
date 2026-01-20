@@ -31,11 +31,16 @@
 (rf/reg-event-db
  :sessions/set-active
  (fn [db [_ session-id]]
-   (-> db
-       (assoc :active-session-id session-id)
-       ;; Clear unread count when session becomes active
-       (cond-> session-id
-         (assoc-in [:sessions session-id :unread-count] 0)))))
+   (let [previous-session-id (:active-session-id db)]
+     (-> db
+         (assoc :active-session-id session-id)
+         ;; Clear unread count when session becomes active
+         (cond-> session-id
+           (assoc-in [:sessions session-id :unread-count] 0))
+         ;; Clear subscribed flag for previous session so it can re-subscribe
+         ;; when user navigates back (matches iOS hasSubscribedThisAppear reset on disappear)
+         (cond-> (and previous-session-id (not= previous-session-id session-id))
+           (update :subscribed-sessions disj previous-session-id))))))
 
 (rf/reg-event-fx
  :sessions/select

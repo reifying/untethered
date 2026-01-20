@@ -861,12 +861,17 @@
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
 
-   ;; This test verifies the event doesn't error
-   ;; The actual ws/send effect would be tested in integration tests
    (testing "session/subscribe dispatches without error"
      (rf/dispatch-sync [:session/subscribe "s1"])
      ;; If we get here without error, the event handler works
-     (is true))))
+     (is true))
+
+   (testing "session/subscribe adds session to subscribed-sessions set"
+     ;; s1 was already subscribed above
+     (is (contains? (:subscribed-sessions @re-frame.db/app-db) "s1"))
+     ;; Subscribe to another session
+     (rf/dispatch-sync [:session/subscribe "s2"])
+     (is (contains? (:subscribed-sessions @re-frame.db/app-db) "s2")))))
 
 ;; ============================================================================
 ;; Session Creation Events
@@ -1641,6 +1646,62 @@
      ;; Now subscribe - should be a delta sync
      (rf/dispatch-sync [:session/subscribe "s2"])
      (is (contains? (:pending-delta-syncs @re-frame.db/app-db) "s2")))))
+
+(deftest subscribe-guard-test
+  "Tests for the subscribe guard that prevents duplicate subscribe requests.
+   Matches iOS hasSubscribedThisAppear pattern from ConversationView.swift."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "duplicate subscribe to same session is blocked"
+     ;; First subscribe succeeds and adds to subscribed-sessions
+     (rf/dispatch-sync [:session/subscribe "s1"])
+     (is (contains? (:subscribed-sessions @re-frame.db/app-db) "s1"))
+     ;; Second subscribe to same session should be a no-op
+     ;; (would not send ws/send again - we can verify subscribed-sessions unchanged)
+     (let [subscribed-before (:subscribed-sessions @re-frame.db/app-db)]
+       (rf/dispatch-sync [:session/subscribe "s1"])
+       (is (= subscribed-before (:subscribed-sessions @re-frame.db/app-db)))))
+
+   (testing "different sessions can be subscribed independently"
+     (rf/dispatch-sync [:session/subscribe "s2"])
+     (is (contains? (:subscribed-sessions @re-frame.db/app-db) "s1"))
+     (is (contains? (:subscribed-sessions @re-frame.db/app-db) "s2")))
+
+   (testing "sessions/set-active clears subscribed flag for previous session"
+     ;; Set s1 as active, then switch to s2
+     (rf/dispatch-sync [:sessions/add {:id "s1" :backend-name "Session 1"}])
+     (rf/dispatch-sync [:sessions/add {:id "s2" :backend-name "Session 2"}])
+     (rf/dispatch-sync [:sessions/set-active "s1"])
+     (is (contains? (:subscribed-sessions @re-frame.db/app-db) "s1"))
+     ;; Switch to s2 - should clear s1's subscribed flag
+     (rf/dispatch-sync [:sessions/set-active "s2"])
+     (is (not (contains? (:subscribed-sessions @re-frame.db/app-db) "s1")))
+     ;; s2 should still be in the set (was subscribed earlier in the test)
+     (is (contains? (:subscribed-sessions @re-frame.db/app-db) "s2")))
+
+   (testing "after clearing, session can re-subscribe"
+     ;; s1 was cleared from subscribed-sessions when we switched to s2
+     ;; Now we should be able to subscribe to s1 again
+     (rf/dispatch-sync [:session/subscribe "s1"])
+     (is (contains? (:subscribed-sessions @re-frame.db/app-db) "s1")))))
+
+(deftest subscribe-guard-reconnect-test
+  "Tests that subscribed-sessions is cleared on reconnection."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "handle-connected clears subscribed-sessions for fresh re-subscribe"
+     ;; Subscribe to some sessions
+     (rf/dispatch-sync [:session/subscribe "s1"])
+     (rf/dispatch-sync [:session/subscribe "s2"])
+     (is (= #{"s1" "s2"} (:subscribed-sessions @re-frame.db/app-db)))
+     ;; Simulate reconnection - handle-connected should clear subscribed-sessions
+     (rf/dispatch-sync [:ws/handle-connected {:session-id "ios-session-id"}])
+     (is (= #{} (:subscribed-sessions @re-frame.db/app-db)))
+     ;; Now sessions can re-subscribe
+     (rf/dispatch-sync [:session/subscribe "s1"])
+     (is (contains? (:subscribed-sessions @re-frame.db/app-db) "s1")))))
 
 (deftest delta-sync-history-merge-test
   (rf-test/run-test-sync
