@@ -157,6 +157,7 @@ android/app/debug/
 
 # React Native Frontend (ClojureScript)
 frontend/node_modules/
+frontend/ios/.xcode.env.local
 frontend/.shadow-cljs/
 frontend/app/
 frontend/out/
