@@ -426,7 +426,7 @@
                         :color "#333"
                         :margin-bottom 8
                         :text-align "center"}}
-    "Welcome to Voice Code"]
+    "Welcome to Untethered"]
    [:> rn/Text {:style {:font-size 15
                         :color "#666"
                         :text-align "center"

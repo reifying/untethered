@@ -23,7 +23,7 @@
   [key]
   (cond
     (str/blank? key)
-    {:valid? false :error nil}  ; Empty is not an error, just invalid
+    {:valid? false :error nil} ; Empty is not an error, just invalid
 
     (not (str/starts-with? key api-key-prefix))
     {:valid? false :error "API key must start with 'untethered-'"}
@@ -208,7 +208,7 @@
                         :font-weight "bold"
                         :color "#333"
                         :margin-bottom 8}}
-    "Voice Code"]
+    "Untethered"]
    [:> rn/Text {:style {:font-size 16
                         :color "#666"
                         :margin-bottom 32}}
