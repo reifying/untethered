@@ -1548,6 +1548,8 @@
      (is (true? (get-in @re-frame.db/app-db [:ui :voice-listening?]))))))
 
 (deftest git-branch-events-test
+  "Tests for git branch detection events including loading state.
+   Matches iOS SessionInfoView behavior (lines 53-69, 239-250)."
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
 
@@ -1568,6 +1570,54 @@
      ;; Both branches should be stored
      (is (= "main" (get-in @re-frame.db/app-db [:git-branches "/project/path"])))
      (is (= "feature/test" (get-in @re-frame.db/app-db [:git-branches "/other/project"]))))))
+
+(deftest git-branch-loading-state-test
+  "Tests that git branch loading state is tracked correctly.
+   iOS shows a spinner while fetching git branch (SessionInfoView.swift lines 53-69)."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "git/request-branch sets loading state for new directory"
+     ;; Clear any existing state
+     (swap! re-frame.db/app-db dissoc :git-branches :git-loading)
+
+     ;; Request branch for a new directory
+     (rf/dispatch-sync [:git/request-branch "/new/project"])
+
+     ;; Loading state should be set
+     (is (true? (get-in @re-frame.db/app-db [:git-loading "/new/project"])))
+     (is (true? @(rf/subscribe [:git/loading? "/new/project"]))))
+
+   (testing "git/handle-branch clears loading state"
+     ;; Simulate receiving the branch response
+     (rf/dispatch-sync [:git/handle-branch {:working-directory "/new/project"
+                                            :branch "develop"}])
+
+     ;; Loading state should be cleared
+     (is (false? @(rf/subscribe [:git/loading? "/new/project"])))
+     ;; Branch should be stored
+     (is (= "develop" @(rf/subscribe [:git/branch "/new/project"]))))
+
+   (testing "git/request-branch does not re-request for already loaded directory"
+     ;; Branch already loaded for /new/project
+     ;; Request again - should not set loading state
+     (rf/dispatch-sync [:git/request-branch "/new/project"])
+
+     ;; Loading should still be false (not triggered)
+     (is (false? @(rf/subscribe [:git/loading? "/new/project"]))))
+
+   (testing "git/request-branch does not duplicate request while loading"
+     ;; Start a new request
+     (rf/dispatch-sync [:git/request-branch "/loading/project"])
+     (is (true? @(rf/subscribe [:git/loading? "/loading/project"])))
+
+     ;; Request again while still loading - should not change state
+     ;; (The ws/send effect would be triggered, but db state shouldn't change)
+     (rf/dispatch-sync [:git/request-branch "/loading/project"])
+     (is (true? @(rf/subscribe [:git/loading? "/loading/project"]))))
+
+   (testing "git/loading? returns false for unknown directories"
+     (is (false? @(rf/subscribe [:git/loading? "/unknown/path"]))))))
 
 ;; ============================================================================
 ;; Max Message Size Tests

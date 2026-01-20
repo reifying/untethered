@@ -128,7 +128,7 @@
 
 (defn- session-info-section
   "Session information section."
-  [{:keys [session git-branch on-copy]}]
+  [{:keys [session git-branch git-loading? on-copy]}]
   (let [{:keys [id backend-name custom-name working-directory]} session
         display-name (or custom-name backend-name (str "Session " (subs id 0 8)))]
     [:> rn/View
@@ -139,8 +139,23 @@
      [info-row {:label "Working Directory"
                 :value (or working-directory "Not set")
                 :on-copy #(on-copy % "Directory copied")}]
-     ;; Git branch row - only shown if branch is detected
-     (when git-branch
+     ;; Git branch row - shows loading spinner while fetching, then branch when detected
+     ;; Matches iOS SessionInfoView behavior (lines 53-69)
+     (cond
+       git-loading?
+       [:> rn/View {:style {:flex-direction "row"
+                            :justify-content "space-between"
+                            :align-items "center"
+                            :padding-horizontal 16
+                            :padding-vertical 12
+                            :background-color "#FFFFFF"
+                            :border-bottom-width 1
+                            :border-bottom-color "#F0F0F0"}}
+        [:> rn/Text {:style {:font-size 15 :color "#666"}}
+         "Git Branch"]
+        [:> rn/ActivityIndicator {:size "small" :color "#999"}]]
+
+       git-branch
        [info-row {:label "Git Branch"
                   :value git-branch
                   :on-copy #(on-copy % "Branch copied")}])
@@ -285,12 +300,6 @@
   (let [^js route route
         ^js navigation navigation
         session-id (-> route .-params .-sessionId)
-        session @(rf/subscribe [:sessions/by-id session-id])
-        settings @(rf/subscribe [:settings/all])
-        active-recipe @(rf/subscribe [:recipes/active-for-session session-id])
-        messages @(rf/subscribe [:messages/for-session session-id])
-        working-directory (:working-directory session)
-        git-branch @(rf/subscribe [:git/branch working-directory])
 
         ;; Local state for copy confirmation
         confirmation-state (r/atom {:visible? false :message ""})
@@ -299,83 +308,92 @@
                              (reset! confirmation-state {:visible? true :message message})
                              (js/setTimeout
                               #(swap! confirmation-state assoc :visible? false)
-                              2000))
-
-        handle-copy (fn [text message]
-                      (copy-to-clipboard! text)
-                      (show-confirmation! message))
-
-        handle-export (fn []
-                        (let [{:keys [id backend-name custom-name working-directory]} session
-                              display-name (or custom-name backend-name (str "Session " (subs id 0 8)))
-                              export-text (str "# " display-name "\n"
-                                               "Session ID: " id "\n"
-                                               "Working Directory: " (or working-directory "Not set") "\n"
-                                               (when git-branch
-                                                 (str "Git Branch: " git-branch "\n"))
-                                               "Exported: " (.toISOString (js/Date.)) "\n"
-                                               "\n---\n\n"
-                                               "Message Count: " (count messages) "\n\n"
-                                               (->> messages
-                                                    (map (fn [{:keys [role text]}]
-                                                           (str "[" (if (= role :user) "User" "Assistant") "]\n"
-                                                                text "\n\n")))
-                                                    (apply str)))]
-                          (copy-to-clipboard! export-text)
-                          (show-confirmation! "Conversation exported")))
-
-        handle-compact (fn []
-                         (.alert Alert
-                                 "Compact Session"
-                                 "This will summarize the conversation history to reduce context window usage. This cannot be undone."
-                                 (clj->js [{:text "Cancel" :style "cancel"}
-                                           {:text "Compact"
-                                            :onPress (fn []
-                                                       (rf/dispatch [:sessions/compact session-id])
-                                                       (show-confirmation! "Compaction started"))}])))
-
-        handle-add-to-queue (fn []
-                              (rf/dispatch [:sessions/add-to-priority-queue session-id])
-                              (show-confirmation! "Added to Priority Queue"))
-
-        handle-remove-from-queue (fn []
-                                   (rf/dispatch [:sessions/remove-from-priority-queue session-id])
-                                   (show-confirmation! "Removed from Priority Queue"))
-
-        handle-change-priority (fn [priority]
-                                 (rf/dispatch [:sessions/change-priority session-id priority])
-                                 (show-confirmation! (str "Priority changed to " priority)))
-
-        handle-start-recipe (fn []
-                              (.navigate navigation "Recipes"
-                                         #js {:sessionId session-id
-                                              :workingDirectory (:working-directory session)}))
-
-        handle-exit-recipe (fn []
-                             (rf/dispatch [:recipes/exit session-id])
-                             (show-confirmation! "Recipe exited"))
-
-        handle-infer-name (fn []
-                            (rf/dispatch [:session/infer-name session-id])
-                            (show-confirmation! "Inferring session name..."))
-
-        handle-delete (fn []
-                        (.alert Alert
-                                "Delete Session"
-                                "Are you sure you want to delete this session? This cannot be undone."
-                                (clj->js [{:text "Cancel" :style "cancel"}
-                                          {:text "Delete"
-                                           :style "destructive"
-                                           :onPress (fn []
-                                                      (rf/dispatch [:sessions/delete session-id])
-                                                      (.goBack navigation))}])))]
+                              2000))]
 
     ;; Request git branch when component mounts
-    (when working-directory
-      (rf/dispatch [:git/request-branch working-directory]))
+    (let [session @(rf/subscribe [:sessions/by-id session-id])
+          working-directory (:working-directory session)]
+      (when working-directory
+        (rf/dispatch [:git/request-branch working-directory])))
 
     (fn []
-      (let [{:keys [visible? message]} @confirmation-state]
+      (let [session @(rf/subscribe [:sessions/by-id session-id])
+            settings @(rf/subscribe [:settings/all])
+            active-recipe @(rf/subscribe [:recipes/active-for-session session-id])
+            messages @(rf/subscribe [:messages/for-session session-id])
+            working-directory (:working-directory session)
+            git-branch @(rf/subscribe [:git/branch working-directory])
+            git-loading? @(rf/subscribe [:git/loading? working-directory])
+            {:keys [visible? message]} @confirmation-state
+
+            handle-copy (fn [text msg]
+                          (copy-to-clipboard! text)
+                          (show-confirmation! msg))
+
+            handle-export (fn []
+                            (let [{:keys [id backend-name custom-name working-directory]} session
+                                  display-name (or custom-name backend-name (str "Session " (subs id 0 8)))
+                                  export-text (str "# " display-name "\n"
+                                                   "Session ID: " id "\n"
+                                                   "Working Directory: " (or working-directory "Not set") "\n"
+                                                   (when git-branch
+                                                     (str "Git Branch: " git-branch "\n"))
+                                                   "Exported: " (.toISOString (js/Date.)) "\n"
+                                                   "\n---\n\n"
+                                                   "Message Count: " (count messages) "\n\n"
+                                                   (->> messages
+                                                        (map (fn [{:keys [role text]}]
+                                                               (str "[" (if (= role :user) "User" "Assistant") "]\n"
+                                                                    text "\n\n")))
+                                                        (apply str)))]
+                              (copy-to-clipboard! export-text)
+                              (show-confirmation! "Conversation exported")))
+
+            handle-compact (fn []
+                             (.alert Alert
+                                     "Compact Session"
+                                     "This will summarize the conversation history to reduce context window usage. This cannot be undone."
+                                     (clj->js [{:text "Cancel" :style "cancel"}
+                                               {:text "Compact"
+                                                :onPress (fn []
+                                                           (rf/dispatch [:sessions/compact session-id])
+                                                           (show-confirmation! "Compaction started"))}])))
+
+            handle-add-to-queue (fn []
+                                  (rf/dispatch [:sessions/add-to-priority-queue session-id])
+                                  (show-confirmation! "Added to Priority Queue"))
+
+            handle-remove-from-queue (fn []
+                                       (rf/dispatch [:sessions/remove-from-priority-queue session-id])
+                                       (show-confirmation! "Removed from Priority Queue"))
+
+            handle-change-priority (fn [priority]
+                                     (rf/dispatch [:sessions/change-priority session-id priority])
+                                     (show-confirmation! (str "Priority changed to " priority)))
+
+            handle-start-recipe (fn []
+                                  (.navigate navigation "Recipes"
+                                             #js {:sessionId session-id
+                                                  :workingDirectory (:working-directory session)}))
+
+            handle-exit-recipe (fn []
+                                 (rf/dispatch [:recipes/exit session-id])
+                                 (show-confirmation! "Recipe exited"))
+
+            handle-infer-name (fn []
+                                (rf/dispatch [:session/infer-name session-id])
+                                (show-confirmation! "Inferring session name..."))
+
+            handle-delete (fn []
+                            (.alert Alert
+                                    "Delete Session"
+                                    "Are you sure you want to delete this session? This cannot be undone."
+                                    (clj->js [{:text "Cancel" :style "cancel"}
+                                              {:text "Delete"
+                                               :style "destructive"
+                                               :onPress (fn []
+                                                          (rf/dispatch [:sessions/delete session-id])
+                                                          (.goBack navigation))}])))]
         [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
          [copy-confirmation-toast message visible?]
          [:> rn/ScrollView {:content-container-style {:padding-bottom 40}}
@@ -383,6 +401,7 @@
             [:> rn/View
              [session-info-section {:session session
                                     :git-branch git-branch
+                                    :git-loading? git-loading?
                                     :on-copy handle-copy}]
              [priority-queue-section {:session session
                                       :settings settings

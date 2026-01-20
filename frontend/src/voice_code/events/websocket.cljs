@@ -916,15 +916,22 @@
 (rf/reg-event-db
  :git/handle-branch
  (fn [db [_ {:keys [working-directory branch]}]]
-   ;; Store git branch by working directory
-   (assoc-in db [:git-branches working-directory] branch)))
+   ;; Store git branch by working directory and clear loading state
+   (-> db
+       (assoc-in [:git-branches working-directory] branch)
+       (update :git-loading dissoc working-directory))))
 
 (rf/reg-event-fx
  :git/request-branch
- (fn [_ [_ working-directory]]
+ (fn [{:keys [db]} [_ working-directory]]
    (when working-directory
-     {:ws/send {:type "get_git_branch"
-                :working-directory working-directory}})))
+     ;; Only request if not already loading and not already fetched
+     (let [already-loaded? (contains? (:git-branches db) working-directory)
+           already-loading? (get-in db [:git-loading working-directory])]
+       (when (and (not already-loaded?) (not already-loading?))
+         {:db (assoc-in db [:git-loading working-directory] true)
+          :ws/send {:type "get_git_branch"
+                    :working-directory working-directory}})))))
 
 ;; ============================================================================
 ;; Async Operation Timeout Support
