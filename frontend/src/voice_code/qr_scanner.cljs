@@ -130,6 +130,10 @@
 ;; Track permission request state globally since the scanner hook resets on unmount
 (defonce ^:private permission-requested? (r/atom false))
 
+;; Track camera ready state for overlay visibility
+;; Overlay should only show when camera is active (has permission + device available)
+(defonce ^:private camera-ready? (r/atom false))
+
 (defn- scanner-camera
   "Camera component with QR code scanning.
    Uses hooks via :f> for functional component."
@@ -146,7 +150,11 @@
                                  (rf/dispatch [:qr/code-scanned value])))))
         code-scanner (useCodeScanner
                       #js {:codeTypes #js ["qr"]
-                           :onCodeScanned on-codes-scanned})]
+                           :onCodeScanned on-codes-scanned})
+        ;; Camera is ready when we have permission and a device
+        is-camera-ready (and has-permission device)]
+    ;; Update shared state for overlay visibility
+    (reset! camera-ready? is-camera-ready)
     (cond
       ;; Permission not yet determined (loading)
       (nil? has-permission)
@@ -280,12 +288,17 @@
 
 (defn qr-scanner-view
   "Full-screen QR scanner view.
-   Shows camera with scanning overlay when QR scanning is active."
+   Shows camera with scanning overlay when QR scanning is active.
+   Overlay only renders when camera has permission and device is available,
+   preventing overlay from blocking permission request UI."
   []
   (if (and use-real-camera? Camera)
     [:> rn/View {:style {:flex 1 :background-color "#000000"}}
      [:f> scanner-camera]
-     [scanner-overlay]
+     ;; Only show overlay when camera is ready (has permission + device)
+     ;; This prevents the overlay from blocking the "Grant Permission" button
+     (when @camera-ready?
+       [scanner-overlay])
      [error-banner]]
     ;; Stub for non-camera environments (tests, etc.)
     [:> rn/View {:style {:flex 1
