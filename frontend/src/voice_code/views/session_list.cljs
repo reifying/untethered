@@ -62,6 +62,85 @@
   "Width of the delete button revealed on swipe."
   80)
 
+(defn- session-item
+  "Single session item in the list.
+   Long-press shows context menu with copy and delete options."
+  [{:keys [session locked? on-press on-delete]}]
+  (let [unread-count (get session :unread-count 0)
+        session-display-name (session-name session)
+        session-id (str (:id session))
+        working-directory (:working-directory session)]
+    [:> rn/TouchableOpacity
+     {:style {:padding-horizontal 16
+              :padding-vertical 14
+              :border-bottom-width 1
+              :border-bottom-color "#F0F0F0"
+              :background-color "#FFFFFF"}
+      :on-press on-press
+      :on-long-press (fn []
+                       (.alert Alert
+                               session-display-name
+                               "Session actions"
+                               (clj->js [{:text "Copy Session ID"
+                                          :onPress #(do (copy-to-clipboard! session-id)
+                                                        (.alert Alert "Copied" "Session ID copied to clipboard"))}
+                                         {:text "Copy Directory Path"
+                                          :onPress #(do (copy-to-clipboard! working-directory)
+                                                        (.alert Alert "Copied" "Directory path copied to clipboard"))}
+                                         {:text "Delete"
+                                          :style "destructive"
+                                          :onPress on-delete}
+                                         {:text "Cancel" :style "cancel"}])))
+      :active-opacity 0.7}
+     [:> rn/View {:style {:flex-direction "row"
+                          :align-items "center"}}
+      ;; Locked indicator
+      (when locked?
+        [:> rn/View {:style {:width 8
+                             :height 8
+                             :border-radius 4
+                             :background-color "#FF9500"
+                             :margin-right 8}}])
+
+      [:> rn/View {:style {:flex 1}}
+       ;; Session name row with unread badge
+       [:> rn/View {:style {:flex-direction "row"
+                            :align-items "center"
+                            :margin-bottom 4}}
+        [:> rn/Text {:style {:font-size 16
+                             :font-weight (if (pos? unread-count) "700" "600")
+                             :color "#000"
+                             :flex 1}}
+         session-display-name]
+        [unread-badge unread-count]
+        ;; Timestamp - auto-updating
+        [relative-time-text {:timestamp (:last-modified session)
+                             :short? true
+                             :style {:font-size 12
+                                     :color "#999"
+                                     :margin-left 8}}]]
+
+       ;; Preview
+       (when-let [preview (:preview session)]
+         [:> rn/Text {:style {:font-size 14
+                              :color (if (pos? unread-count) "#333" "#666")
+                              :font-weight (if (pos? unread-count) "500" "400")
+                              :line-height 20}
+                      :number-of-lines 2}
+          preview])
+
+       ;; Message count
+       [:> rn/View {:style {:flex-direction "row"
+                            :align-items "center"
+                            :margin-top 4}}
+        [:> rn/Text {:style {:font-size 12 :color "#999"}}
+         (str (:message-count session 0) " messages")]
+        (when locked?
+          [:> rn/Text {:style {:font-size 12
+                               :color "#FF9500"
+                               :margin-left 8}}
+           "• Processing"])]]]]))
+
 (defn- swipeable-session-item
   "Session item with swipe-to-delete functionality.
    Swipe left to reveal delete button, or swipe far left to delete immediately.
@@ -205,85 +284,6 @@
                                      (close-swipe)
                                      (on-press)))
                        :on-delete on-delete}]]])))
-
-(defn- session-item
-  "Single session item in the list.
-   Long-press shows context menu with copy and delete options."
-  [{:keys [session locked? on-press on-delete]}]
-  (let [unread-count (get session :unread-count 0)
-        session-display-name (session-name session)
-        session-id (str (:id session))
-        working-directory (:working-directory session)]
-    [:> rn/TouchableOpacity
-     {:style {:padding-horizontal 16
-              :padding-vertical 14
-              :border-bottom-width 1
-              :border-bottom-color "#F0F0F0"
-              :background-color "#FFFFFF"}
-      :on-press on-press
-      :on-long-press (fn []
-                       (.alert Alert
-                               session-display-name
-                               "Session actions"
-                               (clj->js [{:text "Copy Session ID"
-                                          :onPress #(do (copy-to-clipboard! session-id)
-                                                        (.alert Alert "Copied" "Session ID copied to clipboard"))}
-                                         {:text "Copy Directory Path"
-                                          :onPress #(do (copy-to-clipboard! working-directory)
-                                                        (.alert Alert "Copied" "Directory path copied to clipboard"))}
-                                         {:text "Delete"
-                                          :style "destructive"
-                                          :onPress on-delete}
-                                         {:text "Cancel" :style "cancel"}])))
-      :active-opacity 0.7}
-     [:> rn/View {:style {:flex-direction "row"
-                          :align-items "center"}}
-      ;; Locked indicator
-      (when locked?
-        [:> rn/View {:style {:width 8
-                             :height 8
-                             :border-radius 4
-                             :background-color "#FF9500"
-                             :margin-right 8}}])
-
-      [:> rn/View {:style {:flex 1}}
-       ;; Session name row with unread badge
-       [:> rn/View {:style {:flex-direction "row"
-                            :align-items "center"
-                            :margin-bottom 4}}
-        [:> rn/Text {:style {:font-size 16
-                             :font-weight (if (pos? unread-count) "700" "600")
-                             :color "#000"
-                             :flex 1}}
-         session-display-name]
-        [unread-badge unread-count]
-        ;; Timestamp - auto-updating
-        [relative-time-text {:timestamp (:last-modified session)
-                             :short? true
-                             :style {:font-size 12
-                                     :color "#999"
-                                     :margin-left 8}}]]
-
-       ;; Preview
-       (when-let [preview (:preview session)]
-         [:> rn/Text {:style {:font-size 14
-                              :color (if (pos? unread-count) "#333" "#666")
-                              :font-weight (if (pos? unread-count) "500" "400")
-                              :line-height 20}
-                      :number-of-lines 2}
-          preview])
-
-       ;; Message count
-       [:> rn/View {:style {:flex-direction "row"
-                            :align-items "center"
-                            :margin-top 4}}
-        [:> rn/Text {:style {:font-size 12 :color "#999"}}
-         (str (:message-count session 0) " messages")]
-        (when locked?
-          [:> rn/Text {:style {:font-size 12
-                               :color "#FF9500"
-                               :margin-left 8}}
-           "• Processing"])]]]]))
 
 (defn- empty-state
   "Shown when there are no sessions for this directory."
