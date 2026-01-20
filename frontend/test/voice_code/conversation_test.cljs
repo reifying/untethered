@@ -96,15 +96,15 @@
                                      :backend-name "Test Session"
                                      :working-directory "/test/path"}])
    (rf/dispatch-sync [:messages/add "session-1"
-                                    {:id "msg-1"
-                                     :role :user
-                                     :text "Hello"
-                                     :timestamp (js/Date.)}])
+                      {:id "msg-1"
+                       :role :user
+                       :text "Hello"
+                       :timestamp (js/Date.)}])
    (rf/dispatch-sync [:messages/add "session-1"
-                                    {:id "msg-2"
-                                     :role :assistant
-                                     :text "Hi there! How can I help?"
-                                     :timestamp (js/Date.)}])
+                      {:id "msg-2"
+                       :role :assistant
+                       :text "Hi there! How can I help?"
+                       :timestamp (js/Date.)}])
 
    (testing "session has messages"
      (let [messages @(rf/subscribe [:messages/for-session "session-1"])]
@@ -125,15 +125,15 @@
 
    (testing "can add user and assistant messages"
      (rf/dispatch-sync [:messages/add "session-1"
-                                      {:id "msg-1"
-                                       :role :user
-                                       :text "Hello"
-                                       :timestamp (js/Date.)}])
+                        {:id "msg-1"
+                         :role :user
+                         :text "Hello"
+                         :timestamp (js/Date.)}])
      (rf/dispatch-sync [:messages/add "session-1"
-                                      {:id "msg-2"
-                                       :role :assistant
-                                       :text "Hi there!"
-                                       :timestamp (js/Date.)}])
+                        {:id "msg-2"
+                         :role :assistant
+                         :text "Hi there!"
+                         :timestamp (js/Date.)}])
      (let [messages @(rf/subscribe [:messages/for-session "session-1"])]
        (is (= 2 (count messages)))
        (is (= :user (:role (first messages))))
@@ -247,9 +247,38 @@
   (testing "handles zero tokens"
     (is (nil? (format-usage-summary {:input-tokens 0 :output-tokens 0} nil)))
     (is (= "$0.01" (format-usage-summary {:input-tokens 0 :output-tokens 0}
-                                          {:total-cost 0.01}))))
+                                         {:total-cost 0.01}))))
 
   (testing "formats small costs correctly"
     (is (= "100 in / 50 out • $0.0015"
            (format-usage-summary {:input-tokens 100 :output-tokens 50}
                                  {:total-cost 0.0015})))))
+
+;; ============================================================================
+;; Session Not Found Tests (VCMOB-h1t7)
+;; ============================================================================
+
+(deftest session-not-found-state-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "non-existent session returns nil from subscription"
+     (let [session @(rf/subscribe [:sessions/by-id "non-existent-session-id"])]
+       (is (nil? session))
+       ;; conversation-view checks (not (:id session)) to detect missing sessions
+       (is (not (:id session)))))
+
+   (testing "existing session returns session data with :id"
+     (rf/dispatch-sync [:sessions/add {:id "session-1"
+                                       :backend-name "Test Session"
+                                       :working-directory "/test/path"}])
+     (let [session @(rf/subscribe [:sessions/by-id "session-1"])]
+       (is (some? session))
+       (is (= "session-1" (:id session)))
+       (is (= "Test Session" (:backend-name session)))
+       ;; conversation-view checks (:id session) to detect valid sessions
+       (is (:id session))))
+
+   (testing "messages for non-existent session returns empty"
+     (let [messages @(rf/subscribe [:messages/for-session "non-existent-session"])]
+       (is (empty? messages))))))

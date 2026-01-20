@@ -823,6 +823,47 @@
                         :text-align "center"}}
     "Type a message below to begin chatting with Claude."]])
 
+(defn- session-not-found
+  "Shown when the requested session doesn't exist (deleted or invalid ID).
+   Matches iOS SessionLookupView behavior: shows error message with session ID
+   and allows copying the ID to clipboard."
+  [{:keys [session-id]}]
+  (let [show-toast! (fn []
+                      (haptic/trigger! :success)
+                      (show-copy-toast! "Session ID copied"))]
+    [:> rn/View {:style {:flex 1
+                         :justify-content "center"
+                         :align-items "center"
+                         :padding 40}}
+     [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "⚠️"]
+     [:> rn/Text {:style {:font-size 20
+                          :font-weight "600"
+                          :color "#333"
+                          :margin-bottom 8}}
+      "Session Not Found"]
+     [:> rn/Text {:style {:font-size 14
+                          :color "#666"
+                          :text-align "center"
+                          :margin-bottom 16}}
+      "This session may have been deleted."]
+     [:> rn/TouchableOpacity
+      {:style {:padding 12
+               :background-color "#F5F5F5"
+               :border-radius 8}
+       :on-press (fn []
+                   (.setString Clipboard session-id)
+                   (show-toast!))}
+      [:> rn/Text {:style {:font-size 12
+                           :font-family (if (= (.-OS rn/Platform) "ios")
+                                          "Menlo"
+                                          "monospace")
+                           :color "#666"}}
+       session-id]]
+     [:> rn/Text {:style {:font-size 11
+                          :color "#999"
+                          :margin-top 8}}
+      "Tap to copy session ID"]]))
+
 (defn- session-display-name
   "Get the display name for a session."
   [session]
@@ -1088,8 +1129,18 @@
             ;; Error banner at top (dismissable, copyable)
             [error-banner]
 
-            (if (empty? messages)
+            (cond
+              ;; Session not found - show error state with session ID
+              ;; A real session always has :id - empty map or {:unread-count 0} means not found
+              (not (:id session))
+              [session-not-found {:session-id session-id}]
+
+              ;; Session exists but no messages - show empty state
+              (empty? messages)
               [empty-conversation]
+
+              ;; Session exists with messages - show message list
+              :else
               [message-list {:messages messages
                              :session-id session-id
                              :locked? locked?
