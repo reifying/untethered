@@ -41,6 +41,9 @@
    (testing "commands/running-any? returns false initially"
      (is (not @(rf/subscribe [:commands/running-any?]))))
 
+   (testing "commands/running-count returns 0 initially"
+     (is (= 0 @(rf/subscribe [:commands/running-count]))))
+
    (testing "commands/running-any? returns true when command running"
      (rf/dispatch-sync [:commands/handle-started
                         {:command-session-id "cmd-123"
@@ -48,11 +51,26 @@
                          :shell-command "make build"}])
      (is @(rf/subscribe [:commands/running-any?])))
 
+   (testing "commands/running-count returns 1 when one command running"
+     (is (= 1 @(rf/subscribe [:commands/running-count]))))
+
    (testing "commands/running-for-session returns command state"
      (let [cmd @(rf/subscribe [:commands/running-for-session "cmd-123"])]
        (is (= "build" (:command-id cmd)))
        (is (= "make build" (:shell-command cmd)))
-       (is (some? (:started-at cmd)))))))
+       (is (some? (:started-at cmd)))))
+
+   (testing "multiple concurrent commands increases count"
+     (rf/dispatch-sync [:commands/handle-started
+                        {:command-session-id "cmd-456"
+                         :command-id "test"
+                         :shell-command "npm test"}])
+     (is (= 2 @(rf/subscribe [:commands/running-count]))))
+
+   (testing "running commands can be retrieved by session ID"
+     (is (some? @(rf/subscribe [:commands/running-for-session "cmd-123"])))
+     (is (some? @(rf/subscribe [:commands/running-for-session "cmd-456"])))
+     (is (nil? @(rf/subscribe [:commands/running-for-session "nonexistent"]))))))
 
 ;; ============================================================================
 ;; Command Event Handlers

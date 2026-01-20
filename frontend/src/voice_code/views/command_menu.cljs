@@ -3,7 +3,7 @@
    Shows project-specific and general commands organized in groups."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn]))
+            ["react-native" :as rn :refer [Platform]]))
 
 (defn- command-item
   "Single command item in the menu."
@@ -96,22 +96,127 @@
                         :letter-spacing 1}}
     title]])
 
+(defn- format-duration
+  "Format duration in milliseconds to human readable string."
+  [started-at]
+  (when started-at
+    (let [now (.now js/Date)
+          ;; Handle both Date objects and timestamps
+          start-ms (if (number? started-at) started-at (.getTime started-at))
+          duration-ms (- now start-ms)]
+      (cond
+        (< duration-ms 1000) (str (int duration-ms) "ms")
+        (< duration-ms 60000) (str (.toFixed (/ duration-ms 1000) 1) "s")
+        :else (let [minutes (int (/ duration-ms 60000))
+                    seconds (int (mod (/ duration-ms 1000) 60))]
+                (str minutes "m " seconds "s"))))))
+
+(defn- running-command-row
+  "Single row showing a running command with status."
+  [{:keys [session-id command on-press]}]
+  (let [{:keys [command-id shell-command output-lines started-at]} command
+        line-count (count output-lines)
+        last-line (last output-lines)]
+    [:> rn/TouchableOpacity
+     {:style {:padding 12
+              :background-color "#fff"
+              :border-bottom-width 1
+              :border-bottom-color "#eee"}
+      :on-press #(on-press session-id)}
+     ;; Main row with status and command
+     [:> rn/View {:style {:flex-direction "row"
+                          :align-items "center"}}
+      [:> rn/ActivityIndicator {:size "small" :color "#007AFF"}]
+      [:> rn/View {:style {:flex 1 :margin-left 10}}
+       [:> rn/Text {:style {:font-size 15
+                            :font-weight "600"
+                            :color "#333"}
+                    :number-of-lines 1}
+        shell-command]]]
+     ;; Metadata row
+     [:> rn/View {:style {:flex-direction "row"
+                          :margin-top 6
+                          :margin-left 26
+                          :align-items "center"}}
+      [:> rn/Text {:style {:font-size 12
+                           :color "#999"}}
+       command-id]
+      (when (pos? line-count)
+        [:> rn/Text {:style {:font-size 12
+                             :color "#999"
+                             :margin-left 12}}
+         (str line-count " lines")])
+      (when started-at
+        [:> rn/Text {:style {:font-size 12
+                             :color "#999"
+                             :margin-left 12}}
+         (format-duration started-at)])]
+     ;; Last output line preview
+     (when last-line
+       [:> rn/Text {:style {:font-size 12
+                            :font-family (if (= (.-OS Platform) "ios")
+                                           "Menlo" "monospace")
+                            :color (if (= (:stream last-line) "stderr")
+                                     "#d9534f" "#666")
+                            :margin-top 6
+                            :margin-left 26}
+                    :number-of-lines 1}
+        (:text last-line)])]))
+
+(defn- running-commands-list
+  "Expandable list of currently running commands.
+   Shows a summary when collapsed, full list when expanded."
+  [{:keys [navigation working-directory]}]
+  (let [expanded? (r/atom false)
+        running @(rf/subscribe [:commands/running])]
+    (fn [{:keys [navigation working-directory]}]
+      (let [running @(rf/subscribe [:commands/running])
+            ;; Sort by start time (most recent first)
+            sorted-commands (->> running
+                                 (sort-by (fn [[_ cmd]]
+                                            (- (or (some-> (:started-at cmd) .getTime) 0))))
+                                 vec)]
+        (when (seq sorted-commands)
+          [:> rn/View {:style {:background-color "#fff3cd"
+                               :border-bottom-width 1
+                               :border-bottom-color "#ffc107"}}
+           ;; Header - tap to expand/collapse
+           [:> rn/TouchableOpacity
+            {:style {:padding 12
+                     :flex-direction "row"
+                     :align-items "center"
+                     :justify-content "space-between"}
+             :on-press #(swap! expanded? not)}
+            [:> rn/View {:style {:flex-direction "row"
+                                 :align-items "center"}}
+             [:> rn/ActivityIndicator {:size "small" :color "#856404"}]
+             [:> rn/Text {:style {:margin-left 8
+                                  :font-size 14
+                                  :font-weight "600"
+                                  :color "#856404"}}
+              (str (count sorted-commands) " command"
+                   (when (> (count sorted-commands) 1) "s")
+                   " running")]]
+            [:> rn/Text {:style {:font-size 16 :color "#856404"}}
+             (if @expanded? "▼" "▶")]]
+           ;; Expanded list
+           (when @expanded?
+             [:> rn/View {:style {:background-color "#fff"}}
+              (for [[session-id command] sorted-commands]
+                ^{:key session-id}
+                [running-command-row
+                 {:session-id session-id
+                  :command command
+                  :on-press (fn [sid]
+                              (when navigation
+                                (.navigate navigation "CommandExecution"
+                                           #js {:workingDirectory working-directory
+                                                :commandSessionId sid})))}])])])))))
+
 (defn- running-command-indicator
-  "Shows currently running commands."
+  "Shows currently running commands - legacy wrapper for backward compatibility."
   []
-  (let [running @(rf/subscribe [:commands/running])]
-    (when (seq running)
-      [:> rn/View {:style {:padding 12
-                           :background-color "#fff3cd"
-                           :border-bottom-width 1
-                           :border-bottom-color "#ffc107"}}
-       [:> rn/View {:style {:flex-direction "row"
-                            :align-items "center"}}
-        [:> rn/ActivityIndicator {:size "small" :color "#856404"}]
-        [:> rn/Text {:style {:margin-left 8
-                             :font-size 14
-                             :color "#856404"}}
-         (str (count running) " command(s) running")]]])))
+  [running-commands-list {}])
 
 (defn- empty-state
   "Empty state when no commands available."
@@ -169,7 +274,8 @@
     (fn [_props]
       (let [commands @(rf/subscribe [:commands/for-directory working-directory])]
         [:> rn/SafeAreaView {:style {:flex 1 :background-color "#fff"}}
-         [running-command-indicator]
+         [running-commands-list {:navigation navigation
+                                 :working-directory working-directory}]
          (if (or (seq (:project commands)) (seq (:general commands)))
            [:> rn/ScrollView {:style {:flex 1}}
             ;; History button at top
