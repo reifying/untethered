@@ -172,6 +172,9 @@
    {:db (-> db
             (assoc-in [:connection :status] :connected)
             (assoc-in [:connection :authenticated?] true)
+            ;; Clear reauthentication flag on successful authentication
+            (assoc-in [:connection :requires-reauthentication?] false)
+            (assoc-in [:connection :error] nil)
             (assoc-in [:connection :reconnect-attempts] 0))
     :ws/start-ping-timer nil
     :dispatch-n [[:sessions/resubscribe-all]
@@ -190,6 +193,9 @@
    (-> db
        (assoc-in [:connection :status] :disconnected)
        (assoc-in [:connection :authenticated?] false)
+       ;; Mark that reauthentication is required - this distinguishes
+       ;; auth failure from initial setup state
+       (assoc-in [:connection :requires-reauthentication?] true)
        (assoc-in [:connection :error] (or message "Authentication failed")))))
 
 ;; ============================================================================

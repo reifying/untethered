@@ -12,6 +12,7 @@
   "Initial application state."
   {:connection {:status :disconnected ; :disconnected | :connecting | :connected
                 :authenticated? false
+                :requires-reauthentication? false ; true when auth_error received (vs initial state)
                 :error nil
                 :reconnect-attempts 0}
 

@@ -461,11 +461,37 @@
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
 
-   (testing "auth_error sets disconnected and error"
+   (testing "auth_error sets disconnected, error, and requires-reauthentication"
      (rf/dispatch-sync [:ws/handle-auth-error {:message "Invalid API key"}])
      (is (= :disconnected @(rf/subscribe [:connection/status])))
      (is (false? @(rf/subscribe [:connection/authenticated?])))
-     (is (= "Invalid API key" @(rf/subscribe [:connection/error]))))))
+     (is (= "Invalid API key" @(rf/subscribe [:connection/error])))
+     (is (true? @(rf/subscribe [:connection/requires-reauthentication?])))))
+
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "auth_error with default message when no message provided"
+     (rf/dispatch-sync [:ws/handle-auth-error {}])
+     (is (= "Authentication failed" @(rf/subscribe [:connection/error])))
+     (is (true? @(rf/subscribe [:connection/requires-reauthentication?]))))))
+
+(deftest handle-connected-clears-reauth-flag-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "connected clears requires-reauthentication flag"
+     ;; First simulate an auth error to set the flag
+     (rf/dispatch-sync [:ws/handle-auth-error {:message "Auth failed"}])
+     (is (true? @(rf/subscribe [:connection/requires-reauthentication?])))
+     (is (some? @(rf/subscribe [:connection/error])))
+
+     ;; Then simulate successful connection
+     (rf/dispatch-sync [:ws/handle-connected {:session-id "test-session"}])
+     (is (= :connected @(rf/subscribe [:connection/status])))
+     (is (true? @(rf/subscribe [:connection/authenticated?])))
+     (is (false? @(rf/subscribe [:connection/requires-reauthentication?])))
+     (is (nil? @(rf/subscribe [:connection/error]))))))
 
 (deftest handle-session-history-test
   (rf-test/run-test-sync

@@ -26,6 +26,11 @@
  (fn [db _]
    (get-in db [:connection :reconnect-attempts])))
 
+(rf/reg-sub
+ :connection/requires-reauthentication?
+ (fn [db _]
+   (get-in db [:connection :requires-reauthentication?])))
+
 ;; ============================================================================
 ;; Sessions
 ;; ============================================================================

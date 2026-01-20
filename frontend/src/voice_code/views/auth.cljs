@@ -1,6 +1,7 @@
 (ns voice-code.views.auth
   "Authentication view for API key entry.
-   Allows manual entry or QR code scanning."
+   Allows manual entry or QR code scanning.
+   Shows different UI for initial setup vs reauthentication (after auth failure)."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             [clojure.string :as str]
@@ -169,11 +170,83 @@
           :on-blur #(rf/dispatch [:settings/save :server-port (js/parseInt @server-port)])
           :keyboard-type "number-pad"}]]])))
 
+;; ============================================================================
+;; Reauthentication-specific components
+;; ============================================================================
+
+(defn- reauthentication-header
+  "Header shown when reauthentication is required (auth failed after previous connection).
+   Matches iOS AuthenticationRequiredView styling."
+  []
+  (let [error @(rf/subscribe [:connection/error])]
+    [:> rn/View {:style {:align-items "center" :padding-horizontal 24}}
+     ;; Warning icon (matching iOS key.slash symbol)
+     [:> rn/Text {:style {:font-size 60 :margin-bottom 16}} "🔑"]
+     ;; Title
+     [:> rn/Text {:style {:font-size 24
+                          :font-weight "600"
+                          :color "#333"
+                          :margin-bottom 8
+                          :text-align "center"}}
+      "Authentication Required"]
+     ;; Error message or instructions
+     [:> rn/Text {:style {:font-size 14
+                          :color "#666"
+                          :text-align "center"
+                          :margin-bottom 24
+                          :padding-horizontal 16}}
+      (if error
+        error
+        "Your session has expired. Please re-scan the API key QR code or enter it manually.")]]))
+
+(defn- initial-setup-header
+  "Header shown on initial setup (no previous connection)."
+  []
+  [:> rn/View {:style {:align-items "center"}}
+   ;; Logo/Title
+   [:> rn/Text {:style {:font-size 32
+                        :font-weight "bold"
+                        :color "#333"
+                        :margin-bottom 8}}
+    "Voice Code"]
+   [:> rn/Text {:style {:font-size 16
+                        :color "#666"
+                        :margin-bottom 32}}
+    "Connect to your backend"]])
+
+(defn- retry-connection-button
+  "Retry button shown when reauthentication is required.
+   Matches iOS AuthenticationRequiredView retry button."
+  []
+  (let [status @(rf/subscribe [:connection/status])
+        connecting? (= status :connecting)]
+    [:> rn/TouchableOpacity
+     {:style {:margin-top 16
+              :padding-horizontal 24
+              :padding-vertical 12}
+      :disabled connecting?
+      :on-press #(rf/dispatch [:ws/force-reconnect])}
+     (if connecting?
+       [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+        [:> rn/ActivityIndicator {:size "small" :color "#666"}]
+        [:> rn/Text {:style {:color "#666" :font-size 14 :margin-left 8}}
+         "Retrying..."]]
+       [:> rn/Text {:style {:color "#666" :font-size 14}}
+        "Retry Connection"])]))
+
+;; ============================================================================
+;; Main Auth View
+;; ============================================================================
+
 (defn auth-view
   "Main authentication screen.
+   Shows different UI based on whether this is initial setup or reauthentication.
+   - Initial setup: Welcome message, server config, API key input
+   - Reauthentication: Warning icon, error message, re-scan/retry options
    Shows QR scanner when scanning mode is active."
   [_props]
-  (let [scanning? @(rf/subscribe [:qr/scanning?])]
+  (let [scanning? @(rf/subscribe [:qr/scanning?])
+        requires-reauth? @(rf/subscribe [:connection/requires-reauthentication?])]
     (if scanning?
       ;; Show QR scanner
       [qr-scanner-view]
@@ -187,19 +260,14 @@
                                     :justify-content "center"
                                     :align-items "center"
                                     :padding-vertical 40}}
-         ;; Logo/Title
-         [:> rn/Text {:style {:font-size 32
-                              :font-weight "bold"
-                              :color "#333"
-                              :margin-bottom 8}}
-          "Voice Code"]
-         [:> rn/Text {:style {:font-size 16
-                              :color "#666"
-                              :margin-bottom 32}}
-          "Connect to your backend"]
+         ;; Header - different based on whether this is reauth or initial setup
+         (if requires-reauth?
+           [reauthentication-header]
+           [initial-setup-header])
 
-         ;; Status indicator
-         [status-indicator]
+         ;; Status indicator (only show if not reauth, since reauth header shows error)
+         (when-not requires-reauth?
+           [status-indicator])
 
          ;; Server configuration
          [server-config]
@@ -213,4 +281,16 @@
           {:style {:margin-top 24}
            :on-press #(rf/dispatch [:auth/scan-qr])}
           [:> rn/Text {:style {:color "#007AFF" :font-size 14}}
-           "Scan QR Code"]]]]])))
+           "Scan QR Code"]]
+
+         ;; Retry button (only shown during reauthentication)
+         (when requires-reauth?
+           [retry-connection-button])
+
+         ;; Help text
+         [:> rn/Text {:style {:font-size 12
+                              :color "#999"
+                              :text-align "center"
+                              :margin-top 24
+                              :padding-horizontal 32}}
+          "Run `make show-key-qr` in your terminal to display the QR code"]]]])))
