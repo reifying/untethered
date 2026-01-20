@@ -16,7 +16,6 @@ private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "R
 
 enum ResourcesNavigationTarget: Hashable {
     case list
-    case share
 }
 
 @main
@@ -114,8 +113,6 @@ struct RootView: View {
                     switch target {
                     case .list:
                         ResourcesView(resourcesManager: resourcesManager, client: client)
-                    case .share:
-                        ResourceShareView(resourcesManager: resourcesManager)
                     }
                 }
         }
