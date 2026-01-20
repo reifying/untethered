@@ -97,3 +97,97 @@
     (let [now (js/Date.)
           five-mins-ago (js/Date. (- (.getTime now) (* 5 60 1000)))]
       (is (string? (utils/format-relative-time-short five-mins-ago))))))
+
+;; ============================================================================
+;; Content Block Extraction Tests
+;; ============================================================================
+
+(deftest summarize-tool-use-test
+  (testing "summarize-tool-use with empty input"
+    (is (= "🔧 Read" (utils/summarize-tool-use {:name "Read"}))))
+
+  (testing "summarize-tool-use with file path"
+    (is (= "🔧 Read: utils.cljs"
+           (utils/summarize-tool-use {:name "Read"
+                                      :input {:path "/src/voice_code/utils.cljs"}}))))
+
+  (testing "summarize-tool-use with pattern"
+    (is (= "🔧 Grep: pattern \"deftest\""
+           (utils/summarize-tool-use {:name "Grep"
+                                      :input {:pattern "deftest"}}))))
+
+  (testing "summarize-tool-use with command"
+    (is (= "🔧 Bash: git status"
+           (utils/summarize-tool-use {:name "Bash"
+                                      :input {:command "git status"}}))))
+
+  (testing "summarize-tool-use with generic key"
+    (is (= "🔧 Custom: query: SELECT * FROM users"
+           (utils/summarize-tool-use {:name "Custom"
+                                      :input {:query "SELECT * FROM users"}})))))
+
+(deftest summarize-tool-result-test
+  (testing "summarize-tool-result success with string content"
+    (is (= "✓ Result (5 bytes)"
+           (utils/summarize-tool-result {:content "hello"}))))
+
+  (testing "summarize-tool-result success with no content"
+    (is (= "✓ Result"
+           (utils/summarize-tool-result {}))))
+
+  (testing "summarize-tool-result error with string"
+    (is (= "✗ Error: File not found"
+           (utils/summarize-tool-result {:is-error true
+                                         :content "File not found"}))))
+
+  (testing "summarize-tool-result error without message"
+    (is (= "✗ Error"
+           (utils/summarize-tool-result {:is-error true})))))
+
+(deftest summarize-thinking-test
+  (testing "summarize-thinking with short text"
+    (is (= "💭 Let me think about this."
+           (utils/summarize-thinking {:thinking "Let me think about this."}))))
+
+  (testing "summarize-thinking with long text truncates"
+    (let [long-thinking "I need to analyze this problem carefully and consider all the different approaches we could take to solve it effectively."
+          result (utils/summarize-thinking {:thinking long-thinking})]
+      (is (clojure.string/starts-with? result "💭 "))
+      (is (clojure.string/ends-with? result "..."))
+      (is (< (count result) 70))))
+
+  (testing "summarize-thinking with empty content"
+    (is (= "💭 Thinking..."
+           (utils/summarize-thinking {})))))
+
+(deftest extract-message-text-test
+  (testing "extract-message-text with string content"
+    (is (= "Hello world"
+           (utils/extract-message-text "Hello world"))))
+
+  (testing "extract-message-text with text blocks only"
+    (is (= "First paragraph\n\nSecond paragraph"
+           (utils/extract-message-text [{:type "text" :text "First paragraph"}
+                                        {:type "text" :text "Second paragraph"}]))))
+
+  (testing "extract-message-text with tool_use block"
+    (let [result (utils/extract-message-text [{:type "text" :text "Let me read that file."}
+                                               {:type "tool_use" :name "Read" :input {:path "/foo/bar.cljs"}}])]
+      (is (clojure.string/includes? result "Let me read that file."))
+      (is (clojure.string/includes? result "🔧 Read: bar.cljs"))))
+
+  (testing "extract-message-text with tool_result block"
+    (let [result (utils/extract-message-text [{:type "tool_result" :content "file contents here"}])]
+      (is (clojure.string/includes? result "✓ Result"))))
+
+  (testing "extract-message-text with thinking block"
+    (let [result (utils/extract-message-text [{:type "thinking" :thinking "Analyzing the problem"}
+                                               {:type "text" :text "Here's my answer."}])]
+      (is (clojure.string/includes? result "💭 Analyzing the problem"))
+      (is (clojure.string/includes? result "Here's my answer."))))
+
+  (testing "extract-message-text with nil returns nil"
+    (is (nil? (utils/extract-message-text nil))))
+
+  (testing "extract-message-text with empty array returns nil"
+    (is (nil? (utils/extract-message-text [])))))

@@ -405,15 +405,12 @@
                                                       (:type msg)))
                                            ;; Content can be a string (user) or array of content blocks (assistant)
                                            raw-content (:content inner-msg)
-                                           ;; Extract text from content - handle both string and array formats
-                                           text (cond
-                                                  (string? raw-content) raw-content
-                                                  (sequential? raw-content)
-                                                  (->> raw-content
-                                                       (filter #(= "text" (:type %)))
-                                                       (map :text)
-                                                       (clojure.string/join "\n\n"))
-                                                  :else (:text msg))]
+                                           ;; Extract text using utils/extract-message-text which handles:
+                                           ;; - String content (user messages)
+                                           ;; - Array of content blocks (assistant: text, tool_use, tool_result, thinking)
+                                           text (or (utils/extract-message-text raw-content)
+                                                    (:text msg)
+                                                    (:summary msg))]
                                        {:id (or (:uuid msg) (:message-id msg) (:id msg))
                                         :session-id session-id
                                         :role (when role (keyword role))
@@ -421,7 +418,6 @@
                                         :timestamp (js/Date. (:timestamp msg))
                                         :status :confirmed})))
                               ;; Filter out internal messages (no role) and messages with no displayable text
-                              ;; This prevents empty bubbles from tool_use-only or thinking-only content
                               (filter (fn [m]
                                         (and (:role m)
                                              (not (clojure.string/blank? (:text m))))))

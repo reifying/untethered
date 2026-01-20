@@ -42,6 +42,142 @@
         :else (.toLocaleDateString ts)))))
 
 ;; ============================================================================
+;; Content Block Extraction for Claude Messages
+;; ============================================================================
+;; These functions extract and summarize different content block types
+;; from Claude messages, matching iOS SessionSyncManager.swift behavior.
+
+(defn- format-content-size
+  "Format byte size in human-readable format."
+  [bytes]
+  (cond
+    (nil? bytes) nil
+    (< bytes 1024) (str bytes " bytes")
+    (< bytes (* 1024 1024)) (str (Math/round (/ bytes 1024)) "KB")
+    :else (str (.toFixed (/ bytes (* 1024 1024)) 1) "MB")))
+
+(defn summarize-tool-use
+  "Summarize a tool_use content block.
+   Returns: '🔧 toolName: param summary' format."
+  [block]
+  (let [tool-name (or (:name block) "Tool call")
+        input (:input block)]
+    (if (or (nil? input) (empty? input))
+      (str "🔧 " tool-name)
+      ;; Extract common parameter patterns for readable summary
+      (let [param-summary (or
+                           ;; File path
+                           (when-let [path (or (:file-path input) (:path input))]
+                             (last (clojure.string/split path #"/")))
+                           ;; Pattern search
+                           (when-let [pattern (:pattern input)]
+                             (str "pattern \"" (subs pattern 0 (min 30 (count pattern)))
+                                  (when (> (count pattern) 30) "...") "\""))
+                           ;; Command
+                           (when-let [cmd (:command input)]
+                             (str (subs cmd 0 (min 40 (count cmd)))
+                                  (when (> (count cmd) 40) "...")))
+                           ;; Code
+                           (when-let [code (:code input)]
+                             (str (subs code 0 (min 40 (count code)))
+                                  (when (> (count code) 40) "...")))
+                           ;; Generic first key-value
+                           (when-let [[k v] (first input)]
+                             (let [v-str (str v)]
+                               (str (name k) ": " (subs v-str 0 (min 30 (count v-str)))
+                                    (when (> (count v-str) 30) "...")))))]
+        (if param-summary
+          (str "🔧 " tool-name ": " param-summary)
+          (str "🔧 " tool-name))))))
+
+(defn- extract-text-from-content-blocks
+  "Extract text from an array of content blocks."
+  [blocks]
+  (->> blocks
+       (filter #(= "text" (:type %)))
+       (map :text)
+       (clojure.string/join "\n")))
+
+(defn summarize-tool-result
+  "Summarize a tool_result content block.
+   Returns: '✓ Result (size)' or '✗ Error: message' format."
+  [block]
+  (if (:is-error block)
+    ;; Error case
+    (let [content (:content block)
+          error-text (cond
+                       (string? content) content
+                       (sequential? content) (extract-text-from-content-blocks content)
+                       :else nil)
+          error-msg (when error-text
+                      (first (clojure.string/split-lines error-text)))
+          truncated (when error-msg
+                      (if (> (count error-msg) 60)
+                        (str (subs error-msg 0 60) "...")
+                        error-msg))]
+      (if truncated
+        (str "✗ Error: " truncated)
+        "✗ Error"))
+    ;; Success case - use character count (not bytes) for ClojureScript
+    (let [content (:content block)
+          size (cond
+                 (string? content) (count content)
+                 (sequential? content) (count (or (extract-text-from-content-blocks content) ""))
+                 :else nil)
+          formatted (format-content-size size)]
+      (if formatted
+        (str "✓ Result (" formatted ")")
+        "✓ Result"))))
+
+(defn summarize-thinking
+  "Summarize a thinking content block.
+   Returns: '💭 First 60 chars of thinking...' format."
+  [block]
+  (let [thinking (:thinking block)]
+    (if (or (nil? thinking) (empty? thinking))
+      "💭 Thinking..."
+      (let [max-length 60]
+        (if (<= (count thinking) max-length)
+          (str "💭 " thinking)
+          ;; Try to break at word boundary
+          (let [truncated (subs thinking 0 max-length)
+                last-space (.lastIndexOf truncated " ")]
+            (if (> last-space 0)
+              (str "💭 " (subs truncated 0 last-space) "...")
+              (str "💭 " truncated "..."))))))))
+
+(defn extract-message-text
+  "Extract displayable text from Claude message content blocks.
+   Handles text, tool_use, tool_result, and thinking block types.
+   Returns nil if no displayable content.
+   
+   Matches iOS SessionSyncManager.extractText behavior."
+  [content]
+  (cond
+    ;; String content (user messages)
+    (string? content) content
+
+    ;; Array of content blocks (assistant messages)
+    (sequential? content)
+    (let [summaries (->> content
+                         (map (fn [block]
+                                (case (:type block)
+                                  "text" (:text block)
+                                  "tool_use" (summarize-tool-use block)
+                                  "tool_result" (summarize-tool-result block)
+                                  "thinking" (summarize-thinking block)
+                                  ;; Unknown block type - show placeholder
+                                  (str "[" (:type block) "]"))))
+                         (remove nil?)
+                         (remove empty?)
+                         (vec))]
+      (when (seq summaries)
+        (clojure.string/join "\n\n" summaries)))
+
+    ;; Fallback
+    :else nil))
+
+;; ============================================================================
 ;; Async Operation Timeout Utilities
 ;; ============================================================================
 

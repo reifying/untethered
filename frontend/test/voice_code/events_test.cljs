@@ -522,16 +522,16 @@
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
 
-   (testing "session_history filters out messages with no displayable text"
-     ;; Test that tool_use-only messages (no text content) are filtered out
-     ;; This prevents empty bubbles in the conversation view
+   (testing "session_history includes tool_use messages with displayable summaries"
+     ;; Tool_use blocks now have displayable text (e.g., "🔧 read_file: test.txt")
+     ;; so they should be included in the message list
      (rf/dispatch-sync [:sessions/handle-history
                         {:session-id "s1"
                          :messages [{:type "user"
                                      :uuid "m1"
                                      :message {:role "user" :content "Read the file"}
                                      :timestamp "2026-01-15T10:00:00Z"}
-                                    ;; Tool use only - no text content, should be filtered
+                                    ;; Tool use only - now has displayable summary, should be included
                                     {:type "assistant"
                                      :uuid "m2"
                                      :message {:role "assistant"
@@ -557,12 +557,14 @@
                                                           :input {:pattern "test"}}]}
                                      :timestamp "2026-01-15T10:00:03Z"}]}])
      (let [msgs @(rf/subscribe [:messages/for-session "s1"])]
-       ;; Should have 3 messages: user, assistant with text, assistant with mixed content
-       ;; The tool_use-only message (m2) should be filtered out
-       (is (= 3 (count msgs)) "Tool-use-only messages should be filtered out")
+       ;; All 4 messages should be included - tool_use has displayable summary now
+       (is (= 4 (count msgs)) "All messages including tool_use should be displayed")
        (is (= "m1" (:id (first msgs))))
-       (is (= "m3" (:id (second msgs))))
-       (is (= "m4" (:id (nth msgs 2))))))
+       (is (= "m2" (:id (second msgs))))
+       (is (= "m3" (:id (nth msgs 2))))
+       (is (= "m4" (:id (nth msgs 3))))
+       ;; Verify tool_use message has proper summary text
+       (is (clojure.string/includes? (:text (second msgs)) "🔧 read_file"))))
 
    (testing "session_history filters messages with empty string text"
      (rf/dispatch-sync [:sessions/handle-history
