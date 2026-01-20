@@ -11,7 +11,8 @@
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [Alert]]
             ["react-native" :refer [Platform]]
-            [voice-code.views.voice-picker :refer [voice-picker-modal]]))
+            [voice-code.views.voice-picker :refer [voice-picker-modal]]
+            [voice-code.haptic :as haptic]))
 
 ;; API Key validation and formatting
 (def api-key-prefix "untethered-")
@@ -198,7 +199,7 @@
      :multiline multiline}]])
 
 (defn- toggle-row
-  "Setting row with toggle switch."
+  "Setting row with toggle switch. Includes haptic selection feedback on toggle."
   [{:keys [label value on-change description]}]
   [:> rn/View {:style {:background-color "#FFFFFF"
                        :border-bottom-width 1
@@ -212,7 +213,9 @@
      label]
     [:> rn/Switch
      {:value value
-      :on-value-change on-change
+      :on-value-change (fn [new-value]
+                         (haptic/selection!)
+                         (on-change new-value))
       :track-color #js {:false "#E9E9EB" :true "#34C759"}
       :thumb-color "#FFFFFF"}]]
    (when description

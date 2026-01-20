@@ -4,7 +4,8 @@
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [Modal]]
             ["@react-native-clipboard/clipboard" :as Clipboard]
-            [voice-code.voice :as voice]))
+            [voice-code.voice :as voice]
+            [voice-code.haptic :as haptic]))
 
 ;; ============================================================================
 ;; Copy Confirmation Toast
@@ -21,10 +22,11 @@
    1500))
 
 (defn- copy-to-clipboard!
-  "Copy text to clipboard and show confirmation."
+  "Copy text to clipboard and show confirmation with haptic feedback."
   [text message]
   (let [clipboard (or (.-default Clipboard) Clipboard)]
     (.setString clipboard text)
+    (haptic/success!)
     (show-copy-toast! message)))
 
 (defn- copy-confirmation-toast

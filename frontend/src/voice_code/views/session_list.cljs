@@ -5,7 +5,8 @@
             [clojure.string :as str]
             ["react-native" :as rn :refer [Alert RefreshControl Modal Switch Animated PanResponder]]
             ["@react-native-clipboard/clipboard" :as Clipboard]
-            [voice-code.views.components :refer [relative-time-text]]))
+            [voice-code.views.components :refer [relative-time-text]]
+            [voice-code.haptic :as haptic]))
 
 (defn- format-relative-time
   "Format a timestamp as relative time."
@@ -31,10 +32,11 @@
       (str "Session " (subs (str (:id session)) 0 8))))
 
 (defn- copy-to-clipboard!
-  "Copy text to clipboard."
+  "Copy text to clipboard with haptic feedback."
   [text]
   (let [clipboard (or (.-default Clipboard) Clipboard)]
-    (.setString clipboard text)))
+    (.setString clipboard text)
+    (haptic/success!)))
 
 (defn- unread-badge
   "Badge showing unread message count."
@@ -63,7 +65,8 @@
 (defn- swipeable-session-item
   "Session item with swipe-to-delete functionality.
    Swipe left to reveal delete button, or swipe far left to delete immediately.
-   Uses React Native's Animated and PanResponder for gesture handling."
+   Uses React Native's Animated and PanResponder for gesture handling.
+   Includes haptic feedback on swipe reveal and delete confirmation."
   [{:keys [session locked? on-press on-delete]}]
   (let [;; Animated value for horizontal translation
         translate-x (Animated.Value. 0)
@@ -108,6 +111,8 @@
                             (or (< velocity-x -0.5) (< current-value swipe-threshold))
                             (do
                               (reset! is-open true)
+                              ;; Haptic feedback when revealing delete button
+                              (haptic/impact! :medium)
                               (.start
                                (Animated.spring translate-x
                                                 #js {:toValue (- delete-button-width)
@@ -147,6 +152,8 @@
 
         ;; Handle delete with confirmation
         handle-delete (fn []
+                        ;; Haptic warning feedback before destructive action
+                        (haptic/warning!)
                         (.alert Alert
                                 "Delete Session"
                                 "Are you sure you want to delete this session?"
