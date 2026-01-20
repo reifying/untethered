@@ -1,8 +1,4 @@
-Read docs/design/clojurescript-react-native-pilot.md and explore the code base.
-
-Run `bd list`. If there is a P0 bug, it is your job to fix that bug rather than work on the remaining parity items.
-
-Study docs/design/clojurescript-react-native-pilot.md and and explore the codebase to understand what has been done and what remains. Determine the what is important to work on next to deliver a high quality, finished platform-agnostic mobile app.
+Study docs/design/clojurescript-react-native-pilot.md and and explore the codebase to understand what has been done and what remains. Run `bd list` to identify what backlog has been reported. If there are no applicable tasks ready to work, thoroughly search the code base to look for additional parity gaps and document them with beads tasks. It is your job to determine the what is important to work on next to deliver a high quality, finished platform-agnostic mobile app.
 
 Use a subagent to run the tests. If the react-native test frameworks are not in place yet, it is your job to build them using subagents. If any tests are failing, it is your job to fix them by correcting the implementation or improving the test. If the tests are slow, it is your job to refactor the code or tests as needed to improve the speed of our feedback loop.
 
@@ -35,7 +31,7 @@ When tests pass, manually verify functionality on the simulator before committin
 
 When tests pass and manual verification is complete, have a haiku subagent commit, tag, and push.
 
-Your session should result in either: (a) new issues created from parity gaps discovered, (b) implementation of existing bead issues, or ideally (c) both.
+Your session should result in either: (a) implementation of existing bead issues or (b) new issues created from parity gaps discovered.
 
 Be sure to verify the beads task does not already exist before creating a new task.
 
