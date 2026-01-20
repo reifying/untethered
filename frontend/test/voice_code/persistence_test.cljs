@@ -152,6 +152,33 @@
                       (is (= "Test message" (-> messages first :text)))
                       (done))))))
 
+(deftest load-all-messages-for-export-test
+  "Verify load-messages! returns ALL messages (not limited like app-db).
+   This is critical for export functionality - iOS exports all messages
+   from CoreData, RN must export all messages from SQLite."
+  (async done
+         (-> (persistence/init-db!)
+             (.then (fn [_]
+                      ;; Save more messages than the app-db limit (50)
+                      ;; to verify load-messages! returns ALL of them
+                      (let [messages (for [i (range 75)]
+                                       {:id (str "msg-" i)
+                                        :session-id "export-test-session"
+                                        :role (if (even? i) :user :assistant)
+                                        :text (str "Message number " i)
+                                        :timestamp (js/Date.)
+                                        :status :confirmed})]
+                        (persistence/save-messages! "export-test-session" messages))))
+             (.then (fn [_]
+                      ;; Load ALL messages - should get all 75, not capped at 50
+                      (persistence/load-messages! "export-test-session")))
+             (.then (fn [messages]
+                      (is (= 75 (count messages))
+                          "load-messages! must return ALL messages for export parity with iOS")
+                      (is (= "Message number 0" (:text (first messages))))
+                      (is (= "Message number 74" (:text (last messages))))
+                      (done))))))
+
 ;; ============================================================================
 ;; Settings Storage Tests (using stub)
 ;; ============================================================================

@@ -10,7 +10,8 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [Alert]]
-            ["@react-native-clipboard/clipboard" :as Clipboard]))
+            ["@react-native-clipboard/clipboard" :as Clipboard]
+            [voice-code.persistence :as persistence]))
 
 ;; ============================================================================
 ;; Clipboard Utility
@@ -320,7 +321,6 @@
       (let [session @(rf/subscribe [:sessions/by-id session-id])
             settings @(rf/subscribe [:settings/all])
             active-recipe @(rf/subscribe [:recipes/active-for-session session-id])
-            messages @(rf/subscribe [:messages/for-session session-id])
             working-directory (:working-directory session)
             git-branch @(rf/subscribe [:git/branch working-directory])
             git-loading? @(rf/subscribe [:git/loading? working-directory])
@@ -330,24 +330,35 @@
                           (copy-to-clipboard! text)
                           (show-confirmation! msg))
 
+            ;; Export loads ALL messages from SQLite, bypassing the 50-message
+            ;; in-memory limit. This matches iOS behavior (SessionInfoView.swift:276-290)
+            ;; which fetches all messages from CoreData for export.
             handle-export (fn []
                             (let [{:keys [id backend-name custom-name working-directory]} session
                                   display-name (or custom-name backend-name (str "Session " (subs id 0 8)))
-                                  export-text (str "# " display-name "\n"
-                                                   "Session ID: " id "\n"
-                                                   "Working Directory: " (or working-directory "Not set") "\n"
-                                                   (when git-branch
-                                                     (str "Git Branch: " git-branch "\n"))
-                                                   "Exported: " (.toISOString (js/Date.)) "\n"
-                                                   "\n---\n\n"
-                                                   "Message Count: " (count messages) "\n\n"
-                                                   (->> messages
-                                                        (map (fn [{:keys [role text]}]
-                                                               (str "[" (if (= role :user) "User" "Assistant") "]\n"
-                                                                    text "\n\n")))
-                                                        (apply str)))]
-                              (copy-to-clipboard! export-text)
-                              (show-confirmation! "Conversation exported")))
+                                  ;; Build header first, then load all messages async
+                                  header (str "# " display-name "\n"
+                                              "Session ID: " id "\n"
+                                              "Working Directory: " (or working-directory "Not set") "\n"
+                                              (when git-branch
+                                                (str "Git Branch: " git-branch "\n"))
+                                              "Exported: " (.toISOString (js/Date.)) "\n"
+                                              "\n---\n\n")]
+                              ;; Load ALL messages from SQLite (not just the 50 in app-db)
+                              (-> (persistence/load-messages! id)
+                                  (.then (fn [all-messages]
+                                           (let [export-text (str header
+                                                                  "Message Count: " (count all-messages) "\n\n"
+                                                                  (->> all-messages
+                                                                       (map (fn [{:keys [role text]}]
+                                                                              (str "[" (if (= role :user) "User" "Assistant") "]\n"
+                                                                                   text "\n\n")))
+                                                                       (apply str)))]
+                                             (copy-to-clipboard! export-text)
+                                             (show-confirmation! (str "Exported " (count all-messages) " messages")))))
+                                  (.catch (fn [error]
+                                            (js/console.error "Export failed:" error)
+                                            (show-confirmation! "Export failed"))))))
 
             handle-compact (fn []
                              (.alert Alert
