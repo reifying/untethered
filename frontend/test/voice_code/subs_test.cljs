@@ -180,6 +180,26 @@
      (is (true? @(rf/subscribe [:session/locked? "session-1"])))
      (is (false? @(rf/subscribe [:session/locked? "session-2"]))))))
 
+(deftest loading-sessions-subs
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "loading-sessions returns empty set initially"
+     (is (= #{} @(rf/subscribe [:loading-sessions]))))
+
+   (testing "session/loading? returns false for non-loading session"
+     (is (false? @(rf/subscribe [:session/loading? "session-1"]))))
+
+   ;; Set a session as loading
+   (swap! re-frame.db/app-db update :loading-sessions conj "session-1")
+
+   (testing "loading-sessions includes loading session"
+     (is (contains? @(rf/subscribe [:loading-sessions]) "session-1")))
+
+   (testing "session/loading? returns true for loading session"
+     (is (true? @(rf/subscribe [:session/loading? "session-1"])))
+     (is (false? @(rf/subscribe [:session/loading? "session-2"]))))))
+
 (deftest ui-subs
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])

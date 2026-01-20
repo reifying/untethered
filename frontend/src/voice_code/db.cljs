@@ -40,6 +40,11 @@
    ;; Cleared when session becomes inactive or on reconnection
    :subscribed-sessions #{}
 
+   ;; Set of session IDs currently loading history (waiting for session_history response)
+   ;; Used to show loading indicator in conversation view
+   ;; Matches iOS isLoading state with 5-second timeout fallback
+   :loading-sessions #{}
+
    ;; Tracks pending delta sync requests (session-id -> true when delta sync in progress)
    ;; Used to determine whether to merge or replace messages on history response
    :pending-delta-syncs #{}

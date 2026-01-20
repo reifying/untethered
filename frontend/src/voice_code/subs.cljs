@@ -161,6 +161,19 @@
  (fn [[locked-sessions active-id] _]
    (contains? locked-sessions active-id)))
 
+;; Loading sessions - set of session IDs currently loading history
+(rf/reg-sub
+ :loading-sessions
+ (fn [db _]
+   (:loading-sessions db)))
+
+;; Check if a specific session is loading its history
+(rf/reg-sub
+ :session/loading?
+ :<- [:loading-sessions]
+ (fn [loading-sessions [_ session-id]]
+   (contains? loading-sessions session-id)))
+
 ;; ============================================================================
 ;; Commands
 ;; ============================================================================

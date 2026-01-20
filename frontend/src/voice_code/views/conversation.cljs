@@ -808,6 +808,20 @@
              (when locked?
                (r/as-element [typing-indicator]))}]]))})))
 
+(defn- loading-conversation
+  "Shown while loading conversation history.
+   Matches iOS ConversationView.swift loading indicator (ProgressView + 'Loading conversation...')."
+  []
+  [:> rn/View {:style {:flex 1
+                       :justify-content "center"
+                       :align-items "center"
+                       :padding-top 100}}
+   [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]
+   [:> rn/Text {:style {:font-size 14
+                        :color "#666"
+                        :margin-top 16}}
+    "Loading conversation..."]])
+
 (defn- empty-conversation
   "Shown when there are no messages."
   []
@@ -1149,6 +1163,7 @@
         ;; Subscriptions MUST be inside :reagent-render for reactivity
         (let [messages @(rf/subscribe [:messages/for-session session-id])
               locked? @(rf/subscribe [:session/locked? session-id])
+              loading? @(rf/subscribe [:session/loading? session-id])
               session @(rf/subscribe [:sessions/by-id session-id])
               working-directory (:working-directory session)]
           [:> rn/View {:style {:flex 1 :background-color "#FFFFFF"}}
@@ -1172,6 +1187,11 @@
               ;; A real session always has :id - empty map or {:unread-count 0} means not found
               (not (:id session))
               [session-not-found {:session-id session-id}]
+
+              ;; Loading history - show loading indicator (matches iOS isLoading state)
+              ;; This shows while waiting for session_history response, with 5s timeout fallback
+              loading?
+              [loading-conversation]
 
               ;; Session exists but no messages - show empty state
               (empty? messages)

@@ -1848,6 +1848,71 @@
      (rf/dispatch-sync [:session/subscribe "s2"])
      (is (contains? (:pending-delta-syncs @re-frame.db/app-db) "s2")))))
 
+(deftest loading-state-subscribe-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "subscribe without existing messages sets loading state"
+     (rf/dispatch-sync [:session/subscribe "s1"])
+     (is (contains? (:loading-sessions @re-frame.db/app-db) "s1")))
+
+   (testing "subscribe with existing messages does not set loading state"
+     ;; First add some messages
+     (rf/dispatch-sync [:messages/add "s2"
+                        {:id "m1" :session-id "s2" :role :user
+                         :text "Hello" :timestamp (js/Date.) :status :confirmed}])
+     ;; Clear subscribed-sessions to allow re-subscribe
+     (swap! re-frame.db/app-db assoc :subscribed-sessions #{})
+     ;; Now subscribe - should NOT set loading state (has cached messages)
+     (rf/dispatch-sync [:session/subscribe "s2"])
+     (is (not (contains? (:loading-sessions @re-frame.db/app-db) "s2"))))))
+
+(deftest loading-state-history-received-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "receiving history clears loading state"
+     ;; Set up loading state
+     (rf/dispatch-sync [:session/subscribe "s1"])
+     (is (contains? (:loading-sessions @re-frame.db/app-db) "s1"))
+
+     ;; Receive history
+     (rf/dispatch-sync [:sessions/handle-history
+                        {:session-id "s1"
+                         :messages [{:type "user"
+                                     :uuid "m1"
+                                     :message {:role "user" :content "Hello"}
+                                     :timestamp "2026-01-15T10:00:00Z"}]}])
+
+     ;; Loading state should be cleared
+     (is (not (contains? (:loading-sessions @re-frame.db/app-db) "s1"))))))
+
+(deftest loading-timeout-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "loading timeout clears loading state"
+     ;; Manually set loading state
+     (swap! re-frame.db/app-db update :loading-sessions conj "s1")
+     (is (contains? (:loading-sessions @re-frame.db/app-db) "s1"))
+
+     ;; Dispatch timeout event
+     (rf/dispatch-sync [:session/loading-timeout "s1"])
+
+     ;; Loading state should be cleared
+     (is (not (contains? (:loading-sessions @re-frame.db/app-db) "s1"))))
+
+   (testing "loading timeout does nothing if not loading"
+     ;; Ensure session is not loading
+     (swap! re-frame.db/app-db update :loading-sessions disj "s2")
+     (is (not (contains? (:loading-sessions @re-frame.db/app-db) "s2")))
+
+     ;; Dispatch timeout event - should not error
+     (rf/dispatch-sync [:session/loading-timeout "s2"])
+
+     ;; Still not loading (no change)
+     (is (not (contains? (:loading-sessions @re-frame.db/app-db) "s2"))))))
+
 (deftest subscribe-guard-test
   "Tests for the subscribe guard that prevents duplicate subscribe requests.
    Matches iOS hasSubscribedThisAppear pattern from ConversationView.swift."

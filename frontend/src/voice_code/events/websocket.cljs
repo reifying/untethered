@@ -387,11 +387,12 @@
                 :last-modified (js/Date.)
                 :message-count 0}))))
 
-(rf/reg-event-db
+(rf/reg-event-fx
  :sessions/handle-history
- (fn [db [_ {:keys [session-id messages]}]]
+ (fn [{:keys [db]} [_ {:keys [session-id messages]}]]
    (let [is-delta-sync? (contains? (:pending-delta-syncs db) session-id)
          existing-messages (get-in db [:messages session-id] [])
+         was-loading? (contains? (:loading-sessions db) session-id)
          parsed-messages (->> messages
                               (map (fn [msg]
                                      ;; Claude JSONL format varies by message type:
@@ -426,13 +427,18 @@
          final-messages (if is-delta-sync?
                           (db/merge-messages existing-messages parsed-messages)
                           (db/prune-messages parsed-messages))]
-     (-> db
-         ;; Clear refreshing state when history is received
-         (assoc-in [:ui :refreshing-session?] false)
-         ;; Clear the pending delta sync flag
-         (update :pending-delta-syncs disj session-id)
-         ;; Set the messages (merged or replaced based on sync type)
-         (assoc-in [:messages session-id] final-messages)))))
+     (cond-> {:db (-> db
+                      ;; Clear refreshing state when history is received
+                      (assoc-in [:ui :refreshing-session?] false)
+                      ;; Clear the pending delta sync flag
+                      (update :pending-delta-syncs disj session-id)
+                      ;; Clear loading state (matches iOS: isLoading = false when messages arrive)
+                      (update :loading-sessions disj session-id)
+                      ;; Set the messages (merged or replaced based on sync type)
+                      (assoc-in [:messages session-id] final-messages))}
+       ;; Cancel the loading timeout if we were loading
+       was-loading?
+       (assoc :timeout/cancel (str "loading-timeout-" session-id))))))
 
 (rf/reg-event-db
  :sessions/handle-updated
@@ -585,16 +591,27 @@
      ;; Already subscribed in this cycle - do nothing
      {}
      ;; First subscribe for this session - proceed
-     (let [last-message-id (-> db :messages (get session-id) last :id)
-           is-delta-sync? (boolean last-message-id)]
-       {:db (-> db
-                (update :subscribed-sessions conj session-id)
-                (cond-> is-delta-sync?
-                  (update :pending-delta-syncs conj session-id)))
-        :ws/send (cond-> {:type "subscribe"
-                          :session-id session-id}
-                   last-message-id
-                   (assoc :last-message-id last-message-id))}))))
+     (let [existing-messages (get-in db [:messages session-id] [])
+           last-message-id (-> existing-messages last :id)
+           is-delta-sync? (boolean last-message-id)
+           ;; Only show loading indicator when no cached messages (matches iOS behavior)
+           ;; iOS: isLoading = true only when messages.isEmpty (ConversationView.swift:662)
+           should-show-loading? (empty? existing-messages)]
+       (cond-> {:db (-> db
+                        (update :subscribed-sessions conj session-id)
+                        (cond-> is-delta-sync?
+                          (update :pending-delta-syncs conj session-id))
+                        (cond-> should-show-loading?
+                          (update :loading-sessions conj session-id)))
+                :ws/send (cond-> {:type "subscribe"
+                                  :session-id session-id}
+                           last-message-id
+                           (assoc :last-message-id last-message-id))}
+         ;; Schedule 5-second timeout to hide loading indicator (matches iOS fallback)
+         should-show-loading?
+         (assoc :timeout/schedule {:id (str "loading-timeout-" session-id)
+                                   :timeout-ms 5000
+                                   :on-timeout [:session/loading-timeout session-id]}))))))
 
 (rf/reg-event-fx
  :session/unsubscribe
@@ -963,3 +980,15 @@
    (-> db
        (update-in [:ui :compacting-sessions] disj session-id)
        (assoc-in [:ui :current-error] "Compaction timed out after 60 seconds"))))
+
+;; Timeout event for session loading (5 second fallback to prevent indefinite loading)
+;; Matches iOS ConversationView.swift:706-714 behavior
+(rf/reg-event-db
+ :session/loading-timeout
+ (fn [db [_ session-id]]
+   ;; Only clear if still loading (may have already received history)
+   (if (contains? (:loading-sessions db) session-id)
+     (do
+       (js/console.log "⏱️ Loading indicator hidden (5s timeout fallback) for session:" session-id)
+       (update db :loading-sessions disj session-id))
+     db)))
