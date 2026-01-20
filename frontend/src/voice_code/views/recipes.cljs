@@ -3,8 +3,9 @@
    Displays available recipes and active recipe status.
    Features:
    - Recipe start confirmation for new sessions
-   - 15-second timeout with error feedback
-   - Loading state during recipe start"
+   - 15-second timeout with error feedback for recipe start
+   - 10-second timeout for initial recipe load
+   - Loading state during recipe start and load"
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [Alert]]))
@@ -143,6 +144,19 @@
                         :letter-spacing 0.5}}
     title]])
 
+(defn- loading-recipes-state
+  "Shown while loading recipes from backend."
+  []
+  [:> rn/View {:style {:flex 1
+                       :justify-content "center"
+                       :align-items "center"
+                       :padding 40}}
+   [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]
+   [:> rn/Text {:style {:font-size 16
+                        :color "#666"
+                        :margin-top 16}}
+    "Loading recipes..."]])
+
 (defn- empty-state
   "Shown when there are no recipes available."
   []
@@ -220,9 +234,10 @@
    Uses Form-2 component pattern for proper Reagent reactivity with React Navigation.
    Features:
    - Toggle to start recipe in a new session
-   - 15-second timeout with error feedback
+   - 15-second timeout with error feedback for recipe start
+   - 10-second timeout for initial recipe load
    - Confirmation alert for new session starts
-   - Loading state during recipe start
+   - Loading state during recipe start and load
    Requests available recipes from backend on mount."
   [^js props]
   (let [route (.-route props)
@@ -234,9 +249,12 @@
         starting-recipe? (r/atom false)
         start-error (r/atom nil)
         pending-session-id (r/atom nil)
-        timeout-handle (r/atom nil)]
-    ;; Request recipes from backend on mount
-    (rf/dispatch [:recipes/request-available])
+        timeout-handle (r/atom nil)
+        ;; Recipe load state
+        loading-recipes? (r/atom true)
+        has-requested-recipes? (r/atom false)
+        load-timeout-handle (r/atom nil)
+        load-error (r/atom nil)]
     ;; Form-2: Return a render function that reads subscriptions
     (fn [^js _props]
       (let [available-recipes @(rf/subscribe [:recipes/available])
@@ -246,6 +264,28 @@
             ;; Check if our pending recipe has started
             pending-active (when @pending-session-id
                              (get active-recipes @pending-session-id))]
+
+        ;; Request recipes on first render (guard against duplicates)
+        (when (and (not @has-requested-recipes?) (empty? available-recipes))
+          (reset! has-requested-recipes? true)
+          (reset! loading-recipes? true)
+          (rf/dispatch [:recipes/request-available])
+          ;; Start 10-second load timeout
+          (reset! load-timeout-handle
+                  (js/setTimeout
+                   (fn []
+                     (when @loading-recipes?
+                       (reset! loading-recipes? false)
+                       (reset! has-requested-recipes? false) ; Allow retry
+                       (reset! load-error "Failed to load recipes. Please try again.")))
+                   10000)))
+
+        ;; Stop loading when recipes arrive
+        (when (and @loading-recipes? (seq available-recipes))
+          (reset! loading-recipes? false)
+          (when @load-timeout-handle
+            (js/clearTimeout @load-timeout-handle)
+            (reset! load-timeout-handle nil)))
 
         ;; Handle recipe start success
         (when (and @starting-recipe? pending-active)
@@ -268,8 +308,51 @@
           (reset! pending-session-id nil))
 
         [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
-         ;; Error state
-         (when @start-error
+         ;; Load error state (for initial recipe load)
+         (when @load-error
+           [:> rn/View {:style {:flex 1
+                                :justify-content "center"
+                                :align-items "center"
+                                :padding 32}}
+            [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "⚠️"]
+            [:> rn/Text {:style {:font-size 18
+                                 :font-weight "600"
+                                 :color "#333"
+                                 :text-align "center"}}
+             "Failed to Load"]
+            [:> rn/Text {:style {:font-size 14
+                                 :color "#666"
+                                 :text-align "center"
+                                 :margin-top 12
+                                 :margin-horizontal 32}}
+             @load-error]
+            [:> rn/TouchableOpacity
+             {:style {:margin-top 24
+                      :padding-horizontal 24
+                      :padding-vertical 12
+                      :background-color "#007AFF"
+                      :border-radius 8}
+              :on-press (fn []
+                          (reset! load-error nil)
+                          (reset! loading-recipes? true)
+                          (reset! has-requested-recipes? true)
+                          (rf/dispatch [:recipes/request-available])
+                          ;; Restart timeout
+                          (reset! load-timeout-handle
+                                  (js/setTimeout
+                                   (fn []
+                                     (when @loading-recipes?
+                                       (reset! loading-recipes? false)
+                                       (reset! has-requested-recipes? false)
+                                       (reset! load-error "Failed to load recipes. Please try again.")))
+                                   10000)))}
+             [:> rn/Text {:style {:color "#FFF"
+                                  :font-size 16
+                                  :font-weight "500"}}
+              "Retry"]]])
+
+         ;; Start error state (for recipe start)
+         (when (and @start-error (not @load-error))
            [:> rn/View {:style {:flex 1
                                 :justify-content "center"
                                 :align-items "center"
@@ -299,7 +382,7 @@
               "Dismiss"]]])
 
          ;; Loading state (starting recipe)
-         (when (and @starting-recipe? (not @start-error))
+         (when (and @starting-recipe? (not @start-error) (not @load-error))
            [:> rn/View {:style {:position "absolute"
                                 :top 0 :left 0 :right 0 :bottom 0
                                 :background-color "rgba(255,255,255,0.9)"
@@ -313,16 +396,25 @@
              "Starting recipe..."]])
 
          ;; Active recipe banner (if running for this session)
-         (when (and active-for-session (not @start-error))
+         (when (and active-for-session (not @start-error) (not @load-error))
            [active-recipe-banner
             {:name (:label active-for-session)
              :started-at (:started-at active-for-session)
              :on-stop #(rf/dispatch [:recipes/stop session-id])}])
 
-         ;; Recipe list
-         (when-not @start-error
-           (if (empty? available-recipes)
+         ;; Recipe list or loading/empty state
+         (when-not (or @start-error @load-error)
+           (cond
+             ;; Loading recipes
+             @loading-recipes?
+             [loading-recipes-state]
+
+             ;; No recipes available
+             (empty? available-recipes)
              [empty-state]
+
+             ;; Show recipe list
+             :else
              [:> rn/ScrollView {:style {:flex 1}}
               ;; New session toggle (only show when no recipe is running)
               (when-not active-for-session
