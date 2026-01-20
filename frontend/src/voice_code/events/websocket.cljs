@@ -4,7 +4,8 @@
   (:require [re-frame.core :as rf]
             [voice-code.websocket :as ws]
             [voice-code.db :as db]
-            [voice-code.json :as json]))
+            [voice-code.json :as json]
+            [voice-code.utils :as utils]))
 
 ;; ============================================================================
 ;; Connection Events
@@ -296,27 +297,29 @@
 ;; Session Handlers
 ;; ============================================================================
 
-(rf/reg-event-db
+(rf/reg-event-fx
  :sessions/handle-list
- (fn [db [_ {:keys [sessions]}]]
+ (fn [{:keys [db]} [_ {:keys [sessions]}]]
    ;; Receiving session list means we're authenticated
    ;; Also clears refreshing state if a refresh was in progress
+   ;; Cancel any pending refresh timeout
    ;; Note: Per STANDARDS.md, all session IDs must be lowercase
-   (-> (reduce (fn [db session]
-                 (let [session-id (json/normalize-session-id (:session-id session))]
-                   (assoc-in db [:sessions session-id]
-                             {:id session-id
-                              :backend-name (:name session)
-                              :working-directory (:working-directory session)
-                              :last-modified (js/Date. (:last-modified session))
-                              :message-count (:message-count session)
-                              :preview (:preview session)})))
-               db
-               sessions)
-       (assoc-in [:connection :status] :connected)
-       (assoc-in [:connection :authenticated?] true)
-       (assoc-in [:connection :reconnect-attempts] 0)
-       (assoc-in [:ui :refreshing?] false))))
+   {:db (-> (reduce (fn [db session]
+                      (let [session-id (json/normalize-session-id (:session-id session))]
+                        (assoc-in db [:sessions session-id]
+                                  {:id session-id
+                                   :backend-name (:name session)
+                                   :working-directory (:working-directory session)
+                                   :last-modified (js/Date. (:last-modified session))
+                                   :message-count (:message-count session)
+                                   :preview (:preview session)})))
+                    db
+                    sessions)
+            (assoc-in [:connection :status] :connected)
+            (assoc-in [:connection :authenticated?] true)
+            (assoc-in [:connection :reconnect-attempts] 0)
+            (assoc-in [:ui :refreshing?] false))
+    :timeout/cancel [:sessions-refresh]}))
 
 (rf/reg-event-db
  :sessions/handle-recent
@@ -339,10 +342,14 @@
  (fn [{:keys [db]} _]
    ;; Send refresh_sessions message to backend to reload session list
    ;; This is used for pull-to-refresh on directory and session lists
+   ;; Timeout: 5 seconds (matching iOS implementation)
    (let [{:keys [recent-sessions-limit]} (:settings db)]
      {:db (assoc-in db [:ui :refreshing?] true)
       :ws/send {:type "refresh_sessions"
-                :recent-sessions-limit (or recent-sessions-limit 10)}})))
+                :recent-sessions-limit (or recent-sessions-limit 10)}
+      :timeout/schedule {:id [:sessions-refresh]
+                         :timeout-ms session-refresh-timeout-ms
+                         :on-timeout [:sessions/refresh-timeout]}})))
 
 (rf/reg-event-db
  :sessions/handle-created
@@ -455,20 +462,22 @@
 (rf/reg-event-fx
  :sessions/handle-compaction-complete
  (fn [{:keys [db]} [_ {:keys [session-id]}]]
-   ;; Compaction succeeded - update state and show feedback
+   ;; Compaction succeeded - update state, cancel timeout, and show feedback
    {:db (-> db
             (update-in [:ui :compacting-sessions] disj session-id)
             (assoc-in [:ui :compaction-timestamps session-id] (js/Date.))
             (assoc-in [:ui :compaction-success] "Session compacted"))
+    :timeout/cancel [:compaction session-id]
     :dispatch-later [{:ms 3000 :dispatch [:ui/clear-compaction-success]}]}))
 
-(rf/reg-event-db
+(rf/reg-event-fx
  :sessions/handle-compaction-error
- (fn [db [_ {:keys [session-id error]}]]
-   ;; Compaction failed - clear compacting state and show error
-   (-> db
-       (update-in [:ui :compacting-sessions] disj session-id)
-       (assoc-in [:ui :current-error] (str "Compaction failed: " error)))))
+ (fn [{:keys [db]} [_ {:keys [session-id error]}]]
+   ;; Compaction failed - clear compacting state, cancel timeout, and show error
+   {:db (-> db
+            (update-in [:ui :compacting-sessions] disj session-id)
+            (assoc-in [:ui :current-error] (str "Compaction failed: " error)))
+    :timeout/cancel [:compaction session-id]}))
 
 ;; ============================================================================
 ;; Worktree Handlers
@@ -759,9 +768,13 @@
  :session/compact
  (fn [{:keys [db]} [_ session-id]]
    ;; Track compacting state and send compact message to backend
+   ;; Timeout: 60 seconds (matching iOS implementation)
    {:db (update-in db [:ui :compacting-sessions] (fnil conj #{}) session-id)
     :ws/send {:type "compact_session"
-              :session-id session-id}}))
+              :session-id session-id}
+    :timeout/schedule {:id [:compaction session-id]
+                       :timeout-ms compaction-timeout-ms
+                       :on-timeout [:session/compaction-timeout session-id]}}))
 
 (rf/reg-event-fx
  :session/kill
@@ -881,3 +894,42 @@
    (when working-directory
      {:ws/send {:type "get_git_branch"
                 :working-directory working-directory}})))
+
+;; ============================================================================
+;; Async Operation Timeout Support
+;; ============================================================================
+
+;; Timeout constants (matching iOS implementation)
+(def ^:const session-refresh-timeout-ms 5000) ; 5 seconds for session refresh
+(def ^:const compaction-timeout-ms 60000) ; 60 seconds for compaction
+
+;; Effect handler to schedule a timeout with automatic dispatch on expiry
+(rf/reg-fx
+ :timeout/schedule
+ (fn [{:keys [id timeout-ms on-timeout]}]
+   (utils/schedule-timeout!
+    id
+    timeout-ms
+    #(rf/dispatch on-timeout))))
+
+;; Effect handler to cancel a pending timeout
+(rf/reg-fx
+ :timeout/cancel
+ (fn [id]
+   (utils/cancel-timeout! id)))
+
+;; Timeout error event for session refresh
+(rf/reg-event-db
+ :sessions/refresh-timeout
+ (fn [db _]
+   (-> db
+       (assoc-in [:ui :refreshing?] false)
+       (assoc-in [:ui :current-error] "Session refresh timed out after 5 seconds"))))
+
+;; Timeout error event for session compaction
+(rf/reg-event-db
+ :session/compaction-timeout
+ (fn [db [_ session-id]]
+   (-> db
+       (update-in [:ui :compacting-sessions] disj session-id)
+       (assoc-in [:ui :current-error] "Compaction timed out after 60 seconds"))))

@@ -1537,6 +1537,55 @@
      (rf/dispatch-sync [:ui/clear-compaction-success])
      (is (nil? (get-in @re-frame.db/app-db [:ui :compaction-success]))))))
 
+(deftest timeout-events-test
+  "Tests for async operation timeout handling (VCMOB-7pp)"
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "sessions/refresh-timeout sets error and clears refreshing state"
+     ;; Set up: in refreshing state
+     (rf/dispatch-sync [:db/update-in [:ui :refreshing?] (constantly true)])
+     (is (true? @(rf/subscribe [:ui/refreshing?])))
+
+     ;; Dispatch timeout event
+     (rf/dispatch-sync [:sessions/refresh-timeout])
+
+     ;; Should clear refreshing state
+     (is (false? @(rf/subscribe [:ui/refreshing?])))
+     ;; Should set error message
+     (is (= "Session refresh timed out after 5 seconds"
+            @(rf/subscribe [:ui/current-error]))))
+
+   (testing "session/compaction-timeout sets error and clears compacting state"
+     ;; Set up: session in compacting state
+     (rf/dispatch-sync [:db/update-in [:ui :compacting-sessions] (constantly #{"session-timeout-test"})])
+     (is (contains? (get-in @re-frame.db/app-db [:ui :compacting-sessions]) "session-timeout-test"))
+
+     ;; Clear any previous error
+     (rf/dispatch-sync [:ui/clear-error])
+
+     ;; Dispatch timeout event for the specific session
+     (rf/dispatch-sync [:session/compaction-timeout "session-timeout-test"])
+
+     ;; Should remove from compacting set
+     (is (not (contains? (get-in @re-frame.db/app-db [:ui :compacting-sessions]) "session-timeout-test")))
+     ;; Should set error message
+     (is (= "Compaction timed out after 60 seconds"
+            @(rf/subscribe [:ui/current-error]))))
+
+   (testing "compaction timeout only affects the specific session"
+     ;; Set up: multiple sessions compacting
+     (rf/dispatch-sync [:db/update-in [:ui :compacting-sessions] (constantly #{"session-a" "session-b" "session-c"})])
+
+     ;; Timeout only session-b
+     (rf/dispatch-sync [:session/compaction-timeout "session-b"])
+
+     ;; Only session-b should be removed
+     (let [compacting (get-in @re-frame.db/app-db [:ui :compacting-sessions])]
+       (is (contains? compacting "session-a"))
+       (is (not (contains? compacting "session-b")))
+       (is (contains? compacting "session-c"))))))
+
 (deftest force-reconnect-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
