@@ -45,8 +45,17 @@
 (rf/reg-event-fx
  :sessions/select
  (fn [{:keys [db]} [_ session-id]]
-   {:db (assoc db :active-session-id session-id)
-    :dispatch [:session/subscribe session-id]}))
+   ;; First check if we already have messages in memory
+   (let [has-messages? (seq (get-in db [:messages session-id]))]
+     (if has-messages?
+       ;; Messages already in memory - subscribe directly
+       {:db (assoc db :active-session-id session-id)
+        :dispatch [:session/subscribe session-id]}
+       ;; No messages in memory - load from persistence first, then subscribe
+       ;; This enables delta sync with last_message_id after app restart
+       {:db (assoc db :active-session-id session-id)
+        :persistence/load-messages {:session-id session-id
+                                    :on-complete [:session/subscribe session-id]}}))))
 
 ;; ============================================================================
 ;; UI State

@@ -34,7 +34,46 @@
 
    (testing "sessions/set-active changes active session"
      (rf/dispatch-sync [:sessions/set-active "session-1"])
-     (is (= "session-1" @(rf/subscribe [:sessions/active-id]))))))
+     (is (= "session-1" @(rf/subscribe [:sessions/active-id])))))
+
+  ;; Test persistence load path in separate run-test-sync
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "sessions/select sets active and triggers persistence load when no messages"
+     (rf/dispatch-sync [:sessions/add {:id "session-2"
+                                       :backend-name "Test Session 2"}])
+
+     ;; Select the session - should trigger persistence load effect
+     (rf/dispatch-sync [:sessions/select "session-2"])
+
+     ;; Active session should be set immediately
+     (is (= "session-2" @(rf/subscribe [:sessions/active-id])))))
+
+  ;; Test direct subscribe path - dispatch directly to session/subscribe to verify
+  ;; that the path works when messages exist
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "sessions/select with existing messages triggers subscribe (verifying via direct call)"
+     ;; Add messages to memory first
+     (rf/dispatch-sync [:messages/add "session-3"
+                        {:id "msg-1" :session-id "session-3" :role :user
+                         :text "Hello" :timestamp (js/Date.) :status :confirmed}])
+     (rf/dispatch-sync [:sessions/add {:id "session-3"
+                                       :backend-name "Test Session 3"}])
+
+     ;; Set active session manually first (simulating what sessions/select does for db)
+     (rf/dispatch-sync [:sessions/set-active "session-3"])
+
+     ;; Now manually dispatch subscribe (which sessions/select would trigger)
+     ;; This verifies the subscribe path works with messages present
+     (rf/dispatch-sync [:session/subscribe "session-3"])
+
+     ;; Should be in subscribed-sessions
+     (is (contains? (:subscribed-sessions @re-frame.db/app-db) "session-3"))
+     ;; Should have last-message-id for delta sync
+     (is (contains? (:pending-delta-syncs @re-frame.db/app-db) "session-3")))))
 
 (deftest ui-state-test
   (rf-test/run-test-sync

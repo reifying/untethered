@@ -507,9 +507,12 @@
 
 (rf/reg-fx
  :persistence/load-messages
- (fn [session-id]
+ (fn [{:keys [session-id on-complete]}]
    (-> (load-messages! session-id)
-       (.then #(rf/dispatch [:messages/add-many session-id %])))))
+       (.then (fn [messages]
+                (rf/dispatch [:messages/add-many session-id messages])
+                (when on-complete
+                  (rf/dispatch on-complete)))))))
 
 (rf/reg-fx
  :persistence/save-setting
