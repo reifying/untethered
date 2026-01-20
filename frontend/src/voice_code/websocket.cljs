@@ -8,6 +8,27 @@
 (def ^:private max-reconnect-attempts 20)
 (def ^:private max-reconnect-delay-ms 30000)
 
+;; Runtime detection for React Native environment (vs Node.js test environment)
+(def ^:private running-in-react-native?
+  "Returns true if running in React Native, false in Node.js test environment."
+  (and (exists? js/navigator)
+       (not= "node" (.-product js/navigator))))
+
+;; Conditionally load AppState module - only available in React Native
+(defonce ^:private app-state-module
+  (when running-in-react-native?
+    (try
+      (js/require "react-native")
+      (catch :default e
+        (js/console.warn "react-native module not available:" e)
+        nil))))
+
+(defn- get-app-state
+  "Get AppState from react-native module. Returns nil in test environment."
+  []
+  (when app-state-module
+    (.-AppState app-state-module)))
+
 (defonce ^:private ws-atom (atom nil))
 (defonce ^:private ping-timer (atom nil))
 (defonce ^:private reconnect-timer (atom nil))
@@ -142,3 +163,79 @@
            (js/setTimeout
             #(connect! config)
             delay-ms))))
+
+;; ============================================================================
+;; App Lifecycle Handling (iOS parity with VoiceCodeClient.swift:93-148)
+;; ============================================================================
+
+(defonce ^:private app-state-subscription (atom nil))
+(defonce ^:private previous-app-state (atom "active"))
+
+(defn- handle-app-state-change!
+  "Handle app state changes (active/inactive/background).
+   Reconnects when app returns to foreground if disconnected.
+   Mirrors iOS VoiceCodeClient.setupLifecycleObservers behavior."
+  [next-state]
+  (let [prev-state @previous-app-state]
+    (reset! previous-app-state next-state)
+    (cond
+      ;; App became active (foreground) - check if we need to reconnect
+      (and (not= prev-state "active") (= next-state "active"))
+      (do
+        (js/console.log "📱 [WebSocket] App became active")
+        (rf/dispatch [:ws/app-became-active]))
+
+      ;; App entered background - log for debugging
+      (and (= prev-state "active") (not= next-state "active"))
+      (js/console.log "📱 [WebSocket] App entering background"))))
+
+(defn setup-app-state-listener!
+  "Set up AppState change listener for lifecycle-aware reconnection.
+   Call once during app initialization. No-op in test environment."
+  []
+  (when-let [app-state (get-app-state)]
+    (when-not @app-state-subscription
+      (reset! app-state-subscription
+              (.addEventListener app-state "change" handle-app-state-change!))
+      (js/console.log "📱 [WebSocket] App state listener initialized"))))
+
+(defn remove-app-state-listener!
+  "Remove AppState change listener. Call on cleanup."
+  []
+  (when-let [subscription @app-state-subscription]
+    (.remove subscription)
+    (reset! app-state-subscription nil)
+    (js/console.log "📱 [WebSocket] App state listener removed")))
+
+;; Effect handler to set up lifecycle listener
+(rf/reg-fx
+ :ws/setup-app-state-listener
+ (fn [_]
+   (setup-app-state-listener!)))
+
+;; Event handler for when app becomes active
+(rf/reg-event-fx
+ :ws/app-became-active
+ (fn [{:keys [db]} _]
+   (let [status (get-in db [:connection :status])
+         requires-reauth? (get-in db [:connection :requires-reauthentication?])
+         server-url (get-in db [:settings :server-url])
+         server-port (get-in db [:settings :server-port])]
+     (cond
+       ;; Don't reconnect if reauthentication is required
+       requires-reauth?
+       (do
+         (js/console.log "📱 [WebSocket] Skipping reconnection - reauthentication required")
+         {})
+
+       ;; Reconnect if disconnected
+       (= status :disconnected)
+       (do
+         (js/console.log "📱 [WebSocket] Attempting reconnection after foreground...")
+         ;; Reset reconnect attempts on foreground (iOS behavior)
+         {:db (assoc-in db [:connection :reconnect-attempts] 0)
+          :ws/connect {:server-url server-url :server-port server-port}})
+
+       ;; Already connected, no action needed
+       :else
+       {}))))

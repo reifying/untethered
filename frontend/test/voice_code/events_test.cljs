@@ -1764,3 +1764,49 @@
        (is (nil? (:usage msg)))
        (is (some? (:cost msg)))
        (is (= 0.01 (get-in msg [:cost :total-cost])))))))
+
+;; ============================================================================
+;; App Lifecycle WebSocket Reconnection Tests (VCMOB-98m)
+;; ============================================================================
+
+(deftest app-became-active-reconnect-test
+  "Tests that ws/app-became-active reconnects when disconnected"
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "app-became-active reconnects when disconnected"
+     ;; Set up: disconnected state with settings
+     (rf/dispatch-sync [:db/update-in [:connection :status] (constantly :disconnected)])
+     (rf/dispatch-sync [:settings/update :server-url "192.168.1.100"])
+     (rf/dispatch-sync [:settings/update :server-port 8080])
+
+     ;; Dispatch app-became-active
+     (rf/dispatch-sync [:ws/app-became-active])
+
+     ;; Should reset reconnect attempts (even though we can't test the ws/connect effect)
+     (is (= 0 (get-in @re-frame.db/app-db [:connection :reconnect-attempts]))))
+
+   (testing "app-became-active does nothing when already connected"
+     ;; Set up: already connected
+     (rf/dispatch-sync [:db/update-in [:connection :status] (constantly :connected)])
+     (rf/dispatch-sync [:db/update-in [:connection :reconnect-attempts] (constantly 5)])
+
+     ;; Dispatch app-became-active
+     (rf/dispatch-sync [:ws/app-became-active])
+
+     ;; Reconnect attempts should NOT be reset (no action taken)
+     (is (= 5 (get-in @re-frame.db/app-db [:connection :reconnect-attempts]))))
+
+   (testing "app-became-active skips reconnection when reauthentication required"
+     ;; Set up: disconnected but requires reauthentication
+     (rf/dispatch-sync [:db/update-in [:connection :status] (constantly :disconnected)])
+     (rf/dispatch-sync [:db/update-in [:connection :requires-reauthentication?] (constantly true)])
+     (rf/dispatch-sync [:db/update-in [:connection :reconnect-attempts] (constantly 3)])
+
+     ;; Dispatch app-became-active
+     (rf/dispatch-sync [:ws/app-became-active])
+
+     ;; Reconnect attempts should NOT be reset (no reconnection attempted)
+     (is (= 3 (get-in @re-frame.db/app-db [:connection :reconnect-attempts])))
+     ;; Status should still be disconnected
+     (is (= :disconnected @(rf/subscribe [:connection/status]))))))

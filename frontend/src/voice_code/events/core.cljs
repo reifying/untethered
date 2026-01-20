@@ -21,7 +21,8 @@
                  [:persistence/load-api-key]
                  [:persistence/load-drafts]
                  [:persistence/load-command-mru]]
-    :voice/setup nil}))
+    :voice/setup nil
+    :ws/setup-app-state-listener nil}))
 
 ;; ============================================================================
 ;; Session Selection
