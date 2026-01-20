@@ -954,15 +954,28 @@
        [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "↻"])]))
 
 (defn- header-stop-speech-button
-  "Stop Speaking button for the conversation header.
-   Only shows when TTS is actively speaking."
+  "Stop/Pause/Resume Speaking buttons for the conversation header.
+   Shows pause/play button to toggle pause state.
+   Shows stop button to stop completely.
+   Only shows when TTS is actively speaking or paused."
   []
-  (let [speaking? @(rf/subscribe [:voice/speaking?])]
-    (when speaking?
-      [:> rn/TouchableOpacity
-       {:style {:padding 8}
-        :on-press #(rf/dispatch [:voice/stop-speaking])}
-       [:> rn/Text {:style {:font-size 16 :color "#FF3B30"}} "🔇"]])))
+  (let [speaking? @(rf/subscribe [:voice/speaking?])
+        paused? @(rf/subscribe [:voice/paused?])]
+    (when (or speaking? paused?)
+      [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+       ;; Pause/Resume button
+       [:> rn/TouchableOpacity
+        {:style {:padding 8}
+         :on-press #(if paused?
+                      (rf/dispatch [:voice/resume-speaking])
+                      (rf/dispatch [:voice/pause-speaking]))}
+        [:> rn/Text {:style {:font-size 16 :color (if paused? "#007AFF" "#FF9500")}}
+         (if paused? "▶️" "⏸️")]]
+       ;; Stop button
+       [:> rn/TouchableOpacity
+        {:style {:padding 8}
+         :on-press #(rf/dispatch [:voice/stop-speaking])}
+        [:> rn/Text {:style {:font-size 16 :color "#FF3B30"}} "⏹"]]])))
 
 (defn- header-kill-button
   "Kill button for canceling stuck prompts.

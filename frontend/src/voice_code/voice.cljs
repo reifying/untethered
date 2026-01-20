@@ -49,7 +49,7 @@
         str/trim)))
 
 ;; Forward declarations for TTS functions used in voice recognition
-(declare speaking?* stop-speaking!)
+(declare speaking?* stop-speaking! set-speech-rate!)
 
 ;; ============================================================================
 ;; Feature Detection
@@ -202,6 +202,8 @@
 
 (defonce ^:private speaking? (atom false))
 
+(defonce ^:private paused? (atom false))
+
 (defn- get-tts-default
   "Get the default export from the TTS module."
   []
@@ -251,22 +253,34 @@
      (.addEventListener Tts "tts-finish"
                         (fn [_]
                           (reset! speaking? false)
+                          (reset! paused? false)
                           (rf/dispatch [:voice/speech-finished])))
 
      ;; TTS started speaking
      (.addEventListener Tts "tts-start"
                         (fn [_]
                           (reset! speaking? true)
+                          (reset! paused? false)
                           (rf/dispatch [:voice/tts-started])))
 
      ;; TTS cancelled
      (.addEventListener Tts "tts-cancel"
                         (fn [_]
                           (reset! speaking? false)
+                          (reset! paused? false)
                           (rf/dispatch [:voice/tts-cancelled])))
 
-     ;; Note: react-native-tts does not support a 'tts-error' event.
-     ;; Errors are handled via promise rejection in speak! function.
+     ;; TTS paused
+     (.addEventListener Tts "tts-pause"
+                        (fn [_]
+                          (reset! paused? true)
+                          (rf/dispatch [:voice/tts-paused])))
+
+     ;; TTS resumed
+     (.addEventListener Tts "tts-resume"
+                        (fn [_]
+                          (reset! paused? false)
+                          (rf/dispatch [:voice/tts-resumed])))
 
      (js/console.log "Text-to-speech initialized"))))
 
@@ -309,6 +323,43 @@
         (.catch (fn [error]
                   (js/console.error "Failed to stop TTS:" error))))
     (js/Promise.resolve nil)))
+
+(defn pause-speaking!
+  "Pause current speech at the next word boundary.
+   Returns a promise that resolves to true if paused, false otherwise."
+  []
+  (if-let [Tts (get-tts-default)]
+    (-> (.pause Tts true) ; true = pause at word boundary
+        (.then (fn [paused]
+                 (when paused
+                   (reset! paused? true)
+                   (js/console.log "TTS paused"))
+                 paused))
+        (.catch (fn [error]
+                  (js/console.error "Failed to pause TTS:" error)
+                  false)))
+    (js/Promise.resolve false)))
+
+(defn resume-speaking!
+  "Resume paused speech.
+   Returns a promise that resolves to true if resumed, false otherwise."
+  []
+  (if-let [Tts (get-tts-default)]
+    (-> (.resume Tts)
+        (.then (fn [resumed]
+                 (when resumed
+                   (reset! paused? false)
+                   (js/console.log "TTS resumed"))
+                 resumed))
+        (.catch (fn [error]
+                  (js/console.error "Failed to resume TTS:" error)
+                  false)))
+    (js/Promise.resolve false)))
+
+(defn paused?*
+  "Returns true if speech is currently paused."
+  []
+  @paused?)
 
 (defn speaking?*
   "Returns true if currently speaking."
@@ -465,6 +516,16 @@
    (stop-speaking!)))
 
 (rf/reg-fx
+ :voice/pause-speaking
+ (fn [_]
+   (pause-speaking!)))
+
+(rf/reg-fx
+ :voice/resume-speaking
+ (fn [_]
+   (resume-speaking!)))
+
+(rf/reg-fx
  :voice/setup
  (fn [settings]
    (setup-voice! (or settings {}))))
@@ -503,6 +564,24 @@
  (fn [_ _]
    {:voice/stop-speaking nil}))
 
+(rf/reg-event-fx
+ :voice/pause-speaking
+ (fn [_ _]
+   {:voice/pause-speaking nil}))
+
+(rf/reg-event-fx
+ :voice/resume-speaking
+ (fn [_ _]
+   {:voice/resume-speaking nil}))
+
+(rf/reg-event-fx
+ :voice/toggle-pause
+ (fn [{:keys [db]} _]
+   (let [paused? (get-in db [:ui :voice-paused?] false)]
+     (if paused?
+       {:voice/resume-speaking nil}
+       {:voice/pause-speaking nil}))))
+
 (rf/reg-event-db
  :voice/transcription-received
  (fn [db [_ text]]
@@ -532,7 +611,9 @@
 (rf/reg-event-db
  :voice/speech-finished
  (fn [db _]
-   (assoc-in db [:ui :voice-speaking?] false)))
+   (-> db
+       (assoc-in [:ui :voice-speaking?] false)
+       (assoc-in [:ui :voice-paused?] false))))
 
 (rf/reg-event-db
  :voice/tts-started
@@ -542,7 +623,19 @@
 (rf/reg-event-db
  :voice/tts-cancelled
  (fn [db _]
-   (assoc-in db [:ui :voice-speaking?] false)))
+   (-> db
+       (assoc-in [:ui :voice-speaking?] false)
+       (assoc-in [:ui :voice-paused?] false))))
+
+(rf/reg-event-db
+ :voice/tts-paused
+ (fn [db _]
+   (assoc-in db [:ui :voice-paused?] true)))
+
+(rf/reg-event-db
+ :voice/tts-resumed
+ (fn [db _]
+   (assoc-in db [:ui :voice-paused?] false)))
 
 (rf/reg-event-db
  :voice/error
@@ -551,6 +644,7 @@
    (-> db
        (assoc-in [:ui :voice-listening?] false)
        (assoc-in [:ui :voice-speaking?] false)
+       (assoc-in [:ui :voice-paused?] false)
        (assoc-in [:ui :voice-error] error))))
 
 (rf/reg-event-db
@@ -571,6 +665,11 @@
  :voice/speaking?
  (fn [db _]
    (get-in db [:ui :voice-speaking?] false)))
+
+(rf/reg-sub
+ :voice/paused?
+ (fn [db _]
+   (get-in db [:ui :voice-paused?] false)))
 
 (rf/reg-sub
  :voice/partial-result

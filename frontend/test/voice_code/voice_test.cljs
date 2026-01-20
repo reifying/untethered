@@ -165,6 +165,83 @@
      (rf/dispatch-sync [:voice/tts-cancelled])
      (is (false? @(rf/subscribe [:voice/speaking?]))))))
 
+(deftest voice-paused-sub
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "voice/paused? returns false initially"
+     (is (false? @(rf/subscribe [:voice/paused?]))))
+
+   (testing "voice/tts-paused sets paused to true"
+     (rf/dispatch-sync [:voice/tts-paused])
+     (is (true? @(rf/subscribe [:voice/paused?]))))
+
+   (testing "voice/tts-resumed sets paused to false"
+     (rf/dispatch-sync [:voice/tts-resumed])
+     (is (false? @(rf/subscribe [:voice/paused?]))))))
+
+(deftest voice-pause-resume-events
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "pause-speaking event is registered and can be dispatched"
+     ;; Start speaking
+     (rf/dispatch-sync [:voice/tts-started])
+     (is (true? @(rf/subscribe [:voice/speaking?])))
+     ;; Dispatch pause (effect won't actually run in tests)
+     (rf/dispatch-sync [:voice/pause-speaking]))
+
+   (testing "resume-speaking event is registered and can be dispatched"
+     ;; Pause first
+     (rf/dispatch-sync [:voice/tts-paused])
+     (is (true? @(rf/subscribe [:voice/paused?])))
+     ;; Dispatch resume (effect won't actually run in tests)
+     (rf/dispatch-sync [:voice/resume-speaking]))))
+
+(deftest voice-toggle-pause-event
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "toggle-pause pauses when not paused"
+     (rf/dispatch-sync [:voice/tts-started])
+     (is (false? @(rf/subscribe [:voice/paused?])))
+     ;; toggle-pause should dispatch pause effect
+     (rf/dispatch-sync [:voice/toggle-pause]))
+
+   (testing "toggle-pause resumes when paused"
+     (rf/dispatch-sync [:voice/tts-paused])
+     (is (true? @(rf/subscribe [:voice/paused?])))
+     ;; toggle-pause should dispatch resume effect
+     (rf/dispatch-sync [:voice/toggle-pause]))))
+
+(deftest voice-pause-cleared-on-finish
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "speech-finished clears paused state"
+     (rf/dispatch-sync [:voice/tts-started])
+     (rf/dispatch-sync [:voice/tts-paused])
+     (is (true? @(rf/subscribe [:voice/paused?])))
+
+     (rf/dispatch-sync [:voice/speech-finished])
+     (is (false? @(rf/subscribe [:voice/paused?]))))
+
+   (testing "tts-cancelled clears paused state"
+     (rf/dispatch-sync [:voice/tts-started])
+     (rf/dispatch-sync [:voice/tts-paused])
+     (is (true? @(rf/subscribe [:voice/paused?])))
+
+     (rf/dispatch-sync [:voice/tts-cancelled])
+     (is (false? @(rf/subscribe [:voice/paused?]))))
+
+   (testing "voice/error clears paused state"
+     (rf/dispatch-sync [:voice/tts-started])
+     (rf/dispatch-sync [:voice/tts-paused])
+     (is (true? @(rf/subscribe [:voice/paused?])))
+
+     (rf/dispatch-sync [:voice/error {:type :test-error :message "Test"}])
+     (is (false? @(rf/subscribe [:voice/paused?]))))))
+
 ;; ============================================================================
 ;; Voice Rotation Tests
 ;; ============================================================================

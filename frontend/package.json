@@ -7,6 +7,7 @@
     "ios": "react-native run-ios",
     "start": "react-native start",
     "clean": "watchman watch-del-all && rm -rf node_modules && npm install",
+    "postinstall": "patch-package",
     "shadow:watch": "npx shadow-cljs watch app",
     "shadow:release": "npx shadow-cljs release app",
     "shadow:server": "npx shadow-cljs server",
@@ -37,6 +38,7 @@
     "@react-native/babel-preset": "^0.76.7",
     "@react-native/metro-config": "^0.76.7",
     "@react-native/typescript-config": "^0.76.7",
+    "patch-package": "^8.0.1",
     "react-test-renderer": "18.3.1",
     "shadow-cljs": "^3.3.5"
   },
