@@ -18,7 +18,7 @@ WRAP := ./scripts/wrap-command
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 .PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
-.PHONY: rn-ios rn-android rn-build-ios rn-deploy-device rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-boot-sim rn-screenshot rn-restart rn-reload manual-ralph
+.PHONY: rn-ios rn-android rn-build-ios rn-deploy-device rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-list-apps rn-boot-sim rn-screenshot rn-restart rn-reload manual-ralph
 .PHONY: rn-test rn-e2e rn-e2e-smoke rn-e2e-auth rn-e2e-nav
 
 # React Native Configuration
@@ -465,6 +465,10 @@ rn-metro:
 # List available iOS simulators
 rn-list-sims:
 	@xcrun simctl list devices available | grep -E "iPhone|iPad"
+
+# List apps installed on booted simulator
+rn-list-apps:
+	@xcrun simctl listapps booted 2>/dev/null | grep -E "CFBundleName|CFBundleIdentifier" | head -100 || echo "No booted simulator found"
 
 # Boot iPhone 16 Pro simulator
 rn-boot-sim:
