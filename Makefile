@@ -523,6 +523,25 @@ rn-home:
 	@xcrun simctl launch booted com.apple.springboard 2>/dev/null || true
 	@echo "Returned to home screen"
 
+# Grant speech recognition permission to the app (prevents permission dialog)
+rn-grant-speech:
+	@echo "Granting speech recognition permission..."
+	@xcrun simctl privacy booted grant speech-recognition $(RN_BUNDLE_ID)
+	@echo "Speech recognition permission granted"
+
+# Grant all common permissions to the app
+rn-grant-permissions:
+	@echo "Granting common permissions..."
+	@xcrun simctl privacy booted grant speech-recognition $(RN_BUNDLE_ID) || true
+	@xcrun simctl privacy booted grant microphone $(RN_BUNDLE_ID) || true
+	@echo "Permissions granted"
+
+# Reset all permissions for the app (useful for testing permission flows)
+rn-reset-permissions:
+	@echo "Resetting all permissions for the app..."
+	@xcrun simctl privacy booted reset all $(RN_BUNDLE_ID)
+	@echo "Permissions reset"
+
 # Take screenshot of running simulator
 rn-screenshot:
 	@xcrun simctl io booted screenshot /tmp/simulator-screenshot.png
