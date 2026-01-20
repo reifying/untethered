@@ -57,6 +57,7 @@
    :settings {:server-url "localhost"
               :server-port 8080
               :voice-identifier nil ; Selected voice for TTS
+              :voice-speech-rate 0.5 ; TTS speech rate (0.0-1.0, default 0.5)
               :recent-sessions-limit 10
               :max-message-size-kb 200
               :system-prompt "" ; Custom system prompt appended to Claude

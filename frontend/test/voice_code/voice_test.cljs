@@ -120,6 +120,25 @@
      (rf/dispatch-sync [:voice/set-respect-silent-mode true])
      (is (true? @(rf/subscribe [:settings/respect-silent-mode]))))))
 
+(deftest voice-speech-rate-event
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "speech-rate defaults to 0.5"
+     (is (= 0.5 (get-in @re-frame.db/app-db [:settings :voice-speech-rate]))))
+
+   (testing "set-speech-rate updates setting to new value"
+     (rf/dispatch-sync [:voice/set-speech-rate 0.75])
+     (is (= 0.75 (get-in @re-frame.db/app-db [:settings :voice-speech-rate]))))
+
+   (testing "set-speech-rate accepts slow rate"
+     (rf/dispatch-sync [:voice/set-speech-rate 0.25])
+     (is (= 0.25 (get-in @re-frame.db/app-db [:settings :voice-speech-rate]))))
+
+   (testing "set-speech-rate accepts fast rate"
+     (rf/dispatch-sync [:voice/set-speech-rate 1.0])
+     (is (= 1.0 (get-in @re-frame.db/app-db [:settings :voice-speech-rate]))))))
+
 (deftest voice-stop-speaking-event
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])

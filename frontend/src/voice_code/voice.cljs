@@ -232,7 +232,8 @@
    Optionally accepts settings map to configure audio behavior."
   ([]
    (setup-tts! {}))
-  ([{:keys [respect-silent-mode] :or {respect-silent-mode true}}]
+  ([{:keys [respect-silent-mode voice-speech-rate]
+     :or {respect-silent-mode true voice-speech-rate 0.5}}]
    (when-let [^js Tts (get-tts-default)]
      ;; Set default language
      (-> (.setDefaultLanguage Tts "en-US")
@@ -241,6 +242,10 @@
 
      ;; Configure silent switch behavior based on setting
      (configure-silent-switch! respect-silent-mode)
+
+     ;; Set speech rate
+     (when voice-speech-rate
+       (set-speech-rate! voice-speech-rate))
 
      ;; TTS finished speaking
      (.addEventListener Tts "tts-finish"
@@ -642,6 +647,18 @@
  (fn [{:keys [db]} [_ respect-silent?]]
    {:db (assoc-in db [:settings :respect-silent-mode] respect-silent?)
     :voice/configure-silent-switch respect-silent?
+    :dispatch [:settings/save]}))
+
+(rf/reg-fx
+ :voice/set-rate
+ (fn [rate]
+   (set-speech-rate! rate)))
+
+(rf/reg-event-fx
+ :voice/set-speech-rate
+ (fn [{:keys [db]} [_ rate]]
+   {:db (assoc-in db [:settings :voice-speech-rate] rate)
+    :voice/set-rate rate
     :dispatch [:settings/save]}))
 
 ;; ============================================================================

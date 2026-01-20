@@ -274,6 +274,73 @@
                           :padding-bottom 10}}
       description])])
 
+(defn- rate-stepper-row
+  "Setting row with fine-grained stepper for speech rate (0.25-1.0).
+   Shows speed labels (Slow, Normal, Fast) alongside numeric value."
+  [{:keys [label value on-change description]}]
+  (let [min-val 0.25
+        max-val 1.0
+        step 0.05
+        ;; Round to 2 decimal places for display
+        display-val (/ (Math/round (* value 100)) 100)
+        speed-label (cond
+                      (<= value 0.35) "Slow"
+                      (<= value 0.55) "Normal"
+                      (<= value 0.75) "Fast"
+                      :else "Very Fast")]
+    [:> rn/View {:style {:background-color "#FFFFFF"
+                         :border-bottom-width 1
+                         :border-bottom-color "#F0F0F0"}}
+     [:> rn/View {:style {:flex-direction "row"
+                          :align-items "center"
+                          :justify-content "space-between"
+                          :padding-horizontal 16
+                          :padding-vertical 10}}
+      [:> rn/View {:style {:flex 1}}
+       [:> rn/Text {:style {:font-size 16 :color "#000"}}
+        label]
+       [:> rn/Text {:style {:font-size 12 :color "#666" :margin-top 2}}
+        speed-label]]
+      [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+       [:> rn/TouchableOpacity
+        {:style {:width 32
+                 :height 32
+                 :border-radius 6
+                 :background-color "#E9E9EB"
+                 :justify-content "center"
+                 :align-items "center"
+                 :opacity (if (<= value min-val) 0.3 1)}
+         :disabled (<= value min-val)
+         :on-press (fn []
+                     (haptic/selection!)
+                     (on-change (max min-val (- value step))))}
+        [:> rn/Text {:style {:font-size 20 :color "#000"}} "−"]]
+       [:> rn/Text {:style {:font-size 16
+                            :color "#007AFF"
+                            :font-weight "500"
+                            :min-width 50
+                            :text-align "center"}}
+        (str display-val "x")]
+       [:> rn/TouchableOpacity
+        {:style {:width 32
+                 :height 32
+                 :border-radius 6
+                 :background-color "#E9E9EB"
+                 :justify-content "center"
+                 :align-items "center"
+                 :opacity (if (>= value max-val) 0.3 1)}
+         :disabled (>= value max-val)
+         :on-press (fn []
+                     (haptic/selection!)
+                     (on-change (min max-val (+ value step))))}
+        [:> rn/Text {:style {:font-size 20 :color "#000"}} "+"]]]]
+     (when description
+       [:> rn/Text {:style {:font-size 12
+                            :color "#666"
+                            :padding-horizontal 16
+                            :padding-bottom 10}}
+        description])]))
+
 (defn- connection-status-section
   "Shows current connection status."
   []
@@ -488,6 +555,10 @@
                     :value (:auto-speak-responses settings)
                     :on-change #(rf/dispatch [:settings/save :auto-speak-responses %])
                     :description "Automatically speak Claude's responses using text-to-speech"}]
+       [rate-stepper-row {:label "Speech Rate"
+                          :value (or (:voice-speech-rate settings) 0.5)
+                          :on-change #(rf/dispatch [:voice/set-speech-rate %])
+                          :description "Adjust how fast text-to-speech reads responses"}]
        [toggle-row {:label "Silence speech when on vibrate"
                     :value (:respect-silent-mode settings)
                     :on-change #(rf/dispatch [:voice/set-respect-silent-mode %])
