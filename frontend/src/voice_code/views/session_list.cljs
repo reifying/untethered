@@ -120,25 +120,29 @@
                                      :color "#999"
                                      :margin-left 8}}]]
 
-       ;; Preview
-       (when-let [preview (:preview session)]
-         [:> rn/Text {:style {:font-size 14
-                              :color (if (pos? unread-count) "#333" "#666")
-                              :font-weight (if (pos? unread-count) "500" "400")
-                              :line-height 20}
-                      :number-of-lines 2}
-          preview])
-
-       ;; Message count
+       ;; Message count + preview on same row (iOS parity: CDSessionRowContent)
+       ;; Shows: "N messages • preview text" with bullet separator
        [:> rn/View {:style {:flex-direction "row"
                             :align-items "center"
                             :margin-top 4}}
         [:> rn/Text {:style {:font-size 12 :color "#999"}}
          (str (:message-count session 0) " messages")]
+        ;; Bullet separator before preview (iOS parity)
+        (when-let [preview (:preview session)]
+          [:<>
+           [:> rn/Text {:style {:font-size 12 :color "#999" :margin-horizontal 6}}
+            "•"]
+           [:> rn/Text {:style {:font-size 12
+                                :color (if (pos? unread-count) "#666" "#999")
+                                :flex 1
+                                :flex-shrink 1}
+                        :number-of-lines 1}
+            preview]])
+        ;; Processing indicator (after preview if any, or after count)
         (when locked?
           [:> rn/Text {:style {:font-size 12
                                :color "#FF9500"
-                               :margin-left 8}}
+                               :margin-left 6}}
            "• Processing"])]]]]))
 
 (defn- swipeable-session-item
