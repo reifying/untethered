@@ -81,19 +81,144 @@
                              :font-weight "500"}}
          message]]])))
 
-(defn- show-rename-dialog
-  "Show an alert dialog to rename the session."
+;; ============================================================================
+;; Rename Session Modal State
+;; ============================================================================
+
+(defonce rename-modal-state
+  (r/atom {:visible? false
+           :session-id nil
+           :current-name ""
+           :input-value ""
+           :on-rename nil}))
+
+(defn- show-rename-modal!
+  "Show the rename session modal."
   [session-id current-name on-rename]
-  (let [Alert (.-Alert rn)]
-    (.prompt Alert
-             "Rename Session"
-             "Enter a new name for this session"
-             (fn [new-name]
-               (when new-name
-                 (on-rename new-name)))
-             "plain-text"
-             (or current-name "")
-             "default")))
+  (reset! rename-modal-state
+          {:visible? true
+           :session-id session-id
+           :current-name (or current-name "")
+           :input-value (or current-name "")
+           :on-rename on-rename}))
+
+(defn- hide-rename-modal!
+  "Hide the rename session modal."
+  []
+  (swap! rename-modal-state assoc :visible? false))
+
+(defn- rename-modal-input-change!
+  "Update the input value in rename modal."
+  [text]
+  (swap! rename-modal-state assoc :input-value text))
+
+(defn- rename-session-modal
+  "Modal for renaming a session with validation.
+   Features: Input validation, clear button, Cancel/Save buttons.
+   Matches iOS RenameSessionView (ConversationView.swift:1266-1314)."
+  []
+  (let [{:keys [visible? input-value on-rename]} @rename-modal-state
+        trimmed-value (when input-value (clojure.string/trim input-value))
+        is-empty? (or (nil? trimmed-value) (empty? trimmed-value))]
+    [:> Modal
+     {:visible visible?
+      :animation-type "slide"
+      :presentation-style "pageSheet"
+      :on-request-close hide-rename-modal!}
+     [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
+      ;; Header with Cancel and Save buttons
+      [:> rn/View {:style {:flex-direction "row"
+                           :justify-content "space-between"
+                           :align-items "center"
+                           :padding-horizontal 16
+                           :padding-vertical 12
+                           :background-color "#FFFFFF"
+                           :border-bottom-width 1
+                           :border-bottom-color "#E5E5E5"}}
+       ;; Cancel button
+       [:> rn/TouchableOpacity
+        {:on-press hide-rename-modal!
+         :style {:padding 8}}
+        [:> rn/Text {:style {:font-size 17 :color "#007AFF"}} "Cancel"]]
+
+       ;; Title
+       [:> rn/Text {:style {:font-size 17
+                            :font-weight "600"
+                            :color "#000"}}
+        "Rename Session"]
+
+       ;; Save button (disabled when empty)
+       [:> rn/TouchableOpacity
+        {:on-press (fn []
+                     (when (and on-rename (not is-empty?))
+                       (on-rename trimmed-value)
+                       (hide-rename-modal!)))
+         :disabled is-empty?
+         :style {:padding 8}}
+        [:> rn/Text {:style {:font-size 17
+                             :font-weight "600"
+                             :color (if is-empty? "#C7C7CC" "#007AFF")}}
+         "Save"]]]
+
+      ;; Form content
+      [:> rn/View {:style {:margin-top 24
+                           :background-color "#FFFFFF"
+                           :border-top-width 1
+                           :border-top-color "#E5E5E5"
+                           :border-bottom-width 1
+                           :border-bottom-color "#E5E5E5"}}
+       ;; Section header
+       [:> rn/View {:style {:padding-horizontal 16
+                            :padding-top 8}}
+        [:> rn/Text {:style {:font-size 13
+                             :color "#666"
+                             :text-transform "uppercase"
+                             :letter-spacing 0.5}}
+         "Session Name"]]
+
+       ;; Input row with clear button
+       [:> rn/View {:style {:flex-direction "row"
+                            :align-items "center"
+                            :padding-horizontal 16
+                            :padding-vertical 12}}
+        [:> rn/TextInput
+         {:style {:flex 1
+                  :font-size 17
+                  :color "#000"
+                  :padding-vertical 8}
+          :value (or input-value "")
+          :on-change-text rename-modal-input-change!
+          :placeholder "Enter session name"
+          :placeholder-text-color "#C7C7CC"
+          :auto-capitalize "words"
+          :auto-focus true
+          :return-key-type "done"
+          :on-submit-editing (fn []
+                               (when (and on-rename (not is-empty?))
+                                 (on-rename trimmed-value)
+                                 (hide-rename-modal!)))}]
+
+        ;; Clear button (X) - only shown when input is not empty
+        (when (not is-empty?)
+          [:> rn/TouchableOpacity
+           {:on-press #(rename-modal-input-change! "")
+            :style {:padding 8}}
+           [:> rn/View {:style {:width 20
+                                :height 20
+                                :border-radius 10
+                                :background-color "#C7C7CC"
+                                :justify-content "center"
+                                :align-items "center"}}
+            [:> rn/Text {:style {:font-size 12
+                                 :color "#FFFFFF"
+                                 :font-weight "600"}}
+             "✕"]]])]]]]))
+
+(defn- show-rename-dialog
+  "Show the rename session modal (replaces Alert.prompt for cross-platform support).
+   Called when user taps the session title to rename."
+  [session-id current-name on-rename]
+  (show-rename-modal! session-id current-name on-rename))
 
 ;; ============================================================================
 ;; Message Detail Modal
@@ -1167,8 +1292,9 @@
               session @(rf/subscribe [:sessions/by-id session-id])
               working-directory (:working-directory session)]
           [:> rn/View {:style {:flex 1 :background-color "#FFFFFF"}}
-           ;; Message detail modal (rendered at root for proper overlay)
+           ;; Modals (rendered at root for proper overlay)
            [message-detail-modal]
+           [rename-session-modal]
 
            [:> rn/KeyboardAvoidingView
             {:style {:flex 1}

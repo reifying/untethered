@@ -284,3 +284,87 @@
    (testing "messages for non-existent session returns empty"
      (let [messages @(rf/subscribe [:messages/for-session "non-existent-session"])]
        (is (empty? messages))))))
+
+;; ============================================================================
+;; Session Rename Modal Tests (VCMOB-0bcf)
+;; ============================================================================
+
+(deftest session-rename-event-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Add a session
+   (rf/dispatch-sync [:sessions/add {:id "session-1"
+                                     :backend-name "Original Name"
+                                     :working-directory "/test/path"}])
+
+   (testing "session has original name"
+     (let [session @(rf/subscribe [:sessions/by-id "session-1"])]
+       (is (= "Original Name" (:backend-name session)))
+       (is (nil? (:custom-name session)))))
+
+   (testing "can rename session via dispatch"
+     (rf/dispatch-sync [:sessions/rename "session-1" "New Custom Name"])
+     (let [session @(rf/subscribe [:sessions/by-id "session-1"])]
+       (is (= "New Custom Name" (:custom-name session)))
+       ;; backend-name should remain unchanged
+       (is (= "Original Name" (:backend-name session)))))
+
+   (testing "renaming with empty string clears custom name"
+     (rf/dispatch-sync [:sessions/rename "session-1" ""])
+     (let [session @(rf/subscribe [:sessions/by-id "session-1"])]
+       ;; Empty string should be treated as nil or empty
+       (is (or (nil? (:custom-name session))
+               (empty? (:custom-name session))))))))
+
+(deftest session-rename-validation-test
+  (testing "trimming whitespace-only names"
+    ;; This tests the validation logic that should happen in the modal
+    (let [test-cases [["  " true] ; whitespace only → invalid
+                      ["" true] ; empty → invalid
+                      [nil true] ; nil → invalid
+                      ["Valid Name" false] ; normal name → valid
+                      ["  Spaces  " false] ; name with surrounding spaces → valid (will be trimmed)
+                      ["A" false]]] ; single char → valid
+      (doseq [[input expected-empty?] test-cases]
+        (let [trimmed (when input (clojure.string/trim input))
+              is-empty? (or (nil? trimmed) (empty? trimmed))]
+          (is (= expected-empty? is-empty?)
+              (str "Input: " (pr-str input) " should be empty?: " expected-empty?)))))))
+
+(deftest session-display-name-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "display name uses custom-name when present"
+     (rf/dispatch-sync [:sessions/add {:id "session-1"
+                                       :backend-name "Backend Name"
+                                       :custom-name "Custom Name"
+                                       :working-directory "/test"}])
+     (let [session @(rf/subscribe [:sessions/by-id "session-1"])]
+       ;; Custom name takes precedence
+       (is (= "Custom Name" (:custom-name session)))
+       ;; Display logic: (or custom-name backend-name (str "Session " (subs id 0 8)))
+       (is (= "Custom Name" (or (:custom-name session)
+                                (:backend-name session)
+                                (str "Session " (subs (:id session) 0 8)))))))
+
+   (testing "display name falls back to backend-name when no custom-name"
+     (rf/dispatch-sync [:sessions/add {:id "session-2"
+                                       :backend-name "Backend Name Only"
+                                       :working-directory "/test"}])
+     (let [session @(rf/subscribe [:sessions/by-id "session-2"])]
+       (is (nil? (:custom-name session)))
+       (is (= "Backend Name Only" (or (:custom-name session)
+                                      (:backend-name session)
+                                      (str "Session " (subs (:id session) 0 8)))))))
+
+   (testing "display name falls back to truncated ID when no names"
+     (rf/dispatch-sync [:sessions/add {:id "abcdefgh-1234-5678"
+                                       :working-directory "/test"}])
+     (let [session @(rf/subscribe [:sessions/by-id "abcdefgh-1234-5678"])]
+       (is (nil? (:custom-name session)))
+       (is (nil? (:backend-name session)))
+       (is (= "Session abcdefgh" (or (:custom-name session)
+                                     (:backend-name session)
+                                     (str "Session " (subs (:id session) 0 8)))))))))
