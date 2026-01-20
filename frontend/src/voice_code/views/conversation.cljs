@@ -651,16 +651,41 @@
       [text-input-area {:session-id session-id}])))
 
 (defn- message-list
-  "Scrollable list of messages with auto-scroll support."
+  "Scrollable list of messages with auto-scroll support.
+   Uses 300ms debounce (per iOS ConversationView.swift lines 193-199) to prevent
+   jarring UX with rapid message updates."
   [{:keys [messages session-id locked? working-directory]}]
   (let [list-ref (r/atom nil)
-        auto-scroll? @(rf/subscribe [:ui/auto-scroll?])]
+        ;; Debounce timer ref for auto-scroll
+        scroll-timer (r/atom nil)
+        prev-message-count (r/atom 0)]
     (r/create-class
      {:component-did-update
       (fn [this _]
-        ;; Auto-scroll to bottom on new messages (if enabled)
-        (when (and auto-scroll? @list-ref)
-          (js/setTimeout #(.scrollToEnd ^js @list-ref #js {:animated true}) 100)))
+        (let [auto-scroll? @(rf/subscribe [:ui/auto-scroll?])
+              new-count (count messages)
+              old-count @prev-message-count]
+          ;; Only scroll if messages increased (not on re-renders)
+          (when (and auto-scroll? @list-ref (> new-count old-count))
+            ;; Cancel any pending scroll
+            (when @scroll-timer
+              (js/clearTimeout @scroll-timer))
+            ;; Debounce scroll by 300ms (matches iOS implementation)
+            (reset! scroll-timer
+                    (js/setTimeout
+                     (fn []
+                       ;; Re-check auto-scroll after debounce in case user disabled it
+                       (when (and @(rf/subscribe [:ui/auto-scroll?]) @list-ref)
+                         (.scrollToEnd ^js @list-ref #js {:animated true})))
+                     300)))
+          ;; Update previous count
+          (reset! prev-message-count new-count)))
+
+      :component-will-unmount
+      (fn [_]
+        ;; Clean up timer on unmount
+        (when @scroll-timer
+          (js/clearTimeout @scroll-timer)))
 
       :reagent-render
       (fn [{:keys [messages session-id locked? working-directory]}]
@@ -680,7 +705,12 @@
                       :padding-vertical 4
                       :background-color (if auto-scroll? "#E8F4FD" "#F5F5F5")
                       :border-radius 12}
-              :on-press #(rf/dispatch [:ui/toggle-auto-scroll])}
+              :on-press (fn []
+                          ;; If re-enabling, scroll to bottom immediately
+                          (when (not auto-scroll?)
+                            (when @list-ref
+                              (.scrollToEnd ^js @list-ref #js {:animated true})))
+                          (rf/dispatch [:ui/toggle-auto-scroll]))}
              [:> rn/Text {:style {:font-size 12
                                   :color (if auto-scroll? "#007AFF" "#666")
                                   :margin-right 4}}
