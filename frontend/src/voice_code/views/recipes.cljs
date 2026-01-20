@@ -89,12 +89,13 @@
         (if active? "Stop" "Start")]]]]))
 
 (defn- active-recipe-banner
-  "Banner showing currently active recipe with details."
-  [{:keys [name started-at on-stop]}]
+  "Banner showing currently active recipe with details.
+   Displays current step and progress if available."
+  [{:keys [name started-at current-step step-count on-stop]}]
   (let [duration (r/atom (format-duration started-at))]
     ;; Update duration every second
     (js/setInterval #(reset! duration (format-duration started-at)) 1000)
-    (fn [{:keys [name started-at on-stop]}]
+    (fn [{:keys [name started-at current-step step-count on-stop]}]
       [:> rn/View {:style {:padding 16
                            :background-color "#E8F5E9"
                            :border-bottom-width 1
@@ -111,10 +112,19 @@
        [:> rn/View {:style {:flex-direction "row"
                             :justify-content "space-between"
                             :align-items "center"}}
-        [:> rn/View
+        [:> rn/View {:style {:flex 1 :margin-right 12}}
          [:> rn/Text {:style {:font-size 15
                               :color "#333"}}
           name]
+         ;; Show current step if available
+         (when current-step
+           [:> rn/Text {:style {:font-size 13
+                                :color "#2E7D32"
+                                :font-weight "500"
+                                :margin-top 4}}
+            (if step-count
+              (str "Step: " current-step " of " step-count)
+              (str "Step: " current-step))])
          [:> rn/Text {:style {:font-size 13
                               :color "#666"
                               :margin-top 2}}
@@ -400,6 +410,8 @@
            [active-recipe-banner
             {:name (:label active-for-session)
              :started-at (:started-at active-for-session)
+             :current-step (:current-step active-for-session)
+             :step-count (:step-count active-for-session)
              :on-stop #(rf/dispatch [:recipes/stop session-id])}])
 
          ;; Recipe list or loading/empty state
