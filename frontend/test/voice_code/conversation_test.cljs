@@ -15,7 +15,9 @@
 ;; Message Truncation Tests
 ;; ============================================================================
 
-(def truncation-threshold 1000)
+(def truncation-threshold
+  "Matches iOS CDMessage.truncationHalfLength * 2 = 500"
+  500)
 (def truncation-preview-chars 250)
 
 (defn- truncate-text

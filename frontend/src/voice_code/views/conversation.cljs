@@ -219,7 +219,9 @@
 ;; Message Truncation Constants
 ;; ============================================================================
 
-(def ^:private truncation-threshold 1000)
+(def ^:private truncation-threshold
+  "Truncate messages longer than this. Matches iOS CDMessage.truncationHalfLength * 2 = 500"
+  500)
 (def ^:private truncation-preview-chars 250)
 
 (defn- truncate-text
