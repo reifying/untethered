@@ -115,12 +115,48 @@
     (vec (take-last max-messages-per-session messages))
     messages))
 
+(defn- reconcile-optimistic-message
+  "Check if a new message matches an existing optimistic message by content.
+   Returns the existing message index if found, nil otherwise.
+   Matches by (session-id, role, text) for user messages with :sending status.
+   Reference: ios/VoiceCode/Managers/SessionSyncManager.swift:296-312"
+  [existing-messages new-msg]
+  (when (= :user (:role new-msg))
+    (->> existing-messages
+         (map-indexed vector)
+         (some (fn [[idx existing]]
+                 (when (and (= :sending (:status existing))
+                            (= :user (:role existing))
+                            (= (:text existing) (:text new-msg)))
+                   idx))))))
+
 (defn merge-messages
   "Merge new messages with existing messages, deduplicating by ID.
+   Also reconciles optimistic messages by matching (session-id, role, text)
+   when a server message arrives for a locally-created :sending message.
    New messages are appended, maintaining chronological order.
    Returns the merged and pruned message vector."
   [existing-messages new-messages]
   (let [existing-ids (into #{} (map :id existing-messages))
-        unique-new (remove #(contains? existing-ids (:id %)) new-messages)]
-    (-> (into (vec existing-messages) unique-new)
-        (prune-messages))))
+        ;; Process each new message - either reconcile with existing or add new
+        result (reduce
+                (fn [msgs new-msg]
+                  ;; Skip if we already have this exact ID
+                  (if (contains? existing-ids (:id new-msg))
+                    msgs
+                    ;; Check for optimistic message to reconcile
+                    (if-let [optimistic-idx (reconcile-optimistic-message msgs new-msg)]
+                      ;; Update the optimistic message with confirmed status and server ID
+                      (update msgs optimistic-idx
+                              (fn [existing]
+                                (-> existing
+                                    (assoc :id (:id new-msg))
+                                    (assoc :status :confirmed)
+                                    ;; Update timestamp if server provides one
+                                    (cond-> (:timestamp new-msg)
+                                      (assoc :timestamp (:timestamp new-msg))))))
+                      ;; No match - add as new message
+                      (conj msgs new-msg))))
+                (vec existing-messages)
+                new-messages)]
+    (prune-messages result)))

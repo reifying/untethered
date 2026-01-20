@@ -152,4 +152,143 @@
     (let [existing [{:id "m1"} {:id "m2"}]
           new-msgs [{:id "m3"} {:id "m4"}]
           result (db/merge-messages existing new-msgs)]
-      (is (= ["m1" "m2" "m3" "m4"] (mapv :id result))))))
+      (is (= ["m1" "m2" "m3" "m4"] (mapv :id result)))))
+
+  ;; ============================================================================
+  ;; Optimistic Message Reconciliation Tests (VCMOB-6wtk)
+  ;; Reference: ios/VoiceCode/Managers/SessionSyncManager.swift:296-312
+  ;; ============================================================================
+
+  (testing "reconciles optimistic user message with server confirmation"
+    (let [;; Optimistic message created when user sends prompt (local random UUID)
+          existing [{:id "local-uuid-123"
+                     :session-id "s1"
+                     :role :user
+                     :text "Hello Claude"
+                     :timestamp (js/Date. "2026-01-15T10:00:00Z")
+                     :status :sending}]
+          ;; Server sends confirmed message with different ID but same text
+          server-msg [{:id "server-uuid-456"
+                       :session-id "s1"
+                       :role :user
+                       :text "Hello Claude"
+                       :timestamp (js/Date. "2026-01-15T10:00:01Z")
+                       :status :confirmed}]
+          result (db/merge-messages existing server-msg)]
+      ;; Should have only 1 message (reconciled, not duplicated)
+      (is (= 1 (count result)))
+      ;; Should have server's ID now
+      (is (= "server-uuid-456" (:id (first result))))
+      ;; Should be confirmed
+      (is (= :confirmed (:status (first result))))
+      ;; Should have server timestamp
+      (is (= (js/Date. "2026-01-15T10:00:01Z") (:timestamp (first result))))))
+
+  (testing "does not reconcile already confirmed messages"
+    (let [;; Already confirmed message
+          existing [{:id "confirmed-id"
+                     :session-id "s1"
+                     :role :user
+                     :text "Hello Claude"
+                     :timestamp (js/Date. "2026-01-15T10:00:00Z")
+                     :status :confirmed}]
+          ;; Server sends same message
+          server-msg [{:id "server-uuid-456"
+                       :session-id "s1"
+                       :role :user
+                       :text "Hello Claude"
+                       :timestamp (js/Date. "2026-01-15T10:00:01Z")
+                       :status :confirmed}]
+          result (db/merge-messages existing server-msg)]
+      ;; Should have 2 messages (no reconciliation for already-confirmed)
+      (is (= 2 (count result)))
+      (is (= "confirmed-id" (:id (first result))))
+      (is (= "server-uuid-456" (:id (second result))))))
+
+  (testing "does not reconcile assistant messages"
+    (let [;; Sending assistant message (hypothetically)
+          existing [{:id "local-uuid"
+                     :session-id "s1"
+                     :role :assistant
+                     :text "Hello human"
+                     :status :sending}]
+          ;; Server sends assistant message with same text
+          server-msg [{:id "server-uuid"
+                       :session-id "s1"
+                       :role :assistant
+                       :text "Hello human"
+                       :status :confirmed}]
+          result (db/merge-messages existing server-msg)]
+      ;; Should have 2 messages (no reconciliation for assistant)
+      (is (= 2 (count result)))))
+
+  (testing "does not reconcile when text differs"
+    (let [existing [{:id "local-uuid"
+                     :session-id "s1"
+                     :role :user
+                     :text "Hello Claude"
+                     :status :sending}]
+          ;; Server sends message with different text
+          server-msg [{:id "server-uuid"
+                       :session-id "s1"
+                       :role :user
+                       :text "Different message"
+                       :status :confirmed}]
+          result (db/merge-messages existing server-msg)]
+      ;; Should have 2 messages (no reconciliation when text differs)
+      (is (= 2 (count result)))))
+
+  (testing "reconciles only first matching optimistic message"
+    (let [;; Two optimistic messages with same text (edge case)
+          existing [{:id "local-1"
+                     :role :user
+                     :text "Hello"
+                     :status :sending}
+                    {:id "local-2"
+                     :role :user
+                     :text "Hello"
+                     :status :sending}]
+          ;; Server sends one confirmation
+          server-msg [{:id "server-uuid"
+                       :role :user
+                       :text "Hello"
+                       :status :confirmed}]
+          result (db/merge-messages existing server-msg)]
+      ;; Should have 2 messages - first reconciled, second unchanged
+      (is (= 2 (count result)))
+      ;; First should be reconciled with server ID
+      (is (= "server-uuid" (:id (first result))))
+      (is (= :confirmed (:status (first result))))
+      ;; Second should still be sending with local ID
+      (is (= "local-2" (:id (second result))))
+      (is (= :sending (:status (second result))))))
+
+  (testing "works with mixed messages during delta sync"
+    (let [;; Existing: optimistic user message + assistant message
+          existing [{:id "local-user"
+                     :role :user
+                     :text "Hello"
+                     :status :sending}
+                    {:id "assistant-1"
+                     :role :assistant
+                     :text "Hi there"
+                     :status :confirmed}]
+          ;; Server sends: confirmed user message + new assistant message
+          server-msgs [{:id "server-user"
+                        :role :user
+                        :text "Hello"
+                        :status :confirmed}
+                       {:id "assistant-2"
+                        :role :assistant
+                        :text "How can I help?"
+                        :status :confirmed}]
+          result (db/merge-messages existing server-msgs)]
+      ;; Should have 3 messages:
+      ;; - First user message reconciled (same position)
+      ;; - Existing assistant message
+      ;; - New assistant message
+      (is (= 3 (count result)))
+      (is (= "server-user" (:id (first result))))
+      (is (= :confirmed (:status (first result))))
+      (is (= "assistant-1" (:id (second result))))
+      (is (= "assistant-2" (:id (nth result 2)))))))
