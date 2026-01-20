@@ -8,6 +8,14 @@
             [voice-code.utils :as utils]))
 
 ;; ============================================================================
+;; Constants
+;; ============================================================================
+
+;; Timeout constants (matching iOS implementation)
+(def ^:const session-refresh-timeout-ms 5000) ; 5 seconds for session refresh
+(def ^:const compaction-timeout-ms 60000) ; 60 seconds for compaction
+
+;; ============================================================================
 ;; Connection Events
 ;; ============================================================================
 
@@ -898,10 +906,6 @@
 ;; ============================================================================
 ;; Async Operation Timeout Support
 ;; ============================================================================
-
-;; Timeout constants (matching iOS implementation)
-(def ^:const session-refresh-timeout-ms 5000) ; 5 seconds for session refresh
-(def ^:const compaction-timeout-ms 60000) ; 60 seconds for compaction
 
 ;; Effect handler to schedule a timeout with automatic dispatch on expiry
 (rf/reg-fx
