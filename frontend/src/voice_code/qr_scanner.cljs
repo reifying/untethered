@@ -46,24 +46,19 @@
 
 (defn parse-qr-code
   "Parse a QR code value for voice-code authentication.
-   Expected format: voice-code://connect?server=<host>&port=<port>&key=<api-key>
-   Returns {:server-url <string> :server-port <int> :api-key <string>} or nil."
+   Expected format: raw API key starting with 'untethered-', exactly 43 characters,
+   with lowercase hex characters after the prefix.
+   Returns the API key string if valid, or nil if invalid."
   [value]
-  (when (string? value)
-    (try
-      (let [url (js/URL. value)]
-        (when (and (= "voice-code:" (.-protocol url))
-                   (= "connect" (.-hostname url)))
-          (let [params (.-searchParams url)
-                server (.get params "server")
-                port (.get params "port")
-                key (.get params "key")]
-            (when (and server port key)
-              {:server-url server
-               :server-port (js/parseInt port 10)
-               :api-key key}))))
-      (catch :default _e
-        nil))))
+  (when (and (string? value)
+             ;; Must start with 'untethered-' prefix
+             (clojure.string/starts-with? value "untethered-")
+             ;; Must be exactly 43 characters (11 prefix + 32 hex)
+             (= 43 (count value))
+             ;; Characters after prefix must be lowercase hex (0-9, a-f)
+             (let [hex-part (subs value 11)]
+               (re-matches #"^[0-9a-f]+$" hex-part)))
+    value))
 
 ;; ============================================================================
 ;; Re-frame Events
@@ -82,16 +77,13 @@
 (rf/reg-event-fx
  :qr/code-scanned
  (fn [{:keys [db]} [_ qr-value]]
-   (if-let [auth-data (parse-qr-code qr-value)]
-     ;; Valid QR code - update settings and connect
-     {:db (-> db
-              (assoc-in [:qr :scanning?] false)
-              (assoc-in [:settings :server-url] (:server-url auth-data))
-              (assoc-in [:settings :server-port] (:server-port auth-data)))
-      :dispatch-n [[:settings/save]
-                   [:auth/connect (:api-key auth-data)]]}
+   (if-let [api-key (parse-qr-code qr-value)]
+     ;; Valid QR code - stop scanning and connect with the API key
+     ;; Server URL and port are already configured in settings
+     {:db (assoc-in db [:qr :scanning?] false)
+      :dispatch [:auth/connect api-key]}
      ;; Invalid QR code
-     {:db (assoc-in db [:qr :error] "Invalid QR code. Expected voice-code authentication code.")})))
+     {:db (assoc-in db [:qr :error] "Invalid QR code. Expected API key starting with 'untethered-'.")})))
 
 (rf/reg-event-db
  :qr/clear-error

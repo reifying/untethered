@@ -1,5 +1,6 @@
 (ns voice-code.qr-scanner-test
   (:require [cljs.test :refer-macros [deftest testing is]]
+            [clojure.string :as str]
             [re-frame.core :as rf]
             [re-frame.db :refer [app-db]]))
 
@@ -11,57 +12,56 @@
 
 (defn parse-qr-code
   "Parse a QR code value for voice-code authentication.
-   Expected format: voice-code://connect?server=<host>&port=<port>&key=<api-key>
-   Returns {:server-url <string> :server-port <int> :api-key <string>} or nil."
+   Expected format: raw API key starting with 'untethered-', exactly 43 characters,
+   with lowercase hex characters after the prefix.
+   Returns the API key string if valid, or nil if invalid."
   [value]
-  (when (string? value)
-    (try
-      (let [url (js/URL. value)]
-        (when (and (= "voice-code:" (.-protocol url))
-                   (= "connect" (.-hostname url)))
-          (let [params (.-searchParams url)
-                server (.get params "server")
-                port (.get params "port")
-                key (.get params "key")]
-            (when (and server port key)
-              {:server-url server
-               :server-port (js/parseInt port 10)
-               :api-key key}))))
-      (catch :default _e
-        nil))))
+  (when (and (string? value)
+             ;; Must start with 'untethered-' prefix
+             (str/starts-with? value "untethered-")
+             ;; Must be exactly 43 characters (11 prefix + 32 hex)
+             (= 43 (count value))
+             ;; Characters after prefix must be lowercase hex (0-9, a-f)
+             (let [hex-part (subs value 11)]
+               (re-matches #"^[0-9a-f]+$" hex-part)))
+    value))
 
 (deftest parse-qr-code-test
-  (testing "Valid voice-code QR code"
-    (let [result (parse-qr-code "voice-code://connect?server=localhost&port=8080&key=untethered-abc123")]
-      (is (= {:server-url "localhost"
-              :server-port 8080
-              :api-key "untethered-abc123"}
-             result))))
+  (testing "Valid API key with correct format"
+    (let [valid-key "untethered-a1b2c3d4e5f678901234567890abcdef"
+          result (parse-qr-code valid-key)]
+      (is (= valid-key result))))
 
-  (testing "Valid QR code with IP address"
-    (let [result (parse-qr-code "voice-code://connect?server=192.168.1.100&port=3000&key=untethered-xyz789")]
-      (is (= {:server-url "192.168.1.100"
-              :server-port 3000
-              :api-key "untethered-xyz789"}
-             result))))
+  (testing "Valid API key with all lowercase hex"
+    (let [valid-key "untethered-00000000000000000000000000000000"
+          result (parse-qr-code valid-key)]
+      (is (= valid-key result))))
 
-  (testing "Invalid protocol"
-    (is (nil? (parse-qr-code "http://connect?server=localhost&port=8080&key=abc"))))
+  (testing "Valid API key with mixed hex digits"
+    (let [valid-key "untethered-0123456789abcdef0123456789abcdef"
+          result (parse-qr-code valid-key)]
+      (is (= valid-key result))))
 
-  (testing "Missing server parameter"
-    (is (nil? (parse-qr-code "voice-code://connect?port=8080&key=abc"))))
+  (testing "Invalid - wrong prefix"
+    (is (nil? (parse-qr-code "tethered-a1b2c3d4e5f678901234567890abcdef0"))))
 
-  (testing "Missing port parameter"
-    (is (nil? (parse-qr-code "voice-code://connect?server=localhost&key=abc"))))
+  (testing "Invalid - too short (missing characters)"
+    (is (nil? (parse-qr-code "untethered-a1b2c3d4e5f6789012345678"))))
 
-  (testing "Missing key parameter"
-    (is (nil? (parse-qr-code "voice-code://connect?server=localhost&port=8080"))))
+  (testing "Invalid - too long (extra characters)"
+    (is (nil? (parse-qr-code "untethered-a1b2c3d4e5f678901234567890abcdef0"))))
 
-  (testing "Wrong hostname"
-    (is (nil? (parse-qr-code "voice-code://auth?server=localhost&port=8080&key=abc"))))
+  (testing "Invalid - uppercase hex characters"
+    (is (nil? (parse-qr-code "untethered-A1B2C3D4E5F678901234567890ABCDEF"))))
 
-  (testing "Invalid URL"
-    (is (nil? (parse-qr-code "not-a-url"))))
+  (testing "Invalid - non-hex characters after prefix"
+    (is (nil? (parse-qr-code "untethered-g1b2c3d4e5f678901234567890abcdef"))))
+
+  (testing "Invalid - URL format (old format should be rejected)"
+    (is (nil? (parse-qr-code "voice-code://connect?server=localhost&port=8080&key=abc"))))
+
+  (testing "Invalid - random string"
+    (is (nil? (parse-qr-code "not-a-valid-key"))))
 
   (testing "Empty string"
     (is (nil? (parse-qr-code ""))))
@@ -101,16 +101,13 @@
 (rf/reg-event-fx
  :qr/code-scanned
  (fn [{:keys [db]} [_ qr-value]]
-   (if-let [auth-data (parse-qr-code qr-value)]
-     ;; Valid QR code - update settings and connect
-     {:db (-> db
-              (assoc-in [:qr :scanning?] false)
-              (assoc-in [:settings :server-url] (:server-url auth-data))
-              (assoc-in [:settings :server-port] (:server-port auth-data)))
-      :dispatch-n [[:settings/save]
-                   [:auth/connect (:api-key auth-data)]]}
+   (if-let [api-key (parse-qr-code qr-value)]
+     ;; Valid QR code - stop scanning and connect with the API key
+     ;; Server URL and port are already configured in settings
+     {:db (assoc-in db [:qr :scanning?] false)
+      :dispatch [:auth/connect api-key]}
      ;; Invalid QR code
-     {:db (assoc-in db [:qr :error] "Invalid QR code. Expected voice-code authentication code.")})))
+     {:db (assoc-in db [:qr :error] "Invalid QR code. Expected API key starting with 'untethered-'.")})))
 
 (rf/reg-sub
  :qr/scanning?
@@ -150,19 +147,24 @@
     (is (false? (get-in @app-db [:qr :scanning?])))))
 
 (deftest qr-code-scanned-valid-test
-  (testing ":qr/code-scanned with valid QR code updates db"
-    (reset! app-db {:settings {:server-url "old-server"
-                               :server-port 9999}
-                    :qr {:scanning? true}})
-    (rf/dispatch-sync [:qr/code-scanned "voice-code://connect?server=newhost&port=5000&key=test-key"])
+  (testing ":qr/code-scanned with valid API key updates db"
+    (reset! app-db {:qr {:scanning? true}})
+    (rf/dispatch-sync [:qr/code-scanned "untethered-a1b2c3d4e5f678901234567890abcdef"])
     (is (false? (get-in @app-db [:qr :scanning?])))
-    (is (= "newhost" (get-in @app-db [:settings :server-url])))
-    (is (= 5000 (get-in @app-db [:settings :server-port])))))
+    ;; Note: Server URL/port are NOT updated from QR - they're configured separately
+    (is (nil? (get-in @app-db [:qr :error])))))
 
 (deftest qr-code-scanned-invalid-test
   (testing ":qr/code-scanned with invalid QR code sets error"
     (reset! app-db {:qr {:scanning? true}})
     (rf/dispatch-sync [:qr/code-scanned "invalid-qr-code"])
+    (is (string? (get-in @app-db [:qr :error])))
+    (is (str/includes? (get-in @app-db [:qr :error]) "untethered-"))))
+
+(deftest qr-code-scanned-old-format-test
+  (testing ":qr/code-scanned rejects old URL format"
+    (reset! app-db {:qr {:scanning? true}})
+    (rf/dispatch-sync [:qr/code-scanned "voice-code://connect?server=localhost&port=8080&key=abc"])
     (is (string? (get-in @app-db [:qr :error])))))
 
 (deftest qr-scanning-subscription-test
