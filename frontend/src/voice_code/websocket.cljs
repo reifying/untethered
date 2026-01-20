@@ -174,10 +174,13 @@
 (defn- handle-app-state-change!
   "Handle app state changes (active/inactive/background).
    Reconnects when app returns to foreground if disconnected.
+   Also updates notifications module for background detection.
    Mirrors iOS VoiceCodeClient.setupLifecycleObservers behavior."
   [next-state]
   (let [prev-state @previous-app-state]
     (reset! previous-app-state next-state)
+    ;; Update notifications module with current app state
+    (rf/dispatch [:notifications/update-app-state next-state])
     (cond
       ;; App became active (foreground) - check if we need to reconnect
       (and (not= prev-state "active") (= next-state "active"))

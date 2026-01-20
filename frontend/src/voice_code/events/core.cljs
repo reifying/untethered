@@ -2,7 +2,8 @@
   "Core re-frame events for app initialization and general state management."
   (:require [re-frame.core :as rf]
             [voice-code.db :as db]
-            [voice-code.voice :as voice]))
+            [voice-code.voice :as voice]
+            [voice-code.notifications :as notifications]))
 
 ;; ============================================================================
 ;; Initialization
@@ -22,7 +23,9 @@
                  [:persistence/load-drafts]
                  [:persistence/load-command-mru]]
     :voice/setup nil
-    :ws/setup-app-state-listener nil}))
+    :ws/setup-app-state-listener nil
+    :notifications/setup nil
+    :notifications/request-permission nil}))
 
 ;; ============================================================================
 ;; Session Selection

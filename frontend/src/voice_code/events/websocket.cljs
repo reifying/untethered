@@ -5,7 +5,8 @@
             [voice-code.websocket :as ws]
             [voice-code.db :as db]
             [voice-code.json :as json]
-            [voice-code.utils :as utils]))
+            [voice-code.utils :as utils]
+            [voice-code.notifications :as notifications]))
 
 ;; ============================================================================
 ;; Constants
@@ -222,9 +223,10 @@
            voice-listening? (get-in db [:ui :voice-listening?])
            active-session-id (:active-session-id db)
            is-active-session? (= session-id active-session-id)
-           ;; Get working directory for voice rotation
+           ;; Get session info for voice rotation and notifications
            session (get-in db [:sessions session-id])
            working-directory (:working-directory session)
+           session-name (or (:custom-name session) (:backend-name session))
            ;; Only auto-speak if:
            ;; 1. Auto-speak is enabled in settings
            ;; 2. User is not currently using voice input (prevent feedback)
@@ -232,6 +234,8 @@
            should-speak? (and auto-speak?
                               (not voice-listening?)
                               is-active-session?)
+           ;; Post notification if app is in background (handled by notifications module)
+           ;; This matches iOS NotificationManager behavior
            new-message (cond-> {:id (random-uuid)
                                 :session-id session-id
                                 :role :assistant
@@ -256,7 +260,12 @@
         :dispatch-n (cond-> [[:ws/send-message-ack message-id]
                              [:persistence/save-message session-id]]
                       should-speak?
-                      (conj [:voice/speak-response text working-directory]))})
+                      (conj [:voice/speak-response text working-directory]))
+        ;; Post notification for background responses
+        ;; Notification module checks app state internally
+        :notifications/post-response {:text text
+                                      :session-name session-name
+                                      :working-directory working-directory}})
      ;; On error, mark the most recent :sending message as :error
      (let [updated-messages (update-in db [:messages session-id]
                                        (fn [msgs]
