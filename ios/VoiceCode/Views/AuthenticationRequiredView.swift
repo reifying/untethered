@@ -156,7 +156,7 @@ struct AuthenticationRequiredView: View {
 
         // Validate key format
         guard KeychainManager.shared.isValidAPIKeyFormat(key) else {
-            validationError = "Invalid API key format. Must start with 'voice-code-' and be 43 characters."
+            validationError = "Invalid API key format. Must start with 'untethered-' and be 43 characters."
             showingManualEntry = true
             manualKeyInput = key
             return
@@ -219,7 +219,7 @@ private struct ManualKeyEntrySheet: View {
             } header: {
                 Text("Enter API Key")
             } footer: {
-                Text("Paste the API key from your terminal. It starts with 'voice-code-' and is 43 characters long.")
+                Text("Paste the API key from your terminal. It starts with 'untethered-' and is 43 characters long.")
             }
         }
         #if os(macOS)
@@ -240,7 +240,7 @@ private struct ManualKeyEntrySheet: View {
                         validationError = nil
                         onSave()
                     } else {
-                        validationError = "Invalid format. Must start with 'voice-code-' and be 43 characters."
+                        validationError = "Invalid format. Must start with 'untethered-' and be 43 characters."
                     }
                 }
                 .disabled(keyInput.isEmpty)

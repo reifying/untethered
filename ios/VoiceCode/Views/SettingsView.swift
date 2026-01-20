@@ -239,7 +239,7 @@ struct SettingsView: View {
         .alert("Invalid API Key", isPresented: $showingAPIKeyError) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text("API key must start with 'voice-code-' and be 43 characters.")
+            Text("API key must start with 'untethered-' and be 43 characters.")
         }
         #if os(iOS)
         .fullScreenCover(isPresented: $showingQRScanner) {

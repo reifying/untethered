@@ -166,7 +166,7 @@ struct APIKeySection: View {
 
         // Validate format
         guard KeychainManager.shared.isValidAPIKeyFormat(apiKeyInput) else {
-            validationError = "Invalid format. Must start with 'voice-code-' and be 43 characters."
+            validationError = "Invalid format. Must start with 'untethered-' and be 43 characters."
             return false
         }
 

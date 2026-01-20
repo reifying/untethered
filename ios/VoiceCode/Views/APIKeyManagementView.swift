@@ -161,7 +161,7 @@ struct APIKeyManagementView: View {
         } header: {
             Text("Manual Entry")
         } footer: {
-            Text("Format: voice-code-<32 hex characters>\nExample: voice-code-a1b2c3d4e5f678901234567890abcdef")
+            Text("Format: untethered-<32 hex characters>\nExample: untethered-a1b2c3d4e5f678901234567890abcdef")
         }
     }
 
@@ -264,8 +264,8 @@ struct APIKeyManagementView: View {
             return "Enter an API key"
         }
 
-        if !newKeyInput.hasPrefix("voice-code-") {
-            return "Must start with 'voice-code-'"
+        if !newKeyInput.hasPrefix("untethered-") {
+            return "Must start with 'untethered-'"
         }
 
         if newKeyInput.count != 43 {
@@ -292,7 +292,7 @@ struct APIKeyManagementView: View {
     // MARK: - Key Masking
 
     /// Mask API key showing first 15 chars, hiding the rest
-    /// Format: "voice-code-a1b2...****"
+    /// Format: "untethered-a1b2...****"
     func maskedKey(_ key: String) -> String {
         guard key.count > 19 else { return key }
 
