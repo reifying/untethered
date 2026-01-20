@@ -351,6 +351,11 @@
    (get-in db [:settings :priority-queue-enabled])))
 
 (rf/reg-sub
+ :session/in-queue?
+ (fn [db [_ session-id]]
+   (some? (get-in db [:sessions session-id :queue-position]))))
+
+(rf/reg-sub
  :settings/resource-storage-location
  (fn [db _]
    (get-in db [:settings :resource-storage-location])))

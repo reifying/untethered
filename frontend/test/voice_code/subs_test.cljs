@@ -260,6 +260,33 @@
        (is (= 1 (count queued)))
        (is (= "s1" (:id (first queued))))))))
 
+(deftest session-in-queue-sub
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "session/in-queue? returns false for non-existent session"
+     (is (false? @(rf/subscribe [:session/in-queue? "nonexistent"]))))
+
+   ;; Add session without queue-position
+   (rf/dispatch-sync [:sessions/add {:id "s1"
+                                     :backend-name "Session 1"
+                                     :working-directory "/project"}])
+
+   (testing "session/in-queue? returns false for session not in queue"
+     (is (false? @(rf/subscribe [:session/in-queue? "s1"]))))
+
+   ;; Add session to queue
+   (rf/dispatch-sync [:sessions/add-to-queue "s1"])
+
+   (testing "session/in-queue? returns true for session in queue"
+     (is (true? @(rf/subscribe [:session/in-queue? "s1"]))))
+
+   ;; Remove from queue
+   (rf/dispatch-sync [:sessions/remove-from-queue "s1"])
+
+   (testing "session/in-queue? returns false after removal from queue"
+     (is (false? @(rf/subscribe [:session/in-queue? "s1"]))))))
+
 (deftest priority-queue-subs
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])

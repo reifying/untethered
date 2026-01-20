@@ -955,6 +955,27 @@
        [:> rn/ActivityIndicator {:size "small" :color "#007AFF"}]
        [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "↻"])]))
 
+(defn- header-queue-remove-button
+  "Remove from queue button. Only shows when queue is enabled and session is in queue.
+   Displays an orange X icon matching iOS design (xmark.circle.fill)."
+  [session-id]
+  (let [queue-enabled? @(rf/subscribe [:settings/queue-enabled])
+        in-queue? @(rf/subscribe [:session/in-queue? session-id])]
+    (when (and queue-enabled? in-queue?)
+      [:> rn/TouchableOpacity
+       {:style {:padding 8}
+        :on-press #(rf/dispatch [:sessions/remove-from-queue session-id])}
+       [:> rn/View {:style {:width 20
+                            :height 20
+                            :border-radius 10
+                            :background-color "#FF9500"
+                            :justify-content "center"
+                            :align-items "center"}}
+        [:> rn/Text {:style {:font-size 12
+                             :font-weight "bold"
+                             :color "#FFFFFF"
+                             :margin-top -1}} "✕"]]])))
+
 (defn- header-stop-speech-button
   "Stop/Pause/Resume Speaking buttons for the conversation header.
    Shows pause/play button to toggle pause state.
@@ -1038,7 +1059,7 @@
                             :color (if locked? "#999" "#007AFF")}} "⚡"])]))
 
 (defn- header-right-buttons
-  "Combined header right buttons: Stop Speech, Kill (when locked), Compact, Recipe, Info, Refresh."
+  "Combined header right buttons: Stop Speech, Kill (when locked), Compact, Recipe, Info, Queue Remove, Refresh."
   [session-id working-directory ^js navigation]
   (let [locked? @(rf/subscribe [:session/locked? session-id])]
     [:> rn/View {:style {:flex-direction "row"
@@ -1052,6 +1073,8 @@
      [header-compact-button session-id]
      [header-recipe-button session-id working-directory navigation]
      [header-info-button session-id navigation]
+     ;; Queue remove button (only visible when queue enabled and session in queue)
+     [header-queue-remove-button session-id]
      [header-refresh-button session-id]]))
 
 (defn- header-right-buttons-wrapper
