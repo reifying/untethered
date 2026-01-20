@@ -4,7 +4,8 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn]
-            ["@react-native-clipboard/clipboard" :as Clipboard]))
+            ["@react-native-clipboard/clipboard" :as Clipboard]
+            [voice-code.haptic :as haptic]))
 
 ;; ============================================================================
 ;; Helper Functions
@@ -134,7 +135,7 @@
     "Loading output..."]])
 
 (defn- copy-button
-  "Button to copy output to clipboard."
+  "Button to copy output to clipboard with haptic feedback."
   [output]
   [:> rn/TouchableOpacity
    {:style {:position "absolute"
@@ -145,7 +146,8 @@
             :border-radius 6}
     :on-press (fn []
                 (let [clipboard (or (.-default Clipboard) Clipboard)]
-                  (.setString clipboard output)))}
+                  (.setString clipboard output)
+                  (haptic/success!)))}
    [:> rn/Text {:style {:font-size 14 :color "#D4D4D4"}}
     "📋 Copy"]])
 

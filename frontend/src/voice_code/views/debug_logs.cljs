@@ -10,7 +10,8 @@
             [re-frame.core :as rf]
             ["react-native" :as rn]
             ["@react-native-clipboard/clipboard" :as Clipboard]
-            [voice-code.log-manager :as log-manager]))
+            [voice-code.log-manager :as log-manager]
+            [voice-code.haptic :as haptic]))
 
 (defn- level-color
   "Get color for log level."
@@ -31,10 +32,11 @@
     "#F8F8F8"))
 
 (defn- copy-to-clipboard!
-  "Copy text to clipboard and show toast."
+  "Copy text to clipboard with haptic feedback and optional callback."
   [text on-copied]
   (let [clipboard (or (.-default Clipboard) Clipboard)]
     (.setString clipboard text)
+    (haptic/success!)
     (when on-copied (on-copied))))
 
 (defn- format-log-for-copy
@@ -149,6 +151,7 @@
                      (let [text (log-manager/get-logs-as-text)]
                        (let [clipboard (or (.-default Clipboard) Clipboard)]
                          (.setString clipboard text))
+                       (haptic/success!)
                        (reset! toast-message "Logs copied to clipboard")
                        (reset! toast-visible? true)
                        (js/setTimeout #(reset! toast-visible? false) 2000)))}

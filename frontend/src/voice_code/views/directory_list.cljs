@@ -5,7 +5,8 @@
             ["react-native" :as rn :refer [RefreshControl Alert]]
             ["@react-native-clipboard/clipboard" :as Clipboard]
             [clojure.string :as str]
-            [voice-code.views.components :refer [relative-time-text]]))
+            [voice-code.views.components :refer [relative-time-text]]
+            [voice-code.haptic :as haptic]))
 
 (defn- format-relative-time
   "Format a timestamp as relative time (e.g., '2 hours ago')."
@@ -47,10 +48,11 @@
       (if (> count 99) "99+" (str count))]]))
 
 (defn- copy-to-clipboard!
-  "Copy text to clipboard."
+  "Copy text to clipboard with haptic feedback."
   [text]
   (let [clipboard (or (.-default Clipboard) Clipboard)]
-    (.setString clipboard text)))
+    (.setString clipboard text)
+    (haptic/success!)))
 
 (defn- directory-item
   "Single directory item in the list.

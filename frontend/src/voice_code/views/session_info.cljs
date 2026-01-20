@@ -11,17 +11,19 @@
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [Alert]]
             ["@react-native-clipboard/clipboard" :as Clipboard]
-            [voice-code.persistence :as persistence]))
+            [voice-code.persistence :as persistence]
+            [voice-code.haptic :as haptic]))
 
 ;; ============================================================================
 ;; Clipboard Utility
 ;; ============================================================================
 
 (defn- copy-to-clipboard!
-  "Copy text to clipboard."
+  "Copy text to clipboard with haptic feedback."
   [text]
   (let [clipboard (or (.-default Clipboard) Clipboard)]
-    (.setString clipboard text)))
+    (.setString clipboard text)
+    (haptic/success!)))
 
 ;; ============================================================================
 ;; Components
