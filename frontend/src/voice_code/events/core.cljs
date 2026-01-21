@@ -483,3 +483,17 @@
    {:ws/send {:type "create_worktree_session"
               :session-name session-name
               :parent-directory parent-directory}}))
+
+;; ============================================================================
+;; Dev-only error handling (for copying stack traces on device)
+;; ============================================================================
+
+(rf/reg-event-db
+ :dev/set-error
+ (fn [db [_ error]]
+   (assoc db :dev/global-error error)))
+
+(rf/reg-event-db
+ :dev/clear-error
+ (fn [db _]
+   (dissoc db :dev/global-error)))

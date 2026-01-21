@@ -559,6 +559,14 @@ rn-reload:
 	@curl -s "http://localhost:8081/reload" >/dev/null 2>&1 || echo "Metro may not support reload endpoint"
 	@echo "Reload triggered (if Metro supports it)"
 
+# Dismiss any system alert dialog on simulator
+rn-dismiss-alert:
+	@xcrun simctl ui booted alert dismiss 2>/dev/null && echo "Alert dismissed" || echo "No alert to dismiss"
+
+# Accept any system alert dialog on simulator (e.g., permission prompts)
+rn-accept-alert:
+	@xcrun simctl ui booted alert accept 2>/dev/null && echo "Alert accepted" || echo "No alert to accept"
+
 # Run ClojureScript unit tests
 rn-test:
 	@echo "Running ClojureScript unit tests..."

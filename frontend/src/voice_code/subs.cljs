@@ -541,3 +541,12 @@
  :git/loading?
  (fn [db [_ working-directory]]
    (get-in db [:git-loading working-directory] false)))
+
+;; ============================================================================
+;; Dev-only subscriptions
+;; ============================================================================
+
+(rf/reg-sub
+ :dev/global-error
+ (fn [db _]
+   (:dev/global-error db)))

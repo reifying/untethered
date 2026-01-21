@@ -2216,3 +2216,54 @@
      (is (= 3 (get-in @re-frame.db/app-db [:connection :reconnect-attempts])))
      ;; Status should still be disconnected
      (is (= :disconnected @(rf/subscribe [:connection/status]))))))
+
+;; ============================================================================
+;; Dev-only Error Handling (for copying stack traces on device)
+;; ============================================================================
+
+(deftest dev-error-events-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "dev/set-error stores error in app-db"
+     (let [test-error {:message "Test error message"
+                       :stack "Error\n  at test.cljs:1\n  at eval.cljs:2"
+                       :is-fatal false}]
+       (rf/dispatch-sync [:dev/set-error test-error])
+
+       (is (= test-error @(rf/subscribe [:dev/global-error])))))
+
+   (testing "dev/clear-error removes error from app-db"
+     ;; Error should exist from previous test
+     (is (some? @(rf/subscribe [:dev/global-error])))
+
+     (rf/dispatch-sync [:dev/clear-error])
+
+     (is (nil? @(rf/subscribe [:dev/global-error])))))
+
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "dev/global-error subscription returns nil when no error"
+     (is (nil? @(rf/subscribe [:dev/global-error])))))
+
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "dev/set-error handles minimal error data"
+     (rf/dispatch-sync [:dev/set-error {:message "Minimal error"}])
+
+     (let [error @(rf/subscribe [:dev/global-error])]
+       (is (= "Minimal error" (:message error)))
+       (is (nil? (:stack error))))))
+
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "dev/set-error replaces existing error"
+     (rf/dispatch-sync [:dev/set-error {:message "First error" :stack "stack1"}])
+     (rf/dispatch-sync [:dev/set-error {:message "Second error" :stack "stack2"}])
+
+     (let [error @(rf/subscribe [:dev/global-error])]
+       (is (= "Second error" (:message error)))
+       (is (= "stack2" (:stack error)))))))
