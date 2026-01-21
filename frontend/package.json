@@ -16,6 +16,7 @@
     "test:watch": "npx shadow-cljs watch test"
   },
   "dependencies": {
+    "@notifee/react-native": "^9.1.8",
     "@react-native-clipboard/clipboard": "^1.16.3",
     "@react-native-voice/voice": "^3.2.4",
     "@react-navigation/native": "^7.0.14",
