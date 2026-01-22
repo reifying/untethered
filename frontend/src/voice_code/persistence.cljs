@@ -553,11 +553,16 @@
 ;; re-frame Event Handlers
 ;; ============================================================================
 
-(rf/reg-event-db
+(rf/reg-event-fx
  :persistence/db-initialized
- (fn [db _]
-   (js/console.log "Database initialized")
-   db))
+ (fn [{:keys [db]} _]
+   (js/console.log "Database initialized, loading persisted data")
+   ;; Now that db is initialized, load all persisted data
+   {:db db
+    :dispatch-n [[:persistence/load-settings]
+                 [:persistence/load-api-key]
+                 [:persistence/load-drafts]
+                 [:persistence/load-command-mru]]}))
 
 (rf/reg-event-fx
  :persistence/settings-loaded
@@ -565,7 +570,17 @@
    (js/console.log "Settings loaded, configuring voice with respect-silent-mode:"
                    (get settings :respect-silent-mode true))
    ;; Configure voice with loaded settings (especially respect-silent-mode for TTS)
-   {:voice/configure-silent-switch (get settings :respect-silent-mode true)}))
+   ;; Also attempt auto-connect if we have an API key but aren't connected yet
+   (let [api-key (:api-key db)
+         server-url (or (get settings :server-url) (get-in db [:settings :server-url]))
+         server-port (or (get settings :server-port) (get-in db [:settings :server-port]))
+         has-server-config? (and (seq server-url) server-port)
+         status (get-in db [:connection :status])
+         already-connecting-or-connected? (#{:connecting :connected :authenticating} status)]
+     (cond-> {:voice/configure-silent-switch (get settings :respect-silent-mode true)}
+       ;; Auto-connect if we have api-key, server config, and not already connected/connecting
+       (and api-key has-server-config? (not already-connecting-or-connected?))
+       (assoc :dispatch [:auth/connect api-key])))))
 
 (rf/reg-event-db
  :persistence/api-key-stored
@@ -576,7 +591,17 @@
 (rf/reg-event-fx
  :persistence/api-key-loaded
  (fn [{:keys [db]} [_ api-key]]
-   {:db (assoc db :api-key api-key)}))
+   ;; Store API key and attempt auto-connect if we have server settings
+   ;; This enables seamless reconnection after app restart
+   (let [server-url (get-in db [:settings :server-url])
+         server-port (get-in db [:settings :server-port])
+         has-server-config? (and (seq server-url) server-port)
+         status (get-in db [:connection :status])
+         already-connecting-or-connected? (#{:connecting :connected :authenticating} status)]
+     (cond-> {:db (assoc db :api-key api-key)}
+       ;; Auto-connect if we have server config and not already connected/connecting
+       (and has-server-config? (not already-connecting-or-connected?))
+       (assoc :dispatch [:auth/connect api-key])))))
 
 (rf/reg-event-db
  :persistence/api-key-deleted

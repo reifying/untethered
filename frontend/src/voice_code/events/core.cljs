@@ -18,10 +18,8 @@
  :app/initialize
  (fn [{:keys [db]} _]
    {:db (merge db/default-db db)
-    :dispatch-n [[:persistence/load-settings]
-                 [:persistence/load-api-key]
-                 [:persistence/load-drafts]
-                 [:persistence/load-command-mru]]
+    ;; Initialize SQLite database first - loading happens after db-initialized
+    :persistence/init-db nil
     :voice/setup nil
     :ws/setup-app-state-listener nil
     :notifications/setup nil

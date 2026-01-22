@@ -51,17 +51,24 @@
 
 (defn root-navigator
   "Main navigation stack.
-   Shows auth screen when not authenticated, main app otherwise.
+   Always shows the navigation container - the DirectoryListView handles
+   showing appropriate UI based on server configuration state.
+   Auth view is only shown when explicit reauthentication is required
+   (e.g., after auth failure when user has logged out).
+   Matches iOS behavior where RootView always shows DirectoryListView.
    Uses r/create-class for proper Reagent reactivity."
   []
   (r/create-class
    {:reagent-render
     (fn []
-      (let [authenticated? @(rf/subscribe [:connection/authenticated?])]
-        (if-not authenticated?
-          ;; Show auth view directly when not authenticated
+      (let [requires-reauth? @(rf/subscribe [:connection/requires-reauthentication?])
+            has-api-key? @(rf/subscribe [:auth/has-api-key?])]
+        (if (and requires-reauth? (not has-api-key?))
+          ;; Show auth view only when reauthentication is required AND user has logged out
+          ;; This happens when auth fails and user explicitly disconnects
           [auth-view]
-          ;; Show full navigation when authenticated
+          ;; Otherwise always show full navigation
+          ;; DirectoryListView handles "Configure Server" state for first-run experience
           [:> NavigationContainer {:ref nav-ref
                                    :theme (navigation-theme)}
            [:> (.-Navigator Stack)
