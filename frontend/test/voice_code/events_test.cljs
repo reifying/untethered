@@ -7,10 +7,15 @@
             [voice-code.events.core]
             [voice-code.events.websocket]
             [voice-code.subs]
-            [voice-code.voice]))
+            [voice-code.voice]
+            [voice-code.debounce :as debounce]))
 
 (use-fixtures :each
-  {:before (fn [] (rf/dispatch-sync [:initialize-db]))})
+  {:before (fn []
+             (debounce/reset-state!)
+             (rf/dispatch-sync [:initialize-db]))
+   :after (fn []
+            (debounce/reset-state!))})
 
 ;; ============================================================================
 ;; Core Events
@@ -406,9 +411,11 @@
      (rf/dispatch-sync [:sessions/lock "session-123"])
      (is (contains? @(rf/subscribe [:locked-sessions]) "session-123"))
 
-     ;; Act: receive turn_complete
+     ;; Act: receive turn_complete (uses debounced updates)
      (rf/dispatch-sync [:sessions/handle-turn-complete
                         {:session-id "session-123"}])
+     ;; Flush debounce queue to apply pending updates
+     (debounce/flush!)
 
      ;; Assert: session unlocked
      (is (not (contains? @(rf/subscribe [:locked-sessions]) "session-123"))))))
@@ -419,6 +426,8 @@
 
    (testing "locks session on session_locked message"
      (rf/dispatch-sync [:sessions/handle-locked {:session-id "session-456"}])
+     ;; Flush debounce queue to apply pending updates
+     (debounce/flush!)
      (is (true? @(rf/subscribe [:session/locked? "session-456"]))))))
 
 (deftest handle-session-ready-test
@@ -456,6 +465,7 @@
      (rf/dispatch-sync [:messages/add "session-kill-1"
                         {:id "msg-1" :role :user :text "test" :timestamp (js/Date.)}])
      (rf/dispatch-sync [:sessions/handle-locked {:session-id "session-kill-1"}])
+     (debounce/flush!)
 
      ;; Verify session exists
      (is (some? @(rf/subscribe [:sessions/by-id "session-kill-1"])))

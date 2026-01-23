@@ -1,12 +1,16 @@
 (ns voice-code.events.websocket
   "re-frame event handlers for WebSocket messages.
-   Implements all message types from STANDARDS.md protocol."
+   Implements all message types from STANDARDS.md protocol.
+   
+   Uses debouncing for high-frequency updates (locked-sessions, command output)
+   to prevent UI thrashing. Matches iOS VoiceCodeClient.swift behavior."
   (:require [re-frame.core :as rf]
             [voice-code.websocket :as ws]
             [voice-code.db :as db]
             [voice-code.json :as json]
             [voice-code.utils :as utils]
-            [voice-code.notifications :as notifications]))
+            [voice-code.notifications :as notifications]
+            [voice-code.debounce :as debounce]))
 
 ;; ============================================================================
 ;; Constants
@@ -455,15 +459,25 @@
    (update-in db [:sessions session-id] merge
               (dissoc updates :type :session-id))))
 
-(rf/reg-event-db
+(rf/reg-event-fx
  :sessions/handle-turn-complete
- (fn [db [_ {:keys [session-id]}]]
-   (update db :locked-sessions disj session-id)))
+ (fn [{:keys [db]} [_ {:keys [session-id]}]]
+   ;; Use debounced update for locked-sessions (high-frequency updates)
+   ;; Matches iOS VoiceCodeClient.scheduleUpdate("lockedSessions", ...)
+   (let [current-locked (debounce/get-current-value db [:locked-sessions])
+         updated-locked (disj (or current-locked #{}) session-id)]
+     {:debounce/schedule {:path [:locked-sessions]
+                          :value updated-locked}})))
 
-(rf/reg-event-db
+(rf/reg-event-fx
  :sessions/handle-locked
- (fn [db [_ {:keys [session-id]}]]
-   (update db :locked-sessions conj session-id)))
+ (fn [{:keys [db]} [_ {:keys [session-id]}]]
+   ;; Use debounced update for locked-sessions (high-frequency updates)
+   ;; Matches iOS VoiceCodeClient.scheduleUpdate("lockedSessions", ...)
+   (let [current-locked (debounce/get-current-value db [:locked-sessions])
+         updated-locked (conj (or current-locked #{}) session-id)]
+     {:debounce/schedule {:path [:locked-sessions]
+                          :value updated-locked}})))
 
 (rf/reg-event-db
  :sessions/handle-ready
