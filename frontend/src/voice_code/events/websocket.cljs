@@ -825,7 +825,10 @@
                          (fn [msgs]
                            (-> (or msgs [])
                                (conj new-message)
-                               db/prune-messages))))
+                               db/prune-messages)))
+              ;; Reset compaction feedback state when user sends a message
+              ;; iOS parity: ConversationView.swift line 747
+              (update-in [:ui :compaction-timestamps] dissoc session-id))
       :ws/send {:type "prompt"
                 :text text
                 :ios-session-id ios-session-id

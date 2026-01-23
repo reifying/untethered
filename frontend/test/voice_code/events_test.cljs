@@ -872,6 +872,30 @@
        (is (= :user (:role (first msgs))))
        (is (= :sending (:status (first msgs))))))))
 
+(deftest prompt-send-clears-compaction-state-test
+  "iOS parity: ConversationView.swift line 747
+   Sending a message should clear the compaction timestamp for that session."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Add a session
+   (rf/dispatch-sync [:sessions/add {:id "s1"
+                                     :working-directory "/project"}])
+
+   ;; Simulate a compaction that was completed
+   (rf/dispatch-sync [:db/update-in [:ui :compaction-timestamps]
+                      assoc "s1" (js/Date.)])
+
+   (testing "compaction timestamp exists before sending"
+     (is (true? @(rf/subscribe [:ui/session-recently-compacted? "s1"]))))
+
+   (testing "prompt/send clears compaction timestamp"
+     (rf/dispatch-sync [:prompt/send {:text "Hello Claude"
+                                      :session-id "s1"
+                                      :working-directory "/project"}])
+     ;; Compaction state should be cleared for this session
+     (is (false? @(rf/subscribe [:ui/session-recently-compacted? "s1"]))))))
+
 (deftest prompt-send-from-draft-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
