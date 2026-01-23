@@ -174,6 +174,7 @@
 (defn- handle-app-state-change!
   "Handle app state changes (active/inactive/background).
    Reconnects when app returns to foreground if disconnected.
+   Stops ping timer when entering background to prevent unnecessary work.
    Also updates notifications module for background detection.
    Mirrors iOS VoiceCodeClient.setupLifecycleObservers behavior."
   [next-state]
@@ -188,9 +189,13 @@
         (js/console.log "📱 [WebSocket] App became active")
         (rf/dispatch [:ws/app-became-active]))
 
-      ;; App entered background - log for debugging
+      ;; App entered background - stop ping timer to save resources
+      ;; The ping timer will be restarted on reconnection when app becomes active
+      ;; This also ensures timers are cleaned up if app is terminated while backgrounded
       (and (= prev-state "active") (not= next-state "active"))
-      (js/console.log "📱 [WebSocket] App entering background"))))
+      (do
+        (js/console.log "📱 [WebSocket] App entering background - stopping ping timer")
+        (stop-ping-timer!)))))
 
 (defn setup-app-state-listener!
   "Set up AppState change listener for lifecycle-aware reconnection.
@@ -216,11 +221,24 @@
  (fn [_]
    (setup-app-state-listener!)))
 
+;; Effect handler to remove lifecycle listener and cleanup all timers
+;; Called when the app is being torn down (e.g., hot reload in dev)
+(rf/reg-fx
+ :ws/cleanup-all
+ (fn [_]
+   (remove-app-state-listener!)
+   (stop-ping-timer!)
+   (when @reconnect-timer
+     (js/clearTimeout @reconnect-timer)
+     (reset! reconnect-timer nil))
+   (js/console.log "📱 [WebSocket] Cleaned up all listeners and timers")))
+
 ;; Event handler for when app becomes active
 (rf/reg-event-fx
  :ws/app-became-active
  (fn [{:keys [db]} _]
    (let [status (get-in db [:connection :status])
+         authenticated? (get-in db [:connection :authenticated?])
          requires-reauth? (get-in db [:connection :requires-reauthentication?])
          server-url (get-in db [:settings :server-url])
          server-port (get-in db [:settings :server-port])]
@@ -239,6 +257,13 @@
          {:db (assoc-in db [:connection :reconnect-attempts] 0)
           :ws/connect {:server-url server-url :server-port server-port}})
 
-       ;; Already connected, no action needed
+       ;; Still connected and authenticated - restart ping timer
+       ;; (it was stopped when entering background to save resources)
+       (and (= status :connected) authenticated?)
+       (do
+         (js/console.log "📱 [WebSocket] Restarting ping timer after foreground")
+         {:ws/start-ping-timer nil})
+
+       ;; Other states (connecting, etc) - no action needed
        :else
        {}))))

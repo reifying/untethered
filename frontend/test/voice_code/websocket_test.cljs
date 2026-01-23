@@ -147,13 +147,33 @@
    ;; Set some reconnect attempts
    (rf/dispatch-sync [:db/update-in [:connection :reconnect-attempts] (constantly 5)])
 
-   (testing "app becoming active does nothing when already connected"
+   (testing "app becoming active restarts ping timer when already connected and authenticated"
      (is (= :connected @(rf/subscribe [:connection/status])))
+     (is (true? @(rf/subscribe [:connection/authenticated?])))
+     ;; Dispatch app became active - should trigger :ws/start-ping-timer effect
      (rf/dispatch-sync [:ws/app-became-active])
      ;; Should still be connected
      (is (= :connected @(rf/subscribe [:connection/status])))
-     ;; Reconnect attempts should NOT be touched (no action taken)
+     ;; Reconnect attempts should NOT be touched (no reconnection action)
      (is (= 5 (get-in @re-frame.db/app-db [:connection :reconnect-attempts]))))))
+
+(deftest app-became-active-connected-not-authenticated-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+   (rf/dispatch-sync [:settings/update :server-url "localhost"])
+   (rf/dispatch-sync [:settings/update :server-port 8080])
+
+   ;; Simulate connected but not yet authenticated (in hello/authenticating flow)
+   (rf/dispatch-sync [:ws/connected])
+   ;; Note: not calling :ws/handle-connected, so authenticated? is false
+
+   (testing "app becoming active does nothing when connected but not authenticated"
+     (is (= :connected @(rf/subscribe [:connection/status])))
+     (is (false? @(rf/subscribe [:connection/authenticated?])))
+     (rf/dispatch-sync [:ws/app-became-active])
+     ;; Should still be connected, no change
+     (is (= :connected @(rf/subscribe [:connection/status])))
+     (is (false? @(rf/subscribe [:connection/authenticated?]))))))
 
 ;; ============================================================================
 ;; Reconnection Attempt Tracking Tests
