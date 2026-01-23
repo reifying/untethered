@@ -267,18 +267,18 @@
                                       :session-name session-name
                                       :working-directory working-directory}})
      ;; On error, mark the most recent :sending message as :error
-     (let [updated-messages (update-in db [:messages session-id]
-                                       (fn [msgs]
-                                         (when msgs
-                                           (let [;; Find the last message with :sending status
-                                                 idx (some (fn [i]
-                                                             (when (= :sending (:status (nth msgs i)))
-                                                               i))
-                                                           (range (dec (count msgs)) -1 -1))]
-                                             (if idx
-                                               (assoc-in (vec msgs) [idx :status] :error)
-                                               msgs)))))]
-       {:db (-> updated-messages
+     (let [updated-db (update-in db [:messages session-id]
+                                 (fn [msgs]
+                                   (when msgs
+                                     (let [;; Find the last message with :sending status
+                                           idx (some (fn [i]
+                                                       (when (= :sending (:status (nth msgs i)))
+                                                         i))
+                                                     (range (dec (count msgs)) -1 -1))]
+                                       (if idx
+                                         (assoc-in (vec msgs) [idx :status] :error)
+                                         msgs)))))]
+       {:db (-> updated-db
                 (assoc-in [:ui :current-error] error)
                 (update :locked-sessions disj session-id))}))))
 

@@ -578,8 +578,8 @@
              [empty-state]
              [:> rn/FlatList
               {:data (clj->js sessions)
-               :key-extractor (fn [item _idx]
-                                (or (.-id item) (str (random-uuid))))
+               :key-extractor (fn [item idx]
+                                (or (.-id item) (str "session-" idx)))
                :refresh-control
                (r/as-element
                 [:> RefreshControl

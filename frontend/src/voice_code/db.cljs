@@ -154,12 +154,12 @@
                       ;; Update the optimistic message with confirmed status and server ID
                       (update msgs optimistic-idx
                               (fn [existing]
-                                (-> existing
-                                    (assoc :id (:id new-msg))
-                                    (assoc :status :confirmed)
-                                    ;; Update timestamp if server provides one
-                                    (cond-> (:timestamp new-msg)
-                                      (assoc :timestamp (:timestamp new-msg))))))
+                                (cond-> (-> existing
+                                            (assoc :id (:id new-msg))
+                                            (assoc :status :confirmed))
+                                  ;; Update timestamp if server provides one
+                                  (:timestamp new-msg)
+                                  (assoc :timestamp (:timestamp new-msg)))))
                       ;; No match - add as new message
                       (conj msgs new-msg))))
                 (vec existing-messages)

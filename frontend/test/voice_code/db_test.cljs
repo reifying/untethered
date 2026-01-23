@@ -292,3 +292,48 @@
       (is (= :confirmed (:status (first result))))
       (is (= "assistant-1" (:id (second result))))
       (is (= "assistant-2" (:id (nth result 2)))))))
+
+(deftest merge-messages-timestamp-test
+  "Tests for VCMOB-vmar: verify cond-> timestamp handling works correctly"
+
+  (testing "preserves existing timestamp when server provides none"
+    (let [original-ts (js/Date. "2026-01-15T10:00:00Z")
+          existing [{:id "local-uuid-123"
+                     :role :user
+                     :text "Hello Claude"
+                     :timestamp original-ts
+                     :status :sending}]
+          ;; Server sends confirmed message WITHOUT timestamp
+          server-msg [{:id "server-uuid-456"
+                       :role :user
+                       :text "Hello Claude"
+                       :status :confirmed}]
+          result (db/merge-messages existing server-msg)]
+      ;; Should have 1 message (reconciled)
+      (is (= 1 (count result)))
+      ;; Should have server's ID
+      (is (= "server-uuid-456" (:id (first result))))
+      ;; Should be confirmed
+      (is (= :confirmed (:status (first result))))
+      ;; Should preserve original timestamp (not nil)
+      (is (= original-ts (:timestamp (first result))))))
+
+  (testing "updates timestamp when server provides one"
+    (let [original-ts (js/Date. "2026-01-15T10:00:00Z")
+          server-ts (js/Date. "2026-01-15T10:00:05Z")
+          existing [{:id "local-uuid-123"
+                     :role :user
+                     :text "Hello Claude"
+                     :timestamp original-ts
+                     :status :sending}]
+          ;; Server sends confirmed message WITH timestamp
+          server-msg [{:id "server-uuid-456"
+                       :role :user
+                       :text "Hello Claude"
+                       :timestamp server-ts
+                       :status :confirmed}]
+          result (db/merge-messages existing server-msg)]
+      ;; Should have 1 message (reconciled)
+      (is (= 1 (count result)))
+      ;; Should have server's timestamp
+      (is (= server-ts (:timestamp (first result)))))))
