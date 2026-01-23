@@ -6,7 +6,8 @@
             ["@react-native-clipboard/clipboard" :as Clipboard]
             [voice-code.voice :as voice]
             [voice-code.haptic :as haptic]
-            [voice-code.utils :as utils]))
+            [voice-code.utils :as utils]
+            [voice-code.performance :as perf]))
 
 ;; ============================================================================
 ;; Copy Confirmation Toast
@@ -372,6 +373,8 @@
         is-sending? (= status :sending)
         is-error? (= status :error)]
     (fn [{:keys [role text timestamp status working-directory session-id usage cost]}]
+      ;; Track renders for performance monitoring
+      (perf/use-render-tracking "message-bubble")
       (let [{:keys [truncated? display-text full-text]} (utils/truncate-text text)
             show-text (if (and truncated? (not @expanded?))
                         display-text
@@ -828,6 +831,8 @@
 
       :reagent-render
       (fn [{:keys [messages session-id locked? working-directory]}]
+        ;; Track renders for performance monitoring
+        (perf/use-render-tracking "message-list")
         (let [auto-scroll? @(rf/subscribe [:ui/auto-scroll?])]
           ;; Sync local atom with subscription (reactive context)
           (when (not= @local-auto-scroll? auto-scroll?)
@@ -1243,6 +1248,8 @@
 
       :reagent-render
       (fn [_]
+        ;; Track renders for performance monitoring
+        (perf/use-render-tracking "conversation-view")
         ;; Subscriptions MUST be inside :reagent-render for reactivity
         (let [messages @(rf/subscribe [:messages/for-session session-id])
               locked? @(rf/subscribe [:session/locked? session-id])
