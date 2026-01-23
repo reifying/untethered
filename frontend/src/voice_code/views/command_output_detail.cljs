@@ -155,18 +155,6 @@
 ;; Main View
 ;; ============================================================================
 
-;; Subscription for command output detail
-(rf/reg-sub
- :commands/output-detail
- (fn [db _]
-   (get-in db [:commands :output-detail])))
-
-;; Event handler for storing full output
-(rf/reg-event-db
- :commands/set-output-detail
- (fn [db [_ detail]]
-   (assoc-in db [:commands :output-detail] detail)))
-
 (defn command-output-detail-view
   "Main command output detail screen showing full command output.
    Uses Form-2 component pattern for proper Reagent reactivity."
@@ -210,18 +198,3 @@
           ;; Copy button
           (when (and output (seq output))
             [copy-button output])]]))))
-
-;; Handle command_output_full message
-(rf/reg-event-db
- :commands/handle-output-detail
- (fn [db [_ {:keys [command-session-id output exit-code timestamp
-                    duration-ms command-id shell-command working-directory]}]]
-   (assoc-in db [:commands :output-detail]
-             {:command-session-id command-session-id
-              :output output
-              :exit-code exit-code
-              :timestamp timestamp
-              :duration-ms duration-ms
-              :command-id command-id
-              :shell-command shell-command
-              :working-directory working-directory})))

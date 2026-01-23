@@ -185,6 +185,47 @@
      (let [history @(rf/subscribe [:commands/history])]
        (is (= 2 (count history)))))))
 
+(deftest handle-command-output-full-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "command_output_full stores full output with metadata"
+     (rf/dispatch-sync [:commands/handle-output-full
+                        {:command-session-id "cmd-full-123"
+                         :output "Build completed successfully\nAll tests passed"
+                         :exit-code 0
+                         :timestamp "2026-01-23T10:30:00.000Z"
+                         :duration-ms 5432
+                         :command-id "build"
+                         :shell-command "make build"
+                         :working-directory "/project"}])
+
+     (let [detail @(rf/subscribe [:commands/output-detail])]
+       (is (= "cmd-full-123" (:command-session-id detail)))
+       (is (= "Build completed successfully\nAll tests passed" (:output detail)))
+       (is (= 0 (:exit-code detail)))
+       (is (= "2026-01-23T10:30:00.000Z" (:timestamp detail)))
+       (is (= 5432 (:duration-ms detail)))
+       (is (= "build" (:command-id detail)))
+       (is (= "make build" (:shell-command detail)))
+       (is (= "/project" (:working-directory detail)))))
+
+   (testing "command_output_full overwrites previous output detail"
+     (rf/dispatch-sync [:commands/handle-output-full
+                        {:command-session-id "cmd-full-456"
+                         :output "Different output"
+                         :exit-code 1
+                         :timestamp "2026-01-23T11:00:00.000Z"
+                         :duration-ms 1000
+                         :command-id "test"
+                         :shell-command "npm test"
+                         :working-directory "/other-project"}])
+
+     (let [detail @(rf/subscribe [:commands/output-detail])]
+       (is (= "cmd-full-456" (:command-session-id detail)))
+       (is (= "Different output" (:output detail)))
+       (is (= 1 (:exit-code detail)))))))
+
 ;; ============================================================================
 ;; Command Execute Event
 ;; ============================================================================

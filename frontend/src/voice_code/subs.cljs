@@ -280,6 +280,11 @@
  (fn [running [_ command-session-id]]
    (get running command-session-id)))
 
+(rf/reg-sub
+ :commands/output-detail
+ (fn [db _]
+   (get-in db [:commands :output-detail])))
+
 ;; ============================================================================
 ;; Resources
 ;; ============================================================================

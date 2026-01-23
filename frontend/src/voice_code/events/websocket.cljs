@@ -691,13 +691,19 @@
 
 (rf/reg-event-db
  :commands/handle-output-full
- (fn [db [_ {:keys [command-session-id output]}]]
-   ;; Full output comes as a plain string - parse into lines without stream info
-   ;; This is used for historical output which doesn't preserve stream markers
-   (let [lines (when output
-                 (mapv (fn [text] {:text text :stream "stdout"})
-                       (clojure.string/split-lines output)))]
-     (assoc-in db [:commands :running command-session-id :output-lines] lines))))
+ (fn [db [_ {:keys [command-session-id output exit-code timestamp
+                    duration-ms command-id shell-command working-directory]}]]
+   ;; Store full command output with all metadata for display in detail view
+   ;; This is the response to get_command_output request for historical commands
+   (assoc-in db [:commands :output-detail]
+             {:command-session-id command-session-id
+              :output output
+              :exit-code exit-code
+              :timestamp timestamp
+              :duration-ms duration-ms
+              :command-id command-id
+              :shell-command shell-command
+              :working-directory working-directory})))
 
 ;; ============================================================================
 ;; Resource Handlers
