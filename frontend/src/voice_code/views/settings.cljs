@@ -13,7 +13,8 @@
             ["react-native" :refer [Platform]]
             [voice-code.auth :refer [api-key-validation-status mask-api-key]]
             [voice-code.views.voice-picker :refer [voice-picker-modal]]
-            [voice-code.haptic :as haptic]))
+            [voice-code.haptic :as haptic]
+            [voice-code.theme :as theme]))
 
 ;; ============================================================================
 ;; Helper Components
@@ -23,7 +24,8 @@
   "Real-time validation status display for API key input.
    Shows character count, validation icon, and specific error messages."
   [{:keys [key-input]}]
-  (let [{:keys [valid? message char-count expected-count]} (api-key-validation-status key-input)
+  (let [colors (theme/use-theme-colors)
+        {:keys [valid? message char-count expected-count]} (api-key-validation-status key-input)
         has-input? (pos? char-count)]
     (when has-input?
       [:> rn/View {:style {:flex-direction "row"
@@ -40,167 +42,174 @@
        [:> rn/Text {:style {:font-size 14
                             :font-family (when (= "ios" (.-OS Platform)) "Menlo")
                             :color (cond
-                                     valid? "#34C759"
-                                     (> char-count expected-count) "#FF3B30"
-                                     :else "#666")
+                                     valid? (:success colors)
+                                     (> char-count expected-count) (:destructive colors)
+                                     :else (:text-secondary colors))
                             :margin-right 8}}
         (str char-count "/" expected-count)]
 
        ;; Validation message
        (when message
          [:> rn/Text {:style {:font-size 13
-                              :color "#FF3B30"
+                              :color (:destructive colors)
                               :flex 1}}
           message])])))
 
 (defn- section-header
   "Section header for settings groups."
   [title]
-  [:> rn/View {:style {:padding-horizontal 16
-                       :padding-top 24
-                       :padding-bottom 8}}
-   [:> rn/Text {:style {:font-size 13
-                        :font-weight "600"
-                        :color "#666"
-                        :text-transform "uppercase"
-                        :letter-spacing 0.5}}
-    title]])
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/View {:style {:padding-horizontal 16
+                         :padding-top 24
+                         :padding-bottom 8}}
+     [:> rn/Text {:style {:font-size 13
+                          :font-weight "600"
+                          :color (:text-secondary colors)
+                          :text-transform "uppercase"
+                          :letter-spacing 0.5}}
+      title]]))
 
 (defn- setting-row
   "Single setting row with label and value/control."
   [{:keys [label value on-press accessory disabled?]}]
-  [:> rn/TouchableOpacity
-   {:style {:flex-direction "row"
-            :align-items "center"
-            :justify-content "space-between"
-            :padding-horizontal 16
-            :padding-vertical 14
-            :background-color "#FFFFFF"
-            :border-bottom-width 1
-            :border-bottom-color "#F0F0F0"
-            :opacity (if disabled? 0.5 1)}
-    :on-press (when-not disabled? on-press)
-    :disabled (or disabled? (nil? on-press))}
-   [:> rn/Text {:style {:font-size 16 :color "#000"}}
-    label]
-   (or accessory
-       (when value
-         [:> rn/Text {:style {:font-size 16 :color "#999"}}
-          value]))])
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/TouchableOpacity
+     {:style {:flex-direction "row"
+              :align-items "center"
+              :justify-content "space-between"
+              :padding-horizontal 16
+              :padding-vertical 14
+              :background-color (:card-background colors)
+              :border-bottom-width 1
+              :border-bottom-color (:separator colors)
+              :opacity (if disabled? 0.5 1)}
+      :on-press (when-not disabled? on-press)
+      :disabled (or disabled? (nil? on-press))}
+     [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
+      label]
+     (or accessory
+         (when value
+           [:> rn/Text {:style {:font-size 16 :color (:text-tertiary colors)}}
+            value]))]))
 
 (defn- text-input-row
   "Setting row with editable text input."
   [{:keys [label value placeholder on-change keyboard-type multiline]}]
-  [:> rn/View {:style {:flex-direction (if multiline "column" "row")
-                       :align-items (if multiline "stretch" "center")
-                       :justify-content "space-between"
-                       :padding-horizontal 16
-                       :padding-vertical 10
-                       :background-color "#FFFFFF"
-                       :border-bottom-width 1
-                       :border-bottom-color "#F0F0F0"}}
-   [:> rn/Text {:style {:font-size 16
-                        :color "#000"
-                        :flex (if multiline 0 1)
-                        :margin-bottom (if multiline 8 0)}}
-    label]
-   [:> rn/TextInput
-    {:style {:font-size 16
-             :color "#000"
-             :text-align (if multiline "left" "right")
-             :min-width (if multiline nil 120)
-             :padding-vertical 4
-             :min-height (if multiline 80 nil)
-             :text-align-vertical (if multiline "top" "center")}
-     :value (str value)
-     :placeholder placeholder
-     :on-change-text on-change
-     :keyboard-type (or keyboard-type "default")
-     :auto-capitalize "none"
-     :auto-correct false
-     :multiline multiline}]])
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/View {:style {:flex-direction (if multiline "column" "row")
+                         :align-items (if multiline "stretch" "center")
+                         :justify-content "space-between"
+                         :padding-horizontal 16
+                         :padding-vertical 10
+                         :background-color (:card-background colors)
+                         :border-bottom-width 1
+                         :border-bottom-color (:separator colors)}}
+     [:> rn/Text {:style {:font-size 16
+                          :color (:text-primary colors)
+                          :flex (if multiline 0 1)
+                          :margin-bottom (if multiline 8 0)}}
+      label]
+     [:> rn/TextInput
+      {:style {:font-size 16
+               :color (:text-primary colors)
+               :text-align (if multiline "left" "right")
+               :min-width (if multiline nil 120)
+               :padding-vertical 4
+               :min-height (if multiline 80 nil)
+               :text-align-vertical (if multiline "top" "center")}
+       :value (str value)
+       :placeholder placeholder
+       :placeholder-text-color (:text-placeholder colors)
+       :on-change-text on-change
+       :keyboard-type (or keyboard-type "default")
+       :auto-capitalize "none"
+       :auto-correct false
+       :multiline multiline}]]))
 
 (defn- toggle-row
   "Setting row with toggle switch. Includes haptic selection feedback on toggle."
   [{:keys [label value on-change description]}]
-  [:> rn/View {:style {:background-color "#FFFFFF"
-                       :border-bottom-width 1
-                       :border-bottom-color "#F0F0F0"}}
-   [:> rn/View {:style {:flex-direction "row"
-                        :align-items "center"
-                        :justify-content "space-between"
-                        :padding-horizontal 16
-                        :padding-vertical 14}}
-    [:> rn/Text {:style {:font-size 16 :color "#000" :flex 1}}
-     label]
-    [:> rn/Switch
-     {:value value
-      :on-value-change (fn [new-value]
-                         (haptic/selection!)
-                         (on-change new-value))
-      :track-color #js {:false "#E9E9EB" :true "#34C759"}
-      :thumb-color "#FFFFFF"}]]
-   (when description
-     [:> rn/Text {:style {:font-size 12
-                          :color "#666"
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/View {:style {:background-color (:card-background colors)
+                         :border-bottom-width 1
+                         :border-bottom-color (:separator colors)}}
+     [:> rn/View {:style {:flex-direction "row"
+                          :align-items "center"
+                          :justify-content "space-between"
                           :padding-horizontal 16
-                          :padding-bottom 10
-                          :margin-top -6}}
-      description])])
+                          :padding-vertical 14}}
+      [:> rn/Text {:style {:font-size 16 :color (:text-primary colors) :flex 1}}
+       label]
+      [:> rn/Switch
+       {:value value
+        :on-value-change (fn [new-value]
+                           (haptic/selection!)
+                           (on-change new-value))
+        :track-color #js {:false (:fill-secondary colors) :true (:success colors)}
+        :thumb-color "#FFFFFF"}]]
+     (when description
+       [:> rn/Text {:style {:font-size 12
+                            :color (:text-secondary colors)
+                            :padding-horizontal 16
+                            :padding-bottom 10
+                            :margin-top -6}}
+        description])]))
 
 (defn- stepper-row
   "Setting row with stepper controls."
   [{:keys [label value on-change min-value max-value step suffix description]}]
-  [:> rn/View {:style {:background-color "#FFFFFF"
-                       :border-bottom-width 1
-                       :border-bottom-color "#F0F0F0"}}
-   [:> rn/View {:style {:flex-direction "row"
-                        :align-items "center"
-                        :justify-content "space-between"
-                        :padding-horizontal 16
-                        :padding-vertical 10}}
-    [:> rn/Text {:style {:font-size 16 :color "#000"}}
-     label]
-    [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-     [:> rn/TouchableOpacity
-      {:style {:width 32
-               :height 32
-               :border-radius 6
-               :background-color "#E9E9EB"
-               :justify-content "center"
-               :align-items "center"
-               :opacity (if (<= value (or min-value 0)) 0.3 1)}
-       :disabled (<= value (or min-value 0))
-       :on-press #(on-change (- value (or step 1)))}
-      [:> rn/Text {:style {:font-size 20 :color "#000"}} "−"]]
-     [:> rn/Text {:style {:font-size 16
-                          :color "#000"
-                          :min-width 60
-                          :text-align "center"}}
-      (str value (or suffix ""))]
-     [:> rn/TouchableOpacity
-      {:style {:width 32
-               :height 32
-               :border-radius 6
-               :background-color "#E9E9EB"
-               :justify-content "center"
-               :align-items "center"
-               :opacity (if (>= value (or max-value 100)) 0.3 1)}
-       :disabled (>= value (or max-value 100))
-       :on-press #(on-change (+ value (or step 1)))}
-      [:> rn/Text {:style {:font-size 20 :color "#000"}} "+"]]]]
-   (when description
-     [:> rn/Text {:style {:font-size 12
-                          :color "#666"
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/View {:style {:background-color (:card-background colors)
+                         :border-bottom-width 1
+                         :border-bottom-color (:separator colors)}}
+     [:> rn/View {:style {:flex-direction "row"
+                          :align-items "center"
+                          :justify-content "space-between"
                           :padding-horizontal 16
-                          :padding-bottom 10}}
-      description])])
+                          :padding-vertical 10}}
+      [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
+       label]
+      [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+       [:> rn/TouchableOpacity
+        {:style {:width 32
+                 :height 32
+                 :border-radius 6
+                 :background-color (:fill-secondary colors)
+                 :justify-content "center"
+                 :align-items "center"
+                 :opacity (if (<= value (or min-value 0)) 0.3 1)}
+         :disabled (<= value (or min-value 0))
+         :on-press #(on-change (- value (or step 1)))}
+        [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "−"]]
+       [:> rn/Text {:style {:font-size 16
+                            :color (:text-primary colors)
+                            :min-width 60
+                            :text-align "center"}}
+        (str value (or suffix ""))]
+       [:> rn/TouchableOpacity
+        {:style {:width 32
+                 :height 32
+                 :border-radius 6
+                 :background-color (:fill-secondary colors)
+                 :justify-content "center"
+                 :align-items "center"
+                 :opacity (if (>= value (or max-value 100)) 0.3 1)}
+         :disabled (>= value (or max-value 100))
+         :on-press #(on-change (+ value (or step 1)))}
+        [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "+"]]]]
+     (when description
+       [:> rn/Text {:style {:font-size 12
+                            :color (:text-secondary colors)
+                            :padding-horizontal 16
+                            :padding-bottom 10}}
+        description])]))
 
 (defn- rate-stepper-row
   "Setting row with fine-grained stepper for speech rate (0.25-1.0).
    Shows speed labels (Slow, Normal, Fast) alongside numeric value."
   [{:keys [label value on-change description]}]
-  (let [min-val 0.25
+  (let [colors (theme/use-theme-colors)
+        min-val 0.25
         max-val 1.0
         step 0.05
         ;; Round to 2 decimal places for display
@@ -210,25 +219,25 @@
                       (<= value 0.55) "Normal"
                       (<= value 0.75) "Fast"
                       :else "Very Fast")]
-    [:> rn/View {:style {:background-color "#FFFFFF"
+    [:> rn/View {:style {:background-color (:card-background colors)
                          :border-bottom-width 1
-                         :border-bottom-color "#F0F0F0"}}
+                         :border-bottom-color (:separator colors)}}
      [:> rn/View {:style {:flex-direction "row"
                           :align-items "center"
                           :justify-content "space-between"
                           :padding-horizontal 16
                           :padding-vertical 10}}
       [:> rn/View {:style {:flex 1}}
-       [:> rn/Text {:style {:font-size 16 :color "#000"}}
+       [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
         label]
-       [:> rn/Text {:style {:font-size 12 :color "#666" :margin-top 2}}
+       [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors) :margin-top 2}}
         speed-label]]
       [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
        [:> rn/TouchableOpacity
         {:style {:width 32
                  :height 32
                  :border-radius 6
-                 :background-color "#E9E9EB"
+                 :background-color (:fill-secondary colors)
                  :justify-content "center"
                  :align-items "center"
                  :opacity (if (<= value min-val) 0.3 1)}
@@ -236,9 +245,9 @@
          :on-press (fn []
                      (haptic/selection!)
                      (on-change (max min-val (- value step))))}
-        [:> rn/Text {:style {:font-size 20 :color "#000"}} "−"]]
+        [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "−"]]
        [:> rn/Text {:style {:font-size 16
-                            :color "#007AFF"
+                            :color (:accent colors)
                             :font-weight "500"
                             :min-width 50
                             :text-align "center"}}
@@ -247,7 +256,7 @@
         {:style {:width 32
                  :height 32
                  :border-radius 6
-                 :background-color "#E9E9EB"
+                 :background-color (:fill-secondary colors)
                  :justify-content "center"
                  :align-items "center"
                  :opacity (if (>= value max-val) 0.3 1)}
@@ -255,10 +264,10 @@
          :on-press (fn []
                      (haptic/selection!)
                      (on-change (min max-val (+ value step))))}
-        [:> rn/Text {:style {:font-size 20 :color "#000"}} "+"]]]]
+        [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "+"]]]]
      (when description
        [:> rn/Text {:style {:font-size 12
-                            :color "#666"
+                            :color (:text-secondary colors)
                             :padding-horizontal 16
                             :padding-bottom 10}}
         description])]))
@@ -285,7 +294,8 @@
   [navigation]
   (let [api-key-input (r/atom "")]
     (fn [navigation]
-      (let [api-key @(rf/subscribe [:auth/api-key])
+      (let [colors (theme/use-theme-colors)
+            api-key @(rf/subscribe [:auth/api-key])
             has-key? (some? api-key)
             current-input @api-key-input
             validation (api-key-validation-status current-input)
@@ -293,9 +303,9 @@
             has-input? (pos? char-count)
             ;; Dynamic border color based on validation state
             input-border-color (cond
-                                 (not has-input?) "#DDD"
-                                 valid? "#34C759"
-                                 :else "#FF3B30")]
+                                 (not has-input?) (:input-border colors)
+                                 valid? (:success colors)
+                                 :else (:destructive colors))]
         [:> rn/View
          [section-header "Authentication"]
          (if has-key?
@@ -306,21 +316,21 @@
                                  :align-items "center"
                                  :padding-horizontal 16
                                  :padding-vertical 14
-                                 :background-color "#FFFFFF"
+                                 :background-color (:card-background colors)
                                  :border-bottom-width 1
-                                 :border-bottom-color "#F0F0F0"}}
-             [:> rn/Text {:style {:font-size 18 :color "#34C759" :margin-right 8}} "✓"]
-             [:> rn/Text {:style {:font-size 16 :color "#000" :flex 1}}
+                                 :border-bottom-color (:separator colors)}}
+             [:> rn/Text {:style {:font-size 18 :color (:success colors) :margin-right 8}} "✓"]
+             [:> rn/Text {:style {:font-size 16 :color (:text-primary colors) :flex 1}}
               "API Key Configured"]
              [:> rn/Text {:style {:font-size 14
                                   :font-family (when (= "ios" (.-OS Platform)) "Menlo")
-                                  :color "#999"}}
+                                  :color (:text-tertiary colors)}}
               (mask-api-key api-key)]]
 
             ;; Update key button (navigates to QR scanner)
             [setting-row {:label "Update Key"
                           :on-press #(when navigation (.navigate navigation "QRScanner"))
-                          :accessory [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "📷"]}]
+                          :accessory [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "📷"]}]
 
             ;; Delete key button
             [setting-row {:label "Delete Key"
@@ -332,7 +342,7 @@
                                                         {:text "Delete"
                                                          :style "destructive"
                                                          :onPress #(rf/dispatch [:auth/disconnect])}])))
-                          :accessory [:> rn/Text {:style {:font-size 16 :color "#FF3B30"}} "🗑"]}]]
+                          :accessory [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}} "🗑"]}]]
 
            ;; Key not configured - show warning and entry options
            [:<>
@@ -341,29 +351,29 @@
                                  :align-items "center"
                                  :padding-horizontal 16
                                  :padding-vertical 14
-                                 :background-color "#FFFFFF"
+                                 :background-color (:card-background colors)
                                  :border-bottom-width 1
-                                 :border-bottom-color "#F0F0F0"}}
-             [:> rn/Text {:style {:font-size 18 :color "#FF9500" :margin-right 8}} "⚠️"]
-             [:> rn/Text {:style {:font-size 16 :color "#000"}}
+                                 :border-bottom-color (:separator colors)}}
+             [:> rn/Text {:style {:font-size 18 :color (:warning colors) :margin-right 8}} "⚠️"]
+             [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
               "API Key Required"]]
 
             ;; Scan QR button
             [setting-row {:label "Scan QR Code"
                           :on-press #(when navigation (.navigate navigation "QRScanner"))
-                          :accessory [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "📷"]}]
+                          :accessory [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "📷"]}]
 
             ;; Manual entry field with real-time validation
-            [:> rn/View {:style {:background-color "#FFFFFF"
+            [:> rn/View {:style {:background-color (:card-background colors)
                                  :border-bottom-width 1
-                                 :border-bottom-color "#F0F0F0"
+                                 :border-bottom-color (:separator colors)
                                  :padding-horizontal 16
                                  :padding-top 10
                                  :padding-bottom (if has-input? 0 10)}}
              [:> rn/TextInput
               {:style {:font-size 14
                        :font-family (when (= "ios" (.-OS Platform)) "Menlo")
-                       :color "#000"
+                       :color (:text-primary colors)
                        :padding-vertical 8
                        :border-width 1
                        :border-color input-border-color
@@ -371,6 +381,7 @@
                        :padding-horizontal 12}
                :value current-input
                :placeholder "Paste API key (untethered-...)"
+               :placeholder-text-color (:text-placeholder colors)
                :on-change-text #(reset! api-key-input %)
                :auto-capitalize "none"
                :auto-correct false
@@ -384,7 +395,7 @@
                [:> rn/TouchableOpacity
                 {:style {:margin-top 4
                          :margin-bottom 10
-                         :background-color (if valid? "#007AFF" "#CCC")
+                         :background-color (if valid? (:accent colors) (:disabled colors))
                          :padding-vertical 10
                          :border-radius 8
                          :align-items "center"}
@@ -399,16 +410,17 @@
             ;; Help text
             [:> rn/View {:style {:padding-horizontal 16
                                  :padding-vertical 8
-                                 :background-color "#FFFFFF"
+                                 :background-color (:card-background colors)
                                  :border-bottom-width 1
-                                 :border-bottom-color "#F0F0F0"}}
-             [:> rn/Text {:style {:font-size 12 :color "#666"}}
+                                 :border-bottom-color (:separator colors)}}
+             [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
               "Run 'make show-key-qr' on your server to display the QR code"]]])]))))
 
 (defn- server-settings-section
   "Server URL and port configuration."
   []
-  (let [settings @(rf/subscribe [:settings/all])]
+  (let [colors (theme/use-theme-colors)
+        settings @(rf/subscribe [:settings/all])]
     [:> rn/View
      [section-header "Server Configuration"]
      [text-input-row {:label "Server Address"
@@ -422,10 +434,10 @@
                       :on-change #(rf/dispatch [:settings/save :server-port (js/parseInt %)])}]
      [:> rn/View {:style {:padding-horizontal 16
                           :padding-vertical 8
-                          :background-color "#FFFFFF"
+                          :background-color (:card-background colors)
                           :border-bottom-width 1
-                          :border-bottom-color "#F0F0F0"}}
-      [:> rn/Text {:style {:font-size 12 :color "#666"}}
+                          :border-bottom-color (:separator colors)}}
+      [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
        (str "Full URL: ws://" (:server-url settings) ":" (:server-port settings))]]]))
 
 (defn- voice-settings-section
@@ -433,7 +445,8 @@
   []
   (let [picker-visible? (r/atom false)]
     (fn []
-      (let [settings @(rf/subscribe [:settings/all])
+      (let [colors (theme/use-theme-colors)
+            settings @(rf/subscribe [:settings/all])
             previewing? @(rf/subscribe [:ui/previewing-voice?])
             voice-id (:voice-identifier settings)
             ;; Get selected voice name from available voices
@@ -449,18 +462,18 @@
                        :on-press #(reset! picker-visible? true)}]
          [:> rn/View {:style {:padding-horizontal 16
                               :padding-bottom 8
-                              :background-color "#FFFFFF"
+                              :background-color (:card-background colors)
                               :border-bottom-width 1
-                              :border-bottom-color "#F0F0F0"}}
-          [:> rn/Text {:style {:font-size 12 :color "#666"}}
+                              :border-bottom-color (:separator colors)}}
+          [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
            "Premium voices require download in Settings → Accessibility → Spoken Content → Voices"]]
          [setting-row {:label "Preview Voice"
                        :disabled? previewing?
                        :on-press #(rf/dispatch [:settings/preview-voice])
                        :accessory [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
                                    (if previewing?
-                                     [:> rn/ActivityIndicator {:size "small" :color "#007AFF"}]
-                                     [:> rn/Text {:style {:font-size 16 :color "#007AFF"}}
+                                     [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
+                                     [:> rn/Text {:style {:font-size 16 :color (:accent colors)}}
                                       "▶"])]}]
          ;; Voice picker modal
          [voice-picker-modal {:visible @picker-visible?
@@ -521,7 +534,8 @@
 (defn- resources-section
   "Resource storage configuration."
   []
-  (let [settings @(rf/subscribe [:settings/all])]
+  (let [colors (theme/use-theme-colors)
+        settings @(rf/subscribe [:settings/all])]
     [:> rn/View
      [section-header "Resources"]
      [text-input-row {:label "Storage Location"
@@ -530,10 +544,10 @@
                       :on-change #(rf/dispatch [:settings/save :resource-storage-location %])}]
      [:> rn/View {:style {:padding-horizontal 16
                           :padding-bottom 8
-                          :background-color "#FFFFFF"
+                          :background-color (:card-background colors)
                           :border-bottom-width 1
-                          :border-bottom-color "#F0F0F0"}}
-      [:> rn/Text {:style {:font-size 12 :color "#666"}}
+                          :border-bottom-color (:separator colors)}}
+      [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
        "Directory where uploaded files will be saved on the backend"]]]))
 
 (defn- message-size-section
@@ -554,7 +568,8 @@
 (defn- system-prompt-section
   "Custom system prompt configuration."
   []
-  (let [settings @(rf/subscribe [:settings/all])]
+  (let [colors (theme/use-theme-colors)
+        settings @(rf/subscribe [:settings/all])]
     [:> rn/View
      [section-header "System Prompt"]
      [text-input-row {:label "Custom System Prompt"
@@ -564,16 +579,17 @@
                       :on-change #(rf/dispatch [:settings/save :system-prompt %])}]
      [:> rn/View {:style {:padding-horizontal 16
                           :padding-bottom 8
-                          :background-color "#FFFFFF"
+                          :background-color (:card-background colors)
                           :border-bottom-width 1
-                          :border-bottom-color "#F0F0F0"}}
-      [:> rn/Text {:style {:font-size 12 :color "#666"}}
+                          :border-bottom-color (:separator colors)}}
+      [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
        "Optional instructions to append to Claude's system prompt on every message. Leave empty to use default behavior."]]]))
 
 (defn- connection-test-section
   "Connection test button and results."
   []
-  (let [testing? @(rf/subscribe [:ui/testing-connection?])
+  (let [colors (theme/use-theme-colors)
+        testing? @(rf/subscribe [:ui/testing-connection?])
         result @(rf/subscribe [:ui/connection-test-result])]
     [:> rn/View
      [section-header "Connection Test"]
@@ -583,61 +599,63 @@
                    :accessory [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
                                (cond
                                  testing?
-                                 [:> rn/ActivityIndicator {:size "small" :color "#007AFF"}]
+                                 [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
 
                                  (some? result)
                                  [:> rn/Text {:style {:font-size 16
-                                                      :color (if (:success result) "#34C759" "#FF3B30")}}
+                                                      :color (if (:success result) (:success colors) (:destructive colors))}}
                                   (if (:success result) "✓" "✕")]
 
                                  :else
-                                 [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "→"])]}]
+                                 [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "→"])]}]
      (when result
        [:> rn/View {:style {:padding-horizontal 16
                             :padding-vertical 8
-                            :background-color "#FFFFFF"
+                            :background-color (:card-background colors)
                             :border-bottom-width 1
-                            :border-bottom-color "#F0F0F0"}}
+                            :border-bottom-color (:separator colors)}}
         [:> rn/Text {:style {:font-size 12
-                             :color (if (:success result) "#34C759" "#FF3B30")}}
+                             :color (if (:success result) (:success colors) (:destructive colors))}}
          (:message result)]])]))
 
 (defn- account-section
   "Account and authentication actions."
   []
-  [:> rn/View
-   [section-header "Account"]
-   [setting-row {:label "Disconnect"
-                 :on-press (fn []
-                             (.alert Alert
-                                     "Disconnect"
-                                     "Are you sure you want to disconnect? Your API key will be deleted."
-                                     (clj->js [{:text "Cancel" :style "cancel"}
-                                               {:text "Disconnect"
-                                                :style "destructive"
-                                                :onPress #(rf/dispatch [:auth/disconnect])}])))
-                 :accessory [:> rn/Text {:style {:font-size 16 :color "#FF3B30"}}
-                             "Disconnect"]}]])
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/View
+     [section-header "Account"]
+     [setting-row {:label "Disconnect"
+                   :on-press (fn []
+                               (.alert Alert
+                                       "Disconnect"
+                                       "Are you sure you want to disconnect? Your API key will be deleted."
+                                       (clj->js [{:text "Cancel" :style "cancel"}
+                                                 {:text "Disconnect"
+                                                  :style "destructive"
+                                                  :onPress #(rf/dispatch [:auth/disconnect])}])))
+                   :accessory [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}}
+                               "Disconnect"]}]]))
 
 (defn- help-section
   "Help information."
   []
-  [:> rn/View
-   [section-header "Help"]
-   [:> rn/View {:style {:background-color "#FFFFFF"
-                        :padding 16
-                        :border-bottom-width 1
-                        :border-bottom-color "#F0F0F0"}}
-    [:> rn/Text {:style {:font-size 14 :font-weight "600" :margin-bottom 8}}
-     "Server Setup"]
-    [:> rn/Text {:style {:font-size 13 :color "#666" :margin-bottom 4}}
-     "1. Start the backend server on your computer"]
-    [:> rn/Text {:style {:font-size 13 :color "#666" :margin-bottom 4}}
-     "2. Find your server's IP address"]
-    [:> rn/Text {:style {:font-size 13 :color "#666" :margin-bottom 4}}
-     "3. Enter that IP address above (e.g., 192.168.1.100)"]
-    [:> rn/Text {:style {:font-size 13 :color "#666"}}
-     "4. Make sure your server is running on the specified port"]]])
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/View
+     [section-header "Help"]
+     [:> rn/View {:style {:background-color (:card-background colors)
+                          :padding 16
+                          :border-bottom-width 1
+                          :border-bottom-color (:separator colors)}}
+      [:> rn/Text {:style {:font-size 14 :font-weight "600" :margin-bottom 8 :color (:text-primary colors)}}
+       "Server Setup"]
+      [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors) :margin-bottom 4}}
+       "1. Start the backend server on your computer"]
+      [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors) :margin-bottom 4}}
+       "2. Find your server's IP address"]
+      [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors) :margin-bottom 4}}
+       "3. Enter that IP address above (e.g., 192.168.1.100)"]
+      [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors)}}
+       "4. Make sure your server is running on the specified port"]]]))
 
 (defn- about-section
   "App information."
@@ -654,25 +672,27 @@
 (defn- debug-section
   "Debug tools section with link to debug logs."
   [navigation]
-  [:> rn/View
-   [section-header "Debug"]
-   [setting-row {:label "Debug Logs"
-                 :on-press #(when navigation (.navigate navigation "DebugLogs"))
-                 :accessory [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "→"]}]
-   [:> rn/View {:style {:padding-horizontal 16
-                        :padding-bottom 8
-                        :background-color "#FFFFFF"
-                        :border-bottom-width 1
-                        :border-bottom-color "#F0F0F0"}}
-    [:> rn/Text {:style {:font-size 12 :color "#666"}}
-     "View captured console logs for debugging"]]])
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/View
+     [section-header "Debug"]
+     [setting-row {:label "Debug Logs"
+                   :on-press #(when navigation (.navigate navigation "DebugLogs"))
+                   :accessory [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "→"]}]
+     [:> rn/View {:style {:padding-horizontal 16
+                          :padding-bottom 8
+                          :background-color (:card-background colors)
+                          :border-bottom-width 1
+                          :border-bottom-color (:separator colors)}}
+      [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
+       "View captured console logs for debugging"]]]))
 
 (defn settings-view
   "Main settings screen with full feature parity to iOS SettingsView.
    Props is a ClojureScript map (converted by r/reactify-component)."
   [props]
-  (let [navigation (:navigation props)]
-    [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
+  (let [navigation (:navigation props)
+        colors (theme/use-theme-colors)]
+    [:> rn/SafeAreaView {:style {:flex 1 :background-color (:background-grouped colors)}}
      [:> rn/ScrollView {:content-container-style {:padding-bottom 40}}
       [connection-status-section]
       [api-key-section navigation]

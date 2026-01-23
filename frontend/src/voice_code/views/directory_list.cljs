@@ -7,6 +7,7 @@
             [clojure.string :as str]
             [voice-code.views.components :refer [relative-time-text]]
             [voice-code.haptic :as haptic]
+            [voice-code.theme :as theme]
             [voice-code.utils :as utils]))
 
 (defn- format-relative-time
@@ -34,19 +35,20 @@
 (defn- unread-badge
   "Badge showing unread message count."
   [count]
-  (when (and count (pos? count))
-    [:> rn/View {:style {:min-width 20
-                         :height 20
-                         :border-radius 10
-                         :background-color "#007AFF"
-                         :justify-content "center"
-                         :align-items "center"
-                         :padding-horizontal 6
-                         :margin-left 8}}
-     [:> rn/Text {:style {:color "#FFF"
-                          :font-size 12
-                          :font-weight "600"}}
-      (if (> count 99) "99+" (str count))]]))
+  (let [colors (theme/use-theme-colors)]
+    (when (and count (pos? count))
+      [:> rn/View {:style {:min-width 20
+                           :height 20
+                           :border-radius 10
+                           :background-color (:accent colors)
+                           :justify-content "center"
+                           :align-items "center"
+                           :padding-horizontal 6
+                           :margin-left 8}}
+       [:> rn/Text {:style {:color "#FFF"
+                            :font-size 12
+                            :font-weight "600"}}
+        (if (> count 99) "99+" (str count))]])))
 
 (defn- copy-to-clipboard!
   "Copy text to clipboard with haptic feedback."
@@ -59,49 +61,50 @@
   "Single directory item in the list.
    Long-press shows context menu to copy directory path."
   [{:keys [directory session-count last-modified unread-count on-press]}]
-  [:> rn/TouchableOpacity
-   {:style {:padding-horizontal 16
-            :padding-vertical 14
-            :border-bottom-width 1
-            :border-bottom-color "#F0F0F0"
-            :background-color "#FFFFFF"}
-    :on-press on-press
-    :on-long-press (fn []
-                     (.alert Alert
-                             (directory-name directory)
-                             "Directory actions"
-                             (clj->js [{:text "Copy Directory Path"
-                                        :onPress #(do (copy-to-clipboard! directory)
-                                                      (.alert Alert "Copied" "Directory path copied to clipboard"))}
-                                       {:text "Cancel" :style "cancel"}])))
-    :active-opacity 0.7}
-   [:> rn/View {:style {:flex-direction "row"
-                        :justify-content "space-between"
-                        :align-items "flex-start"}}
-    [:> rn/View {:style {:flex 1 :margin-right 12}}
-     ;; Directory name with optional unread badge
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/TouchableOpacity
+     {:style {:padding-horizontal 16
+              :padding-vertical 14
+              :border-bottom-width 1
+              :border-bottom-color (:separator colors)
+              :background-color (:card-background colors)}
+      :on-press on-press
+      :on-long-press (fn []
+                       (.alert Alert
+                               (directory-name directory)
+                               "Directory actions"
+                               (clj->js [{:text "Copy Directory Path"
+                                          :onPress #(do (copy-to-clipboard! directory)
+                                                        (.alert Alert "Copied" "Directory path copied to clipboard"))}
+                                         {:text "Cancel" :style "cancel"}])))
+      :active-opacity 0.7}
      [:> rn/View {:style {:flex-direction "row"
-                          :align-items "center"
-                          :margin-bottom 4}}
-      [:> rn/Text {:style {:font-size 17
-                           :font-weight (if (and unread-count (pos? unread-count)) "700" "600")
-                           :color "#000"}}
-       (directory-name directory)]
-      [unread-badge unread-count]]
-     ;; Full path
-     [:> rn/Text {:style {:font-size 13
-                          :color "#666"
-                          :margin-bottom 2}
-                  :number-of-lines 1}
-      directory]
-     ;; Session count
-     [:> rn/Text {:style {:font-size 12 :color "#999"}}
-      (str session-count " session" (when (not= session-count 1) "s"))]]
+                          :justify-content "space-between"
+                          :align-items "flex-start"}}
+      [:> rn/View {:style {:flex 1 :margin-right 12}}
+       ;; Directory name with optional unread badge
+       [:> rn/View {:style {:flex-direction "row"
+                            :align-items "center"
+                            :margin-bottom 4}}
+        [:> rn/Text {:style {:font-size 17
+                             :font-weight (if (and unread-count (pos? unread-count)) "700" "600")
+                             :color (:text-primary colors)}}
+         (directory-name directory)]
+        [unread-badge unread-count]]
+       ;; Full path
+       [:> rn/Text {:style {:font-size 13
+                            :color (:text-secondary colors)
+                            :margin-bottom 2}
+                    :number-of-lines 1}
+        directory]
+       ;; Session count
+       [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors)}}
+        (str session-count " session" (when (not= session-count 1) "s"))]]
 
-    ;; Last modified time - auto-updating
-    [relative-time-text {:timestamp last-modified
-                         :style {:font-size 12
-                                 :color "#999"}}]]])
+      ;; Last modified time - auto-updating
+      [relative-time-text {:timestamp last-modified
+                           :style {:font-size 12
+                                   :color (:text-tertiary colors)}}]]]))
 
 (defn- session-name
   "Get display name for a session."
@@ -114,15 +117,16 @@
   "Single recent session item.
    Long-press shows context menu with copy options."
   [{:keys [session on-press]}]
-  (let [unread-count (get session :unread-count 0)
+  (let [colors (theme/use-theme-colors)
+        unread-count (get session :unread-count 0)
         session-id (str (:id session))
         working-directory (:working-directory session)]
     [:> rn/TouchableOpacity
      {:style {:padding-horizontal 16
               :padding-vertical 12
               :border-bottom-width 1
-              :border-bottom-color "#F0F0F0"
-              :background-color "#FFFFFF"}
+              :border-bottom-color (:separator colors)
+              :background-color (:card-background colors)}
       :on-press on-press
       :on-long-press (fn []
                        (.alert Alert
@@ -146,38 +150,40 @@
                             :margin-bottom 2}}
         [:> rn/Text {:style {:font-size 15
                              :font-weight (if (pos? unread-count) "600" "500")
-                             :color "#000"}}
+                             :color (:text-primary colors)}}
          (session-name session)]
         [unread-badge unread-count]]
        ;; Directory name (last component)
        [:> rn/Text {:style {:font-size 12
-                            :color "#666"}
+                            :color (:text-secondary colors)}
                     :number-of-lines 1}
         (directory-name (:working-directory session))]]
       ;; Timestamp - auto-updating
       [relative-time-text {:timestamp (:last-modified session)
-                           :style {:font-size 12 :color "#999"}}]]]))
+                           :style {:font-size 12 :color (:text-tertiary colors)}}]]]))
 
 (defn- priority-tint-color
-  "Get background color based on priority level (like iOS)."
-  [priority]
+  "Get background color based on priority level (like iOS).
+   Takes colors map from theme to use appropriate accent color."
+  [colors priority]
   (case priority
-    1 "rgba(0, 122, 255, 0.18)" ; High - darker blue tint
-    5 "rgba(0, 122, 255, 0.10)" ; Medium - lighter blue tint
+    1 (str (:accent colors) "2E") ; High - darker accent tint (~18% opacity)
+    5 (str (:accent colors) "1A") ; Medium - lighter accent tint (~10% opacity)
     "transparent")) ; Low (10) or default - no tint
 
 (defn- queue-session-item
   "Single session item in the queue section.
    Long-press shows context menu with copy options."
   [{:keys [session on-press on-remove]}]
-  (let [unread-count (get session :unread-count 0)
+  (let [colors (theme/use-theme-colors)
+        unread-count (get session :unread-count 0)
         session-id (str (:id session))
         working-directory (:working-directory session)]
     [:> rn/View {:style {:flex-direction "row"
                          :align-items "center"
-                         :background-color "#FFFFFF"
+                         :background-color (:card-background colors)
                          :border-bottom-width 1
-                         :border-bottom-color "#F0F0F0"}}
+                         :border-bottom-color (:separator colors)}}
      [:> rn/TouchableOpacity
       {:style {:flex 1
                :padding-horizontal 16
@@ -205,44 +211,45 @@
                              :margin-bottom 2}}
          [:> rn/Text {:style {:font-size 15
                               :font-weight (if (pos? unread-count) "600" "500")
-                              :color "#000"}}
+                              :color (:text-primary colors)}}
           (session-name session)]
          [unread-badge unread-count]]
         ;; Directory name (last component)
         [:> rn/Text {:style {:font-size 12
-                             :color "#666"}
+                             :color (:text-secondary colors)}
                      :number-of-lines 1}
          (directory-name (:working-directory session))]]
        ;; Timestamp - auto-updating
        [relative-time-text {:timestamp (:last-modified session)
-                            :style {:font-size 12 :color "#999"}}]]]
+                            :style {:font-size 12 :color (:text-tertiary colors)}}]]]
      ;; Remove button
      (when on-remove
        [:> rn/TouchableOpacity
         {:style {:padding 12
                  :justify-content "center"}
          :on-press on-remove}
-        [:> rn/Text {:style {:font-size 18 :color "#FF3B30"}} "✕"]])]))
+        [:> rn/Text {:style {:font-size 18 :color (:destructive colors)}} "✕"]])]))
 
 (defn- priority-queue-session-item
   "Single session item in the priority queue section with priority tinting.
    Long-press shows context menu with copy options."
   [{:keys [session on-press on-remove]}]
-  (let [unread-count (get session :unread-count 0)
+  (let [colors (theme/use-theme-colors)
+        unread-count (get session :unread-count 0)
         priority (or (:priority session) 10)
-        tint-color (priority-tint-color priority)
+        tint-color (priority-tint-color colors priority)
         session-id (str (:id session))
         working-directory (:working-directory session)]
     [:> rn/View {:style {:flex-direction "row"
                          :align-items "center"
                          :background-color tint-color
                          :border-bottom-width 1
-                         :border-bottom-color "#F0F0F0"}}
+                         :border-bottom-color (:separator colors)}}
      ;; Drag handle placeholder (visual indicator)
      [:> rn/View {:style {:padding-left 12
                           :padding-vertical 12
                           :justify-content "center"}}
-      [:> rn/Text {:style {:font-size 16 :color "#999"}} "☰"]]
+      [:> rn/Text {:style {:font-size 16 :color (:text-tertiary colors)}} "☰"]]
      [:> rn/TouchableOpacity
       {:style {:flex 1
                :padding-horizontal 8
@@ -270,14 +277,14 @@
                              :margin-bottom 2}}
          [:> rn/Text {:style {:font-size 15
                               :font-weight (if (pos? unread-count) "600" "500")
-                              :color "#000"}}
+                              :color (:text-primary colors)}}
           (session-name session)]
          [unread-badge unread-count]
          ;; Priority indicator
          [:> rn/Text {:style {:font-size 10
-                              :color "#666"
+                              :color (:text-secondary colors)
                               :margin-left 8
-                              :background-color (if (= priority 1) "#E3F2FD" "#F5F5F5")
+                              :background-color (if (= priority 1) (:accent-background colors) (:fill-tertiary colors))
                               :padding-horizontal 6
                               :padding-vertical 2
                               :border-radius 4}}
@@ -287,46 +294,47 @@
             "LOW")]]
         ;; Directory name (last component)
         [:> rn/Text {:style {:font-size 12
-                             :color "#666"}
+                             :color (:text-secondary colors)}
                      :number-of-lines 1}
          (directory-name (:working-directory session))]]
        ;; Timestamp - auto-updating
        [relative-time-text {:timestamp (:last-modified session)
-                            :style {:font-size 12 :color "#999"}}]]]
+                            :style {:font-size 12 :color (:text-tertiary colors)}}]]]
      ;; Remove button
      (when on-remove
        [:> rn/TouchableOpacity
         {:style {:padding 12
                  :justify-content "center"}
          :on-press on-remove}
-        [:> rn/Text {:style {:font-size 18 :color "#FF3B30"}} "✕"]])]))
+        [:> rn/Text {:style {:font-size 18 :color (:destructive colors)}} "✕"]])]))
 
 (defn- section-header
   "Collapsible section header."
   [{:keys [title expanded? on-toggle count]}]
-  [:> rn/TouchableOpacity
-   {:style {:flex-direction "row"
-            :align-items "center"
-            :justify-content "space-between"
-            :padding-horizontal 16
-            :padding-vertical 10
-            :background-color "#F0F0F0"}
-    :on-press on-toggle
-    :active-opacity 0.7}
-   [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-    [:> rn/Text {:style {:font-size 13
-                         :font-weight "600"
-                         :color "#666"
-                         :text-transform "uppercase"
-                         :letter-spacing 0.5}}
-     title]
-    (when (and count (pos? count))
-      [:> rn/Text {:style {:font-size 12
-                           :color "#999"
-                           :margin-left 8}}
-       (str "(" count ")")])]
-   [:> rn/Text {:style {:font-size 14 :color "#999"}}
-    (if expanded? "▼" "▶")]])
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/TouchableOpacity
+     {:style {:flex-direction "row"
+              :align-items "center"
+              :justify-content "space-between"
+              :padding-horizontal 16
+              :padding-vertical 10
+              :background-color (:separator colors)}
+      :on-press on-toggle
+      :active-opacity 0.7}
+     [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+      [:> rn/Text {:style {:font-size 13
+                           :font-weight "600"
+                           :color (:text-secondary colors)
+                           :text-transform "uppercase"
+                           :letter-spacing 0.5}}
+       title]
+      (when (and count (pos? count))
+        [:> rn/Text {:style {:font-size 12
+                             :color (:text-tertiary colors)
+                             :margin-left 8}}
+         (str "(" count ")")])]
+     [:> rn/Text {:style {:font-size 14 :color (:text-tertiary colors)}}
+      (if expanded? "▼" "▶")]]))
 
 (defn- recent-sessions-section
   "Collapsible recent sessions section."
@@ -400,66 +408,69 @@
 (defn- empty-state
   "Shown when there are no directories/sessions."
   []
-  [:> rn/View {:style {:flex 1
-                       :justify-content "center"
-                       :align-items "center"
-                       :padding 40}}
-   [:> rn/Text {:style {:font-size 18
-                        :font-weight "600"
-                        :color "#333"
-                        :margin-bottom 8}}
-    "No Projects Yet"]
-   [:> rn/Text {:style {:font-size 14
-                        :color "#666"
-                        :text-align "center"}}
-    "Sessions will appear here grouped by their working directory."]])
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/View {:style {:flex 1
+                         :justify-content "center"
+                         :align-items "center"
+                         :padding 40}}
+     [:> rn/Text {:style {:font-size 18
+                          :font-weight "600"
+                          :color (:text-primary colors)
+                          :margin-bottom 8}}
+      "No Projects Yet"]
+     [:> rn/Text {:style {:font-size 14
+                          :color (:text-secondary colors)
+                          :text-align "center"}}
+      "Sessions will appear here grouped by their working directory."]]))
 
 (defn- configure-server-state
   "Shown when server is not yet configured (first-run experience)."
   [navigation]
-  [:> rn/View {:style {:flex 1
-                       :justify-content "center"
-                       :align-items "center"
-                       :padding 40}}
-   [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "🔧"]
-   [:> rn/Text {:style {:font-size 22
-                        :font-weight "700"
-                        :color "#333"
-                        :margin-bottom 8
-                        :text-align "center"}}
-    "Welcome to Untethered"]
-   [:> rn/Text {:style {:font-size 15
-                        :color "#666"
-                        :text-align "center"
-                        :margin-bottom 24
-                        :line-height 22}}
-    "Connect to your backend server to get started. You'll need your server URL and API key."]
-   [:> rn/TouchableOpacity
-    {:style {:background-color "#007AFF"
-             :border-radius 12
-             :padding-horizontal 32
-             :padding-vertical 14
-             :shadow-color "#007AFF"
-             :shadow-offset #js {:width 0 :height 4}
-             :shadow-opacity 0.3
-             :shadow-radius 8
-             :elevation 4}
-     :on-press #(when navigation (.navigate navigation "Settings"))}
-    [:> rn/Text {:style {:color "#FFF"
-                         :font-size 16
-                         :font-weight "600"}}
-     "Configure Server"]]
-   [:> rn/Text {:style {:font-size 12
-                        :color "#999"
-                        :text-align "center"
-                        :margin-top 24
-                        :line-height 18}}
-    "Tip: You can scan a QR code or manually enter your API key in Settings."]])
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/View {:style {:flex 1
+                         :justify-content "center"
+                         :align-items "center"
+                         :padding 40}}
+     [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "🔧"]
+     [:> rn/Text {:style {:font-size 22
+                          :font-weight "700"
+                          :color (:text-primary colors)
+                          :margin-bottom 8
+                          :text-align "center"}}
+      "Welcome to Untethered"]
+     [:> rn/Text {:style {:font-size 15
+                          :color (:text-secondary colors)
+                          :text-align "center"
+                          :margin-bottom 24
+                          :line-height 22}}
+      "Connect to your backend server to get started. You'll need your server URL and API key."]
+     [:> rn/TouchableOpacity
+      {:style {:background-color (:accent colors)
+               :border-radius 12
+               :padding-horizontal 32
+               :padding-vertical 14
+               :shadow-color (:accent colors)
+               :shadow-offset #js {:width 0 :height 4}
+               :shadow-opacity 0.3
+               :shadow-radius 8
+               :elevation 4}
+       :on-press #(when navigation (.navigate navigation "Settings"))}
+      [:> rn/Text {:style {:color "#FFF"
+                           :font-size 16
+                           :font-weight "600"}}
+       "Configure Server"]]
+     [:> rn/Text {:style {:font-size 12
+                          :color (:text-tertiary colors)
+                          :text-align "center"
+                          :margin-top 24
+                          :line-height 18}}
+      "Tip: You can scan a QR code or manually enter your API key in Settings."]]))
 
 (defn- resources-button
   "Resources button with badge for pending uploads."
   [navigation]
-  (let [pending-count @(rf/subscribe [:resources/pending-uploads])]
+  (let [colors (theme/use-theme-colors)
+        pending-count @(rf/subscribe [:resources/pending-uploads])]
     [:> rn/TouchableOpacity
      {:style {:padding 8 :margin-right 4}
       :on-press #(when navigation (.navigate navigation "Resources"))}
@@ -473,7 +484,7 @@
                              :min-width 16
                              :height 16
                              :border-radius 8
-                             :background-color "#FF3B30"
+                             :background-color (:destructive colors)
                              :justify-content "center"
                              :align-items "center"
                              :padding-horizontal 4}}
@@ -494,14 +505,15 @@
   "Combined header buttons: New Session, Stop Speech, Resources and Settings.
    Stop Speech button shows only when TTS is actively speaking."
   [navigation]
-  (let [speaking? @(rf/subscribe [:voice/speaking?])]
+  (let [colors (theme/use-theme-colors)
+        speaking? @(rf/subscribe [:voice/speaking?])]
     [:> rn/View {:style {:flex-direction "row"
                          :align-items "center"}}
      ;; New Session button
      [:> rn/TouchableOpacity
       {:style {:padding 8 :margin-right 4}
        :on-press #(.navigate navigation "NewSession")}
-      [:> rn/Text {:style {:font-size 22 :color "#007AFF"}} "+"]]
+      [:> rn/Text {:style {:font-size 22 :color (:accent colors)}} "+"]]
      ;; Stop Speech button - only shown when TTS is speaking
      (when speaking?
        [:> rn/TouchableOpacity
@@ -535,41 +547,42 @@
 (defn- debug-section
   "Debug section with link to debug logs view."
   [{:keys [navigation]}]
-  [:> rn/View
-   [:> rn/View {:style {:flex-direction "row"
-                        :align-items "center"
-                        :justify-content "space-between"
-                        :padding-horizontal 16
-                        :padding-vertical 10
-                        :background-color "#F0F0F0"}}
-    [:> rn/Text {:style {:font-size 13
-                         :font-weight "600"
-                         :color "#666"
-                         :text-transform "uppercase"
-                         :letter-spacing 0.5}}
-     "Debug"]]
-   [:> rn/TouchableOpacity
-    {:style {:flex-direction "row"
-             :align-items "center"
-             :padding-horizontal 16
-             :padding-vertical 14
-             :background-color "#FFFFFF"
-             :border-bottom-width 1
-             :border-bottom-color "#F0F0F0"}
-     :on-press #(when navigation (.navigate navigation "DebugLogs"))
-     :active-opacity 0.7}
-    [:> rn/Text {:style {:font-size 18
-                         :color "#FF9500"
-                         :margin-right 12}}
-     "🐞"]
-    [:> rn/View {:style {:flex 1}}
-     [:> rn/Text {:style {:font-size 16 :color "#000"}}
-      "Debug Logs"]]]
-   [:> rn/View {:style {:padding-horizontal 16
-                        :padding-vertical 8
-                        :background-color "#F5F5F5"}}
-    [:> rn/Text {:style {:font-size 12 :color "#999"}}
-     "View and copy app logs for troubleshooting"]]])
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/View
+     [:> rn/View {:style {:flex-direction "row"
+                          :align-items "center"
+                          :justify-content "space-between"
+                          :padding-horizontal 16
+                          :padding-vertical 10
+                          :background-color (:separator colors)}}
+      [:> rn/Text {:style {:font-size 13
+                           :font-weight "600"
+                           :color (:text-secondary colors)
+                           :text-transform "uppercase"
+                           :letter-spacing 0.5}}
+       "Debug"]]
+     [:> rn/TouchableOpacity
+      {:style {:flex-direction "row"
+               :align-items "center"
+               :padding-horizontal 16
+               :padding-vertical 14
+               :background-color (:card-background colors)
+               :border-bottom-width 1
+               :border-bottom-color (:separator colors)}
+       :on-press #(when navigation (.navigate navigation "DebugLogs"))
+       :active-opacity 0.7}
+      [:> rn/Text {:style {:font-size 18
+                           :color (:warning colors)
+                           :margin-right 12}}
+       "🐞"]
+      [:> rn/View {:style {:flex 1}}
+       [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
+        "Debug Logs"]]]
+     [:> rn/View {:style {:padding-horizontal 16
+                          :padding-vertical 8
+                          :background-color (:grouped-background colors)}}
+      [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors)}}
+       "View and copy app logs for troubleshooting"]]]))
 
 (def ^:private debounce-ms
   "Debounce delay for queue cache updates (matches iOS 150ms)."
@@ -628,7 +641,8 @@
 
       :reagent-render
       (fn [props]
-        (let [nav (:navigation props)
+        (let [colors (theme/use-theme-colors)
+              nav (:navigation props)
               server-configured? @(rf/subscribe [:settings/server-configured?])
               directories @(rf/subscribe [:sessions/directories])
               recent-sessions @(rf/subscribe [:sessions/recent])
@@ -646,14 +660,14 @@
                                (seq recent-sessions)
                                (seq queue-sessions)
                                (seq priority-queue-sessions))]
-          [:> rn/View {:style {:flex 1 :background-color "#F5F5F5"}}
+          [:> rn/View {:style {:flex 1 :background-color (:grouped-background colors)}}
            (cond
              ;; Loading state
              loading?
              [:> rn/View {:style {:flex 1
                                   :justify-content "center"
                                   :align-items "center"}}
-              [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]]
+              [:> rn/ActivityIndicator {:size "large" :color (:accent colors)}]]
 
              ;; First-run: Server not configured
              (not server-configured?)
@@ -673,8 +687,8 @@
                 [:> RefreshControl
                  {:refreshing (boolean refreshing?)
                   :on-refresh #(rf/dispatch [:sessions/refresh])
-                  :tint-color "#007AFF"
-                  :colors #js ["#007AFF"]}])}
+                  :tint-color (:accent colors)
+                  :colors #js [(:accent colors)]}])}
               ;; Queue section (FIFO, if enabled and has sessions)
               (when (seq queue-sessions)
                 [queue-section {:sessions queue-sessions

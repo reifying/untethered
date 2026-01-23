@@ -26,7 +26,7 @@
    :background "#FFFFFF" ; Color.systemBackground
    :background-secondary "#F2F2F7" ; Color.secondarySystemBackground
    :background-tertiary "#FFFFFF" ; Color.tertiarySystemBackground
-   :background-grouped "#F2F2F7" ; Color.systemGroupedBackground
+   :grouped-background "#F2F2F7" ; Color.systemGroupedBackground
 
    ;; Text
    :text-primary "#000000" ; Color.primary (label)
@@ -49,6 +49,12 @@
    :success "#34C759" ; Color.green
    :warning "#FF9500" ; Color.orange
    :info "#007AFF" ; Color.blue
+
+   ;; Semantic background tints (for active states)
+   :accent-background "#E8F4FD" ; Light blue tint for accent active states
+   :success-background "#E8F8E8" ; Light green tint for success active states
+   :warning-background "#FFF3CD" ; Light yellow/orange tint for warnings
+   :destructive-background "#FFE5E5" ; Light red tint for destructive states
 
    ;; Additional semantic colors
    :link "#007AFF" ; Links
@@ -87,7 +93,7 @@
    :background "#000000" ; Color.systemBackground (dark)
    :background-secondary "#1C1C1E" ; Color.secondarySystemBackground (dark)
    :background-tertiary "#2C2C2E" ; Color.tertiarySystemBackground (dark)
-   :background-grouped "#000000" ; Color.systemGroupedBackground (dark)
+   :grouped-background "#000000" ; Color.systemGroupedBackground (dark)
 
    ;; Text
    :text-primary "#FFFFFF" ; Color.primary (dark)
@@ -110,6 +116,12 @@
    :success "#30D158" ; Color.green (dark)
    :warning "#FF9F0A" ; Color.orange (dark)
    :info "#0A84FF" ; Color.blue (dark)
+
+   ;; Semantic background tints (for active states - darker versions)
+   :accent-background "#0A84FF1A" ; Dark blue tint for accent active states
+   :success-background "#30D1581A" ; Dark green tint for success active states
+   :warning-background "#FF9F0A1A" ; Dark orange tint for warnings
+   :destructive-background "#FF453A1A" ; Dark red tint for destructive states
 
    ;; Additional semantic colors
    :link "#0A84FF" ; Links (dark)

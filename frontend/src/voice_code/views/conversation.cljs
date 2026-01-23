@@ -122,32 +122,33 @@
   []
   (let [{:keys [visible? input-value on-rename]} @rename-modal-state
         trimmed-value (when input-value (clojure.string/trim input-value))
-        is-empty? (or (nil? trimmed-value) (empty? trimmed-value))]
+        is-empty? (or (nil? trimmed-value) (empty? trimmed-value))
+        colors (theme/use-theme-colors)]
     [:> Modal
      {:visible visible?
       :animation-type "slide"
       :presentation-style "pageSheet"
       :on-request-close hide-rename-modal!}
-     [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
+     [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
       ;; Header with Cancel and Save buttons
       [:> rn/View {:style {:flex-direction "row"
                            :justify-content "space-between"
                            :align-items "center"
                            :padding-horizontal 16
                            :padding-vertical 12
-                           :background-color "#FFFFFF"
+                           :background-color (:card-background colors)
                            :border-bottom-width 1
-                           :border-bottom-color "#E5E5E5"}}
+                           :border-bottom-color (:separator colors)}}
        ;; Cancel button
        [:> rn/TouchableOpacity
         {:on-press hide-rename-modal!
          :style {:padding 8}}
-        [:> rn/Text {:style {:font-size 17 :color "#007AFF"}} "Cancel"]]
+        [:> rn/Text {:style {:font-size 17 :color (:accent colors)}} "Cancel"]]
 
        ;; Title
        [:> rn/Text {:style {:font-size 17
                             :font-weight "600"
-                            :color "#000"}}
+                            :color (:text-primary colors)}}
         "Rename Session"]
 
        ;; Save button (disabled when empty)
@@ -160,21 +161,21 @@
          :style {:padding 8}}
         [:> rn/Text {:style {:font-size 17
                              :font-weight "600"
-                             :color (if is-empty? "#C7C7CC" "#007AFF")}}
+                             :color (if is-empty? (:text-tertiary colors) (:accent colors))}}
          "Save"]]]
 
       ;; Form content
       [:> rn/View {:style {:margin-top 24
-                           :background-color "#FFFFFF"
+                           :background-color (:card-background colors)
                            :border-top-width 1
-                           :border-top-color "#E5E5E5"
+                           :border-top-color (:separator colors)
                            :border-bottom-width 1
-                           :border-bottom-color "#E5E5E5"}}
+                           :border-bottom-color (:separator colors)}}
        ;; Section header
        [:> rn/View {:style {:padding-horizontal 16
                             :padding-top 8}}
         [:> rn/Text {:style {:font-size 13
-                             :color "#666"
+                             :color (:text-secondary colors)
                              :text-transform "uppercase"
                              :letter-spacing 0.5}}
          "Session Name"]]
@@ -187,12 +188,12 @@
         [:> rn/TextInput
          {:style {:flex 1
                   :font-size 17
-                  :color "#000"
+                  :color (:text-primary colors)
                   :padding-vertical 8}
           :value (or input-value "")
           :on-change-text rename-modal-input-change!
           :placeholder "Enter session name"
-          :placeholder-text-color "#C7C7CC"
+          :placeholder-text-color (:text-placeholder colors)
           :auto-capitalize "words"
           :auto-focus true
           :return-key-type "done"
@@ -209,7 +210,7 @@
            [:> rn/View {:style {:width 20
                                 :height 20
                                 :border-radius 10
-                                :background-color "#C7C7CC"
+                                :background-color (:text-tertiary colors)
                                 :justify-content "center"
                                 :align-items "center"}}
             [:> rn/Text {:style {:font-size 12
@@ -251,18 +252,19 @@
 (defn- action-button
   "Action button for message detail modal."
   [{:keys [icon label on-press color]}]
-  [:> rn/TouchableOpacity
-   {:style {:align-items "center"
-            :padding-vertical 12
-            :padding-horizontal 16
-            :min-width 80}
-    :on-press on-press
-    :active-opacity 0.7}
-   [:> rn/Text {:style {:font-size 28 :margin-bottom 6}} icon]
-   [:> rn/Text {:style {:font-size 13
-                        :color (or color "#007AFF")
-                        :font-weight "500"}}
-    label]])
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/TouchableOpacity
+     {:style {:align-items "center"
+              :padding-vertical 12
+              :padding-horizontal 16
+              :min-width 80}
+      :on-press on-press
+      :active-opacity 0.7}
+     [:> rn/Text {:style {:font-size 28 :margin-bottom 6}} icon]
+     [:> rn/Text {:style {:font-size 13
+                          :color (or color (:accent colors))
+                          :font-weight "500"}}
+      label]]))
 
 (defn message-detail-modal
   "Modal showing full message content with actions.
@@ -271,13 +273,14 @@
   (let [{:keys [visible? message session-id working-directory]} @selected-message-state
         {:keys [role text]} (or message {})
         speaking? @(rf/subscribe [:voice/speaking?])
-        is-assistant? (= role :assistant)]
+        is-assistant? (= role :assistant)
+        colors (theme/use-theme-colors)]
     [:> Modal
      {:visible visible?
       :animation-type "slide"
       :presentation-style "pageSheet"
       :on-request-close hide-message-detail!}
-     [:> rn/SafeAreaView {:style {:flex 1 :background-color "#FFFFFF"}}
+     [:> rn/SafeAreaView {:style {:flex 1 :background-color (:card-background colors)}}
       ;; Header
       [:> rn/View {:style {:flex-direction "row"
                            :justify-content "space-between"
@@ -285,22 +288,22 @@
                            :padding-horizontal 16
                            :padding-vertical 12
                            :border-bottom-width 1
-                           :border-bottom-color "#E5E5E5"}}
+                           :border-bottom-color (:separator colors)}}
        [:> rn/Text {:style {:font-size 17
                             :font-weight "600"
-                            :color "#000"}}
+                            :color (:text-primary colors)}}
         (if (= role :user) "Your Message" "Claude's Response")]
        [:> rn/TouchableOpacity
         {:on-press hide-message-detail!
          :style {:padding 8}}
-        [:> rn/Text {:style {:font-size 17 :color "#007AFF"}} "Done"]]]
+        [:> rn/Text {:style {:font-size 17 :color (:accent colors)}} "Done"]]]
 
       ;; Message content - scrollable
       [:> rn/ScrollView {:style {:flex 1}
                          :content-container-style {:padding 16}}
        [:> rn/Text {:style {:font-size 16
                             :line-height 24
-                            :color "#000"}
+                            :color (:text-primary colors)}
                     :selectable true}
         text]]
 
@@ -311,8 +314,8 @@
                            :padding-vertical 16
                            :padding-horizontal 8
                            :border-top-width 1
-                           :border-top-color "#E5E5E5"
-                           :background-color "#F9F9F9"}}
+                           :border-top-color (:separator colors)
+                           :background-color (:background-secondary colors)}}
        ;; Copy button
        [action-button
         {:icon "📋"
@@ -325,7 +328,7 @@
        [action-button
         {:icon (if speaking? "⏹" "🔊")
          :label (if speaking? "Stop" "Read Aloud")
-         :color (if speaking? "#FF3B30" "#007AFF")
+         :color (if speaking? (:destructive colors) (:accent colors))
          :on-press (fn []
                      (if speaking?
                        (rf/dispatch [:voice/stop-speaking])
@@ -483,11 +486,12 @@
   "Displays error message with copy-to-clipboard and dismiss options.
    Tapping the error text copies it to clipboard."
   []
-  (let [error @(rf/subscribe [:ui/current-error])]
+  (let [error @(rf/subscribe [:ui/current-error])
+        colors (theme/use-theme-colors)]
     (when error
-      [:> rn/View {:style {:background-color "#FFF3F3"
+      [:> rn/View {:style {:background-color (:destructive-background colors)
                            :border-width 1
-                           :border-color "#FF3B30"
+                           :border-color (:destructive colors)
                            :border-radius 8
                            :margin-horizontal 12
                            :margin-vertical 8
@@ -502,15 +506,15 @@
          :on-press (fn []
                      (copy-to-clipboard! error "Error copied")
                      (js/console.log "Error copied to clipboard"))}
-        [:> rn/Text {:style {:color "#FF3B30"
+        [:> rn/Text {:style {:color (:destructive colors)
                              :font-size 14
                              :font-weight "500"}}
          "Error"]
-        [:> rn/Text {:style {:color "#333"
+        [:> rn/Text {:style {:color (:text-primary colors)
                              :font-size 13
                              :margin-top 4}}
          error]
-        [:> rn/Text {:style {:color "#666"
+        [:> rn/Text {:style {:color (:text-secondary colors)
                              :font-size 11
                              :margin-top 4
                              :font-style "italic"}}
@@ -519,24 +523,25 @@
        [:> rn/TouchableOpacity
         {:style {:padding 4}
          :on-press #(rf/dispatch [:ui/clear-error])}
-        [:> rn/Text {:style {:font-size 18 :color "#999"}} "×"]]])))
+        [:> rn/Text {:style {:font-size 18 :color (:text-tertiary colors)}} "×"]]])))
 
 (defn- mode-toggle
   "Toggle button for switching between voice and text input modes."
   []
-  (let [voice-mode? @(rf/subscribe [:ui/voice-mode?])]
+  (let [voice-mode? @(rf/subscribe [:ui/voice-mode?])
+        colors (theme/use-theme-colors)]
     [:> rn/TouchableOpacity
      {:style {:flex-direction "row"
               :align-items "center"
               :padding-horizontal 12
               :padding-vertical 6
-              :background-color "#E8F4FD"
+              :background-color (:accent-background colors)
               :border-radius 8}
       :on-press #(rf/dispatch [:ui/toggle-input-mode])}
      [:> rn/Text {:style {:font-size 16 :margin-right 6}}
       (if voice-mode? "🎤" "⌨️")]
      [:> rn/Text {:style {:font-size 13
-                          :color "#007AFF"
+                          :color (:accent colors)
                           :font-weight "500"}}
       (if voice-mode? "Voice Mode" "Text Mode")]]))
 
@@ -546,7 +551,8 @@
   []
   (let [status @(rf/subscribe [:connection/status])
         connected? (= status :connected)
-        connecting? (= status :connecting)]
+        connecting? (= status :connecting)
+        colors (theme/use-theme-colors)]
     [:> rn/TouchableOpacity
      {:style {:flex-direction "row"
               :align-items "center"
@@ -554,9 +560,9 @@
               :padding-vertical 4
               :border-radius 12
               :background-color (cond
-                                  connecting? "#FFF3E0"
+                                  connecting? (:warning-background colors)
                                   connected? "transparent"
-                                  :else "#FFF3F3")}
+                                  :else (:destructive-background colors))}
       :active-opacity 0.7
       :on-press (when-not connecting?
                   #(rf/dispatch [:ws/force-reconnect]))}
@@ -565,16 +571,16 @@
                           :height 8
                           :border-radius 4
                           :background-color (cond
-                                              connecting? "#FF9500"
-                                              connected? "#34C759"
-                                              :else "#FF3B30")
+                                              connecting? (:warning colors)
+                                              connected? (:success colors)
+                                              :else (:destructive colors))
                           :margin-right 6}}]
      ;; Status text
      [:> rn/Text {:style {:font-size 12
                           :color (cond
-                                   connecting? "#FF9500"
-                                   connected? "#666"
-                                   :else "#FF3B30")}}
+                                   connecting? (:warning colors)
+                                   connected? (:text-secondary colors)
+                                   :else (:destructive colors))}}
       (case status
         :connected "Connected"
         :connecting "Connecting..."
@@ -589,10 +595,11 @@
         partial-result @(rf/subscribe [:voice/partial-result])
         voice-error @(rf/subscribe [:voice/error])
         locked? @(rf/subscribe [:session/locked? session-id])
-        session (when session-id @(rf/subscribe [:sessions/by-id session-id]))]
+        session (when session-id @(rf/subscribe [:sessions/by-id session-id]))
+        colors (theme/use-theme-colors)]
     [:> rn/View {:style {:border-top-width 1
-                         :border-top-color "#E5E5E5"
-                         :background-color "#FFFFFF"
+                         :border-top-color (:separator colors)
+                         :background-color (:background colors)
                          :padding-vertical 12}}
      ;; Mode toggle row
      [:> rn/View {:style {:flex-direction "row"
@@ -609,16 +616,16 @@
        [:> rn/View {:style {:margin-horizontal 16
                             :margin-bottom 12
                             :padding 12
-                            :background-color "#FFF5F5"
+                            :background-color (:destructive-background colors)
                             :border-radius 12
                             :border-width 1
-                            :border-color "#FFCDD2"}}
+                            :border-color (:destructive colors)}}
         [:> rn/View {:style {:flex-direction "row"
                              :align-items "center"
                              :margin-bottom 8}}
          [:> rn/Text {:style {:font-size 16 :margin-right 8}} "⚠️"]
          [:> rn/Text {:style {:font-size 14
-                              :color "#D32F2F"
+                              :color (:destructive colors)
                               :font-weight "500"
                               :flex 1}}
           (case (:type voice-error)
@@ -627,7 +634,7 @@
             :speak-failed "Speech playback failed"
             "Voice error occurred")]]
         [:> rn/Text {:style {:font-size 12
-                             :color "#666"
+                             :color (:text-secondary colors)
                              :margin-bottom 12}}
          (or (:message voice-error) "Please try again")]
         [:> rn/View {:style {:flex-direction "row"
@@ -635,17 +642,17 @@
          [:> rn/TouchableOpacity
           {:style {:padding-horizontal 16
                    :padding-vertical 8
-                   :background-color "#FFEBEE"
+                   :background-color (:destructive-background colors)
                    :border-radius 8
                    :margin-right 8}
            :on-press #(rf/dispatch [:voice/clear-error])}
           [:> rn/Text {:style {:font-size 13
-                               :color "#D32F2F"}}
+                               :color (:destructive colors)}}
            "Dismiss"]]
          [:> rn/TouchableOpacity
           {:style {:padding-horizontal 16
                    :padding-vertical 8
-                   :background-color "#D32F2F"
+                   :background-color (:destructive colors)
                    :border-radius 8}
            :on-press (fn []
                        (rf/dispatch [:voice/clear-error])
@@ -661,9 +668,9 @@
                             :padding-vertical 8
                             :margin-horizontal 16
                             :margin-bottom 12
-                            :background-color "#F5F5F5"
+                            :background-color (:fill-tertiary colors)
                             :border-radius 12}}
-        [:> rn/Text {:style {:font-size 14 :color "#333" :font-style "italic"}}
+        [:> rn/Text {:style {:font-size 14 :color (:text-primary colors) :font-style "italic"}}
          partial-result]])
 
      ;; Microphone button
@@ -673,12 +680,12 @@
                 :height 72
                 :border-radius 36
                 :background-color (cond
-                                    locked? "#CCC"
-                                    listening? "#FF3B30"
-                                    :else "#007AFF")
+                                    locked? (:disabled colors)
+                                    listening? (:destructive colors)
+                                    :else (:accent colors))
                 :justify-content "center"
                 :align-items "center"
-                :shadow-color "#000"
+                :shadow-color (:shadow colors)
                 :shadow-offset {:width 0 :height 2}
                 :shadow-opacity 0.25
                 :shadow-radius 4
@@ -699,17 +706,17 @@
          {:style {:margin-top 8
                   :padding-horizontal 12
                   :padding-vertical 6
-                  :background-color "#FFF3E0"
+                  :background-color (:warning-background colors)
                   :border-radius 12
                   :border-width 1
-                  :border-color "#FF9500"}
+                  :border-color (:warning colors)}
           :on-press #(rf/dispatch [:sessions/unlock session-id])}
          [:> rn/Text {:style {:font-size 12
-                              :color "#FF9500"
+                              :color (:warning colors)
                               :font-weight "500"}}
           "Tap to Unlock"]]
         [:> rn/Text {:style {:font-size 12
-                             :color (if listening? "#FF3B30" "#666")
+                             :color (if listening? (:destructive colors) (:text-secondary colors))
                              :margin-top 8}}
          (if listening?
            "Listening... Tap to stop"
@@ -925,39 +932,42 @@
   "Shown while loading conversation history.
    Matches iOS ConversationView.swift loading indicator (ProgressView + 'Loading conversation...')."
   []
-  [:> rn/View {:style {:flex 1
-                       :justify-content "center"
-                       :align-items "center"
-                       :padding-top 100}}
-   [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]
-   [:> rn/Text {:style {:font-size 14
-                        :color "#666"
-                        :margin-top 16}}
-    "Loading conversation..."]])
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/View {:style {:flex 1
+                         :justify-content "center"
+                         :align-items "center"
+                         :padding-top 100}}
+     [:> rn/ActivityIndicator {:size "large" :color (:accent colors)}]
+     [:> rn/Text {:style {:font-size 14
+                          :color (:text-secondary colors)
+                          :margin-top 16}}
+      "Loading conversation..."]]))
 
 (defn- empty-conversation
   "Shown when there are no messages."
   []
-  [:> rn/View {:style {:flex 1
-                       :justify-content "center"
-                       :align-items "center"
-                       :padding 40}}
-   [:> rn/Text {:style {:font-size 18
-                        :font-weight "600"
-                        :color "#333"
-                        :margin-bottom 8}}
-    "Start a Conversation"]
-   [:> rn/Text {:style {:font-size 14
-                        :color "#666"
-                        :text-align "center"}}
-    "Type a message below to begin chatting with Claude."]])
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/View {:style {:flex 1
+                         :justify-content "center"
+                         :align-items "center"
+                         :padding 40}}
+     [:> rn/Text {:style {:font-size 18
+                          :font-weight "600"
+                          :color (:text-primary colors)
+                          :margin-bottom 8}}
+      "Start a Conversation"]
+     [:> rn/Text {:style {:font-size 14
+                          :color (:text-secondary colors)
+                          :text-align "center"}}
+      "Type a message below to begin chatting with Claude."]]))
 
 (defn- session-not-found
   "Shown when the requested session doesn't exist (deleted or invalid ID).
    Matches iOS SessionLookupView behavior: shows error message with session ID
    and allows copying the ID to clipboard."
   [{:keys [session-id]}]
-  (let [show-toast! (fn []
+  (let [colors (theme/use-theme-colors)
+        show-toast! (fn []
                       (haptic/trigger! :success)
                       (show-copy-toast! "Session ID copied"))]
     [:> rn/View {:style {:flex 1
@@ -967,17 +977,17 @@
      [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "⚠️"]
      [:> rn/Text {:style {:font-size 20
                           :font-weight "600"
-                          :color "#333"
+                          :color (:text-primary colors)
                           :margin-bottom 8}}
       "Session Not Found"]
      [:> rn/Text {:style {:font-size 14
-                          :color "#666"
+                          :color (:text-secondary colors)
                           :text-align "center"
                           :margin-bottom 16}}
       "This session may have been deleted."]
      [:> rn/TouchableOpacity
       {:style {:padding 12
-               :background-color "#F5F5F5"
+               :background-color (:fill-tertiary colors)
                :border-radius 8}
        :on-press (fn []
                    (.setString Clipboard session-id)
@@ -986,10 +996,10 @@
                            :font-family (if (= (.-OS rn/Platform) "ios")
                                           "Menlo"
                                           "monospace")
-                           :color "#666"}}
+                           :color (:text-secondary colors)}}
        session-id]]
      [:> rn/Text {:style {:font-size 11
-                          :color "#999"
+                          :color (:text-tertiary colors)
                           :margin-top 8}}
       "Tap to copy session ID"]]))
 
@@ -1006,12 +1016,13 @@
    When a recipe is active, shows recipe label with current step and exit button.
    When no recipe is active, shows clipboard icon to navigate to Recipes screen."
   [session-id working-directory ^js navigation]
-  (let [active-recipe @(rf/subscribe [:recipes/active-for-session session-id])]
+  (let [active-recipe @(rf/subscribe [:recipes/active-for-session session-id])
+        colors (theme/use-theme-colors)]
     (if active-recipe
       ;; Active recipe: show status with step info and exit button
       [:> rn/View {:style {:flex-direction "row"
                            :align-items "center"
-                           :background-color "#E8F5E9"
+                           :background-color (:success-background colors)
                            :border-radius 8
                            :padding-horizontal 8
                            :padding-vertical 4
@@ -1025,7 +1036,7 @@
          [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
           [:> rn/Text {:style {:font-size 12 :margin-right 4}} "📋"]
           [:> rn/Text {:style {:font-size 12
-                               :color "#2E7D32"
+                               :color (:success colors)
                                :font-weight "600"
                                :max-width 100}
                        :number-of-lines 1}
@@ -1034,12 +1045,12 @@
          [:> rn/View {:style {:flex-direction "row" :align-items "center" :margin-top 2}}
           (when (:step-count active-recipe)
             [:> rn/Text {:style {:font-size 10
-                                 :color "#558B2F"
+                                 :color (:success colors)
                                  :margin-right 4}}
              (str "Step " (:step-count active-recipe))])
           (when (:current-step active-recipe)
             [:> rn/Text {:style {:font-size 10
-                                 :color "#689F38"
+                                 :color (:success colors)
                                  :max-width 80
                                  :font-style "italic"}
                          :number-of-lines 1}
@@ -1048,46 +1059,49 @@
        [:> rn/TouchableOpacity
         {:style {:margin-left 6
                  :padding 4
-                 :background-color "#FFCDD2"
+                 :background-color (:destructive-background colors)
                  :border-radius 4}
          :on-press #(rf/dispatch [:recipes/exit session-id])}
-        [:> rn/Text {:style {:font-size 10 :color "#C62828" :font-weight "600"}} "Exit"]]]
+        [:> rn/Text {:style {:font-size 10 :color (:destructive colors) :font-weight "600"}} "Exit"]]]
       ;; No active recipe: show icon to open recipes
       [:> rn/TouchableOpacity
        {:style {:padding 8}
         :on-press #(.navigate navigation "Recipes"
                               #js {:sessionId session-id
                                    :workingDirectory working-directory})}
-       [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "📝"]])))
+       [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "📝"]])))
 
 (defn- header-info-button
   "Info button for the conversation header.
    Opens SessionInfo modal."
   [session-id ^js navigation]
-  [:> rn/TouchableOpacity
-   {:style {:padding 8}
-    :on-press #(.navigate navigation "SessionInfo"
-                          #js {:sessionId session-id})}
-   [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "ℹ️"]])
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/TouchableOpacity
+     {:style {:padding 8}
+      :on-press #(.navigate navigation "SessionInfo"
+                            #js {:sessionId session-id})}
+     [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "ℹ️"]]))
 
 (defn- header-refresh-button
   "Refresh button for the conversation header."
   [session-id]
-  (let [refreshing? @(rf/subscribe [:ui/refreshing-session?])]
+  (let [refreshing? @(rf/subscribe [:ui/refreshing-session?])
+        colors (theme/use-theme-colors)]
     [:> rn/TouchableOpacity
      {:style {:padding 8}
       :disabled refreshing?
       :on-press #(rf/dispatch [:session/refresh session-id])}
      (if refreshing?
-       [:> rn/ActivityIndicator {:size "small" :color "#007AFF"}]
-       [:> rn/Text {:style {:font-size 16 :color "#007AFF"}} "↻"])]))
+       [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
+       [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "↻"])]))
 
 (defn- header-queue-remove-button
   "Remove from queue button. Only shows when queue is enabled and session is in queue.
    Displays an orange X icon matching iOS design (xmark.circle.fill)."
   [session-id]
   (let [queue-enabled? @(rf/subscribe [:settings/queue-enabled])
-        in-queue? @(rf/subscribe [:session/in-queue? session-id])]
+        in-queue? @(rf/subscribe [:session/in-queue? session-id])
+        colors (theme/use-theme-colors)]
     (when (and queue-enabled? in-queue?)
       [:> rn/TouchableOpacity
        {:style {:padding 8}
@@ -1095,7 +1109,7 @@
        [:> rn/View {:style {:width 20
                             :height 20
                             :border-radius 10
-                            :background-color "#FF9500"
+                            :background-color (:warning colors)
                             :justify-content "center"
                             :align-items "center"}}
         [:> rn/Text {:style {:font-size 12
@@ -1110,7 +1124,8 @@
    Only shows when TTS is actively speaking or paused."
   []
   (let [speaking? @(rf/subscribe [:voice/speaking?])
-        paused? @(rf/subscribe [:voice/paused?])]
+        paused? @(rf/subscribe [:voice/paused?])
+        colors (theme/use-theme-colors)]
     (when (or speaking? paused?)
       [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
        ;; Pause/Resume button
@@ -1119,19 +1134,20 @@
          :on-press #(if paused?
                       (rf/dispatch [:voice/resume-speaking])
                       (rf/dispatch [:voice/pause-speaking]))}
-        [:> rn/Text {:style {:font-size 16 :color (if paused? "#007AFF" "#FF9500")}}
+        [:> rn/Text {:style {:font-size 16 :color (if paused? (:accent colors) (:warning colors))}}
          (if paused? "▶️" "⏸️")]]
        ;; Stop button
        [:> rn/TouchableOpacity
         {:style {:padding 8}
          :on-press #(rf/dispatch [:voice/stop-speaking])}
-        [:> rn/Text {:style {:font-size 16 :color "#FF3B30"}} "⏹"]]])))
+        [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}} "⏹"]]])))
 
 (defn- header-kill-button
   "Kill button for canceling stuck prompts.
    Only shows when the session is locked (processing a prompt)."
   [session-id]
-  (let [Alert (.-Alert rn)]
+  (let [Alert (.-Alert rn)
+        colors (theme/use-theme-colors)]
     [:> rn/TouchableOpacity
      {:style {:padding 8}
       :on-press #(.alert Alert
@@ -1142,7 +1158,7 @@
                                     :style "destructive"
                                     :onPress (fn []
                                                (rf/dispatch [:session/kill session-id]))}]))}
-     [:> rn/Text {:style {:font-size 16 :color "#FF3B30"}} "⏹"]]))
+     [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}} "⏹"]]))
 
 (defn- header-compact-button
   "Compact button for compressing session history.
@@ -1152,7 +1168,8 @@
   (let [compacting? @(rf/subscribe [:ui/compacting-session? session-id])
         recently-compacted? @(rf/subscribe [:ui/session-recently-compacted? session-id])
         locked? @(rf/subscribe [:session/locked? session-id])
-        Alert (.-Alert rn)]
+        Alert (.-Alert rn)
+        colors (theme/use-theme-colors)]
     [:> rn/TouchableOpacity
      {:style {:padding 8}
       :disabled (or compacting? locked?)
@@ -1176,14 +1193,14 @@
                                        :onPress #(rf/dispatch [:session/compact session-id])}]))))}
      (cond
        compacting?
-       [:> rn/ActivityIndicator {:size "small" :color "#007AFF"}]
+       [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
 
        recently-compacted?
-       [:> rn/Text {:style {:font-size 16 :color "#34C759"}} "⚡"]
+       [:> rn/Text {:style {:font-size 16 :color (:success colors)}} "⚡"]
 
        :else
        [:> rn/Text {:style {:font-size 16
-                            :color (if locked? "#999" "#007AFF")}} "⚡"])]))
+                            :color (if locked? (:text-tertiary colors) (:accent colors))}} "⚡"])]))
 
 (defn- header-right-buttons
   "Combined header right buttons: Stop Speech, Kill (when locked), Compact, Recipe, Info, Queue Remove, Refresh."
@@ -1216,7 +1233,8 @@
   "Custom header title component that can be tapped to rename."
   [session-id ^js navigation]
   (let [session @(rf/subscribe [:sessions/by-id session-id])
-        display-name (session-display-name session)]
+        display-name (session-display-name session)
+        colors (theme/use-theme-colors)]
     [:> rn/TouchableOpacity
      {:style {:flex-direction "row"
               :align-items "center"}
@@ -1230,10 +1248,10 @@
                       (.setOptions navigation #js {:title new-name}))))}
      [:> rn/Text {:style {:font-size 17
                           :font-weight "600"
-                          :color "#000"}}
+                          :color (:text-primary colors)}}
       display-name]
      [:> rn/Text {:style {:font-size 12
-                          :color "#666"
+                          :color (:text-secondary colors)
                           :margin-left 6}}
       "✏️"]]))
 

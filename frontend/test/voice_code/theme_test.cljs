@@ -13,11 +13,12 @@
 
 (deftest light-colors-completeness-test
   (testing "light colors has all required keys"
-    (let [required-keys #{:background :background-secondary :background-tertiary :background-grouped
+    (let [required-keys #{:background :background-secondary :background-tertiary :grouped-background
                           :text-primary :text-secondary :text-tertiary :text-placeholder
                           :separator :separator-opaque
                           :fill-primary :fill-secondary :fill-tertiary
                           :accent :destructive :success :warning :info
+                          :accent-background :success-background :warning-background :destructive-background
                           :link :disabled
                           :bubble-user :bubble-user-text :bubble-assistant :bubble-assistant-text
                           :input-background :input-border :input-placeholder
@@ -30,11 +31,12 @@
 
 (deftest dark-colors-completeness-test
   (testing "dark colors has all required keys"
-    (let [required-keys #{:background :background-secondary :background-tertiary :background-grouped
+    (let [required-keys #{:background :background-secondary :background-tertiary :grouped-background
                           :text-primary :text-secondary :text-tertiary :text-placeholder
                           :separator :separator-opaque
                           :fill-primary :fill-secondary :fill-tertiary
                           :accent :destructive :success :warning :info
+                          :accent-background :success-background :warning-background :destructive-background
                           :link :disabled
                           :bubble-user :bubble-user-text :bubble-assistant :bubble-assistant-text
                           :input-background :input-border :input-placeholder
