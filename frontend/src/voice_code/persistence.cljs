@@ -7,6 +7,22 @@
             [clojure.string :as str]))
 
 ;; ============================================================================
+;; Safe EDN Reading
+;; ============================================================================
+
+(defn- safe-read-edn
+  "Safely read EDN string with error handling.
+   Returns nil and logs a warning if the string is invalid EDN.
+   This prevents corrupted storage data from crashing the app."
+  [s]
+  (when (and s (not (str/blank? s)))
+    (try
+      (edn/read-string s)
+      (catch :default e
+        (js/console.warn "Failed to parse EDN from storage:" s "Error:" e)
+        nil))))
+
+;; ============================================================================
 ;; SQLite Database (stub implementation for Node.js testing)
 ;; Real implementation requires react-native-sqlite-storage
 ;; ============================================================================
@@ -355,7 +371,7 @@
                       (let [rows (-> results .-rows)]
                         (if (> (.-length rows) 0)
                           (let [value-str (.-value (.item rows 0))]
-                            (resolve (edn/read-string value-str)))
+                            (resolve (safe-read-edn value-str)))
                           (resolve nil)))))
              (.catch (fn [error]
                        (js/console.error "Failed to load setting:" error)
@@ -381,7 +397,7 @@
                                            (for [i (range len)]
                                              (let [row (.item rows i)]
                                                [(keyword (.-key row))
-                                                (edn/read-string (.-value row))])))]
+                                                (safe-read-edn (.-value row))])))]
                         (resolve settings))))
              (.catch (fn [error]
                        (js/console.error "Failed to load settings:" error)
@@ -724,7 +740,7 @@
                                            (let [row (.item rows i)
                                                  key (.-key row)
                                                  session-id (subs key 6)] ; Remove "draft:" prefix
-                                             [session-id (edn/read-string (.-value row))])))]
+                                             [session-id (safe-read-edn (.-value row))])))]
                         (resolve drafts))))
              (.catch (fn [error]
                        (js/console.error "Failed to load drafts:" error)

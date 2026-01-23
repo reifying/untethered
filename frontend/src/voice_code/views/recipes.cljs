@@ -90,55 +90,69 @@
 
 (defn- active-recipe-banner
   "Banner showing currently active recipe with details.
-   Displays current step and progress if available."
+   Displays current step and progress if available.
+   Uses r/create-class with component-will-unmount to clean up the interval timer."
   [{:keys [name started-at current-step step-count on-stop]}]
-  (let [duration (r/atom (format-duration started-at))]
-    ;; Update duration every second
-    (js/setInterval #(reset! duration (format-duration started-at)) 1000)
-    (fn [{:keys [name started-at current-step step-count on-stop]}]
-      [:> rn/View {:style {:padding 16
-                           :background-color "#E8F5E9"
-                           :border-bottom-width 1
-                           :border-bottom-color "#A5D6A7"}}
-       [:> rn/View {:style {:flex-direction "row"
-                            :align-items "center"
-                            :margin-bottom 8}}
-        [:> rn/ActivityIndicator {:size "small" :color "#2E7D32"}]
-        [:> rn/Text {:style {:font-size 16
-                             :font-weight "600"
-                             :color "#2E7D32"
-                             :margin-left 8}}
-         "Recipe Running"]]
-       [:> rn/View {:style {:flex-direction "row"
-                            :justify-content "space-between"
-                            :align-items "center"}}
-        [:> rn/View {:style {:flex 1 :margin-right 12}}
-         [:> rn/Text {:style {:font-size 15
-                              :color "#333"}}
-          name]
-         ;; Show current step if available
-         (when current-step
+  (let [duration (r/atom (format-duration started-at))
+        interval-id (atom nil)]
+    (r/create-class
+     {:component-did-mount
+      (fn [_]
+        ;; Update duration every second
+        (reset! interval-id (js/setInterval #(reset! duration (format-duration started-at)) 1000)))
+
+      :component-will-unmount
+      (fn [_]
+        ;; Clean up interval to prevent memory leak
+        (when @interval-id
+          (js/clearInterval @interval-id)
+          (reset! interval-id nil)))
+
+      :reagent-render
+      (fn [{:keys [name started-at current-step step-count on-stop]}]
+        [:> rn/View {:style {:padding 16
+                             :background-color "#E8F5E9"
+                             :border-bottom-width 1
+                             :border-bottom-color "#A5D6A7"}}
+         [:> rn/View {:style {:flex-direction "row"
+                              :align-items "center"
+                              :margin-bottom 8}}
+          [:> rn/ActivityIndicator {:size "small" :color "#2E7D32"}]
+          [:> rn/Text {:style {:font-size 16
+                               :font-weight "600"
+                               :color "#2E7D32"
+                               :margin-left 8}}
+           "Recipe Running"]]
+         [:> rn/View {:style {:flex-direction "row"
+                              :justify-content "space-between"
+                              :align-items "center"}}
+          [:> rn/View {:style {:flex 1 :margin-right 12}}
+           [:> rn/Text {:style {:font-size 15
+                                :color "#333"}}
+            name]
+           ;; Show current step if available
+           (when current-step
+             [:> rn/Text {:style {:font-size 13
+                                  :color "#2E7D32"
+                                  :font-weight "500"
+                                  :margin-top 4}}
+              (if step-count
+                (str "Step: " current-step " of " step-count)
+                (str "Step: " current-step))])
            [:> rn/Text {:style {:font-size 13
-                                :color "#2E7D32"
+                                :color "#666"
+                                :margin-top 2}}
+            (str "Running for " @duration)]]
+          [:> rn/TouchableOpacity
+           {:style {:padding-horizontal 16
+                    :padding-vertical 8
+                    :background-color "#FFCDD2"
+                    :border-radius 6}
+            :on-press on-stop}
+           [:> rn/Text {:style {:font-size 14
                                 :font-weight "500"
-                                :margin-top 4}}
-            (if step-count
-              (str "Step: " current-step " of " step-count)
-              (str "Step: " current-step))])
-         [:> rn/Text {:style {:font-size 13
-                              :color "#666"
-                              :margin-top 2}}
-          (str "Running for " @duration)]]
-        [:> rn/TouchableOpacity
-         {:style {:padding-horizontal 16
-                  :padding-vertical 8
-                  :background-color "#FFCDD2"
-                  :border-radius 6}
-          :on-press on-stop}
-         [:> rn/Text {:style {:font-size 14
-                              :font-weight "500"
-                              :color "#C62828"}}
-          "Stop"]]]])))
+                                :color "#C62828"}}
+            "Stop"]]]])})))
 
 (defn- section-header
   "Section header for recipe groups."
