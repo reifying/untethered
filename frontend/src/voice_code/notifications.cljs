@@ -11,10 +11,22 @@
 (def ^:private dismiss-action-id "DISMISS_ACTION")
 (def ^:private category-id "CLAUDE_RESPONSE_CATEGORY")
 
+;; Memory management constants to prevent unbounded growth of pending-responses
+(def ^:private pending-response-ttl-ms
+  "Time-to-live for pending responses: 1 hour.
+   Notifications not interacted with within this time are cleaned up."
+  (* 60 60 1000))
+
+(def ^:private max-pending-responses
+  "Maximum number of pending responses to keep.
+   When exceeded, oldest entries are removed."
+  50)
+
 ;; Track app state for background detection
 (defonce ^:private app-state-atom (atom "active"))
 
-;; Store pending responses for action handling (notification-id -> response-text)
+;; Store pending responses for action handling (notification-id -> {:text string :working-directory string :timestamp js/Date})
+;; Note: Includes timestamp for TTL-based cleanup to prevent unbounded memory growth
 (defonce ^:private pending-responses (atom {}))
 
 ;; Notification module reference (lazy loaded)
@@ -41,11 +53,43 @@
   []
   (not= @app-state-atom "active"))
 
+(defn- cleanup-expired-responses!
+  "Remove expired pending responses based on TTL and max size limit.
+   Called periodically to prevent unbounded memory growth.
+   Returns the number of entries removed."
+  []
+  (let [now (js/Date.now)
+        current-responses @pending-responses
+        ;; Remove entries older than TTL
+        active-responses (->> current-responses
+                              (filter (fn [[_ v]]
+                                        (let [timestamp (:timestamp v)]
+                                          (and timestamp
+                                               (< (- now timestamp) pending-response-ttl-ms)))))
+                              (into {}))
+        ;; If still over max size, keep only the most recent entries
+        trimmed-responses (if (> (count active-responses) max-pending-responses)
+                            (->> active-responses
+                                 (sort-by (fn [[_ v]] (- (:timestamp v 0))))
+                                 (take max-pending-responses)
+                                 (into {}))
+                            active-responses)
+        removed-count (- (count current-responses) (count trimmed-responses))]
+    (when (pos? removed-count)
+      (reset! pending-responses trimmed-responses)
+      (js/console.log "📬 [Notifications] Cleaned up" removed-count "expired pending responses"))
+    removed-count))
+
 (defn update-app-state!
-  "Update the current app state. Called from websocket app state listener."
+  "Update the current app state. Called from websocket app state listener.
+   When app becomes active, also cleans up expired pending responses."
   [state]
-  (reset! app-state-atom state)
-  (js/console.log "📬 [Notifications] App state updated:" state))
+  (let [prev-state @app-state-atom]
+    (reset! app-state-atom state)
+    (js/console.log "📬 [Notifications] App state updated:" state)
+    ;; Clean up expired responses when app returns to foreground
+    (when (and (not= prev-state "active") (= state "active"))
+      (cleanup-expired-responses!))))
 
 ;; ============================================================================
 ;; Permission Handling
@@ -109,6 +153,7 @@
 (defn post-response-notification!
   "Post a notification for a Claude response.
    Only posts if app is in background and has permission.
+   Includes timestamp for TTL-based cleanup to prevent memory leaks.
    
    Parameters:
    - text: The Claude response text
@@ -117,11 +162,14 @@
   [{:keys [text session-name working-directory]}]
   (when-let [notifee (get-notifee)]
     (when (app-in-background?)
+      ;; Clean up expired responses before adding new one
+      (cleanup-expired-responses!)
       (let [notification-id (str (random-uuid))]
-        ;; Store full response text for action handling
+        ;; Store full response text with timestamp for action handling and TTL cleanup
         (swap! pending-responses assoc notification-id
                {:text text
-                :working-directory working-directory})
+                :working-directory working-directory
+                :timestamp (js/Date.now)})
 
         ;; Create and display notification
         (-> (.displayNotification notifee

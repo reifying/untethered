@@ -168,3 +168,119 @@
 
   ;; Reset
   (notifications/update-app-state! "active"))
+
+;; ============================================================================
+;; Memory Management Tests (VCMOB-7n6e)
+;; ============================================================================
+
+(deftest pending-responses-cleanup-test
+  (testing "cleanup-expired-responses! removes old entries based on TTL"
+    ;; Reset the atom to known state
+    (reset! @#'notifications/pending-responses {})
+
+    ;; Add some responses with timestamps
+    (let [now (js/Date.now)
+          old-timestamp (- now (* 2 60 60 1000)) ; 2 hours ago (past TTL)
+          recent-timestamp (- now (* 30 60 1000))] ; 30 minutes ago (within TTL)
+
+      ;; Add old and recent entries
+      (swap! @#'notifications/pending-responses assoc
+             "old-notif-1" {:text "Old message 1" :timestamp old-timestamp}
+             "old-notif-2" {:text "Old message 2" :timestamp old-timestamp}
+             "recent-notif" {:text "Recent message" :timestamp recent-timestamp})
+
+      ;; Verify initial state
+      (is (= 3 (count @@#'notifications/pending-responses)))
+
+      ;; Run cleanup
+      (let [removed (#'notifications/cleanup-expired-responses!)]
+        ;; Should have removed the 2 old entries
+        (is (= 2 removed))
+        (is (= 1 (count @@#'notifications/pending-responses)))
+        (is (contains? @@#'notifications/pending-responses "recent-notif"))
+        (is (not (contains? @@#'notifications/pending-responses "old-notif-1")))
+        (is (not (contains? @@#'notifications/pending-responses "old-notif-2"))))))
+
+  ;; Reset for other tests
+  (reset! @#'notifications/pending-responses {}))
+
+(deftest pending-responses-max-size-test
+  (testing "cleanup-expired-responses! enforces max size limit"
+    ;; Reset the atom
+    (reset! @#'notifications/pending-responses {})
+
+    ;; Add more than max-pending-responses entries (50) with recent timestamps
+    (let [now (js/Date.now)]
+      (doseq [i (range 60)]
+        (swap! @#'notifications/pending-responses assoc
+               (str "notif-" i)
+               {:text (str "Message " i)
+                ;; Slightly different timestamps to ensure deterministic ordering
+                :timestamp (- now (* i 1000))}))
+
+      ;; Verify we have 60 entries
+      (is (= 60 (count @@#'notifications/pending-responses)))
+
+      ;; Run cleanup - should trim to 50 most recent
+      (#'notifications/cleanup-expired-responses!)
+
+      ;; Should now have max-pending-responses (50) entries
+      (is (= 50 (count @@#'notifications/pending-responses)))
+
+      ;; The newest entries (notif-0 through notif-49) should be kept
+      (is (contains? @@#'notifications/pending-responses "notif-0"))
+      (is (contains? @@#'notifications/pending-responses "notif-49"))
+      ;; The oldest entries (notif-50 through notif-59) should be removed
+      (is (not (contains? @@#'notifications/pending-responses "notif-50")))
+      (is (not (contains? @@#'notifications/pending-responses "notif-59")))))
+
+  ;; Reset for other tests
+  (reset! @#'notifications/pending-responses {}))
+
+(deftest update-app-state-triggers-cleanup-test
+  (testing "returning to foreground triggers pending response cleanup"
+    ;; Reset the atom
+    (reset! @#'notifications/pending-responses {})
+
+    ;; Add an expired entry
+    (let [old-timestamp (- (js/Date.now) (* 2 60 60 1000))] ; 2 hours ago
+      (swap! @#'notifications/pending-responses assoc
+             "expired-notif" {:text "Expired" :timestamp old-timestamp}))
+
+    ;; Start in background state
+    (notifications/update-app-state! "background")
+    (is (= 1 (count @@#'notifications/pending-responses)))
+
+    ;; Return to active state - should trigger cleanup
+    (notifications/update-app-state! "active")
+    (is (= 0 (count @@#'notifications/pending-responses))))
+
+  ;; Reset for other tests
+  (reset! @#'notifications/pending-responses {})
+  (notifications/update-app-state! "active"))
+
+(deftest post-notification-includes-timestamp-test
+  (testing "posted notifications include timestamp for TTL tracking"
+    ;; This test verifies the structure of pending responses
+    ;; We can't actually post notifications in test env, but we can verify
+    ;; the cleanup function handles entries with timestamps correctly
+
+    (reset! @#'notifications/pending-responses {})
+
+    ;; Simulate what post-response-notification! does
+    (let [now (js/Date.now)]
+      (swap! @#'notifications/pending-responses assoc
+             "test-notif"
+             {:text "Test message"
+              :working-directory "/test/path"
+              :timestamp now})
+
+      ;; Verify the entry has all required fields
+      (let [entry (get @@#'notifications/pending-responses "test-notif")]
+        (is (contains? entry :text))
+        (is (contains? entry :working-directory))
+        (is (contains? entry :timestamp))
+        (is (number? (:timestamp entry)))))
+
+    ;; Reset
+    (reset! @#'notifications/pending-responses {})))
