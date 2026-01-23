@@ -1,40 +1,12 @@
 (ns voice-code.auth-test
-  "Tests for API key validation logic."
+  "Tests for API key validation logic.
+   Tests the shared validation utilities in voice-code.auth."
   (:require [cljs.test :refer-macros [deftest testing is]]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [voice-code.auth :as auth :refer [api-key-prefix api-key-total-length
+                                              validate-api-key api-key-validation-status]]))
 
-;; ============================================================================
-;; API Key Validation (copied from auth.cljs for testing without RN deps)
-;; ============================================================================
-
-(def ^:private api-key-prefix "untethered-")
-(def ^:private api-key-hex-length 32)
-(def ^:private api-key-total-length (+ (count api-key-prefix) api-key-hex-length))
-
-(defn validate-api-key
-  "Validate API key format.
-   Expected format: untethered-<32 hex characters>
-   Returns {:valid? true} or {:valid? false :error \"message\"}"
-  [key]
-  (cond
-    (str/blank? key)
-    {:valid? false :error nil}
-
-    (not (str/starts-with? key api-key-prefix))
-    {:valid? false :error "API key must start with 'untethered-'"}
-
-    (not= (count key) api-key-total-length)
-    {:valid? false :error (str "API key must be " api-key-total-length " characters")}
-
-    (not (re-matches #"^untethered-[a-f0-9]{32}$" key))
-    {:valid? false :error "API key must contain only lowercase hex characters after prefix"}
-
-    :else
-    {:valid? true :error nil}))
-
-;; ============================================================================
-;; Tests
-;; ============================================================================
+;; Tests for voice-code.auth validation functions
 
 (deftest validate-api-key-valid-test
   (testing "Valid API key (32 hex chars)"
@@ -120,68 +92,7 @@
   (testing "Total length constant is correct"
     (is (= 43 api-key-total-length))))
 
-;; ============================================================================
-;; Detailed Validation Status Tests (for real-time feedback UI)
-;; ============================================================================
-
-(defn api-key-validation-status
-  "Get detailed validation status for API key input.
-   Mirrors implementation in settings.cljs for testing without RN deps."
-  [key]
-  (let [len (count (or key ""))
-        expected api-key-total-length
-        prefix-len (count api-key-prefix)
-        hex-part (when (and key (> len prefix-len))
-                   (subs key prefix-len))]
-    (cond
-      ;; Empty input
-      (empty? key)
-      {:valid? false
-       :message nil
-       :char-count 0
-       :expected-count expected}
-
-      ;; Too short
-      (< len expected)
-      {:valid? false
-       :message (str "Too short (" (- expected len) " more characters needed)")
-       :char-count len
-       :expected-count expected}
-
-      ;; Too long
-      (> len expected)
-      {:valid? false
-       :message (str "Too long (" (- len expected) " extra characters)")
-       :char-count len
-       :expected-count expected}
-
-      ;; Missing prefix
-      (not (str/starts-with? key api-key-prefix))
-      {:valid? false
-       :message (str "Must start with '" api-key-prefix "'")
-       :char-count len
-       :expected-count expected}
-
-      ;; Contains uppercase hex letters
-      (re-find #"[A-F]" (or hex-part ""))
-      {:valid? false
-       :message "Must use lowercase letters (a-f), not uppercase"
-       :char-count len
-       :expected-count expected}
-
-      ;; Contains non-hex characters after prefix
-      (not (re-matches #"[a-f0-9]*" (or hex-part "")))
-      {:valid? false
-       :message "Characters after prefix must be lowercase hex (0-9, a-f)"
-       :char-count len
-       :expected-count expected}
-
-      ;; Valid
-      :else
-      {:valid? true
-       :message nil
-       :char-count len
-       :expected-count expected})))
+;; Detailed validation status tests (for real-time feedback UI)
 
 (deftest validation-status-valid-key-test
   (testing "Valid key shows correct status"

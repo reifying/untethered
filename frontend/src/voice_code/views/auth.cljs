@@ -4,38 +4,13 @@
    Shows different UI for initial setup vs reauthentication (after auth failure)."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            [clojure.string :as str]
             ["react-native" :as rn]
+            [voice-code.auth :refer [validate-api-key]]
             [voice-code.qr-scanner :refer [qr-scanner-view]]))
 
 ;; ============================================================================
-;; API Key Validation
+;; Components
 ;; ============================================================================
-
-(def ^:private api-key-prefix "untethered-")
-(def ^:private api-key-hex-length 32)
-(def ^:private api-key-total-length (+ (count api-key-prefix) api-key-hex-length))
-
-(defn validate-api-key
-  "Validate API key format.
-   Expected format: untethered-<32 hex characters>
-   Returns {:valid? true} or {:valid? false :error \"message\"}"
-  [key]
-  (cond
-    (str/blank? key)
-    {:valid? false :error nil} ; Empty is not an error, just invalid
-
-    (not (str/starts-with? key api-key-prefix))
-    {:valid? false :error "API key must start with 'untethered-'"}
-
-    (not= (count key) api-key-total-length)
-    {:valid? false :error (str "API key must be " api-key-total-length " characters")}
-
-    (not (re-matches #"^untethered-[a-f0-9]{32}$" key))
-    {:valid? false :error "API key must contain only lowercase hex characters after prefix"}
-
-    :else
-    {:valid? true :error nil}))
 
 (defn- status-indicator
   "Shows connection status during authentication."
