@@ -457,11 +457,8 @@
  (fn [db [_ session-id]]
    (get-in db [:ui :drafts session-id] "")))
 
-(rf/reg-sub
- :ui/active-draft
- :<- [:sessions/active-id]
- (fn [active-id _]
-   (rf/subscribe [:ui/draft active-id])))
+;; NOTE: :ui/active-draft subscription removed - was unused dead code with a bug
+;; (calling rf/subscribe inside computation function). Use :ui/draft directly.
 
 (rf/reg-sub
  :ui/auto-scroll?

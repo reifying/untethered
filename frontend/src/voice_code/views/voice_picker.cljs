@@ -169,80 +169,82 @@
    - visible: boolean, whether modal is shown
    - on-close: callback when modal should close"
   [{:keys [visible on-close]}]
-  (let [voices @(rf/subscribe [:voice/available-voices])
-        loading? @(rf/subscribe [:voice/loading-voices?])
-        current-voice @(rf/subscribe [:settings/voice-identifier])
-        previewing-voice @(rf/subscribe [:voice/previewing-voice])
-        premium-voices @(rf/subscribe [:voice/premium-voices])
-        handle-select (fn [voice-id]
-                        (rf/dispatch [:voice/select-voice voice-id])
-                        (when on-close (on-close)))]
-    ;; Load voices when modal becomes visible
-    (r/create-class
-     {:component-did-update
-      (fn [this [_ prev-props]]
-        (when (and visible (not (:visible prev-props)))
-          (rf/dispatch [:voice/load-available-voices])))
+  ;; Load voices when modal becomes visible
+  (r/create-class
+   {:component-did-update
+    (fn [this [_ prev-props]]
+      (let [props (r/props this)]
+        (when (and (:visible props) (not (:visible prev-props)))
+          (rf/dispatch [:voice/load-available-voices]))))
 
-      :component-did-mount
-      (fn [_]
-        (when visible
-          (rf/dispatch [:voice/load-available-voices])))
+    :component-did-mount
+    (fn [this]
+      (let [props (r/props this)]
+        (when (:visible props)
+          (rf/dispatch [:voice/load-available-voices]))))
 
-      :reagent-render
-      (fn [{:keys [visible on-close]}]
-        (let [previewing-voice @(rf/subscribe [:voice/previewing-voice])
-              premium-voices @(rf/subscribe [:voice/premium-voices])]
-          [:> rn/Modal
-           {:visible visible
-            :animation-type "slide"
-            :presentation-style "pageSheet"
-            :on-request-close on-close}
-           [:> rn/SafeAreaView {:style {:flex 1 :background-color "#FFFFFF"}}
-            ;; Header
-            [:> rn/View {:style {:flex-direction "row"
-                                 :align-items "center"
-                                 :justify-content "space-between"
-                                 :padding-horizontal 16
-                                 :padding-vertical 12
-                                 :border-bottom-width 1
-                                 :border-bottom-color "#E5E5EA"}}
-             [:> rn/View {:style {:width 60}}]
-             [:> rn/Text {:style {:font-size 17
-                                  :font-weight "600"
-                                  :color "#000000"}}
-              "Select Voice"]
-             [:> rn/TouchableOpacity
-              {:style {:width 60 :align-items "flex-end"}
-               :on-press on-close}
-              [:> rn/Text {:style {:font-size 17
-                                   :color "#007AFF"
-                                   :font-weight "500"}}
-               "Done"]]]
+    :reagent-render
+    (fn [{:keys [visible on-close]}]
+      ;; All subscriptions must be inside :reagent-render for reactivity
+      (let [voices @(rf/subscribe [:voice/available-voices])
+            loading? @(rf/subscribe [:voice/loading-voices?])
+            current-voice @(rf/subscribe [:settings/voice-identifier])
+            previewing-voice @(rf/subscribe [:voice/previewing-voice])
+            premium-voices @(rf/subscribe [:voice/premium-voices])
+            handle-select (fn [voice-id]
+                            (rf/dispatch [:voice/select-voice voice-id])
+                            (when on-close (on-close)))]
+        [:> rn/Modal
+         {:visible visible
+          :animation-type "slide"
+          :presentation-style "pageSheet"
+          :on-request-close on-close}
+         [:> rn/SafeAreaView {:style {:flex 1 :background-color "#FFFFFF"}}
+          ;; Header
+          [:> rn/View {:style {:flex-direction "row"
+                               :align-items "center"
+                               :justify-content "space-between"
+                               :padding-horizontal 16
+                               :padding-vertical 12
+                               :border-bottom-width 1
+                               :border-bottom-color "#E5E5EA"}}
+           [:> rn/View {:style {:width 60}}]
+           [:> rn/Text {:style {:font-size 17
+                                :font-weight "600"
+                                :color "#000000"}}
+            "Select Voice"]
+           [:> rn/TouchableOpacity
+            {:style {:width 60 :align-items "flex-end"}
+             :on-press on-close}
+            [:> rn/Text {:style {:font-size 17
+                                 :color "#007AFF"
+                                 :font-weight "500"}}
+             "Done"]]]
 
-            ;; Content
-            (cond
-              loading?
-              [loading-indicator]
+          ;; Content
+          (cond
+            loading?
+            [loading-indicator]
 
-              (empty? voices)
-              [empty-voices]
+            (empty? voices)
+            [empty-voices]
 
-              :else
-              [:> rn/ScrollView {:style {:flex 1}}
-               ;; System Default option
-               [system-default-item {:selected? (nil? current-voice)
-                                     :on-select handle-select}]
-               ;; All Premium Voices option (only show if we have premium voices)
-               (when (seq premium-voices)
-                 [all-premium-voices-item
-                  {:selected? (= current-voice voice/all-premium-voices-identifier)
-                   :on-select handle-select
-                   :premium-count (count premium-voices)}])
-               ;; Individual voices
-               (for [v voices]
-                 ^{:key (:id v)}
-                 [voice-item {:voice v
-                              :selected? (= (:id v) current-voice)
-                              :previewing? (= (:id v) previewing-voice)
-                              :on-select handle-select}])])]]))})))
+            :else
+            [:> rn/ScrollView {:style {:flex 1}}
+             ;; System Default option
+             [system-default-item {:selected? (nil? current-voice)
+                                   :on-select handle-select}]
+             ;; All Premium Voices option (only show if we have premium voices)
+             (when (seq premium-voices)
+               [all-premium-voices-item
+                {:selected? (= current-voice voice/all-premium-voices-identifier)
+                 :on-select handle-select
+                 :premium-count (count premium-voices)}])
+             ;; Individual voices
+             (for [v voices]
+               ^{:key (:id v)}
+               [voice-item {:voice v
+                            :selected? (= (:id v) current-voice)
+                            :previewing? (= (:id v) previewing-voice)
+                            :on-select handle-select}])])]]))}))
+
