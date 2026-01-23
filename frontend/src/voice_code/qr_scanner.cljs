@@ -12,8 +12,11 @@
 
 (def ^:private use-real-camera?
   "Feature flag for real camera access.
-   Only true in actual React Native environment."
+   Only true in actual React Native environment.
+   In Node.js, navigator.product is undefined (not 'node'), so we check for
+   a truthy product value that isn't 'node' - this ensures stub mode in tests."
   (and (exists? js/navigator)
+       (some? (.-product js/navigator))
        (not= "node" (.-product js/navigator))))
 
 (defonce ^:private vision-camera-module

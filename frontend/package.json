@@ -12,7 +12,7 @@
     "shadow:release": "npx shadow-cljs release app",
     "shadow:server": "npx shadow-cljs server",
     "repl": "npx shadow-cljs cljs-repl app",
-    "test": "npx shadow-cljs compile test && node out/test.js",
+    "test": "npx shadow-cljs compile test && node --require ./test/setup.js out/test.js",
     "test:watch": "npx shadow-cljs watch test"
   },
   "dependencies": {

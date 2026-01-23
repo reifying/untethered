@@ -10,8 +10,11 @@
 
 ;; Runtime detection for React Native environment (vs Node.js test environment)
 (def ^:private running-in-react-native?
-  "Returns true if running in React Native, false in Node.js test environment."
+  "Returns true if running in React Native, false in Node.js test environment.
+   In Node.js, navigator.product is undefined (not 'node'), so we check for
+   a truthy product value that isn't 'node' - this ensures stub mode in tests."
   (and (exists? js/navigator)
+       (some? (.-product js/navigator))
        (not= "node" (.-product js/navigator))))
 
 ;; Conditionally load AppState module - only available in React Native

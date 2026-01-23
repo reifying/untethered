@@ -30,8 +30,11 @@
 (defonce ^:private db-atom (atom nil))
 
 ;; Feature flag for using real SQLite vs stub (disabled in Node.js tests)
+;; In Node.js, navigator.product is undefined (not "node"), so we check for
+;; a truthy product value that isn't "node" - this ensures stub mode in tests
 (def ^:private use-real-sqlite?
   (and (exists? js/navigator)
+       (some? (.-product js/navigator))
        (not= "node" (.-product js/navigator))))
 
 ;; Dynamically loaded SQLite module (only in React Native environment)
@@ -418,9 +421,12 @@
 ;; Keychain atom for fallback/test mode only
 (defonce ^:private keychain-atom (atom nil))
 
-;; Feature flag for using real keychain vs stub (disabled in Node.js tests)
+;; Feature flag for using real Keychain vs stub (disabled in Node.js tests)
+;; In Node.js, navigator.product is undefined (not "node"), so we check for
+;; a truthy product value that isn't "node" - this ensures stub mode in tests
 (def ^:private use-real-keychain?
   (and (exists? js/navigator)
+       (some? (.-product js/navigator))
        (not= "node" (.-product js/navigator))))
 
 ;; Dynamically loaded keychain module (only in React Native environment)

@@ -55,9 +55,12 @@
 ;; Feature Detection
 ;; ============================================================================
 
-;; Feature flag for using real voice vs stub (disabled in Node.js tests)
+;; Feature flag for using real voice modules vs stubs (disabled in Node.js tests)
+;; In Node.js, navigator.product is undefined (not "node"), so we check for
+;; a truthy product value that isn't "node" - this ensures stub mode in tests
 (def ^:private use-real-voice?
   (and (exists? js/navigator)
+       (some? (.-product js/navigator))
        (not= "node" (.-product js/navigator))))
 
 ;; ============================================================================
