@@ -42,6 +42,73 @@
         :else (.toLocaleDateString ts)))))
 
 ;; ============================================================================
+;; Text Truncation for Message Display
+;; ============================================================================
+;; Matches iOS CDMessage.swift truncation behavior for UI rendering.
+
+(def truncation-threshold
+  "Truncate messages longer than this. Matches iOS CDMessage.truncationHalfLength * 2 = 500"
+  500)
+
+(def truncation-preview-chars
+  "Number of chars to show at start and end of truncated messages."
+  250)
+
+(defn truncate-text
+  "Truncate text with first N and last N chars, showing truncation count.
+   Matches iOS CDMessage.displayText behavior.
+   Returns {:truncated? bool :display-text string :full-text string :truncated-count int}"
+  [text]
+  (if (or (nil? text) (<= (count text) truncation-threshold))
+    {:truncated? false
+     :display-text text
+     :full-text text
+     :truncated-count 0}
+    (let [total-len (count text)
+          truncated-count (- total-len (* 2 truncation-preview-chars))
+          first-part (subs text 0 truncation-preview-chars)
+          last-part (subs text (- total-len truncation-preview-chars))]
+      {:truncated? true
+       :display-text (str first-part "\n\n...[" truncated-count " chars truncated]...\n\n" last-part)
+       :full-text text
+       :truncated-count truncated-count})))
+
+;; ============================================================================
+;; Cost and Usage Formatting
+;; ============================================================================
+
+(defn format-cost
+  "Format cost as currency with appropriate precision.
+   Returns nil for nil, zero, or negative values."
+  [cost]
+  (when (and cost (pos? cost))
+    (if (< cost 0.01)
+      (str "$" (.toFixed cost 4))
+      (str "$" (.toFixed cost 2)))))
+
+(defn format-usage-summary
+  "Format usage/cost into a compact display string.
+   Shows tokens and cost in a compact format like '1.2K in / 890 out • $0.02'"
+  [usage cost]
+  (when (or usage cost)
+    (let [input-tokens (or (:input-tokens usage) 0)
+          output-tokens (or (:output-tokens usage) 0)
+          total-cost (:total-cost cost)
+          ;; Format tokens with K suffix for thousands
+          format-tokens (fn [n]
+                          (if (>= n 1000)
+                            (str (.toFixed (/ n 1000) 1) "K")
+                            (str n)))
+          parts (cond-> []
+                  (pos? (+ input-tokens output-tokens))
+                  (conj (str (format-tokens input-tokens) " in / "
+                             (format-tokens output-tokens) " out"))
+                  total-cost
+                  (conj (format-cost total-cost)))]
+      (when (seq parts)
+        (clojure.string/join " • " parts)))))
+
+;; ============================================================================
 ;; Content Block Extraction for Claude Messages
 ;; ============================================================================
 ;; These functions extract and summarize different content block types

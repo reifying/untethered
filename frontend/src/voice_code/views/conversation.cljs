@@ -5,7 +5,8 @@
             ["react-native" :as rn :refer [Modal]]
             ["@react-native-clipboard/clipboard" :as Clipboard]
             [voice-code.voice :as voice]
-            [voice-code.haptic :as haptic]))
+            [voice-code.haptic :as haptic]
+            [voice-code.utils :as utils]))
 
 ;; ============================================================================
 ;; Copy Confirmation Toast
@@ -340,32 +341,7 @@
                        (show-copy-toast! "Inferring session name...")
                        (hide-message-detail!))}])]]]))
 
-;; ============================================================================
-;; Message Truncation Constants
-;; ============================================================================
-
-(def ^:private truncation-threshold
-  "Truncate messages longer than this. Matches iOS CDMessage.truncationHalfLength * 2 = 500"
-  500)
-(def ^:private truncation-preview-chars 250)
-
-(defn- truncate-text
-  "Truncate text with first N and last N chars, showing truncation count.
-   Returns {:truncated? bool :display-text string :full-text string :truncated-count int}"
-  [text]
-  (if (or (nil? text) (<= (count text) truncation-threshold))
-    {:truncated? false
-     :display-text text
-     :full-text text
-     :truncated-count 0}
-    (let [total-len (count text)
-          truncated-count (- total-len (* 2 truncation-preview-chars))
-          first-part (subs text 0 truncation-preview-chars)
-          last-part (subs text (- total-len truncation-preview-chars))]
-      {:truncated? true
-       :display-text (str first-part "\n\n...[" truncated-count " chars truncated]...\n\n" last-part)
-       :full-text text
-       :truncated-count truncated-count})))
+;; Text truncation: utils/truncate-text, utils/truncation-threshold, utils/truncation-preview-chars
 
 (defn- format-time
   "Format timestamp for display."
@@ -382,35 +358,7 @@
   (when n
     (.toLocaleString n "en-US")))
 
-(defn- format-cost
-  "Format cost as currency with appropriate precision."
-  [cost]
-  (when (and cost (pos? cost))
-    (if (< cost 0.01)
-      (str "$" (.toFixed cost 4))
-      (str "$" (.toFixed cost 2)))))
-
-(defn- format-usage-summary
-  "Format usage/cost into a compact display string.
-   Shows tokens and cost in a compact format like '1.2K in / 890 out • $0.02'"
-  [usage cost]
-  (when (or usage cost)
-    (let [input-tokens (or (:input-tokens usage) 0)
-          output-tokens (or (:output-tokens usage) 0)
-          total-cost (:total-cost cost)
-          ;; Format tokens with K suffix for thousands
-          format-tokens (fn [n]
-                          (if (>= n 1000)
-                            (str (.toFixed (/ n 1000) 1) "K")
-                            (str n)))
-          parts (cond-> []
-                  (pos? (+ input-tokens output-tokens))
-                  (conj (str (format-tokens input-tokens) " in / "
-                             (format-tokens output-tokens) " out"))
-                  total-cost
-                  (conj (format-cost total-cost)))]
-      (when (seq parts)
-        (clojure.string/join " • " parts)))))
+;; Cost/usage formatting: utils/format-cost, utils/format-usage-summary
 
 (defn- message-bubble
   "Single message bubble with truncation support for long messages.
@@ -419,19 +367,19 @@
    For assistant messages, shows token usage and cost metadata."
   [{:keys [role text timestamp status working-directory session-id usage cost]}]
   (let [expanded? (r/atom false)
-        {:keys [truncated? display-text full-text]} (truncate-text text)
+        {:keys [truncated? display-text full-text]} (utils/truncate-text text)
         is-user? (= role :user)
         is-sending? (= status :sending)
         is-error? (= status :error)]
     (fn [{:keys [role text timestamp status working-directory session-id usage cost]}]
-      (let [{:keys [truncated? display-text full-text]} (truncate-text text)
+      (let [{:keys [truncated? display-text full-text]} (utils/truncate-text text)
             show-text (if (and truncated? (not @expanded?))
                         display-text
                         full-text)
             speaking? @(rf/subscribe [:voice/speaking?])
             is-error? (= status :error)
             is-assistant? (= role :assistant)
-            usage-summary (when is-assistant? (format-usage-summary usage cost))]
+            usage-summary (when is-assistant? (utils/format-usage-summary usage cost))]
         [:> rn/TouchableOpacity
          {:style {:align-self (if is-user? "flex-end" "flex-start")
                   :max-width "85%"

@@ -6,7 +6,8 @@
             [voice-code.db :as db]
             [voice-code.events.core]
             [voice-code.events.websocket]
-            [voice-code.subs]))
+            [voice-code.subs]
+            [voice-code.utils :as utils]))
 
 (use-fixtures :each
   {:before (fn [] (rf/dispatch-sync [:initialize-db]))})
@@ -14,53 +15,32 @@
 ;; ============================================================================
 ;; Message Truncation Tests
 ;; ============================================================================
-
-(def truncation-threshold
-  "Matches iOS CDMessage.truncationHalfLength * 2 = 500"
-  500)
-(def truncation-preview-chars 250)
-
-(defn- truncate-text
-  "Test version of the truncation function from conversation.cljs"
-  [text]
-  (if (or (nil? text) (<= (count text) truncation-threshold))
-    {:truncated? false
-     :display-text text
-     :full-text text
-     :truncated-count 0}
-    (let [total-len (count text)
-          truncated-count (- total-len (* 2 truncation-preview-chars))
-          first-part (subs text 0 truncation-preview-chars)
-          last-part (subs text (- total-len truncation-preview-chars))]
-      {:truncated? true
-       :display-text (str first-part "\n\n...[" truncated-count " chars truncated]...\n\n" last-part)
-       :full-text text
-       :truncated-count truncated-count})))
+;; Using utils/truncate-text, utils/truncation-threshold, utils/truncation-preview-chars
 
 (deftest truncate-text-test
   (testing "does not truncate nil input"
-    (let [result (truncate-text nil)]
+    (let [result (utils/truncate-text nil)]
       (is (false? (:truncated? result)))
       (is (nil? (:display-text result)))
       (is (= 0 (:truncated-count result)))))
 
   (testing "does not truncate short messages"
     (let [short-text "Hello, World!"
-          result (truncate-text short-text)]
+          result (utils/truncate-text short-text)]
       (is (false? (:truncated? result)))
       (is (= short-text (:display-text result)))
       (is (= short-text (:full-text result)))
       (is (= 0 (:truncated-count result)))))
 
   (testing "does not truncate messages at exactly threshold"
-    (let [text (apply str (repeat truncation-threshold "x"))
-          result (truncate-text text)]
+    (let [text (apply str (repeat utils/truncation-threshold "x"))
+          result (utils/truncate-text text)]
       (is (false? (:truncated? result)))
       (is (= text (:display-text result)))))
 
   (testing "truncates messages over threshold"
     (let [text (apply str (repeat 2000 "x"))
-          result (truncate-text text)]
+          result (utils/truncate-text text)]
       (is (true? (:truncated? result)))
       (is (= 2000 (count (:full-text result))))
       (is (> (count (:full-text result)) (count (:display-text result))))
@@ -68,15 +48,15 @@
 
   (testing "truncated display text contains marker"
     (let [text (apply str (repeat 2000 "x"))
-          result (truncate-text text)]
+          result (utils/truncate-text text)]
       (is (re-find #"chars truncated" (:display-text result)))))
 
   (testing "preserves first and last portions"
-    (let [first-chars (apply str (repeat truncation-preview-chars "A"))
+    (let [first-chars (apply str (repeat utils/truncation-preview-chars "A"))
           middle-chars (apply str (repeat 600 "M"))
-          last-chars (apply str (repeat truncation-preview-chars "Z"))
+          last-chars (apply str (repeat utils/truncation-preview-chars "Z"))
           text (str first-chars middle-chars last-chars)
-          result (truncate-text text)]
+          result (utils/truncate-text text)]
       (is (true? (:truncated? result)))
       ;; Display text should start with As and end with Zs
       (is (clojure.string/starts-with? (:display-text result) "AAAA"))
@@ -174,87 +154,59 @@
 ;; ============================================================================
 ;; Usage/Cost Formatting Tests (VCMOB-2onn)
 ;; ============================================================================
-
-;; Test versions of the formatting functions from conversation.cljs
-(defn- format-cost
-  "Format cost as currency with appropriate precision."
-  [cost]
-  (when (and cost (pos? cost))
-    (if (< cost 0.01)
-      (str "$" (.toFixed cost 4))
-      (str "$" (.toFixed cost 2)))))
-
-(defn- format-usage-summary
-  "Format usage/cost into a compact display string."
-  [usage cost]
-  (when (or usage cost)
-    (let [input-tokens (or (:input-tokens usage) 0)
-          output-tokens (or (:output-tokens usage) 0)
-          total-cost (:total-cost cost)
-          format-tokens (fn [n]
-                          (if (>= n 1000)
-                            (str (.toFixed (/ n 1000) 1) "K")
-                            (str n)))
-          parts (cond-> []
-                  (pos? (+ input-tokens output-tokens))
-                  (conj (str (format-tokens input-tokens) " in / "
-                             (format-tokens output-tokens) " out"))
-                  total-cost
-                  (conj (format-cost total-cost)))]
-      (when (seq parts)
-        (clojure.string/join " • " parts)))))
+;; Using utils/format-cost, utils/format-usage-summary
 
 (deftest format-cost-test
   (testing "formats nil as nil"
-    (is (nil? (format-cost nil))))
+    (is (nil? (utils/format-cost nil))))
 
   (testing "formats zero as nil"
-    (is (nil? (format-cost 0))))
+    (is (nil? (utils/format-cost 0))))
 
   (testing "formats negative as nil"
-    (is (nil? (format-cost -0.01))))
+    (is (nil? (utils/format-cost -0.01))))
 
   (testing "formats small costs with 4 decimal places"
-    (is (= "$0.0025" (format-cost 0.0025)))
-    (is (= "$0.0001" (format-cost 0.0001))))
+    (is (= "$0.0025" (utils/format-cost 0.0025)))
+    (is (= "$0.0001" (utils/format-cost 0.0001))))
 
   (testing "formats regular costs with 2 decimal places"
-    (is (= "$0.01" (format-cost 0.01)))
-    (is (= "$0.15" (format-cost 0.15)))
-    (is (= "$1.00" (format-cost 1.0)))
-    (is (= "$12.34" (format-cost 12.34)))))
+    (is (= "$0.01" (utils/format-cost 0.01)))
+    (is (= "$0.15" (utils/format-cost 0.15)))
+    (is (= "$1.00" (utils/format-cost 1.0)))
+    (is (= "$12.34" (utils/format-cost 12.34)))))
 
 (deftest format-usage-summary-test
   (testing "returns nil for nil inputs"
-    (is (nil? (format-usage-summary nil nil))))
+    (is (nil? (utils/format-usage-summary nil nil))))
 
   (testing "formats usage without cost"
     (is (= "500 in / 100 out"
-           (format-usage-summary {:input-tokens 500 :output-tokens 100} nil))))
+           (utils/format-usage-summary {:input-tokens 500 :output-tokens 100} nil))))
 
   (testing "formats usage with K suffix for thousands"
     (is (= "1.5K in / 800 out"
-           (format-usage-summary {:input-tokens 1500 :output-tokens 800} nil)))
+           (utils/format-usage-summary {:input-tokens 1500 :output-tokens 800} nil)))
     (is (= "12.3K in / 4.5K out"
-           (format-usage-summary {:input-tokens 12300 :output-tokens 4500} nil))))
+           (utils/format-usage-summary {:input-tokens 12300 :output-tokens 4500} nil))))
 
   (testing "formats cost without usage"
-    (is (= "$0.05" (format-usage-summary nil {:total-cost 0.05}))))
+    (is (= "$0.05" (utils/format-usage-summary nil {:total-cost 0.05}))))
 
   (testing "formats both usage and cost"
     (is (= "1.0K in / 500 out • $0.03"
-           (format-usage-summary {:input-tokens 1000 :output-tokens 500}
-                                 {:total-cost 0.03}))))
+           (utils/format-usage-summary {:input-tokens 1000 :output-tokens 500}
+                                       {:total-cost 0.03}))))
 
   (testing "handles zero tokens"
-    (is (nil? (format-usage-summary {:input-tokens 0 :output-tokens 0} nil)))
-    (is (= "$0.01" (format-usage-summary {:input-tokens 0 :output-tokens 0}
-                                         {:total-cost 0.01}))))
+    (is (nil? (utils/format-usage-summary {:input-tokens 0 :output-tokens 0} nil)))
+    (is (= "$0.01" (utils/format-usage-summary {:input-tokens 0 :output-tokens 0}
+                                               {:total-cost 0.01}))))
 
   (testing "formats small costs correctly"
     (is (= "100 in / 50 out • $0.0015"
-           (format-usage-summary {:input-tokens 100 :output-tokens 50}
-                                 {:total-cost 0.0015})))))
+           (utils/format-usage-summary {:input-tokens 100 :output-tokens 50}
+                                       {:total-cost 0.0015})))))
 
 ;; ============================================================================
 ;; Session Not Found Tests (VCMOB-h1t7)
