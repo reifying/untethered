@@ -2,29 +2,14 @@
   (:require [cljs.test :refer-macros [deftest testing is]]
             [clojure.string :as str]
             [re-frame.core :as rf]
-            [re-frame.db :refer [app-db]]))
+            [re-frame.db :refer [app-db]]
+            [voice-code.utils :refer [parse-qr-code]]))
 
 ;; ============================================================================
 ;; QR Code Parsing Tests
 ;; ============================================================================
-;; Note: We test the parsing logic inline here rather than importing the
-;; qr-scanner namespace, which has react-native dependencies.
-
-(defn parse-qr-code
-  "Parse a QR code value for voice-code authentication.
-   Expected format: raw API key starting with 'untethered-', exactly 43 characters,
-   with lowercase hex characters after the prefix.
-   Returns the API key string if valid, or nil if invalid."
-  [value]
-  (when (and (string? value)
-             ;; Must start with 'untethered-' prefix
-             (str/starts-with? value "untethered-")
-             ;; Must be exactly 43 characters (11 prefix + 32 hex)
-             (= 43 (count value))
-             ;; Characters after prefix must be lowercase hex (0-9, a-f)
-             (let [hex-part (subs value 11)]
-               (re-matches #"^[0-9a-f]+$" hex-part)))
-    value))
+;; parse-qr-code is imported from voice-code.utils - a pure utility namespace
+;; without React Native dependencies, making it testable in Node.js
 
 (deftest parse-qr-code-test
   (testing "Valid API key with correct format"

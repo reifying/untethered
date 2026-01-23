@@ -315,3 +315,23 @@
                (when-let [handle @timeout-handle]
                  (js/clearTimeout handle)
                  (reset! timeout-handle nil)))}))
+
+;; ============================================================================
+;; QR Code Parsing
+;; ============================================================================
+
+(defn parse-qr-code
+  "Parse a QR code value for voice-code authentication.
+   Expected format: raw API key starting with 'untethered-', exactly 43 characters,
+   with lowercase hex characters after the prefix.
+   Returns the API key string if valid, or nil if invalid."
+  [value]
+  (when (and (string? value)
+             ;; Must start with 'untethered-' prefix
+             (clojure.string/starts-with? value "untethered-")
+             ;; Must be exactly 43 characters (11 prefix + 32 hex)
+             (= 43 (count value))
+             ;; Characters after prefix must be lowercase hex (0-9, a-f)
+             (let [hex-part (subs value 11)]
+               (re-matches #"^[0-9a-f]+$" hex-part)))
+    value))

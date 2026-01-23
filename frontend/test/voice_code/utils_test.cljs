@@ -259,3 +259,43 @@
                 (is (= [1 2 3] @result))
                 (done))
               100)))))
+
+;; ============================================================================
+;; QR Code Parsing Tests
+;; ============================================================================
+
+(deftest parse-qr-code-test
+  (testing "Valid API key with correct format"
+    (let [valid-key "untethered-a1b2c3d4e5f678901234567890abcdef"]
+      (is (= valid-key (utils/parse-qr-code valid-key)))))
+
+  (testing "Valid API key with all zeros"
+    (let [valid-key "untethered-00000000000000000000000000000000"]
+      (is (= valid-key (utils/parse-qr-code valid-key)))))
+
+  (testing "Invalid - wrong prefix"
+    (is (nil? (utils/parse-qr-code "tethered-a1b2c3d4e5f678901234567890abcdef0"))))
+
+  (testing "Invalid - too short"
+    (is (nil? (utils/parse-qr-code "untethered-a1b2c3d4e5f6789012345678"))))
+
+  (testing "Invalid - too long"
+    (is (nil? (utils/parse-qr-code "untethered-a1b2c3d4e5f678901234567890abcdef0"))))
+
+  (testing "Invalid - uppercase hex"
+    (is (nil? (utils/parse-qr-code "untethered-A1B2C3D4E5F678901234567890ABCDEF"))))
+
+  (testing "Invalid - non-hex characters"
+    (is (nil? (utils/parse-qr-code "untethered-g1b2c3d4e5f678901234567890abcdef"))))
+
+  (testing "Invalid - URL format (old format)"
+    (is (nil? (utils/parse-qr-code "voice-code://connect?server=localhost&port=8080&key=abc"))))
+
+  (testing "Empty string"
+    (is (nil? (utils/parse-qr-code ""))))
+
+  (testing "Nil input"
+    (is (nil? (utils/parse-qr-code nil))))
+
+  (testing "Non-string input"
+    (is (nil? (utils/parse-qr-code 12345)))))
