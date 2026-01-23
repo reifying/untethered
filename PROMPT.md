@@ -27,6 +27,8 @@ Before implementing any feature:
 
 The iOS app is the reference implementation. If a field exists in iOS models but isn't displayed in iOS views, it's not ready for RN implementation.
 
+One option among several to consider is to check our test coverage. Install coverage framework if it does not exist and add a Makefile command. The coverage tool is slower so should only be run intentionally when trying to understand testing gaps. Ideally, the way our report is generated produces output that does not fill an agent's context window.
+
 Make sure the beads are updated before your turn is finished. Cite the `ios/VoiceCode/` used as a refernence for your implementation in your updates to the bead task before closing. If there are any P0 bugs, those have the highest priority since they indicate issues in recent work.
 
 You can use up to 1000 tool calls to complete this work. Use up to 1000 parallel subagents, but only use 1 subagent for compiling and running tests.
