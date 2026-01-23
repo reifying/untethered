@@ -172,7 +172,7 @@
 
   (testing "extract-message-text with tool_use block"
     (let [result (utils/extract-message-text [{:type "text" :text "Let me read that file."}
-                                               {:type "tool_use" :name "Read" :input {:path "/foo/bar.cljs"}}])]
+                                              {:type "tool_use" :name "Read" :input {:path "/foo/bar.cljs"}}])]
       (is (clojure.string/includes? result "Let me read that file."))
       (is (clojure.string/includes? result "🔧 Read: bar.cljs"))))
 
@@ -182,7 +182,7 @@
 
   (testing "extract-message-text with thinking block"
     (let [result (utils/extract-message-text [{:type "thinking" :thinking "Analyzing the problem"}
-                                               {:type "text" :text "Here's my answer."}])]
+                                              {:type "text" :text "Here's my answer."}])]
       (is (clojure.string/includes? result "💭 Analyzing the problem"))
       (is (clojure.string/includes? result "Here's my answer."))))
 
@@ -191,3 +191,71 @@
 
   (testing "extract-message-text with empty array returns nil"
     (is (nil? (utils/extract-message-text [])))))
+
+(deftest debounce-test
+  (testing "debounce returns invoke and cancel functions"
+    (let [result (atom nil)
+          {:keys [invoke cancel]} (utils/debounce #(reset! result %) 50)]
+      (is (fn? invoke))
+      (is (fn? cancel))))
+
+  (testing "debounce delays execution"
+    (async done
+           (let [result (atom nil)
+                 {:keys [invoke]} (utils/debounce #(reset! result %) 50)]
+             (invoke "test")
+        ;; Should not be set immediately
+             (is (nil? @result))
+        ;; Check after delay
+             (js/setTimeout
+              (fn []
+                (is (= "test" @result))
+                (done))
+              100))))
+
+  (testing "debounce cancels previous invocation on rapid calls"
+    (async done
+           (let [result (atom nil)
+                 call-count (atom 0)
+                 {:keys [invoke]} (utils/debounce
+                                   (fn [val]
+                                     (swap! call-count inc)
+                                     (reset! result val))
+                                   50)]
+        ;; Rapid fire calls
+             (invoke "a")
+             (invoke "b")
+             (invoke "c")
+        ;; Check after delay - only last call should have executed
+             (js/setTimeout
+              (fn []
+                (is (= "c" @result))
+                (is (= 1 @call-count))
+                (done))
+              100))))
+
+  (testing "debounce cancel prevents execution"
+    (async done
+           (let [result (atom nil)
+                 {:keys [invoke cancel]} (utils/debounce #(reset! result %) 50)]
+             (invoke "test")
+             (cancel)
+        ;; Check after delay - should not have executed
+             (js/setTimeout
+              (fn []
+                (is (nil? @result))
+                (done))
+              100))))
+
+  (testing "debounce passes multiple arguments"
+    (async done
+           (let [result (atom nil)
+                 {:keys [invoke]} (utils/debounce
+                                   (fn [a b c] (reset! result [a b c]))
+                                   50)]
+             (invoke 1 2 3)
+             (js/setTimeout
+              (fn []
+                (is (= [1 2 3] @result))
+                (done))
+              100)))))

@@ -2,11 +2,12 @@
   "Directory list view showing sessions grouped by working directory."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn :refer [RefreshControl Alert]]
+            ["react-native" :as rn :refer [RefreshControl Alert AppState]]
             ["@react-native-clipboard/clipboard" :as Clipboard]
             [clojure.string :as str]
             [voice-code.views.components :refer [relative-time-text]]
-            [voice-code.haptic :as haptic]))
+            [voice-code.haptic :as haptic]
+            [voice-code.utils :as utils]))
 
 (defn- format-relative-time
   "Format a timestamp as relative time (e.g., '2 hours ago')."
@@ -570,20 +571,60 @@
     [:> rn/Text {:style {:font-size 12 :color "#999"}}
      "View and copy app logs for troubleshooting"]]])
 
+(def ^:private debounce-ms
+  "Debounce delay for queue cache updates (matches iOS 150ms)."
+  150)
+
 (defn directory-list-view
-  "Main directory list screen.
-   Props is a ClojureScript map (converted by r/reactify-component)."
+  "Main directory list screen with debounced queue caching.
+   Props is a ClojureScript map (converted by r/reactify-component).
+   
+   Uses debounced caching for queue/priority-queue to prevent:
+   - Performance issues on large session lists
+   - ANR on Android from rapid layout updates
+   - Excessive re-renders during rapid session updates
+   
+   Mirrors iOS DirectoryListView.swift debouncing behavior (150ms)."
   [props]
-  ;; Props is a CLJS map, use keyword access.
-  (let [navigation (:navigation props)]
-    ;; Set up header right button
+  ;; Form-3 component: outer function sets up local state, returns class
+  (let [navigation (:navigation props)
+        ;; Cached queue values (updated on debounced schedule)
+        cached-queue-sessions (r/atom nil)
+        cached-priority-queue-sessions (r/atom nil)
+        ;; App state tracking (skip updates when backgrounded)
+        app-active? (r/atom true)
+        ;; Debounced update functions
+        {:keys [invoke cancel]} (utils/debounce
+                                 (fn [queue-sessions priority-queue-sessions]
+                                   (when @app-active?
+                                     (reset! cached-queue-sessions queue-sessions)
+                                     (reset! cached-priority-queue-sessions priority-queue-sessions)))
+                                 debounce-ms)
+        ;; App state listener
+        app-state-subscription (atom nil)]
     (r/create-class
-     {:component-did-mount
+     {:display-name "directory-list-view"
+
+      :component-did-mount
       (fn [this]
+        ;; Set up header
         (let [^js nav (:navigation (r/props this))]
           (when nav
             (.setOptions nav
-                         #js {:headerRight #(r/as-element [header-right-buttons nav])}))))
+                         #js {:headerRight #(r/as-element [header-right-buttons nav])})))
+        ;; Track app state (skip updates when backgrounded like iOS)
+        (reset! app-state-subscription
+                (.addEventListener AppState "change"
+                                   (fn [state]
+                                     (reset! app-active? (= state "active"))))))
+
+      :component-will-unmount
+      (fn [_this]
+        ;; Cancel pending debounced update
+        (cancel)
+        ;; Remove app state listener
+        (when-let [sub @app-state-subscription]
+          (.remove sub)))
 
       :reagent-render
       (fn [props]
@@ -591,10 +632,16 @@
               server-configured? @(rf/subscribe [:settings/server-configured?])
               directories @(rf/subscribe [:sessions/directories])
               recent-sessions @(rf/subscribe [:sessions/recent])
-              queue-sessions @(rf/subscribe [:sessions/queued])
-              priority-queue-sessions @(rf/subscribe [:sessions/priority-queued])
+              ;; Read live subscription values
+              queue-sessions-live @(rf/subscribe [:sessions/queued])
+              priority-queue-sessions-live @(rf/subscribe [:sessions/priority-queued])
               loading? @(rf/subscribe [:ui/loading?])
               refreshing? @(rf/subscribe [:ui/refreshing?])
+              ;; Schedule debounced cache update when live values change
+              _ (invoke queue-sessions-live priority-queue-sessions-live)
+              ;; Use cached values for rendering (or live if cache not yet populated)
+              queue-sessions (or @cached-queue-sessions queue-sessions-live)
+              priority-queue-sessions (or @cached-priority-queue-sessions priority-queue-sessions-live)
               has-content? (or (seq directories)
                                (seq recent-sessions)
                                (seq queue-sessions)
@@ -640,7 +687,7 @@
               (when (seq recent-sessions)
                 [recent-sessions-section {:sessions recent-sessions
                                           :navigation nav}])
-;; Projects/Directories section
+              ;; Projects/Directories section
               (when (seq directories)
                 [directories-section {:directories directories
                                       :navigation nav}])

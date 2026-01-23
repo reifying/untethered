@@ -217,3 +217,34 @@
   "Check if there's a pending timeout for the given operation-id."
   [operation-id]
   (contains? @timeout-registry operation-id))
+
+(defn debounce
+  "Create a debounced function that delays invoking fn until after wait-ms
+   milliseconds have elapsed since the last time the debounced function was called.
+   
+   Returns a map with:
+   - :invoke - function to call (accepts any args, passes them to f)
+   - :cancel - function to cancel any pending invocation
+   
+   Usage:
+   (let [{:keys [invoke cancel]} (debounce #(println \"called\" %) 150)]
+     (invoke \"a\")  ; scheduled
+     (invoke \"b\")  ; cancels previous, schedules new
+     ; after 150ms, prints \"called b\")"
+  [f wait-ms]
+  (let [timeout-handle (atom nil)]
+    {:invoke (fn [& args]
+               ;; Cancel any pending timeout
+               (when-let [handle @timeout-handle]
+                 (js/clearTimeout handle))
+               ;; Schedule new timeout
+               (reset! timeout-handle
+                       (js/setTimeout
+                        (fn []
+                          (reset! timeout-handle nil)
+                          (apply f args))
+                        wait-ms)))
+     :cancel (fn []
+               (when-let [handle @timeout-handle]
+                 (js/clearTimeout handle)
+                 (reset! timeout-handle nil)))}))
