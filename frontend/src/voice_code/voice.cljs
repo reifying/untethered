@@ -739,14 +739,14 @@
  (fn [{:keys [db]} [_ voice-id]]
    {:db (assoc-in db [:settings :voice-identifier] voice-id)
     :voice/set-voice voice-id
-    :dispatch [:settings/save]}))
+    :dispatch [:settings/save :voice-identifier voice-id]}))
 
 (rf/reg-event-fx
  :voice/set-respect-silent-mode
  (fn [{:keys [db]} [_ respect-silent?]]
    {:db (assoc-in db [:settings :respect-silent-mode] respect-silent?)
     :voice/configure-silent-switch respect-silent?
-    :dispatch [:settings/save]}))
+    :dispatch [:settings/save :respect-silent-mode respect-silent?]}))
 
 (rf/reg-fx
  :voice/set-rate
@@ -758,7 +758,7 @@
  (fn [{:keys [db]} [_ rate]]
    {:db (assoc-in db [:settings :voice-speech-rate] rate)
     :voice/set-rate rate
-    :dispatch [:settings/save]}))
+    :dispatch [:settings/save :voice-speech-rate rate]}))
 
 ;; ============================================================================
 ;; Voice Preview

@@ -263,7 +263,17 @@
                :message_count nil}
           session (#'persistence/row->session row)]
       (is (= "s1" (:id session)))
-      (is (nil? (:last-modified session))))))
+      (is (nil? (:last-modified session)))))
+
+  (testing "save-setting! handles nil key gracefully (VCMOB-2ugp fix)"
+    (async done
+           (-> (persistence/init-db!)
+               (.then (fn [_]
+                        ;; This should not throw, just log a warning and return
+                        (persistence/save-setting! nil "some-value")))
+               (.then (fn [result]
+                        (is (nil? result) "save-setting! with nil key should return nil")
+                        (done)))))))
 
 ;; ============================================================================
 ;; Draft Persistence Tests

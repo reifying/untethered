@@ -340,20 +340,25 @@
 ;; ============================================================================
 
 (defn save-setting!
-  "Save a setting to SQLite. Returns a promise."
+  "Save a setting to SQLite. Returns a promise.
+   Guards against nil key to prevent (name nil) error."
   [key value]
-  (if-let [db @db-atom]
-    (if (and use-real-sqlite? sqlite-module)
-      ;; Real SQLite - store value as EDN string
-      (execute-sql! db
-                    "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)"
-                    [(name key) (pr-str value)])
-      ;; Stub mode
-      (do
-        (swap! db-atom assoc-in [:settings key] value)
-        (js/console.log "Saved setting (stub):" key)
-        (js/Promise.resolve nil)))
-    (js/Promise.resolve nil)))
+  (if (nil? key)
+    (do
+      (js/console.warn "save-setting! called with nil key, ignoring. Value:" value)
+      (js/Promise.resolve nil))
+    (if-let [db @db-atom]
+      (if (and use-real-sqlite? sqlite-module)
+        ;; Real SQLite - store value as EDN string
+        (execute-sql! db
+                      "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)"
+                      [(name key) (pr-str value)])
+        ;; Stub mode
+        (do
+          (swap! db-atom assoc-in [:settings key] value)
+          (js/console.log "Saved setting (stub):" key)
+          (js/Promise.resolve nil)))
+      (js/Promise.resolve nil))))
 
 (defn load-setting!
   "Load a setting from SQLite.
