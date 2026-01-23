@@ -508,7 +508,11 @@
  :persistence/init-db
  (fn [_]
    (-> (init-db!)
-       (.then #(rf/dispatch [:persistence/db-initialized])))))
+       (.then #(rf/dispatch [:persistence/db-initialized]))
+       (.catch (fn [error]
+                 (js/console.error "Failed to initialize database:" error)
+                 (rf/dispatch [:persistence/error {:operation :init-db
+                                                   :error (str error)}]))))))
 
 (rf/reg-fx
  :persistence/save-session
@@ -524,7 +528,11 @@
  :persistence/load-sessions
  (fn [_]
    (-> (load-sessions!)
-       (.then #(rf/dispatch [:sessions/add-many %])))))
+       (.then #(rf/dispatch [:sessions/add-many %]))
+       (.catch (fn [error]
+                 (js/console.error "Failed to load sessions:" error)
+                 (rf/dispatch [:persistence/error {:operation :load-sessions
+                                                   :error (str error)}]))))))
 
 (rf/reg-fx
  :persistence/load-messages
@@ -533,7 +541,12 @@
        (.then (fn [messages]
                 (rf/dispatch [:messages/add-many session-id messages])
                 (when on-complete
-                  (rf/dispatch on-complete)))))))
+                  (rf/dispatch on-complete))))
+       (.catch (fn [error]
+                 (js/console.error "Failed to load messages:" error)
+                 (rf/dispatch [:persistence/error {:operation :load-messages
+                                                   :session-id session-id
+                                                   :error (str error)}]))))))
 
 (rf/reg-fx
  :persistence/save-setting
@@ -549,26 +562,42 @@
                 (doseq [[k v] settings]
                   (rf/dispatch [:settings/update k v]))
                 ;; Dispatch completion event with all settings for post-load configuration
-                (rf/dispatch [:persistence/settings-loaded settings]))))))
+                (rf/dispatch [:persistence/settings-loaded settings])))
+       (.catch (fn [error]
+                 (js/console.error "Failed to load settings:" error)
+                 (rf/dispatch [:persistence/error {:operation :load-settings
+                                                   :error (str error)}]))))))
 
 (rf/reg-fx
  :persistence/store-api-key
  (fn [api-key]
    (-> (store-api-key! api-key)
-       (.then #(rf/dispatch [:persistence/api-key-stored])))))
+       (.then #(rf/dispatch [:persistence/api-key-stored]))
+       (.catch (fn [error]
+                 (js/console.error "Failed to store API key:" error)
+                 (rf/dispatch [:persistence/error {:operation :store-api-key
+                                                   :error (str error)}]))))))
 
 (rf/reg-fx
  :persistence/load-api-key
  (fn [_]
    (-> (retrieve-api-key!)
        (.then #(when %
-                 (rf/dispatch [:persistence/api-key-loaded %]))))))
+                 (rf/dispatch [:persistence/api-key-loaded %])))
+       (.catch (fn [error]
+                 (js/console.error "Failed to load API key:" error)
+                 (rf/dispatch [:persistence/error {:operation :load-api-key
+                                                   :error (str error)}]))))))
 
 (rf/reg-fx
  :persistence/delete-api-key
  (fn [_]
    (-> (delete-api-key!)
-       (.then #(rf/dispatch [:persistence/api-key-deleted])))))
+       (.then #(rf/dispatch [:persistence/api-key-deleted]))
+       (.catch (fn [error]
+                 (js/console.error "Failed to delete API key:" error)
+                 (rf/dispatch [:persistence/error {:operation :delete-api-key
+                                                   :error (str error)}]))))))
 
 ;; ============================================================================
 ;; re-frame Event Handlers
@@ -584,6 +613,17 @@
                  [:persistence/load-api-key]
                  [:persistence/load-drafts]
                  [:persistence/load-command-mru]]}))
+
+(rf/reg-event-db
+ :persistence/error
+ (fn [db [_ {:keys [operation error session-id]}]]
+   (js/console.error "Persistence error:" operation error session-id)
+   ;; Store the error for potential UI display
+   ;; Don't crash the app - persistence errors are recoverable
+   (assoc-in db [:persistence :last-error] {:operation operation
+                                            :error error
+                                            :session-id session-id
+                                            :timestamp (js/Date.now)})))
 
 (rf/reg-event-fx
  :persistence/settings-loaded
@@ -776,7 +816,11 @@
  :persistence/load-drafts
  (fn [_]
    (-> (load-all-drafts!)
-       (.then #(rf/dispatch [:persistence/drafts-loaded %])))))
+       (.then #(rf/dispatch [:persistence/drafts-loaded %]))
+       (.catch (fn [error]
+                 (js/console.error "Failed to load drafts:" error)
+                 (rf/dispatch [:persistence/error {:operation :load-drafts
+                                                   :error (str error)}]))))))
 
 (rf/reg-event-db
  :persistence/drafts-loaded
@@ -825,7 +869,11 @@
  (fn [_]
    (-> (load-command-mru!)
        (.then #(when %
-                 (rf/dispatch [:commands/mru-loaded %]))))))
+                 (rf/dispatch [:commands/mru-loaded %])))
+       (.catch (fn [error]
+                 (js/console.error "Failed to load command MRU:" error)
+                 (rf/dispatch [:persistence/error {:operation :load-command-mru
+                                                   :error (str error)}]))))))
 
 (rf/reg-event-fx
  :persistence/save-command-mru

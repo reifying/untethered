@@ -365,3 +365,24 @@
      ;; String setting
      (rf/dispatch-sync [:settings/save :system-prompt "Be concise"])
      (is (= "Be concise" (:system-prompt @(rf/subscribe [:settings/all])))))))
+
+(deftest persistence-error-event-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "persistence/error event stores error in db"
+     (rf/dispatch-sync [:persistence/error {:operation :init-db
+                                            :error "Database initialization failed"}])
+     (let [last-error (get-in @re-frame.db/app-db [:persistence :last-error])]
+       (is (some? last-error))
+       (is (= :init-db (:operation last-error)))
+       (is (= "Database initialization failed" (:error last-error)))
+       (is (number? (:timestamp last-error)))))
+
+   (testing "persistence/error handles session-id for message operations"
+     (rf/dispatch-sync [:persistence/error {:operation :load-messages
+                                            :session-id "test-session-123"
+                                            :error "Failed to load"}])
+     (let [last-error (get-in @re-frame.db/app-db [:persistence :last-error])]
+       (is (= :load-messages (:operation last-error)))
+       (is (= "test-session-123" (:session-id last-error)))))))
