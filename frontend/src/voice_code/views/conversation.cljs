@@ -785,16 +785,23 @@
 (defn- message-list
   "Scrollable list of messages with auto-scroll support.
    Uses 300ms debounce (per iOS ConversationView.swift lines 193-199) to prevent
-   jarring UX with rapid message updates."
+   jarring UX with rapid message updates.
+   
+   Note: Uses local atom for auto-scroll state to avoid subscription deref in
+   component-did-update (not a reactive context). The local atom syncs with
+   the re-frame subscription in reagent-render."
   [{:keys [messages session-id locked? working-directory]}]
   (let [list-ref (r/atom nil)
         ;; Debounce timer ref for auto-scroll
         scroll-timer (r/atom nil)
-        prev-message-count (r/atom 0)]
+        prev-message-count (r/atom 0)
+        ;; Local atom for auto-scroll state - synced from subscription in render
+        ;; This avoids subscription deref in component-did-update (not reactive)
+        local-auto-scroll? (r/atom true)]
     (r/create-class
      {:component-did-update
       (fn [this _]
-        (let [auto-scroll? @(rf/subscribe [:ui/auto-scroll?])
+        (let [auto-scroll? @local-auto-scroll?
               new-count (count messages)
               old-count @prev-message-count]
           ;; Only scroll if messages increased (not on re-renders)
@@ -807,7 +814,7 @@
                     (js/setTimeout
                      (fn []
                        ;; Re-check auto-scroll after debounce in case user disabled it
-                       (when (and @(rf/subscribe [:ui/auto-scroll?]) @list-ref)
+                       (when (and @local-auto-scroll? @list-ref)
                          (.scrollToEnd ^js @list-ref #js {:animated true})))
                      300)))
           ;; Update previous count
@@ -822,6 +829,9 @@
       :reagent-render
       (fn [{:keys [messages session-id locked? working-directory]}]
         (let [auto-scroll? @(rf/subscribe [:ui/auto-scroll?])]
+          ;; Sync local atom with subscription (reactive context)
+          (when (not= @local-auto-scroll? auto-scroll?)
+            (reset! local-auto-scroll? auto-scroll?))
           [:> rn/View {:style {:flex 1}}
            ;; Auto-scroll toggle button
            [:> rn/View {:style {:flex-direction "row"

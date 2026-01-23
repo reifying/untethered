@@ -320,3 +320,29 @@
        (is (= "Session abcdefgh" (or (:custom-name session)
                                      (:backend-name session)
                                      (str "Session " (subs (:id session) 0 8)))))))))
+
+;; ============================================================================
+;; Auto-scroll State Tests (VCMOB-sw3t)
+;; ============================================================================
+
+(deftest auto-scroll-state-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "auto-scroll is enabled by default"
+     (is (true? @(rf/subscribe [:ui/auto-scroll?]))))
+
+   (testing "can toggle auto-scroll state"
+     (rf/dispatch-sync [:ui/toggle-auto-scroll])
+     (is (false? @(rf/subscribe [:ui/auto-scroll?])))
+     (rf/dispatch-sync [:ui/toggle-auto-scroll])
+     (is (true? @(rf/subscribe [:ui/auto-scroll?]))))
+
+   (testing "auto-scroll state persists across subscription calls"
+     ;; This verifies that the subscription returns consistent values
+     ;; which is important for the local atom sync pattern in message-list
+     (rf/dispatch-sync [:ui/toggle-auto-scroll])
+     (is (false? @(rf/subscribe [:ui/auto-scroll?])))
+     (is (false? @(rf/subscribe [:ui/auto-scroll?])))
+     (is (= @(rf/subscribe [:ui/auto-scroll?])
+            @(rf/subscribe [:ui/auto-scroll?]))))))
