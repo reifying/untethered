@@ -167,8 +167,7 @@
   "Expandable list of currently running commands.
    Shows a summary when collapsed, full list when expanded."
   [{:keys [navigation working-directory]}]
-  (let [expanded? (r/atom false)
-        running @(rf/subscribe [:commands/running])]
+  (let [expanded? (r/atom false)]
     (fn [{:keys [navigation working-directory]}]
       (let [running @(rf/subscribe [:commands/running])
             ;; Sort by start time (most recent first)
