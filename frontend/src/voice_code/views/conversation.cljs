@@ -7,7 +7,8 @@
             [voice-code.voice :as voice]
             [voice-code.haptic :as haptic]
             [voice-code.utils :as utils]
-            [voice-code.performance :as perf]))
+            [voice-code.performance :as perf]
+            [voice-code.theme :as theme]))
 
 ;; ============================================================================
 ;; Copy Confirmation Toast
@@ -375,95 +376,108 @@
     (fn [{:keys [role text timestamp status working-directory session-id usage cost]}]
       ;; Track renders for performance monitoring
       (perf/use-render-tracking "message-bubble")
-      (let [{:keys [truncated? display-text full-text]} (utils/truncate-text text)
-            show-text (if (and truncated? (not @expanded?))
-                        display-text
-                        full-text)
-            speaking? @(rf/subscribe [:voice/speaking?])
-            is-error? (= status :error)
-            is-assistant? (= role :assistant)
-            usage-summary (when is-assistant? (utils/format-usage-summary usage cost))]
-        [:> rn/TouchableOpacity
-         {:style {:align-self (if is-user? "flex-end" "flex-start")
-                  :max-width "85%"
-                  :margin-vertical 4
-                  :margin-horizontal 12}
-          :active-opacity 0.8
-          :on-press #(show-message-detail! {:role role :text full-text} session-id working-directory)
-          :on-long-press #(copy-to-clipboard! full-text "Message copied")}
-         ;; Message bubble
-         [:> rn/View {:style {:background-color (if is-user? "#007AFF" "#E9E9EB")
-                              :border-radius 18
-                              :padding-horizontal 14
-                              :padding-vertical 10
-                              :border-bottom-right-radius (if is-user? 4 18)
-                              :border-bottom-left-radius (if is-user? 18 4)}}
-          [:> rn/Text {:style {:color (if is-user? "#FFF" "#000")
-                               :font-size 16
-                               :line-height 22}
-                       :selectable true}
-           show-text]
+      ;; Wrap in [:f> ...] to enable React hooks for theme colors
+      [:f>
+       (fn []
+         (let [colors (theme/use-theme-colors)
+               {:keys [truncated? display-text full-text]} (utils/truncate-text text)
+               show-text (if (and truncated? (not @expanded?))
+                           display-text
+                           full-text)
+               speaking? @(rf/subscribe [:voice/speaking?])
+               is-error? (= status :error)
+               is-assistant? (= role :assistant)
+               usage-summary (when is-assistant? (utils/format-usage-summary usage cost))]
+           [:> rn/TouchableOpacity
+            {:style {:align-self (if is-user? "flex-end" "flex-start")
+                     :max-width "85%"
+                     :margin-vertical 4
+                     :margin-horizontal 12}
+             :active-opacity 0.8
+             :on-press #(show-message-detail! {:role role :text full-text} session-id working-directory)
+             :on-long-press #(copy-to-clipboard! full-text "Message copied")}
+            ;; Message bubble
+            [:> rn/View {:style {:background-color (if is-user?
+                                                     (:bubble-user colors)
+                                                     (:bubble-assistant colors))
+                                 :border-radius 18
+                                 :padding-horizontal 14
+                                 :padding-vertical 10
+                                 :border-bottom-right-radius (if is-user? 4 18)
+                                 :border-bottom-left-radius (if is-user? 18 4)}}
+             [:> rn/Text {:style {:color (if is-user?
+                                           (:bubble-user-text colors)
+                                           (:bubble-assistant-text colors))
+                                  :font-size 16
+                                  :line-height 22}
+                          :selectable true}
+              show-text]
 
-          ;; Show more/less toggle for truncated messages
-          (when truncated?
-            [:> rn/TouchableOpacity
-             {:style {:margin-top 8
-                      :padding-vertical 4}
-              :on-press #(swap! expanded? not)}
-             [:> rn/Text {:style {:color (if is-user? "#CCE5FF" "#007AFF")
-                                  :font-size 14
-                                  :font-weight "500"}}
-              (if @expanded? "Show less" "Show more")]])]
+             ;; Show more/less toggle for truncated messages
+             (when truncated?
+               [:> rn/TouchableOpacity
+                {:style {:margin-top 8
+                         :padding-vertical 4}
+                 :on-press #(swap! expanded? not)}
+                [:> rn/Text {:style {:color (if is-user?
+                                              (theme/opacity (:bubble-user-text colors) 0.7)
+                                              (:accent colors))
+                                     :font-size 14
+                                     :font-weight "500"}}
+                 (if @expanded? "Show less" "Show more")]])]
 
-         ;; Timestamp, status, usage/cost, and interaction hints
-         [:> rn/View {:style {:flex-direction "row"
-                              :align-items "center"
-                              :flex-wrap "wrap"
-                              :margin-top 2
-                              :padding-horizontal 4}}
-          [:> rn/Text {:style {:font-size 11
-                               :color "#999"}}
-           (format-time timestamp)]
-          (cond
-            is-error?
-            [:> rn/Text {:style {:font-size 11
-                                 :color "#FF3B30"
-                                 :margin-left 4}}
-             " • ⚠️ Failed to send"]
-            is-sending?
-            [:> rn/Text {:style {:font-size 11
-                                 :color "#999"
-                                 :margin-left 4}}
-             " • Sending..."])
-          ;; Usage/cost display for assistant messages
-          (when usage-summary
-            [:> rn/Text {:style {:font-size 11
-                                 :color "#888"
-                                 :margin-left 6}}
-             (str " • " usage-summary)])
-          ;; Tap hint - ellipsis indicates actions available
-          [:> rn/Text {:style {:font-size 11
-                               :color "#999"
-                               :margin-left 8}}
-           "•••"]]]))))
+            ;; Timestamp, status, usage/cost, and interaction hints
+            [:> rn/View {:style {:flex-direction "row"
+                                 :align-items "center"
+                                 :flex-wrap "wrap"
+                                 :margin-top 2
+                                 :padding-horizontal 4}}
+             [:> rn/Text {:style {:font-size 11
+                                  :color (:text-tertiary colors)}}
+              (format-time timestamp)]
+             (cond
+               is-error?
+               [:> rn/Text {:style {:font-size 11
+                                    :color (:destructive colors)
+                                    :margin-left 4}}
+                " • ⚠️ Failed to send"]
+               is-sending?
+               [:> rn/Text {:style {:font-size 11
+                                    :color (:text-tertiary colors)
+                                    :margin-left 4}}
+                " • Sending..."])
+             ;; Usage/cost display for assistant messages
+             (when usage-summary
+               [:> rn/Text {:style {:font-size 11
+                                    :color (:text-secondary colors)
+                                    :margin-left 6}}
+                (str " • " usage-summary)])
+             ;; Tap hint - ellipsis indicates actions available
+             [:> rn/Text {:style {:font-size 11
+                                  :color (:text-tertiary colors)
+                                  :margin-left 8}}
+              "•••"]]]))])))
 
 (defn- typing-indicator
   "Shows when Claude is processing."
   []
-  [:> rn/View {:style {:align-self "flex-start"
-                       :margin-horizontal 12
-                       :margin-vertical 8}}
-   [:> rn/View {:style {:background-color "#E9E9EB"
-                        :border-radius 18
-                        :padding-horizontal 14
-                        :padding-vertical 10
-                        :flex-direction "row"
-                        :align-items "center"}}
-    [:> rn/ActivityIndicator {:size "small" :color "#666"}]
-    [:> rn/Text {:style {:color "#666"
-                         :margin-left 8
-                         :font-size 14}}
-     "Claude is thinking..."]]])
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/View {:style {:align-self "flex-start"
+                            :margin-horizontal 12
+                            :margin-vertical 8}}
+        [:> rn/View {:style {:background-color (:bubble-assistant colors)
+                             :border-radius 18
+                             :padding-horizontal 14
+                             :padding-vertical 10
+                             :flex-direction "row"
+                             :align-items "center"}}
+         [:> rn/ActivityIndicator {:size "small" :color (:text-secondary colors)}]
+         [:> rn/Text {:style {:color (:text-secondary colors)
+                              :margin-left 8
+                              :font-size 14}}
+          "Claude is thinking..."]]]))])
 
 (defn- error-banner
   "Displays error message with copy-to-clipboard and dismiss options.
@@ -704,78 +718,83 @@
 (defn- text-input-area
   "Text input with send button."
   [{:keys [session-id]}]
-  (let [draft @(rf/subscribe [:ui/draft session-id])
-        locked? @(rf/subscribe [:session/locked? session-id])
-        can-send? (and (not locked?) (seq draft))]
-    [:> rn/View {:style {:border-top-width 1
-                         :border-top-color "#E5E5E5"
-                         :background-color "#FFFFFF"
-                         :padding-horizontal 12
-                         :padding-vertical 8}}
-     ;; Mode toggle row
-     [:> rn/View {:style {:flex-direction "row"
-                          :justify-content "space-between"
-                          :align-items "center"
-                          :margin-bottom 8}}
-      [mode-toggle]
-      ;; Tappable connection status indicator
-      [tappable-connection-status]]
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           draft @(rf/subscribe [:ui/draft session-id])
+           locked? @(rf/subscribe [:session/locked? session-id])
+           can-send? (and (not locked?) (seq draft))]
+       [:> rn/View {:style {:border-top-width 1
+                            :border-top-color (:separator colors)
+                            :background-color (:background colors)
+                            :padding-horizontal 12
+                            :padding-vertical 8}}
+        ;; Mode toggle row
+        [:> rn/View {:style {:flex-direction "row"
+                             :justify-content "space-between"
+                             :align-items "center"
+                             :margin-bottom 8}}
+         [mode-toggle]
+         ;; Tappable connection status indicator
+         [tappable-connection-status]]
 
-     ;; Text input row
-     [:> rn/View {:style {:flex-direction "row"
-                          :align-items "flex-end"}}
-      [:> rn/TextInput
-       {:style {:flex 1
-                :border-width 1
-                :border-color "#DDD"
-                :border-radius 20
-                :padding-horizontal 16
-                :padding-vertical 10
-                :padding-right 44
-                :font-size 16
-                :max-height 120
-                :background-color "#F9F9F9"}
-        :placeholder "Message..."
-        :multiline true
-        :value (or draft "")
-        :editable (not locked?)
-        :on-change-text #(rf/dispatch [:ui/set-draft session-id %])}]
+        ;; Text input row
+        [:> rn/View {:style {:flex-direction "row"
+                             :align-items "flex-end"}}
+         [:> rn/TextInput
+          {:style {:flex 1
+                   :border-width 1
+                   :border-color (:input-border colors)
+                   :border-radius 20
+                   :padding-horizontal 16
+                   :padding-vertical 10
+                   :padding-right 44
+                   :font-size 16
+                   :max-height 120
+                   :background-color (:input-background colors)
+                   :color (:text-primary colors)}
+           :placeholder "Message..."
+           :placeholder-text-color (:input-placeholder colors)
+           :multiline true
+           :value (or draft "")
+           :editable (not locked?)
+           :on-change-text #(rf/dispatch [:ui/set-draft session-id %])}]
 
-      ;; Send button
-      [:> rn/TouchableOpacity
-       {:style {:position "absolute"
-                :right 4
-                :bottom 4
-                :width 36
-                :height 36
-                :border-radius 18
-                :background-color (if can-send? "#007AFF" "#CCC")
-                :justify-content "center"
-                :align-items "center"}
-        :disabled (not can-send?)
-        :on-press #(rf/dispatch [:prompt/send-from-draft session-id])}
-       [:> rn/Text {:style {:color "#FFF"
-                            :font-size 18
-                            :font-weight "bold"}}
-        "↑"]]]
+         ;; Send button
+         [:> rn/TouchableOpacity
+          {:style {:position "absolute"
+                   :right 4
+                   :bottom 4
+                   :width 36
+                   :height 36
+                   :border-radius 18
+                   :background-color (if can-send? (:accent colors) (:disabled colors))
+                   :justify-content "center"
+                   :align-items "center"}
+           :disabled (not can-send?)
+           :on-press #(rf/dispatch [:prompt/send-from-draft session-id])}
+          [:> rn/Text {:style {:color "#FFF"
+                               :font-size 18
+                               :font-weight "bold"}}
+           "↑"]]]
 
-     ;; Locked state hint - tappable unlock button
-     (when locked?
-       [:> rn/TouchableOpacity
-        {:style {:margin-top 8
-                 :padding-horizontal 12
-                 :padding-vertical 6
-                 :align-self "center"
-                 :background-color "#FFF3E0"
-                 :border-radius 12
-                 :border-width 1
-                 :border-color "#FF9500"}
-         :on-press #(rf/dispatch [:sessions/unlock session-id])}
-        [:> rn/Text {:style {:font-size 12
-                             :color "#FF9500"
-                             :font-weight "500"
-                             :text-align "center"}}
-         "Tap to Unlock"]])]))
+        ;; Locked state hint - tappable unlock button
+        (when locked?
+          [:> rn/TouchableOpacity
+           {:style {:margin-top 8
+                    :padding-horizontal 12
+                    :padding-vertical 6
+                    :align-self "center"
+                    :background-color "#FFF3E0"
+                    :border-radius 12
+                    :border-width 1
+                    :border-color (:warning colors)}
+            :on-press #(rf/dispatch [:sessions/unlock session-id])}
+           [:> rn/Text {:style {:font-size 12
+                                :color (:warning colors)
+                                :font-weight "500"
+                                :text-align "center"}}
+            "Tap to Unlock"]])]))])
 
 (defn- input-area
   "Switches between voice and text input based on current mode."
@@ -833,68 +852,74 @@
       (fn [{:keys [messages session-id locked? working-directory]}]
         ;; Track renders for performance monitoring
         (perf/use-render-tracking "message-list")
-        (let [auto-scroll? @(rf/subscribe [:ui/auto-scroll?])]
-          ;; Sync local atom with subscription (reactive context)
-          (when (not= @local-auto-scroll? auto-scroll?)
-            (reset! local-auto-scroll? auto-scroll?))
-          [:> rn/View {:style {:flex 1}}
-           ;; Auto-scroll toggle button
-           [:> rn/View {:style {:flex-direction "row"
-                                :justify-content "flex-end"
-                                :padding-horizontal 12
-                                :padding-vertical 4
-                                :border-bottom-width 1
-                                :border-bottom-color "#F0F0F0"}}
-            [:> rn/TouchableOpacity
-             {:style {:flex-direction "row"
-                      :align-items "center"
-                      :padding-horizontal 8
-                      :padding-vertical 4
-                      :background-color (if auto-scroll? "#E8F4FD" "#F5F5F5")
-                      :border-radius 12}
-              :on-press (fn []
-                          ;; If re-enabling, scroll to bottom immediately
-                          (when (not auto-scroll?)
-                            (when @list-ref
-                              (.scrollToEnd ^js @list-ref #js {:animated true})))
-                          (rf/dispatch [:ui/toggle-auto-scroll]))}
-             [:> rn/Text {:style {:font-size 12
-                                  :color (if auto-scroll? "#007AFF" "#666")
-                                  :margin-right 4}}
-              "Auto-scroll"]
-             [:> rn/Text {:style {:font-size 10
-                                  :color (if auto-scroll? "#007AFF" "#999")}}
-              (if auto-scroll? "ON" "OFF")]]]
-           ;; Message list
-           [:> rn/FlatList
-            {:ref #(reset! list-ref %)
-             :style {:flex 1}
-             :data (clj->js messages)
-             :key-extractor (fn [item idx]
-                              (or (.-id item) (str idx)))
-             :render-item
-             (fn [^js obj]
-               (let [item (.-item obj)
-                     ;; Convert JS item to Clojure map, including usage/cost for assistant messages
-                     msg {:role (keyword (.-role item))
-                          :text (.-text item)
-                          :timestamp (.-timestamp item)
-                          :status (some-> item .-status keyword)
-                          :working-directory working-directory
-                          :session-id session-id
-                          ;; Usage data from backend response (input-tokens, output-tokens, etc.)
-                          :usage (when-let [u (.-usage item)]
-                                   (js->clj u :keywordize-keys true))
-                          ;; Cost data from backend response (input-cost, output-cost, total-cost)
-                          :cost (when-let [c (.-cost item)]
-                                  (js->clj c :keywordize-keys true))}]
-                 (r/as-element [message-bubble msg])))
-             :content-container-style {:padding-vertical 8}
-             :inverted false
-             :keyboard-dismiss-mode "interactive"
-             :list-footer-component
-             (when locked?
-               (r/as-element [typing-indicator]))}]]))})))
+        ;; Wrap in [:f> ...] to enable React hooks for theme colors
+        [:f>
+         (fn []
+           (let [colors (theme/use-theme-colors)
+                 auto-scroll? @(rf/subscribe [:ui/auto-scroll?])]
+             ;; Sync local atom with subscription (reactive context)
+             (when (not= @local-auto-scroll? auto-scroll?)
+               (reset! local-auto-scroll? auto-scroll?))
+             [:> rn/View {:style {:flex 1}}
+              ;; Auto-scroll toggle button
+              [:> rn/View {:style {:flex-direction "row"
+                                   :justify-content "flex-end"
+                                   :padding-horizontal 12
+                                   :padding-vertical 4
+                                   :border-bottom-width 1
+                                   :border-bottom-color (:separator colors)}}
+               [:> rn/TouchableOpacity
+                {:style {:flex-direction "row"
+                         :align-items "center"
+                         :padding-horizontal 8
+                         :padding-vertical 4
+                         :background-color (if auto-scroll?
+                                             (theme/opacity (:accent colors) 0.15)
+                                             (:fill-secondary colors))
+                         :border-radius 12}
+                 :on-press (fn []
+                             ;; If re-enabling, scroll to bottom immediately
+                             (when (not auto-scroll?)
+                               (when @list-ref
+                                 (.scrollToEnd ^js @list-ref #js {:animated true})))
+                             (rf/dispatch [:ui/toggle-auto-scroll]))}
+                [:> rn/Text {:style {:font-size 12
+                                     :color (if auto-scroll? (:accent colors) (:text-secondary colors))
+                                     :margin-right 4}}
+                 "Auto-scroll"]
+                [:> rn/Text {:style {:font-size 10
+                                     :color (if auto-scroll? (:accent colors) (:text-tertiary colors))}}
+                 (if auto-scroll? "ON" "OFF")]]]
+              ;; Message list
+              [:> rn/FlatList
+               {:ref #(reset! list-ref %)
+                :style {:flex 1}
+                :data (clj->js messages)
+                :key-extractor (fn [item idx]
+                                 (or (.-id item) (str idx)))
+                :render-item
+                (fn [^js obj]
+                  (let [item (.-item obj)
+                        ;; Convert JS item to Clojure map, including usage/cost for assistant messages
+                        msg {:role (keyword (.-role item))
+                             :text (.-text item)
+                             :timestamp (.-timestamp item)
+                             :status (some-> item .-status keyword)
+                             :working-directory working-directory
+                             :session-id session-id
+                             ;; Usage data from backend response (input-tokens, output-tokens, etc.)
+                             :usage (when-let [u (.-usage item)]
+                                      (js->clj u :keywordize-keys true))
+                             ;; Cost data from backend response (input-cost, output-cost, total-cost)
+                             :cost (when-let [c (.-cost item)]
+                                     (js->clj c :keywordize-keys true))}]
+                    (r/as-element [message-bubble msg])))
+                :content-container-style {:padding-vertical 8}
+                :inverted false
+                :keyboard-dismiss-mode "interactive"
+                :list-footer-component
+                (when locked?
+                  (r/as-element [typing-indicator]))}]]))])})))
 
 (defn- loading-conversation
   "Shown while loading conversation history.
@@ -1215,7 +1240,11 @@
 (defn conversation-view
   "Main conversation screen.
    Uses Form-3 component pattern for proper Reagent reactivity with React Navigation.
-   Props is a ClojureScript map (converted by r/reactify-component)."
+   Props is a ClojureScript map (converted by r/reactify-component).
+   
+   Note: Wraps content in [:f> ...] to enable React hooks for theme colors.
+   The Form-3 create-class is needed for lifecycle methods, but its reagent-render
+   cannot use hooks directly. The [:f> ...] wrapper provides a functional component context."
   [props]
   ;; Props is a CLJS map, use keyword access. The JS objects inside need .- access.
   (let [^js navigation (:navigation props)
@@ -1250,49 +1279,53 @@
       (fn [_]
         ;; Track renders for performance monitoring
         (perf/use-render-tracking "conversation-view")
-        ;; Subscriptions MUST be inside :reagent-render for reactivity
-        (let [messages @(rf/subscribe [:messages/for-session session-id])
-              locked? @(rf/subscribe [:session/locked? session-id])
-              loading? @(rf/subscribe [:session/loading? session-id])
-              session @(rf/subscribe [:sessions/by-id session-id])
-              working-directory (:working-directory session)]
-          [:> rn/View {:style {:flex 1 :background-color "#FFFFFF"}}
-           ;; Modals (rendered at root for proper overlay)
-           [message-detail-modal]
-           [rename-session-modal]
+        ;; Wrap in [:f> ...] to enable React hooks for theme colors
+        [:f>
+         (fn []
+           ;; Subscriptions inside functional component for reactivity
+           (let [colors (theme/use-theme-colors)
+                 messages @(rf/subscribe [:messages/for-session session-id])
+                 locked? @(rf/subscribe [:session/locked? session-id])
+                 loading? @(rf/subscribe [:session/loading? session-id])
+                 session @(rf/subscribe [:sessions/by-id session-id])
+                 working-directory (:working-directory session)]
+             [:> rn/View {:style {:flex 1 :background-color (:background colors)}}
+              ;; Modals (rendered at root for proper overlay)
+              [message-detail-modal]
+              [rename-session-modal]
 
-           [:> rn/KeyboardAvoidingView
-            {:style {:flex 1}
-             :behavior "padding"
-             :keyboard-vertical-offset 90}
+              [:> rn/KeyboardAvoidingView
+               {:style {:flex 1}
+                :behavior "padding"
+                :keyboard-vertical-offset 90}
 
-            ;; Toast notifications (float above content)
-            [copy-confirmation-toast]
-            [compaction-success-toast]
+               ;; Toast notifications (float above content)
+               [copy-confirmation-toast]
+               [compaction-success-toast]
 
-            ;; Error banner at top (dismissable, copyable)
-            [error-banner]
+               ;; Error banner at top (dismissable, copyable)
+               [error-banner]
 
-            (cond
-              ;; Session not found - show error state with session ID
-              ;; A real session always has :id - empty map or {:unread-count 0} means not found
-              (not (:id session))
-              [session-not-found {:session-id session-id}]
+               (cond
+                 ;; Session not found - show error state with session ID
+                 ;; A real session always has :id - empty map or {:unread-count 0} means not found
+                 (not (:id session))
+                 [session-not-found {:session-id session-id}]
 
-              ;; Loading history - show loading indicator (matches iOS isLoading state)
-              ;; This shows while waiting for session_history response, with 5s timeout fallback
-              loading?
-              [loading-conversation]
+                 ;; Loading history - show loading indicator (matches iOS isLoading state)
+                 ;; This shows while waiting for session_history response, with 5s timeout fallback
+                 loading?
+                 [loading-conversation]
 
-              ;; Session exists but no messages - show empty state
-              (empty? messages)
-              [empty-conversation]
+                 ;; Session exists but no messages - show empty state
+                 (empty? messages)
+                 [empty-conversation]
 
-              ;; Session exists with messages - show message list
-              :else
-              [message-list {:messages messages
-                             :session-id session-id
-                             :locked? locked?
-                             :working-directory working-directory}])
+                 ;; Session exists with messages - show message list
+                 :else
+                 [message-list {:messages messages
+                                :session-id session-id
+                                :locked? locked?
+                                :working-directory working-directory}])
 
-            [input-area {:session-id session-id}]]]))})))
+               [input-area {:session-id session-id}]]]))])})))
