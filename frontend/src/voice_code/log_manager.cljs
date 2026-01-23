@@ -1,7 +1,10 @@
 (ns voice-code.log-manager
   "Log manager for capturing and displaying debug logs.
    Provides a circular buffer that stores recent log entries up to a size limit.
-   Integrates with console.log/warn/error for automatic capture."
+   Integrates with console.log/warn/error for automatic capture.
+   
+   Uses a single atom for log state to ensure atomic updates and avoid
+   race conditions between entry count and size tracking."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]))
 
@@ -9,9 +12,9 @@
 (def ^:private max-log-size-bytes 15000) ; 15KB limit as per iOS parity
 (def ^:private max-entries 500) ; Max entries to prevent memory issues
 
-;; Log storage - use ratom for reactivity
-(defonce log-entries (r/atom []))
-(defonce current-size (r/atom 0))
+;; Log storage - single atom for atomic updates
+;; Using a single atom prevents race conditions between entry count and size tracking
+(defonce log-state (r/atom {:entries [] :size 0}))
 
 ;; Original console functions (saved before override)
 (defonce ^:private original-console-log (atom nil))
@@ -40,36 +43,37 @@
      (count (:message entry))
      10)) ; overhead for structure
 
-(defn- trim-logs-if-needed!
-  "Remove oldest entries if we exceed size limit."
-  []
-  (while (and (> @current-size max-log-size-bytes)
-              (seq @log-entries))
-    (let [oldest (first @log-entries)
-          size (entry-size oldest)]
-      (swap! log-entries subvec 1)
-      (swap! current-size - size))))
+(defn- trim-state-if-needed
+  "Pure function to trim log state if it exceeds limits.
+   Returns updated state with oldest entries removed as needed."
+  [{:keys [entries size] :as state}]
+  (if (or (> size max-log-size-bytes) (> (count entries) max-entries))
+    (loop [entries entries
+           size size]
+      (if (and (seq entries)
+               (or (> size max-log-size-bytes)
+                   (> (count entries) max-entries)))
+        (let [oldest (first entries)
+              oldest-size (entry-size oldest)]
+          (recur (subvec entries 1) (- size oldest-size)))
+        {:entries entries :size size}))
+    state))
 
 (defn add-log!
-  "Add a log entry to the buffer."
+  "Add a log entry to the buffer.
+   Uses a single atomic swap! to add entry, update size, and trim if needed."
   [level & args]
   (let [message (apply str (interpose " " (map str args)))
         entry {:timestamp (format-timestamp)
                :level level
                :message message
                :id (str (random-uuid))}
-        size (entry-size entry)]
-    ;; Add entry
-    (swap! log-entries conj entry)
-    (swap! current-size + size)
-    ;; Trim if over max entries
-    (when (> (count @log-entries) max-entries)
-      (let [oldest (first @log-entries)
-            oldest-size (entry-size oldest)]
-        (swap! log-entries subvec 1)
-        (swap! current-size - oldest-size)))
-    ;; Trim if over size limit
-    (trim-logs-if-needed!)))
+        entry-sz (entry-size entry)]
+    (swap! log-state
+           (fn [{:keys [entries size]}]
+             (-> {:entries (conj entries entry)
+                  :size (+ size entry-sz)}
+                 trim-state-if-needed)))))
 
 (defn- wrap-console-fn
   "Wrap a console function to capture logs while preserving original behavior."
@@ -110,12 +114,12 @@
 (defn get-logs
   "Get all current log entries."
   []
-  @log-entries)
+  (:entries @log-state))
 
 (defn get-logs-as-text
   "Get all logs formatted as text for clipboard."
   []
-  (->> @log-entries
+  (->> (:entries @log-state)
        (map (fn [{:keys [timestamp level message]}]
               (str "[" timestamp "] [" level "] " message)))
        (clojure.string/join "\n")))
@@ -123,34 +127,33 @@
 (defn clear-logs!
   "Clear all log entries."
   []
-  (reset! log-entries [])
-  (reset! current-size 0))
+  (reset! log-state {:entries [] :size 0}))
 
 (defn log-count
   "Get number of log entries."
   []
-  (count @log-entries))
+  (count (:entries @log-state)))
 
 (defn log-size-bytes
   "Get current log size in bytes."
   []
-  @current-size)
+  (:size @log-state))
 
 ;; Re-frame subscriptions for UI reactivity
 (rf/reg-sub
  :logs/entries
  (fn [_ _]
-   @log-entries))
+   (:entries @log-state)))
 
 (rf/reg-sub
  :logs/count
  (fn [_ _]
-   (count @log-entries)))
+   (count (:entries @log-state))))
 
 (rf/reg-sub
  :logs/size-bytes
  (fn [_ _]
-   @current-size))
+   (:size @log-state)))
 
 ;; Re-frame events for log management
 (rf/reg-event-fx
