@@ -298,7 +298,8 @@
 ;; ============================================================================
 
 (defn session-info-view
-  "Modal view displaying session context information and actions."
+  "Modal view displaying session context information and actions.
+   Uses Form-3 component to properly handle git branch loading on mount."
   [{:keys [route navigation]}]
   (let [^js route route
         ^js navigation navigation
@@ -313,120 +314,126 @@
                               #(swap! confirmation-state assoc :visible? false)
                               2000))]
 
-    ;; Request git branch when component mounts
-    (let [session @(rf/subscribe [:sessions/by-id session-id])
-          working-directory (:working-directory session)]
-      (when working-directory
-        (rf/dispatch [:git/request-branch working-directory])))
+    (r/create-class
+     {:display-name "session-info-view"
 
-    (fn []
-      (let [session @(rf/subscribe [:sessions/by-id session-id])
-            settings @(rf/subscribe [:settings/all])
-            active-recipe @(rf/subscribe [:recipes/active-for-session session-id])
-            working-directory (:working-directory session)
-            git-branch @(rf/subscribe [:git/branch working-directory])
-            git-loading? @(rf/subscribe [:git/loading? working-directory])
-            {:keys [visible? message]} @confirmation-state
+      :component-did-mount
+      (fn [_this]
+        ;; Request git branch when component mounts (matches iOS .task modifier)
+        (let [session @(rf/subscribe [:sessions/by-id session-id])
+              working-directory (:working-directory session)]
+          (when working-directory
+            (rf/dispatch [:git/request-branch working-directory]))))
 
-            handle-copy (fn [text msg]
-                          (copy-to-clipboard! text)
-                          (show-confirmation! msg))
+      :reagent-render
+      (fn []
+        (let [session @(rf/subscribe [:sessions/by-id session-id])
+              settings @(rf/subscribe [:settings/all])
+              active-recipe @(rf/subscribe [:recipes/active-for-session session-id])
+              working-directory (:working-directory session)
+              git-branch @(rf/subscribe [:git/branch working-directory])
+              git-loading? @(rf/subscribe [:git/loading? working-directory])
+              {:keys [visible? message]} @confirmation-state
 
-            ;; Export loads ALL messages from SQLite, bypassing the 50-message
-            ;; in-memory limit. This matches iOS behavior (SessionInfoView.swift:276-290)
-            ;; which fetches all messages from CoreData for export.
-            handle-export (fn []
-                            (let [{:keys [id backend-name custom-name working-directory]} session
-                                  display-name (or custom-name backend-name (str "Session " (subs id 0 8)))
-                                  ;; Build header first, then load all messages async
-                                  header (str "# " display-name "\n"
-                                              "Session ID: " id "\n"
-                                              "Working Directory: " (or working-directory "Not set") "\n"
-                                              (when git-branch
-                                                (str "Git Branch: " git-branch "\n"))
-                                              "Exported: " (.toISOString (js/Date.)) "\n"
-                                              "\n---\n\n")]
-                              ;; Load ALL messages from SQLite (not just the 50 in app-db)
-                              (-> (persistence/load-messages! id)
-                                  (.then (fn [all-messages]
-                                           (let [export-text (str header
-                                                                  "Message Count: " (count all-messages) "\n\n"
-                                                                  (->> all-messages
-                                                                       (map (fn [{:keys [role text]}]
-                                                                              (str "[" (if (= role :user) "User" "Assistant") "]\n"
-                                                                                   text "\n\n")))
-                                                                       (apply str)))]
-                                             (copy-to-clipboard! export-text)
-                                             (show-confirmation! (str "Exported " (count all-messages) " messages")))))
-                                  (.catch (fn [error]
-                                            (js/console.error "Export failed:" error)
-                                            (show-confirmation! "Export failed"))))))
+              handle-copy (fn [text msg]
+                            (copy-to-clipboard! text)
+                            (show-confirmation! msg))
 
-            handle-compact (fn []
-                             (.alert Alert
-                                     "Compact Session"
-                                     "This will summarize the conversation history to reduce context window usage. This cannot be undone."
-                                     (clj->js [{:text "Cancel" :style "cancel"}
-                                               {:text "Compact"
-                                                :onPress (fn []
-                                                           (rf/dispatch [:sessions/compact session-id])
-                                                           (show-confirmation! "Compaction started"))}])))
+              ;; Export loads ALL messages from SQLite, bypassing the 50-message
+              ;; in-memory limit. This matches iOS behavior (SessionInfoView.swift:276-290)
+              ;; which fetches all messages from CoreData for export.
+              handle-export (fn []
+                              (let [{:keys [id backend-name custom-name working-directory]} session
+                                    display-name (or custom-name backend-name (str "Session " (subs id 0 8)))
+                                    ;; Build header first, then load all messages async
+                                    header (str "# " display-name "\n"
+                                                "Session ID: " id "\n"
+                                                "Working Directory: " (or working-directory "Not set") "\n"
+                                                (when git-branch
+                                                  (str "Git Branch: " git-branch "\n"))
+                                                "Exported: " (.toISOString (js/Date.)) "\n"
+                                                "\n---\n\n")]
+                                ;; Load ALL messages from SQLite (not just the 50 in app-db)
+                                (-> (persistence/load-messages! id)
+                                    (.then (fn [all-messages]
+                                             (let [export-text (str header
+                                                                    "Message Count: " (count all-messages) "\n\n"
+                                                                    (->> all-messages
+                                                                         (map (fn [{:keys [role text]}]
+                                                                                (str "[" (if (= role :user) "User" "Assistant") "]\n"
+                                                                                     text "\n\n")))
+                                                                         (apply str)))]
+                                               (copy-to-clipboard! export-text)
+                                               (show-confirmation! (str "Exported " (count all-messages) " messages")))))
+                                    (.catch (fn [error]
+                                              (js/console.error "Export failed:" error)
+                                              (show-confirmation! "Export failed"))))))
 
-            handle-add-to-queue (fn []
-                                  (rf/dispatch [:sessions/add-to-priority-queue session-id])
-                                  (show-confirmation! "Added to Priority Queue"))
+              handle-compact (fn []
+                               (.alert Alert
+                                       "Compact Session"
+                                       "This will summarize the conversation history to reduce context window usage. This cannot be undone."
+                                       (clj->js [{:text "Cancel" :style "cancel"}
+                                                 {:text "Compact"
+                                                  :onPress (fn []
+                                                             (rf/dispatch [:sessions/compact session-id])
+                                                             (show-confirmation! "Compaction started"))}])))
 
-            handle-remove-from-queue (fn []
-                                       (rf/dispatch [:sessions/remove-from-priority-queue session-id])
-                                       (show-confirmation! "Removed from Priority Queue"))
+              handle-add-to-queue (fn []
+                                    (rf/dispatch [:sessions/add-to-priority-queue session-id])
+                                    (show-confirmation! "Added to Priority Queue"))
 
-            handle-change-priority (fn [priority]
-                                     (rf/dispatch [:sessions/change-priority session-id priority])
-                                     (show-confirmation! (str "Priority changed to " priority)))
+              handle-remove-from-queue (fn []
+                                         (rf/dispatch [:sessions/remove-from-priority-queue session-id])
+                                         (show-confirmation! "Removed from Priority Queue"))
 
-            handle-start-recipe (fn []
-                                  (.navigate navigation "Recipes"
-                                             #js {:sessionId session-id
-                                                  :workingDirectory (:working-directory session)}))
+              handle-change-priority (fn [priority]
+                                       (rf/dispatch [:sessions/change-priority session-id priority])
+                                       (show-confirmation! (str "Priority changed to " priority)))
 
-            handle-exit-recipe (fn []
-                                 (rf/dispatch [:recipes/exit session-id])
-                                 (show-confirmation! "Recipe exited"))
+              handle-start-recipe (fn []
+                                    (.navigate navigation "Recipes"
+                                               #js {:sessionId session-id
+                                                    :workingDirectory (:working-directory session)}))
 
-            handle-infer-name (fn []
-                                (rf/dispatch [:session/infer-name session-id])
-                                (show-confirmation! "Inferring session name..."))
+              handle-exit-recipe (fn []
+                                   (rf/dispatch [:recipes/exit session-id])
+                                   (show-confirmation! "Recipe exited"))
 
-            handle-delete (fn []
-                            (.alert Alert
-                                    "Delete Session"
-                                    "Are you sure you want to delete this session? This cannot be undone."
-                                    (clj->js [{:text "Cancel" :style "cancel"}
-                                              {:text "Delete"
-                                               :style "destructive"
-                                               :onPress (fn []
-                                                          (rf/dispatch [:sessions/delete session-id])
-                                                          (.goBack navigation))}])))]
-        [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
-         [copy-confirmation-toast message visible?]
-         [:> rn/ScrollView {:content-container-style {:padding-bottom 40}}
-          (when session
-            [:> rn/View
-             [session-info-section {:session session
-                                    :git-branch git-branch
-                                    :git-loading? git-loading?
-                                    :on-copy handle-copy}]
-             [priority-queue-section {:session session
-                                      :settings settings
-                                      :on-copy handle-copy
-                                      :on-add-to-queue handle-add-to-queue
-                                      :on-remove-from-queue handle-remove-from-queue
-                                      :on-change-priority handle-change-priority}]
-             [recipe-orchestration-section {:session-id session-id
-                                            :active-recipe active-recipe
-                                            :on-start-recipe handle-start-recipe
-                                            :on-exit-recipe handle-exit-recipe}]
-             [actions-section {:on-export handle-export
-                               :on-compact handle-compact
-                               :on-infer-name handle-infer-name}]
-             [danger-zone-section {:on-delete handle-delete}]])]]))))
+              handle-infer-name (fn []
+                                  (rf/dispatch [:session/infer-name session-id])
+                                  (show-confirmation! "Inferring session name..."))
+
+              handle-delete (fn []
+                              (.alert Alert
+                                      "Delete Session"
+                                      "Are you sure you want to delete this session? This cannot be undone."
+                                      (clj->js [{:text "Cancel" :style "cancel"}
+                                                {:text "Delete"
+                                                 :style "destructive"
+                                                 :onPress (fn []
+                                                            (rf/dispatch [:sessions/delete session-id])
+                                                            (.goBack navigation))}])))]
+          [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
+           [copy-confirmation-toast message visible?]
+           [:> rn/ScrollView {:content-container-style {:padding-bottom 40}}
+            (when session
+              [:> rn/View
+               [session-info-section {:session session
+                                      :git-branch git-branch
+                                      :git-loading? git-loading?
+                                      :on-copy handle-copy}]
+               [priority-queue-section {:session session
+                                        :settings settings
+                                        :on-copy handle-copy
+                                        :on-add-to-queue handle-add-to-queue
+                                        :on-remove-from-queue handle-remove-from-queue
+                                        :on-change-priority handle-change-priority}]
+               [recipe-orchestration-section {:session-id session-id
+                                              :active-recipe active-recipe
+                                              :on-start-recipe handle-start-recipe
+                                              :on-exit-recipe handle-exit-recipe}]
+               [actions-section {:on-export handle-export
+                                 :on-compact handle-compact
+                                 :on-infer-name handle-infer-name}]
+               [danger-zone-section {:on-delete handle-delete}]])]]))})))
