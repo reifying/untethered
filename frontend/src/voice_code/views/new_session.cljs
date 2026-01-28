@@ -46,8 +46,8 @@
     [:> rn/Switch
      {:value value
       :on-value-change on-value-change
-      :track-color #js {:false (:separator colors) :true "#81B0FF"}
-      :thumb-color (if value (:accent colors) "#FFF")}]]
+      :track-color #js {:false (:separator colors) :true (:switch-track-on colors)}
+      :thumb-color (if value (:accent colors) (:switch-thumb colors))}]]
    (when description
      [:> rn/Text {:style {:font-size 13
                           :color (:text-secondary colors)
@@ -105,7 +105,7 @@
      :on-press on-create}
     [:> rn/Text {:style {:font-size 16
                          :font-weight "600"
-                         :color "#FFF"}}
+                         :color (:button-text-on-accent colors)}}
      "Create"]]])
 
 (defn new-session-view

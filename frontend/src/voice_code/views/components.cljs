@@ -4,7 +4,8 @@
             ["react-native" :as rn]
             ["@react-native-clipboard/clipboard" :as Clipboard]
             [voice-code.haptic :as haptic]
-            [voice-code.utils :as utils]))
+            [voice-code.utils :as utils]
+            [voice-code.theme :as theme]))
 
 ;; Timer interval for relative time updates (60 seconds)
 (def ^:private update-interval-ms 60000)
@@ -102,17 +103,21 @@
     (haptic/success!)
     (show-toast! message)))
 
-(def ^:private toast-colors
-  "Background colors for toast variants."
-  {:success "rgba(52, 199, 89, 0.95)"   ; iOS green
-   :error   "rgba(255, 59, 48, 0.95)"   ; iOS red
-   :info    "rgba(0, 122, 255, 0.95)"}) ; iOS blue
+(defn- toast-background-color
+  "Get toast background color for variant using theme colors."
+  [colors variant]
+  (case variant
+    :success (:success-toast-background colors)
+    :error (:error-toast-background colors)
+    :info (:info-toast-background colors)
+    (:success-toast-background colors)))
 
 (defn toast-overlay
   "Toast notification overlay component.
 
    Renders at the top of the screen when toast-state is visible.
    Include this component once in your view hierarchy.
+   Uses theme colors for proper light/dark mode support.
 
    Example:
    [:> rn/View {:style {:flex 1}}
@@ -120,25 +125,28 @@
     ;; ... rest of view content
     ]"
   []
-  (let [{:keys [visible? message variant]} @toast-state]
-    (when visible?
-      [:> rn/View {:style {:position "absolute"
-                           :top 60
-                           :left 0
-                           :right 0
-                           :align-items "center"
-                           :z-index 1000
-                           :pointer-events "none"}}
-       [:> rn/View {:style {:background-color (get toast-colors variant (:success toast-colors))
-                            :padding-horizontal 16
-                            :padding-vertical 10
-                            :border-radius 8
-                            :shadow-color "#000"
-                            :shadow-offset {:width 0 :height 2}
-                            :shadow-opacity 0.25
-                            :shadow-radius 4
-                            :elevation 5}}
-        [:> rn/Text {:style {:font-size 14
-                             :color "#FFFFFF"
-                             :font-weight "500"}}
-         message]]])))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           {:keys [visible? message variant]} @toast-state]
+       (when visible?
+         [:> rn/View {:style {:position "absolute"
+                              :top 60
+                              :left 0
+                              :right 0
+                              :align-items "center"
+                              :z-index 1000
+                              :pointer-events "none"}}
+          [:> rn/View {:style {:background-color (toast-background-color colors variant)
+                               :padding-horizontal 16
+                               :padding-vertical 10
+                               :border-radius 8
+                               :shadow-color (:shadow colors)
+                               :shadow-offset {:width 0 :height 2}
+                               :shadow-opacity 0.25
+                               :shadow-radius 4
+                               :elevation 5}}
+           [:> rn/Text {:style {:font-size 14
+                                :color (:button-text-on-accent colors)
+                                :font-weight "500"}}
+            message]]])))])

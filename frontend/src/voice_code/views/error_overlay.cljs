@@ -42,7 +42,7 @@
                                     :left 0
                                     :right 0
                                     :bottom 0
-                                    :backgroundColor "rgba(0,0,0,0.95)"
+                                    :backgroundColor (:overlay-background colors)
                                     :zIndex 9999}}
                 [:> rn/SafeAreaView {:style {:flex 1}}
                  ;; Header
@@ -52,14 +52,14 @@
                                       :paddingHorizontal 16
                                       :paddingVertical 12
                                       :backgroundColor (:destructive colors)}}
-                  [:> rn/Text {:style {:color "#FFFFFF"
+                  [:> rn/Text {:style {:color (:button-text-on-accent colors)
                                        :fontSize 18
                                        :fontWeight "600"}}
                    "Error (Dev)"]
                   [:> rn/TouchableOpacity
                    {:onPress #(rf/dispatch [:dev/clear-error])
                     :style {:padding 8}}
-                   [:> rn/Text {:style {:color "#FFFFFF"
+                   [:> rn/Text {:style {:color (:button-text-on-accent colors)
                                         :fontSize 16}}
                     "Dismiss"]]]
 
@@ -104,7 +104,7 @@
                             :borderRadius 12
                             :padding 16
                             :alignItems "center"}}
-                   [:> rn/Text {:style {:color "#FFFFFF"
+                   [:> rn/Text {:style {:color (:button-text-on-accent colors)
                                         :fontSize 16
                                         :fontWeight "600"}}
                     (if @copied? "Copied!" "Copy to Clipboard")]]]]]))])))))

@@ -16,28 +16,31 @@
   "Toast notification shown when session is compacted.
    This uses a subscription-based approach for compaction feedback."
   []
-  (let [message @(rf/subscribe [:ui/compaction-success])]
-    (when message
-      [:> rn/View {:style {:position "absolute"
-                           :top 60
-                           :left 0
-                           :right 0
-                           :align-items "center"
-                           :z-index 1000
-                           :pointer-events "none"}}
-       [:> rn/View {:style {:background-color "rgba(52, 199, 89, 0.95)"
-                            :padding-horizontal 16
-                            :padding-vertical 10
-                            :border-radius 8
-                            :shadow-color "#000"
-                            :shadow-offset {:width 0 :height 2}
-                            :shadow-opacity 0.25
-                            :shadow-radius 4
-                            :elevation 5}}
-        [:> rn/Text {:style {:font-size 14
-                             :color "#FFFFFF"
-                             :font-weight "500"}}
-         message]]])))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           message @(rf/subscribe [:ui/compaction-success])]
+       (when message
+         [:> rn/View {:style {:position "absolute"
+                              :top 60
+                              :left 0
+                              :right 0
+                              :align-items "center"
+                              :z-index 1000
+                              :pointer-events "none"}}
+          [:> rn/View {:style {:background-color (:success-toast-background colors)
+                               :padding-horizontal 16
+                               :padding-vertical 10
+                               :border-radius 8
+                               :shadow-color (:shadow colors)
+                               :shadow-offset {:width 0 :height 2}
+                               :shadow-opacity 0.25
+                               :shadow-radius 4
+                               :elevation 5}}
+           [:> rn/Text {:style {:font-size 14
+                                :color (:button-text-on-accent colors)
+                                :font-weight "500"}}
+            message]]])))])
 
 ;; ============================================================================
 ;; Rename Session Modal State
@@ -169,7 +172,7 @@
                                 :justify-content "center"
                                 :align-items "center"}}
             [:> rn/Text {:style {:font-size 12
-                                 :color "#FFFFFF"
+                                 :color (:button-text-on-accent colors)
                                  :font-weight "600"}}
              "✕"]]])]]]]))
 
@@ -613,7 +616,7 @@
                        (rf/dispatch [:voice/clear-error])
                        (rf/dispatch [:voice/start-listening]))}
           [:> rn/Text {:style {:font-size 13
-                               :color "#FFFFFF"
+                               :color (:button-text-on-accent colors)
                                :font-weight "500"}}
            "Retry"]]]])
 
@@ -735,7 +738,7 @@
                    :align-items "center"}
            :disabled (not can-send?)
            :on-press #(rf/dispatch [:prompt/send-from-draft session-id])}
-          [:> rn/Text {:style {:color "#FFF"
+          [:> rn/Text {:style {:color (:button-text-on-accent colors)
                                :font-size 18
                                :font-weight "bold"}}
            "↑"]]]
@@ -1069,7 +1072,7 @@
                             :align-items "center"}}
         [:> rn/Text {:style {:font-size 12
                              :font-weight "bold"
-                             :color "#FFFFFF"
+                             :color (:button-text-on-accent colors)
                              :margin-top -1}} "✕"]]])))
 
 (defn- header-stop-speech-button

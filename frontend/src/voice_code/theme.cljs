@@ -90,7 +90,20 @@
 
    ;; Toast backgrounds
    :toast-background "rgba(0,0,0,0.8)" ; Default dark toast
-   :success-toast-background "rgba(52,199,89,0.95)"}) ; Green success toast
+   :success-toast-background "rgba(52,199,89,0.95)" ; Green success toast
+   :error-toast-background "rgba(255,59,48,0.95)" ; iOS red
+   :info-toast-background "rgba(0,122,255,0.95)" ; iOS blue
+
+   ;; Button text on colored backgrounds (accent, success, etc.)
+   ;; Always white for proper contrast in both modes
+   :button-text-on-accent "#FFFFFF"
+
+   ;; Switch component colors
+   :switch-thumb "#FFFFFF" ; Standard iOS white thumb
+   :switch-track-on "#81B0FF" ; iOS-style light blue when on
+
+   ;; Modal/overlay backgrounds
+   :overlay-background "rgba(0,0,0,0.95)"})
 
 (def dark-colors
   "Dark mode color palette matching iOS system dark mode colors."
@@ -162,7 +175,20 @@
 
    ;; Toast backgrounds
    :toast-background "rgba(60,60,60,0.9)" ; Dark toast for dark mode
-   :success-toast-background "rgba(48,209,88,0.95)"}) ; Green success toast (dark)
+   :success-toast-background "rgba(48,209,88,0.95)" ; Green success toast (dark)
+   :error-toast-background "rgba(255,69,58,0.95)" ; iOS red (dark)
+   :info-toast-background "rgba(10,132,255,0.95)" ; iOS blue (dark)
+
+   ;; Button text on colored backgrounds (accent, success, etc.)
+   ;; Always white for proper contrast in both modes
+   :button-text-on-accent "#FFFFFF"
+
+   ;; Switch component colors
+   :switch-thumb "#FFFFFF" ; Standard iOS white thumb
+   :switch-track-on "#4CD964" ; iOS green when on (dark mode version)
+
+   ;; Modal/overlay backgrounds
+   :overlay-background "rgba(0,0,0,0.95)"})
 
 ;; =============================================================================
 ;; Hooks

@@ -104,7 +104,7 @@
                 :background-color (if (= value priority-value) (:accent colors) (:fill-secondary colors))}
         :on-press #(on-change priority-value)}
        [:> rn/Text {:style {:font-size 14
-                            :color (if (= value priority-value) "#FFFFFF" (:text-primary colors))}}
+                            :color (if (= value priority-value) (:button-text-on-accent colors) (:text-primary colors))}}
         label]])]])
 
 (defn- copy-confirmation-toast
@@ -122,7 +122,7 @@
                           :padding-vertical 8
                           :border-radius 8}}
       [:> rn/Text {:style {:font-size 14
-                           :color "#FFFFFF"
+                           :color (:button-text-on-accent colors)
                            :font-weight "500"}}
        message]]]))
 

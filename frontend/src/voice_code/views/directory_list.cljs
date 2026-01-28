@@ -44,7 +44,7 @@
                          :align-items "center"
                          :padding-horizontal 6
                          :margin-left 8}}
-     [:> rn/Text {:style {:color "#FFF"
+     [:> rn/Text {:style {:color (:button-text-on-accent colors)
                           :font-size 12
                           :font-weight "600"}}
       (if (> count 99) "99+" (str count))]]))
@@ -461,7 +461,7 @@
                :shadow-radius 8
                :elevation 4}
        :on-press #(when navigation (.navigate navigation "Settings"))}
-      [:> rn/Text {:style {:color "#FFF"
+      [:> rn/Text {:style {:color (:button-text-on-accent colors)
                            :font-size 16
                            :font-weight "600"}}
        "Configure Server"]]
@@ -494,7 +494,7 @@
                              :justify-content "center"
                              :align-items "center"
                              :padding-horizontal 4}}
-         [:> rn/Text {:style {:color "#FFF"
+         [:> rn/Text {:style {:color (:button-text-on-accent colors)
                               :font-size 10
                               :font-weight "600"}}
           (if (> pending-count 99) "99+" (str pending-count))]])]]))

@@ -251,7 +251,7 @@
     [:> rn/Switch {:value enabled?
                    :on-value-change on-change
                    :track-color #js {:false (:fill-secondary colors) :true (:success colors)}
-                   :thumb-color "#FFFFFF"
+                   :thumb-color (:switch-thumb colors)
                    :ios-background-color (:fill-secondary colors)}]]])
 
 (defn recipes-view
@@ -372,7 +372,7 @@
                                        (reset! has-requested-recipes? false)
                                        (reset! load-error "Failed to load recipes. Please try again.")))
                                    10000)))}
-             [:> rn/Text {:style {:color "#FFF"
+             [:> rn/Text {:style {:color (:button-text-on-accent colors)
                                   :font-size 16
                                   :font-weight "500"}}
               "Retry"]]])
@@ -402,7 +402,7 @@
                       :background-color (:accent colors)
                       :border-radius 8}
               :on-press #(reset! start-error nil)}
-             [:> rn/Text {:style {:color "#FFF"
+             [:> rn/Text {:style {:color (:button-text-on-accent colors)
                                   :font-size 16
                                   :font-weight "500"}}
               "Dismiss"]]])

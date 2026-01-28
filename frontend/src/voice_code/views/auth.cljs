@@ -97,7 +97,7 @@
                    :align-items "center"}
            :disabled (not can-connect?)
            :on-press #(rf/dispatch [:auth/connect @api-key])}
-          [:> rn/Text {:style {:color "#FFF"
+          [:> rn/Text {:style {:color (:button-text-on-accent colors)
                                :font-size 16
                                :font-weight "600"}}
            (if connecting? "Connecting..." "Connect")]]]))))

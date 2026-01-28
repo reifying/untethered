@@ -146,7 +146,7 @@
                            (haptic/selection!)
                            (on-change new-value))
         :track-color #js {:false (:fill-secondary colors) :true (:success colors)}
-        :thumb-color "#FFFFFF"}]]
+        :thumb-color (:switch-thumb colors)}]]
      (when description
        [:> rn/Text {:style {:font-size 12
                             :color (:text-secondary colors)
@@ -404,7 +404,7 @@
                              (when valid?
                                (rf/dispatch [:auth/connect current-input])
                                (reset! api-key-input "")))}
-                [:> rn/Text {:style {:color "#FFF" :font-size 16 :font-weight "600"}}
+                [:> rn/Text {:style {:color (:button-text-on-accent colors) :font-size 16 :font-weight "600"}}
                  "Save API Key"]])]
 
             ;; Help text

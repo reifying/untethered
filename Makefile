@@ -547,6 +547,16 @@ rn-screenshot:
 	@xcrun simctl io booted screenshot /tmp/simulator-screenshot.png
 	@echo "Screenshot saved to /tmp/simulator-screenshot.png"
 
+# Toggle dark mode on simulator
+rn-dark-mode:
+	@xcrun simctl ui booted appearance dark
+	@echo "Dark mode enabled"
+
+# Toggle light mode on simulator
+rn-light-mode:
+	@xcrun simctl ui booted appearance light
+	@echo "Light mode enabled"
+
 # Restart the React Native iOS app (terminate and relaunch)
 rn-restart:
 	@xcrun simctl terminate booted $(RN_BUNDLE_ID) 2>/dev/null || true

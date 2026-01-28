@@ -76,7 +76,7 @@
                          :background-color (level-color colors level)}}
      [:> rn/Text {:style {:font-size 10
                           :font-weight "600"
-                          :color "#FFFFFF"
+                          :color (:button-text-on-accent colors)
                           :text-transform "uppercase"}}
       level]]
     ;; Copy hint
@@ -160,7 +160,7 @@
          [:> rn/Text {:style {:font-size 16 :margin-right 6}} "📋"]
          [:> rn/Text {:style {:font-size 16
                               :font-weight "600"
-                              :color "#FFFFFF"}}
+                              :color (:button-text-on-accent colors)}}
           "Copy Logs"]]]
 
        ;; Clear button
@@ -180,7 +180,7 @@
          [:> rn/Text {:style {:font-size 16 :margin-right 6}} "🗑️"]
          [:> rn/Text {:style {:font-size 16
                               :font-weight "600"
-                              :color "#FFFFFF"}}
+                              :color (:button-text-on-accent colors)}}
           "Clear"]]]
 
        ;; Toast notification
@@ -194,7 +194,7 @@
                                :padding-horizontal 20
                                :padding-vertical 10
                                :border-radius 20}}
-           [:> rn/Text {:style {:color "#FFFFFF"
+           [:> rn/Text {:style {:color (:button-text-on-accent colors)
                                 :font-size 14}}
             @toast-message]]])])))
 
@@ -247,7 +247,7 @@
                                  :padding-horizontal 20
                                  :padding-vertical 10
                                  :border-radius 20}}
-             [:> rn/Text {:style {:color "#FFFFFF"
+             [:> rn/Text {:style {:color (:button-text-on-accent colors)
                                   :font-size 14
                                   :font-weight "500"}}
               @toast-message]]])]))))

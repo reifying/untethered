@@ -45,7 +45,7 @@
                          :justify-content "center"
                          :align-items "center"
                          :padding-horizontal 6}}
-     [:> rn/Text {:style {:color "#FFF"
+     [:> rn/Text {:style {:color (:button-text-on-accent colors)
                           :font-size 12
                           :font-weight "600"}}
       (if (> count 99) "99+" (str count))]]))
@@ -268,7 +268,7 @@
                     :justify-content "center"
                     :align-items "center"}
             :on-press handle-delete}
-           [:> rn/Text {:style {:color "#FFF"
+           [:> rn/Text {:style {:color (:button-text-on-accent colors)
                                 :font-size 14
                                 :font-weight "600"}}
             "Delete"]]]
@@ -417,7 +417,7 @@
                {:value @create-worktree?
                 :on-value-change #(reset! create-worktree? %)
                 :track-color #js {:false (:separator colors) :true (:success colors)}
-                :thumb-color "#FFF"}]]]
+                :thumb-color (:switch-thumb colors)}]]]
             [:> rn/Text {:style {:font-size 13
                                  :color (:text-secondary colors)
                                  :margin-horizontal 16
@@ -470,7 +470,7 @@
                              :justify-content "center"
                              :align-items "center"
                              :padding-horizontal 4}}
-         [:> rn/Text {:style {:color "#FFF"
+         [:> rn/Text {:style {:color (:button-text-on-accent colors)
                               :font-size 10
                               :font-weight "600"}}
           (if (> badge-count 99) "99+" (str badge-count))]])]
