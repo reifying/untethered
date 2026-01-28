@@ -22,11 +22,19 @@
             [voice-code.views.new-session :refer [new-session-view]]))
 
 (defn- reactify-with-name
-  "Create a React component from a Reagent component with proper displayName.
+  "Create a React component from a Reagent component with proper name.
+   Sets both .name (for React Navigation) and .displayName (for DevTools).
    This eliminates React Navigation warnings about component names not starting
-   with uppercase letters."
+   with uppercase letters by using Object.defineProperty to override the
+   function's .name property with a PascalCase name."
   [reagent-component display-name]
   (let [react-comp (r/reactify-component reagent-component)]
+    ;; Set .name for React Navigation (uses component.name for warning check)
+    (js/Object.defineProperty react-comp "name"
+                              #js {:value display-name
+                                   :writable false
+                                   :configurable true})
+    ;; Set .displayName for React DevTools and error stack traces
     (set! (.-displayName react-comp) display-name)
     react-comp))
 

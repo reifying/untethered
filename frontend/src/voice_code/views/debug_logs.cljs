@@ -200,55 +200,54 @@
 
 (defn debug-logs-view
   "Main debug logs screen showing captured console output.
-   Uses Form-2 component pattern for proper Reagent reactivity with React Navigation."
+   Uses :f> functional component pattern for React hooks (use-theme-colors)."
   [_props]
-  (let [toast-visible? (r/atom false)
-        toast-message (r/atom "")
-        show-toast! (fn [message]
-                      (reset! toast-message message)
-                      (reset! toast-visible? true)
-                      (js/setTimeout #(reset! toast-visible? false) 2000))]
-    (fn [_props]
-      (let [colors (theme/use-theme-colors)
-            entries @(rf/subscribe [:logs/entries])
-            scroll-ref (r/atom nil)]
-        [:> rn/SafeAreaView {:style {:flex 1 :background-color (:background colors)}}
-         ;; Stats header
-         [header-stats colors]
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           entries @(rf/subscribe [:logs/entries])
+           toast-visible? (r/atom false)
+           toast-message (r/atom "")
+           show-toast! (fn [message]
+                         (reset! toast-message message)
+                         (reset! toast-visible? true)
+                         (js/setTimeout #(reset! toast-visible? false) 2000))]
+       [:> rn/SafeAreaView {:style {:flex 1 :background-color (:background colors)}}
+        ;; Stats header
+        [header-stats colors]
 
-         ;; Log list
-         (if (empty? entries)
-           [empty-state colors]
-           [:> rn/FlatList
-            {:ref #(reset! scroll-ref %)
-             :data (clj->js (reverse entries)) ; Show newest first
-             :key-extractor (fn [item _idx]
-                              (or (.-id item) (str (random-uuid))))
-             :render-item (fn [^js obj]
-                            (let [item (js->clj (.-item obj) :keywordize-keys true)]
-                              (r/as-element [log-entry-item (assoc item
-                                                                   :on-copy-toast show-toast!
-                                                                   :colors colors)])))
-             :inverted false
-             :content-container-style {:padding-bottom 8}}])
+        ;; Log list
+        (if (empty? entries)
+          [empty-state colors]
+          [:> rn/FlatList
+           {:data (clj->js (reverse entries)) ; Show newest first
+            :key-extractor (fn [item _idx]
+                             (or (.-id item) (str (random-uuid))))
+            :render-item (fn [^js obj]
+                           (let [item (js->clj (.-item obj) :keywordize-keys true)]
+                             (r/as-element [log-entry-item (assoc item
+                                                                  :on-copy-toast show-toast!
+                                                                  :colors colors)])))
+            :inverted false
+            :content-container-style {:padding-bottom 8}}])
 
-         ;; Action buttons (they have their own toast management)
-         [action-buttons colors]
+        ;; Action buttons (they have their own toast management)
+        [action-buttons colors]
 
-         ;; Global toast for individual entry copies
-         (when @toast-visible?
-           [:> rn/View {:style {:position "absolute"
-                                :bottom 100
-                                :left 0
-                                :right 0
-                                :align-items "center"
-                                :z-index 1000}}
-            [:> rn/View {:style {:background-color (:success-toast-background colors)
-                                 :padding-horizontal 20
-                                 :padding-vertical 10
-                                 :border-radius 20}}
-             [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                                  :font-size 14
-                                  :font-weight "500"}}
-              @toast-message]]])]))))
+        ;; Global toast for individual entry copies
+        (when @toast-visible?
+          [:> rn/View {:style {:position "absolute"
+                               :bottom 100
+                               :left 0
+                               :right 0
+                               :align-items "center"
+                               :z-index 1000}}
+           [:> rn/View {:style {:background-color (:success-toast-background colors)
+                                :padding-horizontal 20
+                                :padding-vertical 10
+                                :border-radius 20}}
+            [:> rn/Text {:style {:color (:button-text-on-accent colors)
+                                 :font-size 14
+                                 :font-weight "500"}}
+             @toast-message]]])]))])
 
