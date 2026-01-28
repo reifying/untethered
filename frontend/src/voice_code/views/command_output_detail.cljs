@@ -3,7 +3,7 @@
    Displays complete stdout/stderr with metadata."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn]
+            ["react-native" :refer [Share] :as rn]
             ["@react-native-clipboard/clipboard" :as Clipboard]
             [voice-code.haptic :as haptic]
             [voice-code.theme :as theme]))
@@ -12,7 +12,7 @@
 ;; Helper Functions
 ;; ============================================================================
 
-(defn- format-duration
+(defn format-duration
   "Format duration in milliseconds to human-readable string."
   [ms]
   (when ms
@@ -23,7 +23,7 @@
                   seconds (quot (mod ms 60000) 1000)]
               (str minutes "m " seconds "s")))))
 
-(defn- format-timestamp
+(defn format-timestamp
   "Format timestamp for display."
   [timestamp]
   (when timestamp
@@ -36,6 +36,17 @@
                             :hour "numeric"
                             :minute "2-digit"
                             :second "2-digit"}))))
+
+(defn build-share-text
+  "Build formatted text for sharing command output with metadata.
+   Matches iOS shareText format from CommandOutputDetailView.swift."
+  [{:keys [shell-command working-directory exit-code duration-ms timestamp output]}]
+  (str "Command: " (or shell-command "Unknown") "\n"
+       "Directory: " (or working-directory "Unknown") "\n"
+       "Exit Code: " (if (some? exit-code) exit-code "N/A") "\n"
+       "Duration: " (or (format-duration duration-ms) "N/A") "\n"
+       "Started: " (or (format-timestamp timestamp) "N/A") "\n\n"
+       "Output:\n" (or output "(no output)")))
 
 ;; ============================================================================
 ;; Components
@@ -135,22 +146,52 @@
                         :color (:text-primary colors)}}
     "Loading output..."]])
 
-(defn- copy-button
-  "Button to copy output to clipboard with haptic feedback."
-  [output colors]
+(defn- action-button
+  "Individual action button component."
+  [{:keys [icon label on-press colors]}]
   [:> rn/TouchableOpacity
-   {:style {:position "absolute"
-            :top 8
-            :right 8
-            :padding 8
+   {:style {:flex-direction "row"
+            :align-items "center"
+            :padding-horizontal 12
+            :padding-vertical 8
             :background-color (:overlay colors)
             :border-radius 6}
-    :on-press (fn []
-                (let [clipboard (or (.-default Clipboard) Clipboard)]
-                  (.setString clipboard output)
-                  (haptic/success!)))}
+    :on-press on-press}
    [:> rn/Text {:style {:font-size 14 :color (:text-primary colors)}}
-    "📋 Copy"]])
+    (str icon " " label)]])
+
+(defn- action-buttons
+  "Action buttons for copy and share functionality.
+   Matches iOS CommandOutputDetailView toolbar menu options."
+  [{:keys [output share-data colors]}]
+  [:> rn/View {:style {:position "absolute"
+                       :top 8
+                       :right 8
+                       :flex-direction "row"
+                       :gap 8}}
+   ;; Share button
+   [action-button
+    {:icon "↗"
+     :label "Share"
+     :colors colors
+     :on-press (fn []
+                 (let [share-text (build-share-text share-data)]
+                   (-> (Share.share #js {:message share-text})
+                       (.then (fn [result]
+                                (when (= (.-action result) (.-sharedAction Share))
+                                  (haptic/success!))))
+                       (.catch (fn [_error]
+                                 ;; User cancelled or error - no action needed
+                                 nil)))))}]
+   ;; Copy button
+   [action-button
+    {:icon "📋"
+     :label "Copy"
+     :colors colors
+     :on-press (fn []
+                 (let [clipboard (or (.-default Clipboard) Clipboard)]
+                   (.setString clipboard output)
+                   (haptic/success!)))}]])
 
 ;; ============================================================================
 ;; Main View
@@ -198,6 +239,13 @@
             [loading-state colors]
             [output-view {:output output :colors colors}])
 
-          ;; Copy button
+          ;; Action buttons (copy and share)
           (when (and output (seq output))
-            [copy-button output colors])]]))))
+            [action-buttons {:output output
+                             :share-data {:shell-command (or (:shell-command cmd-data) shell-command)
+                                          :working-directory working-directory
+                                          :exit-code exit-code
+                                          :duration-ms duration-ms
+                                          :timestamp timestamp
+                                          :output output}
+                             :colors colors}])]]))))
