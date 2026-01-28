@@ -23,10 +23,16 @@
         (.setGlobalHandler
          ErrorUtils
          (fn [error is-fatal]
-           (rf/dispatch [:dev/set-error
-                         {:message (or (.-message error) (str error))
-                          :stack (or (.-stack error) "No stack trace available")
-                          :is-fatal is-fatal}])
+           ;; Wrap dispatch in try-catch since this handler could fire before
+           ;; re-frame is fully initialized (e.g., error during init itself).
+           ;; Error is still logged to console regardless.
+           (try
+             (rf/dispatch [:dev/set-error
+                           {:message (or (.-message error) (str error))
+                            :stack (or (.-stack error) "No stack trace available")
+                            :is-fatal is-fatal}])
+             (catch :default e
+               (js/console.warn "Could not dispatch error to re-frame:" e)))
            ;; Still log to console for Metro output
            (js/console.error error)))))))
 
