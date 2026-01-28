@@ -792,7 +792,7 @@
                     :padding-horizontal 12
                     :padding-vertical 6
                     :align-self "center"
-                    :background-color "#FFF3E0"
+                    :background-color (:warning-background colors)
                     :border-radius 12
                     :border-width 1
                     :border-color (:warning colors)}
