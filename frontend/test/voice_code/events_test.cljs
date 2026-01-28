@@ -2619,3 +2619,63 @@
      (let [resources @(rf/subscribe [:resources/list])]
        (is (= 1 (count resources)))
        (is (= "test.txt" (:filename (first resources))))))))
+
+;; ============================================================================
+;; WebSocket Message Format Tests (kebab-case verification)
+;; ============================================================================
+;; These tests verify that outbound WebSocket messages use kebab-case keys
+;; which will be converted to snake_case by json/clj->json.
+;; Using snake_case directly (e.g., :session_id) would result in double
+;; underscores after conversion (session__id), breaking the protocol.
+
+(deftest sessions-delete-websocket-message-test
+  "Verifies sessions/delete sends correctly formatted WebSocket message.
+   The message must use :session-id (kebab-case), not :session_id (snake_case).
+   See VCMOB-82aq for bug details."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (let [sent-messages (atom [])]
+     ;; Mock the ws/send effect to capture messages
+     (rf/reg-fx :ws/send (fn [msg] (swap! sent-messages conj msg)))
+
+     ;; Create a session to delete
+     (rf/dispatch-sync [:sessions/add {:id "test-session"
+                                       :backend-name "Test Session"
+                                       :working-directory "/project"
+                                       :is-user-deleted false}])
+
+     ;; Delete the session
+     (rf/dispatch-sync [:sessions/delete "test-session"])
+
+     ;; Verify WebSocket message format
+     (is (= 1 (count @sent-messages)))
+     (let [msg (first @sent-messages)]
+       (is (= "session_deleted" (:type msg)))
+       ;; CRITICAL: Must be :session-id (kebab-case), NOT :session_id
+       (is (contains? msg :session-id) "Message must use :session-id (kebab-case)")
+       (is (not (contains? msg :session_id)) "Message must NOT use :session_id (snake_case)")
+       (is (= "test-session" (:session-id msg)))))))
+
+(deftest sessions-compact-websocket-message-test
+  "Verifies sessions/compact sends correctly formatted WebSocket message.
+   The message must use :session-id (kebab-case), not :session_id (snake_case).
+   See VCMOB-82aq for bug details."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (let [sent-messages (atom [])]
+     ;; Mock the ws/send effect to capture messages
+     (rf/reg-fx :ws/send (fn [msg] (swap! sent-messages conj msg)))
+
+     ;; Compact a session
+     (rf/dispatch-sync [:sessions/compact "session-to-compact"])
+
+     ;; Verify WebSocket message format
+     (is (= 1 (count @sent-messages)))
+     (let [msg (first @sent-messages)]
+       (is (= "compact_session" (:type msg)))
+       ;; CRITICAL: Must be :session-id (kebab-case), NOT :session_id
+       (is (contains? msg :session-id) "Message must use :session-id (kebab-case)")
+       (is (not (contains? msg :session_id)) "Message must NOT use :session_id (snake_case)")
+       (is (= "session-to-compact" (:session-id msg)))))))

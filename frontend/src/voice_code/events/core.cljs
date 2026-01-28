@@ -352,7 +352,7 @@
                    [:persistence/delete-draft session-id]]
       ;; Notify backend of deletion
       :ws/send {:type "session_deleted"
-                :session_id session-id}})))
+                :session-id session-id}})))
 
 (rf/reg-event-fx
  :sessions/remove
@@ -424,7 +424,7 @@
  :sessions/compact
  (fn [{:keys [db]} [_ session-id]]
    {:ws/send {:type "compact_session"
-              :session_id session-id}}))
+              :session-id session-id}}))
 
 ;; ============================================================================
 ;; Priority Queue Management
@@ -512,12 +512,8 @@
 ;; Recipe Management
 ;; ============================================================================
 
-(rf/reg-event-fx
- :recipes/exit
- (fn [{:keys [db]} [_ session-id]]
-   {:db (update-in db [:recipes :active] dissoc session-id)
-    :ws/send {:type "exit_recipe"
-              :session_id session-id}}))
+;; NOTE: :recipes/exit is defined in events/websocket.cljs to keep WebSocket-related
+;; event handling consolidated. See events/websocket.cljs:806-810.
 
 ;; ============================================================================
 ;; Session Creation
