@@ -2,9 +2,12 @@
 # Kills wrapped command if it outputs "Error: No messages returned"
 # Usage: kill-on-hang <command> [args...]
 
-bash -c 'shopt -s expand_aliases; source ~/.bashrc 2>/dev/null; '"$*" > /tmp/koh.$$ 2>&1 &
+# Save stdin to temp file so we can pass it to backgrounded process
+cat > /tmp/koh_in.$$
+
+bash -c 'shopt -s expand_aliases; source ~/.bashrc 2>/dev/null; '"$*" < /tmp/koh_in.$$ > /tmp/koh.$$ 2>&1 &
 PID=$!
-trap "kill $PID 2>/dev/null; rm -f /tmp/koh.$$" EXIT
+trap "kill $PID 2>/dev/null; rm -f /tmp/koh.$$ /tmp/koh_in.$$" EXIT
 
 while kill -0 $PID 2>/dev/null; do
     if grep -q "Error: No messages returned" /tmp/koh.$$ 2>/dev/null; then
