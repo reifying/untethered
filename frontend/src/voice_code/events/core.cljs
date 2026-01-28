@@ -395,26 +395,60 @@
 ;; Priority Queue Management
 ;; ============================================================================
 
+(defn- decrement-queue-positions
+  "Decrement queue-position for all sessions with position > threshold.
+   Returns updated sessions map.
+   Matches iOS ConversationView.swift lines 1067-1074."
+  [sessions threshold]
+  (reduce-kv
+   (fn [acc id session]
+     (if (and (:queue-position session)
+              (> (:queue-position session) threshold))
+       (update-in acc [id :queue-position] dec)
+       acc))
+   sessions
+   sessions))
+
 (rf/reg-event-db
  :sessions/add-to-queue
  (fn [db [_ session-id]]
-   (let [;; Find the highest queue position and add 1
+   (let [session (get-in db [:sessions session-id])
+         current-position (:queue-position session)
+         in-queue? (some? current-position)
+         ;; Find the highest queue position
          max-position (->> (vals (:sessions db))
                            (map :queue-position)
                            (filter some?)
                            (apply max 0))]
-     (-> db
-         (update-in [:sessions session-id] merge
-                    {:queue-position (inc max-position)
-                     :queued-at (js/Date.)})))))
+     (if in-queue?
+       ;; Already in queue - move to end (iOS lines 1010-1036)
+       ;; Decrement positions between current and max, then move session to max
+       (-> db
+           (update :sessions decrement-queue-positions current-position)
+           (assoc-in [:sessions session-id :queue-position] max-position)
+           (assoc-in [:sessions session-id :queued-at] (js/Date.)))
+       ;; New to queue - add at end (iOS lines 1037-1049)
+       (-> db
+           (update-in [:sessions session-id] merge
+                      {:queue-position (inc max-position)
+                       :queued-at (js/Date.)}))))))
 
 (rf/reg-event-db
  :sessions/remove-from-queue
  (fn [db [_ session-id]]
-   (-> db
-       (update-in [:sessions session-id] merge
-                  {:queue-position nil
-                   :queued-at nil}))))
+   (let [removed-position (get-in db [:sessions session-id :queue-position])]
+     (if (some? removed-position)
+       ;; Reorder remaining queue items (iOS lines 1059-1082)
+       (-> db
+           (update-in [:sessions session-id] merge
+                      {:queue-position nil
+                       :queued-at nil})
+           (update :sessions decrement-queue-positions removed-position))
+       ;; Not in queue - just clear the fields
+       (-> db
+           (update-in [:sessions session-id] merge
+                      {:queue-position nil
+                       :queued-at nil}))))))
 
 (rf/reg-event-db
  :sessions/add-to-priority-queue

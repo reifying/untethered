@@ -1142,6 +1142,91 @@
        (is (nil? (:queue-position session)))
        (is (nil? (:queued-at session)))))))
 
+(deftest queue-position-reordering-test
+  "Tests queue position reordering logic to match iOS ConversationView.swift lines 1010-1082.
+   Ensures contiguous queue positions are maintained after add/remove operations."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Create test sessions
+   (rf/dispatch-sync [:sessions/add {:id "s1" :backend-name "Session 1" :working-directory "/p"}])
+   (rf/dispatch-sync [:sessions/add {:id "s2" :backend-name "Session 2" :working-directory "/p"}])
+   (rf/dispatch-sync [:sessions/add {:id "s3" :backend-name "Session 3" :working-directory "/p"}])
+   (rf/dispatch-sync [:sessions/add {:id "s4" :backend-name "Session 4" :working-directory "/p"}])
+
+   ;; Add all sessions to queue
+   (rf/dispatch-sync [:sessions/add-to-queue "s1"])
+   (rf/dispatch-sync [:sessions/add-to-queue "s2"])
+   (rf/dispatch-sync [:sessions/add-to-queue "s3"])
+   (rf/dispatch-sync [:sessions/add-to-queue "s4"])
+
+   (testing "initial queue positions are 1, 2, 3, 4"
+     (is (= 1 (:queue-position @(rf/subscribe [:sessions/by-id "s1"]))))
+     (is (= 2 (:queue-position @(rf/subscribe [:sessions/by-id "s2"]))))
+     (is (= 3 (:queue-position @(rf/subscribe [:sessions/by-id "s3"]))))
+     (is (= 4 (:queue-position @(rf/subscribe [:sessions/by-id "s4"])))))
+
+   (testing "removing middle session reorders remaining sessions"
+     ;; Remove s2 (position 2) - s3 and s4 should decrement
+     (rf/dispatch-sync [:sessions/remove-from-queue "s2"])
+     (is (nil? (:queue-position @(rf/subscribe [:sessions/by-id "s2"]))))
+     (is (= 1 (:queue-position @(rf/subscribe [:sessions/by-id "s1"]))))
+     (is (= 2 (:queue-position @(rf/subscribe [:sessions/by-id "s3"]))))
+     (is (= 3 (:queue-position @(rf/subscribe [:sessions/by-id "s4"])))))
+
+   (testing "removing first session reorders all remaining"
+     ;; Remove s1 (position 1) - s3 and s4 should decrement again
+     (rf/dispatch-sync [:sessions/remove-from-queue "s1"])
+     (is (nil? (:queue-position @(rf/subscribe [:sessions/by-id "s1"]))))
+     (is (= 1 (:queue-position @(rf/subscribe [:sessions/by-id "s3"]))))
+     (is (= 2 (:queue-position @(rf/subscribe [:sessions/by-id "s4"])))))
+
+   (testing "removing last session doesn't affect others"
+     ;; Remove s4 (position 2) - s3 should remain at 1
+     (rf/dispatch-sync [:sessions/remove-from-queue "s4"])
+     (is (= 1 (:queue-position @(rf/subscribe [:sessions/by-id "s3"])))))))
+
+(deftest queue-move-to-end-test
+  "Tests that adding session already in queue moves it to end.
+   Matches iOS ConversationView.swift lines 1010-1036."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Create test sessions
+   (rf/dispatch-sync [:sessions/add {:id "s1" :backend-name "Session 1" :working-directory "/p"}])
+   (rf/dispatch-sync [:sessions/add {:id "s2" :backend-name "Session 2" :working-directory "/p"}])
+   (rf/dispatch-sync [:sessions/add {:id "s3" :backend-name "Session 3" :working-directory "/p"}])
+
+   ;; Add all sessions to queue
+   (rf/dispatch-sync [:sessions/add-to-queue "s1"])
+   (rf/dispatch-sync [:sessions/add-to-queue "s2"])
+   (rf/dispatch-sync [:sessions/add-to-queue "s3"])
+
+   (testing "adding session already in queue moves it to end"
+     ;; s1 is at position 1, add again should move to position 3
+     (rf/dispatch-sync [:sessions/add-to-queue "s1"])
+     ;; s1 should now be at position 3 (the old max)
+     (is (= 3 (:queue-position @(rf/subscribe [:sessions/by-id "s1"]))))
+     ;; s2 and s3 should have decremented
+     (is (= 1 (:queue-position @(rf/subscribe [:sessions/by-id "s2"]))))
+     (is (= 2 (:queue-position @(rf/subscribe [:sessions/by-id "s3"])))))))
+
+(deftest queue-remove-not-in-queue-test
+  "Tests that removing session not in queue is a no-op."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Create test session
+   (rf/dispatch-sync [:sessions/add {:id "s1" :backend-name "Session 1" :working-directory "/p"}])
+
+   (testing "removing session not in queue is a no-op"
+     ;; Session starts with nil queue-position
+     (is (nil? (:queue-position @(rf/subscribe [:sessions/by-id "s1"]))))
+     ;; Remove from queue (not in queue)
+     (rf/dispatch-sync [:sessions/remove-from-queue "s1"])
+     ;; Should still be nil
+     (is (nil? (:queue-position @(rf/subscribe [:sessions/by-id "s1"])))))))
+
 (deftest priority-queue-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
