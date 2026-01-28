@@ -231,6 +231,8 @@
            session (get-in db [:sessions session-id])
            working-directory (:working-directory session)
            session-name (or (:custom-name session) (:backend-name session))
+           ;; Auto-add to priority queue if enabled (iOS parity: SessionSyncManager lines 459-467)
+           priority-queue-enabled? (get-in db [:settings :priority-queue-enabled])
            ;; Only auto-speak if:
            ;; 1. Auto-speak is enabled in settings
            ;; 2. User is not currently using voice input (prevent feedback)
@@ -260,7 +262,14 @@
                 ;; Increment unread count for assistant messages on non-active sessions
                 ;; This matches iOS SessionSyncManager behavior
                 (cond-> (not is-active-session?)
-                  (update-in [:sessions session-id :unread-count] (fnil inc 0))))
+                  (update-in [:sessions session-id :unread-count] (fnil inc 0)))
+                ;; Auto-add to priority queue on assistant response (iOS parity: SessionSyncManager lines 459-467)
+                ;; Done directly in db update for atomicity and test compatibility
+                (cond-> priority-queue-enabled?
+                  (update-in [:sessions session-id] merge
+                             {:priority 10
+                              :priority-order 1.0
+                              :priority-queued-at (js/Date.)})))
         :dispatch-n (cond-> [[:ws/send-message-ack message-id]
                              [:persistence/save-message session-id]]
                       should-speak?

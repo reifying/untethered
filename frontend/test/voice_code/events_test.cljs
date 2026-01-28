@@ -1572,6 +1572,69 @@
      ;; Unread should be cleared
      (is (= 0 @(rf/subscribe [:sessions/unread-count "background-session"]))))))
 
+(deftest handle-response-priority-queue-test
+  "Tests that ws/handle-response auto-adds session to priority queue when enabled.
+   This matches iOS SessionSyncManager behavior (lines 459-467)."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Create a session
+   (rf/dispatch-sync [:sessions/add {:id "pq-session" :backend-name "Priority Queue Session"
+                                     :working-directory "/project"}])
+
+   (testing "handle-response does NOT add to priority queue when setting disabled"
+     ;; Ensure priority queue is disabled (default)
+     (rf/dispatch-sync [:settings/save :priority-queue-enabled false])
+
+     ;; Receive a response
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Response without priority queue"
+                         :session-id "pq-session"
+                         :message-id "msg-pq-1"}])
+
+     ;; Session should NOT be in priority queue
+     (let [session @(rf/subscribe [:sessions/by-id "pq-session"])]
+       (is (nil? (:priority-queued-at session)))))
+
+   (testing "handle-response adds to priority queue when setting enabled"
+     ;; Enable priority queue
+     (rf/dispatch-sync [:settings/save :priority-queue-enabled true])
+
+     ;; Receive another response
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success true
+                         :text "Response with priority queue"
+                         :session-id "pq-session"
+                         :message-id "msg-pq-2"}])
+
+     ;; Session should now be in priority queue
+     (let [session @(rf/subscribe [:sessions/by-id "pq-session"])]
+       (is (some? (:priority-queued-at session)))
+       ;; Should have default priority values
+       (is (= 10 (:priority session)))
+       (is (= 1.0 (:priority-order session))))))
+
+  ;; Test error response does not add to priority queue
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Create session and enable priority queue
+   (rf/dispatch-sync [:sessions/add {:id "pq-error-session" :backend-name "Error Session"
+                                     :working-directory "/project"}])
+   (rf/dispatch-sync [:settings/save :priority-queue-enabled true])
+
+   (testing "handle-response error does NOT add to priority queue"
+     ;; Receive an error response
+     (rf/dispatch-sync [:ws/handle-response
+                        {:success false
+                         :error "Something went wrong"
+                         :session-id "pq-error-session"}])
+
+     ;; Session should NOT be in priority queue (error responses don't trigger it)
+     (let [session @(rf/subscribe [:sessions/by-id "pq-error-session"])]
+       (is (nil? (:priority-queued-at session)))))))
+
 (deftest handle-replay-unread-count-test
   "Tests that ws/handle-replay increments unread count for assistant messages on non-active sessions."
   (rf-test/run-test-sync
