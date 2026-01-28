@@ -491,15 +491,21 @@
 (rf/reg-event-fx
  :sessions/create
  (fn [{:keys [db]} [_ {:keys [working-directory name]}]]
-   (let [new-session {:id (str (random-uuid))
-                      :backend-name nil
-                      :custom-name (when-not (empty? name) name)
-                      :working-directory working-directory
-                      :last-modified (js/Date.)
-                      :message-count 0
-                      :preview nil
-                      :priority 10
-                      :is-user-deleted false}]
+   (let [priority-queue-enabled? (get-in db [:settings :priority-queue-enabled])
+         now (js/Date.)
+         new-session (cond-> {:id (str (random-uuid))
+                              :backend-name nil
+                              :custom-name (when-not (empty? name) name)
+                              :working-directory working-directory
+                              :last-modified now
+                              :message-count 0
+                              :preview nil
+                              :priority 10
+                              :is-user-deleted false}
+                       ;; Auto-add to priority queue if enabled (iOS parity: lines 369-373)
+                       priority-queue-enabled?
+                       (merge {:priority-order 1.0
+                               :priority-queued-at now}))]
      {:db (assoc-in db [:sessions (:id new-session)] new-session)
       :dispatch [:persistence/save-session new-session]})))
 

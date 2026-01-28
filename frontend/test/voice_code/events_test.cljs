@@ -990,6 +990,29 @@
        (is (some? empty-name-session))
        (is (nil? (:custom-name empty-name-session)))))))
 
+(deftest sessions-create-priority-queue-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "sessions/create does NOT auto-add to priority queue when disabled"
+     (rf/dispatch-sync [:settings/save :priority-queue-enabled false])
+     (rf/dispatch-sync [:sessions/create {:working-directory "/no-queue/project"}])
+     (let [sessions (vals @(rf/subscribe [:sessions/all]))
+           session (first (filter #(= "/no-queue/project" (:working-directory %)) sessions))]
+       (is (some? session))
+       (is (nil? (:priority-queued-at session)) "Should not have priority-queued-at when disabled")
+       (is (nil? (:priority-order session)) "Should not have priority-order when disabled")))
+
+   (testing "sessions/create auto-adds to priority queue when enabled (iOS parity)"
+     (rf/dispatch-sync [:settings/save :priority-queue-enabled true])
+     (rf/dispatch-sync [:sessions/create {:working-directory "/auto-queue/project"}])
+     (let [sessions (vals @(rf/subscribe [:sessions/all]))
+           session (first (filter #(= "/auto-queue/project" (:working-directory %)) sessions))]
+       (is (some? session))
+       (is (some? (:priority-queued-at session)) "Should have priority-queued-at when enabled")
+       (is (= 1.0 (:priority-order session)) "Should have default priority-order 1.0")
+       (is (= 10 (:priority session)) "Should have default priority 10")))))
+
 (deftest session-create-new-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
