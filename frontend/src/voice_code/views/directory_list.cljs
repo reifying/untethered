@@ -633,7 +633,9 @@
                                      (reset! cached-priority-queue-sessions priority-queue-sessions)))
                                  debounce-ms)
         ;; App state listener
-        app-state-subscription (atom nil)]
+        app-state-subscription (atom nil)
+        ;; Previous app state for detecting background->active transitions
+        prev-app-state (atom "active")]
     (r/create-class
      {:display-name "directory-list-view"
 
@@ -644,11 +646,21 @@
           (when nav
             (.setOptions nav
                          #js {:headerRight (fn [] (r/as-element [header-right-buttons nav]))})))
-        ;; Track app state (skip updates when backgrounded like iOS)
+        ;; Track app state (skip updates when backgrounded like iOS DirectoryListView.swift)
+        ;; Also refresh caches when returning from background to prevent stale data
         (reset! app-state-subscription
                 (.addEventListener AppState "change"
                                    (fn [state]
-                                     (reset! app-active? (= state "active"))))))
+                                     (let [was-background? (= @prev-app-state "background")
+                                           is-active? (= state "active")]
+                                       ;; Refresh caches when returning from background
+                                       ;; (matches iOS .onChange(of: scenePhase) behavior)
+                                       (when (and was-background? is-active?)
+                                         (reset! cached-queue-sessions nil)
+                                         (reset! cached-priority-queue-sessions nil))
+                                       ;; Update tracking state
+                                       (reset! prev-app-state state)
+                                       (reset! app-active? is-active?))))))
 
       :component-will-unmount
       (fn [_this]
