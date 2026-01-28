@@ -12,7 +12,8 @@
             ["react-native" :as rn :refer [Alert]]
             ["@react-native-clipboard/clipboard" :as Clipboard]
             [voice-code.persistence :as persistence]
-            [voice-code.haptic :as haptic]))
+            [voice-code.haptic :as haptic]
+            [voice-code.theme :as theme]))
 
 ;; ============================================================================
 ;; Clipboard Utility
@@ -31,67 +32,67 @@
 
 (defn- section-header
   "Section header for info groups."
-  [title]
+  [title colors]
   [:> rn/View {:style {:padding-horizontal 16
                        :padding-top 24
                        :padding-bottom 8}}
    [:> rn/Text {:style {:font-size 13
                         :font-weight "600"
-                        :color "#666"
+                        :color (:text-secondary colors)
                         :text-transform "uppercase"
                         :letter-spacing 0.5}}
     title]])
 
 (defn- info-row
   "Tappable info row with label, value, and copy functionality."
-  [{:keys [label value on-copy]}]
+  [{:keys [label value on-copy colors]}]
   [:> rn/TouchableOpacity
    {:style {:padding-horizontal 16
             :padding-vertical 12
-            :background-color "#FFFFFF"
+            :background-color (:row-background colors)
             :border-bottom-width 1
-            :border-bottom-color "#F0F0F0"}
+            :border-bottom-color (:separator-opaque colors)}
     :on-press #(when on-copy (on-copy value))}
    [:> rn/Text {:style {:font-size 12
-                        :color "#666"
+                        :color (:text-secondary colors)
                         :margin-bottom 4}}
     label]
    [:> rn/Text {:style {:font-size 16
-                        :color "#000"}
+                        :color (:text-primary colors)}
                 :selectable true}
     value]])
 
 (defn- action-button
   "Action button for session actions."
-  [{:keys [label icon on-press destructive?]}]
+  [{:keys [label icon on-press destructive? colors]}]
   [:> rn/TouchableOpacity
    {:style {:flex-direction "row"
             :align-items "center"
             :padding-horizontal 16
             :padding-vertical 14
-            :background-color "#FFFFFF"
+            :background-color (:row-background colors)
             :border-bottom-width 1
-            :border-bottom-color "#F0F0F0"}
+            :border-bottom-color (:separator-opaque colors)}
     :on-press on-press}
    (when icon
      [:> rn/Text {:style {:font-size 18
-                          :color (if destructive? "#FF3B30" "#007AFF")
+                          :color (if destructive? (:destructive colors) (:accent colors))
                           :margin-right 12}}
       icon])
    [:> rn/Text {:style {:font-size 16
-                        :color (if destructive? "#FF3B30" "#007AFF")}}
+                        :color (if destructive? (:destructive colors) (:accent colors))}}
     label]])
 
 (defn- priority-picker
   "Priority selection picker."
-  [{:keys [value on-change]}]
+  [{:keys [value on-change colors]}]
   [:> rn/View {:style {:flex-direction "row"
                        :padding-horizontal 16
                        :padding-vertical 12
-                       :background-color "#FFFFFF"
+                       :background-color (:row-background colors)
                        :border-bottom-width 1
-                       :border-bottom-color "#F0F0F0"}}
-   [:> rn/Text {:style {:font-size 16 :color "#000" :margin-right 16}}
+                       :border-bottom-color (:separator-opaque colors)}}
+   [:> rn/Text {:style {:font-size 16 :color (:text-primary colors) :margin-right 16}}
     "Priority"]
    [:> rn/View {:style {:flex-direction "row" :flex 1 :justify-content "space-around"}}
     (for [[label priority-value] [["High (1)" 1] ["Medium (5)" 5] ["Low (10)" 10]]]
@@ -100,15 +101,15 @@
        {:style {:padding-horizontal 16
                 :padding-vertical 8
                 :border-radius 6
-                :background-color (if (= value priority-value) "#007AFF" "#E9E9EB")}
+                :background-color (if (= value priority-value) (:accent colors) (:fill-secondary colors))}
         :on-press #(on-change priority-value)}
        [:> rn/Text {:style {:font-size 14
-                            :color (if (= value priority-value) "#FFFFFF" "#000")}}
+                            :color (if (= value priority-value) "#FFFFFF" (:text-primary colors))}}
         label]])]])
 
 (defn- copy-confirmation-toast
   "Toast notification for copy confirmation."
-  [message visible?]
+  [message visible? colors]
   (when visible?
     [:> rn/View {:style {:position "absolute"
                          :top 8
@@ -116,7 +117,7 @@
                          :right 0
                          :align-items "center"
                          :z-index 1000}}
-     [:> rn/View {:style {:background-color "rgba(52, 199, 89, 0.95)"
+     [:> rn/View {:style {:background-color (:success-toast-background colors)
                           :padding-horizontal 16
                           :padding-vertical 8
                           :border-radius 8}}
@@ -131,17 +132,19 @@
 
 (defn- session-info-section
   "Session information section."
-  [{:keys [session git-branch git-loading? on-copy]}]
+  [{:keys [session git-branch git-loading? on-copy colors]}]
   (let [{:keys [id backend-name custom-name working-directory]} session
         display-name (or custom-name backend-name (str "Session " (subs id 0 8)))]
     [:> rn/View
-     [section-header "Session Information"]
+     [section-header "Session Information" colors]
      [info-row {:label "Name"
                 :value display-name
-                :on-copy #(on-copy % "Name copied")}]
+                :on-copy #(on-copy % "Name copied")
+                :colors colors}]
      [info-row {:label "Working Directory"
                 :value (or working-directory "Not set")
-                :on-copy #(on-copy % "Directory copied")}]
+                :on-copy #(on-copy % "Directory copied")
+                :colors colors}]
      ;; Git branch row - shows loading spinner while fetching, then branch when detected
      ;; Matches iOS SessionInfoView behavior (lines 53-69)
      (cond
@@ -151,146 +154,162 @@
                             :align-items "center"
                             :padding-horizontal 16
                             :padding-vertical 12
-                            :background-color "#FFFFFF"
+                            :background-color (:row-background colors)
                             :border-bottom-width 1
-                            :border-bottom-color "#F0F0F0"}}
-        [:> rn/Text {:style {:font-size 15 :color "#666"}}
+                            :border-bottom-color (:separator-opaque colors)}}
+        [:> rn/Text {:style {:font-size 15 :color (:text-secondary colors)}}
          "Git Branch"]
-        [:> rn/ActivityIndicator {:size "small" :color "#999"}]]
+        [:> rn/ActivityIndicator {:size "small" :color (:text-tertiary colors)}]]
 
        git-branch
        [info-row {:label "Git Branch"
                   :value git-branch
-                  :on-copy #(on-copy % "Branch copied")}])
+                  :on-copy #(on-copy % "Branch copied")
+                  :colors colors}])
      [info-row {:label "Session ID"
                 :value id
-                :on-copy #(on-copy % "Session ID copied")}]
+                :on-copy #(on-copy % "Session ID copied")
+                :colors colors}]
      [:> rn/View {:style {:padding-horizontal 16
                           :padding-vertical 8
-                          :background-color "#FFFFFF"
+                          :background-color (:row-background colors)
                           :border-bottom-width 1
-                          :border-bottom-color "#F0F0F0"}}
-      [:> rn/Text {:style {:font-size 12 :color "#666"}}
+                          :border-bottom-color (:separator-opaque colors)}}
+      [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
        "Tap to copy any field"]]]))
 
 (defn- priority-queue-section
   "Priority queue management section."
-  [{:keys [session settings on-copy on-add-to-queue on-remove-from-queue on-change-priority]}]
+  [{:keys [session settings on-copy on-add-to-queue on-remove-from-queue on-change-priority colors]}]
   (when (:priority-queue-enabled settings)
     (let [{:keys [priority priority-order priority-queued-at]} session
           in-queue? (some? priority-queued-at)]
       [:> rn/View
-       [section-header "Priority Queue"]
+       [section-header "Priority Queue" colors]
        (if in-queue?
          [:> rn/View
           [priority-picker {:value (or priority 10)
-                            :on-change on-change-priority}]
+                            :on-change on-change-priority
+                            :colors colors}]
           [info-row {:label "Order"
                      :value (str (or priority-order 1.0))
-                     :on-copy nil}]
+                     :on-copy nil
+                     :colors colors}]
           (when priority-queued-at
             [info-row {:label "Queued"
                        :value (str priority-queued-at)
-                       :on-copy nil}])
+                       :on-copy nil
+                       :colors colors}])
           [action-button {:label "Remove from Priority Queue"
                           :icon "☆"
                           :destructive? true
-                          :on-press on-remove-from-queue}]
+                          :on-press on-remove-from-queue
+                          :colors colors}]
           [:> rn/View {:style {:padding-horizontal 16
                                :padding-vertical 8
-                               :background-color "#FFFFFF"
+                               :background-color (:row-background colors)
                                :border-bottom-width 1
-                               :border-bottom-color "#F0F0F0"}}
-           [:> rn/Text {:style {:font-size 12 :color "#666"}}
+                               :border-bottom-color (:separator-opaque colors)}}
+           [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
             "Change priority to adjust position in queue. Lower priority number = higher importance."]]]
          [:> rn/View
           [action-button {:label "Add to Priority Queue"
                           :icon "★"
-                          :on-press on-add-to-queue}]
+                          :on-press on-add-to-queue
+                          :colors colors}]
           [:> rn/View {:style {:padding-horizontal 16
                                :padding-vertical 8
-                               :background-color "#FFFFFF"
+                               :background-color (:row-background colors)
                                :border-bottom-width 1
-                               :border-bottom-color "#F0F0F0"}}
-           [:> rn/Text {:style {:font-size 12 :color "#666"}}
+                               :border-bottom-color (:separator-opaque colors)}}
+           [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
             "Add to priority queue to track this session with custom priority ordering."]]])])))
 
 (defn- recipe-orchestration-section
   "Recipe orchestration controls section."
-  [{:keys [session-id active-recipe on-start-recipe on-exit-recipe]}]
+  [{:keys [session-id active-recipe on-start-recipe on-exit-recipe colors]}]
   [:> rn/View
-   [section-header "Recipe Orchestration"]
+   [section-header "Recipe Orchestration" colors]
    (if active-recipe
      [:> rn/View
       [info-row {:label "Active Recipe"
                  :value (:recipe-label active-recipe)
-                 :on-copy nil}]
+                 :on-copy nil
+                 :colors colors}]
       [info-row {:label "Current Step"
                  :value (:current-step active-recipe)
-                 :on-copy nil}]
+                 :on-copy nil
+                 :colors colors}]
       [info-row {:label "Step"
                  :value (str (:step-count active-recipe))
-                 :on-copy nil}]
+                 :on-copy nil
+                 :colors colors}]
       [action-button {:label "Exit Recipe"
                       :icon "⏹"
                       :destructive? true
-                      :on-press on-exit-recipe}]
+                      :on-press on-exit-recipe
+                      :colors colors}]
       [:> rn/View {:style {:padding-horizontal 16
                            :padding-vertical 8
-                           :background-color "#FFFFFF"
+                           :background-color (:row-background colors)
                            :border-bottom-width 1
-                           :border-bottom-color "#F0F0F0"}}
-       [:> rn/Text {:style {:font-size 12 :color "#666"}}
+                           :border-bottom-color (:separator-opaque colors)}}
+       [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
         "Recipe is guiding this session through structured steps."]]]
      [:> rn/View
       [action-button {:label "Start Recipe"
                       :icon "▶"
-                      :on-press on-start-recipe}]
+                      :on-press on-start-recipe
+                      :colors colors}]
       [:> rn/View {:style {:padding-horizontal 16
                            :padding-vertical 8
-                           :background-color "#FFFFFF"
+                           :background-color (:row-background colors)
                            :border-bottom-width 1
-                           :border-bottom-color "#F0F0F0"}}
-       [:> rn/Text {:style {:font-size 12 :color "#666"}}
+                           :border-bottom-color (:separator-opaque colors)}}
+       [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
         "Recipes automate multi-step workflows with code review loops."]]])])
 
 (defn- actions-section
   "Session actions section."
-  [{:keys [on-export on-compact on-infer-name]}]
+  [{:keys [on-export on-compact on-infer-name colors]}]
   [:> rn/View
-   [section-header "Actions"]
+   [section-header "Actions" colors]
    [action-button {:label "Infer Session Name"
                    :icon "✨"
-                   :on-press on-infer-name}]
+                   :on-press on-infer-name
+                   :colors colors}]
    [action-button {:label "Export Conversation"
                    :icon "↗"
-                   :on-press on-export}]
+                   :on-press on-export
+                   :colors colors}]
    [action-button {:label "Compact Session"
                    :icon "⚡"
-                   :on-press on-compact}]
+                   :on-press on-compact
+                   :colors colors}]
    [:> rn/View {:style {:padding-horizontal 16
                         :padding-vertical 8
-                        :background-color "#FFFFFF"
+                        :background-color (:row-background colors)
                         :border-bottom-width 1
-                        :border-bottom-color "#F0F0F0"}}
-    [:> rn/Text {:style {:font-size 12 :color "#666"}}
+                        :border-bottom-color (:separator-opaque colors)}}
+    [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
      "Infer Name asks Claude to generate a session name. Compaction summarizes conversation history to reduce context window usage."]]])
 
 (defn- danger-zone-section
   "Danger zone with destructive actions."
-  [{:keys [on-delete]}]
+  [{:keys [on-delete colors]}]
   [:> rn/View
-   [section-header "Danger Zone"]
+   [section-header "Danger Zone" colors]
    [action-button {:label "Delete Session"
                    :icon "🗑"
                    :destructive? true
-                   :on-press on-delete}]
+                   :on-press on-delete
+                   :colors colors}]
    [:> rn/View {:style {:padding-horizontal 16
                         :padding-vertical 8
-                        :background-color "#FFFFFF"
+                        :background-color (:row-background colors)
                         :border-bottom-width 1
-                        :border-bottom-color "#F0F0F0"}}
-    [:> rn/Text {:style {:font-size 12 :color "#666"}}
+                        :border-bottom-color (:separator-opaque colors)}}
+    [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
      "Deleting a session hides it from all lists. This cannot be undone."]]])
 
 ;; ============================================================================
@@ -327,7 +346,8 @@
 
       :reagent-render
       (fn []
-        (let [session @(rf/subscribe [:sessions/by-id session-id])
+        (let [colors (theme/use-theme-colors)
+              session @(rf/subscribe [:sessions/by-id session-id])
               settings @(rf/subscribe [:settings/all])
               active-recipe @(rf/subscribe [:recipes/active-for-session session-id])
               working-directory (:working-directory session)
@@ -414,26 +434,31 @@
                                                  :onPress (fn []
                                                             (rf/dispatch [:sessions/delete session-id])
                                                             (.goBack navigation))}])))]
-          [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
-           [copy-confirmation-toast message visible?]
+          [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
+           [copy-confirmation-toast message visible? colors]
            [:> rn/ScrollView {:content-container-style {:padding-bottom 40}}
             (when session
               [:> rn/View
                [session-info-section {:session session
                                       :git-branch git-branch
                                       :git-loading? git-loading?
-                                      :on-copy handle-copy}]
+                                      :on-copy handle-copy
+                                      :colors colors}]
                [priority-queue-section {:session session
                                         :settings settings
                                         :on-copy handle-copy
                                         :on-add-to-queue handle-add-to-queue
                                         :on-remove-from-queue handle-remove-from-queue
-                                        :on-change-priority handle-change-priority}]
+                                        :on-change-priority handle-change-priority
+                                        :colors colors}]
                [recipe-orchestration-section {:session-id session-id
                                               :active-recipe active-recipe
                                               :on-start-recipe handle-start-recipe
-                                              :on-exit-recipe handle-exit-recipe}]
+                                              :on-exit-recipe handle-exit-recipe
+                                              :colors colors}]
                [actions-section {:on-export handle-export
                                  :on-compact handle-compact
-                                 :on-infer-name handle-infer-name}]
-               [danger-zone-section {:on-delete handle-delete}]])]]))})))
+                                 :on-infer-name handle-infer-name
+                                 :colors colors}]
+               [danger-zone-section {:on-delete handle-delete
+                                     :colors colors}]])]]))})))

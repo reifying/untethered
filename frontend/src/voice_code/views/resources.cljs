@@ -3,7 +3,8 @@
    Displays list of uploaded resources with delete functionality."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn :refer [RefreshControl]]))
+            ["react-native" :as rn :refer [RefreshControl]]
+            [voice-code.theme :as theme]))
 
 (defn- format-file-size
   "Format file size in bytes to human-readable string."
@@ -42,22 +43,22 @@
 
 (defn- resource-item
   "Single resource item in the list."
-  [{:keys [resource on-delete]}]
+  [{:keys [resource on-delete colors]}]
   (let [{:keys [filename path size timestamp]} resource
         confirm-delete? (r/atom false)]
-    (fn [{:keys [resource on-delete]}]
+    (fn [{:keys [resource on-delete colors]}]
       [:> rn/View {:style {:flex-direction "row"
                            :align-items "center"
                            :padding-horizontal 16
                            :padding-vertical 12
-                           :background-color "#FFFFFF"
+                           :background-color (:row-background colors)
                            :border-bottom-width 1
-                           :border-bottom-color "#F0F0F0"}}
+                           :border-bottom-color (:separator colors)}}
        ;; File icon
        [:> rn/View {:style {:width 44
                             :height 44
                             :border-radius 8
-                            :background-color "#F5F5F5"
+                            :background-color (:background-secondary colors)
                             :align-items "center"
                             :justify-content "center"
                             :margin-right 12}}
@@ -68,18 +69,18 @@
        [:> rn/View {:style {:flex 1}}
         [:> rn/Text {:style {:font-size 16
                              :font-weight "500"
-                             :color "#000"
+                             :color (:text-primary colors)
                              :margin-bottom 2}
                      :number-of-lines 1}
          filename]
         [:> rn/View {:style {:flex-direction "row"
                              :align-items "center"}}
          [:> rn/Text {:style {:font-size 12
-                              :color "#999"}}
+                              :color (:text-secondary colors)}}
           (format-file-size size)]
          (when timestamp
            [:> rn/Text {:style {:font-size 12
-                                :color "#999"
+                                :color (:text-secondary colors)
                                 :margin-left 8}}
             (str "• " (format-timestamp timestamp))])]]
 
@@ -89,7 +90,7 @@
           [:> rn/TouchableOpacity
            {:style {:padding-horizontal 12
                     :padding-vertical 6
-                    :background-color "#FF3B30"
+                    :background-color (:destructive colors)
                     :border-radius 6
                     :margin-right 8}
             :on-press #(do (on-delete resource)
@@ -101,10 +102,10 @@
           [:> rn/TouchableOpacity
            {:style {:padding-horizontal 12
                     :padding-vertical 6
-                    :background-color "#E5E5E5"
+                    :background-color (:fill-secondary colors)
                     :border-radius 6}
             :on-press #(reset! confirm-delete? false)}
-           [:> rn/Text {:style {:color "#666"
+           [:> rn/Text {:style {:color (:text-secondary colors)
                                 :font-size 14}}
             "Cancel"]]]
 
@@ -112,27 +113,27 @@
           {:style {:padding 8}
            :on-press #(reset! confirm-delete? true)}
           [:> rn/Text {:style {:font-size 20
-                               :color "#FF3B30"}}
+                               :color (:destructive colors)}}
            "🗑️"]])])))
 
 (defn- pending-uploads-banner
   "Banner showing pending uploads count."
-  [count]
+  [count colors]
   [:> rn/View {:style {:flex-direction "row"
                        :align-items "center"
                        :padding 12
-                       :background-color "#FFF3CD"
+                       :background-color (:warning-background colors)
                        :border-bottom-width 1
-                       :border-bottom-color "#FFE69C"}}
-   [:> rn/ActivityIndicator {:size "small" :color "#856404"}]
+                       :border-bottom-color (:separator colors)}}
+   [:> rn/ActivityIndicator {:size "small" :color (:warning colors)}]
    [:> rn/Text {:style {:margin-left 8
                         :font-size 14
-                        :color "#856404"}}
+                        :color (:warning colors)}}
     (str count " upload" (when (> count 1) "s") " in progress...")]])
 
 (defn- empty-state
   "Shown when there are no resources."
-  []
+  [colors]
   [:> rn/View {:style {:flex 1
                        :justify-content "center"
                        :align-items "center"
@@ -140,18 +141,18 @@
    [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "📁"]
    [:> rn/Text {:style {:font-size 18
                         :font-weight "600"
-                        :color "#333"
+                        :color (:text-primary colors)
                         :text-align "center"}}
     "No Resources"]
    [:> rn/Text {:style {:font-size 14
-                        :color "#666"
+                        :color (:text-secondary colors)
                         :text-align "center"
                         :margin-top 8}}
     "Uploaded files will appear here. Share files from other apps or use the upload feature."]])
 
 (defn- upload-button
   "FAB for uploading new resources."
-  [on-press]
+  [on-press colors]
   [:> rn/TouchableOpacity
    {:style {:position "absolute"
             :bottom 24
@@ -159,10 +160,10 @@
             :width 56
             :height 56
             :border-radius 28
-            :background-color "#007AFF"
+            :background-color (:accent colors)
             :justify-content "center"
             :align-items "center"
-            :shadow-color "#000"
+            :shadow-color (:shadow colors)
             :shadow-offset #js {:width 0 :height 2}
             :shadow-opacity 0.25
             :shadow-radius 4
@@ -178,17 +179,18 @@
   [^js _props]
   ;; Form-2: Return a render function that reads subscriptions
   (fn [^js _props]
-    (let [resources @(rf/subscribe [:resources/list])
+    (let [colors (theme/use-theme-colors)
+          resources @(rf/subscribe [:resources/list])
           pending-uploads @(rf/subscribe [:resources/pending-uploads])
           refreshing? @(rf/subscribe [:ui/refreshing-resources?])]
-      [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
+      [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
        ;; Pending uploads banner
        (when (and pending-uploads (> pending-uploads 0))
-         [pending-uploads-banner pending-uploads])
+         [pending-uploads-banner pending-uploads colors])
 
        ;; Resources list
        (if (empty? resources)
-         [empty-state]
+         [empty-state colors]
          [:> rn/FlatList
           {:data (clj->js resources)
            :key-extractor (fn [item _idx]
@@ -205,15 +207,16 @@
                (r/as-element
                 [resource-item
                  {:resource resource
-                  :on-delete #(rf/dispatch [:resources/delete (:filename %)])}])))
+                  :on-delete #(rf/dispatch [:resources/delete (:filename %)])
+                  :colors colors}])))
            :refresh-control
            (r/as-element
             [:> RefreshControl
              {:refreshing (boolean refreshing?)
               :on-refresh #(rf/dispatch [:resources/refresh])
-              :tint-color "#007AFF"
-              :colors #js ["#007AFF"]}])
+              :tint-color (:accent colors)
+              :colors #js [(:accent colors)]}])
            :content-container-style {:padding-vertical 8}}])
 
        ;; Upload FAB
-       [upload-button #(rf/dispatch [:resources/upload])]])))
+       [upload-button #(rf/dispatch [:resources/upload]) colors]])))

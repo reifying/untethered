@@ -8,7 +8,8 @@
    - Loading state during recipe start and load"
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn :refer [Alert]]))
+            ["react-native" :as rn :refer [Alert]]
+            [voice-code.theme :as theme]))
 
 (defn- format-duration
   "Format duration since start time."
@@ -26,20 +27,20 @@
   "Single recipe item in the available list.
    Recipe data has :id, :label, :description from backend.
    Supports disabled state during recipe start."
-  [{:keys [recipe active? disabled? on-start on-stop]}]
+  [{:keys [recipe active? disabled? on-start on-stop colors]}]
   (let [{:keys [label description]} recipe]
     [:> rn/View {:style {:padding-horizontal 16
                          :padding-vertical 14
-                         :background-color "#FFFFFF"
+                         :background-color (:row-background colors)
                          :border-bottom-width 1
-                         :border-bottom-color "#F0F0F0"}}
+                         :border-bottom-color (:separator-opaque colors)}}
      [:> rn/View {:style {:flex-direction "row"
                           :align-items "flex-start"}}
       ;; Recipe icon
       [:> rn/View {:style {:width 44
                            :height 44
                            :border-radius 8
-                           :background-color (if active? "#E8F5E9" "#F5F5F5")
+                           :background-color (if active? (:success-background colors) (:fill-tertiary colors))
                            :align-items "center"
                            :justify-content "center"
                            :margin-right 12}}
@@ -50,21 +51,21 @@
       [:> rn/View {:style {:flex 1}}
        [:> rn/Text {:style {:font-size 16
                             :font-weight "600"
-                            :color "#000"
+                            :color (:text-primary colors)
                             :margin-bottom 4}}
         label]
        (when description
          [:> rn/Text {:style {:font-size 14
-                              :color "#666"
+                              :color (:text-secondary colors)
                               :line-height 20}}
           description])
        (when active?
          [:> rn/View {:style {:flex-direction "row"
                               :align-items "center"
                               :margin-top 8}}
-          [:> rn/ActivityIndicator {:size "small" :color "#4CAF50"}]
+          [:> rn/ActivityIndicator {:size "small" :color (:success colors)}]
           [:> rn/Text {:style {:font-size 13
-                               :color "#4CAF50"
+                               :color (:success colors)
                                :margin-left 8}}
            "Running..."]])]
 
@@ -74,25 +75,25 @@
                 :padding-vertical 8
                 :border-radius 6
                 :background-color (cond
-                                    disabled? "#E5E5E5"
-                                    active? "#FFEBEE"
-                                    :else "#E3F2FD")
+                                    disabled? (:fill-tertiary colors)
+                                    active? (:destructive-background colors)
+                                    :else (:accent-background colors))
                 :opacity (if disabled? 0.6 1)}
         :disabled disabled?
         :on-press (if active? on-stop on-start)}
        [:> rn/Text {:style {:font-size 14
                             :font-weight "500"
                             :color (cond
-                                     disabled? "#999"
-                                     active? "#C62828"
-                                     :else "#1565C0")}}
+                                     disabled? (:disabled colors)
+                                     active? (:destructive colors)
+                                     :else (:accent colors))}}
         (if active? "Stop" "Start")]]]]))
 
 (defn- active-recipe-banner
   "Banner showing currently active recipe with details.
    Displays current step and progress if available.
    Uses r/create-class with component-will-unmount to clean up the interval timer."
-  [{:keys [name started-at current-step step-count on-stop]}]
+  [{:keys [name started-at current-step step-count on-stop colors]}]
   (let [duration (r/atom (format-duration started-at))
         interval-id (atom nil)]
     (r/create-class
@@ -109,18 +110,18 @@
           (reset! interval-id nil)))
 
       :reagent-render
-      (fn [{:keys [name started-at current-step step-count on-stop]}]
+      (fn [{:keys [name started-at current-step step-count on-stop colors]}]
         [:> rn/View {:style {:padding 16
-                             :background-color "#E8F5E9"
+                             :background-color (:success-background colors)
                              :border-bottom-width 1
-                             :border-bottom-color "#A5D6A7"}}
+                             :border-bottom-color (:success colors)}}
          [:> rn/View {:style {:flex-direction "row"
                               :align-items "center"
                               :margin-bottom 8}}
-          [:> rn/ActivityIndicator {:size "small" :color "#2E7D32"}]
+          [:> rn/ActivityIndicator {:size "small" :color (:success colors)}]
           [:> rn/Text {:style {:font-size 16
                                :font-weight "600"
-                               :color "#2E7D32"
+                               :color (:success colors)
                                :margin-left 8}}
            "Recipe Running"]]
          [:> rn/View {:style {:flex-direction "row"
@@ -128,62 +129,62 @@
                               :align-items "center"}}
           [:> rn/View {:style {:flex 1 :margin-right 12}}
            [:> rn/Text {:style {:font-size 15
-                                :color "#333"}}
+                                :color (:text-primary colors)}}
             name]
            ;; Show current step if available
            (when current-step
              [:> rn/Text {:style {:font-size 13
-                                  :color "#2E7D32"
+                                  :color (:success colors)
                                   :font-weight "500"
                                   :margin-top 4}}
               (if step-count
                 (str "Step: " current-step " of " step-count)
                 (str "Step: " current-step))])
            [:> rn/Text {:style {:font-size 13
-                                :color "#666"
+                                :color (:text-secondary colors)
                                 :margin-top 2}}
             (str "Running for " @duration)]]
           [:> rn/TouchableOpacity
            {:style {:padding-horizontal 16
                     :padding-vertical 8
-                    :background-color "#FFCDD2"
+                    :background-color (:destructive-background colors)
                     :border-radius 6}
             :on-press on-stop}
            [:> rn/Text {:style {:font-size 14
                                 :font-weight "500"
-                                :color "#C62828"}}
+                                :color (:destructive colors)}}
             "Stop"]]]])})))
 
 (defn- section-header
   "Section header for recipe groups."
-  [title]
+  [title colors]
   [:> rn/View {:style {:padding-horizontal 16
                        :padding-top 24
                        :padding-bottom 8
-                       :background-color "#F5F5F5"}}
+                       :background-color (:grouped-background colors)}}
    [:> rn/Text {:style {:font-size 13
                         :font-weight "600"
-                        :color "#666"
+                        :color (:text-secondary colors)
                         :text-transform "uppercase"
                         :letter-spacing 0.5}}
     title]])
 
 (defn- loading-recipes-state
   "Shown while loading recipes from backend."
-  []
+  [colors]
   [:> rn/View {:style {:flex 1
                        :justify-content "center"
                        :align-items "center"
                        :padding 40}}
-   [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]
+   [:> rn/ActivityIndicator {:size "large" :color (:accent colors)}]
    [:> rn/Text {:style {:font-size 16
-                        :color "#666"
+                        :color (:text-secondary colors)
                         :margin-top 16}}
     "Loading recipes..."]])
 
 (defn- empty-state
   "Shown when there are no recipes available."
-  []
+  [colors]
   [:> rn/View {:style {:flex 1
                        :justify-content "center"
                        :align-items "center"
@@ -191,23 +192,23 @@
    [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "🧪"]
    [:> rn/Text {:style {:font-size 18
                         :font-weight "600"
-                        :color "#333"
+                        :color (:text-primary colors)
                         :text-align "center"}}
     "No Recipes Available"]
    [:> rn/Text {:style {:font-size 14
-                        :color "#666"
+                        :color (:text-secondary colors)
                         :text-align "center"
                         :margin-top 8}}
     "Recipes will appear here when the backend provides them."]])
 
 (defn- recipe-history-item
   "Single item in recipe execution history."
-  [{:keys [name started-at ended-at status]}]
+  [{:keys [name started-at ended-at status colors]}]
   [:> rn/View {:style {:padding-horizontal 16
                        :padding-vertical 12
-                       :background-color "#FFFFFF"
+                       :background-color (:row-background colors)
                        :border-bottom-width 1
-                       :border-bottom-color "#F0F0F0"}}
+                       :border-bottom-color (:separator-opaque colors)}}
    [:> rn/View {:style {:flex-direction "row"
                         :align-items "center"}}
     [:> rn/View {:style {:width 8
@@ -215,43 +216,43 @@
                          :border-radius 4
                          :margin-right 12
                          :background-color (case status
-                                             :success "#4CAF50"
-                                             :error "#F44336"
-                                             "#999")}}]
+                                             :success (:success colors)
+                                             :error (:destructive colors)
+                                             (:disabled colors))}}]
     [:> rn/View {:style {:flex 1}}
      [:> rn/Text {:style {:font-size 15
-                          :color "#333"}}
+                          :color (:text-primary colors)}}
       name]
      [:> rn/Text {:style {:font-size 12
-                          :color "#999"
+                          :color (:text-tertiary colors)
                           :margin-top 2}}
       (when started-at
         (.toLocaleString (js/Date. started-at)))]]]])
 
 (defn- new-session-toggle
   "Toggle for starting recipe in a new session."
-  [{:keys [enabled? on-change]}]
+  [{:keys [enabled? on-change colors]}]
   [:> rn/View {:style {:padding-horizontal 16
                        :padding-vertical 12
-                       :background-color "#FFFFFF"
+                       :background-color (:row-background colors)
                        :border-bottom-width 1
-                       :border-bottom-color "#F0F0F0"}}
+                       :border-bottom-color (:separator-opaque colors)}}
    [:> rn/View {:style {:flex-direction "row"
                         :align-items "center"
                         :justify-content "space-between"}}
     [:> rn/View {:style {:flex 1 :margin-right 12}}
      [:> rn/Text {:style {:font-size 16
-                          :color "#000"}}
+                          :color (:text-primary colors)}}
       "Start in new session"]
      [:> rn/Text {:style {:font-size 13
-                          :color "#666"
+                          :color (:text-secondary colors)
                           :margin-top 4}}
       "Creates a fresh session for this recipe instead of using the current session."]]
     [:> rn/Switch {:value enabled?
                    :on-value-change on-change
-                   :track-color #js {:false "#E5E5E5" :true "#34C759"}
+                   :track-color #js {:false (:fill-secondary colors) :true (:success colors)}
                    :thumb-color "#FFFFFF"
-                   :ios-background-color "#E5E5E5"}]]])
+                   :ios-background-color (:fill-secondary colors)}]]])
 
 (defn recipes-view
   "Main recipes screen showing available and active recipes.
@@ -281,7 +282,8 @@
         load-error (r/atom nil)]
     ;; Form-2: Return a render function that reads subscriptions
     (fn [^js _props]
-      (let [available-recipes @(rf/subscribe [:recipes/available])
+      (let [colors (theme/use-theme-colors)
+            available-recipes @(rf/subscribe [:recipes/available])
             active-recipes @(rf/subscribe [:recipes/active])
             active-for-session (get active-recipes session-id)
             active-recipe-id (:recipe-id active-for-session)
@@ -331,7 +333,7 @@
               (.goBack navigation)))
           (reset! pending-session-id nil))
 
-        [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
+        [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
          ;; Load error state (for initial recipe load)
          (when @load-error
            [:> rn/View {:style {:flex 1
@@ -341,11 +343,11 @@
             [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "⚠️"]
             [:> rn/Text {:style {:font-size 18
                                  :font-weight "600"
-                                 :color "#333"
+                                 :color (:text-primary colors)
                                  :text-align "center"}}
              "Failed to Load"]
             [:> rn/Text {:style {:font-size 14
-                                 :color "#666"
+                                 :color (:text-secondary colors)
                                  :text-align "center"
                                  :margin-top 12
                                  :margin-horizontal 32}}
@@ -354,7 +356,7 @@
              {:style {:margin-top 24
                       :padding-horizontal 24
                       :padding-vertical 12
-                      :background-color "#007AFF"
+                      :background-color (:accent colors)
                       :border-radius 8}
               :on-press (fn []
                           (reset! load-error nil)
@@ -384,11 +386,11 @@
             [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "⚠️"]
             [:> rn/Text {:style {:font-size 18
                                  :font-weight "600"
-                                 :color "#333"
+                                 :color (:text-primary colors)
                                  :text-align "center"}}
              "Recipe Error"]
             [:> rn/Text {:style {:font-size 14
-                                 :color "#666"
+                                 :color (:text-secondary colors)
                                  :text-align "center"
                                  :margin-top 12
                                  :margin-horizontal 32}}
@@ -397,7 +399,7 @@
              {:style {:margin-top 24
                       :padding-horizontal 24
                       :padding-vertical 12
-                      :background-color "#007AFF"
+                      :background-color (:accent colors)
                       :border-radius 8}
               :on-press #(reset! start-error nil)}
              [:> rn/Text {:style {:color "#FFF"
@@ -409,13 +411,13 @@
          (when (and @starting-recipe? (not @start-error) (not @load-error))
            [:> rn/View {:style {:position "absolute"
                                 :top 0 :left 0 :right 0 :bottom 0
-                                :background-color "rgba(255,255,255,0.9)"
+                                :background-color (theme/opacity (:background colors) 0.9)
                                 :justify-content "center"
                                 :align-items "center"
                                 :z-index 999}}
-            [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]
+            [:> rn/ActivityIndicator {:size "large" :color (:accent colors)}]
             [:> rn/Text {:style {:font-size 16
-                                 :color "#333"
+                                 :color (:text-primary colors)
                                  :margin-top 16}}
              "Starting recipe..."]])
 
@@ -426,18 +428,19 @@
              :started-at (:started-at active-for-session)
              :current-step (:current-step active-for-session)
              :step-count (:step-count active-for-session)
-             :on-stop #(rf/dispatch [:recipes/stop session-id])}])
+             :on-stop #(rf/dispatch [:recipes/stop session-id])
+             :colors colors}])
 
          ;; Recipe list or loading/empty state
          (when-not (or @start-error @load-error)
            (cond
              ;; Loading recipes
              @loading-recipes?
-             [loading-recipes-state]
+             [loading-recipes-state colors]
 
              ;; No recipes available
              (empty? available-recipes)
-             [empty-state]
+             [empty-state colors]
 
              ;; Show recipe list
              :else
@@ -446,15 +449,17 @@
               (when-not active-for-session
                 [new-session-toggle
                  {:enabled? @use-new-session?
-                  :on-change #(reset! use-new-session? %)}])
+                  :on-change #(reset! use-new-session? %)
+                  :colors colors}])
 
-              [section-header "Available Recipes"]
+              [section-header "Available Recipes" colors]
               (for [recipe available-recipes]
                 ^{:key (:id recipe)}
                 [recipe-item
                  {:recipe recipe
                   :active? (= active-recipe-id (:id recipe))
                   :disabled? @starting-recipe?
+                  :colors colors
                   :on-start (fn []
                               (let [target-session-id (if @use-new-session?
                                                         (str (random-uuid))

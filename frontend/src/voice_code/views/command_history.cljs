@@ -3,7 +3,8 @@
    Provides list of recent commands with exit codes, duration, and output preview."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn :refer [RefreshControl]]))
+            ["react-native" :as rn :refer [RefreshControl]]
+            [voice-code.theme :as theme]))
 
 ;; ============================================================================
 ;; Helper Functions
@@ -47,12 +48,12 @@
 
 (defn- exit-code-indicator
   "Color-coded exit code badge."
-  [exit-code]
+  [exit-code colors]
   (let [success? (= exit-code 0)
         color (cond
-                (nil? exit-code) "#999"
-                success? "#34C759"
-                :else "#FF3B30")]
+                (nil? exit-code) (:text-secondary colors)
+                success? (:success colors)
+                :else (:destructive colors))]
     [:> rn/View {:style {:width 8
                          :height 8
                          :border-radius 4
@@ -61,21 +62,21 @@
 
 (defn- history-item
   "Single command history item in the list."
-  [{:keys [command on-press]}]
+  [{:keys [command on-press colors]}]
   (let [{:keys [command-session-id command-id shell-command working-directory
                 timestamp exit-code duration-ms output-preview]} command]
     [:> rn/TouchableOpacity
      {:style {:padding-horizontal 16
               :padding-vertical 14
-              :background-color "#FFFFFF"
+              :background-color (:row-background colors)
               :border-bottom-width 1
-              :border-bottom-color "#F0F0F0"}
+              :border-bottom-color (:separator colors)}
       :on-press #(on-press command)}
      [:> rn/View {:style {:flex-direction "row"
                           :align-items "flex-start"}}
       ;; Exit code indicator
       [:> rn/View {:style {:padding-top 6}}
-       [exit-code-indicator exit-code]]
+       [exit-code-indicator exit-code colors]]
 
       ;; Command info
       [:> rn/View {:style {:flex 1}}
@@ -83,7 +84,7 @@
        [:> rn/Text {:style {:font-size 15
                             :font-weight "600"
                             :font-family "monospace"
-                            :color "#000"
+                            :color (:text-primary colors)
                             :margin-bottom 4}
                     :number-of-lines 1}
         (or shell-command command-id "Unknown command")]
@@ -95,18 +96,18 @@
         ;; Timestamp
         (when timestamp
           [:> rn/Text {:style {:font-size 12
-                               :color "#666"}}
+                               :color (:text-secondary colors)}}
            (format-timestamp timestamp)])
         ;; Duration
         (when duration-ms
           [:> rn/Text {:style {:font-size 12
-                               :color "#666"
+                               :color (:text-secondary colors)
                                :margin-left 12}}
            (str "⏱ " (format-duration duration-ms))])
         ;; Exit code
         (when (some? exit-code)
           [:> rn/Text {:style {:font-size 12
-                               :color (if (= exit-code 0) "#34C759" "#FF3B30")
+                               :color (if (= exit-code 0) (:success colors) (:destructive colors))
                                :margin-left 12
                                :font-weight "500"}}
            (if (= exit-code 0) "✓ Success" (str "✗ Exit " exit-code))])]
@@ -114,9 +115,9 @@
        ;; Output preview
        (when (and output-preview (seq output-preview))
          [:> rn/Text {:style {:font-size 13
-                              :color "#666"
+                              :color (:text-secondary colors)
                               :font-family "monospace"
-                              :background-color "#F8F8F8"
+                              :background-color (:background-secondary colors)
                               :padding 8
                               :border-radius 6
                               :overflow "hidden"}
@@ -125,7 +126,7 @@
 
 (defn- empty-state
   "Shown when there is no command history."
-  []
+  [colors]
   [:> rn/View {:style {:flex 1
                        :justify-content "center"
                        :align-items "center"
@@ -133,25 +134,25 @@
    [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "📜"]
    [:> rn/Text {:style {:font-size 18
                         :font-weight "600"
-                        :color "#333"
+                        :color (:text-primary colors)
                         :text-align "center"}}
     "No Command History"]
    [:> rn/Text {:style {:font-size 14
-                        :color "#666"
+                        :color (:text-secondary colors)
                         :text-align "center"
                         :margin-top 8}}
     "Previously executed commands will appear here."]])
 
 (defn- loading-state
   "Shown while fetching history."
-  []
+  [colors]
   [:> rn/View {:style {:flex 1
                        :justify-content "center"
                        :align-items "center"}}
-   [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]
+   [:> rn/ActivityIndicator {:size "large" :color (:accent colors)}]
    [:> rn/Text {:style {:margin-top 12
                         :font-size 14
-                        :color "#666"}}
+                        :color (:text-secondary colors)}}
     "Loading history..."]])
 
 ;; ============================================================================
@@ -173,16 +174,17 @@
 
       :reagent-render
       (fn [_props]
-        (let [history @(rf/subscribe [:commands/history])
+        (let [colors (theme/use-theme-colors)
+              history @(rf/subscribe [:commands/history])
               refreshing? @(rf/subscribe [:ui/refreshing-command-history?])
               loading? false] ; Could track loading state if needed
-          [:> rn/SafeAreaView {:style {:flex 1 :background-color "#F5F5F5"}}
+          [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
            (cond
              loading?
-             [loading-state]
+             [loading-state colors]
 
              (empty? history)
-             [empty-state]
+             [empty-state colors]
 
              :else
              [:> rn/FlatList
@@ -207,6 +209,7 @@
                    (r/as-element
                     [history-item
                      {:command cmd
+                      :colors colors
                       :on-press (fn [c]
                                   (rf/dispatch [:commands/get-output (:command-session-id c)])
                                   (when navigation
@@ -218,6 +221,6 @@
                 [:> RefreshControl
                  {:refreshing (boolean refreshing?)
                   :on-refresh #(rf/dispatch [:commands/refresh-history working-directory])
-                  :tint-color "#007AFF"
-                  :colors #js ["#007AFF"]}])
+                  :tint-color (:accent colors)
+                  :colors #js [(:accent colors)]}])
                :content-container-style {:padding-vertical 8}}])]))})))

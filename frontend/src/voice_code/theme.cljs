@@ -54,6 +54,7 @@
    :accent-background "#E8F4FD" ; Light blue tint for accent active states
    :success-background "#E8F8E8" ; Light green tint for success active states
    :warning-background "#FFF3CD" ; Light yellow/orange tint for warnings
+   :warning-text "#856404" ; Light yellow/orange tint for warnings
    :destructive-background "#FFE5E5" ; Light red tint for destructive states
 
    ;; Additional semantic colors
@@ -85,7 +86,11 @@
    :status-connecting "#FF9500"
 
    ;; Shadows
-   :shadow "#000000"})
+   :shadow "#000000"
+
+   ;; Toast backgrounds
+   :toast-background "rgba(0,0,0,0.8)" ; Default dark toast
+   :success-toast-background "rgba(52,199,89,0.95)"}) ; Green success toast
 
 (def dark-colors
   "Dark mode color palette matching iOS system dark mode colors."
@@ -121,6 +126,7 @@
    :accent-background "#0A84FF1A" ; Dark blue tint for accent active states
    :success-background "#30D1581A" ; Dark green tint for success active states
    :warning-background "#FF9F0A1A" ; Dark orange tint for warnings
+   :warning-text "#FFD60A" ; Dark orange tint for warnings
    :destructive-background "#FF453A1A" ; Dark red tint for destructive states
 
    ;; Additional semantic colors
@@ -152,7 +158,11 @@
    :status-connecting "#FF9F0A"
 
    ;; Shadows (less visible in dark mode)
-   :shadow "#000000"})
+   :shadow "#000000"
+
+   ;; Toast backgrounds
+   :toast-background "rgba(60,60,60,0.9)" ; Dark toast for dark mode
+   :success-toast-background "rgba(48,209,88,0.95)"}) ; Green success toast (dark)
 
 ;; =============================================================================
 ;; Hooks

@@ -5,7 +5,8 @@
             [re-frame.core :as rf]
             ["react-native" :as rn]
             ["@react-native-clipboard/clipboard" :as Clipboard]
-            [voice-code.haptic :as haptic]))
+            [voice-code.haptic :as haptic]
+            [voice-code.theme :as theme]))
 
 ;; ============================================================================
 ;; Helper Functions
@@ -42,20 +43,20 @@
 
 (defn- metadata-header
   "Header showing command metadata."
-  [{:keys [shell-command exit-code timestamp duration-ms working-directory]}]
+  [{:keys [shell-command exit-code timestamp duration-ms working-directory colors]}]
   [:> rn/View {:style {:padding 16
-                       :background-color "#F8F9FA"
+                       :background-color (:grouped-background colors)
                        :border-bottom-width 1
-                       :border-bottom-color "#DEE2E6"}}
+                       :border-bottom-color (:separator colors)}}
    ;; Command
    [:> rn/Text {:style {:font-size 13
-                        :color "#6C757D"
+                        :color (:text-secondary colors)
                         :margin-bottom 4}}
     "Command"]
    [:> rn/Text {:style {:font-size 16
                         :font-weight "600"
                         :font-family "monospace"
-                        :color "#212529"
+                        :color (:text-primary colors)
                         :margin-bottom 12}}
     (or shell-command "Unknown")]
 
@@ -72,10 +73,10 @@
        [:> rn/View {:style {:width 8
                             :height 8
                             :border-radius 4
-                            :background-color (if (= exit-code 0) "#34C759" "#FF3B30")
+                            :background-color (if (= exit-code 0) (:success colors) (:destructive colors))
                             :margin-right 6}}]
        [:> rn/Text {:style {:font-size 13
-                            :color (if (= exit-code 0) "#34C759" "#FF3B30")
+                            :color (if (= exit-code 0) (:success colors) (:destructive colors))
                             :font-weight "500"}}
         (if (= exit-code 0) "Success" (str "Exit " exit-code))]])
 
@@ -85,7 +86,7 @@
                            :align-items "center"
                            :margin-right 16
                            :margin-bottom 4}}
-       [:> rn/Text {:style {:font-size 13 :color "#6C757D"}}
+       [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors)}}
         (str "⏱ " (format-duration duration-ms))]])
 
     ;; Timestamp
@@ -93,62 +94,62 @@
       [:> rn/View {:style {:flex-direction "row"
                            :align-items "center"
                            :margin-bottom 4}}
-       [:> rn/Text {:style {:font-size 13 :color "#6C757D"}}
+       [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors)}}
         (format-timestamp timestamp)]])]
 
    ;; Working directory
    (when working-directory
      [:> rn/View {:style {:margin-top 8}}
-      [:> rn/Text {:style {:font-size 12 :color "#6C757D"}}
+      [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
        (str "📁 " working-directory)]])])
 
 (defn- output-view
   "Scrollable output display."
-  [{:keys [output]}]
+  [{:keys [output colors]}]
   [:> rn/ScrollView {:style {:flex 1
-                             :background-color "#1E1E1E"}
+                             :background-color (:background-secondary colors)}
                      :content-container-style {:padding 12}}
    (if (and output (seq output))
      [:> rn/Text {:style {:font-family "monospace"
                           :font-size 13
                           :line-height 20
-                          :color "#D4D4D4"}
+                          :color (:text-primary colors)}
                   :selectable true}
       output]
      [:> rn/Text {:style {:font-family "monospace"
                           :font-size 13
-                          :color "#6C757D"
+                          :color (:text-secondary colors)
                           :font-style "italic"}}
       "No output"])])
 
 (defn- loading-state
   "Shown while loading output."
-  []
+  [colors]
   [:> rn/View {:style {:flex 1
                        :justify-content "center"
                        :align-items "center"
-                       :background-color "#1E1E1E"}}
-   [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]
+                       :background-color (:background-secondary colors)}}
+   [:> rn/ActivityIndicator {:size "large" :color (:accent colors)}]
    [:> rn/Text {:style {:margin-top 12
                         :font-size 14
-                        :color "#D4D4D4"}}
+                        :color (:text-primary colors)}}
     "Loading output..."]])
 
 (defn- copy-button
   "Button to copy output to clipboard with haptic feedback."
-  [output]
+  [output colors]
   [:> rn/TouchableOpacity
    {:style {:position "absolute"
             :top 8
             :right 8
             :padding 8
-            :background-color "rgba(255,255,255,0.1)"
+            :background-color (:overlay colors)
             :border-radius 6}
     :on-press (fn []
                 (let [clipboard (or (.-default Clipboard) Clipboard)]
                   (.setString clipboard output)
                   (haptic/success!)))}
-   [:> rn/Text {:style {:font-size 14 :color "#D4D4D4"}}
+   [:> rn/Text {:style {:font-size 14 :color (:text-primary colors)}}
     "📋 Copy"]])
 
 ;; ============================================================================
@@ -163,7 +164,8 @@
         command-session-id (when route (some-> route .-params .-commandSessionId))
         shell-command (when route (some-> route .-params .-shellCommand))]
     (fn [_props]
-      (let [;; Try to get from running commands first, then from output detail
+      (let [colors (theme/use-theme-colors)
+            ;; Try to get from running commands first, then from output detail
             running @(rf/subscribe [:commands/running])
             running-cmd (get running command-session-id)
             output-detail @(rf/subscribe [:commands/output-detail])
@@ -181,20 +183,21 @@
             working-directory (or (:working-directory cmd-data)
                                   (:working-directory output-detail))
             loading? (and (nil? output) (nil? running-cmd))]
-        [:> rn/SafeAreaView {:style {:flex 1 :background-color "#1E1E1E"}}
+        [:> rn/SafeAreaView {:style {:flex 1 :background-color (:background-secondary colors)}}
          ;; Metadata header
          [metadata-header {:shell-command (or (:shell-command cmd-data) shell-command)
                            :exit-code exit-code
                            :timestamp timestamp
                            :duration-ms duration-ms
-                           :working-directory working-directory}]
+                           :working-directory working-directory
+                           :colors colors}]
 
          ;; Output
          [:> rn/View {:style {:flex 1}}
           (if loading?
-            [loading-state]
-            [output-view {:output output}])
+            [loading-state colors]
+            [output-view {:output output :colors colors}])
 
           ;; Copy button
           (when (and output (seq output))
-            [copy-button output])]]))))
+            [copy-button output colors])]]))))

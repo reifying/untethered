@@ -34,21 +34,20 @@
 
 (defn- unread-badge
   "Badge showing unread message count."
-  [count]
-  (let [colors (theme/use-theme-colors)]
-    (when (and count (pos? count))
-      [:> rn/View {:style {:min-width 20
-                           :height 20
-                           :border-radius 10
-                           :background-color (:accent colors)
-                           :justify-content "center"
-                           :align-items "center"
-                           :padding-horizontal 6
-                           :margin-left 8}}
-       [:> rn/Text {:style {:color "#FFF"
-                            :font-size 12
-                            :font-weight "600"}}
-        (if (> count 99) "99+" (str count))]])))
+  [count colors]
+  (when (and count (pos? count))
+    [:> rn/View {:style {:min-width 20
+                         :height 20
+                         :border-radius 10
+                         :background-color (:accent colors)
+                         :justify-content "center"
+                         :align-items "center"
+                         :padding-horizontal 6
+                         :margin-left 8}}
+     [:> rn/Text {:style {:color "#FFF"
+                          :font-size 12
+                          :font-weight "600"}}
+      (if (> count 99) "99+" (str count))]]))
 
 (defn- copy-to-clipboard!
   "Copy text to clipboard with haptic feedback."
@@ -60,8 +59,8 @@
 (defn- directory-item
   "Single directory item in the list.
    Long-press shows context menu to copy directory path."
-  [{:keys [directory session-count last-modified unread-count on-press]}]
-  (let [colors (theme/use-theme-colors)]
+  [{:keys [directory session-count last-modified unread-count on-press colors]}]
+  (let [colors colors]
     [:> rn/TouchableOpacity
      {:style {:padding-horizontal 16
               :padding-vertical 14
@@ -90,7 +89,7 @@
                              :font-weight (if (and unread-count (pos? unread-count)) "700" "600")
                              :color (:text-primary colors)}}
          (directory-name directory)]
-        [unread-badge unread-count]]
+        [unread-badge unread-count colors]]
        ;; Full path
        [:> rn/Text {:style {:font-size 13
                             :color (:text-secondary colors)
@@ -116,8 +115,8 @@
 (defn- recent-session-item
   "Single recent session item.
    Long-press shows context menu with copy options."
-  [{:keys [session on-press]}]
-  (let [colors (theme/use-theme-colors)
+  [{:keys [session on-press colors]}]
+  (let [colors colors
         unread-count (get session :unread-count 0)
         session-id (str (:id session))
         working-directory (:working-directory session)]
@@ -152,7 +151,7 @@
                              :font-weight (if (pos? unread-count) "600" "500")
                              :color (:text-primary colors)}}
          (session-name session)]
-        [unread-badge unread-count]]
+        [unread-badge unread-count colors]]
        ;; Directory name (last component)
        [:> rn/Text {:style {:font-size 12
                             :color (:text-secondary colors)}
@@ -174,8 +173,8 @@
 (defn- queue-session-item
   "Single session item in the queue section.
    Long-press shows context menu with copy options."
-  [{:keys [session on-press on-remove]}]
-  (let [colors (theme/use-theme-colors)
+  [{:keys [session on-press on-remove colors]}]
+  (let [colors colors
         unread-count (get session :unread-count 0)
         session-id (str (:id session))
         working-directory (:working-directory session)]
@@ -213,7 +212,7 @@
                               :font-weight (if (pos? unread-count) "600" "500")
                               :color (:text-primary colors)}}
           (session-name session)]
-         [unread-badge unread-count]]
+         [unread-badge unread-count colors]]
         ;; Directory name (last component)
         [:> rn/Text {:style {:font-size 12
                              :color (:text-secondary colors)}
@@ -233,8 +232,8 @@
 (defn- priority-queue-session-item
   "Single session item in the priority queue section with priority tinting.
    Long-press shows context menu with copy options."
-  [{:keys [session on-press on-remove]}]
-  (let [colors (theme/use-theme-colors)
+  [{:keys [session on-press on-remove colors]}]
+  (let [colors colors
         unread-count (get session :unread-count 0)
         priority (or (:priority session) 10)
         tint-color (priority-tint-color colors priority)
@@ -279,7 +278,7 @@
                               :font-weight (if (pos? unread-count) "600" "500")
                               :color (:text-primary colors)}}
           (session-name session)]
-         [unread-badge unread-count]
+         [unread-badge unread-count colors]
          ;; Priority indicator
          [:> rn/Text {:style {:font-size 10
                               :color (:text-secondary colors)
@@ -310,8 +309,8 @@
 
 (defn- section-header
   "Collapsible section header."
-  [{:keys [title expanded? on-toggle count]}]
-  (let [colors (theme/use-theme-colors)]
+  [{:keys [title expanded? on-toggle count colors]}]
+  (let [colors colors]
     [:> rn/TouchableOpacity
      {:style {:flex-direction "row"
               :align-items "center"
@@ -338,42 +337,47 @@
 
 (defn- recent-sessions-section
   "Collapsible recent sessions section."
-  [{:keys [sessions navigation]}]
+  [{:keys [sessions navigation colors]}]
   (let [expanded? (r/atom true)]
-    (fn [{:keys [sessions navigation]}]
+    (fn [{:keys [sessions navigation colors]}]
       [:> rn/View
        [section-header {:title "Recent"
                         :expanded? @expanded?
                         :on-toggle #(swap! expanded? not)
-                        :count (count sessions)}]
+                        :count (count sessions)
+                        :colors colors}]
        (when @expanded?
          [:> rn/View
           (for [[idx session] (map-indexed vector sessions)]
             ^{:key (or (:id session) (str "recent-" idx))}
             [recent-session-item
              {:session session
+              :colors colors
               :on-press #(when navigation
                            (.navigate navigation "Conversation"
                                       #js {:sessionId (:id session)
                                            :sessionName (session-name session)}))}])])])))
 
+
 (defn- queue-section
   "Collapsible FIFO queue section."
-  [{:keys [sessions navigation]}]
+  [{:keys [sessions navigation colors]}]
   (let [expanded? (r/atom true)]
-    (fn [{:keys [sessions navigation]}]
+    (fn [{:keys [sessions navigation colors]}]
       (when (seq sessions)
         [:> rn/View
          [section-header {:title "Queue"
                           :expanded? @expanded?
                           :on-toggle #(swap! expanded? not)
-                          :count (count sessions)}]
+                          :count (count sessions)
+                          :colors colors}]
          (when @expanded?
            [:> rn/View
             (for [[idx session] (map-indexed vector sessions)]
               ^{:key (or (:id session) (str "queue-" idx))}
               [queue-session-item
                {:session session
+                :colors colors
                 :on-press #(when navigation
                              (.navigate navigation "Conversation"
                                         #js {:sessionId (:id session)
@@ -382,15 +386,16 @@
 
 (defn- priority-queue-section
   "Collapsible priority queue section with visual priority indicators."
-  [{:keys [sessions navigation]}]
+  [{:keys [sessions navigation colors]}]
   (let [expanded? (r/atom true)]
-    (fn [{:keys [sessions navigation]}]
+    (fn [{:keys [sessions navigation colors]}]
       (when (seq sessions)
         [:> rn/View
          [section-header {:title "Priority Queue"
                           :expanded? @expanded?
                           :on-toggle #(swap! expanded? not)
-                          :count (count sessions)}]
+                          :count (count sessions)
+                          :colors colors}]
          (when @expanded?
            [:> rn/View
             ;; Note: Drag-to-reorder would require react-native-draggable-flatlist
@@ -399,6 +404,7 @@
               ^{:key (or (:id session) (str "priority-" idx))}
               [priority-queue-session-item
                {:session session
+                :colors colors
                 :on-press #(when navigation
                              (.navigate navigation "Conversation"
                                         #js {:sessionId (:id session)
@@ -407,8 +413,8 @@
 
 (defn- empty-state
   "Shown when there are no directories/sessions."
-  []
-  (let [colors (theme/use-theme-colors)]
+  [colors]
+  (let [colors colors]
     [:> rn/View {:style {:flex 1
                          :justify-content "center"
                          :align-items "center"
@@ -425,8 +431,8 @@
 
 (defn- configure-server-state
   "Shown when server is not yet configured (first-run experience)."
-  [navigation]
-  (let [colors (theme/use-theme-colors)]
+  [navigation colors]
+  (let [colors colors]
     [:> rn/View {:style {:flex 1
                          :justify-content "center"
                          :align-items "center"
@@ -468,8 +474,8 @@
 
 (defn- resources-button
   "Resources button with badge for pending uploads."
-  [navigation]
-  (let [colors (theme/use-theme-colors)
+  [navigation colors]
+  (let [colors colors
         pending-count @(rf/subscribe [:resources/pending-uploads])]
     [:> rn/TouchableOpacity
      {:style {:padding 8 :margin-right 4}
@@ -503,42 +509,51 @@
 
 (defn- header-right-buttons
   "Combined header buttons: New Session, Stop Speech, Resources and Settings.
-   Stop Speech button shows only when TTS is actively speaking."
+   Stop Speech button shows only when TTS is actively speaking.
+
+   Note: Wraps content in [:f> ...] to enable React hooks for theme colors.
+   This component is rendered via r/as-element from React Navigation's headerRight,
+   which creates a class component context. The [:f> ...] provides the functional
+   component context needed for hooks."
   [navigation]
-  (let [colors (theme/use-theme-colors)
-        speaking? @(rf/subscribe [:voice/speaking?])]
-    [:> rn/View {:style {:flex-direction "row"
-                         :align-items "center"}}
-     ;; New Session button
-     [:> rn/TouchableOpacity
-      {:style {:padding 8 :margin-right 4}
-       :on-press #(.navigate navigation "NewSession")}
-      [:> rn/Text {:style {:font-size 22 :color (:accent colors)}} "+"]]
-     ;; Stop Speech button - only shown when TTS is speaking
-     (when speaking?
-       [:> rn/TouchableOpacity
-        {:style {:padding 8 :margin-right 4}
-         :on-press #(rf/dispatch [:voice/stop-speaking])}
-        [:> rn/Text {:style {:font-size 20}} "🔇"]])
-     [resources-button navigation]
-     [settings-button navigation]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           speaking? @(rf/subscribe [:voice/speaking?])]
+       [:> rn/View {:style {:flex-direction "row"
+                            :align-items "center"}}
+        ;; New Session button
+        [:> rn/TouchableOpacity
+         {:style {:padding 8 :margin-right 4}
+          :on-press #(.navigate navigation "NewSession")}
+         [:> rn/Text {:style {:font-size 22 :color (:accent colors)}} "+"]]
+        ;; Stop Speech button - only shown when TTS is speaking
+        (when speaking?
+          [:> rn/TouchableOpacity
+           {:style {:padding 8 :margin-right 4}
+            :on-press #(rf/dispatch [:voice/stop-speaking])}
+           [:> rn/Text {:style {:font-size 20}} "🔇"]])
+        [resources-button navigation colors]
+        [settings-button navigation]]))])
 
 (defn- directories-section
   "Collapsible directories (Projects) section."
-  [{:keys [directories navigation]}]
+  [{:keys [directories navigation colors]}]
   (let [expanded? (r/atom true)]
-    (fn [{:keys [directories navigation]}]
+    (fn [{:keys [directories navigation colors]}]
       [:> rn/View
        [section-header {:title "Projects"
                         :expanded? @expanded?
                         :on-toggle #(swap! expanded? not)
-                        :count (count directories)}]
+                        :count (count directories)
+                        :colors colors}]
        (when @expanded?
          [:> rn/View
           (for [[idx dir] (map-indexed vector directories)]
             ^{:key (or (:directory dir) (str "unknown-dir-" idx))}
             [directory-item
              (assoc dir
+                    :colors colors
                     :on-press #(when navigation
                                  (.navigate navigation "SessionList"
                                             #js {:directory (:directory dir)
@@ -546,8 +561,8 @@
 
 (defn- debug-section
   "Debug section with link to debug logs view."
-  [{:keys [navigation]}]
-  (let [colors (theme/use-theme-colors)]
+  [{:keys [navigation colors]}]
+  (let [colors colors]
     [:> rn/View
      [:> rn/View {:style {:flex-direction "row"
                           :align-items "center"
@@ -591,13 +606,17 @@
 (defn directory-list-view
   "Main directory list screen with debounced queue caching.
    Props is a ClojureScript map (converted by r/reactify-component).
-   
+
    Uses debounced caching for queue/priority-queue to prevent:
    - Performance issues on large session lists
    - ANR on Android from rapid layout updates
    - Excessive re-renders during rapid session updates
-   
-   Mirrors iOS DirectoryListView.swift debouncing behavior (150ms)."
+
+   Mirrors iOS DirectoryListView.swift debouncing behavior (150ms).
+
+   Note: Wraps content in [:f> ...] to enable React hooks for theme colors.
+   The Form-3 create-class is needed for lifecycle methods, but its reagent-render
+   cannot use hooks directly. The [:f> ...] wrapper provides a functional component context."
   [props]
   ;; Form-3 component: outer function sets up local state, returns class
   (let [navigation (:navigation props)
@@ -620,11 +639,11 @@
 
       :component-did-mount
       (fn [this]
-        ;; Set up header
+        ;; Set up header - header-right-buttons calls its own theme hook
         (let [^js nav (:navigation (r/props this))]
           (when nav
             (.setOptions nav
-                         #js {:headerRight #(r/as-element [header-right-buttons nav])})))
+                         #js {:headerRight (fn [] (r/as-element [header-right-buttons nav]))})))
         ;; Track app state (skip updates when backgrounded like iOS)
         (reset! app-state-subscription
                 (.addEventListener AppState "change"
@@ -641,26 +660,29 @@
 
       :reagent-render
       (fn [props]
-        (let [colors (theme/use-theme-colors)
-              nav (:navigation props)
-              server-configured? @(rf/subscribe [:settings/server-configured?])
-              directories @(rf/subscribe [:sessions/directories])
-              recent-sessions @(rf/subscribe [:sessions/recent])
-              ;; Read live subscription values
-              queue-sessions-live @(rf/subscribe [:sessions/queued])
-              priority-queue-sessions-live @(rf/subscribe [:sessions/priority-queued])
-              loading? @(rf/subscribe [:ui/loading?])
-              refreshing? @(rf/subscribe [:ui/refreshing?])
-              ;; Schedule debounced cache update when live values change
-              _ (invoke queue-sessions-live priority-queue-sessions-live)
-              ;; Use cached values for rendering (or live if cache not yet populated)
-              queue-sessions (or @cached-queue-sessions queue-sessions-live)
-              priority-queue-sessions (or @cached-priority-queue-sessions priority-queue-sessions-live)
-              has-content? (or (seq directories)
-                               (seq recent-sessions)
-                               (seq queue-sessions)
-                               (seq priority-queue-sessions))]
-          [:> rn/View {:style {:flex 1 :background-color (:grouped-background colors)}}
+        (let [nav (:navigation props)]
+          ;; Wrap in [:f> ...] to enable React hooks for theme colors
+          [:f>
+           (fn []
+             (let [colors (theme/use-theme-colors)
+                   server-configured? @(rf/subscribe [:settings/server-configured?])
+                   directories @(rf/subscribe [:sessions/directories])
+                   recent-sessions @(rf/subscribe [:sessions/recent])
+                   ;; Read live subscription values
+                   queue-sessions-live @(rf/subscribe [:sessions/queued])
+                   priority-queue-sessions-live @(rf/subscribe [:sessions/priority-queued])
+                   loading? @(rf/subscribe [:ui/loading?])
+                   refreshing? @(rf/subscribe [:ui/refreshing?])
+                   ;; Schedule debounced cache update when live values change
+                   _ (invoke queue-sessions-live priority-queue-sessions-live)
+                   ;; Use cached values for rendering (or live if cache not yet populated)
+                   queue-sessions (or @cached-queue-sessions queue-sessions-live)
+                   priority-queue-sessions (or @cached-priority-queue-sessions priority-queue-sessions-live)
+                   has-content? (or (seq directories)
+                                    (seq recent-sessions)
+                                    (seq queue-sessions)
+                                    (seq priority-queue-sessions))]
+               [:> rn/View {:style {:flex 1 :background-color (:grouped-background colors)}}
            (cond
              ;; Loading state
              loading?
@@ -671,11 +693,11 @@
 
              ;; First-run: Server not configured
              (not server-configured?)
-             [configure-server-state nav]
+             [configure-server-state nav colors]
 
              ;; No content yet (but server is configured)
              (not has-content?)
-             [empty-state]
+             [empty-state colors]
 
              ;; Normal content view
              :else
@@ -692,19 +714,24 @@
               ;; Queue section (FIFO, if enabled and has sessions)
               (when (seq queue-sessions)
                 [queue-section {:sessions queue-sessions
-                                :navigation nav}])
+                                :navigation nav
+                                :colors colors}])
               ;; Priority Queue section (if enabled and has sessions)
               (when (seq priority-queue-sessions)
                 [priority-queue-section {:sessions priority-queue-sessions
-                                         :navigation nav}])
+                                         :navigation nav
+                                         :colors colors}])
               ;; Recent sessions section (if any)
               (when (seq recent-sessions)
                 [recent-sessions-section {:sessions recent-sessions
-                                          :navigation nav}])
+                                          :navigation nav
+                                          :colors colors}])
               ;; Projects/Directories section
               (when (seq directories)
                 [directories-section {:directories directories
-                                      :navigation nav}])
+                                      :navigation nav
+                                      :colors colors}])
               ;; Debug section - always shown when server configured
-              [debug-section {:navigation nav}]])]))})))
+              [debug-section {:navigation nav
+                              :colors colors}]])]))]))})))
 
