@@ -4,7 +4,7 @@
             [re-frame.core :as rf]
             [day8.re-frame.test :as rf-test]
             [voice-code.db :as db]
-            [voice-code.events.core]
+            [voice-code.events.core :as events-core]
             [voice-code.events.websocket]
             [voice-code.subs]
             [voice-code.voice]
@@ -13,9 +13,11 @@
 (use-fixtures :each
   {:before (fn []
              (debounce/reset-state!)
+             (events-core/reset-draft-timers!)
              (rf/dispatch-sync [:initialize-db]))
    :after (fn []
-            (debounce/reset-state!))})
+            (debounce/reset-state!)
+            (events-core/reset-draft-timers!))})
 
 ;; ============================================================================
 ;; Core Events
@@ -419,6 +421,61 @@
      (let [directories @(rf/subscribe [:sessions/directories])]
        (is (= 1 (count directories)))
        (is (= "/project/b" (:directory (first directories))))))))
+
+(deftest sessions-delete-clears-draft-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Setup: create session and set a draft
+   (rf/dispatch-sync [:sessions/add {:id "s1"
+                                     :backend-name "Session 1"
+                                     :working-directory "/project/a"
+                                     :is-user-deleted false}])
+   (rf/dispatch-sync [:ui/set-draft "s1" "Unsaved draft text"])
+
+   (testing "draft exists before delete"
+     (is (= "Unsaved draft text" @(rf/subscribe [:ui/draft "s1"]))))
+
+   (testing "sessions/delete clears the draft (matches iOS DraftManager.cleanupDraft)"
+     (rf/dispatch-sync [:sessions/delete "s1"])
+     (is (= "" @(rf/subscribe [:ui/draft "s1"]))))))
+
+(deftest sessions-remove-clears-draft-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Setup: create session and set a draft
+   (rf/dispatch-sync [:sessions/add {:id "s1"
+                                     :backend-name "Session 1"
+                                     :working-directory "/project/a"}])
+   (rf/dispatch-sync [:ui/set-draft "s1" "Draft for session"])
+
+   (testing "draft exists before remove"
+     (is (= "Draft for session" @(rf/subscribe [:ui/draft "s1"]))))
+
+   (testing "sessions/remove clears the draft from UI state"
+     (rf/dispatch-sync [:sessions/remove "s1"])
+     (is (= "" @(rf/subscribe [:ui/draft "s1"]))))))
+
+(deftest draft-timer-reset-function-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Setup: set drafts for multiple sessions to create timers
+   (rf/dispatch-sync [:ui/set-draft "s1" "Draft 1"])
+   (rf/dispatch-sync [:ui/set-draft "s2" "Draft 2"])
+   (rf/dispatch-sync [:ui/set-draft "s3" "Draft 3"])
+
+   (testing "timers are created for each draft"
+     (let [timers (events-core/get-draft-timer-ids)]
+       (is (= 3 (count timers)))
+       (is (contains? timers "s1"))
+       (is (contains? timers "s2"))
+       (is (contains? timers "s3"))))
+
+   (testing "reset-draft-timers! clears all timers"
+     (events-core/reset-draft-timers!)
+     (is (= {} (events-core/get-draft-timer-ids))))))
 
 ;; ============================================================================
 ;; WebSocket Events

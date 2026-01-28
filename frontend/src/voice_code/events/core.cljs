@@ -85,10 +85,28 @@
  (fn [db _]
    (assoc-in db [:ui :compaction-success] nil)))
 
+;; ============================================================================
+;; Draft Timer Management
+;; ============================================================================
 ;; Debounce timers for draft persistence (session-id -> timer-id)
+;; Uses defonce to preserve state across hot reloads, but provides
+;; reset-draft-timers! for explicit cleanup during tests.
 (defonce ^:private draft-save-timers (atom {}))
 
 (def ^:private draft-save-delay-ms 300)
+
+(defn reset-draft-timers!
+  "Cancel all pending draft save timers and clear state.
+   For testing and hot reload cleanup."
+  []
+  (doseq [[_ timer-id] @draft-save-timers]
+    (js/clearTimeout timer-id))
+  (reset! draft-save-timers {}))
+
+(defn get-draft-timer-ids
+  "Get all pending draft timer IDs. For testing only."
+  []
+  @draft-save-timers)
 
 (rf/reg-event-fx
  :ui/set-draft
@@ -318,21 +336,35 @@
 (rf/reg-event-fx
  :sessions/delete
  (fn [{:keys [db]} [_ session-id]]
+   ;; Cancel pending draft timer synchronously (matches iOS DraftManager.cleanupDraft)
+   (when-let [timer-id (get @draft-save-timers session-id)]
+     (js/clearTimeout timer-id)
+     (swap! draft-save-timers dissoc session-id))
    (let [session (get-in db [:sessions session-id])]
-     {:db (assoc-in db [:sessions session-id :is-user-deleted] true)
+     {:db (-> db
+              (assoc-in [:sessions session-id :is-user-deleted] true)
+              ;; Clear draft from UI state synchronously
+              (update-in [:ui :drafts] dissoc session-id))
       :dispatch-n [[:persistence/save-session (assoc session :is-user-deleted true)]
                    ;; Unsubscribe from session before notifying backend
-                   [:session/unsubscribe session-id]]
+                   [:session/unsubscribe session-id]
+                   ;; Persist draft deletion to storage
+                   [:persistence/delete-draft session-id]]
       ;; Notify backend of deletion
       :ws/send {:type "session_deleted"
                 :session_id session-id}})))
 
-(rf/reg-event-db
+(rf/reg-event-fx
  :sessions/remove
- (fn [db [_ session-id]]
-   (-> db
-       (update :sessions dissoc session-id)
-       (update :messages dissoc session-id))))
+ (fn [{:keys [db]} [_ session-id]]
+   ;; Clear draft timer before removing session
+   (when-let [timer-id (get @draft-save-timers session-id)]
+     (js/clearTimeout timer-id)
+     (swap! draft-save-timers dissoc session-id))
+   {:db (-> db
+            (update :sessions dissoc session-id)
+            (update :messages dissoc session-id)
+            (update-in [:ui :drafts] dissoc session-id))}))
 
 ;; ============================================================================
 ;; Generic DB update (for testing)
