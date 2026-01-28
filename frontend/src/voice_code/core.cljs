@@ -8,6 +8,7 @@
             [voice-code.subs]
             [voice-code.persistence]
             [voice-code.websocket]
+            [voice-code.document-picker] ; Register document picker effect
             [voice-code.log-manager :as log-manager]
             [voice-code.views.core :refer [app-root]]
             [voice-code.views.error-overlay :refer [with-error-overlay]]))

@@ -299,6 +299,16 @@
  (fn [db _]
    (get-in db [:resources :pending-uploads])))
 
+(rf/reg-sub
+ :resources/uploading?
+ (fn [db _]
+   (get-in db [:resources :uploading?])))
+
+(rf/reg-sub
+ :resources/uploading-filename
+ (fn [db _]
+   (get-in db [:resources :uploading-filename])))
+
 ;; ============================================================================
 ;; Recipes
 ;; ============================================================================

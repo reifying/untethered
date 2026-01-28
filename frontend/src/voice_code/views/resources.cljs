@@ -197,20 +197,34 @@
     :on-delete on-delete
     :colors colors}])
 
-(defn- pending-uploads-banner
-  "Banner showing pending uploads count."
-  [count colors]
+(defn- uploading-banner
+  "Banner showing current upload in progress.
+   Matches iOS PendingUploadRow when isProcessing is true."
+  [filename colors]
   [:> rn/View {:style {:flex-direction "row"
                        :align-items "center"
                        :padding 12
                        :background-color (:warning-background colors)
                        :border-bottom-width 1
                        :border-bottom-color (:separator colors)}}
-   [:> rn/ActivityIndicator {:size "small" :color (:warning colors)}]
-   [:> rn/Text {:style {:margin-left 8
-                        :font-size 14
-                        :color (:warning colors)}}
-    (str count " upload" (when (> count 1) "s") " in progress...")]])
+   [:> rn/View {:style {:width 40
+                        :height 40
+                        :border-radius 8
+                        :background-color (:warning colors)
+                        :align-items "center"
+                        :justify-content "center"
+                        :margin-right 12
+                        :opacity 0.8}}
+    [:> rn/Text {:style {:font-size 18}} "⬆️"]]
+   [:> rn/View {:style {:flex 1}}
+    [:> rn/Text {:style {:font-size 14
+                         :color (:text-primary colors)
+                         :margin-bottom 2}}
+     (or filename "Uploading...")]
+    [:> rn/Text {:style {:font-size 12
+                         :color (:text-secondary colors)}}
+     "Uploading to server..."]]
+   [:> rn/ActivityIndicator {:size "small" :color (:warning colors)}]])
 
 (defn- empty-state
   "Shown when there are no resources."
@@ -232,72 +246,90 @@
     "Uploaded files will appear here. Share files from other apps or use the upload feature."]])
 
 (defn- upload-button
-  "FAB for uploading new resources."
+  "FAB for uploading new resources.
+   Disabled when on-press is nil (during upload)."
   [on-press colors]
-  [:> rn/TouchableOpacity
-   {:style {:position "absolute"
-            :bottom 24
-            :right 24
-            :width 56
-            :height 56
-            :border-radius 28
-            :background-color (:accent colors)
-            :justify-content "center"
-            :align-items "center"
-            :shadow-color (:shadow colors)
-            :shadow-offset #js {:width 0 :height 2}
-            :shadow-opacity 0.25
-            :shadow-radius 4
-            :elevation 5}
-    :on-press on-press}
-   [:> rn/Text {:style {:font-size 24
-                        :color (:bubble-user-text colors)}}
-    "📤"]])
+  (let [disabled? (nil? on-press)]
+    [:> rn/TouchableOpacity
+     {:style {:position "absolute"
+              :bottom 24
+              :right 24
+              :width 56
+              :height 56
+              :border-radius 28
+              :background-color (if disabled? (:disabled colors) (:accent colors))
+              :justify-content "center"
+              :align-items "center"
+              :shadow-color (:shadow colors)
+              :shadow-offset #js {:width 0 :height 2}
+              :shadow-opacity (if disabled? 0.1 0.25)
+              :shadow-radius 4
+              :elevation (if disabled? 1 5)
+              :opacity (if disabled? 0.6 1)}
+      :disabled disabled?
+      :on-press on-press}
+     [:> rn/Text {:style {:font-size 24
+                          :color (:bubble-user-text colors)}}
+      "📤"]]))
+
+(defn- resources-view-inner
+  "Inner render component for resources view.
+   Wrapped in [:f>] to enable React hooks."
+  []
+  (let [colors (theme/use-theme-colors)
+        resources @(rf/subscribe [:resources/list])
+        uploading? @(rf/subscribe [:resources/uploading?])
+        uploading-filename @(rf/subscribe [:resources/uploading-filename])
+        refreshing? @(rf/subscribe [:ui/refreshing-resources?])]
+    [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
+     ;; Uploading banner (shown during active upload)
+     (when uploading?
+       [uploading-banner uploading-filename colors])
+
+     ;; Resources list
+     (if (empty? resources)
+       [empty-state colors]
+       [:> rn/FlatList
+        {:data (clj->js resources)
+         :key-extractor (fn [item _idx]
+                          (or (.-filename item)
+                              (.-path item)
+                              (str (random-uuid))))
+         :render-item
+         (fn [^js obj]
+           (let [item (.-item obj)
+                 resource {:filename (.-filename item)
+                           :path (.-path item)
+                           :size (.-size item)
+                           :timestamp (.-timestamp item)}]
+             (r/as-element
+              [resource-item
+               {:resource resource
+                :on-delete #(rf/dispatch [:resources/delete (:filename %)])
+                :colors colors}])))
+         :refresh-control
+         (r/as-element
+          [:> RefreshControl
+           {:refreshing (boolean refreshing?)
+            :on-refresh #(rf/dispatch [:resources/refresh])
+            :tint-color (:accent colors)
+            :colors #js [(:accent colors)]}])
+         :content-container-style {:padding-vertical 8}}])
+
+     ;; Upload FAB (disabled during upload)
+     [upload-button
+      (when-not uploading?
+        #(rf/dispatch [:resources/upload]))
+      colors]]))
 
 (defn resources-view
   "Main resources screen showing uploaded files.
-   Uses Form-2 component pattern for proper Reagent reactivity with React Navigation."
+   Uses Form-3 component with [:f>] wrapper for proper React hook context.
+   Matches iOS ResourcesView.swift with uploading state and document picker."
   [^js _props]
-  ;; Form-2: Return a render function that reads subscriptions
-  (fn [^js _props]
-    (let [colors (theme/use-theme-colors)
-          resources @(rf/subscribe [:resources/list])
-          pending-uploads @(rf/subscribe [:resources/pending-uploads])
-          refreshing? @(rf/subscribe [:ui/refreshing-resources?])]
-      [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
-       ;; Pending uploads banner
-       (when (and pending-uploads (> pending-uploads 0))
-         [pending-uploads-banner pending-uploads colors])
-
-       ;; Resources list
-       (if (empty? resources)
-         [empty-state colors]
-         [:> rn/FlatList
-          {:data (clj->js resources)
-           :key-extractor (fn [item _idx]
-                            (or (.-filename item)
-                                (.-path item)
-                                (str (random-uuid))))
-           :render-item
-           (fn [^js obj]
-             (let [item (.-item obj)
-                   resource {:filename (.-filename item)
-                             :path (.-path item)
-                             :size (.-size item)
-                             :timestamp (.-timestamp item)}]
-               (r/as-element
-                [resource-item
-                 {:resource resource
-                  :on-delete #(rf/dispatch [:resources/delete (:filename %)])
-                  :colors colors}])))
-           :refresh-control
-           (r/as-element
-            [:> RefreshControl
-             {:refreshing (boolean refreshing?)
-              :on-refresh #(rf/dispatch [:resources/refresh])
-              :tint-color (:accent colors)
-              :colors #js [(:accent colors)]}])
-           :content-container-style {:padding-vertical 8}}])
-
-       ;; Upload FAB
-       [upload-button #(rf/dispatch [:resources/upload]) colors]])))
+  (r/create-class
+   {:display-name "ResourcesView"
+    :reagent-render
+    (fn [^js _props]
+      ;; Wrap in [:f>] to create proper functional component context for hooks
+      [:f> resources-view-inner])}))

@@ -743,8 +743,9 @@
  :resources/handle-uploaded
  (fn [db [_ resource]]
    (-> db
-       (update-in [:resources :list] conj resource)
-       (update-in [:resources :pending-uploads] dec))))
+       (update-in [:resources :list] (fnil conj []) resource)
+       (assoc-in [:resources :uploading?] false)
+       (assoc-in [:resources :uploading-filename] nil))))
 
 (rf/reg-event-db
  :resources/handle-deleted
@@ -935,9 +936,40 @@
 (rf/reg-event-fx
  :resources/upload
  (fn [{:keys [db]} _]
-   ;; Note: Actual file upload requires native module integration
-   ;; This dispatches the intent; native code handles file selection
-   {:db (update-in db [:resources :pending-uploads] (fnil inc 0))}))
+   ;; Trigger document picker via effect
+   ;; The document-picker effect handles file selection and reading
+   {:document-picker/pick-file
+    {:on-success [:resources/upload-file]
+     :on-error [:resources/upload-error]
+     :on-cancel [:resources/upload-cancelled]}}))
+
+(rf/reg-event-fx
+ :resources/upload-file
+ (fn [{:keys [db]} [_ {:keys [name size content]}]]
+   ;; Send file to backend via WebSocket
+   (let [storage-location (get-in db [:settings :resource-storage-location] "~/Downloads")]
+     {:db (-> db
+              (assoc-in [:resources :uploading?] true)
+              (assoc-in [:resources :uploading-filename] name))
+      :ws/send {:type "upload_file"
+                :filename name
+                :content content
+                :storage-location storage-location}})))
+
+(rf/reg-event-db
+ :resources/upload-error
+ (fn [db [_ error]]
+   (js/console.error "Upload error:" error)
+   (-> db
+       (assoc-in [:resources :uploading?] false)
+       (assoc-in [:resources :uploading-filename] nil)
+       (assoc-in [:ui :current-error] (str "Failed to upload file: " (or (.-message error) error))))))
+
+(rf/reg-event-db
+ :resources/upload-cancelled
+ (fn [db _]
+   ;; User cancelled file picker - no action needed
+   db))
 
 (rf/reg-event-fx
  :resources/refresh

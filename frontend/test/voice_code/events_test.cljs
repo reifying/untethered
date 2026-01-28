@@ -2472,3 +2472,71 @@
      (let [error @(rf/subscribe [:dev/global-error])]
        (is (= "Second error" (:message error)))
        (is (= "stack2" (:stack error)))))))
+
+;; ============================================================================
+;; Resources Upload Events
+;; ============================================================================
+
+(deftest resources-upload-file-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+   ;; Set up storage location
+   (rf/dispatch-sync [:settings/update :resource-storage-location "~/Downloads"])
+
+   (testing "resources/upload-file sets uploading state"
+     (rf/dispatch-sync [:resources/upload-file {:name "test.txt"
+                                                 :size 100
+                                                 :content "dGVzdA=="}])
+     (is (true? @(rf/subscribe [:resources/uploading?])))
+     (is (= "test.txt" @(rf/subscribe [:resources/uploading-filename]))))))
+
+(deftest resources-upload-error-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "resources/upload-error clears uploading state and sets error"
+     ;; First set uploading state
+     (rf/dispatch-sync [:settings/update :resource-storage-location "~/Downloads"])
+     (rf/dispatch-sync [:resources/upload-file {:name "test.txt"
+                                                 :size 100
+                                                 :content "dGVzdA=="}])
+     (is (true? @(rf/subscribe [:resources/uploading?])))
+
+     ;; Then trigger error
+     (rf/dispatch-sync [:resources/upload-error "Network error"])
+     (is (false? @(rf/subscribe [:resources/uploading?])))
+     (is (nil? @(rf/subscribe [:resources/uploading-filename]))))))
+
+(deftest resources-upload-cancelled-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "resources/upload-cancelled does not change state"
+     (let [initial-db @re-frame.db/app-db]
+       (rf/dispatch-sync [:resources/upload-cancelled])
+       ;; State should be unchanged - cancel is a no-op
+       (is (= initial-db @re-frame.db/app-db))))))
+
+(deftest resources-handle-uploaded-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "resources/handle-uploaded clears uploading state and adds resource"
+     ;; First set uploading state
+     (rf/dispatch-sync [:settings/update :resource-storage-location "~/Downloads"])
+     (rf/dispatch-sync [:resources/upload-file {:name "test.txt"
+                                                 :size 100
+                                                 :content "dGVzdA=="}])
+     (is (true? @(rf/subscribe [:resources/uploading?])))
+
+     ;; Backend responds with successful upload
+     (rf/dispatch-sync [:resources/handle-uploaded {:filename "test.txt"
+                                                     :path "/Users/test/Downloads/test.txt"
+                                                     :size 100
+                                                     :timestamp "2026-01-28T10:00:00Z"}])
+     (is (false? @(rf/subscribe [:resources/uploading?])))
+     (is (nil? @(rf/subscribe [:resources/uploading-filename])))
+     ;; Resource should be in list
+     (let [resources @(rf/subscribe [:resources/list])]
+       (is (= 1 (count resources)))
+       (is (= "test.txt" (:filename (first resources))))))))
