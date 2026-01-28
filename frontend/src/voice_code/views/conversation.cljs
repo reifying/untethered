@@ -378,11 +378,10 @@
    Long-press to quickly copy message text to clipboard.
    For assistant messages, shows token usage and cost metadata."
   [{:keys [role text timestamp status working-directory session-id usage cost]}]
-  (let [expanded? (r/atom false)
-        {:keys [truncated? display-text full-text]} (utils/truncate-text text)
-        is-user? (= role :user)
-        is-sending? (= status :sending)
-        is-error? (= status :error)]
+  ;; Form-2 component: outer let runs once at mount, inner fn runs each render
+  ;; Only put truly static values (atoms) in outer let
+  ;; All derived state must be in inner let to react to prop changes
+  (let [expanded? (r/atom false)]
     (fn [{:keys [role text timestamp status working-directory session-id usage cost]}]
       ;; Track renders for performance monitoring
       (perf/use-render-tracking "message-bubble")
@@ -395,6 +394,8 @@
                            display-text
                            full-text)
                speaking? @(rf/subscribe [:voice/speaking?])
+               is-user? (= role :user)
+               is-sending? (= status :sending)
                is-error? (= status :error)
                is-assistant? (= role :assistant)
                usage-summary (when is-assistant? (utils/format-usage-summary usage cost))]
