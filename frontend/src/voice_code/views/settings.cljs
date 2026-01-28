@@ -22,255 +22,276 @@
 
 (defn- validation-status-row
   "Real-time validation status display for API key input.
-   Shows character count, validation icon, and specific error messages."
+   Shows character count, validation icon, and specific error messages.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [{:keys [key-input]}]
-  (let [colors (theme/use-theme-colors)
-        {:keys [valid? message char-count expected-count]} (api-key-validation-status key-input)
-        has-input? (pos? char-count)]
-    (when has-input?
-      [:> rn/View {:style {:flex-direction "row"
-                           :align-items "center"
-                           :padding-horizontal 16
-                           :padding-top 8
-                           :padding-bottom (if message 4 8)}}
-       ;; Status icon
-       [:> rn/Text {:style {:font-size 16
-                            :margin-right 8}}
-        (if valid? "✓" "✗")]
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           {:keys [valid? message char-count expected-count]} (api-key-validation-status key-input)
+           has-input? (pos? char-count)]
+       (when has-input?
+         [:> rn/View {:style {:flex-direction "row"
+                              :align-items "center"
+                              :padding-horizontal 16
+                              :padding-top 8
+                              :padding-bottom (if message 4 8)}}
+          ;; Status icon
+          [:> rn/Text {:style {:font-size 16
+                               :margin-right 8}}
+           (if valid? "✓" "✗")]
 
-       ;; Character count
-       [:> rn/Text {:style {:font-size 14
-                            :font-family (when (= "ios" (.-OS Platform)) "Menlo")
-                            :color (cond
-                                     valid? (:success colors)
-                                     (> char-count expected-count) (:destructive colors)
-                                     :else (:text-secondary colors))
-                            :margin-right 8}}
-        (str char-count "/" expected-count)]
+          ;; Character count
+          [:> rn/Text {:style {:font-size 14
+                               :font-family (when (= "ios" (.-OS Platform)) "Menlo")
+                               :color (cond
+                                        valid? (:success colors)
+                                        (> char-count expected-count) (:destructive colors)
+                                        :else (:text-secondary colors))
+                               :margin-right 8}}
+           (str char-count "/" expected-count)]
 
-       ;; Validation message
-       (when message
-         [:> rn/Text {:style {:font-size 13
-                              :color (:destructive colors)
-                              :flex 1}}
-          message])])))
+          ;; Validation message
+          (when message
+            [:> rn/Text {:style {:font-size 13
+                                 :color (:destructive colors)
+                                 :flex 1}}
+             message])])))])
 
 (defn- section-header
-  "Section header for settings groups."
+  "Section header for settings groups.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [title]
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/View {:style {:padding-horizontal 16
-                         :padding-top 24
-                         :padding-bottom 8}}
-     [:> rn/Text {:style {:font-size 13
-                          :font-weight "600"
-                          :color (:text-secondary colors)
-                          :text-transform "uppercase"
-                          :letter-spacing 0.5}}
-      title]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/View {:style {:padding-horizontal 16
+                            :padding-top 24
+                            :padding-bottom 8}}
+        [:> rn/Text {:style {:font-size 13
+                             :font-weight "600"
+                             :color (:text-secondary colors)
+                             :text-transform "uppercase"
+                             :letter-spacing 0.5}}
+         title]]))])
 
 (defn- setting-row
-  "Single setting row with label and value/control."
+  "Single setting row with label and value/control.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [{:keys [label value on-press accessory disabled?]}]
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/TouchableOpacity
-     {:style {:flex-direction "row"
-              :align-items "center"
-              :justify-content "space-between"
-              :padding-horizontal 16
-              :padding-vertical 14
-              :background-color (:card-background colors)
-              :border-bottom-width 1
-              :border-bottom-color (:separator colors)
-              :opacity (if disabled? 0.5 1)}
-      :on-press (when-not disabled? on-press)
-      :disabled (or disabled? (nil? on-press))}
-     [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
-      label]
-     (or accessory
-         (when value
-           [:> rn/Text {:style {:font-size 16 :color (:text-tertiary colors)}}
-            value]))]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/TouchableOpacity
+        {:style {:flex-direction "row"
+                 :align-items "center"
+                 :justify-content "space-between"
+                 :padding-horizontal 16
+                 :padding-vertical 14
+                 :background-color (:card-background colors)
+                 :border-bottom-width 1
+                 :border-bottom-color (:separator colors)
+                 :opacity (if disabled? 0.5 1)}
+         :on-press (when-not disabled? on-press)
+         :disabled (or disabled? (nil? on-press))}
+        [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
+         label]
+        (or accessory
+            (when value
+              [:> rn/Text {:style {:font-size 16 :color (:text-tertiary colors)}}
+               value]))]))])
 
 (defn- text-input-row
-  "Setting row with editable text input."
+  "Setting row with editable text input.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [{:keys [label value placeholder on-change keyboard-type multiline]}]
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/View {:style {:flex-direction (if multiline "column" "row")
-                         :align-items (if multiline "stretch" "center")
-                         :justify-content "space-between"
-                         :padding-horizontal 16
-                         :padding-vertical 10
-                         :background-color (:card-background colors)
-                         :border-bottom-width 1
-                         :border-bottom-color (:separator colors)}}
-     [:> rn/Text {:style {:font-size 16
-                          :color (:text-primary colors)
-                          :flex (if multiline 0 1)
-                          :margin-bottom (if multiline 8 0)}}
-      label]
-     [:> rn/TextInput
-      {:style {:font-size 16
-               :color (:text-primary colors)
-               :text-align (if multiline "left" "right")
-               :min-width (if multiline nil 120)
-               :padding-vertical 4
-               :min-height (if multiline 80 nil)
-               :text-align-vertical (if multiline "top" "center")}
-       :value (str value)
-       :placeholder placeholder
-       :placeholder-text-color (:text-placeholder colors)
-       :on-change-text on-change
-       :keyboard-type (or keyboard-type "default")
-       :auto-capitalize "none"
-       :auto-correct false
-       :multiline multiline}]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/View {:style {:flex-direction (if multiline "column" "row")
+                            :align-items (if multiline "stretch" "center")
+                            :justify-content "space-between"
+                            :padding-horizontal 16
+                            :padding-vertical 10
+                            :background-color (:card-background colors)
+                            :border-bottom-width 1
+                            :border-bottom-color (:separator colors)}}
+        [:> rn/Text {:style {:font-size 16
+                             :color (:text-primary colors)
+                             :flex (if multiline 0 1)
+                             :margin-bottom (if multiline 8 0)}}
+         label]
+        [:> rn/TextInput
+         {:style {:font-size 16
+                  :color (:text-primary colors)
+                  :text-align (if multiline "left" "right")
+                  :min-width (if multiline nil 120)
+                  :padding-vertical 4
+                  :min-height (if multiline 80 nil)
+                  :text-align-vertical (if multiline "top" "center")}
+          :value (str value)
+          :placeholder placeholder
+          :placeholder-text-color (:text-placeholder colors)
+          :on-change-text on-change
+          :keyboard-type (or keyboard-type "default")
+          :auto-capitalize "none"
+          :auto-correct false
+          :multiline multiline}]]))])
 
 (defn- toggle-row
-  "Setting row with toggle switch. Includes haptic selection feedback on toggle."
+  "Setting row with toggle switch. Includes haptic selection feedback on toggle.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [{:keys [label value on-change description]}]
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/View {:style {:background-color (:card-background colors)
-                         :border-bottom-width 1
-                         :border-bottom-color (:separator colors)}}
-     [:> rn/View {:style {:flex-direction "row"
-                          :align-items "center"
-                          :justify-content "space-between"
-                          :padding-horizontal 16
-                          :padding-vertical 14}}
-      [:> rn/Text {:style {:font-size 16 :color (:text-primary colors) :flex 1}}
-       label]
-      [:> rn/Switch
-       {:value value
-        :on-value-change (fn [new-value]
-                           (haptic/selection!)
-                           (on-change new-value))
-        :track-color #js {:false (:fill-secondary colors) :true (:success colors)}
-        :thumb-color (:switch-thumb colors)}]]
-     (when description
-       [:> rn/Text {:style {:font-size 12
-                            :color (:text-secondary colors)
-                            :padding-horizontal 16
-                            :padding-bottom 10
-                            :margin-top -6}}
-        description])]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/View {:style {:background-color (:card-background colors)
+                            :border-bottom-width 1
+                            :border-bottom-color (:separator colors)}}
+        [:> rn/View {:style {:flex-direction "row"
+                             :align-items "center"
+                             :justify-content "space-between"
+                             :padding-horizontal 16
+                             :padding-vertical 14}}
+         [:> rn/Text {:style {:font-size 16 :color (:text-primary colors) :flex 1}}
+          label]
+         [:> rn/Switch
+          {:value value
+           :on-value-change (fn [new-value]
+                              (haptic/selection!)
+                              (on-change new-value))
+           :track-color #js {:false (:fill-secondary colors) :true (:success colors)}
+           :thumb-color (:switch-thumb colors)}]]
+        (when description
+          [:> rn/Text {:style {:font-size 12
+                               :color (:text-secondary colors)
+                               :padding-horizontal 16
+                               :padding-bottom 10
+                               :margin-top -6}}
+           description])]))])
 
 (defn- stepper-row
-  "Setting row with stepper controls."
+  "Setting row with stepper controls.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [{:keys [label value on-change min-value max-value step suffix description]}]
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/View {:style {:background-color (:card-background colors)
-                         :border-bottom-width 1
-                         :border-bottom-color (:separator colors)}}
-     [:> rn/View {:style {:flex-direction "row"
-                          :align-items "center"
-                          :justify-content "space-between"
-                          :padding-horizontal 16
-                          :padding-vertical 10}}
-      [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
-       label]
-      [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-       [:> rn/TouchableOpacity
-        {:style {:width 32
-                 :height 32
-                 :border-radius 6
-                 :background-color (:fill-secondary colors)
-                 :justify-content "center"
-                 :align-items "center"
-                 :opacity (if (<= value (or min-value 0)) 0.3 1)}
-         :disabled (<= value (or min-value 0))
-         :on-press #(on-change (- value (or step 1)))}
-        [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "−"]]
-       [:> rn/Text {:style {:font-size 16
-                            :color (:text-primary colors)
-                            :min-width 60
-                            :text-align "center"}}
-        (str value (or suffix ""))]
-       [:> rn/TouchableOpacity
-        {:style {:width 32
-                 :height 32
-                 :border-radius 6
-                 :background-color (:fill-secondary colors)
-                 :justify-content "center"
-                 :align-items "center"
-                 :opacity (if (>= value (or max-value 100)) 0.3 1)}
-         :disabled (>= value (or max-value 100))
-         :on-press #(on-change (+ value (or step 1)))}
-        [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "+"]]]]
-     (when description
-       [:> rn/Text {:style {:font-size 12
-                            :color (:text-secondary colors)
-                            :padding-horizontal 16
-                            :padding-bottom 10}}
-        description])]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/View {:style {:background-color (:card-background colors)
+                            :border-bottom-width 1
+                            :border-bottom-color (:separator colors)}}
+        [:> rn/View {:style {:flex-direction "row"
+                             :align-items "center"
+                             :justify-content "space-between"
+                             :padding-horizontal 16
+                             :padding-vertical 10}}
+         [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
+          label]
+         [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+          [:> rn/TouchableOpacity
+           {:style {:width 32
+                    :height 32
+                    :border-radius 6
+                    :background-color (:fill-secondary colors)
+                    :justify-content "center"
+                    :align-items "center"
+                    :opacity (if (<= value (or min-value 0)) 0.3 1)}
+            :disabled (<= value (or min-value 0))
+            :on-press #(on-change (- value (or step 1)))}
+           [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "−"]]
+          [:> rn/Text {:style {:font-size 16
+                               :color (:text-primary colors)
+                               :min-width 60
+                               :text-align "center"}}
+           (str value (or suffix ""))]
+          [:> rn/TouchableOpacity
+           {:style {:width 32
+                    :height 32
+                    :border-radius 6
+                    :background-color (:fill-secondary colors)
+                    :justify-content "center"
+                    :align-items "center"
+                    :opacity (if (>= value (or max-value 100)) 0.3 1)}
+            :disabled (>= value (or max-value 100))
+            :on-press #(on-change (+ value (or step 1)))}
+           [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "+"]]]]
+        (when description
+          [:> rn/Text {:style {:font-size 12
+                               :color (:text-secondary colors)
+                               :padding-horizontal 16
+                               :padding-bottom 10}}
+           description])]))])
 
 (defn- rate-stepper-row
   "Setting row with fine-grained stepper for speech rate (0.25-1.0).
-   Shows speed labels (Slow, Normal, Fast) alongside numeric value."
+   Shows speed labels (Slow, Normal, Fast) alongside numeric value.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [{:keys [label value on-change description]}]
-  (let [colors (theme/use-theme-colors)
-        min-val 0.25
-        max-val 1.0
-        step 0.05
-        ;; Round to 2 decimal places for display
-        display-val (/ (Math/round (* value 100)) 100)
-        speed-label (cond
-                      (<= value 0.35) "Slow"
-                      (<= value 0.55) "Normal"
-                      (<= value 0.75) "Fast"
-                      :else "Very Fast")]
-    [:> rn/View {:style {:background-color (:card-background colors)
-                         :border-bottom-width 1
-                         :border-bottom-color (:separator colors)}}
-     [:> rn/View {:style {:flex-direction "row"
-                          :align-items "center"
-                          :justify-content "space-between"
-                          :padding-horizontal 16
-                          :padding-vertical 10}}
-      [:> rn/View {:style {:flex 1}}
-       [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
-        label]
-       [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors) :margin-top 2}}
-        speed-label]]
-      [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-       [:> rn/TouchableOpacity
-        {:style {:width 32
-                 :height 32
-                 :border-radius 6
-                 :background-color (:fill-secondary colors)
-                 :justify-content "center"
-                 :align-items "center"
-                 :opacity (if (<= value min-val) 0.3 1)}
-         :disabled (<= value min-val)
-         :on-press (fn []
-                     (haptic/selection!)
-                     (on-change (max min-val (- value step))))}
-        [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "−"]]
-       [:> rn/Text {:style {:font-size 16
-                            :color (:accent colors)
-                            :font-weight "500"
-                            :min-width 50
-                            :text-align "center"}}
-        (str display-val "x")]
-       [:> rn/TouchableOpacity
-        {:style {:width 32
-                 :height 32
-                 :border-radius 6
-                 :background-color (:fill-secondary colors)
-                 :justify-content "center"
-                 :align-items "center"
-                 :opacity (if (>= value max-val) 0.3 1)}
-         :disabled (>= value max-val)
-         :on-press (fn []
-                     (haptic/selection!)
-                     (on-change (min max-val (+ value step))))}
-        [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "+"]]]]
-     (when description
-       [:> rn/Text {:style {:font-size 12
-                            :color (:text-secondary colors)
-                            :padding-horizontal 16
-                            :padding-bottom 10}}
-        description])]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           min-val 0.25
+           max-val 1.0
+           step 0.05
+           ;; Round to 2 decimal places for display
+           display-val (/ (Math/round (* value 100)) 100)
+           speed-label (cond
+                         (<= value 0.35) "Slow"
+                         (<= value 0.55) "Normal"
+                         (<= value 0.75) "Fast"
+                         :else "Very Fast")]
+       [:> rn/View {:style {:background-color (:card-background colors)
+                            :border-bottom-width 1
+                            :border-bottom-color (:separator colors)}}
+        [:> rn/View {:style {:flex-direction "row"
+                             :align-items "center"
+                             :justify-content "space-between"
+                             :padding-horizontal 16
+                             :padding-vertical 10}}
+         [:> rn/View {:style {:flex 1}}
+          [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
+           label]
+          [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors) :margin-top 2}}
+           speed-label]]
+         [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+          [:> rn/TouchableOpacity
+           {:style {:width 32
+                    :height 32
+                    :border-radius 6
+                    :background-color (:fill-secondary colors)
+                    :justify-content "center"
+                    :align-items "center"
+                    :opacity (if (<= value min-val) 0.3 1)}
+            :disabled (<= value min-val)
+            :on-press (fn []
+                        (haptic/selection!)
+                        (on-change (max min-val (- value step))))}
+           [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "−"]]
+          [:> rn/Text {:style {:font-size 16
+                               :color (:accent colors)
+                               :font-weight "500"
+                               :min-width 50
+                               :text-align "center"}}
+           (str display-val "x")]
+          [:> rn/TouchableOpacity
+           {:style {:width 32
+                    :height 32
+                    :border-radius 6
+                    :background-color (:fill-secondary colors)
+                    :justify-content "center"
+                    :align-items "center"
+                    :opacity (if (>= value max-val) 0.3 1)}
+            :disabled (>= value max-val)
+            :on-press (fn []
+                        (haptic/selection!)
+                        (on-change (min max-val (+ value step))))}
+           [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "+"]]]]
+        (when description
+          [:> rn/Text {:style {:font-size 12
+                               :color (:text-secondary colors)
+                               :padding-horizontal 16
+                               :padding-bottom 10}}
+           description])]))])
 
 (defn- connection-status-section
   "Shows current connection status."

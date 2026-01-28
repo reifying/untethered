@@ -225,55 +225,58 @@
    Shows different UI based on whether this is initial setup or reauthentication.
    - Initial setup: Welcome message, server config, API key input
    - Reauthentication: Warning icon, error message, re-scan/retry options
-   Shows QR scanner when scanning mode is active."
+   Shows QR scanner when scanning mode is active.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [_props]
-  (let [colors (theme/use-theme-colors)
-        scanning? @(rf/subscribe [:qr/scanning?])
-        requires-reauth? @(rf/subscribe [:connection/requires-reauthentication?])]
-    (if scanning?
-      ;; Show QR scanner
-      [qr-scanner-view]
-      ;; Show normal auth view
-      [:> rn/SafeAreaView {:style {:flex 1 :background-color (:background colors)}}
-       [:> rn/KeyboardAvoidingView
-        {:style {:flex 1}
-         :behavior "padding"}
-        [:> rn/ScrollView
-         {:content-container-style {:flex-grow 1
-                                    :justify-content "center"
-                                    :align-items "center"
-                                    :padding-vertical 40}}
-         ;; Header - different based on whether this is reauth or initial setup
-         (if requires-reauth?
-           [reauthentication-header colors]
-           [initial-setup-header colors])
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           scanning? @(rf/subscribe [:qr/scanning?])
+           requires-reauth? @(rf/subscribe [:connection/requires-reauthentication?])]
+       (if scanning?
+         ;; Show QR scanner
+         [qr-scanner-view]
+         ;; Show normal auth view
+         [:> rn/SafeAreaView {:style {:flex 1 :background-color (:background colors)}}
+          [:> rn/KeyboardAvoidingView
+           {:style {:flex 1}
+            :behavior "padding"}
+           [:> rn/ScrollView
+            {:content-container-style {:flex-grow 1
+                                       :justify-content "center"
+                                       :align-items "center"
+                                       :padding-vertical 40}}
+            ;; Header - different based on whether this is reauth or initial setup
+            (if requires-reauth?
+              [reauthentication-header colors]
+              [initial-setup-header colors])
 
-         ;; Status indicator (only show if not reauth, since reauth header shows error)
-         (when-not requires-reauth?
-           [status-indicator colors])
+            ;; Status indicator (only show if not reauth, since reauth header shows error)
+            (when-not requires-reauth?
+              [status-indicator colors])
 
-         ;; Server configuration
-         [server-config colors]
+            ;; Server configuration
+            [server-config colors]
 
-         ;; API key input
-         [:> rn/View {:style {:margin-top 24 :width "100%"}}
-          [api-key-input colors]]
+            ;; API key input
+            [:> rn/View {:style {:margin-top 24 :width "100%"}}
+             [api-key-input colors]]
 
-         ;; QR code option
-         [:> rn/TouchableOpacity
-          {:style {:margin-top 24}
-           :on-press #(rf/dispatch [:auth/scan-qr])}
-          [:> rn/Text {:style {:color (:accent colors) :font-size 14}}
-           "Scan QR Code"]]
+            ;; QR code option
+            [:> rn/TouchableOpacity
+             {:style {:margin-top 24}
+              :on-press #(rf/dispatch [:auth/scan-qr])}
+             [:> rn/Text {:style {:color (:accent colors) :font-size 14}}
+              "Scan QR Code"]]
 
-         ;; Retry button (only shown during reauthentication)
-         (when requires-reauth?
-           [retry-connection-button colors])
+            ;; Retry button (only shown during reauthentication)
+            (when requires-reauth?
+              [retry-connection-button colors])
 
-         ;; Help text
-         [:> rn/Text {:style {:font-size 12
-                              :color (:text-tertiary colors)
-                              :text-align "center"
-                              :margin-top 24
-                              :padding-horizontal 32}}
-          "Run `make show-key-qr` in your terminal to display the QR code"]]]])))
+            ;; Help text
+            [:> rn/Text {:style {:font-size 12
+                                 :color (:text-tertiary colors)
+                                 :text-align "center"
+                                 :margin-top 24
+                                 :padding-horizontal 32}}
+             "Run `make show-key-qr` in your terminal to display the QR code"]]]])))])

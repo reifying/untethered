@@ -76,105 +76,108 @@
 (defn- rename-session-modal
   "Modal for renaming a session with validation.
    Features: Input validation, clear button, Cancel/Save buttons.
-   Matches iOS RenameSessionView (ConversationView.swift:1266-1314)."
+   Matches iOS RenameSessionView (ConversationView.swift:1266-1314).
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [{:keys [visible? input-value on-rename]} @rename-modal-state
-        trimmed-value (when input-value (clojure.string/trim input-value))
-        is-empty? (or (nil? trimmed-value) (empty? trimmed-value))
-        colors (theme/use-theme-colors)]
-    [:> Modal
-     {:visible visible?
-      :animation-type "slide"
-      :presentation-style "pageSheet"
-      :on-request-close hide-rename-modal!}
-     [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
-      ;; Header with Cancel and Save buttons
-      [:> rn/View {:style {:flex-direction "row"
-                           :justify-content "space-between"
-                           :align-items "center"
-                           :padding-horizontal 16
-                           :padding-vertical 12
-                           :background-color (:card-background colors)
-                           :border-bottom-width 1
-                           :border-bottom-color (:separator colors)}}
-       ;; Cancel button
-       [:> rn/TouchableOpacity
-        {:on-press hide-rename-modal!
-         :style {:padding 8}}
-        [:> rn/Text {:style {:font-size 17 :color (:accent colors)}} "Cancel"]]
-
-       ;; Title
-       [:> rn/Text {:style {:font-size 17
-                            :font-weight "600"
-                            :color (:text-primary colors)}}
-        "Rename Session"]
-
-       ;; Save button (disabled when empty)
-       [:> rn/TouchableOpacity
-        {:on-press (fn []
-                     (when (and on-rename (not is-empty?))
-                       (on-rename trimmed-value)
-                       (hide-rename-modal!)))
-         :disabled is-empty?
-         :style {:padding 8}}
-        [:> rn/Text {:style {:font-size 17
-                             :font-weight "600"
-                             :color (if is-empty? (:text-tertiary colors) (:accent colors))}}
-         "Save"]]]
-
-      ;; Form content
-      [:> rn/View {:style {:margin-top 24
-                           :background-color (:card-background colors)
-                           :border-top-width 1
-                           :border-top-color (:separator colors)
-                           :border-bottom-width 1
-                           :border-bottom-color (:separator colors)}}
-       ;; Section header
-       [:> rn/View {:style {:padding-horizontal 16
-                            :padding-top 8}}
-        [:> rn/Text {:style {:font-size 13
-                             :color (:text-secondary colors)
-                             :text-transform "uppercase"
-                             :letter-spacing 0.5}}
-         "Session Name"]]
-
-       ;; Input row with clear button
-       [:> rn/View {:style {:flex-direction "row"
-                            :align-items "center"
-                            :padding-horizontal 16
-                            :padding-vertical 12}}
-        [:> rn/TextInput
-         {:style {:flex 1
-                  :font-size 17
-                  :color (:text-primary colors)
-                  :padding-vertical 8}
-          :value (or input-value "")
-          :on-change-text rename-modal-input-change!
-          :placeholder "Enter session name"
-          :placeholder-text-color (:text-placeholder colors)
-          :auto-capitalize "words"
-          :auto-focus true
-          :return-key-type "done"
-          :on-submit-editing (fn []
-                               (when (and on-rename (not is-empty?))
-                                 (on-rename trimmed-value)
-                                 (hide-rename-modal!)))}]
-
-        ;; Clear button (X) - only shown when input is not empty
-        (when (not is-empty?)
+  [:f>
+   (fn []
+     (let [{:keys [visible? input-value on-rename]} @rename-modal-state
+           trimmed-value (when input-value (clojure.string/trim input-value))
+           is-empty? (or (nil? trimmed-value) (empty? trimmed-value))
+           colors (theme/use-theme-colors)]
+       [:> Modal
+        {:visible visible?
+         :animation-type "slide"
+         :presentation-style "pageSheet"
+         :on-request-close hide-rename-modal!}
+        [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
+         ;; Header with Cancel and Save buttons
+         [:> rn/View {:style {:flex-direction "row"
+                              :justify-content "space-between"
+                              :align-items "center"
+                              :padding-horizontal 16
+                              :padding-vertical 12
+                              :background-color (:card-background colors)
+                              :border-bottom-width 1
+                              :border-bottom-color (:separator colors)}}
+          ;; Cancel button
           [:> rn/TouchableOpacity
-           {:on-press #(rename-modal-input-change! "")
+           {:on-press hide-rename-modal!
             :style {:padding 8}}
-           [:> rn/View {:style {:width 20
-                                :height 20
-                                :border-radius 10
-                                :background-color (:text-tertiary colors)
-                                :justify-content "center"
-                                :align-items "center"}}
-            [:> rn/Text {:style {:font-size 12
-                                 :color (:button-text-on-accent colors)
-                                 :font-weight "600"}}
-             "✕"]]])]]]]))
+           [:> rn/Text {:style {:font-size 17 :color (:accent colors)}} "Cancel"]]
+
+          ;; Title
+          [:> rn/Text {:style {:font-size 17
+                               :font-weight "600"
+                               :color (:text-primary colors)}}
+           "Rename Session"]
+
+          ;; Save button (disabled when empty)
+          [:> rn/TouchableOpacity
+           {:on-press (fn []
+                        (when (and on-rename (not is-empty?))
+                          (on-rename trimmed-value)
+                          (hide-rename-modal!)))
+            :disabled is-empty?
+            :style {:padding 8}}
+           [:> rn/Text {:style {:font-size 17
+                                :font-weight "600"
+                                :color (if is-empty? (:text-tertiary colors) (:accent colors))}}
+            "Save"]]]
+
+         ;; Form content
+         [:> rn/View {:style {:margin-top 24
+                              :background-color (:card-background colors)
+                              :border-top-width 1
+                              :border-top-color (:separator colors)
+                              :border-bottom-width 1
+                              :border-bottom-color (:separator colors)}}
+          ;; Section header
+          [:> rn/View {:style {:padding-horizontal 16
+                               :padding-top 8}}
+           [:> rn/Text {:style {:font-size 13
+                                :color (:text-secondary colors)
+                                :text-transform "uppercase"
+                                :letter-spacing 0.5}}
+            "Session Name"]]
+
+          ;; Input row with clear button
+          [:> rn/View {:style {:flex-direction "row"
+                               :align-items "center"
+                               :padding-horizontal 16
+                               :padding-vertical 12}}
+           [:> rn/TextInput
+            {:style {:flex 1
+                     :font-size 17
+                     :color (:text-primary colors)
+                     :padding-vertical 8}
+             :value (or input-value "")
+             :on-change-text rename-modal-input-change!
+             :placeholder "Enter session name"
+             :placeholder-text-color (:text-placeholder colors)
+             :auto-capitalize "words"
+             :auto-focus true
+             :return-key-type "done"
+             :on-submit-editing (fn []
+                                  (when (and on-rename (not is-empty?))
+                                    (on-rename trimmed-value)
+                                    (hide-rename-modal!)))}]
+
+           ;; Clear button (X) - only shown when input is not empty
+           (when (not is-empty?)
+             [:> rn/TouchableOpacity
+              {:on-press #(rename-modal-input-change! "")
+               :style {:padding 8}}
+              [:> rn/View {:style {:width 20
+                                   :height 20
+                                   :border-radius 10
+                                   :background-color (:text-tertiary colors)
+                                   :justify-content "center"
+                                   :align-items "center"}}
+               [:> rn/Text {:style {:font-size 12
+                                    :color (:button-text-on-accent colors)
+                                    :font-weight "600"}}
+                "✕"]]])]]]]]))])
 
 (defn- show-rename-dialog
   "Show the rename session modal (replaces Alert.prompt for cross-platform support).
@@ -208,101 +211,107 @@
   (swap! selected-message-state assoc :visible? false))
 
 (defn- action-button
-  "Action button for message detail modal."
+  "Action button for message detail modal.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [{:keys [icon label on-press color]}]
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/TouchableOpacity
-     {:style {:align-items "center"
-              :padding-vertical 12
-              :padding-horizontal 16
-              :min-width 80}
-      :on-press on-press
-      :active-opacity 0.7}
-     [:> rn/Text {:style {:font-size 28 :margin-bottom 6}} icon]
-     [:> rn/Text {:style {:font-size 13
-                          :color (or color (:accent colors))
-                          :font-weight "500"}}
-      label]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/TouchableOpacity
+        {:style {:align-items "center"
+                 :padding-vertical 12
+                 :padding-horizontal 16
+                 :min-width 80}
+         :on-press on-press
+         :active-opacity 0.7}
+        [:> rn/Text {:style {:font-size 28 :margin-bottom 6}} icon]
+        [:> rn/Text {:style {:font-size 13
+                             :color (or color (:accent colors))
+                             :font-weight "500"}}
+         label]]))])
 
 (defn message-detail-modal
   "Modal showing full message content with actions.
-   Features: Copy, Read Aloud, Infer Name (for assistant messages)."
+   Features: Copy, Read Aloud, Infer Name (for assistant messages).
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [{:keys [visible? message session-id working-directory]} @selected-message-state
-        {:keys [role text]} (or message {})
-        speaking? @(rf/subscribe [:voice/speaking?])
-        is-assistant? (= role :assistant)
-        colors (theme/use-theme-colors)]
-    [:> Modal
-     {:visible visible?
-      :animation-type "slide"
-      :presentation-style "pageSheet"
-      :on-request-close hide-message-detail!}
-     [:> rn/SafeAreaView {:style {:flex 1 :background-color (:card-background colors)}}
-      ;; Header
-      [:> rn/View {:style {:flex-direction "row"
-                           :justify-content "space-between"
-                           :align-items "center"
-                           :padding-horizontal 16
-                           :padding-vertical 12
-                           :border-bottom-width 1
-                           :border-bottom-color (:separator colors)}}
-       [:> rn/Text {:style {:font-size 17
-                            :font-weight "600"
-                            :color (:text-primary colors)}}
-        (if (= role :user) "Your Message" "Claude's Response")]
-       [:> rn/TouchableOpacity
-        {:on-press hide-message-detail!
-         :style {:padding 8}}
-        [:> rn/Text {:style {:font-size 17 :color (:accent colors)}} "Done"]]]
+  [:f>
+   (fn []
+     (let [{:keys [visible? message session-id working-directory]} @selected-message-state
+           {:keys [role text]} (or message {})
+           speaking? @(rf/subscribe [:voice/speaking?])
+           is-assistant? (= role :assistant)
+           colors (theme/use-theme-colors)]
+       [:> Modal
+        {:visible visible?
+         :animation-type "slide"
+         :presentation-style "pageSheet"
+         :on-request-close hide-message-detail!}
+        [:> rn/SafeAreaView {:style {:flex 1 :background-color (:card-background colors)}}
+         ;; Header
+         [:> rn/View {:style {:flex-direction "row"
+                              :justify-content "space-between"
+                              :align-items "center"
+                              :padding-horizontal 16
+                              :padding-vertical 12
+                              :border-bottom-width 1
+                              :border-bottom-color (:separator colors)}}
+          [:> rn/Text {:style {:font-size 17
+                               :font-weight "600"
+                               :color (:text-primary colors)}}
+           (if (= role :user) "Your Message" "Claude's Response")]
+          [:> rn/TouchableOpacity
+           {:on-press hide-message-detail!
+            :style {:padding 8}}
+           [:> rn/Text {:style {:font-size 17 :color (:accent colors)}} "Done"]]]
 
-      ;; Message content - scrollable
-      [:> rn/ScrollView {:style {:flex 1}
-                         :content-container-style {:padding 16}}
-       [:> rn/Text {:style {:font-size 16
-                            :line-height 24
-                            :color (:text-primary colors)}
-                    :selectable true}
-        text]]
+         ;; Message content - scrollable
+         [:> rn/ScrollView {:style {:flex 1}
+                            :content-container-style {:padding 16}}
+          [:> rn/Text {:style {:font-size 16
+                               :line-height 24
+                               :color (:text-primary colors)}
+                       :selectable true}
+           text]]
 
-      ;; Action buttons row
-      [:> rn/View {:style {:flex-direction "row"
-                           :justify-content "space-evenly"
-                           :align-items "center"
-                           :padding-vertical 16
-                           :padding-horizontal 8
-                           :border-top-width 1
-                           :border-top-color (:separator colors)
-                           :background-color (:background-secondary colors)}}
-       ;; Copy button
-       [action-button
-        {:icon "📋"
-         :label "Copy"
-         :on-press (fn []
-                     (copy-to-clipboard! text "Message copied")
-                     (hide-message-detail!))}]
+         ;; Action buttons row
+         [:> rn/View {:style {:flex-direction "row"
+                              :justify-content "space-evenly"
+                              :align-items "center"
+                              :padding-vertical 16
+                              :padding-horizontal 8
+                              :border-top-width 1
+                              :border-top-color (:separator colors)
+                              :background-color (:background-secondary colors)}}
+          ;; Copy button
+          [action-button
+           {:icon "📋"
+            :label "Copy"
+            :on-press (fn []
+                        (copy-to-clipboard! text "Message copied")
+                        (hide-message-detail!))}]
 
-       ;; Read Aloud / Stop button
-       [action-button
-        {:icon (if speaking? "⏹" "🔊")
-         :label (if speaking? "Stop" "Read Aloud")
-         :color (if speaking? (:destructive colors) (:accent colors))
-         :on-press (fn []
-                     (if speaking?
-                       (rf/dispatch [:voice/stop-speaking])
-                       (do
-                         (rf/dispatch [:voice/speak-response text working-directory])
-                         (hide-message-detail!))))}]
+          ;; Read Aloud / Stop button
+          [action-button
+           {:icon (if speaking? "⏹" "🔊")
+            :label (if speaking? "Stop" "Read Aloud")
+            :color (if speaking? (:destructive colors) (:accent colors))
+            :on-press (fn []
+                        (if speaking?
+                          (rf/dispatch [:voice/stop-speaking])
+                          (do
+                            (rf/dispatch [:voice/speak-response text working-directory])
+                            (hide-message-detail!))))}]
 
-       ;; Infer Name button (only for assistant messages)
-       (when is-assistant?
-         [action-button
-          {:icon "✨"
-           :label "Infer Name"
-           :on-press (fn []
-                       (rf/dispatch [:session/infer-name session-id])
-                       (show-toast! "Inferring session name...")
-                       (hide-message-detail!))}])]]]))
+          ;; Infer Name button (only for assistant messages)
+          (when is-assistant?
+            [action-button
+             {:icon "✨"
+              :label "Infer Name"
+              :on-press (fn []
+                          (rf/dispatch [:session/infer-name session-id])
+                          (show-toast! "Inferring session name...")
+                          (hide-message-detail!))}])]]]]))])
 
 ;; Text truncation: utils/truncate-text, utils/truncation-threshold, utils/truncation-preview-chars
 
@@ -502,119 +511,131 @@
 
 (defn- error-banner
   "Displays error message with copy-to-clipboard and dismiss options.
-   Tapping the error text copies it to clipboard."
+   Tapping the error text copies it to clipboard.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [error @(rf/subscribe [:ui/current-error])
-        colors (theme/use-theme-colors)]
-    (when error
-      [:> rn/View {:style {:background-color (:destructive-background colors)
-                           :border-width 1
-                           :border-color (:destructive colors)
-                           :border-radius 8
-                           :margin-horizontal 12
-                           :margin-vertical 8
-                           :padding 12
-                           :flex-direction "row"
-                           :align-items "flex-start"}}
-       ;; Error icon
-       [:> rn/Text {:style {:font-size 16 :margin-right 8}} "⚠️"]
-       ;; Error content (tappable to copy)
-       [:> rn/TouchableOpacity
-        {:style {:flex 1}
-         :on-press (fn []
-                     (copy-to-clipboard! error "Error copied")
-                     (js/console.log "Error copied to clipboard"))}
-        [:> rn/Text {:style {:color (:destructive colors)
-                             :font-size 14
-                             :font-weight "500"}}
-         "Error"]
-        [:> rn/Text {:style {:color (:text-primary colors)
-                             :font-size 13
-                             :margin-top 4}}
-         error]
-        [:> rn/Text {:style {:color (:text-secondary colors)
-                             :font-size 11
-                             :margin-top 4
-                             :font-style "italic"}}
-         "Tap to copy"]]
-       ;; Dismiss button
-       [:> rn/TouchableOpacity
-        {:style {:padding 4}
-         :on-press #(rf/dispatch [:ui/clear-error])}
-        [:> rn/Text {:style {:font-size 18 :color (:text-tertiary colors)}} "×"]]])))
+  [:f>
+   (fn []
+     (let [error @(rf/subscribe [:ui/current-error])
+           colors (theme/use-theme-colors)]
+       (when error
+         [:> rn/View {:style {:background-color (:destructive-background colors)
+                              :border-width 1
+                              :border-color (:destructive colors)
+                              :border-radius 8
+                              :margin-horizontal 12
+                              :margin-vertical 8
+                              :padding 12
+                              :flex-direction "row"
+                              :align-items "flex-start"}}
+          ;; Error icon
+          [:> rn/Text {:style {:font-size 16 :margin-right 8}} "⚠️"]
+          ;; Error content (tappable to copy)
+          [:> rn/TouchableOpacity
+           {:style {:flex 1}
+            :on-press (fn []
+                        (copy-to-clipboard! error "Error copied")
+                        (js/console.log "Error copied to clipboard"))}
+           [:> rn/Text {:style {:color (:destructive colors)
+                                :font-size 14
+                                :font-weight "500"}}
+            "Error"]
+           [:> rn/Text {:style {:color (:text-primary colors)
+                                :font-size 13
+                                :margin-top 4}}
+            error]
+           [:> rn/Text {:style {:color (:text-secondary colors)
+                                :font-size 11
+                                :margin-top 4
+                                :font-style "italic"}}
+            "Tap to copy"]]
+          ;; Dismiss button
+          [:> rn/TouchableOpacity
+           {:style {:padding 4}
+            :on-press #(rf/dispatch [:ui/clear-error])}
+           [:> rn/Text {:style {:font-size 18 :color (:text-tertiary colors)}} "×"]]])))])
 
 (defn- mode-toggle
-  "Toggle button for switching between voice and text input modes."
+  "Toggle button for switching between voice and text input modes.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [voice-mode? @(rf/subscribe [:ui/voice-mode?])
-        colors (theme/use-theme-colors)]
-    [:> rn/TouchableOpacity
-     {:style {:flex-direction "row"
-              :align-items "center"
-              :padding-horizontal 12
-              :padding-vertical 6
-              :background-color (:accent-background colors)
-              :border-radius 8}
-      :on-press #(rf/dispatch [:ui/toggle-input-mode])}
-     [:> rn/Text {:style {:font-size 16 :margin-right 6}}
-      (if voice-mode? "🎤" "⌨️")]
-     [:> rn/Text {:style {:font-size 13
-                          :color (:accent colors)
-                          :font-weight "500"}}
-      (if voice-mode? "Voice Mode" "Text Mode")]]))
+  [:f>
+   (fn []
+     (let [voice-mode? @(rf/subscribe [:ui/voice-mode?])
+           colors (theme/use-theme-colors)]
+       [:> rn/TouchableOpacity
+        {:style {:flex-direction "row"
+                 :align-items "center"
+                 :padding-horizontal 12
+                 :padding-vertical 6
+                 :background-color (:accent-background colors)
+                 :border-radius 8}
+         :on-press #(rf/dispatch [:ui/toggle-input-mode])}
+        [:> rn/Text {:style {:font-size 16 :margin-right 6}}
+         (if voice-mode? "🎤" "⌨️")]
+        [:> rn/Text {:style {:font-size 13
+                             :color (:accent colors)
+                             :font-weight "500"}}
+         (if voice-mode? "Voice Mode" "Text Mode")]]))])
 
 (defn- tappable-connection-status
   "Connection status indicator that can be tapped to force reconnection.
-   Shows a colored dot and status text. Tapping when disconnected triggers reconnection."
+   Shows a colored dot and status text. Tapping when disconnected triggers reconnection.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [status @(rf/subscribe [:connection/status])
-        connected? (= status :connected)
-        connecting? (= status :connecting)
-        colors (theme/use-theme-colors)]
-    [:> rn/TouchableOpacity
-     {:style {:flex-direction "row"
-              :align-items "center"
-              :padding-horizontal 8
-              :padding-vertical 4
-              :border-radius 12
-              :background-color (cond
-                                  connecting? (:warning-background colors)
-                                  connected? "transparent"
-                                  :else (:destructive-background colors))}
-      :active-opacity 0.7
-      :on-press (when-not connecting?
-                  #(rf/dispatch [:ws/force-reconnect]))}
-     ;; Status dot
-     [:> rn/View {:style {:width 8
-                          :height 8
-                          :border-radius 4
-                          :background-color (cond
-                                              connecting? (:warning colors)
-                                              connected? (:success colors)
-                                              :else (:destructive colors))
-                          :margin-right 6}}]
-     ;; Status text
-     [:> rn/Text {:style {:font-size 12
-                          :color (cond
-                                   connecting? (:warning colors)
-                                   connected? (:text-secondary colors)
-                                   :else (:destructive colors))}}
-      (case status
-        :connected "Connected"
-        :connecting "Connecting..."
-        :authenticating "Authenticating..."
-        "Tap to reconnect")]]))
+  [:f>
+   (fn []
+     (let [status @(rf/subscribe [:connection/status])
+           connected? (= status :connected)
+           connecting? (= status :connecting)
+           colors (theme/use-theme-colors)]
+       [:> rn/TouchableOpacity
+        {:style {:flex-direction "row"
+                 :align-items "center"
+                 :padding-horizontal 8
+                 :padding-vertical 4
+                 :border-radius 12
+                 :background-color (cond
+                                     connecting? (:warning-background colors)
+                                     connected? "transparent"
+                                     :else (:destructive-background colors))}
+         :active-opacity 0.7
+         :on-press (when-not connecting?
+                     #(rf/dispatch [:ws/force-reconnect]))}
+        ;; Status dot
+        [:> rn/View {:style {:width 8
+                             :height 8
+                             :border-radius 4
+                             :background-color (cond
+                                                 connecting? (:warning colors)
+                                                 connected? (:success colors)
+                                                 :else (:destructive colors))
+                             :margin-right 6}}]
+        ;; Status text
+        [:> rn/Text {:style {:font-size 12
+                             :color (cond
+                                      connecting? (:warning colors)
+                                      connected? (:text-secondary colors)
+                                      :else (:destructive colors))}}
+         (case status
+           :connected "Connected"
+           :connecting "Connecting..."
+           :authenticating "Authenticating..."
+           "Tap to reconnect")]]))])
 
 (defn- voice-input-area
   "Voice input with microphone button.
-   Shows error state with retry option when voice recognition fails."
+   Shows error state with retry option when voice recognition fails.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [{:keys [session-id]}]
-  (let [listening? @(rf/subscribe [:voice/listening?])
-        partial-result @(rf/subscribe [:voice/partial-result])
-        voice-error @(rf/subscribe [:voice/error])
-        locked? @(rf/subscribe [:session/locked? session-id])
-        session (when session-id @(rf/subscribe [:sessions/by-id session-id]))
-        colors (theme/use-theme-colors)]
+  [:f>
+   (fn []
+     (let [listening? @(rf/subscribe [:voice/listening?])
+           partial-result @(rf/subscribe [:voice/partial-result])
+           voice-error @(rf/subscribe [:voice/error])
+           locked? @(rf/subscribe [:session/locked? session-id])
+           session (when session-id @(rf/subscribe [:sessions/by-id session-id]))
+           colors (theme/use-theme-colors)]
     [:> rn/View {:style {:border-top-width 1
                          :border-top-color (:separator colors)
                          :background-color (:background colors)
@@ -738,7 +759,7 @@
                              :margin-top 8}}
          (if listening?
            "Listening... Tap to stop"
-           "Tap to speak")])]]))
+           "Tap to speak")])])))])
 
 (defn- text-input-area
   "Text input with send button."
@@ -948,73 +969,82 @@
 
 (defn- loading-conversation
   "Shown while loading conversation history.
-   Matches iOS ConversationView.swift loading indicator (ProgressView + 'Loading conversation...')."
+   Matches iOS ConversationView.swift loading indicator (ProgressView + 'Loading conversation...').
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/View {:style {:flex 1
-                         :justify-content "center"
-                         :align-items "center"
-                         :padding-top 100}}
-     [:> rn/ActivityIndicator {:size "large" :color (:accent colors)}]
-     [:> rn/Text {:style {:font-size 14
-                          :color (:text-secondary colors)
-                          :margin-top 16}}
-      "Loading conversation..."]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/View {:style {:flex 1
+                            :justify-content "center"
+                            :align-items "center"
+                            :padding-top 100}}
+        [:> rn/ActivityIndicator {:size "large" :color (:accent colors)}]
+        [:> rn/Text {:style {:font-size 14
+                             :color (:text-secondary colors)
+                             :margin-top 16}}
+         "Loading conversation..."]]))])
 
 (defn- empty-conversation
-  "Shown when there are no messages."
+  "Shown when there are no messages.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/View {:style {:flex 1
-                         :justify-content "center"
-                         :align-items "center"
-                         :padding 40}}
-     [:> rn/Text {:style {:font-size 18
-                          :font-weight "600"
-                          :color (:text-primary colors)
-                          :margin-bottom 8}}
-      "Start a Conversation"]
-     [:> rn/Text {:style {:font-size 14
-                          :color (:text-secondary colors)
-                          :text-align "center"}}
-      "Type a message below to begin chatting with Claude."]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/View {:style {:flex 1
+                            :justify-content "center"
+                            :align-items "center"
+                            :padding 40}}
+        [:> rn/Text {:style {:font-size 18
+                             :font-weight "600"
+                             :color (:text-primary colors)
+                             :margin-bottom 8}}
+         "Start a Conversation"]
+        [:> rn/Text {:style {:font-size 14
+                             :color (:text-secondary colors)
+                             :text-align "center"}}
+         "Type a message below to begin chatting with Claude."]]))])
 
 (defn- session-not-found
   "Shown when the requested session doesn't exist (deleted or invalid ID).
    Matches iOS SessionLookupView behavior: shows error message with session ID
-   and allows copying the ID to clipboard."
+   and allows copying the ID to clipboard.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [{:keys [session-id]}]
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/View {:style {:flex 1
-                         :justify-content "center"
-                         :align-items "center"
-                         :padding 40}}
-     [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "⚠️"]
-     [:> rn/Text {:style {:font-size 20
-                          :font-weight "600"
-                          :color (:text-primary colors)
-                          :margin-bottom 8}}
-      "Session Not Found"]
-     [:> rn/Text {:style {:font-size 14
-                          :color (:text-secondary colors)
-                          :text-align "center"
-                          :margin-bottom 16}}
-      "This session may have been deleted."]
-     [:> rn/TouchableOpacity
-      {:style {:padding 12
-               :background-color (:fill-tertiary colors)
-               :border-radius 8}
-       :on-press #(copy-to-clipboard! session-id "Session ID copied")}
-      [:> rn/Text {:style {:font-size 12
-                           :font-family (if (= (.-OS rn/Platform) "ios")
-                                          "Menlo"
-                                          "monospace")
-                           :color (:text-secondary colors)}}
-       session-id]]
-     [:> rn/Text {:style {:font-size 11
-                          :color (:text-tertiary colors)
-                          :margin-top 8}}
-      "Tap to copy session ID"]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/View {:style {:flex 1
+                            :justify-content "center"
+                            :align-items "center"
+                            :padding 40}}
+        [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "⚠️"]
+        [:> rn/Text {:style {:font-size 20
+                             :font-weight "600"
+                             :color (:text-primary colors)
+                             :margin-bottom 8}}
+         "Session Not Found"]
+        [:> rn/Text {:style {:font-size 14
+                             :color (:text-secondary colors)
+                             :text-align "center"
+                             :margin-bottom 16}}
+         "This session may have been deleted."]
+        [:> rn/TouchableOpacity
+         {:style {:padding 12
+                  :background-color (:fill-tertiary colors)
+                  :border-radius 8}
+          :on-press #(copy-to-clipboard! session-id "Session ID copied")}
+         [:> rn/Text {:style {:font-size 12
+                              :font-family (if (= (.-OS rn/Platform) "ios")
+                                             "Menlo"
+                                             "monospace")
+                              :color (:text-secondary colors)}}
+          session-id]]
+        [:> rn/Text {:style {:font-size 11
+                             :color (:text-tertiary colors)
+                             :margin-top 8}}
+         "Tap to copy session ID"]]))])
 
 (defn- session-display-name
   "Get the display name for a session."
