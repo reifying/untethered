@@ -4,6 +4,7 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn]
+            [voice-code.haptic :as haptic]
             [voice-code.utils :refer [parse-qr-code]]))
 
 ;; ============================================================================
@@ -65,10 +66,15 @@
    (if-let [api-key (parse-qr-code qr-value)]
      ;; Valid QR code - stop scanning and connect with the API key
      ;; Server URL and port are already configured in settings
-     {:db (assoc-in db [:qr :scanning?] false)
-      :dispatch [:auth/connect api-key]}
-     ;; Invalid QR code
-     {:db (assoc-in db [:qr :error] "Invalid QR code. Expected API key starting with 'untethered-'.")})))
+     ;; Haptic feedback matches iOS QRScannerView.swift:386-387
+     (do
+       (haptic/success!)
+       {:db (assoc-in db [:qr :scanning?] false)
+        :dispatch [:auth/connect api-key]})
+     ;; Invalid QR code - error haptic matches iOS QRScannerView.swift:394-396
+     (do
+       (haptic/error!)
+       {:db (assoc-in db [:qr :error] "Invalid QR code. Expected API key starting with 'untethered-'.")}))))
 
 (rf/reg-event-db
  :qr/clear-error
