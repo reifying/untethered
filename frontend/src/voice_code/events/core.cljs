@@ -21,6 +21,9 @@
     ;; Initialize SQLite database first - loading happens after db-initialized
     :persistence/init-db nil
     :voice/setup nil
+    ;; Preload TTS voices asynchronously for faster first speech response
+    ;; Matches iOS VoiceCodeApp.swift:151 AppSettings.preloadVoices()
+    :voice/load-voices nil
     :ws/setup-app-state-listener nil
     :notifications/setup nil
     :notifications/request-permission nil}))

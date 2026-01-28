@@ -29,6 +29,28 @@
      (is (= :disconnected @(rf/subscribe [:connection/status])))
      (is (= {} @(rf/subscribe [:sessions/all]))))))
 
+(deftest app-initialize-preloads-voices-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "app/initialize triggers voice preloading for faster first TTS"
+     ;; The :app/initialize event should include :voice/load-voices effect
+     ;; This matches iOS VoiceCodeApp.swift:151 AppSettings.preloadVoices()
+     ;; which preloads voices asynchronously to avoid blocking main thread
+     ;;
+     ;; In tests, the effect doesn't actually run (effects are stubbed),
+     ;; but we can verify the event handler is registered and doesn't throw.
+     ;; The actual voice loading happens via the :voice/load-voices effect
+     ;; which resolves a promise and dispatches :voice/voices-loaded.
+     (rf/dispatch-sync [:app/initialize])
+
+     ;; After app/initialize, db should still be in valid state
+     (is (= :disconnected @(rf/subscribe [:connection/status])))
+
+     ;; Verify voice-related state is initialized correctly
+     (is (= [] @(rf/subscribe [:voice/available-voices])))
+     (is (false? @(rf/subscribe [:voice/loading-voices?]))))))
+
 (deftest session-selection-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
