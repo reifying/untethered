@@ -520,16 +520,18 @@
        :on-press #(when navigation
                     (.navigate navigation "CommandMenu"
                                #js {:workingDirectory directory}))}]
-     ;; History button - green indicator when commands are running
+     ;; Active Commands button - green indicator when commands are running
+     ;; iOS parity: This matches the "clock.arrow.circlepath" button that shows
+     ;; ActiveCommandsListView (running commands), not completed history.
      [toolbar-button
       {:icon "📜"
-       :label "History"
+       :label "Active"
        :active? running-commands
        :active-color :green
        :badge-count (when running-commands running-count)
        :colors colors
        :on-press #(when navigation
-                    (.navigate navigation "CommandHistory"
+                    (.navigate navigation "ActiveCommands"
                                #js {:workingDirectory directory}))}]
      ;; Resources button
      [toolbar-button

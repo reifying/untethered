@@ -15,6 +15,7 @@
             [voice-code.views.command-menu :refer [command-menu-view]]
             [voice-code.views.command-execution :refer [command-execution-view]]
             [voice-code.views.command-history :refer [command-history-view]]
+            [voice-code.views.active-commands :refer [active-commands-view]]
             [voice-code.views.command-output-detail :refer [command-output-detail-view]]
             [voice-code.views.resources :refer [resources-view]]
             [voice-code.views.recipes :refer [recipes-view]]
@@ -132,6 +133,12 @@
             {:name "CommandExecution"
              :component (reactify-with-name command-execution-view "CommandExecutionView")
              :options #js {:title "Running Command"}}]
+
+           ;; Active commands (currently running - iOS parity with ActiveCommandsListView)
+           [:> (.-Screen Stack)
+            {:name "ActiveCommands"
+             :component (reactify-with-name active-commands-view "ActiveCommandsView")
+             :options #js {:title "Active Commands"}}]
 
            ;; Command history (past command executions)
            [:> (.-Screen Stack)
