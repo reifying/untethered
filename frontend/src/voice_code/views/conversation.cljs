@@ -421,12 +421,17 @@
                                    :letter-spacing 0.5}}
                (role-label role)]]
              ;; Message text
-             [:> rn/Text {:style {:color (if is-user?
-                                           (:bubble-user-text colors)
-                                           (:bubble-assistant-text colors))
-                                  :font-size 16
-                                  :line-height 22}
-                          :selectable true}
+             ;; Uses numberOfLines=20 when collapsed to match iOS ConversationView.swift:1117
+             ;; lineLimit(20) - prevents excessive layout calculations for long messages
+             [:> rn/Text (cond-> {:style {:color (if is-user?
+                                                   (:bubble-user-text colors)
+                                                   (:bubble-assistant-text colors))
+                                          :font-size 16
+                                          :line-height 22}
+                                  :selectable true}
+                           ;; Apply native line limit only when not expanded
+                           (not @expanded?)
+                           (assoc :number-of-lines 20))
               show-text]
 
              ;; Show more/less toggle for truncated messages
