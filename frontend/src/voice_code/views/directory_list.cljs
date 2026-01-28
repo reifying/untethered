@@ -3,10 +3,8 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [RefreshControl Alert AppState]]
-            ["@react-native-clipboard/clipboard" :as Clipboard]
             [clojure.string :as str]
-            [voice-code.views.components :refer [relative-time-text]]
-            [voice-code.haptic :as haptic]
+            [voice-code.views.components :refer [relative-time-text copy-to-clipboard! toast-overlay]]
             [voice-code.theme :as theme]
             [voice-code.utils :as utils]))
 
@@ -49,13 +47,6 @@
                           :font-weight "600"}}
       (if (> count 99) "99+" (str count))]]))
 
-(defn- copy-to-clipboard!
-  "Copy text to clipboard with haptic feedback."
-  [text]
-  (let [clipboard (or (.-default Clipboard) Clipboard)]
-    (.setString clipboard text)
-    (haptic/success!)))
-
 (defn- directory-item
   "Single directory item in the list.
    Long-press shows context menu to copy directory path."
@@ -73,8 +64,7 @@
                                (directory-name directory)
                                "Directory actions"
                                (clj->js [{:text "Copy Directory Path"
-                                          :onPress #(do (copy-to-clipboard! directory)
-                                                        (.alert Alert "Copied" "Directory path copied to clipboard"))}
+                                          :onPress #(copy-to-clipboard! directory "Directory path copied")}
                                          {:text "Cancel" :style "cancel"}])))
       :active-opacity 0.7}
      [:> rn/View {:style {:flex-direction "row"
@@ -132,11 +122,9 @@
                                (session-name session)
                                "Session actions"
                                (clj->js [{:text "Copy Session ID"
-                                          :onPress #(do (copy-to-clipboard! session-id)
-                                                        (.alert Alert "Copied" "Session ID copied to clipboard"))}
+                                          :onPress #(copy-to-clipboard! session-id "Session ID copied")}
                                          {:text "Copy Directory Path"
-                                          :onPress #(do (copy-to-clipboard! working-directory)
-                                                        (.alert Alert "Copied" "Directory path copied to clipboard"))}
+                                          :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
                                          {:text "Cancel" :style "cancel"}])))
       :active-opacity 0.7}
      [:> rn/View {:style {:flex-direction "row"
@@ -193,11 +181,9 @@
                                 (session-name session)
                                 "Session actions"
                                 (clj->js [{:text "Copy Session ID"
-                                           :onPress #(do (copy-to-clipboard! session-id)
-                                                         (.alert Alert "Copied" "Session ID copied to clipboard"))}
+                                           :onPress #(copy-to-clipboard! session-id "Session ID copied")}
                                           {:text "Copy Directory Path"
-                                           :onPress #(do (copy-to-clipboard! working-directory)
-                                                         (.alert Alert "Copied" "Directory path copied to clipboard"))}
+                                           :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
                                           {:text "Cancel" :style "cancel"}])))
        :active-opacity 0.7}
       [:> rn/View {:style {:flex-direction "row"
@@ -259,11 +245,9 @@
                                 (session-name session)
                                 "Session actions"
                                 (clj->js [{:text "Copy Session ID"
-                                           :onPress #(do (copy-to-clipboard! session-id)
-                                                         (.alert Alert "Copied" "Session ID copied to clipboard"))}
+                                           :onPress #(copy-to-clipboard! session-id "Session ID copied")}
                                           {:text "Copy Directory Path"
-                                           :onPress #(do (copy-to-clipboard! working-directory)
-                                                         (.alert Alert "Copied" "Directory path copied to clipboard"))}
+                                           :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
                                           {:text "Cancel" :style "cancel"}])))
        :active-opacity 0.7}
       [:> rn/View {:style {:flex-direction "row"
@@ -695,6 +679,8 @@
                                     (seq queue-sessions)
                                     (seq priority-queue-sessions))]
                [:> rn/View {:style {:flex 1 :background-color (:grouped-background colors)}}
+                ;; Toast overlay for copy confirmations
+                [toast-overlay]
            (cond
              ;; Loading state
              loading?
