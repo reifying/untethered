@@ -2,7 +2,7 @@
 # Kills wrapped command if it outputs "Error: No messages returned"
 # Usage: kill-on-hang <command> [args...]
 
-"$@" > /tmp/koh.$$ 2>&1 &
+bash -c 'shopt -s expand_aliases; source ~/.bashrc 2>/dev/null; '"$*" > /tmp/koh.$$ 2>&1 &
 PID=$!
 trap "kill $PID 2>/dev/null; rm -f /tmp/koh.$$" EXIT
 
