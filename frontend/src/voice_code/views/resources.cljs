@@ -1,9 +1,11 @@
 (ns voice-code.views.resources
   "Resources view for managing uploaded files.
-   Displays list of uploaded resources with delete functionality."
+   Displays list of uploaded resources with delete functionality.
+   Implements swipe-to-delete matching iOS ResourcesView.swift swipe actions."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn :refer [RefreshControl]]
+            ["react-native" :as rn :refer [RefreshControl Animated PanResponder]]
+            [voice-code.haptic :as haptic]
             [voice-code.theme :as theme]))
 
 (defn- format-file-size
@@ -41,80 +43,159 @@
       ("zip" "tar" "gz") "📦"
       "📎")))
 
-(defn- resource-item
-  "Single resource item in the list."
+;; Swipe-to-delete constants
+(def ^:private swipe-threshold
+  "Distance to swipe before delete action is triggered."
+  -80)
+
+(def ^:private delete-button-width
+  "Width of the delete button revealed on swipe."
+  80)
+
+(defn- resource-item-content
+  "The content portion of a resource item (icon, text, metadata).
+   Extracted for use in swipeable wrapper."
+  [{:keys [filename size timestamp colors]}]
+  [:> rn/View {:style {:flex-direction "row"
+                       :align-items "center"
+                       :padding-horizontal 16
+                       :padding-vertical 12
+                       :background-color (:row-background colors)}}
+   ;; File icon
+   [:> rn/View {:style {:width 44
+                        :height 44
+                        :border-radius 8
+                        :background-color (:background-secondary colors)
+                        :align-items "center"
+                        :justify-content "center"
+                        :margin-right 12}}
+    [:> rn/Text {:style {:font-size 22}}
+     (file-icon filename)]]
+
+   ;; File info
+   [:> rn/View {:style {:flex 1}}
+    [:> rn/Text {:style {:font-size 16
+                         :font-weight "500"
+                         :color (:text-primary colors)
+                         :margin-bottom 2}
+                 :number-of-lines 1}
+     filename]
+    [:> rn/View {:style {:flex-direction "row"
+                         :align-items "center"}}
+     [:> rn/Text {:style {:font-size 12
+                          :color (:text-secondary colors)}}
+      (format-file-size size)]
+     (when timestamp
+       [:> rn/Text {:style {:font-size 12
+                            :color (:text-secondary colors)
+                            :margin-left 8}}
+        (str "• " (format-timestamp timestamp))])]]])
+
+(defn- swipeable-resource-item
+  "Resource item with swipe-to-delete gesture support.
+   Matches iOS ResourcesView.swift swipe actions (lines 36-44).
+   Uses Animated and PanResponder for smooth gesture handling."
   [{:keys [resource on-delete colors]}]
-  (let [{:keys [filename path size timestamp]} resource
-        confirm-delete? (r/atom false)]
+  (let [;; Animated value for swipe position
+        translate-x (Animated.Value. 0)
+        ;; Track if item is swiped open
+        is-swiped? (r/atom false)
+        ;; PanResponder for gesture handling
+        pan-responder
+        (.create PanResponder
+                 #js {:onStartShouldSetPanResponder (fn [] false)
+                      :onMoveShouldSetPanResponder
+                      (fn [_ gesture-state]
+                        ;; Only respond to horizontal swipes
+                        (let [dx (.-dx gesture-state)
+                              dy (.-dy gesture-state)]
+                          (and (< (js/Math.abs dy) 10)
+                               (> (js/Math.abs dx) 10))))
+                      :onPanResponderGrant
+                      (fn [_ _]
+                        ;; Set offset to current value to allow continuing swipe
+                        (.setOffset translate-x (.-_value translate-x))
+                        (.setValue translate-x 0))
+                      :onPanResponderMove
+                      (fn [_ gesture-state]
+                        ;; Only allow swipe left (negative dx), clamp to button width
+                        (let [dx (.-dx gesture-state)
+                              clamped (max (- delete-button-width) (min 0 dx))]
+                          (.setValue translate-x clamped)))
+                      :onPanResponderRelease
+                      (fn [_ gesture-state]
+                        (.flattenOffset translate-x)
+                        (let [current-val (.-_value translate-x)]
+                          ;; If swiped past threshold, snap open
+                          (if (< current-val (/ swipe-threshold 2))
+                            (do
+                              (reset! is-swiped? true)
+                              (-> (.spring Animated translate-x
+                                           #js {:toValue swipe-threshold
+                                                :useNativeDriver false})
+                                  (.start)))
+                            ;; Otherwise snap closed
+                            (do
+                              (reset! is-swiped? false)
+                              (-> (.spring Animated translate-x
+                                           #js {:toValue 0
+                                                :useNativeDriver false})
+                                  (.start))))))})]
     (fn [{:keys [resource on-delete colors]}]
-      [:> rn/View {:style {:flex-direction "row"
-                           :align-items "center"
-                           :padding-horizontal 16
-                           :padding-vertical 12
-                           :background-color (:row-background colors)
+      [:> rn/View {:style {:overflow "hidden"
                            :border-bottom-width 1
                            :border-bottom-color (:separator colors)}}
-       ;; File icon
-       [:> rn/View {:style {:width 44
-                            :height 44
-                            :border-radius 8
-                            :background-color (:background-secondary colors)
-                            :align-items "center"
+       ;; Delete button behind (revealed on swipe)
+       [:> rn/View {:style {:position "absolute"
+                            :right 0
+                            :top 0
+                            :bottom 0
+                            :width delete-button-width
+                            :background-color (:destructive colors)
                             :justify-content "center"
-                            :margin-right 12}}
-        [:> rn/Text {:style {:font-size 22}}
-         (file-icon filename)]]
+                            :align-items "center"}}
+        [:> rn/TouchableOpacity
+         {:style {:flex 1
+                  :width "100%"
+                  :justify-content "center"
+                  :align-items "center"}
+          :on-press (fn []
+                      ;; Haptic feedback on delete
+                      (haptic/trigger! :warning)
+                      ;; Animate out then delete
+                      (-> (.timing Animated translate-x
+                                   #js {:toValue -500
+                                        :duration 200
+                                        :useNativeDriver false})
+                          (.start (fn [_] (on-delete resource)))))}
+         [:> rn/Text {:style {:font-size 24}} "🗑️"]
+         [:> rn/Text {:style {:color (:bubble-user-text colors)
+                              :font-size 12
+                              :font-weight "600"
+                              :margin-top 2}}
+          "Delete"]]]
 
-       ;; File info
-       [:> rn/View {:style {:flex 1}}
-        [:> rn/Text {:style {:font-size 16
-                             :font-weight "500"
-                             :color (:text-primary colors)
-                             :margin-bottom 2}
-                     :number-of-lines 1}
-         filename]
-        [:> rn/View {:style {:flex-direction "row"
-                             :align-items "center"}}
-         [:> rn/Text {:style {:font-size 12
-                              :color (:text-secondary colors)}}
-          (format-file-size size)]
-         (when timestamp
-           [:> rn/Text {:style {:font-size 12
-                                :color (:text-secondary colors)
-                                :margin-left 8}}
-            (str "• " (format-timestamp timestamp))])]]
+       ;; Swipeable content - spread panHandlers onto the animated view
+       (let [handlers (.-panHandlers pan-responder)]
+         [:> (.-View Animated)
+          (js/Object.assign
+           #js {:style #js {:transform #js [#js {:translateX translate-x}]
+                            :backgroundColor (:row-background colors)}}
+           handlers)
+          [resource-item-content
+           {:filename (:filename resource)
+            :size (:size resource)
+            :timestamp (:timestamp resource)
+            :colors colors}]])])))
 
-       ;; Delete button
-       (if @confirm-delete?
-         [:> rn/View {:style {:flex-direction "row"}}
-          [:> rn/TouchableOpacity
-           {:style {:padding-horizontal 12
-                    :padding-vertical 6
-                    :background-color (:destructive colors)
-                    :border-radius 6
-                    :margin-right 8}
-            :on-press #(do (on-delete resource)
-                           (reset! confirm-delete? false))}
-           [:> rn/Text {:style {:color "#FFF"
-                                :font-size 14
-                                :font-weight "500"}}
-            "Delete"]]
-          [:> rn/TouchableOpacity
-           {:style {:padding-horizontal 12
-                    :padding-vertical 6
-                    :background-color (:fill-secondary colors)
-                    :border-radius 6}
-            :on-press #(reset! confirm-delete? false)}
-           [:> rn/Text {:style {:color (:text-secondary colors)
-                                :font-size 14}}
-            "Cancel"]]]
-
-         [:> rn/TouchableOpacity
-          {:style {:padding 8}
-           :on-press #(reset! confirm-delete? true)}
-          [:> rn/Text {:style {:font-size 20
-                               :color (:destructive colors)}}
-           "🗑️"]])])))
+(defn- resource-item
+  "Single resource item in the list with swipe-to-delete.
+   Wraps swipeable-resource-item for consistent API."
+  [{:keys [resource on-delete colors]}]
+  [swipeable-resource-item
+   {:resource resource
+    :on-delete on-delete
+    :colors colors}])
 
 (defn- pending-uploads-banner
   "Banner showing pending uploads count."
@@ -170,7 +251,7 @@
             :elevation 5}
     :on-press on-press}
    [:> rn/Text {:style {:font-size 24
-                        :color "#FFF"}}
+                        :color (:bubble-user-text colors)}}
     "📤"]])
 
 (defn resources-view
