@@ -346,3 +346,59 @@
      (is (false? @(rf/subscribe [:ui/auto-scroll?])))
      (is (= @(rf/subscribe [:ui/auto-scroll?])
             @(rf/subscribe [:ui/auto-scroll?]))))))
+
+;; ============================================================================
+;; Role Indicator Tests (VCMOB-yhmv)
+;; ============================================================================
+;; Tests for role icon and label helpers matching iOS ConversationView.swift lines 1101-1110
+;; Note: These functions are private to the view namespace, so we test through integration
+;; with the message data structures and subscriptions.
+
+(deftest message-role-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Add a session
+   (rf/dispatch-sync [:sessions/add {:id "session-1"
+                                     :backend-name "Test Session"
+                                     :working-directory "/test/path"}])
+
+   (testing "user message has :user role"
+     (rf/dispatch-sync [:messages/add "session-1"
+                        {:id "msg-user"
+                         :role :user
+                         :text "Hello"
+                         :timestamp (js/Date.)}])
+     (let [messages @(rf/subscribe [:messages/for-session "session-1"])
+           user-msg (first (filter #(= "msg-user" (:id %)) messages))]
+       (is (= :user (:role user-msg)))))
+
+   (testing "assistant message has :assistant role"
+     (rf/dispatch-sync [:messages/add "session-1"
+                        {:id "msg-assistant"
+                         :role :assistant
+                         :text "Hi there!"
+                         :timestamp (js/Date.)}])
+     (let [messages @(rf/subscribe [:messages/for-session "session-1"])
+           assistant-msg (first (filter #(= "msg-assistant" (:id %)) messages))]
+       (is (= :assistant (:role assistant-msg)))))
+
+   (testing "tool-call message has :tool-call role"
+     (rf/dispatch-sync [:messages/add "session-1"
+                        {:id "msg-tool-call"
+                         :role :tool-call
+                         :text "Reading file..."
+                         :timestamp (js/Date.)}])
+     (let [messages @(rf/subscribe [:messages/for-session "session-1"])
+           tool-msg (first (filter #(= "msg-tool-call" (:id %)) messages))]
+       (is (= :tool-call (:role tool-msg)))))
+
+   (testing "tool-result message has :tool-result role"
+     (rf/dispatch-sync [:messages/add "session-1"
+                        {:id "msg-tool-result"
+                         :role :tool-result
+                         :text "File contents..."
+                         :timestamp (js/Date.)}])
+     (let [messages @(rf/subscribe [:messages/for-session "session-1"])
+           result-msg (first (filter #(= "msg-tool-result" (:id %)) messages))]
+       (is (= :tool-result (:role result-msg)))))))

@@ -301,10 +301,50 @@
            :label "Infer Name"
            :on-press (fn []
                        (rf/dispatch [:session/infer-name session-id])
-                       (show-copy-toast! "Inferring session name...")
+                       (show-toast! "Inferring session name...")
                        (hide-message-detail!))}])]]]))
 
 ;; Text truncation: utils/truncate-text, utils/truncation-threshold, utils/truncation-preview-chars
+
+;; ============================================================================
+;; Role Indicator Helpers
+;; ============================================================================
+;; Matches iOS ConversationView.swift lines 1101-1103 which shows role icons:
+;; - User: person.circle.fill (blue)
+;; - Assistant: cpu (green)
+;; - Tool call: hammer.fill (orange)
+;; - Tool result: doc.text.fill (purple)
+
+(defn- role-icon
+  "Get the icon emoji for a message role.
+   Matches iOS SF Symbol names with emoji equivalents."
+  [role]
+  (case role
+    :user "👤"
+    :assistant "🤖"
+    :tool-call "🔧"
+    :tool-result "📄"
+    "❓"))
+
+(defn- role-label
+  "Get the display label for a message role."
+  [role]
+  (case role
+    :user "You"
+    :assistant "Claude"
+    :tool-call "Tool Call"
+    :tool-result "Tool Result"
+    (name role)))
+
+(defn- role-color
+  "Get the theme color key for a message role."
+  [role colors]
+  (case role
+    :user (:accent colors)           ;; Blue
+    :assistant (:success colors)     ;; Green
+    :tool-call (:warning colors)     ;; Orange
+    :tool-result (:purple colors (:accent colors)) ;; Purple (fallback to accent)
+    (:text-secondary colors)))
 
 (defn- format-time
   "Format timestamp for display."
@@ -366,6 +406,21 @@
                                  :padding-vertical 10
                                  :border-bottom-right-radius (if is-user? 4 18)
                                  :border-bottom-left-radius (if is-user? 18 4)}}
+             ;; Role indicator header (icon + label)
+             ;; Matches iOS ConversationView.swift lines 1101-1110
+             [:> rn/View {:style {:flex-direction "row"
+                                  :align-items "center"
+                                  :margin-bottom 6}}
+              [:> rn/Text {:style {:font-size 16
+                                   :margin-right 6}}
+               (role-icon role)]
+              [:> rn/Text {:style {:font-size 12
+                                   :font-weight "600"
+                                   :color (role-color role colors)
+                                   :text-transform "uppercase"
+                                   :letter-spacing 0.5}}
+               (role-label role)]]
+             ;; Message text
              [:> rn/Text {:style {:color (if is-user?
                                            (:bubble-user-text colors)
                                            (:bubble-assistant-text colors))
@@ -924,10 +979,7 @@
    Matches iOS SessionLookupView behavior: shows error message with session ID
    and allows copying the ID to clipboard."
   [{:keys [session-id]}]
-  (let [colors (theme/use-theme-colors)
-        show-toast! (fn []
-                      (haptic/trigger! :success)
-                      (show-copy-toast! "Session ID copied"))]
+  (let [colors (theme/use-theme-colors)]
     [:> rn/View {:style {:flex 1
                          :justify-content "center"
                          :align-items "center"
@@ -947,9 +999,7 @@
       {:style {:padding 12
                :background-color (:fill-tertiary colors)
                :border-radius 8}
-       :on-press (fn []
-                   (.setString Clipboard session-id)
-                   (show-toast!))}
+       :on-press #(copy-to-clipboard! session-id "Session ID copied")}
       [:> rn/Text {:style {:font-size 12
                            :font-family (if (= (.-OS rn/Platform) "ios")
                                           "Menlo"
