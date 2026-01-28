@@ -1,0 +1,21 @@
+#!/bin/bash
+# Kills wrapped command if it outputs "Error: No messages returned"
+# Usage: kill-on-hang <command> [args...]
+
+"$@" > /tmp/koh.$$ 2>&1 &
+PID=$!
+trap "kill $PID 2>/dev/null; rm -f /tmp/koh.$$" EXIT
+
+while kill -0 $PID 2>/dev/null; do
+    if grep -q "Error: No messages returned" /tmp/koh.$$ 2>/dev/null; then
+        kill $PID 2>/dev/null
+        cat /tmp/koh.$$
+        exit 1
+    fi
+    sleep 0.2
+done
+
+wait $PID
+CODE=$?
+cat /tmp/koh.$$
+exit $CODE
