@@ -20,7 +20,8 @@
             [voice-code.views.resources :refer [resources-view]]
             [voice-code.views.recipes :refer [recipes-view]]
             [voice-code.views.debug-logs :refer [debug-logs-view]]
-            [voice-code.views.new-session :refer [new-session-view]]))
+            [voice-code.views.new-session :refer [new-session-view]]
+            [voice-code.qr-scanner :refer [qr-scanner-view]]))
 
 (defn- reactify-with-name
   "Create a React component from a Reagent component with proper name.
@@ -178,7 +179,16 @@
            [:> (.-Screen Stack)
             {:name "DebugLogs"
              :component (reactify-with-name debug-logs-view "DebugLogsView")
-             :options #js {:title "Debug Logs"}}]]])))])
+             :options #js {:title "Debug Logs"}}]
+
+           ;; QR Scanner (for API key authentication)
+           ;; Presented as fullScreenCover modal to match iOS QRScannerView presentation
+           [:> (.-Screen Stack)
+            {:name "QRScanner"
+             :component (reactify-with-name qr-scanner-view "QRScannerView")
+             :options #js {:title "Scan QR Code"
+                           :presentation "fullScreenModal"
+                           :headerShown false}}]]])))])
 
 (defn navigate!
   "Navigate to a screen programmatically. Useful for REPL testing.
@@ -188,6 +198,19 @@
   ([screen-name params]
    (when (.isReady nav-ref)
      (.navigate nav-ref screen-name (clj->js params)))))
+
+(defn go-back!
+  "Navigate back programmatically. Returns true if navigation occurred."
+  []
+  (when (and (.isReady nav-ref) (.canGoBack nav-ref))
+    (.goBack nav-ref)
+    true))
+
+;; Re-frame effect handlers for navigation
+(rf/reg-fx
+ :nav/go-back
+ (fn [_]
+   (go-back!)))
 
 (defn app-root
   "Main app component with navigation."

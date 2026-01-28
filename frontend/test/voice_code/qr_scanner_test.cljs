@@ -87,12 +87,18 @@
  :qr/code-scanned
  (fn [{:keys [db]} [_ qr-value]]
    (if-let [api-key (parse-qr-code qr-value)]
-     ;; Valid QR code - stop scanning and connect with the API key
+     ;; Valid QR code - stop scanning, navigate back, and connect with the API key
      ;; Server URL and port are already configured in settings
      {:db (assoc-in db [:qr :scanning?] false)
-      :dispatch [:auth/connect api-key]}
+      :dispatch [:auth/connect api-key]
+      :nav/go-back true}
      ;; Invalid QR code
      {:db (assoc-in db [:qr :error] "Invalid QR code. Expected API key starting with 'untethered-'.")})))
+
+;; Mock nav/go-back effect handler for tests (no-op since we can't navigate in tests)
+(rf/reg-fx
+ :nav/go-back
+ (fn [_] nil))
 
 (rf/reg-sub
  :qr/scanning?

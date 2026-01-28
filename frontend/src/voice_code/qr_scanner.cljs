@@ -64,13 +64,15 @@
  :qr/code-scanned
  (fn [{:keys [db]} [_ qr-value]]
    (if-let [api-key (parse-qr-code qr-value)]
-     ;; Valid QR code - stop scanning and connect with the API key
+     ;; Valid QR code - stop scanning, navigate back, and connect with the API key
      ;; Server URL and port are already configured in settings
      ;; Haptic feedback matches iOS QRScannerView.swift:386-387
+     ;; Navigate back immediately like iOS dismisses the sheet on success
      (do
        (haptic/success!)
        {:db (assoc-in db [:qr :scanning?] false)
-        :dispatch [:auth/connect api-key]})
+        :dispatch [:auth/connect api-key]
+        :nav/go-back true})
      ;; Invalid QR code - error haptic matches iOS QRScannerView.swift:394-396
      (do
        (haptic/error!)
@@ -189,9 +191,10 @@
         :isActive true
         :codeScanner code-scanner}])))
 
-(defn- scanner-overlay
-  "Overlay with scan frame and cancel button."
-  []
+(defn- scanner-overlay-with-nav
+  "Overlay with scan frame and cancel button.
+   go-back is a callback function that handles navigation back."
+  [{:keys [go-back]}]
   [:> rn/View {:style {:position "absolute"
                        :top 0
                        :left 0
@@ -238,11 +241,17 @@
               :border-radius 8
               :border-width 1
               :border-color "#FFFFFF"}
-      :on-press #(rf/dispatch [:qr/cancel-scan])}
+      :on-press go-back}
      [:> rn/Text {:style {:color "#FFFFFF"
                           :font-size 16
                           :font-weight "600"}}
       "Cancel"]]]])
+
+(defn- scanner-overlay
+  "Overlay with scan frame and cancel button.
+   This version dispatches :qr/cancel-scan event only."
+  []
+  [scanner-overlay-with-nav {:go-back #(rf/dispatch [:qr/cancel-scan])}])
 
 (defn- error-banner
   "Shows error message when QR code is invalid."
@@ -270,32 +279,40 @@
          "×"]]])))
 
 (defn qr-scanner-view
-  "Full-screen QR scanner view.
+  "Full-screen QR scanner view as a navigation screen.
    Shows camera with scanning overlay when QR scanning is active.
    Overlay only renders when camera has permission and device is available,
-   preventing overlay from blocking permission request UI."
-  []
-  (if (and use-real-camera? Camera)
-    [:> rn/View {:style {:flex 1 :background-color "#000000"}}
-     [:f> scanner-camera]
-     ;; Only show overlay when camera is ready (has permission + device)
-     ;; This prevents the overlay from blocking the "Grant Permission" button
-     (when @camera-ready?
-       [scanner-overlay])
-     [error-banner]]
-    ;; Stub for non-camera environments (tests, etc.)
-    [:> rn/View {:style {:flex 1
-                         :justify-content "center"
-                         :align-items "center"
-                         :background-color "#F5F5F5"}}
-     [:> rn/Text {:style {:font-size 18 :color "#666"}}
-      "Camera not available"]
-     [:> rn/TouchableOpacity
-      {:style {:margin-top 24
-               :padding-horizontal 24
-               :padding-vertical 12
-               :background-color "#007AFF"
-               :border-radius 8}
-       :on-press #(rf/dispatch [:qr/cancel-scan])}
-      [:> rn/Text {:style {:color "#FFFFFF" :font-size 16}}
-       "Cancel"]]]))
+   preventing overlay from blocking permission request UI.
+
+   When used as a navigation screen (with props from React Navigation),
+   the cancel button will navigate back. Success is handled by the
+   :qr/code-scanned event which calls :auth/connect."
+  [^js props]
+  (let [navigation (when props (.-navigation props))
+        go-back! (fn []
+                   (when (and navigation (.canGoBack navigation))
+                     (.goBack navigation)))]
+    (if (and use-real-camera? Camera)
+      [:> rn/View {:style {:flex 1 :background-color "#000000"}}
+       [:f> scanner-camera]
+       ;; Only show overlay when camera is ready (has permission + device)
+       ;; This prevents the overlay from blocking the "Grant Permission" button
+       (when @camera-ready?
+         [scanner-overlay-with-nav {:go-back go-back!}])
+       [error-banner]]
+      ;; Stub for non-camera environments (tests, etc.)
+      [:> rn/View {:style {:flex 1
+                           :justify-content "center"
+                           :align-items "center"
+                           :background-color "#F5F5F5"}}
+       [:> rn/Text {:style {:font-size 18 :color "#666"}}
+        "Camera not available"]
+       [:> rn/TouchableOpacity
+        {:style {:margin-top 24
+                 :padding-horizontal 24
+                 :padding-vertical 12
+                 :background-color "#007AFF"
+                 :border-radius 8}
+         :on-press go-back!}
+        [:> rn/Text {:style {:color "#FFFFFF" :font-size 16}}
+         "Cancel"]]])))
