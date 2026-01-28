@@ -18,6 +18,16 @@
 (use-fixtures :each
   {:before (fn []
              (rf/clear-subscription-cache!)
+             ;; Register no-op effect stubs for effects triggered by events
+             ;; This prevents errors when events dispatch to other events
+             ;; that trigger effects like :ws/send
+             (rf/reg-fx :ws/send (fn [_] nil))
+             (rf/reg-fx :ws/start-ping-timer (fn [_] nil))
+             (rf/reg-fx :ws/stop-ping-timer (fn [_] nil))
+             (rf/reg-fx :notifications/post-response (fn [_] nil))
+             (rf/reg-fx :debounce/schedule (fn [_] nil))
+             (rf/reg-fx :timeout/schedule (fn [_] nil))
+             (rf/reg-fx :timeout/cancel (fn [_] nil))
              (rf/dispatch-sync [:initialize-db]))})
 
 ;; ============================================================================

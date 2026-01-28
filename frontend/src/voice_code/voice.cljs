@@ -30,6 +30,7 @@
 (def remove-code-blocks utils/remove-code-blocks)
 (def get-premium-voices utils/get-premium-voices)
 (def resolve-voice-identifier utils/resolve-voice-identifier)
+(def stable-hash utils/stable-hash)
 
 ;; ============================================================================
 ;; Re-exports from recognition (for backwards compatibility)

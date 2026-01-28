@@ -46,7 +46,7 @@
 ;; Voice Selection
 ;; ============================================================================
 
-(defn- stable-hash
+(defn stable-hash
   "Compute a stable hash for a string that remains consistent across app launches.
    Returns a non-negative integer hash value."
   [s]
