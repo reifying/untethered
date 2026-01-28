@@ -22,4 +22,34 @@
    :output-to "out/test.js"
    :ns-regexp "-test$"
    :autorun true
-   :compiler-options {:infer-externs :auto}}}}
+   :compiler-options {:infer-externs :auto}
+   :js-options {:resolve {"react-native" {:target :file
+                                           :file "test/stubs/react-native.js"}
+                          "react-native-haptic-feedback" {:target :file
+                                                          :file "test/stubs/react-native-haptic-feedback.js"}
+                          "react-native-keychain" {:target :file
+                                                   :file "test/stubs/react-native-keychain.js"}
+                          "react-native-sqlite-storage" {:target :file
+                                                         :file "test/stubs/react-native-sqlite-storage.js"}
+                          "react-native-tts" {:target :file
+                                              :file "test/stubs/react-native-tts.js"}
+                          "@react-native-voice/voice" {:target :file
+                                                       :file "test/stubs/react-native-voice.js"}
+                          "@notifee/react-native" {:target :file
+                                                   :file "test/stubs/notifee.js"}
+                          "react-native-vision-camera" {:target :file
+                                                        :file "test/stubs/react-native-vision-camera.js"}
+                          "@react-native-clipboard/clipboard" {:target :file
+                                                               :file "test/stubs/clipboard.js"}
+                          "react-native-document-picker" {:target :file
+                                                          :file "test/stubs/document-picker.js"}
+                          "react-native-fs" {:target :file
+                                             :file "test/stubs/react-native-fs.js"}
+                          "@react-navigation/native" {:target :file
+                                                      :file "test/stubs/react-navigation-native.js"}
+                          "@react-navigation/native-stack" {:target :file
+                                                            :file "test/stubs/react-navigation-native-stack.js"}
+                          "react-native-safe-area-context" {:target :file
+                                                            :file "test/stubs/safe-area-context.js"}
+                          "react-native-screens" {:target :file
+                                                  :file "test/stubs/react-native-screens.js"}}}}}}
