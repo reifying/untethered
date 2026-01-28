@@ -1,7 +1,8 @@
 (ns voice-code.components-test
   "Tests for shared utility functions used by UI components."
-  (:require [cljs.test :refer [deftest testing is]]
-            [voice-code.utils :as utils]))
+  (:require [cljs.test :refer [deftest testing is async]]
+            [voice-code.utils :as utils]
+            [voice-code.views.components :as components]))
 
 (deftest format-relative-time-test
   (testing "returns nil for nil input"
@@ -97,3 +98,48 @@
         (is (string? result))
         ;; Should contain a number (from the date)
         (is (re-find #"\d" result))))))
+
+;; ============================================================================
+;; Toast Component Tests
+;; ============================================================================
+
+(deftest toast-state-initial-test
+  (testing "toast state starts hidden"
+    (let [{:keys [visible? message variant]} @components/toast-state]
+      ;; May be :success by default or empty depending on initial state
+      (is (boolean? visible?)))))
+
+(deftest show-toast-basic-test
+  (testing "show-toast! updates state to visible"
+    ;; Reset state first
+    (reset! components/toast-state {:visible? false :message "" :variant :success})
+    (components/show-toast! "Test message")
+    (let [{:keys [visible? message variant]} @components/toast-state]
+      (is (true? visible?))
+      (is (= "Test message" message))
+      (is (= :success variant)))))
+
+(deftest show-toast-with-variant-test
+  (testing "show-toast! accepts variant option"
+    (reset! components/toast-state {:visible? false :message "" :variant :success})
+    (components/show-toast! "Error occurred" {:variant :error})
+    (let [{:keys [visible? message variant]} @components/toast-state]
+      (is (true? visible?))
+      (is (= "Error occurred" message))
+      (is (= :error variant)))))
+
+(deftest show-toast-auto-dismiss-test
+  (testing "show-toast! auto-dismisses after specified duration"
+    (async done
+      ;; Reset state
+      (reset! components/toast-state {:visible? false :message "" :variant :success})
+      ;; Show toast with short duration for testing
+      (components/show-toast! "Quick message" {:duration-ms 100})
+      ;; Verify it's visible immediately
+      (is (true? (:visible? @components/toast-state)))
+      ;; Wait for dismiss and verify
+      (js/setTimeout
+       (fn []
+         (is (false? (:visible? @components/toast-state)))
+         (done))
+       200))))

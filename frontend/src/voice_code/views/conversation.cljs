@@ -3,63 +3,18 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [Modal]]
-            ["@react-native-clipboard/clipboard" :as Clipboard]
+            [voice-code.views.components :as components :refer [copy-to-clipboard! toast-overlay show-toast!]]
             [voice-code.voice :as voice]
-            [voice-code.haptic :as haptic]
             [voice-code.utils :as utils]
             [voice-code.performance :as perf]
             [voice-code.theme :as theme]))
 
-;; ============================================================================
-;; Copy Confirmation Toast
-;; ============================================================================
-
-(defonce ^:private copy-toast-state (r/atom {:visible? false :message ""}))
-
-(defn- show-copy-toast!
-  "Show a temporary toast notification for copy confirmation."
-  [message]
-  (reset! copy-toast-state {:visible? true :message message})
-  (js/setTimeout
-   #(swap! copy-toast-state assoc :visible? false)
-   1500))
-
-(defn- copy-to-clipboard!
-  "Copy text to clipboard and show confirmation with haptic feedback."
-  [text message]
-  (let [clipboard (or (.-default Clipboard) Clipboard)]
-    (.setString clipboard text)
-    (haptic/success!)
-    (show-copy-toast! message)))
-
-(defn- copy-confirmation-toast
-  "Toast notification shown when text is copied."
-  []
-  (let [{:keys [visible? message]} @copy-toast-state]
-    (when visible?
-      [:> rn/View {:style {:position "absolute"
-                           :top 60
-                           :left 0
-                           :right 0
-                           :align-items "center"
-                           :z-index 1000
-                           :pointer-events "none"}}
-       [:> rn/View {:style {:background-color "rgba(52, 199, 89, 0.95)"
-                            :padding-horizontal 16
-                            :padding-vertical 10
-                            :border-radius 8
-                            :shadow-color "#000"
-                            :shadow-offset {:width 0 :height 2}
-                            :shadow-opacity 0.25
-                            :shadow-radius 4
-                            :elevation 5}}
-        [:> rn/Text {:style {:font-size 14
-                             :color "#FFFFFF"
-                             :font-weight "500"}}
-         message]]])))
+;; Note: Toast components (copy-to-clipboard!, show-toast!, toast-overlay) are now
+;; imported from voice-code.views.components for consistency across views.
 
 (defn- compaction-success-toast
-  "Toast notification shown when session is compacted."
+  "Toast notification shown when session is compacted.
+   This uses a subscription-based approach for compaction feedback."
   []
   (let [message @(rf/subscribe [:ui/compaction-success])]
     (when message
@@ -1318,7 +1273,7 @@
                 :keyboard-vertical-offset 90}
 
                ;; Toast notifications (float above content)
-               [copy-confirmation-toast]
+               [toast-overlay]
                [compaction-success-toast]
 
                ;; Error banner at top (dismissable, copyable)

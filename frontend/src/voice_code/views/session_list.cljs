@@ -4,8 +4,7 @@
             [re-frame.core :as rf]
             [clojure.string :as str]
             ["react-native" :as rn :refer [Alert RefreshControl Modal Switch Animated PanResponder]]
-            ["@react-native-clipboard/clipboard" :as Clipboard]
-            [voice-code.views.components :refer [relative-time-text]]
+            [voice-code.views.components :as components :refer [relative-time-text copy-to-clipboard! toast-overlay]]
             [voice-code.haptic :as haptic]
             [voice-code.theme :as theme]))
 
@@ -32,12 +31,7 @@
       (:backend-name session)
       (str "Session " (subs (str (:id session)) 0 8))))
 
-(defn- copy-to-clipboard!
-  "Copy text to clipboard with haptic feedback."
-  [text]
-  (let [clipboard (or (.-default Clipboard) Clipboard)]
-    (.setString clipboard text)
-    (haptic/success!)))
+;; Note: copy-to-clipboard! is now imported from voice-code.views.components
 
 (defn- unread-badge
   "Badge showing unread message count.
@@ -85,11 +79,9 @@
                                session-display-name
                                "Session actions"
                                (clj->js [{:text "Copy Session ID"
-                                          :onPress #(do (copy-to-clipboard! session-id)
-                                                        (.alert Alert "Copied" "Session ID copied to clipboard"))}
+                                          :onPress #(copy-to-clipboard! session-id "Session ID copied")}
                                          {:text "Copy Directory Path"
-                                          :onPress #(do (copy-to-clipboard! working-directory)
-                                                        (.alert Alert "Copied" "Directory path copied to clipboard"))}
+                                          :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
                                          {:text "Delete"
                                           :style "destructive"
                                           :onPress on-delete}
@@ -489,10 +481,12 @@
       label]]))
 
 (defn- session-toolbar
-  "Toolbar with action buttons for Commands, History, Resources, Recipes, and Stop Speech.
+  "Toolbar with action buttons for Commands, History, Resources, Recipes, Refresh, New, and Settings.
    Commands shows badge with available command count.
    History shows green indicator when commands are running.
    Stop Speech shows only when TTS is actively speaking.
+   Refresh requests session list from backend (iOS parity: arrow.clockwise button).
+   Settings navigates to Settings screen (iOS parity: gear button).
    colors: theme colors map (required prop to avoid hook violation)"
   [{:keys [navigation directory on-new-session colors]}]
   (let [running-commands @(rf/subscribe [:commands/running-any?])
@@ -500,7 +494,8 @@
         command-count @(rf/subscribe [:commands/count-for-directory directory])
         pending-uploads @(rf/subscribe [:resources/pending-uploads])
         active-recipe @(rf/subscribe [:recipes/active-for-session nil])
-        speaking? @(rf/subscribe [:voice/speaking?])]
+        speaking? @(rf/subscribe [:voice/speaking?])
+        refreshing? @(rf/subscribe [:ui/refreshing?])]
     [:> rn/View {:style {:flex-direction "row"
                          :background-color (:card-background colors)
                          :border-bottom-width 1
@@ -554,12 +549,26 @@
        :on-press #(when navigation
                     (.navigate navigation "Recipes"
                                #js {:workingDirectory directory}))}]
+     ;; Refresh button - requests session list from backend (iOS parity)
+     [toolbar-button
+      {:icon "🔄"
+       :label "Refresh"
+       :active? refreshing?
+       :colors colors
+       :on-press #(rf/dispatch [:sessions/refresh])}]
      ;; New Session button - opens modal for session creation
      [toolbar-button
       {:icon "+"
        :label "New"
        :colors colors
-       :on-press on-new-session}]]))
+       :on-press on-new-session}]
+     ;; Settings button - navigates to Settings screen (iOS parity)
+     [toolbar-button
+      {:icon "⚙️"
+       :label "Settings"
+       :colors colors
+       :on-press #(when navigation
+                    (.navigate navigation "Settings"))}]]))
 
 (defn session-list-view
   "Main session list screen for a directory.
@@ -596,6 +605,9 @@
                  locked-sessions @(rf/subscribe [:locked-sessions])
                  refreshing? @(rf/subscribe [:ui/refreshing?])]
              [:> rn/View {:style {:flex 1 :background-color (:grouped-background colors)}}
+              ;; Toast overlay for copy confirmations (iOS parity: non-blocking auto-dismiss)
+              [toast-overlay]
+
               ;; Toolbar at top
               [session-toolbar {:navigation navigation
                                 :directory directory
