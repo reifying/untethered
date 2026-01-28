@@ -40,21 +40,21 @@
     (haptic/success!)))
 
 (defn- unread-badge
-  "Badge showing unread message count."
-  [count]
-  (let [colors (theme/use-theme-colors)]
-    (when (and count (pos? count))
-      [:> rn/View {:style {:min-width 20
-                           :height 20
-                           :border-radius 10
-                           :background-color (:accent colors)
-                           :justify-content "center"
-                           :align-items "center"
-                           :padding-horizontal 6}}
-       [:> rn/Text {:style {:color "#FFF"
-                            :font-size 12
-                            :font-weight "600"}}
-        (if (> count 99) "99+" (str count))]])))
+  "Badge showing unread message count.
+   colors: theme colors map (required prop to avoid hook violation)"
+  [count colors]
+  (when (and count (pos? count))
+    [:> rn/View {:style {:min-width 20
+                         :height 20
+                         :border-radius 10
+                         :background-color (:accent colors)
+                         :justify-content "center"
+                         :align-items "center"
+                         :padding-horizontal 6}}
+     [:> rn/Text {:style {:color "#FFF"
+                          :font-size 12
+                          :font-weight "600"}}
+      (if (> count 99) "99+" (str count))]]))
 
 (def ^:private swipe-threshold
   "Minimum swipe distance to trigger delete action."
@@ -66,10 +66,10 @@
 
 (defn- session-item
   "Single session item in the list.
-   Long-press shows context menu with copy and delete options."
-  [{:keys [session locked? on-press on-delete]}]
-  (let [colors (theme/use-theme-colors)
-        unread-count (get session :unread-count 0)
+   Long-press shows context menu with copy and delete options.
+   colors: theme colors map (required prop to avoid hook violation)"
+  [{:keys [session locked? on-press on-delete colors]}]
+  (let [unread-count (get session :unread-count 0)
         session-display-name (session-name session)
         session-id (str (:id session))
         working-directory (:working-directory session)]
@@ -115,7 +115,7 @@
                              :color (:text-primary colors)
                              :flex 1}}
          session-display-name]
-        [unread-badge unread-count]
+        [unread-badge unread-count colors]
         ;; Timestamp - auto-updating
         [relative-time-text {:timestamp (:last-modified session)
                              :short? true
@@ -152,9 +152,10 @@
   "Session item with swipe-to-delete functionality.
    Swipe left to reveal delete button, or swipe far left to delete immediately.
    Uses React Native's Animated and PanResponder for gesture handling.
-   Includes haptic feedback on swipe reveal and delete confirmation."
-  [{:keys [session locked? on-press on-delete]}]
-  (let [colors (theme/use-theme-colors)
+   Includes haptic feedback on swipe reveal and delete confirmation.
+   colors: theme colors map (required prop to avoid hook violation)"
+  [{:keys [session locked? on-press on-delete colors]}]
+  (let [;; Note: colors is now passed as prop, not obtained from hook
         ;; Animated value for horizontal translation
         translate-x (Animated.Value. 0)
         ;; Track if item is open (showing delete button)
@@ -257,9 +258,9 @@
                                                                              :duration 200
                                                                              :useNativeDriver true})
                                                        on-delete))}])))]
-    (fn [{:keys [session locked? on-press on-delete]}]
-      (let [colors (theme/use-theme-colors)]
-        [:> rn/View {:style {:overflow "hidden"}}
+    (fn [{:keys [session locked? on-press on-delete colors]}]
+      ;; Note: colors passed as prop from parent, not obtained from hook
+      [:> rn/View {:style {:overflow "hidden"}}
          ;; Delete button background (revealed on swipe)
          [:> rn/View {:style {:position "absolute"
                               :right 0
@@ -288,38 +289,40 @@
            (js->clj (.-panHandlers pan-responder)))
           [session-item {:session session
                          :locked? locked?
+                         :colors colors
                          :on-press (fn []
                                      (if @is-open
                                        (close-swipe)
                                        (on-press)))
-                         :on-delete on-delete}]]]))))
+                         :on-delete on-delete}]]])))
 
 (defn- empty-state
-  "Shown when there are no sessions for this directory."
-  []
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/View {:style {:flex 1
-                         :justify-content "center"
-                         :align-items "center"
-                         :padding 40}}
-     [:> rn/Text {:style {:font-size 18
-                          :font-weight "600"
-                          :color (:text-primary colors)
-                          :margin-bottom 8}}
-      "No Sessions"]
-     [:> rn/Text {:style {:font-size 14
-                          :color (:text-secondary colors)
-                          :text-align "center"}}
-      "Start a new conversation from Claude Code to create a session."]]))
+  "Shown when there are no sessions for this directory.
+   colors: theme colors map (required prop to avoid hook violation)"
+  [colors]
+  [:> rn/View {:style {:flex 1
+                       :justify-content "center"
+                       :align-items "center"
+                       :padding 40}}
+   [:> rn/Text {:style {:font-size 18
+                        :font-weight "600"
+                        :color (:text-primary colors)
+                        :margin-bottom 8}}
+    "No Sessions"]
+   [:> rn/Text {:style {:font-size 14
+                        :color (:text-secondary colors)
+                        :text-align "center"}}
+    "Start a new conversation from Claude Code to create a session."]])
 
 (defn- new-session-modal
-  "Modal for creating a new session with optional worktree support."
-  [{:keys [visible? on-close on-create directory]}]
+  "Modal for creating a new session with optional worktree support.
+   colors: theme colors map (required prop to avoid hook violation)"
+  [{:keys [visible? on-close on-create directory colors]}]
   (let [session-name-atom (r/atom "")
         create-worktree? (r/atom false)]
-    (fn [{:keys [visible? on-close on-create directory]}]
-      (let [colors (theme/use-theme-colors)]
-        [:> Modal
+    (fn [{:keys [visible? on-close on-create directory colors]}]
+      ;; Note: colors passed as prop from parent, not obtained from hook
+      [:> Modal
          {:visible visible?
           :animation-type "slide"
           :presentation-style "pageSheet"
@@ -439,16 +442,16 @@
                                   :border-radius 8}}
               [:> rn/Text {:style {:font-size 14
                                    :color (:warning colors)}}
-               "Session name is required when creating a git worktree."]])]]]))))
+               "Session name is required when creating a git worktree."]])]]])))
 
 (defn- toolbar-button
   "Single toolbar button with icon and label.
    active? shows highlighted background (green for running state, blue otherwise).
    badge-count shows red badge with count (or green if active).
-   active-color can be :green (for running commands) or :blue (default)."
-  [{:keys [icon label on-press active? badge-count active-color]}]
-  (let [colors (theme/use-theme-colors)
-        is-green? (= active-color :green)
+   active-color can be :green (for running commands) or :blue (default).
+   colors: theme colors map (required prop to avoid hook violation)"
+  [{:keys [icon label on-press active? badge-count active-color colors]}]
+  (let [is-green? (= active-color :green)
         active-bg (if is-green? (:success-background colors) (:accent-background colors))
         active-text (if is-green? (:success colors) (:accent colors))
         badge-bg (if active? (:success colors) (:destructive colors))]
@@ -489,10 +492,10 @@
   "Toolbar with action buttons for Commands, History, Resources, Recipes, and Stop Speech.
    Commands shows badge with available command count.
    History shows green indicator when commands are running.
-   Stop Speech shows only when TTS is actively speaking."
-  [{:keys [navigation directory on-new-session]}]
-  (let [colors (theme/use-theme-colors)
-        running-commands @(rf/subscribe [:commands/running-any?])
+   Stop Speech shows only when TTS is actively speaking.
+   colors: theme colors map (required prop to avoid hook violation)"
+  [{:keys [navigation directory on-new-session colors]}]
+  (let [running-commands @(rf/subscribe [:commands/running-any?])
         running-count @(rf/subscribe [:commands/running-count])
         command-count @(rf/subscribe [:commands/count-for-directory directory])
         pending-uploads @(rf/subscribe [:resources/pending-uploads])
@@ -511,12 +514,14 @@
          :label "Stop"
          :active? true
          :active-color :green
+         :colors colors
          :on-press #(rf/dispatch [:voice/stop-speaking])}])
      ;; Commands button - badge shows available command count
      [toolbar-button
       {:icon "⚡"
        :label "Commands"
        :badge-count command-count
+       :colors colors
        :on-press #(when navigation
                     (.navigate navigation "CommandMenu"
                                #js {:workingDirectory directory}))}]
@@ -527,6 +532,7 @@
        :active? running-commands
        :active-color :green
        :badge-count (when running-commands running-count)
+       :colors colors
        :on-press #(when navigation
                     (.navigate navigation "CommandHistory"
                                #js {:workingDirectory directory}))}]
@@ -535,6 +541,7 @@
       {:icon "📎"
        :label "Resources"
        :badge-count pending-uploads
+       :colors colors
        :on-press #(when navigation
                     (.navigate navigation "Resources"
                                #js {:workingDirectory directory}))}]
@@ -543,6 +550,7 @@
       {:icon "📋"
        :label "Recipes"
        :active? (some? active-recipe)
+       :colors colors
        :on-press #(when navigation
                     (.navigate navigation "Recipes"
                                #js {:workingDirectory directory}))}]
@@ -550,6 +558,7 @@
      [toolbar-button
       {:icon "+"
        :label "New"
+       :colors colors
        :on-press on-new-session}]]))
 
 (defn session-list-view
@@ -577,58 +586,65 @@
 
       :reagent-render
       (fn [_]
-        ;; Subscriptions MUST be inside :reagent-render for reactivity
-        (let [colors (theme/use-theme-colors)
-              sessions @(rf/subscribe [:sessions/for-directory directory])
-              locked-sessions @(rf/subscribe [:locked-sessions])
-              refreshing? @(rf/subscribe [:ui/refreshing?])]
-          [:> rn/View {:style {:flex 1 :background-color (:grouped-background colors)}}
-           ;; Toolbar at top
-           [session-toolbar {:navigation navigation
-                             :directory directory
-                             :on-new-session #(reset! show-new-session-modal? true)}]
+        ;; Wrap in [:f> ...] to enable React hooks for theme colors.
+        ;; Form-3 create-class reagent-render cannot use hooks directly.
+        [:f>
+         (fn []
+           ;; Subscriptions and hooks inside functional component context
+           (let [colors (theme/use-theme-colors)
+                 sessions @(rf/subscribe [:sessions/for-directory directory])
+                 locked-sessions @(rf/subscribe [:locked-sessions])
+                 refreshing? @(rf/subscribe [:ui/refreshing?])]
+             [:> rn/View {:style {:flex 1 :background-color (:grouped-background colors)}}
+              ;; Toolbar at top
+              [session-toolbar {:navigation navigation
+                                :directory directory
+                                :colors colors
+                                :on-new-session #(reset! show-new-session-modal? true)}]
 
-           ;; Session list content
-           (if (empty? sessions)
-             [empty-state]
-             [:> rn/FlatList
-              {:data (clj->js sessions)
-               :key-extractor (fn [item idx]
-                                (or (.-id item) (str "session-" idx)))
-               :refresh-control
-               (r/as-element
-                [:> RefreshControl
-                 {:refreshing (boolean refreshing?)
-                  :on-refresh #(rf/dispatch [:sessions/refresh])
-                  :tint-color (:accent colors)
-                  :colors #js [(:accent colors)]}])
-               :render-item
-               (fn [^js obj]
-                 (let [item (.-item obj)
-                       session-data (js->clj item :keywordize-keys true)
-                       session-id (:id session-data)]
-                   (r/as-element
-                    [swipeable-session-item
-                     {:session session-data
-                      :locked? (contains? locked-sessions session-id)
-                      :on-press #(when navigation
-                                   (.navigate navigation "Conversation"
-                                              #js {:sessionId session-id
-                                                   :sessionName (session-name session-data)}))
-                      :on-delete #(rf/dispatch [:sessions/delete session-id])}])))
-               :content-container-style {:padding-vertical 8}}])
+              ;; Session list content
+              (if (empty? sessions)
+                [empty-state colors]
+                [:> rn/FlatList
+                 {:data (clj->js sessions)
+                  :key-extractor (fn [item idx]
+                                   (or (.-id item) (str "session-" idx)))
+                  :refresh-control
+                  (r/as-element
+                   [:> RefreshControl
+                    {:refreshing (boolean refreshing?)
+                     :on-refresh #(rf/dispatch [:sessions/refresh])
+                     :tint-color (:accent colors)
+                     :colors #js [(:accent colors)]}])
+                  :render-item
+                  (fn [^js obj]
+                    (let [item (.-item obj)
+                          session-data (js->clj item :keywordize-keys true)
+                          session-id (:id session-data)]
+                      (r/as-element
+                       [swipeable-session-item
+                        {:session session-data
+                         :locked? (contains? locked-sessions session-id)
+                         :colors colors
+                         :on-press #(when navigation
+                                      (.navigate navigation "Conversation"
+                                                 #js {:sessionId session-id
+                                                      :sessionName (session-name session-data)}))
+                         :on-delete #(rf/dispatch [:sessions/delete session-id])}])))
+                  :content-container-style {:padding-vertical 8}}])
 
-           ;; New Session Modal
-           [new-session-modal
-            {:visible? @show-new-session-modal?
-             :directory directory
-             :on-close #(reset! show-new-session-modal? false)
-             :on-create (fn [{:keys [name create-worktree?]}]
-                          (reset! show-new-session-modal? false)
-                          (if create-worktree?
-                            (rf/dispatch [:worktree/create
-                                          {:session-name name
-                                           :parent-directory directory}])
-                            (rf/dispatch [:sessions/create
-                                          {:working-directory directory
-                                           :name name}])))}]]))})))
+              ;; New Session Modal
+              [new-session-modal
+               {:visible? @show-new-session-modal?
+                :directory directory
+                :colors colors
+                :on-close #(reset! show-new-session-modal? false)
+                :on-create (fn [{:keys [name create-worktree?]}]
+                             (reset! show-new-session-modal? false)
+                             (if create-worktree?
+                               (rf/dispatch [:worktree/create
+                                             {:session-name name
+                                              :parent-directory directory}])
+                               (rf/dispatch [:sessions/create
+                                             {:working-directory directory
+                                              :name name}])))}]]))])})))
