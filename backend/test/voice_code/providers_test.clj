@@ -579,15 +579,47 @@ another_key: another value
 ;; ============================================================================
 
 (deftest test-invoke-provider-async-copilot
-  (testing "returns not-implemented error for Copilot"
-    (let [result-promise (promise)
-          callback-fn (fn [result] (deliver result-promise result))]
-      (providers/invoke-provider-async :copilot "test prompt" callback-fn)
-      (let [result (deref result-promise 1000 :timeout)]
-        (is (not= :timeout result))
-        (is (false? (:success result)))
-        (is (clojure.string/includes? (:error result) "Copilot CLI invocation not yet implemented"))
-        (is (= :copilot (:provider result)))))))
+  (testing "delegates to invoke-copilot-async"
+    (let [invoke-called (atom false)
+          received-args (atom nil)]
+      (with-redefs [providers/invoke-copilot-async
+                    (fn [prompt callback-fn & {:keys [resume-session-id working-directory
+                                                      timeout-ms model]}]
+                      (reset! invoke-called true)
+                      (reset! received-args {:prompt prompt
+                                             :resume-session-id resume-session-id
+                                             :working-directory working-directory
+                                             :timeout-ms timeout-ms
+                                             :model model})
+                      (callback-fn {:success true :result "mock response" :provider :copilot}))]
+        (let [result-promise (promise)
+              callback-fn (fn [result] (deliver result-promise result))]
+          (providers/invoke-provider-async :copilot "test prompt" callback-fn
+                                           :resume-session-id "session-123"
+                                           :working-directory "/test/dir"
+                                           :model "gpt-5")
+          (let [result (deref result-promise 1000 :timeout)]
+            (is (not= :timeout result))
+            (is @invoke-called)
+            (is (:success result))
+            (is (= "test prompt" (:prompt @received-args)))
+            (is (= "session-123" (:resume-session-id @received-args)))
+            (is (= "/test/dir" (:working-directory @received-args)))
+            (is (= "gpt-5" (:model @received-args))))))))
+
+  (testing "ignores Claude-specific options (new-session-id, system-prompt)"
+    ;; Copilot doesn't support these, they should not cause errors
+    (with-redefs [providers/invoke-copilot-async
+                  (fn [prompt callback-fn & opts]
+                    (callback-fn {:success true :result "ok" :provider :copilot}))]
+      (let [result-promise (promise)
+            callback-fn (fn [result] (deliver result-promise result))]
+        (providers/invoke-provider-async :copilot "test" callback-fn
+                                         :new-session-id "ignored"
+                                         :system-prompt "also ignored")
+        (let [result (deref result-promise 1000 :timeout)]
+          (is (not= :timeout result))
+          (is (:success result)))))))
 
 (deftest test-invoke-provider-async-cursor
   (testing "returns not-implemented error for Cursor"
@@ -637,3 +669,196 @@ another_key: another value
             (is (not= :timeout result))
             (is @invoke-called)
             (is (:success result))))))))
+
+;; ============================================================================
+;; Copilot CLI Invocation Tests
+;; ============================================================================
+
+(deftest test-invoke-copilot-cli-not-installed
+  (testing "throws when Copilot CLI not installed"
+    (with-redefs [providers/provider-installed? (constantly false)]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"copilot CLI not installed"
+                            (providers/invoke-copilot "test prompt"))))))
+
+(deftest test-invoke-copilot-success-with-mock
+  (testing "returns success response when CLI succeeds"
+    (let [mock-output "Here is the solution to your problem:\n\n```clojure\n(defn hello [] \"world\")\n```"
+          run-process-var (var providers/run-copilot-process)
+          find-newest-var (var providers/find-newest-copilot-session)]
+      (with-redefs-fn {#'providers/provider-installed? (constantly true)
+                       run-process-var (fn [_args _dir _timeout _session-id]
+                                         {:exit 0
+                                          :out mock-output
+                                          :err ""})
+                       find-newest-var (fn [_] "mock-session-12345678-1234-1234-1234-123456789012")}
+        (fn []
+          (let [result (providers/invoke-copilot "help me write code")]
+            (is (:success result))
+            (is (= mock-output (:result result)))
+            (is (= "mock-session-12345678-1234-1234-1234-123456789012" (:session-id result)))
+            (is (= :copilot (:provider result)))))))))
+
+(deftest test-invoke-copilot-resume-session
+  (testing "passes resume-session-id to CLI process"
+    (let [captured-args (atom nil)]
+      (with-redefs-fn {#'providers/provider-installed? (constantly true)
+                       #'providers/run-copilot-process (fn [args _dir _timeout session-id]
+                                                         (reset! captured-args {:args args :session-id session-id})
+                                                         {:exit 0 :out "Response" :err ""})}
+        (fn []
+          (let [result (providers/invoke-copilot "continue working"
+                                                 :resume-session-id "existing-session-id")]
+            (is (:success result))
+            (is (= "existing-session-id" (:session-id result)))
+            (is (some #{"--resume"} (:args @captured-args)))
+            (is (some #{"existing-session-id"} (:args @captured-args)))
+            (is (= "existing-session-id" (:session-id @captured-args)))))))))
+
+(deftest test-invoke-copilot-with-model
+  (testing "passes model to CLI process"
+    (let [captured-args (atom nil)]
+      (with-redefs-fn {#'providers/provider-installed? (constantly true)
+                       #'providers/run-copilot-process (fn [args _dir _timeout _session-id]
+                                                         (reset! captured-args args)
+                                                         {:exit 0 :out "Done" :err ""})
+                       #'providers/find-newest-copilot-session (fn [_] "new-session")}
+        (fn []
+          (providers/invoke-copilot "test" :model "claude-sonnet-4")
+          (is (some #{"--model"} @captured-args))
+          (is (some #{"claude-sonnet-4"} @captured-args)))))))
+
+(deftest test-invoke-copilot-failure
+  (testing "returns error response when CLI fails"
+    (with-redefs-fn {#'providers/provider-installed? (constantly true)
+                     #'providers/run-copilot-process (fn [_args _dir _timeout _session-id]
+                                                       {:exit 1
+                                                        :out ""
+                                                        :err "Error: Authentication required"})}
+      (fn []
+        (let [result (providers/invoke-copilot "test prompt")]
+          (is (false? (:success result)))
+          (is (clojure.string/includes? (:error result) "exited with code 1"))
+          (is (= "Error: Authentication required" (:stderr result)))
+          (is (= 1 (:exit-code result)))
+          (is (= :copilot (:provider result))))))))
+
+(deftest test-invoke-copilot-async-success
+  (testing "calls callback with success response"
+    (with-redefs [providers/invoke-copilot (fn [prompt & opts]
+                                             {:success true
+                                              :result "Async response"
+                                              :session-id "async-session"
+                                              :provider :copilot})]
+      (let [result-promise (promise)
+            callback-fn (fn [result] (deliver result-promise result))]
+        (providers/invoke-copilot-async "test prompt" callback-fn)
+        (let [result (deref result-promise 5000 :timeout)]
+          (is (not= :timeout result))
+          (is (:success result))
+          (is (= "Async response" (:result result)))
+          (is (= "async-session" (:session-id result))))))))
+
+(deftest test-invoke-copilot-async-error
+  (testing "calls callback with error response"
+    (with-redefs [providers/invoke-copilot (fn [prompt & opts]
+                                             {:success false
+                                              :error "CLI failed"
+                                              :provider :copilot})]
+      (let [result-promise (promise)
+            callback-fn (fn [result] (deliver result-promise result))]
+        (providers/invoke-copilot-async "test prompt" callback-fn)
+        (let [result (deref result-promise 5000 :timeout)]
+          (is (not= :timeout result))
+          (is (false? (:success result)))
+          (is (= "CLI failed" (:error result))))))))
+
+(deftest test-invoke-copilot-async-exception
+  (testing "calls callback with error when exception occurs"
+    (with-redefs [providers/invoke-copilot (fn [prompt & opts]
+                                             (throw (Exception. "Unexpected error")))]
+      (let [result-promise (promise)
+            callback-fn (fn [result] (deliver result-promise result))]
+        (providers/invoke-copilot-async "test prompt" callback-fn)
+        (let [result (deref result-promise 5000 :timeout)]
+          (is (not= :timeout result))
+          (is (false? (:success result)))
+          (is (clojure.string/includes? (:error result) "Unexpected error"))
+          (is (= :copilot (:provider result))))))))
+
+(deftest test-kill-copilot-session
+  (testing "kills tracked process and removes from registry"
+    (let [mock-process (proxy [Process] []
+                         (destroyForcibly [] nil))
+          session-id "kill-test-session"]
+      ;; Add a mock process to the registry
+      (swap! providers/active-copilot-processes assoc session-id mock-process)
+
+      (is (true? (providers/kill-copilot-session session-id)))
+      (is (nil? (get @providers/active-copilot-processes session-id)))))
+
+  (testing "returns nil when session not found"
+    (is (nil? (providers/kill-copilot-session "nonexistent-session")))))
+
+(deftest test-find-newest-copilot-session
+  (testing "finds new session directory"
+    (let [sessions-dir (io/file *test-dir* "find-newest-test-1" ".copilot" "session-state")
+          existing-id "11111111-1111-1111-1111-111111111111"
+          new-id "22222222-2222-2222-2222-222222222222"
+          existing-dir (io/file sessions-dir existing-id)
+          new-dir (io/file sessions-dir new-id)
+          find-newest-fn @#'providers/find-newest-copilot-session]
+
+      (.mkdirs existing-dir)
+      (.mkdirs new-dir)
+
+      ;; Set modification times - new-dir is more recent
+      (.setLastModified existing-dir (- (System/currentTimeMillis) 10000))
+      (.setLastModified new-dir (System/currentTimeMillis))
+
+      (with-redefs [providers/get-sessions-dir (fn [_] sessions-dir)]
+        (let [sessions-before #{existing-dir}
+              newest (find-newest-fn sessions-before)]
+          (is (= new-id newest))))))
+
+  (testing "returns nil when no new sessions"
+    ;; Use a separate directory to avoid interference from previous test
+    (let [sessions-dir (io/file *test-dir* "find-newest-test-2" ".copilot" "session-state")
+          existing-id "33333333-3333-3333-3333-333333333333"
+          existing-dir (io/file sessions-dir existing-id)
+          find-newest-fn @#'providers/find-newest-copilot-session]
+
+      (.mkdirs existing-dir)
+
+      (with-redefs [providers/get-sessions-dir (fn [_] sessions-dir)]
+        (let [sessions-before #{existing-dir}
+              newest (find-newest-fn sessions-before)]
+          (is (nil? newest)))))))
+
+(deftest test-get-copilot-sessions-before
+  (testing "returns set of existing session directories"
+    (let [sessions-dir (io/file *test-dir* ".copilot" "session-state")
+          session1-dir (io/file sessions-dir "44444444-4444-4444-4444-444444444444")
+          session2-dir (io/file sessions-dir "55555555-5555-5555-5555-555555555555")
+          non-uuid-dir (io/file sessions-dir "not-a-uuid")
+          get-sessions-before-fn @#'providers/get-copilot-sessions-before]
+
+      (.mkdirs session1-dir)
+      (.mkdirs session2-dir)
+      (.mkdirs non-uuid-dir)
+
+      (with-redefs [providers/get-sessions-dir (fn [_] sessions-dir)]
+        (let [result (get-sessions-before-fn)]
+          (is (set? result))
+          (is (= 2 (count result)))
+          (is (contains? result session1-dir))
+          (is (contains? result session2-dir))
+          (is (not (contains? result non-uuid-dir)))))))
+
+  (testing "returns empty set when directory doesn't exist"
+    (let [nonexistent-dir (io/file *test-dir* "does-not-exist")
+          get-sessions-before-fn @#'providers/get-copilot-sessions-before]
+      (with-redefs [providers/get-sessions-dir (fn [_] nonexistent-dir)]
+        (let [result (get-sessions-before-fn)]
+          (is (set? result))
+          (is (empty? result)))))))

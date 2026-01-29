@@ -5,12 +5,16 @@
    while keeping the common WebSocket protocol and session management unchanged.
    
    Phase 1: :claude implemented
-   Phase 2: :copilot implemented"
+   Phase 2: :copilot implemented
+   Phase 6: :copilot CLI invocation"
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as shell]
+            [clojure.java.process :as proc]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
-            [cheshire.core :as json]))
+            [clojure.core.async :as async]
+            [cheshire.core :as json])
+  (:import [java.lang ProcessBuilder$Redirect]))
 
 ;; ============================================================================
 ;; Provider Registry
@@ -409,23 +413,253 @@
                   {:provider provider
                    :known-providers known-providers})))
 
+;; ============================================================================
+;; Copilot CLI Invocation
+;; ============================================================================
+
+(defonce active-copilot-processes
+  ;; Atom tracking active Copilot CLI processes by session-id for kill support.
+  (atom {}))
+
+(defn kill-copilot-session
+  "Kill an active Copilot CLI process for a given session-id."
+  [session-id]
+  (when-let [process (get @active-copilot-processes session-id)]
+    (log/info "Killing Copilot process" {:session-id session-id})
+    (.destroyForcibly process)
+    (swap! active-copilot-processes dissoc session-id)
+    true))
+
+(defn- find-newest-copilot-session
+  "Find the most recently created Copilot session directory.
+   Used to discover session ID for new sessions since Copilot CLI
+   doesn't return session ID in output."
+  [sessions-before]
+  (let [sessions-dir (get-sessions-dir :copilot)]
+    (when (.exists sessions-dir)
+      (let [current-sessions (->> (.listFiles sessions-dir)
+                                  (filter #(.isDirectory %))
+                                  (filter #(valid-uuid? (.getName %)))
+                                  set)
+            new-sessions (clojure.set/difference current-sessions sessions-before)]
+        (when (seq new-sessions)
+          ;; Return the newest one by modification time
+          (->> new-sessions
+               (sort-by #(.lastModified %) >)
+               first
+               .getName))))))
+
+(defn- get-copilot-sessions-before
+  "Get set of existing Copilot session directories before CLI invocation."
+  []
+  (let [sessions-dir (get-sessions-dir :copilot)]
+    (if (.exists sessions-dir)
+      (->> (.listFiles sessions-dir)
+           (filter #(.isDirectory %))
+           (filter #(valid-uuid? (.getName %)))
+           set)
+      #{})))
+
+(defn- run-copilot-process
+  "Run a Copilot CLI process with stdout/stderr capture.
+   Returns a map with :exit, :out, and :err.
+   
+   Parameters:
+   - args: Vector of command arguments (not including 'copilot')
+   - working-dir: Optional working directory
+   - timeout-ms: Timeout in milliseconds
+   - session-id: Optional session ID for process tracking"
+  [args working-dir timeout-ms session-id]
+  (let [stdout-path (java.nio.file.Files/createTempFile
+                     "copilot-stdout-" ".txt"
+                     (into-array java.nio.file.attribute.FileAttribute
+                                 [(java.nio.file.attribute.PosixFilePermissions/asFileAttribute
+                                   (java.nio.file.attribute.PosixFilePermissions/fromString "rw-------"))]))
+        stderr-path (java.nio.file.Files/createTempFile
+                     "copilot-stderr-" ".txt"
+                     (into-array java.nio.file.attribute.FileAttribute
+                                 [(java.nio.file.attribute.PosixFilePermissions/asFileAttribute
+                                   (java.nio.file.attribute.PosixFilePermissions/fromString "rw-------"))]))
+        stdout-file (.toFile stdout-path)
+        stderr-file (.toFile stderr-path)]
+    (try
+      (let [process-opts (cond-> {:out (ProcessBuilder$Redirect/to stdout-file)
+                                  :err (ProcessBuilder$Redirect/to stderr-file)
+                                  :in :pipe}
+                           working-dir (assoc :dir working-dir))
+            all-args (into ["copilot"] args)
+            _ (log/info "Starting Copilot CLI process"
+                        {:args (vec (take 4 all-args)) ;; Don't log full prompt
+                         :working-dir working-dir
+                         :session-id session-id})
+            process (apply proc/start process-opts all-args)
+            exit-ref (proc/exit-ref process)]
+
+        ;; Track process if session-id provided
+        (when session-id
+          (swap! active-copilot-processes assoc session-id process)
+          (log/debug "Tracking Copilot process" {:session-id session-id}))
+
+        (.close (.getOutputStream process))
+
+        (try
+          (let [exit-code (if timeout-ms
+                            (deref exit-ref timeout-ms :timeout)
+                            @exit-ref)]
+            (when (= exit-code :timeout)
+              (.destroyForcibly process)
+              (throw (ex-info "Copilot process timeout" {:timeout-ms timeout-ms})))
+            (let [stdout (slurp stdout-file)
+                  stderr (slurp stderr-file)]
+              {:exit exit-code
+               :out stdout
+               :err stderr}))
+          (finally
+            ;; Clean up process tracking
+            (when session-id
+              (swap! active-copilot-processes dissoc session-id)))))
+      (finally
+        (try (.delete stdout-file) (catch Exception e (log/warn e "Failed to delete stdout file")))
+        (try (.delete stderr-file) (catch Exception e (log/warn e "Failed to delete stderr file")))))))
+
+(defn invoke-copilot
+  "Invoke Copilot CLI synchronously.
+   
+   Unlike Claude CLI, Copilot outputs plain text (no JSON mode).
+   Session ID for new sessions is discovered via filesystem inspection.
+   
+   Parameters:
+   - prompt: The prompt text to send
+   - :resume-session-id: Optional session ID to resume
+   - :model: Optional model to use
+   - :working-directory: Optional working directory for CLI
+   - :timeout: Timeout in milliseconds (default: 1 hour)
+   
+   Returns:
+   - On success: {:success true :result \"<output>\" :session-id \"<id>\"}
+   - On error: {:success false :error \"<message>\"}"
+  [prompt & {:keys [resume-session-id model working-directory timeout]
+             :or {timeout 3600000}}]
+  ;; Validate CLI is available
+  (when-let [validation-error (validate-cli-available :copilot)]
+    (throw (ex-info (:error validation-error) validation-error)))
+
+  ;; Capture existing sessions before invocation (for new session discovery)
+  (let [sessions-before (when-not resume-session-id
+                          (get-copilot-sessions-before))
+        ;; Build command args
+        args (cond-> ["--no-color" "--allow-all-tools" "-p" prompt]
+               resume-session-id (into ["--resume" resume-session-id])
+               model (into ["--model" model]))
+        ;; Use resume-session-id for tracking, or nil for new sessions
+        tracking-id resume-session-id
+
+        _ (log/info "Invoking Copilot CLI"
+                    {:resume-session-id resume-session-id
+                     :working-directory working-directory
+                     :model model
+                     :has-sessions-before (some? sessions-before)
+                     :sessions-before-count (count sessions-before)})
+
+        result (run-copilot-process args working-directory timeout tracking-id)]
+
+    (log/debug "Copilot CLI completed"
+               {:exit (:exit result)
+                :stdout-length (count (:out result))
+                :stderr-length (count (:err result))})
+
+    (if (zero? (:exit result))
+      ;; Success - extract output and discover session ID
+      (let [output (str/trim (:out result))
+            ;; For resume, use provided session-id; for new, discover from filesystem
+            session-id (or resume-session-id
+                           (do
+                             ;; Small delay to let filesystem settle
+                             (Thread/sleep 100)
+                             (find-newest-copilot-session sessions-before)))]
+        (if (or resume-session-id session-id)
+          {:success true
+           :result output
+           :session-id session-id
+           :provider :copilot}
+          {:success true
+           :result output
+           :session-id nil
+           :provider :copilot
+           :warning "Could not discover new session ID"}))
+
+      ;; Error
+      (do
+        (log/error "Copilot CLI failed" {:exit (:exit result) :stderr (:err result)})
+        {:success false
+         :error (str "Copilot CLI exited with code " (:exit result))
+         :stderr (:err result)
+         :exit-code (:exit result)
+         :provider :copilot}))))
+
+(defn invoke-copilot-async
+  "Invoke Copilot CLI asynchronously with timeout handling.
+   
+   Parameters:
+   - prompt: The prompt to send to Copilot
+   - callback-fn: Function to call with result (takes one arg: response map)
+   - :resume-session-id: Optional session ID for resuming
+   - :working-directory: Optional working directory for Copilot
+   - :model: Optional model to use
+   - :timeout-ms: Timeout in milliseconds (default: 24 hours)
+   
+   Returns immediately. Calls callback-fn when done or on timeout.
+   Response map will have :success true/false and either :result or :error."
+  [prompt callback-fn & {:keys [resume-session-id working-directory model timeout-ms]
+                         :or {timeout-ms 86400000}}]
+  (async/go
+    (let [response-ch (async/thread
+                        (try
+                          (invoke-copilot prompt
+                                          :resume-session-id resume-session-id
+                                          :model model
+                                          :working-directory working-directory
+                                          :timeout timeout-ms)
+                          (catch Exception e
+                            (log/error e "Exception in Copilot invocation")
+                            {:success false
+                             :error (str "Exception: " (ex-message e))
+                             :provider :copilot})))
+
+          [response port] (async/alts! [response-ch (async/timeout timeout-ms)])]
+
+      (if (= port response-ch)
+        ;; Got response before timeout
+        (do
+          (log/debug "Copilot invocation completed" {:success (:success response)})
+          (callback-fn response))
+
+        ;; Timeout occurred
+        (do
+          (log/warn "Copilot invocation timed out" {:timeout-ms timeout-ms})
+          (callback-fn {:success false
+                        :error (str "Request timed out after " (/ timeout-ms 1000) " seconds")
+                        :timeout true
+                        :provider :copilot})))))
+  nil)
+
 (defn invoke-provider-async
   "Invoke a provider's CLI asynchronously.
    
    This function routes to the appropriate provider implementation.
    For Claude, delegates to voice-code.claude/invoke-claude-async.
-   For other providers, may throw 'not implemented' until CLI interface is researched.
+   For Copilot, uses invoke-copilot-async.
    
    Args:
    - provider: Provider keyword (:claude, :copilot, etc.)
    - prompt: The prompt text to send
    - callback-fn: Function called with result map when complete
    - opts: Map with optional keys:
-     - :new-session-id - Session ID for new sessions
+     - :new-session-id - Session ID for new sessions (Claude only)
      - :resume-session-id - Session ID to resume
      - :working-directory - Working directory for CLI
      - :timeout-ms - Timeout in milliseconds
-     - :system-prompt - System prompt to append
+     - :system-prompt - System prompt to append (Claude only)
      - :model - Model to use
    
    Returns nil immediately. Callback receives:
@@ -448,11 +682,13 @@
                  :model model))
 
     :copilot
-    ;; Copilot CLI invocation not yet implemented
-    ;; Call callback immediately with error
-    (callback-fn {:success false
-                  :error "Copilot CLI invocation not yet implemented. The Copilot CLI interface requires research before prompt execution can be supported."
-                  :provider :copilot})
+    ;; Delegate to Copilot implementation
+    ;; Note: Copilot doesn't support new-session-id or system-prompt
+    (invoke-copilot-async prompt callback-fn
+                          :resume-session-id resume-session-id
+                          :working-directory working-directory
+                          :timeout-ms timeout-ms
+                          :model model)
 
     :cursor
     (callback-fn {:success false
