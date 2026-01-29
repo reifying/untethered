@@ -1,6 +1,7 @@
 (ns voice-code.replication-test
   (:require [clojure.test :refer :all]
             [voice-code.replication :as repl]
+            [voice-code.providers :as providers]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [cheshire.core :as json]
@@ -276,8 +277,9 @@
           non-uuid-file (create-test-jsonl-file "not-a-uuid.jsonl" messages)
           numeric-file (create-test-jsonl-file "12345.jsonl" messages)
           readme-file (create-test-jsonl-file "README.jsonl" messages)]
-      ;; Mock find-jsonl-files to return our test files
-      (with-redefs [repl/find-jsonl-files (fn [] [lowercase-uuid-file uppercase-uuid-file mixed-case-uuid-file non-uuid-file numeric-file readme-file])]
+      ;; Mock find-jsonl-files to return our test files and mock Copilot provider to return empty
+      (with-redefs [repl/find-jsonl-files (fn [] [lowercase-uuid-file uppercase-uuid-file mixed-case-uuid-file non-uuid-file numeric-file readme-file])
+                    providers/find-session-files (fn [provider] (if (= provider :copilot) [] (providers/find-session-files provider)))]
         (let [index (repl/build-index!)]
           ;; Should include all 3 valid UUID sessions (normalized to lowercase keys)
           (is (= 3 (count index)))
@@ -299,8 +301,9 @@
       (let [inference-file (io/file inference-dir "abc123de-4567-89ab-cdef-000000000001.jsonl")]
         (spit inference-file (first messages))
 
-        ;; Mock find-jsonl-files to return both normal and inference files
-        (with-redefs [repl/find-jsonl-files (fn [] [normal-file inference-file])]
+        ;; Mock find-jsonl-files to return both normal and inference files, mock Copilot to return empty
+        (with-redefs [repl/find-jsonl-files (fn [] [normal-file inference-file])
+                      providers/find-session-files (fn [provider] (if (= provider :copilot) [] (providers/find-session-files provider)))]
           (let [index (repl/build-index!)]
             ;; Should only include the normal session, not the inference session
             (is (= 1 (count index)))
@@ -1333,7 +1336,8 @@
 
 (deftest test-get-recent-sessions-sorting
   (testing "get-recent-sessions returns sessions sorted by last-modified descending"
-    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))]
+    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))
+                  providers/find-session-files (fn [provider] [])]  ;; Mock Copilot to return empty
       ;; Create test files with different timestamps
       (let [session-id-1 "abc123de-4567-89ab-cdef-000000000001"
             session-id-2 "abc123de-4567-89ab-cdef-000000000002"
@@ -1368,7 +1372,8 @@
 
 (deftest test-get-recent-sessions-limit
   (testing "get-recent-sessions respects limit parameter"
-    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))]
+    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))
+                  providers/find-session-files (fn [provider] [])]  ;; Mock Copilot to return empty
       ;; Create 5 test sessions
       (doseq [i (range 5)]
         (let [session-id (format "abc123de-4567-89ab-cdef-%012d" i)
@@ -1390,7 +1395,8 @@
 
 (deftest test-get-recent-sessions-empty-index
   (testing "get-recent-sessions handles empty index gracefully"
-    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))]
+    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))
+                  providers/find-session-files (fn [provider] [])]  ;; Mock Copilot to return empty
       (repl/initialize-index!)
       (let [recent (repl/get-recent-sessions 10)]
         (is (empty? recent))
@@ -1398,7 +1404,8 @@
 
 (deftest test-get-recent-sessions-filters-invalid-uuids
   (testing "get-recent-sessions only includes sessions with valid UUIDs"
-    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))]
+    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))
+                  providers/find-session-files (fn [provider] [])]  ;; Mock Copilot to return empty
       ;; Create one valid UUID session and one invalid
       (let [valid-id "abc123de-4567-89ab-cdef-000000000001"
             invalid-file (io/file test-dir "not-a-uuid.jsonl")]
@@ -1552,3 +1559,121 @@
           ;; Neither file should exist
           (is (not (.exists new-index-file)))
           (is (not (.exists legacy-index-file))))))))
+
+;; ============================================================================
+;; Multi-Provider Session Discovery Tests
+;; ============================================================================
+
+(defn create-copilot-test-session
+  "Create a test Copilot session directory with events.jsonl and workspace.yaml"
+  [session-id working-dir messages]
+  (let [session-dir (io/file test-dir ".copilot" "session-state" session-id)
+        events-file (io/file session-dir "events.jsonl")
+        workspace-file (io/file session-dir "workspace.yaml")]
+    (.mkdirs session-dir)
+    (spit events-file (str/join "\n" messages))
+    (spit workspace-file (str "id: " session-id "\ncwd: " working-dir "\n"))
+    session-dir))
+
+(deftest test-build-copilot-session-metadata
+  (testing "Builds metadata from Copilot session directory"
+    (let [session-id "11111111-1111-1111-1111-111111111111"
+          working-dir "/test/project"
+          messages [(json/generate-string {:type "user.message"
+                                           :timestamp "2026-01-28T10:00:00Z"
+                                           :data {:content "Hello, help me"
+                                                  :messageId "msg-1"}})
+                    (json/generate-string {:type "assistant.message"
+                                           :timestamp "2026-01-28T10:00:05Z"
+                                           :data {:content "I can help you"
+                                                  :messageId "msg-2"}})]
+          session-dir (create-copilot-test-session session-id working-dir messages)
+          metadata (repl/build-copilot-session-metadata session-dir)]
+      (is (= session-id (:session-id metadata)))
+      (is (= working-dir (:working-directory metadata)))
+      (is (= 2 (:message-count metadata)))
+      (is (= :copilot (:provider metadata)))
+      (is (str/includes? (:name metadata) "Hello, help me"))
+      (is (str/includes? (:file metadata) "events.jsonl"))))
+
+  (testing "Handles session with no messages"
+    (let [session-id "22222222-2222-2222-2222-222222222222"
+          working-dir "/empty/project"
+          messages [(json/generate-string {:type "session.start"
+                                           :timestamp "2026-01-28T10:00:00Z"})]
+          session-dir (create-copilot-test-session session-id working-dir messages)
+          metadata (repl/build-copilot-session-metadata session-dir)]
+      (is (= session-id (:session-id metadata)))
+      (is (= 0 (:message-count metadata)))
+      (is (= :copilot (:provider metadata))))))
+
+(deftest test-build-index-with-copilot-sessions
+  (testing "build-index! discovers both Claude and Copilot sessions"
+    (let [;; Create Claude session
+          claude-id "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+          claude-file (create-test-jsonl-file (str claude-id ".jsonl")
+                                              ["{\"role\":\"user\",\"text\":\"Claude message\"}"])
+          ;; Create Copilot session
+          copilot-id "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+          copilot-dir (create-copilot-test-session
+                       copilot-id
+                       "/copilot/project"
+                       [(json/generate-string {:type "user.message"
+                                               :timestamp "2026-01-28T10:00:00Z"
+                                               :data {:content "Copilot message"
+                                                      :messageId "msg-1"}})])]
+      ;; Mock the provider functions to use test directories
+      (with-redefs [repl/find-jsonl-files (fn [] [claude-file])
+                    providers/find-session-files (fn [provider]
+                                                   (case provider
+                                                     :copilot [copilot-dir]
+                                                     []))]
+        (let [index (repl/build-index!)]
+          ;; Should find both sessions
+          (is (= 2 (count index)))
+          ;; Claude session
+          (is (contains? index claude-id))
+          (is (= :claude (:provider (get index claude-id))))
+          ;; Copilot session
+          (is (contains? index copilot-id))
+          (is (= :copilot (:provider (get index copilot-id)))))))))
+
+(deftest test-build-index-provider-precedence
+  (testing "Claude sessions take precedence over Copilot if same ID exists"
+    ;; This tests the unlikely case of UUID collision
+    (let [same-id "cccccccc-cccc-cccc-cccc-cccccccccccc"
+          claude-file (create-test-jsonl-file (str same-id ".jsonl")
+                                              ["{\"role\":\"user\",\"text\":\"Claude version\"}"])
+          copilot-dir (create-copilot-test-session
+                       same-id
+                       "/copilot/project"
+                       [(json/generate-string {:type "user.message"
+                                               :timestamp "2026-01-28T10:00:00Z"
+                                               :data {:content "Copilot version"
+                                                      :messageId "msg-1"}})])]
+      (with-redefs [repl/find-jsonl-files (fn [] [claude-file])
+                    providers/find-session-files (fn [provider]
+                                                   (case provider
+                                                     :copilot [copilot-dir]
+                                                     []))]
+        (let [index (repl/build-index!)]
+          ;; Only one entry with that ID
+          (is (= 1 (count index)))
+          ;; Should be the Claude version (takes precedence)
+          (is (= :claude (:provider (get index same-id)))))))))
+
+(deftest test-copilot-session-name-extraction
+  (testing "Extracts session name from first user message"
+    (let [session-id "dddddddd-dddd-dddd-dddd-dddddddddddd"
+          long-message "This is a very long message that should be truncated to 60 characters with an ellipsis at the end"
+          copilot-dir (create-copilot-test-session
+                       session-id
+                       "/project"
+                       [(json/generate-string {:type "user.message"
+                                               :timestamp "2026-01-28T10:00:00Z"
+                                               :data {:content long-message
+                                                      :messageId "msg-1"}})])
+          metadata (repl/build-copilot-session-metadata copilot-dir)]
+      ;; Name should be truncated
+      (is (<= (count (:name metadata)) 63))  ;; 60 chars + "..."
+      (is (str/ends-with? (:name metadata) "...")))))

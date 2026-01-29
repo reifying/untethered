@@ -355,7 +355,7 @@
       (str dir-name " - " formatted-time))))
 
 (defn build-session-metadata
-  "Build metadata map for a single .jsonl file"
+  "Build metadata map for a single .jsonl file (Claude provider)"
   [file]
   (let [session-id (extract-session-id-from-path file)
         working-dir (extract-working-dir file)
@@ -391,37 +391,159 @@
                :provider :claude})
     metadata)) ; Timestamp when iOS first notified
 
-(defn build-index!
-  "Scan all .jsonl files and build the session index.
-  Returns map of session-id -> metadata.
-  Filters out files with non-UUID session IDs and inference sessions."
+;; ============================================================================
+;; Copilot Session Metadata
+;; ============================================================================
+
+(defn- extract-copilot-session-name
+  "Extract a session name from Copilot events.
+   Uses first user message content truncated to 60 chars."
+  [messages]
+  (when-let [first-user-msg (first (filter #(= :user (:role %)) messages))]
+    (when-let [content (:text first-user-msg)]
+      (when (and (string? content)
+                 (>= (count content) 5))
+        (let [truncated (subs content 0 (min 60 (count content)))]
+          (if (> (count content) 60)
+            (str truncated "...")
+            truncated))))))
+
+(defn- parse-copilot-events-file
+  "Parse a Copilot events.jsonl file and return canonical messages."
+  [events-file]
+  (try
+    (with-open [rdr (io/reader events-file)]
+      (->> (line-seq rdr)
+           (map parse-jsonl-line)
+           (filter some?)
+           (map #(providers/parse-message :copilot %))
+           (filter some?)
+           (vec)))
+    (catch Exception e
+      (log/warn "Failed to parse Copilot events file"
+                {:file (.getPath events-file) :error (ex-message e)})
+      [])))
+
+(defn build-copilot-session-metadata
+  "Build metadata map for a Copilot session directory.
+   The session-dir is a directory containing events.jsonl and optionally workspace.yaml."
+  [session-dir]
+  (let [session-id (providers/session-id-from-file :copilot session-dir)
+        events-file (io/file session-dir "events.jsonl")
+        working-dir (providers/extract-working-dir :copilot session-dir)
+        messages (when (.exists events-file)
+                   (parse-copilot-events-file events-file))
+        message-count (count messages)
+        first-msg (first messages)
+        last-msg (last messages)
+        ;; Extract timestamp from last message, or fall back to events file modification time
+        last-modified (or (when-let [ts (:timestamp last-msg)]
+                            (try
+                              (.toEpochMilli (java.time.Instant/parse ts))
+                              (catch Exception _ nil)))
+                          (when (.exists events-file)
+                            (.lastModified events-file)))
+        created-at (if (.exists events-file)
+                     (.lastModified events-file)
+                     (System/currentTimeMillis))
+        session-name (or (extract-copilot-session-name messages)
+                         (let [dir-name (if working-dir
+                                          (last (str/split working-dir #"/"))
+                                          "Copilot Session")
+                               timestamp (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm")
+                               instant (java.time.Instant/ofEpochMilli created-at)
+                               zoned (.atZone instant (java.time.ZoneId/systemDefault))
+                               formatted-time (.format timestamp zoned)]
+                           (str dir-name " - " formatted-time)))
+        preview (when last-msg
+                  (let [text (or (:text last-msg) "")
+                        truncated (subs text 0 (min 100 (count text)))]
+                    (if (> (count text) 100)
+                      (str truncated "...")
+                      truncated)))
+        metadata {:session-id session-id
+                  :file (.getAbsolutePath events-file)
+                  :name session-name
+                  :working-directory (or working-dir "[unknown]")
+                  :created-at created-at
+                  :last-modified last-modified
+                  :message-count message-count
+                  :preview preview
+                  :first-message (:text first-msg)
+                  :last-message (:text last-msg)
+                  :ios-notified false
+                  :first-notification nil
+                  :provider :copilot}]
+    (log/info "Built Copilot session metadata"
+              {:session-id session-id
+               :working-directory working-dir
+               :name session-name
+               :message-count message-count
+               :provider :copilot})
+    metadata))
+
+(defn- build-claude-sessions-index
+  "Build index entries for all Claude sessions.
+   Returns map of session-id -> metadata."
   []
-  (log/info "Building session index from filesystem...")
+  (let [files (find-jsonl-files)
+        _ (log/info "Found Claude session files" {:count (count files)})]
+    (reduce (fn [acc file]
+              (try
+                ;; Filter out inference sessions
+                (if (is-inference-session? file)
+                  (do
+                    (log/debug "Skipping inference session" {:file (.getPath file)})
+                    acc)
+                  (let [metadata (build-session-metadata file)
+                        session-id (:session-id metadata)]
+                    ;; Only add to index if session-id is not nil (i.e., is a valid UUID)
+                    (if session-id
+                      (assoc acc session-id metadata)
+                      acc)))
+                (catch Exception e
+                  (log/error e "Failed to process Claude file" {:file (.getPath file)})
+                  acc)))
+            {}
+            files)))
+
+(defn- build-copilot-sessions-index
+  "Build index entries for all Copilot sessions.
+   Returns map of session-id -> metadata."
+  []
+  (let [copilot-sessions (providers/find-session-files :copilot)
+        _ (log/info "Found Copilot session directories" {:count (count copilot-sessions)})]
+    (reduce (fn [acc session-dir]
+              (try
+                (let [metadata (build-copilot-session-metadata session-dir)
+                      session-id (:session-id metadata)]
+                  (if session-id
+                    (assoc acc session-id metadata)
+                    acc))
+                (catch Exception e
+                  (log/error e "Failed to process Copilot session" {:dir (.getPath session-dir)})
+                  acc)))
+            {}
+            copilot-sessions)))
+
+(defn build-index!
+  "Scan all session files from all providers and build the session index.
+   Returns map of session-id -> metadata.
+   Discovers sessions from Claude (~/.claude/projects/) and Copilot (~/.copilot/session-state/).
+   Filters out files with non-UUID session IDs and inference sessions."
+  []
+  (log/info "Building session index from filesystem (multi-provider)...")
   (let [start-time (System/currentTimeMillis)
-        files (find-jsonl-files)
-        file-count (count files)
-        _ (log/info "Found .jsonl files" {:count file-count})
-        index (reduce (fn [acc file]
-                        (try
-                          ;; Filter out inference sessions
-                          (if (is-inference-session? file)
-                            (do
-                              (log/debug "Skipping inference session" {:file (.getPath file)})
-                              acc)
-                            (let [metadata (build-session-metadata file)
-                                  session-id (:session-id metadata)]
-                              ;; Only add to index if session-id is not nil (i.e., is a valid UUID)
-                              (if session-id
-                                (assoc acc session-id metadata)
-                                acc)))
-                          (catch Exception e
-                            (log/error e "Failed to process file" {:file (.getPath file)})
-                            acc)))
-                      {}
-                      files)
+        ;; Build indices for each provider
+        claude-index (build-claude-sessions-index)
+        copilot-index (build-copilot-sessions-index)
+        ;; Merge indices (Claude sessions take precedence in case of ID collision)
+        index (merge copilot-index claude-index)
         elapsed (- (System/currentTimeMillis) start-time)]
     (log/info "Session index built"
-              {:session-count (count index)
+              {:claude-count (count claude-index)
+               :copilot-count (count copilot-index)
+               :total-count (count index)
                :elapsed-ms elapsed})
     index))
 
@@ -1016,19 +1138,190 @@
       (catch Exception e
         (log/error e "Failed to watch new project directory" {:dir (.getPath dir)})))))
 
+;; ============================================================================
+;; Copilot Filesystem Watching
+;; ============================================================================
+
+(defn- get-copilot-sessions-dir
+  "Get the Copilot session-state directory path."
+  []
+  (providers/get-sessions-dir :copilot))
+
+(defn- is-copilot-session-dir?
+  "Check if a directory is a valid Copilot session directory (UUID name)."
+  [dir]
+  (and (.isDirectory dir)
+       (valid-uuid? (.getName dir))))
+
+(defn handle-copilot-session-created
+  "Handle creation of a new Copilot session directory.
+   Adds the session to the index and starts watching the directory for events.jsonl changes."
+  [session-dir]
+  (when (is-copilot-session-dir? session-dir)
+    (try
+      (let [session-id (.getName session-dir)
+            events-file (io/file session-dir "events.jsonl")]
+        ;; Register watch for the session directory to catch events.jsonl changes
+        (when-let [watch-service (:watch-service @watcher-state)]
+          (let [path (.toPath session-dir)
+                watch-key (.register path
+                                     watch-service
+                                     (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                                  StandardWatchEventKinds/ENTRY_MODIFY
+                                                  StandardWatchEventKinds/ENTRY_DELETE]))]
+            (swap! watcher-state update :watch-keys assoc watch-key session-dir)
+            (swap! watcher-state update :copilot-session-dirs (fnil conj #{}) session-dir)
+            (log/info "Started watching Copilot session directory" {:session-id session-id})))
+
+        ;; If events.jsonl already exists, build metadata and add to index
+        (when (.exists events-file)
+          (let [metadata (build-copilot-session-metadata session-dir)
+                message-count (:message-count metadata)]
+            (swap! session-index assoc session-id metadata)
+            (save-index! @session-index)
+
+            ;; Initialize file position
+            (swap! file-positions assoc (.getAbsolutePath events-file) (.length events-file))
+
+            ;; Notify iOS if we have messages
+            (when (pos? message-count)
+              (log/info "Notifying iOS of new Copilot session"
+                        {:session-id session-id
+                         :message-count message-count})
+              (when-let [callback (:on-session-created @watcher-state)]
+                (callback metadata))
+              (swap! session-index assoc-in [session-id :ios-notified] true)
+              (swap! session-index assoc-in [session-id :first-notification] (System/currentTimeMillis))
+              (save-index! @session-index)))))
+      (catch Exception e
+        (log/error e "Failed to handle Copilot session creation" {:dir (.getPath session-dir)})))))
+
+(defn- parse-copilot-events-incremental
+  "Parse only new lines from a Copilot events.jsonl file since last read position."
+  [file-path]
+  (try
+    (let [file (io/file file-path)
+          last-pos (get @file-positions file-path 0)
+          current-size (.length file)]
+      (if (<= current-size last-pos)
+        []  ;; No new data
+        (with-open [raf (java.io.RandomAccessFile. file "r")]
+          (.seek raf last-pos)
+          (let [remaining-bytes (- current-size last-pos)
+                buffer (byte-array remaining-bytes)
+                _ (.readFully raf buffer)
+                new-content (String. buffer "UTF-8")
+                lines (str/split-lines new-content)
+                messages (->> lines
+                              (map parse-jsonl-line)
+                              (filter some?)
+                              (map #(providers/parse-message :copilot %))
+                              (filter some?)
+                              (vec))]
+            ;; Update position
+            (swap! file-positions assoc file-path current-size)
+            messages))))
+    (catch Exception e
+      (log/error e "Failed to parse Copilot events file incrementally" {:file file-path})
+      [])))
+
+(defn handle-copilot-events-modified
+  "Handle modification to a Copilot events.jsonl file."
+  [events-file session-dir]
+  (let [session-id (.getName session-dir)
+        old-metadata (get @session-index session-id)]
+    ;; Only process if we have metadata in index
+    (when old-metadata
+      ;; Debounce
+      (when (debounce-event session-id)
+        (try
+          (let [new-messages (parse-copilot-events-incremental (.getAbsolutePath events-file))]
+            (when (seq new-messages)
+              (let [old-count (:message-count old-metadata 0)
+                    new-count (+ old-count (count new-messages))
+                    ios-notified? (:ios-notified old-metadata false)
+                    last-message-timestamp (when-let [last-msg (last new-messages)]
+                                             (when-let [ts (:timestamp last-msg)]
+                                               (try
+                                                 (.toEpochMilli (java.time.Instant/parse ts))
+                                                 (catch Exception _ nil))))
+                    last-modified (or last-message-timestamp (.lastModified events-file))
+                    new-metadata (assoc old-metadata
+                                        :last-modified last-modified
+                                        :message-count new-count)]
+                (swap! session-index assoc session-id new-metadata)
+                (save-index! @session-index)
+
+                (log/info "Updated Copilot session index"
+                          {:session-id session-id
+                           :old-count old-count
+                           :new-count new-count
+                           :provider :copilot})
+
+                ;; Check for 0→N transition (delayed notification)
+                (if (and (zero? old-count) (pos? new-count) (not ios-notified?))
+                  (do
+                    (log/info "Copilot session now has messages - notifying iOS"
+                              {:session-id session-id
+                               :message-count new-count})
+                    (when-let [callback (:on-session-created @watcher-state)]
+                      (callback (get @session-index session-id)))
+                    (swap! session-index assoc-in [session-id :ios-notified] true)
+                    (swap! session-index assoc-in [session-id :first-notification] (System/currentTimeMillis))
+                    (save-index! @session-index))
+
+                  ;; Send updates to subscribed clients
+                  (when (is-subscribed? session-id)
+                    (log/info "Sending Copilot update to subscribed iOS client"
+                              {:session-id session-id
+                               :new-messages (count new-messages)})
+                    (when-let [callback (:on-session-updated @watcher-state)]
+                      (callback session-id new-messages)))))))
+          (catch Exception e
+            (log/error e "Failed to handle Copilot events modification"
+                       {:session-id session-id})))))))
+
+(defn handle-copilot-session-deleted
+  "Handle deletion of a Copilot session directory."
+  [session-id]
+  (when (valid-uuid? session-id)
+    (swap! session-index dissoc session-id)
+    (save-index! @session-index)
+    (when-let [callback (:on-session-deleted @watcher-state)]
+      (callback session-id))
+    (log/info "Copilot session deleted" {:session-id session-id})))
+
+(defn- is-copilot-parent-dir?
+  "Check if watched-dir is the Copilot session-state parent directory."
+  [watched-dir]
+  (let [copilot-dir (get-copilot-sessions-dir)]
+    (and copilot-dir
+         (.exists copilot-dir)
+         (= (.getPath watched-dir) (.getPath copilot-dir)))))
+
+(defn- is-copilot-session-watch-dir?
+  "Check if watched-dir is a Copilot session directory being watched."
+  [watched-dir]
+  (contains? (:copilot-session-dirs @watcher-state) watched-dir))
+
 (defn process-watch-events
   "Process watch events from the WatchService.
+  Handles events for both Claude and Copilot directories.
   watch-key: The WatchKey that triggered the events
   watched-dir: The File object of the directory being watched"
   [watch-key watched-dir]
   (let [projects-dir (get-claude-projects-dir)
-        is-parent-dir (= (.getPath watched-dir) (.getPath projects-dir))]
+        is-claude-parent (= (.getPath watched-dir) (.getPath projects-dir))
+        is-copilot-parent (is-copilot-parent-dir? watched-dir)
+        is-copilot-session (is-copilot-session-watch-dir? watched-dir)]
     (doseq [event (.pollEvents watch-key)]
       (let [kind (.kind event)
             context (.context event)
             file-name (str context)]
-        (if is-parent-dir
-          ;; Parent directory event - watch for new project directories
+
+        (cond
+          ;; Claude parent directory event - watch for new project directories
+          is-claude-parent
           (cond
             (= kind StandardWatchEventKinds/ENTRY_CREATE)
             (let [file (io/file watched-dir file-name)]
@@ -1036,9 +1329,43 @@
                 (handle-directory-created file)))
 
             (= kind StandardWatchEventKinds/ENTRY_DELETE)
-            (log/debug "Project directory deleted" {:dir file-name}))
+            (log/debug "Claude project directory deleted" {:dir file-name}))
 
-          ;; Project directory event - watch for .jsonl file changes
+          ;; Copilot parent directory event - watch for new session directories
+          is-copilot-parent
+          (cond
+            (= kind StandardWatchEventKinds/ENTRY_CREATE)
+            (let [dir (io/file watched-dir file-name)]
+              (when (.isDirectory dir)
+                (handle-copilot-session-created dir)))
+
+            (= kind StandardWatchEventKinds/ENTRY_DELETE)
+            (handle-copilot-session-deleted file-name))
+
+          ;; Copilot session directory event - watch for events.jsonl changes
+          is-copilot-session
+          (when (= file-name "events.jsonl")
+            (let [events-file (io/file watched-dir file-name)]
+              (cond
+                (= kind StandardWatchEventKinds/ENTRY_CREATE)
+                (when (.exists events-file)
+                  ;; events.jsonl was just created, build metadata
+                  (let [metadata (build-copilot-session-metadata watched-dir)
+                        session-id (:session-id metadata)]
+                    (swap! session-index assoc session-id metadata)
+                    (save-index! @session-index)
+                    (swap! file-positions assoc (.getAbsolutePath events-file) (.length events-file))
+                    (log/info "Copilot events.jsonl created" {:session-id session-id})))
+
+                (= kind StandardWatchEventKinds/ENTRY_MODIFY)
+                (handle-copilot-events-modified events-file watched-dir)
+
+                (= kind StandardWatchEventKinds/ENTRY_DELETE)
+                (let [session-id (.getName watched-dir)]
+                  (log/warn "Copilot events.jsonl deleted" {:session-id session-id})))))
+
+          ;; Claude project directory event - watch for .jsonl file changes
+          :else
           (cond
             (= kind StandardWatchEventKinds/ENTRY_CREATE)
             (let [file (io/file watched-dir file-name)]
@@ -1054,10 +1381,60 @@
   ;; Reset the key
   (.reset watch-key))
 
+(defn- register-copilot-watches!
+  "Register watches for Copilot session-state directory and existing session directories.
+   Returns a map of watch-key -> directory."
+  [watch-service]
+  (let [copilot-dir (get-copilot-sessions-dir)]
+    (if (and copilot-dir (.exists copilot-dir))
+      (do
+        (log/info "Setting up Copilot directory watching" {:dir (.getPath copilot-dir)})
+        (let [;; Watch the parent session-state directory for new session directories
+              parent-watch-key (try
+                                 (.register (.toPath copilot-dir)
+                                            watch-service
+                                            (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                                         StandardWatchEventKinds/ENTRY_DELETE]))
+                                 (catch Exception e
+                                   (log/warn e "Failed to watch Copilot parent directory")
+                                   nil))
+              initial-keys (if parent-watch-key
+                             {parent-watch-key copilot-dir}
+                             {})
+              ;; Find existing session directories and watch them
+              session-dirs (providers/find-session-files :copilot)
+              _ (log/info "Found existing Copilot session directories" {:count (count session-dirs)})
+              ;; Track which dirs are Copilot session dirs
+              copilot-session-dirs (atom #{})
+              watch-keys (reduce (fn [acc session-dir]
+                                   (try
+                                     (let [path (.toPath session-dir)
+                                           watch-key (.register path
+                                                                watch-service
+                                                                (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                                                             StandardWatchEventKinds/ENTRY_MODIFY
+                                                                             StandardWatchEventKinds/ENTRY_DELETE]))]
+                                       (swap! copilot-session-dirs conj session-dir)
+                                       (log/debug "Watching Copilot session directory" {:dir (.getPath session-dir)})
+                                       (assoc acc watch-key session-dir))
+                                     (catch Exception e
+                                       (log/warn e "Failed to watch Copilot session directory" {:dir (.getPath session-dir)})
+                                       acc)))
+                                 initial-keys
+                                 session-dirs)]
+          ;; Store the set of copilot session dirs for event routing
+          (swap! watcher-state assoc :copilot-session-dirs @copilot-session-dirs)
+          watch-keys))
+      (do
+        (log/info "Copilot session-state directory does not exist, skipping Copilot watching"
+                  {:expected-dir (when copilot-dir (.getPath copilot-dir))})
+        {}))))
+
 (defn start-watcher!
   "Start the filesystem watcher thread.
-  Watches parent ~/.claude/projects/ directory to detect new project directories,
-  and all existing project subdirectories for .jsonl file changes.
+  Watches:
+  - ~/.claude/projects/ for Claude project directories and .jsonl files
+  - ~/.copilot/session-state/ for Copilot session directories and events.jsonl files
   Callbacks:
   - :on-session-created (fn [session-metadata])
   - :on-session-updated (fn [session-id new-messages])
@@ -1074,38 +1451,44 @@
 
       (let [watch-service (.newWatchService (FileSystems/getDefault))
             project-dirs (find-project-directories)
-            _ (log/info "Found project directories" {:count (count project-dirs)
-                                                     :dirs (mapv #(.getName %) project-dirs)})
+            _ (log/info "Found Claude project directories" {:count (count project-dirs)
+                                                            :dirs (mapv #(.getName %) project-dirs)})
 
-            ;; Register watch for parent directory to detect new project directories
-            parent-watch-key (try
-                               (let [path (.toPath projects-dir)]
-                                 (.register path
-                                            watch-service
-                                            (into-array [StandardWatchEventKinds/ENTRY_CREATE
-                                                         StandardWatchEventKinds/ENTRY_DELETE])))
-                               (catch Exception e
-                                 (log/error e "Failed to watch parent directory" {:dir (.getPath projects-dir)})
-                                 nil))
+            ;; Register watch for Claude parent directory
+            claude-parent-watch-key (try
+                                      (let [path (.toPath projects-dir)]
+                                        (.register path
+                                                   watch-service
+                                                   (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                                                StandardWatchEventKinds/ENTRY_DELETE])))
+                                      (catch Exception e
+                                        (log/error e "Failed to watch Claude parent directory" {:dir (.getPath projects-dir)})
+                                        nil))
 
-            ;; Register watch for each existing project directory
-            watch-keys (reduce (fn [acc dir]
-                                 (try
-                                   (let [path (.toPath dir)
-                                         watch-key (.register path
-                                                              watch-service
-                                                              (into-array [StandardWatchEventKinds/ENTRY_CREATE
-                                                                           StandardWatchEventKinds/ENTRY_MODIFY
-                                                                           StandardWatchEventKinds/ENTRY_DELETE]))]
-                                     (log/debug "Watching directory" {:dir (.getPath dir)})
-                                     (assoc acc watch-key dir))
-                                   (catch Exception e
-                                     (log/warn e "Failed to watch directory" {:dir (.getPath dir)})
-                                     acc)))
-                               (if parent-watch-key
-                                 {parent-watch-key projects-dir}
-                                 {})
-                               project-dirs)]
+            ;; Register watches for Claude project directories
+            claude-watch-keys (reduce (fn [acc dir]
+                                        (try
+                                          (let [path (.toPath dir)
+                                                watch-key (.register path
+                                                                     watch-service
+                                                                     (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                                                                  StandardWatchEventKinds/ENTRY_MODIFY
+                                                                                  StandardWatchEventKinds/ENTRY_DELETE]))]
+                                            (log/debug "Watching Claude directory" {:dir (.getPath dir)})
+                                            (assoc acc watch-key dir))
+                                          (catch Exception e
+                                            (log/warn e "Failed to watch Claude directory" {:dir (.getPath dir)})
+                                            acc)))
+                                      (if claude-parent-watch-key
+                                        {claude-parent-watch-key projects-dir}
+                                        {})
+                                      project-dirs)
+
+            ;; Register watches for Copilot directories
+            copilot-watch-keys (register-copilot-watches! watch-service)
+
+            ;; Combine all watch keys
+            watch-keys (merge claude-watch-keys copilot-watch-keys)]
 
         ;; Update state with callbacks and watch keys
         (swap! watcher-state assoc
@@ -1119,7 +1502,9 @@
         ;; Start watcher thread
         (let [watcher-thread (Thread.
                               (fn []
-                                (log/info "Filesystem watcher started" {:project-count (count project-dirs)})
+                                (log/info "Filesystem watcher started (multi-provider)"
+                                          {:claude-dirs (count claude-watch-keys)
+                                           :copilot-dirs (count copilot-watch-keys)})
                                 (try
                                   (while (:running @watcher-state)
                                     (try
@@ -1160,6 +1545,7 @@
            :watch-thread nil
            :watch-keys {}
            :subscribed-sessions #{}
+           :copilot-session-dirs #{}  ;; Clear Copilot session tracking
            :on-session-created nil
            :on-session-updated nil
            :on-session-deleted nil)
