@@ -1,7 +1,7 @@
 # Multi-Provider CLI Support: Unified Design
 
 **Date:** January 2026
-**Status:** Final Design
+**Status:** ✅ Implemented (Phases 1-3 Complete)
 
 ## Design Philosophy
 
@@ -595,3 +595,45 @@ The unified design is well-reasoned and appropriately minimal. The main gaps are
 With these addressed, the design is ready for Phase 1 implementation. The 500-line estimate seems achievable given the multimethod approach and existing `replication.clj` structure to build from.
 
 **Recommendation:** Approve with the modifications noted above. Begin with a research spike to verify Copilot CLI interface before committing to Phase 2 timeline.
+
+---
+
+## Implementation Status (January 2026)
+
+### ✅ Completed
+
+**Phase 1: Provider Abstraction**
+- `voice-code.providers` namespace with multimethods: `get-sessions-dir`, `find-session-files`, `session-id-from-file`, `is-valid-session-file?`, `get-session-file`, `extract-working-dir`, `parse-message`, `build-cli-command`
+- Claude provider methods implemented (refactored from existing code)
+- Session metadata includes `:provider` field
+- WebSocket messages include `provider` field
+- All tests pass (331 tests, 1797 assertions)
+
+**Phase 2: Copilot Provider**
+- Copilot multimethods implemented for all operations
+- `~/.copilot/session-state/` directory scanning
+- `workspace.yaml` parsing for working directory extraction
+- `events.jsonl` message parsing with canonical format transformation
+- Copilot filesystem watching (parent dir + session dirs)
+- Copilot CLI invocation with `invoke-copilot-async`
+
+**Phase 3: iOS + Integration**
+- CoreData `provider` field with default "claude"
+- `SessionSyncManager` parses provider from backend
+- Provider badge in session list UI (shown for non-Claude sessions)
+- Lightweight migration (automatic via default value)
+
+**Design Review Issues Addressed:**
+- Issue 2: CLI validation before prompt execution (`validate-cli-available`)
+- Issue 3: Filesystem watcher handles nested Copilot structure
+- Issue 4: Index moved to `~/.voice-code/session-index.edn` with legacy migration
+- Issue 5: Copilot CLI flags researched and documented
+- Issue 6: Smart default provider selection (`get-default-provider`)
+- Issue 7: iOS CoreData migration with default "claude"
+- Issue 8: Thread safety via atom-based session-index
+
+### 🔮 Future Work
+
+**Phase 4: Cursor Provider**
+- `:cursor` multimethod stubs exist (throw "not yet implemented")
+- Requires research into Cursor CLI storage format
