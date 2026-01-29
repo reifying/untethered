@@ -1109,200 +1109,221 @@
 (defn- header-recipe-button
   "Recipe button for the conversation header.
    When a recipe is active, shows recipe label with current step and exit button.
-   When no recipe is active, shows clipboard icon to navigate to Recipes screen."
+   When no recipe is active, shows clipboard icon to navigate to Recipes screen.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [session-id working-directory ^js navigation]
-  (let [active-recipe @(rf/subscribe [:recipes/active-for-session session-id])
-        colors (theme/use-theme-colors)]
-    (if active-recipe
-      ;; Active recipe: show status with step info and exit button
-      [:> rn/View {:style {:flex-direction "row"
-                           :align-items "center"
-                           :background-color (:success-background colors)
-                           :border-radius 8
-                           :padding-horizontal 8
-                           :padding-vertical 4
-                           :margin-right 4}}
-       [:> rn/TouchableOpacity
-        {:on-press #(.navigate navigation "Recipes"
-                               #js {:sessionId session-id
-                                    :workingDirectory working-directory})}
-        [:> rn/View {:style {:flex-direction "column" :align-items "flex-start"}}
-         ;; Top row: recipe label
-         [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-          [:> rn/Text {:style {:font-size 12 :margin-right 4}} "📋"]
-          [:> rn/Text {:style {:font-size 12
-                               :color (:success colors)
-                               :font-weight "600"
-                               :max-width 100}
-                       :number-of-lines 1}
-           (or (:label active-recipe) "Recipe")]]
-         ;; Bottom row: current step info
-         [:> rn/View {:style {:flex-direction "row" :align-items "center" :margin-top 2}}
-          (when (:step-count active-recipe)
-            [:> rn/Text {:style {:font-size 10
-                                 :color (:success colors)
-                                 :margin-right 4}}
-             (str "Step " (:step-count active-recipe))])
-          (when (:current-step active-recipe)
-            [:> rn/Text {:style {:font-size 10
-                                 :color (:success colors)
-                                 :max-width 80
-                                 :font-style "italic"}
-                         :number-of-lines 1}
-             (:current-step active-recipe)])]]]
-       ;; Exit button
-       [:> rn/TouchableOpacity
-        {:style {:margin-left 6
-                 :padding 4
-                 :background-color (:destructive-background colors)
-                 :border-radius 4}
-         :on-press #(rf/dispatch [:recipes/exit session-id])}
-        [:> rn/Text {:style {:font-size 10 :color (:destructive colors) :font-weight "600"}} "Exit"]]]
-      ;; No active recipe: show icon to open recipes
-      [:> rn/TouchableOpacity
-       {:style {:padding 8}
-        :on-press #(.navigate navigation "Recipes"
-                              #js {:sessionId session-id
-                                   :workingDirectory working-directory})}
-       [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "📝"]])))
+  [:f>
+   (fn []
+     (let [active-recipe @(rf/subscribe [:recipes/active-for-session session-id])
+           colors (theme/use-theme-colors)]
+       (if active-recipe
+         ;; Active recipe: show status with step info and exit button
+         [:> rn/View {:style {:flex-direction "row"
+                              :align-items "center"
+                              :background-color (:success-background colors)
+                              :border-radius 8
+                              :padding-horizontal 8
+                              :padding-vertical 4
+                              :margin-right 4}}
+          [:> rn/TouchableOpacity
+           {:on-press #(.navigate navigation "Recipes"
+                                  #js {:sessionId session-id
+                                       :workingDirectory working-directory})}
+           [:> rn/View {:style {:flex-direction "column" :align-items "flex-start"}}
+            ;; Top row: recipe label
+            [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+             [:> rn/Text {:style {:font-size 12 :margin-right 4}} "📋"]
+             [:> rn/Text {:style {:font-size 12
+                                  :color (:success colors)
+                                  :font-weight "600"
+                                  :max-width 100}
+                          :number-of-lines 1}
+              (or (:label active-recipe) "Recipe")]]
+            ;; Bottom row: current step info
+            [:> rn/View {:style {:flex-direction "row" :align-items "center" :margin-top 2}}
+             (when (:step-count active-recipe)
+               [:> rn/Text {:style {:font-size 10
+                                    :color (:success colors)
+                                    :margin-right 4}}
+                (str "Step " (:step-count active-recipe))])
+             (when (:current-step active-recipe)
+               [:> rn/Text {:style {:font-size 10
+                                    :color (:success colors)
+                                    :max-width 80
+                                    :font-style "italic"}
+                            :number-of-lines 1}
+                (:current-step active-recipe)])]]]
+          ;; Exit button
+          [:> rn/TouchableOpacity
+           {:style {:margin-left 6
+                    :padding 4
+                    :background-color (:destructive-background colors)
+                    :border-radius 4}
+            :on-press #(rf/dispatch [:recipes/exit session-id])}
+           [:> rn/Text {:style {:font-size 10 :color (:destructive colors) :font-weight "600"}} "Exit"]]]
+         ;; No active recipe: show icon to open recipes
+         [:> rn/TouchableOpacity
+          {:style {:padding 8}
+           :on-press #(.navigate navigation "Recipes"
+                                 #js {:sessionId session-id
+                                      :workingDirectory working-directory})}
+          [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "📝"]])))])
 
 (defn- header-info-button
   "Info button for the conversation header.
-   Opens SessionInfo modal."
+   Opens SessionInfo modal.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [session-id ^js navigation]
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/TouchableOpacity
-     {:style {:padding 8}
-      :on-press #(.navigate navigation "SessionInfo"
-                            #js {:sessionId session-id})}
-     [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "ℹ️"]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/TouchableOpacity
+        {:style {:padding 8}
+         :on-press #(.navigate navigation "SessionInfo"
+                               #js {:sessionId session-id})}
+        [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "ℹ️"]]))])
 
 (defn- header-refresh-button
-  "Refresh button for the conversation header."
+  "Refresh button for the conversation header.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [session-id]
-  (let [refreshing? @(rf/subscribe [:ui/refreshing-session?])
-        colors (theme/use-theme-colors)]
-    [:> rn/TouchableOpacity
-     {:style {:padding 8}
-      :disabled refreshing?
-      :on-press #(rf/dispatch [:session/refresh session-id])}
-     (if refreshing?
-       [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
-       [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "↻"])]))
+  [:f>
+   (fn []
+     (let [refreshing? @(rf/subscribe [:ui/refreshing-session?])
+           colors (theme/use-theme-colors)]
+       [:> rn/TouchableOpacity
+        {:style {:padding 8}
+         :disabled refreshing?
+         :on-press #(rf/dispatch [:session/refresh session-id])}
+        (if refreshing?
+          [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
+          [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "↻"])]))])
 
 (defn- header-queue-remove-button
   "Remove from queue button. Only shows when queue is enabled and session is in queue.
-   Displays an orange X icon matching iOS design (xmark.circle.fill)."
+   Displays an orange X icon matching iOS design (xmark.circle.fill).
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [session-id]
-  (let [queue-enabled? @(rf/subscribe [:settings/queue-enabled])
-        in-queue? @(rf/subscribe [:session/in-queue? session-id])
-        colors (theme/use-theme-colors)]
-    (when (and queue-enabled? in-queue?)
-      [:> rn/TouchableOpacity
-       {:style {:padding 8}
-        :on-press #(rf/dispatch [:sessions/remove-from-queue session-id])}
-       [:> rn/View {:style {:width 20
-                            :height 20
-                            :border-radius 10
-                            :background-color (:warning colors)
-                            :justify-content "center"
-                            :align-items "center"}}
-        [:> rn/Text {:style {:font-size 12
-                             :font-weight "bold"
-                             :color (:button-text-on-accent colors)
-                             :margin-top -1}} "✕"]]])))
+  [:f>
+   (fn []
+     (let [queue-enabled? @(rf/subscribe [:settings/queue-enabled])
+           in-queue? @(rf/subscribe [:session/in-queue? session-id])
+           colors (theme/use-theme-colors)]
+       (when (and queue-enabled? in-queue?)
+         [:> rn/TouchableOpacity
+          {:style {:padding 8}
+           :on-press #(rf/dispatch [:sessions/remove-from-queue session-id])}
+          [:> rn/View {:style {:width 20
+                               :height 20
+                               :border-radius 10
+                               :background-color (:warning colors)
+                               :justify-content "center"
+                               :align-items "center"}}
+           [:> rn/Text {:style {:font-size 12
+                                :font-weight "bold"
+                                :color (:button-text-on-accent colors)
+                                :margin-top -1}} "✕"]]])))])
 
 (defn- header-stop-speech-button
   "Stop/Pause/Resume Speaking buttons for the conversation header.
    Shows pause/play button to toggle pause state.
    Shows stop button to stop completely.
-   Only shows when TTS is actively speaking or paused."
+   Only shows when TTS is actively speaking or paused.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [speaking? @(rf/subscribe [:voice/speaking?])
-        paused? @(rf/subscribe [:voice/paused?])
-        colors (theme/use-theme-colors)]
-    (when (or speaking? paused?)
-      [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-       ;; Pause/Resume button
-       [:> rn/TouchableOpacity
-        {:style {:padding 8}
-         :on-press #(if paused?
-                      (rf/dispatch [:voice/resume-speaking])
-                      (rf/dispatch [:voice/pause-speaking]))}
-        [:> rn/Text {:style {:font-size 16 :color (if paused? (:accent colors) (:warning colors))}}
-         (if paused? "▶️" "⏸️")]]
-       ;; Stop button
-       [:> rn/TouchableOpacity
-        {:style {:padding 8}
-         :on-press #(rf/dispatch [:voice/stop-speaking])}
-        [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}} "⏹"]]])))
+  [:f>
+   (fn []
+     (let [speaking? @(rf/subscribe [:voice/speaking?])
+           paused? @(rf/subscribe [:voice/paused?])
+           colors (theme/use-theme-colors)]
+       (when (or speaking? paused?)
+         [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+          ;; Pause/Resume button
+          [:> rn/TouchableOpacity
+           {:style {:padding 8}
+            :on-press #(if paused?
+                         (rf/dispatch [:voice/resume-speaking])
+                         (rf/dispatch [:voice/pause-speaking]))}
+           [:> rn/Text {:style {:font-size 16 :color (if paused? (:accent colors) (:warning colors))}}
+            (if paused? "▶️" "⏸️")]]
+          ;; Stop button
+          [:> rn/TouchableOpacity
+           {:style {:padding 8}
+            :on-press #(rf/dispatch [:voice/stop-speaking])}
+           [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}} "⏹"]]])))])
 
 (defn- header-kill-button
   "Kill button for canceling stuck prompts.
-   Only shows when the session is locked (processing a prompt)."
+   Only shows when the session is locked (processing a prompt).
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [session-id]
-  (let [Alert (.-Alert rn)
-        colors (theme/use-theme-colors)]
-    [:> rn/TouchableOpacity
-     {:style {:padding 8}
-      :on-press #(.alert Alert
-                         "Stop Session?"
-                         "This will terminate the current Claude process. The session will be unlocked and you can send a new prompt."
-                         (clj->js [{:text "Cancel" :style "cancel"}
-                                   {:text "Stop"
-                                    :style "destructive"
-                                    :onPress (fn []
-                                               (rf/dispatch [:session/kill session-id]))}]))}
-     [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}} "⏹"]]))
+  [:f>
+   (fn []
+     (let [Alert (.-Alert rn)
+           colors (theme/use-theme-colors)]
+       [:> rn/TouchableOpacity
+        {:style {:padding 8}
+         :on-press #(.alert Alert
+                            "Stop Session?"
+                            "This will terminate the current Claude process. The session will be unlocked and you can send a new prompt."
+                            (clj->js [{:text "Cancel" :style "cancel"}
+                                      {:text "Stop"
+                                       :style "destructive"
+                                       :onPress (fn []
+                                                  (rf/dispatch [:session/kill session-id]))}]))}
+        [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}} "⏹"]]))])
 
 (defn- header-compact-button
   "Compact button for compressing session history.
    Shows loading state during compaction, green checkmark if recently compacted.
    Disabled when session is locked or currently compacting.
-   Shows relative timestamp when re-compacting (iOS parity: ConversationView.swift line 561)."
+   Shows relative timestamp when re-compacting (iOS parity: ConversationView.swift line 561).
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [session-id]
-  (let [compacting? @(rf/subscribe [:ui/compacting-session? session-id])
-        recently-compacted? @(rf/subscribe [:ui/session-recently-compacted? session-id])
-        compaction-timestamp @(rf/subscribe [:ui/compaction-timestamp session-id])
-        locked? @(rf/subscribe [:session/locked? session-id])
-        Alert (.-Alert rn)
-        colors (theme/use-theme-colors)
-        ;; Format relative time for re-compaction message
-        relative-time (when compaction-timestamp
-                        (utils/format-relative-time compaction-timestamp))]
-    [:> rn/TouchableOpacity
-     {:style {:padding 8}
-      :disabled (or compacting? locked?)
-      :on-press (fn []
-                  (if recently-compacted?
-                    ;; Show confirmation for re-compaction with relative timestamp
-                    (.alert Alert
-                            "Session Already Compacted"
-                            (if relative-time
-                              (str "This session was compacted " relative-time ".\n\nCompact again?")
-                              "This session was recently compacted.\n\nCompact again?")
-                            (clj->js [{:text "Cancel" :style "cancel"}
-                                      {:text "Compact Again"
-                                       :style "destructive"
-                                       :onPress #(rf/dispatch [:session/compact session-id])}]))
-                    ;; First time compaction confirmation
-                    (.alert Alert
-                            "Compact Session?"
-                            "This will summarize conversation history to reduce context window usage."
-                            (clj->js [{:text "Cancel" :style "cancel"}
-                                      {:text "Compact"
-                                       :style "destructive"
-                                       :onPress #(rf/dispatch [:session/compact session-id])}]))))}
-     (cond
-       compacting?
-       [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
+  [:f>
+   (fn []
+     (let [compacting? @(rf/subscribe [:ui/compacting-session? session-id])
+           recently-compacted? @(rf/subscribe [:ui/session-recently-compacted? session-id])
+           compaction-timestamp @(rf/subscribe [:ui/compaction-timestamp session-id])
+           locked? @(rf/subscribe [:session/locked? session-id])
+           Alert (.-Alert rn)
+           colors (theme/use-theme-colors)
+           ;; Format relative time for re-compaction message
+           relative-time (when compaction-timestamp
+                           (utils/format-relative-time compaction-timestamp))]
+       [:> rn/TouchableOpacity
+        {:style {:padding 8}
+         :disabled (or compacting? locked?)
+         :on-press (fn []
+                     (if recently-compacted?
+                       ;; Show confirmation for re-compaction with relative timestamp
+                       (.alert Alert
+                               "Session Already Compacted"
+                               (if relative-time
+                                 (str "This session was compacted " relative-time ".\n\nCompact again?")
+                                 "This session was recently compacted.\n\nCompact again?")
+                               (clj->js [{:text "Cancel" :style "cancel"}
+                                         {:text "Compact Again"
+                                          :style "destructive"
+                                          :onPress #(rf/dispatch [:session/compact session-id])}]))
+                       ;; First time compaction confirmation
+                       (.alert Alert
+                               "Compact Session?"
+                               "This will summarize conversation history to reduce context window usage."
+                               (clj->js [{:text "Cancel" :style "cancel"}
+                                         {:text "Compact"
+                                          :style "destructive"
+                                          :onPress #(rf/dispatch [:session/compact session-id])}]))))}
+        (cond
+          compacting?
+          [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
 
-       recently-compacted?
-       [:> rn/Text {:style {:font-size 16 :color (:success colors)}} "⚡"]
+          recently-compacted?
+          [:> rn/Text {:style {:font-size 16 :color (:success colors)}} "⚡"]
 
-       :else
-       [:> rn/Text {:style {:font-size 16
-                            :color (if locked? (:text-tertiary colors) (:accent colors))}} "⚡"])]))
+          :else
+          [:> rn/Text {:style {:font-size 16
+                               :color (if locked? (:text-tertiary colors) (:accent colors))}} "⚡"])]))])
 
 (defn- header-right-buttons
   "Combined header right buttons: Stop Speech, Kill (when locked), Compact, Recipe, Info, Queue Remove, Refresh."
@@ -1332,30 +1353,33 @@
     [header-right-buttons session-id working-directory navigation]))
 
 (defn- header-title
-  "Custom header title component that can be tapped to rename."
+  "Custom header title component that can be tapped to rename.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
   [session-id ^js navigation]
-  (let [session @(rf/subscribe [:sessions/by-id session-id])
-        display-name (session-display-name session)
-        colors (theme/use-theme-colors)]
-    [:> rn/TouchableOpacity
-     {:style {:flex-direction "row"
-              :align-items "center"}
-      :on-press #(show-rename-dialog
-                  session-id
-                  (:custom-name session)
-                  (fn [new-name]
-                    (rf/dispatch [:sessions/rename session-id new-name])
-                    ;; Update navigation title
-                    (when navigation
-                      (.setOptions navigation #js {:title new-name}))))}
-     [:> rn/Text {:style {:font-size 17
-                          :font-weight "600"
-                          :color (:text-primary colors)}}
-      display-name]
-     [:> rn/Text {:style {:font-size 12
-                          :color (:text-secondary colors)
-                          :margin-left 6}}
-      "✏️"]]))
+  [:f>
+   (fn []
+     (let [session @(rf/subscribe [:sessions/by-id session-id])
+           display-name (session-display-name session)
+           colors (theme/use-theme-colors)]
+       [:> rn/TouchableOpacity
+        {:style {:flex-direction "row"
+                 :align-items "center"}
+         :on-press #(show-rename-dialog
+                     session-id
+                     (:custom-name session)
+                     (fn [new-name]
+                       (rf/dispatch [:sessions/rename session-id new-name])
+                       ;; Update navigation title
+                       (when navigation
+                         (.setOptions navigation #js {:title new-name}))))}
+        [:> rn/Text {:style {:font-size 17
+                             :font-weight "600"
+                             :color (:text-primary colors)}}
+         display-name]
+        [:> rn/Text {:style {:font-size 12
+                             :color (:text-secondary colors)
+                             :margin-left 6}}
+         "✏️"]]))])
 
 (defn conversation-view
   "Main conversation screen.
