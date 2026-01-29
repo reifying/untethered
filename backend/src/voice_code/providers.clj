@@ -325,3 +325,122 @@
       {:error (str (name provider) " CLI not installed. "
                    "Please install the " cli-name " CLI to use " (name provider) " sessions.")
        :provider provider})))
+
+;; ============================================================================
+;; CLI Command Building and Invocation
+;; ============================================================================
+
+(defmulti build-cli-command
+  "Builds the CLI command args for invoking this provider.
+   
+   Args:
+   - provider: Provider keyword (:claude, :copilot, etc.)
+   - opts: Map with keys:
+     - :prompt - The prompt text to send
+     - :new-session-id - Optional session ID for new sessions
+     - :resume-session-id - Optional session ID to resume
+     - :working-directory - Optional working directory
+     - :system-prompt - Optional system prompt to append
+     - :model - Optional model to use
+   
+   Returns: A vector of command args (e.g., [\"claude\" \"--resume\" \"abc\" \"prompt\"])
+   
+   Throws: ex-info if provider CLI invocation not supported"
+  (fn [provider _opts] provider))
+
+(defmethod build-cli-command :claude [_ opts]
+  ;; Note: The actual Claude CLI invocation is handled by voice-code.claude/invoke-claude
+  ;; This method exists to document the expected command format.
+  ;; The claude.clj module handles all the complexity of process management,
+  ;; output parsing, and error handling.
+  (let [{:keys [prompt new-session-id resume-session-id system-prompt model]} opts
+        cli-path (or (System/getenv "CLAUDE_CLI_PATH")
+                     (let [home (System/getProperty "user.home")
+                           default-path (str home "/.claude/local/claude")]
+                       (when (.exists (io/file default-path))
+                         default-path)))
+        trimmed-system-prompt (when system-prompt (str/trim system-prompt))
+        has-system-prompt? (and trimmed-system-prompt (not (str/blank? trimmed-system-prompt)))]
+    (when-not cli-path
+      (throw (ex-info "Claude CLI not found" {:provider :claude})))
+    (cond-> [cli-path
+             "--dangerously-skip-permissions"
+             "--print"
+             "--output-format" "json"]
+      model (into ["--model" model])
+      new-session-id (into ["--session-id" new-session-id])
+      resume-session-id (into ["--resume" resume-session-id])
+      has-system-prompt? (into ["--append-system-prompt" trimmed-system-prompt])
+      true (conj prompt))))
+
+(defmethod build-cli-command :copilot [_ _opts]
+  ;; Per design review Issue 5: Copilot CLI flags need verification before implementation.
+  ;; Until the Copilot CLI interface is researched and documented, throw an error.
+  (throw (ex-info "Copilot CLI invocation not yet implemented. Copilot CLI interface needs research."
+                  {:provider :copilot
+                   :reason "CLI flags and output format need verification"})))
+
+(defmethod build-cli-command :cursor [_ _opts]
+  (throw (ex-info "Cursor CLI invocation not yet implemented."
+                  {:provider :cursor
+                   :reason "Future provider - CLI interface not yet researched"})))
+
+(defmethod build-cli-command :default [provider _opts]
+  (throw (ex-info (str "Unknown provider: " (name provider))
+                  {:provider provider
+                   :known-providers known-providers})))
+
+(defn invoke-provider-async
+  "Invoke a provider's CLI asynchronously.
+   
+   This function routes to the appropriate provider implementation.
+   For Claude, delegates to voice-code.claude/invoke-claude-async.
+   For other providers, may throw 'not implemented' until CLI interface is researched.
+   
+   Args:
+   - provider: Provider keyword (:claude, :copilot, etc.)
+   - prompt: The prompt text to send
+   - callback-fn: Function called with result map when complete
+   - opts: Map with optional keys:
+     - :new-session-id - Session ID for new sessions
+     - :resume-session-id - Session ID to resume
+     - :working-directory - Working directory for CLI
+     - :timeout-ms - Timeout in milliseconds
+     - :system-prompt - System prompt to append
+     - :model - Model to use
+   
+   Returns nil immediately. Callback receives:
+   - On success: {:success true :result \"...\" :session-id \"...\" ...}
+   - On error: {:success false :error \"...\"}
+   - On not-implemented: {:success false :error \"...provider not implemented...\"}"
+  [provider prompt callback-fn & {:keys [new-session-id resume-session-id working-directory timeout-ms system-prompt model]
+                                  :or {timeout-ms 86400000}}]
+  (case provider
+    :claude
+    ;; Delegate to existing Claude implementation
+    ;; Use requiring-resolve to avoid circular dependency
+    (let [invoke-fn (requiring-resolve 'voice-code.claude/invoke-claude-async)]
+      (invoke-fn prompt callback-fn
+                 :new-session-id new-session-id
+                 :resume-session-id resume-session-id
+                 :working-directory working-directory
+                 :timeout-ms timeout-ms
+                 :system-prompt system-prompt
+                 :model model))
+
+    :copilot
+    ;; Copilot CLI invocation not yet implemented
+    ;; Call callback immediately with error
+    (callback-fn {:success false
+                  :error "Copilot CLI invocation not yet implemented. The Copilot CLI interface requires research before prompt execution can be supported."
+                  :provider :copilot})
+
+    :cursor
+    (callback-fn {:success false
+                  :error "Cursor CLI invocation not yet implemented."
+                  :provider :cursor})
+
+    ;; Default: unknown provider
+    (callback-fn {:success false
+                  :error (str "Unknown provider: " (name provider))
+                  :provider provider})))

@@ -1290,64 +1290,69 @@
                                     :session-id claude-session-id})))
                     ;; Try to acquire lock for this session
                     (if (repl/acquire-session-lock! claude-session-id)
-                    (do
-                      (log/info "Received prompt"
-                                {:text (subs prompt-text 0 (min 50 (count prompt-text)))
-                                 :new-session-id new-session-id
-                                 :resume-session-id resume-session-id
-                                 :working-directory working-dir
-                                 :in-recipe (some? orch-state)
-                                 :session-locked false})
+                      (do
+                        (log/info "Received prompt"
+                                  {:text (subs prompt-text 0 (min 50 (count prompt-text)))
+                                   :new-session-id new-session-id
+                                   :resume-session-id resume-session-id
+                                   :working-directory working-dir
+                                   :provider provider
+                                   :in-recipe (some? orch-state)
+                                   :session-locked false})
 
                       ;; Send immediate acknowledgment
-                      (http/send! channel
-                                  (generate-json
-                                   {:type :ack
-                                    :message "Processing prompt..."}))
+                        (http/send! channel
+                                    (generate-json
+                                     {:type :ack
+                                      :message "Processing prompt..."}))
 
                       ;; For new sessions: register channel so we can send session_ready when file is created
                       ;; Filesystem watcher will send session_ready once Claude CLI creates the file
-                      (when new-session-id
-                        (log/info "New session detected, registering for session_ready" {:session-id new-session-id})
-                        (swap! pending-new-sessions assoc new-session-id channel))
+                        (when new-session-id
+                          (log/info "New session detected, registering for session_ready" {:session-id new-session-id})
+                          (swap! pending-new-sessions assoc new-session-id channel))
 
-                      ;; Invoke Claude asynchronously
-                      ;; NEW ARCHITECTURE: Don't send response directly
+                      ;; Invoke provider CLI asynchronously
+                      ;; Routes to correct CLI based on provider (Claude, Copilot, etc.)
                       ;; Filesystem watcher will detect changes and send session_updated
-                      (claude/invoke-claude-async
-                       final-prompt-text
-                       (fn [response]
+                        (providers/invoke-provider-async
+                         provider
+                         final-prompt-text
+                         (fn [response]
                          ;; Always release lock when done (success or failure)
-                         (try
+                           (try
                            ;; Just log completion - let filesystem watcher handle updates
-                           (if (:success response)
-                             (do
-                               (log/info "Prompt completed successfully"
-                                         {:session-id (:session-id response)})
+                             (if (:success response)
+                               (do
+                                 (log/info "Prompt completed successfully"
+                                           {:session-id (:session-id response)
+                                            :provider provider})
                                ;; Send turn_complete message so iOS can unlock
-                               (send-to-client! channel
-                                                {:type :turn-complete
-                                                 :session-id claude-session-id}))
-                             (do
-                               (log/error "Prompt failed" {:error (:error response) :session-id claude-session-id})
+                                 (send-to-client! channel
+                                                  {:type :turn-complete
+                                                   :session-id claude-session-id}))
+                               (do
+                                 (log/error "Prompt failed" {:error (:error response)
+                                                             :session-id claude-session-id
+                                                             :provider provider})
                                ;; Still send error responses directly - include session-id so iOS can unlock
-                               (send-to-client! channel
-                                                {:type :error
-                                                 :message (:error response)
-                                                 :session-id claude-session-id})))
-                           (finally
-                             (repl/release-session-lock! claude-session-id))))
-                       :new-session-id new-session-id
-                       :resume-session-id resume-session-id
-                       :working-directory working-dir
-                       :timeout-ms 86400000
-                       :system-prompt system-prompt))
-                    (do
+                                 (send-to-client! channel
+                                                  {:type :error
+                                                   :message (:error response)
+                                                   :session-id claude-session-id})))
+                             (finally
+                               (repl/release-session-lock! claude-session-id))))
+                         :new-session-id new-session-id
+                         :resume-session-id resume-session-id
+                         :working-directory working-dir
+                         :timeout-ms 86400000
+                         :system-prompt system-prompt))
+                      (do
                       ;; Session is locked, send session_locked message
-                      (log/info "Session locked, rejecting prompt"
-                                {:session-id claude-session-id
-                                 :text (subs prompt-text 0 (min 50 (count prompt-text)))})
-                      (send-session-locked! channel claude-session-id)))))))
+                        (log/info "Session locked, rejecting prompt"
+                                  {:session-id claude-session-id
+                                   :text (subs prompt-text 0 (min 50 (count prompt-text)))})
+                        (send-session-locked! channel claude-session-id)))))))
 
             "set_directory"
             (let [path (:path data)]

@@ -428,3 +428,164 @@ another_key: another value
         (is (= "value" (:valid_key result)))
         (is (= "another value" (:another_key result)))
         (is (not (contains? result :#)))))))
+
+;; ============================================================================
+;; CLI Command Building Tests
+;; ============================================================================
+
+(deftest test-build-cli-command-claude
+  (testing "builds basic Claude CLI command with prompt"
+    ;; Need to mock the CLI path check since it depends on filesystem
+    (with-redefs [io/file (fn [& args]
+                            (let [path (apply str (interpose "/" args))]
+                              (proxy [java.io.File] [path]
+                                (exists [] (clojure.string/includes? path ".claude/local/claude")))))]
+      (let [home (System/getProperty "user.home")
+            expected-cli-path (str home "/.claude/local/claude")
+            result (providers/build-cli-command :claude {:prompt "test prompt"})]
+        (is (vector? result))
+        (is (= expected-cli-path (first result)))
+        (is (some #{"--dangerously-skip-permissions"} result))
+        (is (some #{"--print"} result))
+        (is (some #{"--output-format"} result))
+        (is (some #{"json"} result))
+        (is (= "test prompt" (last result))))))
+
+  (testing "includes --session-id for new sessions"
+    (with-redefs [io/file (fn [& args]
+                            (let [path (apply str (interpose "/" args))]
+                              (proxy [java.io.File] [path]
+                                (exists [] (clojure.string/includes? path ".claude/local/claude")))))]
+      (let [result (providers/build-cli-command :claude {:prompt "test"
+                                                         :new-session-id "abc-123"})]
+        (is (some #{"--session-id"} result))
+        (is (some #{"abc-123"} result)))))
+
+  (testing "includes --resume for resumed sessions"
+    (with-redefs [io/file (fn [& args]
+                            (let [path (apply str (interpose "/" args))]
+                              (proxy [java.io.File] [path]
+                                (exists [] (clojure.string/includes? path ".claude/local/claude")))))]
+      (let [result (providers/build-cli-command :claude {:prompt "test"
+                                                         :resume-session-id "xyz-789"})]
+        (is (some #{"--resume"} result))
+        (is (some #{"xyz-789"} result)))))
+
+  (testing "includes --model when specified"
+    (with-redefs [io/file (fn [& args]
+                            (let [path (apply str (interpose "/" args))]
+                              (proxy [java.io.File] [path]
+                                (exists [] (clojure.string/includes? path ".claude/local/claude")))))]
+      (let [result (providers/build-cli-command :claude {:prompt "test"
+                                                         :model "haiku"})]
+        (is (some #{"--model"} result))
+        (is (some #{"haiku"} result)))))
+
+  (testing "includes --append-system-prompt when specified"
+    (with-redefs [io/file (fn [& args]
+                            (let [path (apply str (interpose "/" args))]
+                              (proxy [java.io.File] [path]
+                                (exists [] (clojure.string/includes? path ".claude/local/claude")))))]
+      (let [result (providers/build-cli-command :claude {:prompt "test"
+                                                         :system-prompt "Be concise"})]
+        (is (some #{"--append-system-prompt"} result))
+        (is (some #{"Be concise"} result)))))
+
+  (testing "ignores blank system-prompt"
+    (with-redefs [io/file (fn [& args]
+                            (let [path (apply str (interpose "/" args))]
+                              (proxy [java.io.File] [path]
+                                (exists [] (clojure.string/includes? path ".claude/local/claude")))))]
+      (let [result (providers/build-cli-command :claude {:prompt "test"
+                                                         :system-prompt "   "})]
+        (is (not (some #{"--append-system-prompt"} result))))))
+
+  (testing "throws when Claude CLI not found"
+    (with-redefs [io/file (fn [& args]
+                            (proxy [java.io.File] [(apply str (interpose "/" args))]
+                              (exists [] false)))]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"Claude CLI not found"
+                            (providers/build-cli-command :claude {:prompt "test"}))))))
+
+(deftest test-build-cli-command-copilot
+  (testing "throws not-implemented error for Copilot"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Copilot CLI invocation not yet implemented"
+                          (providers/build-cli-command :copilot {:prompt "test"})))))
+
+(deftest test-build-cli-command-cursor
+  (testing "throws not-implemented error for Cursor"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Cursor CLI invocation not yet implemented"
+                          (providers/build-cli-command :cursor {:prompt "test"})))))
+
+(deftest test-build-cli-command-unknown
+  (testing "throws error for unknown provider"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Unknown provider"
+                          (providers/build-cli-command :unknown {:prompt "test"})))))
+
+;; ============================================================================
+;; invoke-provider-async Tests
+;; ============================================================================
+
+(deftest test-invoke-provider-async-copilot
+  (testing "returns not-implemented error for Copilot"
+    (let [result-promise (promise)
+          callback-fn (fn [result] (deliver result-promise result))]
+      (providers/invoke-provider-async :copilot "test prompt" callback-fn)
+      (let [result (deref result-promise 1000 :timeout)]
+        (is (not= :timeout result))
+        (is (false? (:success result)))
+        (is (clojure.string/includes? (:error result) "Copilot CLI invocation not yet implemented"))
+        (is (= :copilot (:provider result)))))))
+
+(deftest test-invoke-provider-async-cursor
+  (testing "returns not-implemented error for Cursor"
+    (let [result-promise (promise)
+          callback-fn (fn [result] (deliver result-promise result))]
+      (providers/invoke-provider-async :cursor "test prompt" callback-fn)
+      (let [result (deref result-promise 1000 :timeout)]
+        (is (not= :timeout result))
+        (is (false? (:success result)))
+        (is (clojure.string/includes? (:error result) "Cursor CLI invocation not yet implemented"))
+        (is (= :cursor (:provider result)))))))
+
+(deftest test-invoke-provider-async-unknown
+  (testing "returns error for unknown provider"
+    (let [result-promise (promise)
+          callback-fn (fn [result] (deliver result-promise result))]
+      (providers/invoke-provider-async :unknown "test prompt" callback-fn)
+      (let [result (deref result-promise 1000 :timeout)]
+        (is (not= :timeout result))
+        (is (false? (:success result)))
+        (is (clojure.string/includes? (:error result) "Unknown provider"))
+        (is (= :unknown (:provider result)))))))
+
+(deftest test-invoke-provider-async-claude-delegates
+  (testing "delegates to Claude implementation"
+    ;; Mock the requiring-resolve to verify it's called
+    (let [invoke-called (atom false)
+          mock-invoke-fn (fn [prompt callback-fn & {:keys [new-session-id resume-session-id
+                                                           working-directory timeout-ms
+                                                           system-prompt model]}]
+                           (reset! invoke-called true)
+                           ;; Verify params are passed through
+                           (is (= "test prompt" prompt))
+                           (is (= "new-123" new-session-id))
+                           (is (= "/test/dir" working-directory))
+                           ;; Call the callback with a mock response
+                           (callback-fn {:success true :result "Mock response"}))]
+      (with-redefs [requiring-resolve (fn [sym]
+                                        (when (= sym 'voice-code.claude/invoke-claude-async)
+                                          mock-invoke-fn))]
+        (let [result-promise (promise)
+              callback-fn (fn [result] (deliver result-promise result))]
+          (providers/invoke-provider-async :claude "test prompt" callback-fn
+                                           :new-session-id "new-123"
+                                           :working-directory "/test/dir")
+          (let [result (deref result-promise 1000 :timeout)]
+            (is (not= :timeout result))
+            (is @invoke-called)
+            (is (:success result))))))))
