@@ -521,7 +521,7 @@
     (reset! server/api-key nil)))
 
 (deftest test-recent-sessions-message-format
-  (testing "recent_sessions message uses snake_case and ISO-8601 timestamps (no name field)"
+  (testing "recent_sessions message uses snake_case and ISO-8601 timestamps"
     (with-redefs [server/send-to-client! (fn [channel message]
                                            (is (= :recent-sessions (:type message)))
                                            (is (number? (:limit message)))
@@ -530,10 +530,12 @@
                                              (let [first-session (first (:sessions message))]
                                                ;; Verify kebab-case keys from Clojure
                                                (is (contains? first-session :session-id))
-                                               ;; Name field removed - iOS provides its own
-                                               (is (not (contains? first-session :name)))
+                                               ;; Name field included per STANDARDS.md protocol spec
+                                               (is (contains? first-session :name))
                                                (is (contains? first-session :working-directory))
                                                (is (contains? first-session :last-modified))
+                                               ;; Provider field added for multi-provider support
+                                               (is (contains? first-session :provider))
                                                ;; Verify timestamp is ISO-8601 string
                                                (is (string? (:last-modified first-session)))
                                                (is (re-matches #"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z"

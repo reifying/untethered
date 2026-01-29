@@ -4,10 +4,13 @@
    Abstracts the differences between CLI providers (Claude Code, GitHub Copilot, etc.)
    while keeping the common WebSocket protocol and session management unchanged.
    
-   Phase 1: Only :claude is implemented. Other providers will be added in Phase 2+."
+   Phase 1: :claude implemented
+   Phase 2: :copilot implemented"
   (:require [clojure.java.io :as io]
+            [clojure.java.shell :as shell]
             [clojure.string :as str]
-            [clojure.tools.logging :as log]))
+            [clojure.tools.logging :as log]
+            [cheshire.core :as json]))
 
 ;; ============================================================================
 ;; Provider Registry
@@ -156,6 +159,106 @@
   nil)
 
 ;; ============================================================================
+;; Copilot Provider Implementation (:copilot)
+;; ============================================================================
+
+(defmethod get-sessions-dir :copilot [_]
+  (let [home (System/getProperty "user.home")]
+    (io/file home ".copilot" "session-state")))
+
+(defmethod find-session-files :copilot [_]
+  (let [sessions-dir (get-sessions-dir :copilot)]
+    (if (.exists sessions-dir)
+      (->> (.listFiles sessions-dir)
+           (filter #(.isDirectory %))
+           ;; Only include directories that have events.jsonl
+           (filter #(.exists (io/file % "events.jsonl")))
+           ;; Only include directories with valid UUID names
+           (filter #(valid-uuid? (.getName %))))
+      [])))
+
+(defmethod session-id-from-file :copilot [_ file]
+  ;; For Copilot, the "file" is actually the session directory
+  ;; The session ID is the directory name
+  (let [name (.getName file)]
+    (when (valid-uuid? name)
+      name)))
+
+(defmethod is-valid-session-file? :copilot [_ file]
+  ;; For Copilot, a valid session is a directory with:
+  ;; - UUID name
+  ;; - events.jsonl file inside
+  (and (.isDirectory file)
+       (valid-uuid? (.getName file))
+       (.exists (io/file file "events.jsonl"))))
+
+(defmethod get-session-file :copilot [_ session-id]
+  (let [sessions-dir (get-sessions-dir :copilot)
+        session-dir (io/file sessions-dir session-id)
+        events-file (io/file session-dir "events.jsonl")]
+    (when (and (.exists events-file) (.isFile events-file))
+      events-file)))
+
+(defn- parse-simple-yaml
+  "Parse a simple YAML file with key: value format.
+   Returns a map of keyword keys to string values.
+   Handles multi-line values and quoted strings."
+  [content]
+  (when content
+    (let [lines (str/split-lines content)]
+      (loop [result {}
+             remaining lines]
+        (if (empty? remaining)
+          result
+          (let [line (first remaining)
+                ;; Match key: value pattern
+                match (re-matches #"^([a-z_]+):\s*(.*)$" line)]
+            (if match
+              (let [k (keyword (second match))
+                    v (str/trim (nth match 2))]
+                (recur (assoc result k v) (rest remaining)))
+              ;; Skip lines that don't match key: value pattern
+              (recur result (rest remaining)))))))))
+
+(defmethod extract-working-dir :copilot [_ file]
+  ;; For Copilot, extract cwd from workspace.yaml in the session directory
+  ;; The 'file' parameter is the session directory (or events.jsonl file)
+  (try
+    (let [session-dir (if (.isDirectory file)
+                        file
+                        (.getParentFile file))
+          workspace-file (io/file session-dir "workspace.yaml")]
+      (when (.exists workspace-file)
+        (let [content (slurp workspace-file)
+              parsed (parse-simple-yaml content)]
+          (:cwd parsed))))
+    (catch Exception e
+      (log/warn "Failed to extract working directory from Copilot session"
+                {:file (.getAbsolutePath file)
+                 :error (ex-message e)})
+      nil)))
+
+(defmethod parse-message :copilot [_ raw-msg]
+  ;; Transform Copilot events.jsonl event to canonical format
+  ;; Only user.message and assistant.message events produce visible messages
+  (let [event-type (:type raw-msg)]
+    (when (contains? #{"user.message" "assistant.message"} event-type)
+      (let [data (:data raw-msg)
+            ;; Extract content from the data field
+            content (or (:content data)
+                        (:transformedContent data)
+                        "")
+            ;; Generate a UUID if messageId not present
+            msg-id (or (:messageId data)
+                       (:id raw-msg)
+                       (str (java.util.UUID/randomUUID)))]
+        {:uuid msg-id
+         :role (if (= "user.message" event-type) :user :assistant)
+         :text content
+         :timestamp (:timestamp raw-msg)
+         :provider :copilot}))))
+
+;; ============================================================================
 ;; Provider Resolution
 ;; ============================================================================
 
@@ -178,17 +281,18 @@
       default-provider))
 
 (defn provider-installed?
-  "Checks if a provider's CLI is installed and available.
-   
-   Currently only checks for :claude since that's the only implemented provider."
+  "Checks if a provider's CLI is installed and available."
   [provider]
   (case provider
     :claude (try
-              (let [result (clojure.java.shell/sh "which" "claude")]
+              (let [result (shell/sh "which" "claude")]
                 (zero? (:exit result)))
               (catch Exception _ false))
+    :copilot (try
+               (let [result (shell/sh "which" "copilot")]
+                 (zero? (:exit result)))
+               (catch Exception _ false))
     ;; Future providers
-    :copilot false
     :cursor false
     ;; Unknown provider
     false))
