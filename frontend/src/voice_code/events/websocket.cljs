@@ -698,13 +698,20 @@
  :commands/handle-complete
  (fn [db [_ {:keys [command-session-id exit-code duration-ms]}]]
    (let [cmd (get-in db [:commands :running command-session-id])]
-     (-> db
-         (update-in [:commands :running] dissoc command-session-id)
-         (update-in [:commands :history] conj
-                    (assoc cmd
-                           :exit-code exit-code
-                           :duration-ms duration-ms
-                           :completed-at (js/Date.)))))))
+     (if cmd
+       ;; Normal case: command found in running, move to history with completion data
+       (-> db
+           (update-in [:commands :running] dissoc command-session-id)
+           (update-in [:commands :history] conj
+                      (assoc cmd
+                             :exit-code exit-code
+                             :duration-ms duration-ms
+                             :completed-at (js/Date.))))
+       ;; Edge case: command not found in running (e.g., duplicate complete message)
+       ;; Just log and return db unchanged to avoid corrupting history
+       (do
+         (js/console.warn "Command complete received for unknown session:" command-session-id)
+         db)))))
 
 (rf/reg-event-db
  :commands/handle-error

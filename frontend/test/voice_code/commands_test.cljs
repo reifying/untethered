@@ -169,6 +169,46 @@
        (is (= 0 (:exit-code (first history))))
        (is (= 1234 (:duration-ms (first history))))))))
 
+(deftest handle-command-complete-unknown-session-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "command_complete for unknown session does not corrupt history"
+     ;; VCMOB-c8h7: Previously this would add a partial record to history
+     ;; {nil :exit-code 0 :duration-ms 500 :completed-at ...}
+     (rf/dispatch-sync [:commands/handle-complete
+                        {:command-session-id "nonexistent-cmd"
+                         :exit-code 0
+                         :duration-ms 500}])
+
+     ;; History should remain empty
+     (let [history @(rf/subscribe [:commands/history])]
+       (is (empty? history) "History should not contain partial records")))
+
+   (testing "duplicate complete message does not corrupt history"
+     ;; Start and complete a command
+     (rf/dispatch-sync [:commands/handle-started
+                        {:command-session-id "cmd-dup"
+                         :command-id "build"
+                         :shell-command "make build"}])
+     (rf/dispatch-sync [:commands/handle-complete
+                        {:command-session-id "cmd-dup"
+                         :exit-code 0
+                         :duration-ms 100}])
+
+     ;; Send duplicate complete - should be ignored
+     (rf/dispatch-sync [:commands/handle-complete
+                        {:command-session-id "cmd-dup"
+                         :exit-code 1
+                         :duration-ms 999}])
+
+     ;; History should have exactly one entry (not duplicated)
+     (let [history @(rf/subscribe [:commands/history])]
+       (is (= 1 (count history)))
+       ;; Should have the first completion's data
+       (is (= 0 (:exit-code (first history))))
+       (is (= 100 (:duration-ms (first history))))))))
+
 (deftest handle-command-history-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
