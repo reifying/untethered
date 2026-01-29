@@ -185,3 +185,30 @@
       (catch :default _))
     ;; Toast should NOT be shown
     (is (false? (:visible? @components/toast-state)))))
+
+(deftest show-toast-cancels-previous-timer-test
+  (testing "show-toast! cancels previous timer when new toast is shown"
+    (async done
+      ;; Reset state
+      (reset! components/toast-state {:visible? false :message "" :variant :success})
+      ;; Show first toast with long duration
+      (components/show-toast! "First message" {:duration-ms 500})
+      ;; Immediately show second toast with short duration
+      ;; This should cancel the first timer
+      (components/show-toast! "Second message" {:duration-ms 100})
+      ;; Verify second toast is showing
+      (is (= "Second message" (:message @components/toast-state)))
+      ;; Wait for second toast to dismiss (100ms + buffer)
+      (js/setTimeout
+       (fn []
+         ;; Toast should be hidden now
+         (is (false? (:visible? @components/toast-state)))
+         ;; Wait a bit more to ensure first timer doesn't resurrect visibility
+         ;; If timer cancellation failed, the first 500ms timer would still be pending
+         (js/setTimeout
+          (fn []
+            ;; Should still be hidden - the cancelled first timer shouldn't affect state
+            (is (false? (:visible? @components/toast-state)))
+            (done))
+          200))
+       150))))

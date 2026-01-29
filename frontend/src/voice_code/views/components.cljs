@@ -70,8 +70,16 @@
   ;; Global toast state atom. Use show-toast! to display toasts.
   (r/atom {:visible? false :message "" :variant :success}))
 
+(defonce ^:private toast-timer-id
+  ;; Tracks the active toast dismiss timer to prevent memory leaks.
+  ;; When a new toast is shown, the previous timer is cancelled.
+  (atom nil))
+
 (defn show-toast!
   "Show a temporary toast notification that auto-dismisses.
+
+   Cancels any pending toast timer before showing the new toast to prevent
+   memory leaks from accumulating uncancelled timers.
 
    Args:
    - message: String to display in the toast
@@ -83,10 +91,16 @@
   ([message]
    (show-toast! message {}))
   ([message {:keys [variant duration-ms] :or {variant :success duration-ms toast-auto-dismiss-ms}}]
+   ;; Cancel any pending toast timer to prevent memory leak
+   (when-let [existing-timer @toast-timer-id]
+     (js/clearTimeout existing-timer))
+   ;; Show the new toast
    (reset! toast-state {:visible? true :message message :variant variant})
-   (js/setTimeout
-    #(swap! toast-state assoc :visible? false)
-    duration-ms)))
+   ;; Schedule auto-dismiss and track the timer
+   (reset! toast-timer-id
+           (js/setTimeout
+            #(swap! toast-state assoc :visible? false)
+            duration-ms))))
 
 (defn copy-to-clipboard!
   "Copy text to clipboard with haptic feedback and optional feedback.
