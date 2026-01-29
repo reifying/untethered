@@ -1573,7 +1573,7 @@
 
      (let [recipe @(rf/subscribe [:recipes/active-for-session "s1"])]
        (is (= "implement-feature" (:recipe-id recipe)))
-       (is (= "Implement Feature" (:label recipe)))
+       (is (= "Implement Feature" (:recipe-label recipe)))
        (is (= "analyze" (:current-step recipe)))
        (is (= 3 (:step-count recipe)))
        (is (some? (:started-at recipe)))))))
@@ -1600,7 +1600,7 @@
        (is (= "implement" (:current-step recipe)))
        (is (= 3 (:step-count recipe)))
        ;; Label should be preserved
-       (is (= "Implement Feature" (:label recipe)))))))
+       (is (= "Implement Feature" (:recipe-label recipe)))))))
 
 ;; ============================================================================
 ;; Auto-Speak Response Events

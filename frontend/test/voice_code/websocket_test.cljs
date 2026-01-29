@@ -778,7 +778,7 @@
      (let [recipe (get-in @re-frame.db/app-db [:recipes :active "session-123"])]
        (is (some? recipe))
        (is (= "code-review" (:recipe-id recipe)))
-       (is (= "Code Review" (:label recipe)))
+       (is (= "Code Review" (:recipe-label recipe)))
        (is (= 1 (:current-step recipe)))
        (is (= 5 (:step-count recipe)))
        (is (some? (:started-at recipe)))))))

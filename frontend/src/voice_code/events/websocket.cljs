@@ -775,7 +775,7 @@
  (fn [db [_ {:keys [session-id recipe-id recipe-label current-step step-count]}]]
    (assoc-in db [:recipes :active session-id]
              {:recipe-id recipe-id
-              :label recipe-label
+              :recipe-label recipe-label
               :current-step current-step
               :step-count step-count
               :started-at (js/Date.)})))

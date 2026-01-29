@@ -82,7 +82,7 @@
        (is (= 1 (count active)))
        (is (contains? active "session-123"))
        (is (= "recipe-1" (get-in active ["session-123" :recipe-id])))
-       (is (= "Test Recipe" (get-in active ["session-123" :label])))
+       (is (= "Test Recipe" (get-in active ["session-123" :recipe-label])))
        (is (= "Initializing" (get-in active ["session-123" :current-step])))
        (is (= 5 (get-in active ["session-123" :step-count])))))))
 
@@ -299,7 +299,7 @@
                          :step-count 3}])
      (let [active (get @(rf/subscribe [:recipes/active]) "session-123")]
        (is (= "recipe-1" (:recipe-id active)))
-       (is (= "Test Recipe" (:label active)))
+       (is (= "Test Recipe" (:recipe-label active)))
        (is (= "Initializing" (:current-step active)))
        (is (= 3 (:step-count active)))
        (is (some? (:started-at active)))))))
