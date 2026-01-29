@@ -35,8 +35,7 @@
   "Single directory item in the list.
    Long-press shows context menu to copy directory path."
   [{:keys [directory session-count last-modified unread-count on-press colors]}]
-  (let [colors colors]
-    [:> rn/TouchableOpacity
+  [:> rn/TouchableOpacity
      {:style {:padding-horizontal 16
               :padding-vertical 14
               :border-bottom-width 1
@@ -77,7 +76,7 @@
       ;; Last modified time - auto-updating
       [relative-time-text {:timestamp last-modified
                            :style {:font-size 12
-                                   :color (:text-tertiary colors)}}]]]))
+                                   :color (:text-tertiary colors)}}]]])
 
 (defn- session-name
   "Get display name for a session."
@@ -90,8 +89,7 @@
   "Single recent session item.
    Long-press shows context menu with copy options."
   [{:keys [session on-press colors]}]
-  (let [colors colors
-        unread-count (get session :unread-count 0)
+  (let [unread-count (get session :unread-count 0)
         session-id (str (:id session))
         working-directory (:working-directory session)]
     [:> rn/TouchableOpacity
@@ -146,8 +144,7 @@
   "Single session item in the queue section.
    Long-press shows context menu with copy options."
   [{:keys [session on-press on-remove colors]}]
-  (let [colors colors
-        unread-count (get session :unread-count 0)
+  (let [unread-count (get session :unread-count 0)
         session-id (str (:id session))
         working-directory (:working-directory session)]
     [:> rn/View {:style {:flex-direction "row"
@@ -203,8 +200,7 @@
   "Single session item in the priority queue section with priority tinting.
    Long-press shows context menu with copy options."
   [{:keys [session on-press on-remove colors]}]
-  (let [colors colors
-        unread-count (get session :unread-count 0)
+  (let [unread-count (get session :unread-count 0)
         priority (or (:priority session) 10)
         tint-color (priority-tint-color colors priority)
         session-id (str (:id session))
@@ -278,30 +274,29 @@
 (defn- section-header
   "Collapsible section header."
   [{:keys [title expanded? on-toggle count colors]}]
-  (let [colors colors]
-    [:> rn/TouchableOpacity
-     {:style {:flex-direction "row"
-              :align-items "center"
-              :justify-content "space-between"
-              :padding-horizontal 16
-              :padding-vertical 10
-              :background-color (:separator colors)}
-      :on-press on-toggle
-      :active-opacity 0.7}
-     [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-      [:> rn/Text {:style {:font-size 13
-                           :font-weight "600"
-                           :color (:text-secondary colors)
-                           :text-transform "uppercase"
-                           :letter-spacing 0.5}}
-       title]
-      (when (and count (pos? count))
-        [:> rn/Text {:style {:font-size 12
-                             :color (:text-tertiary colors)
-                             :margin-left 8}}
-         (str "(" count ")")])]
-     [:> rn/Text {:style {:font-size 14 :color (:text-tertiary colors)}}
-      (if expanded? "▼" "▶")]]))
+  [:> rn/TouchableOpacity
+   {:style {:flex-direction "row"
+            :align-items "center"
+            :justify-content "space-between"
+            :padding-horizontal 16
+            :padding-vertical 10
+            :background-color (:separator colors)}
+    :on-press on-toggle
+    :active-opacity 0.7}
+   [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+    [:> rn/Text {:style {:font-size 13
+                         :font-weight "600"
+                         :color (:text-secondary colors)
+                         :text-transform "uppercase"
+                         :letter-spacing 0.5}}
+     title]
+    (when (and count (pos? count))
+      [:> rn/Text {:style {:font-size 12
+                           :color (:text-tertiary colors)
+                           :margin-left 8}}
+       (str "(" count ")")])]
+   [:> rn/Text {:style {:font-size 14 :color (:text-tertiary colors)}}
+    (if expanded? "▼" "▶")]])
 
 (defn- recent-sessions-section
   "Collapsible recent sessions section."
@@ -382,69 +377,66 @@
 (defn- empty-state
   "Shown when there are no directories/sessions."
   [colors]
-  (let [colors colors]
-    [:> rn/View {:style {:flex 1
-                         :justify-content "center"
-                         :align-items "center"
-                         :padding 40}}
-     [:> rn/Text {:style {:font-size 18
-                          :font-weight "600"
-                          :color (:text-primary colors)
-                          :margin-bottom 8}}
-      "No Projects Yet"]
-     [:> rn/Text {:style {:font-size 14
-                          :color (:text-secondary colors)
-                          :text-align "center"}}
-      "Sessions will appear here grouped by their working directory."]]))
+  [:> rn/View {:style {:flex 1
+                       :justify-content "center"
+                       :align-items "center"
+                       :padding 40}}
+   [:> rn/Text {:style {:font-size 18
+                        :font-weight "600"
+                        :color (:text-primary colors)
+                        :margin-bottom 8}}
+    "No Projects Yet"]
+   [:> rn/Text {:style {:font-size 14
+                        :color (:text-secondary colors)
+                        :text-align "center"}}
+    "Sessions will appear here grouped by their working directory."]])
 
 (defn- configure-server-state
   "Shown when server is not yet configured (first-run experience)."
   [navigation colors]
-  (let [colors colors]
-    [:> rn/View {:style {:flex 1
-                         :justify-content "center"
-                         :align-items "center"
-                         :padding 40}}
-     [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "🔧"]
-     [:> rn/Text {:style {:font-size 22
-                          :font-weight "700"
-                          :color (:text-primary colors)
-                          :margin-bottom 8
-                          :text-align "center"}}
-      "Welcome to Untethered"]
-     [:> rn/Text {:style {:font-size 15
-                          :color (:text-secondary colors)
-                          :text-align "center"
-                          :margin-bottom 24
-                          :line-height 22}}
-      "Connect to your backend server to get started. You'll need your server URL and API key."]
-     [:> rn/TouchableOpacity
-      {:style {:background-color (:accent colors)
-               :border-radius 12
-               :padding-horizontal 32
-               :padding-vertical 14
-               :shadow-color (:accent colors)
-               :shadow-offset #js {:width 0 :height 4}
-               :shadow-opacity 0.3
-               :shadow-radius 8
-               :elevation 4}
-       :on-press #(when navigation (.navigate navigation "Settings"))}
-      [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                           :font-size 16
-                           :font-weight "600"}}
-       "Configure Server"]]
-     [:> rn/Text {:style {:font-size 12
-                          :color (:text-tertiary colors)
-                          :text-align "center"
-                          :margin-top 24
-                          :line-height 18}}
-      "Tip: You can scan a QR code or manually enter your API key in Settings."]]))
+  [:> rn/View {:style {:flex 1
+                       :justify-content "center"
+                       :align-items "center"
+                       :padding 40}}
+   [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "🔧"]
+   [:> rn/Text {:style {:font-size 22
+                        :font-weight "700"
+                        :color (:text-primary colors)
+                        :margin-bottom 8
+                        :text-align "center"}}
+    "Welcome to Untethered"]
+   [:> rn/Text {:style {:font-size 15
+                        :color (:text-secondary colors)
+                        :text-align "center"
+                        :margin-bottom 24
+                        :line-height 22}}
+    "Connect to your backend server to get started. You'll need your server URL and API key."]
+   [:> rn/TouchableOpacity
+    {:style {:background-color (:accent colors)
+             :border-radius 12
+             :padding-horizontal 32
+             :padding-vertical 14
+             :shadow-color (:accent colors)
+             :shadow-offset #js {:width 0 :height 4}
+             :shadow-opacity 0.3
+             :shadow-radius 8
+             :elevation 4}
+     :on-press #(when navigation (.navigate navigation "Settings"))}
+    [:> rn/Text {:style {:color (:button-text-on-accent colors)
+                         :font-size 16
+                         :font-weight "600"}}
+     "Configure Server"]]
+   [:> rn/Text {:style {:font-size 12
+                        :color (:text-tertiary colors)
+                        :text-align "center"
+                        :margin-top 24
+                        :line-height 18}}
+    "Tip: You can scan a QR code or manually enter your API key in Settings."]])
 
 (defn- resources-button
   "Resources button with badge for pending uploads."
   [navigation colors]
-  (let [colors colors
-        pending-count @(rf/subscribe [:resources/pending-uploads])]
+  (let [pending-count @(rf/subscribe [:resources/pending-uploads])]
     [:> rn/TouchableOpacity
      {:style {:padding 8 :margin-right 4}
       :on-press #(when navigation (.navigate navigation "Resources"))}
@@ -530,42 +522,41 @@
 (defn- debug-section
   "Debug section with link to debug logs view."
   [{:keys [navigation colors]}]
-  (let [colors colors]
-    [:> rn/View
-     [:> rn/View {:style {:flex-direction "row"
-                          :align-items "center"
-                          :justify-content "space-between"
-                          :padding-horizontal 16
-                          :padding-vertical 10
-                          :background-color (:separator colors)}}
-      [:> rn/Text {:style {:font-size 13
-                           :font-weight "600"
-                           :color (:text-secondary colors)
-                           :text-transform "uppercase"
-                           :letter-spacing 0.5}}
-       "Debug"]]
-     [:> rn/TouchableOpacity
-      {:style {:flex-direction "row"
-               :align-items "center"
-               :padding-horizontal 16
-               :padding-vertical 14
-               :background-color (:card-background colors)
-               :border-bottom-width 1
-               :border-bottom-color (:separator colors)}
-       :on-press #(when navigation (.navigate navigation "DebugLogs"))
-       :active-opacity 0.7}
-      [:> rn/Text {:style {:font-size 18
-                           :color (:warning colors)
-                           :margin-right 12}}
-       "🐞"]
-      [:> rn/View {:style {:flex 1}}
-       [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
-        "Debug Logs"]]]
-     [:> rn/View {:style {:padding-horizontal 16
-                          :padding-vertical 8
-                          :background-color (:grouped-background colors)}}
-      [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors)}}
-       "View and copy app logs for troubleshooting"]]]))
+  [:> rn/View
+   [:> rn/View {:style {:flex-direction "row"
+                        :align-items "center"
+                        :justify-content "space-between"
+                        :padding-horizontal 16
+                        :padding-vertical 10
+                        :background-color (:separator colors)}}
+    [:> rn/Text {:style {:font-size 13
+                         :font-weight "600"
+                         :color (:text-secondary colors)
+                         :text-transform "uppercase"
+                         :letter-spacing 0.5}}
+     "Debug"]]
+   [:> rn/TouchableOpacity
+    {:style {:flex-direction "row"
+             :align-items "center"
+             :padding-horizontal 16
+             :padding-vertical 14
+             :background-color (:card-background colors)
+             :border-bottom-width 1
+             :border-bottom-color (:separator colors)}
+     :on-press #(when navigation (.navigate navigation "DebugLogs"))
+     :active-opacity 0.7}
+    [:> rn/Text {:style {:font-size 18
+                         :color (:warning colors)
+                         :margin-right 12}}
+     "🐞"]
+    [:> rn/View {:style {:flex 1}}
+     [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
+      "Debug Logs"]]]
+   [:> rn/View {:style {:padding-horizontal 16
+                        :padding-vertical 8
+                        :background-color (:grouped-background colors)}}
+    [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors)}}
+     "View and copy app logs for troubleshooting"]]])
 
 (def ^:private debounce-ms
   "Debounce delay for queue cache updates (matches iOS 150ms)."
