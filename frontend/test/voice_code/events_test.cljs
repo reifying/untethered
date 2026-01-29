@@ -1469,9 +1469,21 @@
                                   :current-step "Review changes"
                                   :step-count 2}])
 
-   (testing "recipes/exit removes recipe from active"
-     (rf/dispatch-sync [:recipes/exit "s1"])
-     (is (nil? @(rf/subscribe [:recipes/active-for-session "s1"]))))))
+   (testing "recipes/exit removes recipe from active and sends exit_recipe message"
+     (let [sent-messages (atom [])]
+       ;; Mock the ws/send effect
+       (rf/reg-fx :ws/send (fn [msg] (swap! sent-messages conj msg)))
+
+       (rf/dispatch-sync [:recipes/exit "s1"])
+
+       ;; Verify active recipe is removed from DB
+       (is (nil? @(rf/subscribe [:recipes/active-for-session "s1"])))
+
+       ;; Verify correct WebSocket message type is sent
+       (is (= 1 (count @sent-messages)))
+       (let [msg (first @sent-messages)]
+         (is (= "exit_recipe" (:type msg)) "Must send exit_recipe, not stop_recipe")
+         (is (= "s1" (:session-id msg))))))))
 
 (deftest recipes-start-new-session-test
   (rf-test/run-test-sync

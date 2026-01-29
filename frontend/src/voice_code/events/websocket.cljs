@@ -797,12 +797,6 @@
                (assoc :working-directory working-directory))}))
 
 (rf/reg-event-fx
- :recipes/stop
- (fn [_ [_ session-id]]
-   {:ws/send {:type "stop_recipe"
-              :session-id session-id}}))
-
-(rf/reg-event-fx
  :recipes/exit
  (fn [{:keys [db]} [_ session-id]]
    {:db (update-in db [:recipes :active] dissoc session-id)

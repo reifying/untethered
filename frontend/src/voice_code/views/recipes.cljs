@@ -428,7 +428,7 @@
              :started-at (:started-at active-for-session)
              :current-step (:current-step active-for-session)
              :step-count (:step-count active-for-session)
-             :on-stop #(rf/dispatch [:recipes/stop session-id])
+             :on-stop #(rf/dispatch [:recipes/exit session-id])
              :colors colors}])
 
          ;; Recipe list or loading/empty state
@@ -486,5 +486,5 @@
                                                :recipe-id (:id recipe)
                                                :working-directory working-directory
                                                :is-new-session @use-new-session?}])))
-                  :on-stop #(rf/dispatch [:recipes/stop session-id])}])]))]))))
+                  :on-stop #(rf/dispatch [:recipes/exit session-id])}])]))]))))
 
