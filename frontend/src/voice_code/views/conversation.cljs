@@ -177,7 +177,7 @@
                [:> rn/Text {:style {:font-size 12
                                     :color (:button-text-on-accent colors)
                                     :font-weight "600"}}
-                "✕"]]])]]]]]))])
+                "✕"]]])]]]]))])
 
 (defn- show-rename-dialog
   "Show the rename session modal (replaces Alert.prompt for cross-platform support).
@@ -311,7 +311,7 @@
               :on-press (fn []
                           (rf/dispatch [:session/infer-name session-id])
                           (show-toast! "Inferring session name...")
-                          (hide-message-detail!))}])]]]]))])
+                          (hide-message-detail!))}])]]]))])
 
 ;; Text truncation: utils/truncate-text, utils/truncation-threshold, utils/truncation-preview-chars
 
@@ -760,7 +760,7 @@
                              :margin-top 8}}
          (if listening?
            "Listening... Tap to stop"
-           "Tap to speak")])])))])
+           "Tap to speak")])]]))])
 
 (defn- text-input-area
   "Text input with send button."
