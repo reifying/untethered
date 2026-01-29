@@ -438,28 +438,31 @@
               "Run 'make show-key-qr' on your server to display the QR code"]]])]))))
 
 (defn- server-settings-section
-  "Server URL and port configuration."
+  "Server URL and port configuration.
+   Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [colors (theme/use-theme-colors)
-        settings @(rf/subscribe [:settings/all])]
-    [:> rn/View
-     [section-header "Server Configuration"]
-     [text-input-row {:label "Server Address"
-                      :value (:server-url settings)
-                      :placeholder "192.168.1.100"
-                      :on-change #(rf/dispatch [:settings/save :server-url %])}]
-     [text-input-row {:label "Port"
-                      :value (:server-port settings)
-                      :placeholder "8080"
-                      :keyboard-type "number-pad"
-                      :on-change #(rf/dispatch [:settings/save :server-port (js/parseInt %)])}]
-     [:> rn/View {:style {:padding-horizontal 16
-                          :padding-vertical 8
-                          :background-color (:card-background colors)
-                          :border-bottom-width 1
-                          :border-bottom-color (:separator colors)}}
-      [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
-       (str "Full URL: ws://" (:server-url settings) ":" (:server-port settings))]]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           settings @(rf/subscribe [:settings/all])]
+       [:> rn/View
+        [section-header "Server Configuration"]
+        [text-input-row {:label "Server Address"
+                         :value (:server-url settings)
+                         :placeholder "192.168.1.100"
+                         :on-change #(rf/dispatch [:settings/save :server-url %])}]
+        [text-input-row {:label "Port"
+                         :value (:server-port settings)
+                         :placeholder "8080"
+                         :keyboard-type "number-pad"
+                         :on-change #(rf/dispatch [:settings/save :server-port (js/parseInt %)])}]
+        [:> rn/View {:style {:padding-horizontal 16
+                             :padding-vertical 8
+                             :background-color (:card-background colors)
+                             :border-bottom-width 1
+                             :border-bottom-color (:separator colors)}}
+         [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
+          (str "Full URL: ws://" (:server-url settings) ":" (:server-port settings))]]]))])
 
 (def ^:private all-premium-voices-id
   "Special identifier for 'All Premium Voices' rotation mode.
@@ -615,23 +618,26 @@
                   :description "Track sessions in priority-based queue. Add sessions manually via toolbar button and adjust priorities to control sort order."}]]))
 
 (defn- resources-section
-  "Resource storage configuration."
+  "Resource storage configuration.
+   Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [colors (theme/use-theme-colors)
-        settings @(rf/subscribe [:settings/all])]
-    [:> rn/View
-     [section-header "Resources"]
-     [text-input-row {:label "Storage Location"
-                      :value (:resource-storage-location settings)
-                      :placeholder "~/Downloads"
-                      :on-change #(rf/dispatch [:settings/save :resource-storage-location %])}]
-     [:> rn/View {:style {:padding-horizontal 16
-                          :padding-bottom 8
-                          :background-color (:card-background colors)
-                          :border-bottom-width 1
-                          :border-bottom-color (:separator colors)}}
-      [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
-       "Directory where uploaded files will be saved on the backend"]]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           settings @(rf/subscribe [:settings/all])]
+       [:> rn/View
+        [section-header "Resources"]
+        [text-input-row {:label "Storage Location"
+                         :value (:resource-storage-location settings)
+                         :placeholder "~/Downloads"
+                         :on-change #(rf/dispatch [:settings/save :resource-storage-location %])}]
+        [:> rn/View {:style {:padding-horizontal 16
+                             :padding-bottom 8
+                             :background-color (:card-background colors)
+                             :border-bottom-width 1
+                             :border-bottom-color (:separator colors)}}
+         [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
+          "Directory where uploaded files will be saved on the backend"]]]))])
 
 (defn- message-size-section
   "Message size limit configuration."
@@ -649,112 +655,127 @@
                    :description "Maximum WebSocket message size. Large responses will be truncated to fit. iOS has a 256 KB limit."}]]))
 
 (defn- system-prompt-section
-  "Custom system prompt configuration."
+  "Custom system prompt configuration.
+   Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [colors (theme/use-theme-colors)
-        settings @(rf/subscribe [:settings/all])]
-    [:> rn/View
-     [section-header "System Prompt"]
-     [text-input-row {:label "Custom System Prompt"
-                      :value (:system-prompt settings)
-                      :placeholder "Optional instructions to append..."
-                      :multiline true
-                      :on-change #(rf/dispatch [:settings/save :system-prompt %])}]
-     [:> rn/View {:style {:padding-horizontal 16
-                          :padding-bottom 8
-                          :background-color (:card-background colors)
-                          :border-bottom-width 1
-                          :border-bottom-color (:separator colors)}}
-      [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
-       "Optional instructions to append to Claude's system prompt on every message. Leave empty to use default behavior."]]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           settings @(rf/subscribe [:settings/all])]
+       [:> rn/View
+        [section-header "System Prompt"]
+        [text-input-row {:label "Custom System Prompt"
+                         :value (:system-prompt settings)
+                         :placeholder "Optional instructions to append..."
+                         :multiline true
+                         :on-change #(rf/dispatch [:settings/save :system-prompt %])}]
+        [:> rn/View {:style {:padding-horizontal 16
+                             :padding-bottom 8
+                             :background-color (:card-background colors)
+                             :border-bottom-width 1
+                             :border-bottom-color (:separator colors)}}
+         [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
+          "Optional instructions to append to Claude's system prompt on every message. Leave empty to use default behavior."]]]))])
 
 (defn- connection-test-section
-  "Connection test button and results."
+  "Connection test button and results.
+   Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [colors (theme/use-theme-colors)
-        testing? @(rf/subscribe [:ui/testing-connection?])
-        result @(rf/subscribe [:ui/connection-test-result])]
-    [:> rn/View
-     [section-header "Connection Test"]
-     [setting-row {:label "Test Connection"
-                   :disabled? testing?
-                   :on-press #(rf/dispatch [:settings/test-connection])
-                   :accessory [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-                               (cond
-                                 testing?
-                                 [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           testing? @(rf/subscribe [:ui/testing-connection?])
+           result @(rf/subscribe [:ui/connection-test-result])]
+       [:> rn/View
+        [section-header "Connection Test"]
+        [setting-row {:label "Test Connection"
+                      :disabled? testing?
+                      :on-press #(rf/dispatch [:settings/test-connection])
+                      :accessory [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+                                  (cond
+                                    testing?
+                                    [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
 
-                                 (some? result)
-                                 [:> rn/Text {:style {:font-size 16
-                                                      :color (if (:success result) (:success colors) (:destructive colors))}}
-                                  (if (:success result) "✓" "✕")]
+                                    (some? result)
+                                    [:> rn/Text {:style {:font-size 16
+                                                         :color (if (:success result) (:success colors) (:destructive colors))}}
+                                     (if (:success result) "✓" "✕")]
 
-                                 :else
-                                 [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "→"])]}]
-     (when result
-       [:> rn/View {:style {:padding-horizontal 16
-                            :padding-vertical 8
-                            :background-color (:card-background colors)
-                            :border-bottom-width 1
-                            :border-bottom-color (:separator colors)}}
-        [:> rn/Text {:style {:font-size 12
-                             :color (if (:success result) (:success colors) (:destructive colors))}}
-         (:message result)]])]))
+                                    :else
+                                    [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "→"])]}]
+        (when result
+          [:> rn/View {:style {:padding-horizontal 16
+                               :padding-vertical 8
+                               :background-color (:card-background colors)
+                               :border-bottom-width 1
+                               :border-bottom-color (:separator colors)}}
+           [:> rn/Text {:style {:font-size 12
+                                :color (if (:success result) (:success colors) (:destructive colors))}}
+            (:message result)]])]))])
 
 (defn- account-section
-  "Account and authentication actions."
+  "Account and authentication actions.
+   Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/View
-     [section-header "Account"]
-     [setting-row {:label "Disconnect"
-                   :on-press (fn []
-                               (.alert Alert
-                                       "Disconnect"
-                                       "Are you sure you want to disconnect? Your API key will be deleted."
-                                       (clj->js [{:text "Cancel" :style "cancel"}
-                                                 {:text "Disconnect"
-                                                  :style "destructive"
-                                                  :onPress #(rf/dispatch [:auth/disconnect])}])))
-                   :accessory [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}}
-                               "Disconnect"]}]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/View
+        [section-header "Account"]
+        [setting-row {:label "Disconnect"
+                      :on-press (fn []
+                                  (.alert Alert
+                                          "Disconnect"
+                                          "Are you sure you want to disconnect? Your API key will be deleted."
+                                          (clj->js [{:text "Cancel" :style "cancel"}
+                                                    {:text "Disconnect"
+                                                     :style "destructive"
+                                                     :onPress #(rf/dispatch [:auth/disconnect])}])))
+                      :accessory [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}}
+                                  "Disconnect"]}]]))])
 
 (defn- help-section
-  "Help information."
+  "Help information.
+   Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/View
-     [section-header "Help"]
-     [:> rn/View {:style {:background-color (:card-background colors)
-                          :padding 16
-                          :border-bottom-width 1
-                          :border-bottom-color (:separator colors)}}
-      [:> rn/Text {:style {:font-size 14 :font-weight "600" :margin-bottom 8 :color (:text-primary colors)}}
-       "Server Setup"]
-      [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors) :margin-bottom 4}}
-       "1. Start the backend server on your computer"]
-      [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors) :margin-bottom 4}}
-       "2. Find your server's IP address"]
-      [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors) :margin-bottom 4}}
-       "3. Enter that IP address above (e.g., 192.168.1.100)"]
-      [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors)}}
-       "4. Make sure your server is running on the specified port"]]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/View
+        [section-header "Help"]
+        [:> rn/View {:style {:background-color (:card-background colors)
+                             :padding 16
+                             :border-bottom-width 1
+                             :border-bottom-color (:separator colors)}}
+         [:> rn/Text {:style {:font-size 14 :font-weight "600" :margin-bottom 8 :color (:text-primary colors)}}
+          "Server Setup"]
+         [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors) :margin-bottom 4}}
+          "1. Start the backend server on your computer"]
+         [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors) :margin-bottom 4}}
+          "2. Find your server's IP address"]
+         [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors) :margin-bottom 4}}
+          "3. Enter that IP address above (e.g., 192.168.1.100)"]
+         [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors)}}
+          "4. Make sure your server is running on the specified port"]]]))])
 
 (defn- examples-section
   "Server address examples to help users configure connection.
-   Matches iOS SettingsView.swift lines 215-222."
+   Matches iOS SettingsView.swift lines 215-222.
+   Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/View
-     [section-header "Examples"]
-     [:> rn/View {:style {:background-color (:card-background colors)
-                          :padding 16
-                          :border-bottom-width 1
-                          :border-bottom-color (:separator colors)}}
-      [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors) :margin-bottom 4}}
-       "Local network: 192.168.1.100"]
-      [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors)}}
-       "Localhost: 127.0.0.1 (testing only)"]]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/View
+        [section-header "Examples"]
+        [:> rn/View {:style {:background-color (:card-background colors)
+                             :padding 16
+                             :border-bottom-width 1
+                             :border-bottom-color (:separator colors)}}
+         [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors) :margin-bottom 4}}
+          "Local network: 192.168.1.100"]
+         [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors)}}
+          "Localhost: 127.0.0.1 (testing only)"]]]))])
 
 (defn- about-section
   "App information."
@@ -769,43 +790,49 @@
                  :value (.-OS Platform)}]])
 
 (defn- debug-section
-  "Debug tools section with link to debug logs."
+  "Debug tools section with link to debug logs.
+   Wrapped in [:f>] to enable React hooks for theme colors."
   [navigation]
-  (let [colors (theme/use-theme-colors)]
-    [:> rn/View
-     [section-header "Debug"]
-     [setting-row {:label "Debug Logs"
-                   :on-press #(when navigation (.navigate navigation "DebugLogs"))
-                   :accessory [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "→"]}]
-     [:> rn/View {:style {:padding-horizontal 16
-                          :padding-bottom 8
-                          :background-color (:card-background colors)
-                          :border-bottom-width 1
-                          :border-bottom-color (:separator colors)}}
-      [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
-       "View captured console logs for debugging"]]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/View
+        [section-header "Debug"]
+        [setting-row {:label "Debug Logs"
+                      :on-press #(when navigation (.navigate navigation "DebugLogs"))
+                      :accessory [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "→"]}]
+        [:> rn/View {:style {:padding-horizontal 16
+                             :padding-bottom 8
+                             :background-color (:card-background colors)
+                             :border-bottom-width 1
+                             :border-bottom-color (:separator colors)}}
+         [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
+          "View captured console logs for debugging"]]]))])
 
 (defn settings-view
   "Main settings screen with full feature parity to iOS SettingsView.
-   Props is a ClojureScript map (converted by r/reactify-component)."
+   Props is a ClojureScript map (converted by r/reactify-component).
+   Wrapped in [:f>] to enable React hooks for theme colors."
   [props]
-  (let [navigation (:navigation props)
-        colors (theme/use-theme-colors)]
-    [:> rn/SafeAreaView {:style {:flex 1 :background-color (:background-grouped colors)}}
-     [:> rn/ScrollView {:content-container-style {:padding-bottom 40}}
-      [connection-status-section]
-      [api-key-section navigation]
-      [server-settings-section]
-      [voice-settings-section]
-      [audio-playback-section]
-      [recent-sessions-section]
-      [queue-settings-section]
-      [resources-section]
-      [message-size-section]
-      [system-prompt-section]
-      [connection-test-section]
-      [account-section]
-      [debug-section navigation]
-      [help-section]
-      [examples-section]
-      [about-section]]]))
+  (let [navigation (:navigation props)]
+    [:f>
+     (fn []
+       (let [colors (theme/use-theme-colors)]
+         [:> rn/SafeAreaView {:style {:flex 1 :background-color (:background-grouped colors)}}
+          [:> rn/ScrollView {:content-container-style {:padding-bottom 40}}
+           [connection-status-section]
+           [api-key-section navigation]
+           [server-settings-section]
+           [voice-settings-section]
+           [audio-playback-section]
+           [recent-sessions-section]
+           [queue-settings-section]
+           [resources-section]
+           [message-size-section]
+           [system-prompt-section]
+           [connection-test-section]
+           [account-section]
+           [debug-section navigation]
+           [help-section]
+           [examples-section]
+           [about-section]]]))]))
