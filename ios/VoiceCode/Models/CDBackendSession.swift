@@ -16,6 +16,10 @@ public class CDBackendSession: NSManagedObject {
     @NSManaged public var isLocallyCreated: Bool
     @NSManaged public var messages: NSSet?
 
+    /// Provider identifier (e.g., "claude", "copilot")
+    /// Defaults to "claude" for backward compatibility
+    @NSManaged public var provider: String
+
     // Queue management properties
     @NSManaged public var isInQueue: Bool
     @NSManaged public var queuePosition: Int32

@@ -769,6 +769,14 @@ class SessionSyncManager {
             session.preview = preview
         }
 
+        // Parse provider field (defaults to "claude" for backward compatibility)
+        if let provider = sessionData["provider"] as? String {
+            session.provider = provider
+        } else if existingSession == nil {
+            // Only set default for new sessions; don't override existing
+            session.provider = "claude"
+        }
+
         // Clear isLocallyCreated flag since session is now synced from backend
         session.isLocallyCreated = false
 

@@ -187,7 +187,7 @@ final class SessionRowDisplayTests: XCTestCase {
 
     // MARK: - Helper Methods
 
-    private func createTestSession(name: String, workingDirectory: String) -> CDBackendSession {
+    private func createTestSession(name: String, workingDirectory: String, provider: String = "claude") -> CDBackendSession {
         let session = CDBackendSession(context: context)
         session.id = UUID()
         session.backendName = name
@@ -195,6 +195,7 @@ final class SessionRowDisplayTests: XCTestCase {
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
+        session.provider = provider
         session.isLocallyCreated = false
         session.unreadCount = 0
         session.isInQueue = false
@@ -202,5 +203,61 @@ final class SessionRowDisplayTests: XCTestCase {
         session.queuedAt = nil
 
         return session
+    }
+
+    // MARK: - Provider Badge Tests
+
+    func testClaudeSessionDoesNotShowBadge() throws {
+        // Given: A session with default Claude provider
+        let session = createTestSession(
+            name: "Claude Session",
+            workingDirectory: "/test/path",
+            provider: "claude"
+        )
+
+        // Then: Provider should be "claude" (badge not shown for Claude)
+        XCTAssertEqual(session.provider, "claude")
+    }
+
+    func testCopilotSessionShowsBadge() throws {
+        // Given: A session with Copilot provider
+        let session = createTestSession(
+            name: "Copilot Session",
+            workingDirectory: "/test/path",
+            provider: "copilot"
+        )
+
+        // Then: Provider should be "copilot" (badge should be shown)
+        XCTAssertEqual(session.provider, "copilot")
+        XCTAssertNotEqual(session.provider, "claude")
+    }
+
+    func testProviderDefaultsToClaude() throws {
+        // Given: A session created without explicit provider
+        let session = createTestSession(
+            name: "Default Session",
+            workingDirectory: "/test/path"
+        )
+
+        // Then: Provider should default to "claude"
+        XCTAssertEqual(session.provider, "claude")
+    }
+
+    func testMultipleProviderSessions() throws {
+        // Given: Sessions from different providers
+        let claudeSession = createTestSession(
+            name: "Claude Session",
+            workingDirectory: "/test/claude",
+            provider: "claude"
+        )
+        let copilotSession = createTestSession(
+            name: "Copilot Session",
+            workingDirectory: "/test/copilot",
+            provider: "copilot"
+        )
+
+        // Then: Each session should have correct provider
+        XCTAssertEqual(claudeSession.provider, "claude")
+        XCTAssertEqual(copilotSession.provider, "copilot")
     }
 }

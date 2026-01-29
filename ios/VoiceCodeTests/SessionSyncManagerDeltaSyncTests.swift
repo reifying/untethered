@@ -25,7 +25,7 @@ final class SessionSyncManagerDeltaSyncTests: XCTestCase {
 
     // MARK: - Helper Methods
 
-    private func createSession(id: UUID, messageCount: Int32 = 0) -> CDBackendSession {
+    private func createSession(id: UUID, messageCount: Int32 = 0, provider: String = "claude") -> CDBackendSession {
         let session = CDBackendSession(context: context)
         session.id = id
         session.backendName = "Test Session"
@@ -33,6 +33,7 @@ final class SessionSyncManagerDeltaSyncTests: XCTestCase {
         session.lastModified = Date()
         session.messageCount = messageCount
         session.preview = ""
+        session.provider = provider
         return session
     }
 
@@ -387,6 +388,136 @@ final class SessionSyncManagerDeltaSyncTests: XCTestCase {
     }
 
     // MARK: - Regression Test for Loading Bug
+
+    // MARK: - Provider Field Tests
+
+    func testHandleSessionListWithClaudeProvider() async throws {
+        // Given: A session list with explicit Claude provider
+        let sessionId = UUID()
+        let sessionData: [[String: Any]] = [[
+            "session_id": sessionId.uuidString.lowercased(),
+            "name": "Test Claude Session",
+            "working_directory": "/tmp/test",
+            "last_modified": Date().timeIntervalSince1970 * 1000,
+            "message_count": 5,
+            "provider": "claude"
+        ]]
+
+        // When: Handling session list
+        await sessionSyncManager.handleSessionList(sessionData)
+
+        // Then: Provider should be "claude"
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
+        let sessions = try context.fetch(fetchRequest)
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions.first?.provider, "claude")
+    }
+
+    func testHandleSessionListWithCopilotProvider() async throws {
+        // Given: A session list with Copilot provider
+        let sessionId = UUID()
+        let sessionData: [[String: Any]] = [[
+            "session_id": sessionId.uuidString.lowercased(),
+            "name": "Test Copilot Session",
+            "working_directory": "/tmp/copilot",
+            "last_modified": Date().timeIntervalSince1970 * 1000,
+            "message_count": 3,
+            "provider": "copilot"
+        ]]
+
+        // When: Handling session list
+        await sessionSyncManager.handleSessionList(sessionData)
+
+        // Then: Provider should be "copilot"
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
+        let sessions = try context.fetch(fetchRequest)
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions.first?.provider, "copilot")
+    }
+
+    func testHandleSessionListWithMissingProviderDefaultsToClaude() async throws {
+        // Given: A session list without provider field (backward compatibility)
+        let sessionId = UUID()
+        let sessionData: [[String: Any]] = [[
+            "session_id": sessionId.uuidString.lowercased(),
+            "name": "Legacy Session",
+            "working_directory": "/tmp/legacy",
+            "last_modified": Date().timeIntervalSince1970 * 1000,
+            "message_count": 2
+            // Note: no "provider" field
+        ]]
+
+        // When: Handling session list
+        await sessionSyncManager.handleSessionList(sessionData)
+
+        // Then: Provider should default to "claude"
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
+        let sessions = try context.fetch(fetchRequest)
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions.first?.provider, "claude")
+    }
+
+    func testHandleSessionListWithMixedProviders() async throws {
+        // Given: A session list with multiple providers
+        let claudeId = UUID()
+        let copilotId = UUID()
+        let sessionData: [[String: Any]] = [
+            [
+                "session_id": claudeId.uuidString.lowercased(),
+                "name": "Claude Session",
+                "working_directory": "/tmp/claude",
+                "last_modified": Date().timeIntervalSince1970 * 1000,
+                "message_count": 5,
+                "provider": "claude"
+            ],
+            [
+                "session_id": copilotId.uuidString.lowercased(),
+                "name": "Copilot Session",
+                "working_directory": "/tmp/copilot",
+                "last_modified": Date().timeIntervalSince1970 * 1000,
+                "message_count": 3,
+                "provider": "copilot"
+            ]
+        ]
+
+        // When: Handling session list
+        await sessionSyncManager.handleSessionList(sessionData)
+
+        // Then: Each session should have correct provider
+        let claudeFetch = CDBackendSession.fetchBackendSession(id: claudeId)
+        let claudeSessions = try context.fetch(claudeFetch)
+        XCTAssertEqual(claudeSessions.first?.provider, "claude")
+
+        let copilotFetch = CDBackendSession.fetchBackendSession(id: copilotId)
+        let copilotSessions = try context.fetch(copilotFetch)
+        XCTAssertEqual(copilotSessions.first?.provider, "copilot")
+    }
+
+    func testHandleSessionListDoesNotOverwriteExistingProviderWithNil() async throws {
+        // Given: An existing Copilot session
+        let sessionId = UUID()
+        let existingSession = createSession(id: sessionId, messageCount: 5, provider: "copilot")
+        try context.save()
+
+        // Verify existing session has copilot provider
+        XCTAssertEqual(existingSession.provider, "copilot")
+
+        // When: Handling session list update WITHOUT provider field
+        let sessionData: [[String: Any]] = [[
+            "session_id": sessionId.uuidString.lowercased(),
+            "name": "Updated Session",
+            "working_directory": "/tmp/test",
+            "last_modified": Date().timeIntervalSince1970 * 1000,
+            "message_count": 10
+            // Note: no "provider" field in update
+        ]]
+
+        await sessionSyncManager.handleSessionList(sessionData)
+
+        // Then: Provider should remain "copilot" (not overwritten to default)
+        context.refresh(existingSession, mergeChanges: true)
+        XCTAssertEqual(existingSession.provider, "copilot", "Existing provider should not be overwritten when update has no provider")
+    }
 
     func testDeltaSyncDoesNotDeleteExistingMessagesWhenNoNewMessages() throws {
         // This is the specific bug scenario:
