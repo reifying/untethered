@@ -71,9 +71,12 @@
     (str/lower-case (str session-id))))
 
 (defn parse-json-safe
-  "Parse JSON string safely, returning nil on error."
+  "Parse JSON string safely, returning nil on error.
+   Logs a warning when parsing fails to help diagnose protocol issues."
   [s]
   (try
     (json->clj s)
-    (catch :default _
+    (catch :default e
+      (js/console.warn "JSON parse failed:" (.-message e)
+                       "Input (first 200 chars):" (subs (str s) 0 (min 200 (count (str s)))))
       nil)))
