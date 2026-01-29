@@ -430,10 +430,11 @@
 ;; Priority Queue Management
 ;; ============================================================================
 
-(defn- decrement-queue-positions
+(defn decrement-queue-positions
   "Decrement queue-position for all sessions with position > threshold.
    Returns updated sessions map.
-   Matches iOS ConversationView.swift lines 1067-1074."
+   Matches iOS ConversationView.swift lines 1067-1074.
+   Public for unit testing."
   [sessions threshold]
   (reduce-kv
    (fn [acc id session]

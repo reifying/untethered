@@ -1329,6 +1329,86 @@
      ;; Should still be nil
      (is (nil? (:queue-position @(rf/subscribe [:sessions/by-id "s1"])))))))
 
+;; ============================================================================
+;; Direct Unit Tests for decrement-queue-positions Helper
+;; ============================================================================
+
+(deftest decrement-queue-positions-test
+  "Direct unit tests for the decrement-queue-positions helper function.
+   Tests the pure function separately from event handler integration.
+   Reference: iOS ConversationView.swift lines 1067-1074."
+
+  (testing "empty sessions map returns empty map"
+    (is (= {} (events-core/decrement-queue-positions {} 1))))
+
+  (testing "sessions with no queue positions are unchanged"
+    (let [sessions {"s1" {:id "s1" :name "Session 1"}
+                    "s2" {:id "s2" :name "Session 2"}}]
+      (is (= sessions (events-core/decrement-queue-positions sessions 1)))))
+
+  (testing "sessions with positions <= threshold are unchanged"
+    (let [sessions {"s1" {:id "s1" :queue-position 1}
+                    "s2" {:id "s2" :queue-position 2}}]
+      (is (= sessions (events-core/decrement-queue-positions sessions 2)))))
+
+  (testing "sessions with positions > threshold are decremented"
+    (let [sessions {"s1" {:id "s1" :queue-position 1}
+                    "s2" {:id "s2" :queue-position 2}
+                    "s3" {:id "s3" :queue-position 3}}
+          result (events-core/decrement-queue-positions sessions 1)]
+      ;; s1 at position 1 <= threshold 1, unchanged
+      (is (= 1 (get-in result ["s1" :queue-position])))
+      ;; s2 at position 2 > threshold 1, decremented to 1
+      (is (= 1 (get-in result ["s2" :queue-position])))
+      ;; s3 at position 3 > threshold 1, decremented to 2
+      (is (= 2 (get-in result ["s3" :queue-position])))))
+
+  (testing "threshold 0 decrements all sessions with positions"
+    (let [sessions {"s1" {:id "s1" :queue-position 1}
+                    "s2" {:id "s2" :queue-position 2}
+                    "s3" {:id "s3" :queue-position 3}}
+          result (events-core/decrement-queue-positions sessions 0)]
+      ;; All positions > 0, so all decremented
+      (is (= 0 (get-in result ["s1" :queue-position])))
+      (is (= 1 (get-in result ["s2" :queue-position])))
+      (is (= 2 (get-in result ["s3" :queue-position])))))
+
+  (testing "mixed sessions with and without queue positions"
+    (let [sessions {"s1" {:id "s1" :queue-position 1}
+                    "s2" {:id "s2" :name "No queue pos"}
+                    "s3" {:id "s3" :queue-position 3}}
+          result (events-core/decrement-queue-positions sessions 1)]
+      ;; s1 unchanged (position 1 <= threshold)
+      (is (= 1 (get-in result ["s1" :queue-position])))
+      ;; s2 still has no queue position
+      (is (nil? (get-in result ["s2" :queue-position])))
+      ;; s3 decremented (position 3 > threshold)
+      (is (= 2 (get-in result ["s3" :queue-position])))))
+
+  (testing "nil queue-position is treated as not having a position"
+    (let [sessions {"s1" {:id "s1" :queue-position nil}
+                    "s2" {:id "s2" :queue-position 2}}
+          result (events-core/decrement-queue-positions sessions 0)]
+      ;; s1 with nil is unchanged
+      (is (nil? (get-in result ["s1" :queue-position])))
+      ;; s2 is decremented
+      (is (= 1 (get-in result ["s2" :queue-position])))))
+
+  (testing "preserves other session fields"
+    (let [sessions {"s1" {:id "s1"
+                          :name "Test Session"
+                          :queue-position 2
+                          :working-directory "/project"
+                          :custom-name "My Session"}}
+          result (events-core/decrement-queue-positions sessions 1)]
+      ;; All other fields preserved
+      (is (= "s1" (get-in result ["s1" :id])))
+      (is (= "Test Session" (get-in result ["s1" :name])))
+      (is (= "/project" (get-in result ["s1" :working-directory])))
+      (is (= "My Session" (get-in result ["s1" :custom-name])))
+      ;; Position decremented
+      (is (= 1 (get-in result ["s1" :queue-position]))))))
+
 (deftest priority-queue-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
