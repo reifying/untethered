@@ -830,14 +830,38 @@
 (rf/reg-event-fx
  :prompt/send
  (fn [{:keys [db]} [_ {:keys [text session-id working-directory system-prompt]}]]
-   (let [ios-session-id (:ios-session-id db)
+   ;; Determine if this is a new session (messageCount == 0) or existing session
+   ;; iOS reference: ConversationView.swift lines 776-795
+   ;; - New sessions: use new_session_id (backend will create .jsonl file)
+   ;; - Existing sessions: use resume_session_id (backend appends to existing file)
+   (let [session (get-in db [:sessions session-id])
+         existing-messages (get-in db [:messages session-id] [])
+         ;; A session is "new" if it has no messages (either from server or locally created)
+         ;; This matches iOS: isNewSession = session.messageCount == 0
+         is-new-session? (and (zero? (or (:message-count session) 0))
+                              (empty? existing-messages))
          message-id (str (random-uuid))
          new-message {:id message-id
                       :session-id session-id
                       :role :user
                       :text text
                       :timestamp (js/Date.)
-                      :status :sending}]
+                      :status :sending}
+         ;; Build WebSocket message with correct session ID field
+         ;; iOS sends new_session_id for new sessions, resume_session_id for existing
+         ws-message (cond-> {:type "prompt"
+                             :text text
+                             :working-directory working-directory}
+                      ;; Include session ID in the correct field based on session state
+                      is-new-session?
+                      (assoc :new-session-id session-id)
+
+                      (not is-new-session?)
+                      (assoc :resume-session-id session-id)
+
+                      ;; Include system prompt if provided and non-empty
+                      (and system-prompt (not (str/blank? system-prompt)))
+                      (assoc :system-prompt system-prompt))]
      {:db (-> db
               (update :locked-sessions conj session-id)
               (update-in [:messages session-id]
@@ -848,12 +872,7 @@
               ;; Reset compaction feedback state when user sends a message
               ;; iOS parity: ConversationView.swift line 747
               (update-in [:ui :compaction-timestamps] dissoc session-id))
-      :ws/send {:type "prompt"
-                :text text
-                :ios-session-id ios-session-id
-                :session-id session-id
-                :working-directory working-directory
-                :system-prompt system-prompt}})))
+      :ws/send ws-message})))
 
 (rf/reg-event-fx
  :prompt/send-from-draft

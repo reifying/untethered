@@ -829,9 +829,15 @@
 (deftest prompt-send-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
-   (rf/dispatch-sync [:db/update-in [:ios-session-id] (constantly "ios-session-123")])
    (rf/dispatch-sync [:db/update-in [:active-session-id] (constantly "session-123")])
    (rf/dispatch-sync [:db/update-in [:locked-sessions] (constantly #{})])
+   ;; Set up session with existing messages (not a new session)
+   (rf/dispatch-sync [:db/update-in [:sessions "session-123"]
+                      (constantly {:id "session-123"
+                                   :message-count 5
+                                   :working-directory "/test/path"})])
+   (rf/dispatch-sync [:db/update-in [:messages "session-123"]
+                      (constantly [{:id "existing-msg" :text "Existing" :role :user}])])
 
    (testing "prompt/send adds user message and locks session"
      (rf/dispatch-sync [:prompt/send
@@ -841,18 +847,131 @@
 
      ;; User message should be added with :sending status
      (let [messages (get-in @re-frame.db/app-db [:messages "session-123"])]
-       (is (= 1 (count messages)))
-       (is (= "Hello Claude" (:text (first messages))))
-       (is (= :user (:role (first messages))))
-       (is (= :sending (:status (first messages)))))
+       (is (= 2 (count messages)))
+       (is (= "Hello Claude" (:text (last messages))))
+       (is (= :user (:role (last messages))))
+       (is (= :sending (:status (last messages)))))
 
      ;; Session should be locked (optimistic locking)
      (is (contains? (:locked-sessions @re-frame.db/app-db) "session-123")))))
 
+(deftest prompt-send-new-session-uses-new-session-id-test
+  "New sessions (messageCount == 0, no messages) should use new_session_id.
+   iOS reference: ConversationView.swift lines 776-795"
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+   ;; Track what gets sent via :ws/send
+   (let [sent-messages (atom [])]
+     (rf/reg-fx :ws/send (fn [msg] (swap! sent-messages conj msg)))
+
+     ;; Set up NEW session (no messages, message-count 0)
+     (rf/dispatch-sync [:db/update-in [:sessions "new-session-123"]
+                        (constantly {:id "new-session-123"
+                                     :message-count 0
+                                     :working-directory "/test/path"})])
+
+     (rf/dispatch-sync [:prompt/send
+                        {:text "First message"
+                         :session-id "new-session-123"
+                         :working-directory "/test/path"}])
+
+     ;; Should use new_session_id, not resume_session_id or session_id
+     (let [ws-msg (last @sent-messages)]
+       (is (= "prompt" (:type ws-msg)))
+       (is (= "new-session-123" (:new-session-id ws-msg))
+           "New session should use :new-session-id")
+       (is (nil? (:resume-session-id ws-msg))
+           "New session should NOT have :resume-session-id")
+       (is (nil? (:session-id ws-msg))
+           "Should not use generic :session-id (old protocol)")))))
+
+(deftest prompt-send-existing-session-uses-resume-session-id-test
+  "Existing sessions (messageCount > 0) should use resume_session_id.
+   iOS reference: ConversationView.swift lines 776-795"
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+   ;; Track what gets sent via :ws/send
+   (let [sent-messages (atom [])]
+     (rf/reg-fx :ws/send (fn [msg] (swap! sent-messages conj msg)))
+
+     ;; Set up EXISTING session (has messages)
+     (rf/dispatch-sync [:db/update-in [:sessions "existing-session-123"]
+                        (constantly {:id "existing-session-123"
+                                     :message-count 10
+                                     :working-directory "/test/path"})])
+     (rf/dispatch-sync [:db/update-in [:messages "existing-session-123"]
+                        (constantly [{:id "msg-1" :text "Previous message" :role :user}])])
+
+     (rf/dispatch-sync [:prompt/send
+                        {:text "Another message"
+                         :session-id "existing-session-123"
+                         :working-directory "/test/path"}])
+
+     ;; Should use resume_session_id, not new_session_id
+     (let [ws-msg (last @sent-messages)]
+       (is (= "prompt" (:type ws-msg)))
+       (is (= "existing-session-123" (:resume-session-id ws-msg))
+           "Existing session should use :resume-session-id")
+       (is (nil? (:new-session-id ws-msg))
+           "Existing session should NOT have :new-session-id")
+       (is (nil? (:session-id ws-msg))
+           "Should not use generic :session-id (old protocol)")))))
+
+(deftest prompt-send-includes-system-prompt-when-provided-test
+  "System prompt should be included only when non-empty"
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+   (let [sent-messages (atom [])]
+     (rf/reg-fx :ws/send (fn [msg] (swap! sent-messages conj msg)))
+
+     ;; Set up session
+     (rf/dispatch-sync [:db/update-in [:sessions "session-123"]
+                        (constantly {:id "session-123"
+                                     :message-count 5
+                                     :working-directory "/test"})])
+     (rf/dispatch-sync [:db/update-in [:messages "session-123"]
+                        (constantly [{:id "msg-1" :text "Hi" :role :user}])])
+
+     (testing "non-empty system prompt is included"
+       (rf/dispatch-sync [:prompt/send
+                          {:text "Hello"
+                           :session-id "session-123"
+                           :working-directory "/test"
+                           :system-prompt "You are a helpful assistant"}])
+
+       (let [ws-msg (last @sent-messages)]
+         (is (= "You are a helpful assistant" (:system-prompt ws-msg)))))
+
+     (testing "empty system prompt is not included"
+       (rf/dispatch-sync [:prompt/send
+                          {:text "Hello again"
+                           :session-id "session-123"
+                           :working-directory "/test"
+                           :system-prompt ""}])
+
+       (let [ws-msg (last @sent-messages)]
+         (is (nil? (:system-prompt ws-msg)))))
+
+     (testing "whitespace-only system prompt is not included"
+       (rf/dispatch-sync [:prompt/send
+                          {:text "One more"
+                           :session-id "session-123"
+                           :working-directory "/test"
+                           :system-prompt "   "}])
+
+       (let [ws-msg (last @sent-messages)]
+         (is (nil? (:system-prompt ws-msg))))))))
+
 (deftest prompt-send-clears-compaction-feedback-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
-   (rf/dispatch-sync [:db/update-in [:ios-session-id] (constantly "ios-session-123")])
+   ;; Set up session with compaction timestamp
+   (rf/dispatch-sync [:db/update-in [:sessions "session-123"]
+                      (constantly {:id "session-123"
+                                   :message-count 5
+                                   :working-directory "/test"})])
+   (rf/dispatch-sync [:db/update-in [:messages "session-123"]
+                      (constantly [{:id "msg-1" :text "Hi" :role :user}])])
    (rf/dispatch-sync [:db/update-in [:ui :compaction-timestamps "session-123"]
                       (constantly (js/Date.))])
 

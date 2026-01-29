@@ -670,14 +670,17 @@
        (is @(rf/subscribe [:ui/session-recently-compacted? "test-session"]))))
 
    (testing "compaction timestamp cleared on sending prompt"
-     ;; Set up the session first
+     ;; Set up the session first with message-count for existing session
      (rf/dispatch-sync [:sessions/add {:id "test-session"
                                        :backend-name "Test Session"
-                                       :working-directory "/test/path"}])
+                                       :working-directory "/test/path"
+                                       :message-count 5}])
+     ;; Add a message so it's treated as existing session
+     (swap! re-frame.db/app-db assoc-in [:messages "test-session"]
+            [{:id "msg-1" :text "Previous" :role :user}])
      ;; Set connection status and API key for prompt sending
      (rf/dispatch-sync [:connection/set-status :connected])
      (swap! re-frame.db/app-db assoc :api-key "test-key")
-     (swap! re-frame.db/app-db assoc :ios-session-id "ios-123")
      ;; Send a prompt which should clear the compaction timestamp
      (rf/dispatch-sync [:prompt/send {:text "Hello"
                                       :session-id "test-session"
