@@ -586,9 +586,7 @@
           ;; Error content (tappable to copy)
           [:> rn/TouchableOpacity
            {:style {:flex 1}
-            :on-press (fn []
-                        (copy-to-clipboard! error "Error copied")
-                        (js/console.log "Error copied to clipboard"))}
+            :on-press #(copy-to-clipboard! error "Error copied")}
            [:> rn/Text {:style {:color (:destructive colors)
                                 :font-size 14
                                 :font-weight "500"}}
