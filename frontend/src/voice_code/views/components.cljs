@@ -89,19 +89,29 @@
     duration-ms)))
 
 (defn copy-to-clipboard!
-  "Copy text to clipboard with haptic feedback and toast confirmation.
+  "Copy text to clipboard with haptic feedback and optional feedback.
+
+   Unified clipboard function supporting three feedback modes:
+   1. Toast message (string): Shows toast notification
+   2. Callback (function): Invokes callback after copy
+   3. No feedback (nil): Just copies with haptic
 
    Args:
    - text: String to copy to clipboard
-   - message: Confirmation message to show in toast
+   - message-or-callback: Optional - string for toast, fn for callback, nil for none
 
-   Example:
-   (copy-to-clipboard! session-id \"Session ID copied\")"
-  [text message]
+   Examples:
+   (copy-to-clipboard! session-id \"Session ID copied\")  ;; Toast
+   (copy-to-clipboard! text #(on-copied))                 ;; Callback
+   (copy-to-clipboard! text nil)                          ;; No feedback"
+  [text message-or-callback]
   (let [clipboard (or (.-default Clipboard) Clipboard)]
     (.setString clipboard text)
     (haptic/success!)
-    (show-toast! message)))
+    (cond
+      (string? message-or-callback) (show-toast! message-or-callback)
+      (fn? message-or-callback) (message-or-callback)
+      :else nil)))
 
 (defn- toast-background-color
   "Get toast background color for variant using theme colors."

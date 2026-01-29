@@ -143,3 +143,45 @@
          (is (false? (:visible? @components/toast-state)))
          (done))
        200))))
+
+;; ============================================================================
+;; copy-to-clipboard! Tests
+;; ============================================================================
+
+(deftest copy-to-clipboard-with-message-test
+  (testing "copy-to-clipboard! shows toast when given a string message"
+    ;; Reset toast state
+    (reset! components/toast-state {:visible? false :message "" :variant :success})
+    ;; Copy with message (clipboard will fail in Node.js but toast should work)
+    (try
+      (components/copy-to-clipboard! "test text" "Copied!")
+      (catch :default _))
+    ;; Toast should be shown
+    (let [{:keys [visible? message]} @components/toast-state]
+      (is (true? visible?))
+      (is (= "Copied!" message)))))
+
+(deftest copy-to-clipboard-with-callback-test
+  (testing "copy-to-clipboard! invokes callback when given a function"
+    ;; Reset toast state
+    (reset! components/toast-state {:visible? false :message "" :variant :success})
+    (let [callback-called? (atom false)]
+      ;; Copy with callback
+      (try
+        (components/copy-to-clipboard! "test text" #(reset! callback-called? true))
+        (catch :default _))
+      ;; Callback should be called, toast should NOT be shown
+      (is (true? @callback-called?))
+      ;; Toast should NOT be visible (nil doesn't show toast)
+      (is (false? (:visible? @components/toast-state))))))
+
+(deftest copy-to-clipboard-with-nil-test
+  (testing "copy-to-clipboard! doesn't show toast when given nil"
+    ;; Reset toast state to visible to test that nil doesn't show toast
+    (reset! components/toast-state {:visible? false :message "" :variant :success})
+    ;; Copy with nil feedback
+    (try
+      (components/copy-to-clipboard! "test text" nil)
+      (catch :default _))
+    ;; Toast should NOT be shown
+    (is (false? (:visible? @components/toast-state)))))

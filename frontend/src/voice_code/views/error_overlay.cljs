@@ -4,16 +4,8 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn]
-            ["@react-native-clipboard/clipboard" :as Clipboard]
-            [voice-code.haptic :as haptic]
+            [voice-code.views.components :refer [copy-to-clipboard!]]
             [voice-code.theme :as theme]))
-
-(defn- copy-to-clipboard!
-  "Copy text to clipboard with haptic feedback."
-  [text]
-  (let [clipboard (or (.-default Clipboard) Clipboard)]
-    (.setString clipboard text)
-    (haptic/success!)))
 
 (defn- format-error
   "Format error and stack trace for display/copying."
@@ -97,9 +89,11 @@
                                       :paddingBottom 32}}
                   [:> rn/TouchableOpacity
                    {:onPress (fn []
-                               (copy-to-clipboard! (format-error error))
-                               (reset! copied? true)
-                               (js/setTimeout #(reset! copied? false) 2000))
+                               (copy-to-clipboard!
+                                (format-error error)
+                                (fn []
+                                  (reset! copied? true)
+                                  (js/setTimeout #(reset! copied? false) 2000))))
                     :style {:backgroundColor (if @copied? (:success colors) (:accent colors))
                             :borderRadius 12
                             :padding 16

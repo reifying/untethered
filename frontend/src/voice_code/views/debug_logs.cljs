@@ -9,9 +9,8 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn]
-            ["@react-native-clipboard/clipboard" :as Clipboard]
             [voice-code.log-manager :as log-manager]
-            [voice-code.haptic :as haptic]
+            [voice-code.views.components :refer [copy-to-clipboard!]]
             [voice-code.theme :as theme]))
 
 (defn- level-color
@@ -31,14 +30,6 @@
     "warn" (:warning-background colors)
     "info" (:accent-background colors)
     (:background-secondary colors)))
-
-(defn- copy-to-clipboard!
-  "Copy text to clipboard with haptic feedback and optional callback."
-  [text on-copied]
-  (let [clipboard (or (.-default Clipboard) Clipboard)]
-    (.setString clipboard text)
-    (haptic/success!)
-    (when on-copied (on-copied))))
 
 (defn- format-log-for-copy
   "Format a log entry for copying to clipboard."
@@ -150,12 +141,12 @@
                  :align-items "center"}
          :on-press (fn []
                      (let [text (log-manager/get-logs-as-text)]
-                       (let [clipboard (or (.-default Clipboard) Clipboard)]
-                         (.setString clipboard text))
-                       (haptic/success!)
-                       (reset! toast-message "Logs copied to clipboard")
-                       (reset! toast-visible? true)
-                       (js/setTimeout #(reset! toast-visible? false) 2000)))}
+                       (copy-to-clipboard!
+                        text
+                        (fn []
+                          (reset! toast-message "Logs copied to clipboard")
+                          (reset! toast-visible? true)
+                          (js/setTimeout #(reset! toast-visible? false) 2000)))))}
         [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
          [:> rn/Text {:style {:font-size 16 :margin-right 6}} "📋"]
          [:> rn/Text {:style {:font-size 16

@@ -10,21 +10,9 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [Alert]]
-            ["@react-native-clipboard/clipboard" :as Clipboard]
             [voice-code.persistence :as persistence]
-            [voice-code.haptic :as haptic]
+            [voice-code.views.components :refer [copy-to-clipboard!]]
             [voice-code.theme :as theme]))
-
-;; ============================================================================
-;; Clipboard Utility
-;; ============================================================================
-
-(defn- copy-to-clipboard!
-  "Copy text to clipboard with haptic feedback."
-  [text]
-  (let [clipboard (or (.-default Clipboard) Clipboard)]
-    (.setString clipboard text)
-    (haptic/success!)))
 
 ;; ============================================================================
 ;; Components
@@ -356,7 +344,7 @@
               {:keys [visible? message]} @confirmation-state
 
               handle-copy (fn [text msg]
-                            (copy-to-clipboard! text)
+                            (copy-to-clipboard! text nil)
                             (show-confirmation! msg))
 
               ;; Export loads ALL messages from SQLite, bypassing the 50-message
@@ -383,7 +371,7 @@
                                                                                 (str "[" (if (= role :user) "User" "Assistant") "]\n"
                                                                                      text "\n\n")))
                                                                          (apply str)))]
-                                               (copy-to-clipboard! export-text)
+                                               (copy-to-clipboard! export-text nil)
                                                (show-confirmation! (str "Exported " (count all-messages) " messages")))))
                                     (.catch (fn [error]
                                               (js/console.error "Export failed:" error)
