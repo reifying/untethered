@@ -401,5 +401,5 @@
                 [:> rn/Text {:style {:color (:button-text-on-accent colors)
                                      :font-size 14
                                      :font-weight "500"}}
-                 @toast-message]]])])])))
+                 @toast-message]]])]))])))
 

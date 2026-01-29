@@ -35,6 +35,67 @@
 (defonce ^:private speaking? (atom false))
 (defonce ^:private paused? (atom false))
 
+;; ============================================================================
+;; Background Audio Keep-Alive
+;; ============================================================================
+;; Mirrors iOS VoiceOutputManager behavior: plays silent audio every 25 seconds
+;; to prevent iOS from suspending the audio session during long TTS playback.
+;; This is required for "Continue playback when locked" functionality.
+;; Reference: ios/VoiceCode/Managers/VoiceOutputManager.swift:90-109
+
+(def ^:private keep-alive-interval-ms
+  "Interval in milliseconds for silent audio playback to keep audio session alive.
+   iOS uses 25 seconds."
+  25000)
+
+(defonce ^:private keep-alive-timer (atom nil))
+(defonce ^:private continue-playback-setting (atom true))
+
+(defn- play-silence!
+  "Play a minimal silent utterance to keep the audio session alive.
+   Uses react-native-tts with an empty string which the library handles gracefully
+   as a no-op on most platforms."
+  []
+  (when-let [^js Tts (get-tts-default)]
+    ;; Speak a single non-breaking space - TTS will process this quickly
+    ;; but it's enough to keep the audio session active
+    (try
+      (.speak Tts "\u00A0") ; Non-breaking space
+      (catch :default e
+        (js/console.warn "Keep-alive silence playback failed:" e)))))
+
+(defn- start-keep-alive-timer!
+  "Start the background audio keep-alive timer.
+   Only starts if continue-playback-when-locked setting is enabled."
+  []
+  (when @continue-playback-setting
+    ;; Stop any existing timer first
+    (when-let [timer @keep-alive-timer]
+      (js/clearInterval timer))
+    ;; Start new timer
+    (reset! keep-alive-timer
+            (js/setInterval play-silence! keep-alive-interval-ms))
+    (js/console.log "🔊 Keep-alive timer started (interval:" keep-alive-interval-ms "ms)")))
+
+(defn- stop-keep-alive-timer!
+  "Stop the background audio keep-alive timer."
+  []
+  (when-let [timer @keep-alive-timer]
+    (js/clearInterval timer)
+    (reset! keep-alive-timer nil)
+    (js/console.log "🔊 Keep-alive timer stopped")))
+
+(defn set-continue-playback-when-locked!
+  "Configure whether background audio keep-alive is enabled.
+   When true, TTS will continue playing when screen is locked.
+   Mirrors iOS AppSettings.continuePlaybackWhenLocked."
+  [enabled?]
+  (reset! continue-playback-setting enabled?)
+  (js/console.log "🔊 Continue playback when locked:" enabled?)
+  ;; If disabled while timer is running, stop it
+  (when (and (not enabled?) @keep-alive-timer)
+    (stop-keep-alive-timer!)))
+
 ;; Track event listener subscriptions for cleanup.
 ;; react-native-tts addEventListener returns a subscription object with .remove() method.
 ;; Storing these enables proper cleanup to prevent memory leaks on hot reload.
@@ -100,6 +161,8 @@
    Call this before re-initializing TTS or when the app unmounts.
    Prevents memory leaks from accumulated event listeners on hot reload."
   []
+  ;; Stop keep-alive timer
+  (stop-keep-alive-timer!)
   ;; Remove all stored event subscriptions
   (doseq [sub @event-subscriptions]
     (try
@@ -151,6 +214,7 @@
      ;; TTS finished speaking
      (add-tts-listener! Tts "tts-finish"
                         (fn [_]
+                          (stop-keep-alive-timer!)
                           (reset! speaking? false)
                           (reset! paused? false)
                           (rf/dispatch [:voice/speech-finished])))
@@ -158,6 +222,7 @@
      ;; TTS started speaking
      (add-tts-listener! Tts "tts-start"
                         (fn [_]
+                          (start-keep-alive-timer!)
                           (reset! speaking? true)
                           (reset! paused? false)
                           (rf/dispatch [:voice/tts-started])))
@@ -165,6 +230,7 @@
      ;; TTS cancelled
      (add-tts-listener! Tts "tts-cancel"
                         (fn [_]
+                          (stop-keep-alive-timer!)
                           (reset! speaking? false)
                           (reset! paused? false)
                           (rf/dispatch [:voice/tts-cancelled])))
@@ -218,6 +284,7 @@
   "Stop any current speech.
    Returns a promise."
   []
+  (stop-keep-alive-timer!)
   (if-let [Tts (get-tts-default)]
     (-> (.stop Tts)
         (.then (fn [_]

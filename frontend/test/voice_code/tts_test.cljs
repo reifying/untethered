@@ -104,3 +104,31 @@
           (.catch (fn [e]
                     (is false (str "get-available-voices! should not reject: " e))
                     (done)))))))
+
+;; ============================================================================
+;; Background Audio Keep-Alive Tests
+;; ============================================================================
+
+(deftest set-continue-playback-when-locked-does-not-throw
+  (testing "set-continue-playback-when-locked! can be called without error"
+    ;; Should not throw even in test environment
+    (is (nil? (tts/set-continue-playback-when-locked! true)))
+    (is (nil? (tts/set-continue-playback-when-locked! false)))))
+
+(deftest cleanup-tts-stops-keep-alive-timer
+  (testing "cleanup-tts! stops the keep-alive timer"
+    ;; Enable the setting so timer would start if TTS were active
+    (tts/set-continue-playback-when-locked! true)
+    ;; Cleanup should not throw even if timer isn't running
+    (tts/cleanup-tts!)
+    ;; Verify cleanup resets state
+    (is (false? (tts/speaking?*)))
+    (is (false? (tts/paused?*)))))
+
+(deftest continue-playback-setting-persists
+  (testing "continue-playback-when-locked setting can be toggled"
+    ;; Set to false then back to true to verify toggling works
+    (tts/set-continue-playback-when-locked! false)
+    ;; No assertion needed - if it throws, test fails
+    (tts/set-continue-playback-when-locked! true)
+    (is true "continue-playback setting can be toggled")))

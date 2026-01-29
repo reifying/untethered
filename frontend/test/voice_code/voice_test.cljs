@@ -139,6 +139,21 @@
      (rf/dispatch-sync [:voice/set-speech-rate 1.0])
      (is (= 1.0 (get-in @re-frame.db/app-db [:settings :voice-speech-rate]))))))
 
+(deftest voice-continue-playback-when-locked-event
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "continue-playback-when-locked defaults to true"
+     (is (true? (get-in @re-frame.db/app-db [:settings :continue-playback-when-locked]))))
+
+   (testing "set-continue-playback-when-locked updates setting to false"
+     (rf/dispatch-sync [:voice/set-continue-playback-when-locked false])
+     (is (false? (get-in @re-frame.db/app-db [:settings :continue-playback-when-locked]))))
+
+   (testing "set-continue-playback-when-locked updates setting back to true"
+     (rf/dispatch-sync [:voice/set-continue-playback-when-locked true])
+     (is (true? (get-in @re-frame.db/app-db [:settings :continue-playback-when-locked]))))))
+
 (deftest voice-stop-speaking-event
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])

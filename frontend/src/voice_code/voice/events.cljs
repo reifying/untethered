@@ -65,7 +65,10 @@
  :voice/setup
  (fn [settings]
    (recognition/setup-voice-recognition!)
-   (tts/setup-tts! (or settings {}))))
+   (tts/setup-tts! (or settings {}))
+   ;; Configure background audio keep-alive based on setting
+   (when-let [continue-playback? (:continue-playback-when-locked settings)]
+     (tts/set-continue-playback-when-locked! continue-playback?))))
 
 (rf/reg-fx
  :voice/configure-silent-switch
@@ -90,6 +93,11 @@
  :voice/set-rate
  (fn [rate]
    (tts/set-speech-rate! rate)))
+
+(rf/reg-fx
+ :voice/set-continue-playback
+ (fn [enabled?]
+   (tts/set-continue-playback-when-locked! enabled?)))
 
 ;; ============================================================================
 ;; Event Handlers - Listening Control
@@ -259,6 +267,13 @@
    {:db (assoc-in db [:settings :voice-speech-rate] rate)
     :voice/set-rate rate
     :dispatch [:settings/save :voice-speech-rate rate]}))
+
+(rf/reg-event-fx
+ :voice/set-continue-playback-when-locked
+ (fn [{:keys [db]} [_ enabled?]]
+   {:db (assoc-in db [:settings :continue-playback-when-locked] enabled?)
+    :voice/set-continue-playback enabled?
+    :dispatch [:settings/save :continue-playback-when-locked enabled?]}))
 
 ;; ============================================================================
 ;; Event Handlers - Voice Preview

@@ -586,7 +586,7 @@
                     :description "When enabled, speech will not play when your phone's ringer switch is on silent/vibrate"}]
        [toggle-row {:label "Continue playback when locked"
                     :value (:continue-playback-when-locked settings)
-                    :on-change #(rf/dispatch [:settings/save :continue-playback-when-locked %])
+                    :on-change #(rf/dispatch [:voice/set-continue-playback-when-locked %])
                     :description "When enabled, audio will continue playing even when you lock your screen"}]])))
 
 (defn- recent-sessions-section
