@@ -16,7 +16,8 @@
             [voice-code.resources :as resources]
             [voice-code.recipes :as recipes]
             [voice-code.orchestration :as orch]
-            [voice-code.env :as env])
+            [voice-code.env :as env]
+            [voice-code.providers :as providers])
   (:gen-class))
 
 ;; JSON key conversion utilities
@@ -1263,14 +1264,32 @@
 
                 :else
                 (let [claude-session-id (or resume-session-id new-session-id)
+                      ;; Determine provider: from session metadata for resumed sessions, or default
+                      session-metadata (when resume-session-id
+                                         (repl/get-session-metadata resume-session-id))
+                      provider (providers/resolve-provider nil session-metadata)
+                      ;; Validate CLI is available before attempting to acquire lock
+                      cli-validation-error (providers/validate-cli-available provider)
                       orch-state (get-session-recipe-state claude-session-id)
                       final-prompt-text (if orch-state
                                           (if-let [recipe (recipes/get-recipe (:recipe-id orch-state))]
                                             (or (get-next-step-prompt claude-session-id orch-state recipe) prompt-text)
                                             prompt-text)
                                           prompt-text)]
-                  ;; Try to acquire lock for this session
-                  (if (repl/acquire-session-lock! claude-session-id)
+                  ;; Check CLI availability before acquiring lock
+                  (if cli-validation-error
+                    (do
+                      (log/warn "CLI not available for provider"
+                                {:provider provider
+                                 :session-id claude-session-id
+                                 :error (:error cli-validation-error)})
+                      (http/send! channel
+                                  (generate-json
+                                   {:type :error
+                                    :message (:error cli-validation-error)
+                                    :session-id claude-session-id})))
+                    ;; Try to acquire lock for this session
+                    (if (repl/acquire-session-lock! claude-session-id)
                     (do
                       (log/info "Received prompt"
                                 {:text (subs prompt-text 0 (min 50 (count prompt-text)))
@@ -1328,7 +1347,7 @@
                       (log/info "Session locked, rejecting prompt"
                                 {:session-id claude-session-id
                                  :text (subs prompt-text 0 (min 50 (count prompt-text)))})
-                      (send-session-locked! channel claude-session-id))))))
+                      (send-session-locked! channel claude-session-id)))))))
 
             "set_directory"
             (let [path (:path data)]

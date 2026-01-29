@@ -301,3 +301,27 @@
   "Returns a vector of installed providers."
   []
   (filterv provider-installed? known-providers))
+
+;; ============================================================================
+;; CLI Validation
+;; ============================================================================
+
+(defn validate-cli-available
+  "Validates that a provider's CLI is available for prompt execution.
+
+   Args:
+   - provider: Provider keyword (:claude, :copilot, etc.)
+
+   Returns:
+   - nil if CLI is available (validation passes)
+   - Map with :error and :provider keys if CLI is unavailable"
+  [provider]
+  (when-not (provider-installed? provider)
+    (let [cli-name (case provider
+                     :claude "claude"
+                     :copilot "copilot"
+                     :cursor "cursor"
+                     (name provider))]
+      {:error (str (name provider) " CLI not installed. "
+                   "Please install the " cli-name " CLI to use " (name provider) " sessions.")
+       :provider provider})))

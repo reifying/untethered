@@ -357,6 +357,42 @@ branch: main")
     (is (false? (providers/provider-installed? :cursor)))))
 
 ;; ============================================================================
+;; CLI Validation Tests
+;; ============================================================================
+
+(deftest test-validate-cli-available
+  (testing "returns nil when CLI is installed"
+    ;; Mock provider-installed? to return true
+    (with-redefs [providers/provider-installed? (constantly true)]
+      (is (nil? (providers/validate-cli-available :claude)))
+      (is (nil? (providers/validate-cli-available :copilot)))
+      (is (nil? (providers/validate-cli-available :cursor)))))
+
+  (testing "returns error map when CLI is not installed"
+    (with-redefs [providers/provider-installed? (constantly false)]
+      (let [result (providers/validate-cli-available :copilot)]
+        (is (map? result))
+        (is (contains? result :error))
+        (is (contains? result :provider))
+        (is (= :copilot (:provider result)))
+        (is (clojure.string/includes? (:error result) "copilot CLI not installed")))))
+
+  (testing "error message includes provider name and CLI name"
+    (with-redefs [providers/provider-installed? (constantly false)]
+      (let [claude-result (providers/validate-cli-available :claude)
+            copilot-result (providers/validate-cli-available :copilot)
+            cursor-result (providers/validate-cli-available :cursor)]
+        (is (clojure.string/includes? (:error claude-result) "claude"))
+        (is (clojure.string/includes? (:error copilot-result) "copilot"))
+        (is (clojure.string/includes? (:error cursor-result) "cursor")))))
+
+  (testing "handles unknown provider gracefully"
+    (with-redefs [providers/provider-installed? (constantly false)]
+      (let [result (providers/validate-cli-available :unknown)]
+        (is (map? result))
+        (is (= :unknown (:provider result)))))))
+
+;; ============================================================================
 ;; YAML Parser Tests
 ;; ============================================================================
 
