@@ -8,22 +8,6 @@
             [voice-code.theme :as theme]
             [voice-code.utils :as utils]))
 
-(defn- format-relative-time
-  "Format a timestamp as relative time (e.g., '2 hours ago')."
-  [timestamp]
-  (when timestamp
-    (let [now (js/Date.)
-          diff (- (.getTime now) (.getTime (js/Date. timestamp)))
-          minutes (Math/floor (/ diff 60000))
-          hours (Math/floor (/ minutes 60))
-          days (Math/floor (/ hours 24))]
-      (cond
-        (< minutes 1) "Just now"
-        (< minutes 60) (str minutes " min ago")
-        (< hours 24) (str hours " hour" (when (not= hours 1) "s") " ago")
-        (< days 7) (str days " day" (when (not= days 1) "s") " ago")
-        :else (.toLocaleDateString (js/Date. timestamp))))))
-
 (defn- directory-name
   "Extract the directory name from a path."
   [path]

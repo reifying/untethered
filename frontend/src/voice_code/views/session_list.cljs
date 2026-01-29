@@ -8,22 +8,6 @@
             [voice-code.haptic :as haptic]
             [voice-code.theme :as theme]))
 
-(defn- format-relative-time
-  "Format a timestamp as relative time."
-  [timestamp]
-  (when timestamp
-    (let [now (js/Date.)
-          diff (- (.getTime now) (.getTime (js/Date. timestamp)))
-          minutes (Math/floor (/ diff 60000))
-          hours (Math/floor (/ minutes 60))
-          days (Math/floor (/ hours 24))]
-      (cond
-        (< minutes 1) "Just now"
-        (< minutes 60) (str minutes "m ago")
-        (< hours 24) (str hours "h ago")
-        (< days 7) (str days "d ago")
-        :else (.toLocaleDateString (js/Date. timestamp))))))
-
 (defn- session-name
   "Get display name for a session."
   [session]
