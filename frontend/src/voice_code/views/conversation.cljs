@@ -230,9 +230,49 @@
                              :font-weight "500"}}
          label]]))])
 
+;; Local atom for copy confirmation state in message detail modal
+;; Matches iOS ConversationView.swift lines 1194-1210 behavior:
+;; - Icon transitions from copy to checkmark
+;; - Color transitions from primary to green
+;; - Text updates from "Copy" to "Copied!"
+;; - Auto-dismisses after 1.5 seconds
+(defonce ^:private copy-confirmation-timer (atom nil))
+(defonce ^:private show-copy-confirmation? (r/atom false))
+
+(defn- cancel-copy-confirmation-timer!
+  "Cancel any pending copy confirmation timer."
+  []
+  (when-let [timer @copy-confirmation-timer]
+    (js/clearTimeout timer)
+    (reset! copy-confirmation-timer nil)))
+
+(defn- start-copy-confirmation!
+  "Start the copy confirmation animation - show checkmark, then auto-hide after 1.5s."
+  []
+  (cancel-copy-confirmation-timer!)
+  (reset! show-copy-confirmation? true)
+  ;; Hide after 1.5 seconds (matches iOS timing)
+  (reset! copy-confirmation-timer
+          (js/setTimeout
+           (fn []
+             (reset! show-copy-confirmation? false)
+             (reset! copy-confirmation-timer nil))
+           1500)))
+
+(defn- reset-copy-confirmation!
+  "Reset copy confirmation state (call when modal closes)."
+  []
+  (cancel-copy-confirmation-timer!)
+  (reset! show-copy-confirmation? false))
+
 (defn message-detail-modal
   "Modal showing full message content with actions.
-   Features: Copy, Read Aloud, Infer Name (for assistant messages).
+   Features: Copy (with animated feedback), Read Aloud, Infer Name (for assistant messages).
+   Copy button shows animated state feedback matching iOS ConversationView.swift lines 1194-1220:
+   - Icon transitions from clipboard to checkmark
+   - Color transitions from accent to green
+   - Text updates from 'Copy' to 'Copied!'
+   - Auto-hides confirmation after 1.5s
    Note: Wrapped in [:f>] to enable React hooks for theme colors."
   []
   [:f>
@@ -241,12 +281,15 @@
            {:keys [role text]} (or message {})
            speaking? @(rf/subscribe [:voice/speaking?])
            is-assistant? (= role :assistant)
+           copied? @show-copy-confirmation?
            colors (theme/use-theme-colors)]
        [:> Modal
         {:visible visible?
          :animation-type "slide"
          :presentation-style "pageSheet"
-         :on-request-close hide-message-detail!}
+         :on-request-close (fn []
+                             (reset-copy-confirmation!)
+                             (hide-message-detail!))}
         [:> rn/SafeAreaView {:style {:flex 1 :background-color (:card-background colors)}}
          ;; Header
          [:> rn/View {:style {:flex-direction "row"
@@ -261,7 +304,9 @@
                                :color (:text-primary colors)}}
            (if (= role :user) "Your Message" "Claude's Response")]
           [:> rn/TouchableOpacity
-           {:on-press hide-message-detail!
+           {:on-press (fn []
+                        (reset-copy-confirmation!)
+                        (hide-message-detail!))
             :style {:padding 8}}
            [:> rn/Text {:style {:font-size 17 :color (:accent colors)}} "Done"]]]
 
@@ -283,13 +328,18 @@
                               :border-top-width 1
                               :border-top-color (:separator colors)
                               :background-color (:background-secondary colors)}}
-          ;; Copy button
+          ;; Copy button with animated state feedback
+          ;; Matches iOS ConversationView.swift lines 1194-1220
           [action-button
-           {:icon "📋"
-            :label "Copy"
+           {:icon (if copied? "✅" "📋")
+            :label (if copied? "Copied!" "Copy")
+            :color (when copied? (:success colors))
             :on-press (fn []
-                        (copy-to-clipboard! text "Message copied")
-                        (hide-message-detail!))}]
+                        (when-not copied?
+                          ;; Copy to clipboard with haptic feedback
+                          (copy-to-clipboard! text nil) ;; nil = don't show toast, we show in-button feedback
+                          ;; Show confirmation animation
+                          (start-copy-confirmation!)))}]
 
           ;; Read Aloud / Stop button
           [action-button
@@ -297,6 +347,7 @@
             :label (if speaking? "Stop" "Read Aloud")
             :color (if speaking? (:destructive colors) (:accent colors))
             :on-press (fn []
+                        (reset-copy-confirmation!)
                         (if speaking?
                           (rf/dispatch [:voice/stop-speaking])
                           (do
@@ -309,6 +360,7 @@
              {:icon "✨"
               :label "Infer Name"
               :on-press (fn []
+                          (reset-copy-confirmation!)
                           (rf/dispatch [:session/infer-name session-id])
                           (show-toast! "Inferring session name...")
                           (hide-message-detail!))}])]]]))])
