@@ -1123,6 +1123,42 @@
      (let [session (get-in @re-frame.db/app-db [:sessions "no-dir-session"])]
        (is (= "" (:working-directory session)))))))
 
+(deftest session-create-new-priority-queue-test
+  "Tests that session/create-new auto-adds to priority queue when enabled.
+   iOS parity: DirectoryListView.swift lines 761-766."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "session/create-new does NOT auto-add to priority queue when disabled"
+     (rf/dispatch-sync [:settings/save :priority-queue-enabled false])
+     (rf/dispatch-sync [:session/create-new
+                        {:session-id "no-queue-session"
+                         :session-name "Test Session"
+                         :working-directory "/test/project"}])
+     (let [session (get-in @re-frame.db/app-db [:sessions "no-queue-session"])]
+       (is (some? session))
+       (is (nil? (:priority-queued-at session)) "Should not have priority-queued-at when disabled")
+       (is (nil? (:priority-order session)) "Should not have priority-order when disabled")))
+
+   (testing "session/create-new auto-adds to priority queue when enabled (iOS parity)"
+     (rf/dispatch-sync [:settings/save :priority-queue-enabled true])
+     (rf/dispatch-sync [:session/create-new
+                        {:session-id "auto-queue-session"
+                         :session-name "Auto Queue Session"
+                         :working-directory "/auto/project"}])
+     (let [session (get-in @re-frame.db/app-db [:sessions "auto-queue-session"])]
+       (is (some? session))
+       (is (some? (:priority-queued-at session)) "Should have priority-queued-at when enabled")
+       (is (= 1.0 (:priority-order session)) "Should have default priority-order 1.0")
+       (is (= 10 (:priority session)) "Should have default priority 10 (low)")))
+
+   (testing "session/create-new priority queue session appears in queued subscription"
+     ;; Priority queue is already enabled from previous test
+     (let [queued @(rf/subscribe [:sessions/priority-queued])]
+       ;; Find our auto-queue-session in the priority queue
+       (is (some #(= "auto-queue-session" (:id %)) queued)
+           "Auto-added session should appear in priority queue subscription")))))
+
 (deftest session-create-worktree-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])

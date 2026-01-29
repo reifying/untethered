@@ -575,17 +575,24 @@
    ;; Create a new session locally and prepare for first prompt.
    ;; The session will be created on the backend when the first prompt is sent.
    ;; This mimics iOS behavior: CoreData session created first, then sent to Claude.
-   (let [now (js/Date.)]
+   ;; Auto-add to priority queue if enabled (iOS parity: DirectoryListView.swift lines 761-766)
+   (let [now (js/Date.)
+         priority-queue-enabled? (get-in db [:settings :priority-queue-enabled])
+         new-session (cond-> {:id session-id
+                              :backend-name session-id ;; Backend ID = iOS UUID for new sessions
+                              :custom-name session-name
+                              :working-directory (or working-directory "")
+                              :last-modified now
+                              :message-count 0
+                              :preview ""
+                              :is-locally-created true}
+                       ;; Auto-add to priority queue if enabled
+                       priority-queue-enabled?
+                       (merge {:priority 10
+                               :priority-order 1.0
+                               :priority-queued-at now}))]
      {:db (-> db
-              (assoc-in [:sessions session-id]
-                        {:id session-id
-                         :backend-name session-id ;; Backend ID = iOS UUID for new sessions
-                         :custom-name session-name
-                         :working-directory (or working-directory "")
-                         :last-modified now
-                         :message-count 0
-                         :preview ""
-                         :is-locally-created true})
+              (assoc-in [:sessions session-id] new-session)
               (assoc :active-session-id session-id))})))
 
 (rf/reg-event-fx
