@@ -76,6 +76,11 @@
      FOREIGN KEY (session_id) REFERENCES sessions(id)
    )")
 
+(def ^:private create-messages-session-index-sql
+  "Index on messages.session_id for efficient session-based queries.
+   Critical for load-messages! which filters by session_id."
+  "CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id)")
+
 (def ^:private create-settings-sql
   "CREATE TABLE IF NOT EXISTS settings (
      key TEXT PRIMARY KEY,
@@ -125,6 +130,7 @@
            (reset! db-atom db)
            (-> (execute-sql! db create-sessions-sql)
                (.then #(execute-sql! db create-messages-sql))
+               (.then #(execute-sql! db create-messages-session-index-sql))
                (.then #(execute-sql! db create-settings-sql))
                (.then (fn [_]
                         (js/console.log "SQLite initialized successfully")

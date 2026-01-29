@@ -107,6 +107,24 @@
                         (done)))))))
 
 ;; ============================================================================
+;; Schema Tests
+;; ============================================================================
+
+(deftest schema-constants-test
+  (testing "messages table schema includes session_id foreign key"
+    ;; Verify the schema definition includes FOREIGN KEY constraint
+    (is (re-find #"FOREIGN KEY \(session_id\)"
+                 @#'persistence/create-messages-sql)
+        "messages table must define session_id foreign key"))
+
+  (testing "messages session_id index exists"
+    ;; Verify index SQL is defined for session_id lookups
+    ;; This index is critical for efficient load-messages! queries
+    (is (re-find #"CREATE INDEX IF NOT EXISTS idx_messages_session_id"
+                 @#'persistence/create-messages-session-index-sql)
+        "index on messages.session_id must be defined for query performance")))
+
+;; ============================================================================
 ;; Session Storage Tests (using stub)
 ;; ============================================================================
 
