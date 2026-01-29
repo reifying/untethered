@@ -1,12 +1,13 @@
 (ns voice-code.providers
   "Multi-provider abstraction using multimethods.
-   
+
    Abstracts the differences between CLI providers (Claude Code, GitHub Copilot, etc.)
    while keeping the common WebSocket protocol and session management unchanged.
-   
+
    Phase 1: :claude implemented
    Phase 2: :copilot implemented
-   Phase 6: :copilot CLI invocation"
+   Phase 6: :copilot CLI invocation
+   Phase 7: Smart default provider selection"
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as shell]
             [clojure.java.process :as proc]
@@ -24,9 +25,32 @@
   "Set of all known provider identifiers."
   #{:claude :copilot :cursor})
 
-(def default-provider
-  "Default provider when none is specified."
+(def fallback-provider
+  "Fallback provider when detection fails. Used only when no providers are installed."
   :claude)
+
+(declare detect-installed-providers)
+
+(defn get-default-provider
+  "Returns the default provider based on what's installed.
+
+   Smart selection logic (per design review Issue 6):
+   1. If only one provider is installed, use it
+   2. If Claude is installed (along with others), prefer Claude (backward compatible)
+   3. If no providers installed, return nil (caller should handle with error)
+
+   This ensures voice-code works even when only Copilot is installed."
+  []
+  (let [installed (detect-installed-providers)]
+    (cond
+      ;; No providers installed - return nil for clear error handling
+      (empty? installed) nil
+      ;; Only one provider installed - use it
+      (= 1 (count installed)) (first installed)
+      ;; Prefer Claude if available (backward compatible)
+      (contains? (set installed) :claude) :claude
+      ;; Fall back to first available
+      :else (first installed))))
 
 ;; ============================================================================
 ;; Multimethods for Provider-Specific Behavior
@@ -268,21 +292,22 @@
 
 (defn resolve-provider
   "Resolves the provider for a given context.
-   
+
    Resolution order:
    1. Explicit provider in message -> use that
    2. session-id provided -> lookup provider from session metadata
-   3. Neither -> use default provider
-   
+   3. Neither -> use smart default based on installed providers
+
    Args:
    - explicit-provider: Optional keyword from message
    - session-metadata: Optional map with :provider key
-   
-   Returns: Provider keyword (defaults to :claude)"
+
+   Returns: Provider keyword, or nil if no providers are installed.
+   Caller should handle nil case with appropriate error message."
   [explicit-provider session-metadata]
   (or explicit-provider
       (:provider session-metadata)
-      default-provider))
+      (get-default-provider)))
 
 (defn provider-installed?
   "Checks if a provider's CLI is installed and available."
@@ -314,13 +339,20 @@
   "Validates that a provider's CLI is available for prompt execution.
 
    Args:
-   - provider: Provider keyword (:claude, :copilot, etc.)
+   - provider: Provider keyword (:claude, :copilot, etc.), or nil
 
    Returns:
    - nil if CLI is available (validation passes)
-   - Map with :error and :provider keys if CLI is unavailable"
+   - Map with :error and :provider keys if CLI is unavailable or provider is nil"
   [provider]
-  (when-not (provider-installed? provider)
+  (cond
+    ;; No provider resolved (no CLI tools installed)
+    (nil? provider)
+    {:error "No AI CLI tools installed. Please install Claude Code or GitHub Copilot CLI."
+     :provider nil}
+
+    ;; Provider specified but not installed
+    (not (provider-installed? provider))
     (let [cli-name (case provider
                      :claude "claude"
                      :copilot "copilot"
@@ -328,7 +360,10 @@
                      (name provider))]
       {:error (str (name provider) " CLI not installed. "
                    "Please install the " cli-name " CLI to use " (name provider) " sessions.")
-       :provider provider})))
+       :provider provider})
+
+    ;; Validation passed
+    :else nil))
 
 ;; ============================================================================
 ;; CLI Command Building and Invocation

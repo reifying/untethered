@@ -49,9 +49,32 @@
     (is (contains? providers/known-providers :copilot))
     (is (contains? providers/known-providers :cursor))))
 
-(deftest test-default-provider
-  (testing "default provider is claude"
-    (is (= :claude providers/default-provider))))
+(deftest test-fallback-provider
+  (testing "fallback provider is claude"
+    (is (= :claude providers/fallback-provider))))
+
+(deftest test-get-default-provider
+  (testing "returns nil when no providers installed"
+    (with-redefs [providers/detect-installed-providers (constantly [])]
+      (is (nil? (providers/get-default-provider)))))
+
+  (testing "returns single provider when only one installed"
+    (with-redefs [providers/detect-installed-providers (constantly [:copilot])]
+      (is (= :copilot (providers/get-default-provider)))))
+
+  (testing "returns Claude when only Claude installed"
+    (with-redefs [providers/detect-installed-providers (constantly [:claude])]
+      (is (= :claude (providers/get-default-provider)))))
+
+  (testing "prefers Claude when multiple providers installed (backward compatible)"
+    (with-redefs [providers/detect-installed-providers (constantly [:copilot :claude])]
+      (is (= :claude (providers/get-default-provider))))
+    (with-redefs [providers/detect-installed-providers (constantly [:claude :copilot])]
+      (is (= :claude (providers/get-default-provider)))))
+
+  (testing "returns first available when Claude not installed but others are"
+    (with-redefs [providers/detect-installed-providers (constantly [:copilot :cursor])]
+      (is (contains? #{:copilot :cursor} (providers/get-default-provider))))))
 
 ;; ============================================================================
 ;; Claude Provider Multimethod Tests
@@ -333,9 +356,19 @@ branch: main")
   (testing "session metadata provider used when no explicit"
     (is (= :copilot (providers/resolve-provider nil {:provider :copilot}))))
 
-  (testing "defaults to :claude when nothing specified"
-    (is (= :claude (providers/resolve-provider nil nil)))
-    (is (= :claude (providers/resolve-provider nil {})))))
+  (testing "defaults to smart detection when nothing specified"
+    ;; When Claude is installed, should return :claude
+    (with-redefs [providers/detect-installed-providers (constantly [:claude :copilot])]
+      (is (= :claude (providers/resolve-provider nil nil)))
+      (is (= :claude (providers/resolve-provider nil {})))))
+
+  (testing "defaults to available provider when Claude not installed"
+    (with-redefs [providers/detect-installed-providers (constantly [:copilot])]
+      (is (= :copilot (providers/resolve-provider nil nil)))))
+
+  (testing "returns nil when no providers installed"
+    (with-redefs [providers/detect-installed-providers (constantly [])]
+      (is (nil? (providers/resolve-provider nil nil))))))
 
 ;; ============================================================================
 ;; detect-installed-providers Tests
@@ -390,7 +423,14 @@ branch: main")
     (with-redefs [providers/provider-installed? (constantly false)]
       (let [result (providers/validate-cli-available :unknown)]
         (is (map? result))
-        (is (= :unknown (:provider result)))))))
+        (is (= :unknown (:provider result))))))
+
+  (testing "returns error when provider is nil (no providers installed)"
+    (let [result (providers/validate-cli-available nil)]
+      (is (map? result))
+      (is (contains? result :error))
+      (is (nil? (:provider result)))
+      (is (clojure.string/includes? (:error result) "No AI CLI tools installed")))))
 
 ;; ============================================================================
 ;; YAML Parser Tests
