@@ -89,8 +89,8 @@
 
 (deftest navigation-theme-light-test
   (testing "navigation theme for light mode has correct structure"
-    (let [nav-theme (theme/navigation-theme-for-scheme false)
-          colors (.-colors nav-theme)]
+    (let [^js nav-theme (theme/navigation-theme-for-scheme false)
+          ^js colors (.-colors nav-theme)]
       (is (false? (.-dark nav-theme)))
       (is (some? (.-primary colors)))
       (is (some? (.-background colors)))
@@ -101,8 +101,8 @@
 
 (deftest navigation-theme-dark-test
   (testing "navigation theme for dark mode has correct structure"
-    (let [nav-theme (theme/navigation-theme-for-scheme true)
-          colors (.-colors nav-theme)]
+    (let [^js nav-theme (theme/navigation-theme-for-scheme true)
+          ^js colors (.-colors nav-theme)]
       (is (true? (.-dark nav-theme)))
       (is (some? (.-primary colors)))
       (is (some? (.-background colors)))
@@ -113,8 +113,8 @@
 
 (deftest navigation-theme-fonts-test
   (testing "navigation theme has font configuration"
-    (let [nav-theme (theme/navigation-theme-for-scheme false)
-          fonts (.-fonts nav-theme)]
+    (let [^js nav-theme (theme/navigation-theme-for-scheme false)
+          ^js fonts (.-fonts nav-theme)]
       (is (some? (.-regular fonts)))
       (is (some? (.-medium fonts)))
       (is (some? (.-bold fonts)))

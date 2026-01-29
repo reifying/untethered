@@ -79,7 +79,7 @@
   "Set the default TTS voice by voice ID.
    Returns a promise."
   [voice-id]
-  (when-let [Tts (get-tts-default)]
+  (when-let [^js Tts (get-tts-default)]
     (-> (.setDefaultVoice Tts voice-id)
         (.then (fn [_]
                  (js/console.log "Set default voice:" voice-id)))
@@ -159,7 +159,7 @@
   ([text]
    (speak! text nil))
   ([text voice-id]
-   (if-let [Tts (get-tts-default)]
+   (if-let [^js Tts (get-tts-default)]
      (let [;; If a specific voice is requested, set it temporarily
            set-voice-promise (if voice-id
                                (-> (.setDefaultVoice Tts voice-id)
@@ -245,7 +245,7 @@
    Returns a promise that resolves to a vector of voice maps.
    Each voice has :id, :name, :language, and optionally :quality."
   []
-  (if-let [Tts (get-tts-default)]
+  (if-let [^js Tts (get-tts-default)]
     (-> (.voices Tts)
         (.then (fn [voices]
                  (->> (js->clj voices :keywordize-keys true)

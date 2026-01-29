@@ -98,9 +98,9 @@
 (defn request-permission!
   "Request notification permission. Returns a promise resolving to permission status."
   []
-  (if-let [notifee (get-notifee)]
+  (if-let [^js notifee (get-notifee)]
     (-> (.requestPermission notifee)
-        (.then (fn [settings]
+        (.then (fn [^js settings]
                  (let [auth-status (.-authorizationStatus settings)]
                    (js/console.log "📬 [Notifications] Permission status:" auth-status)
                    ;; AuthorizationStatus: -1=NOT_DETERMINED, 0=DENIED, 1=AUTHORIZED, 2=PROVISIONAL
@@ -113,9 +113,9 @@
 (defn check-permission
   "Check current notification permission status."
   []
-  (if-let [notifee (get-notifee)]
+  (if-let [^js notifee (get-notifee)]
     (-> (.getNotificationSettings notifee)
-        (.then (fn [settings]
+        (.then (fn [^js settings]
                  (let [auth-status (.-authorizationStatus settings)]
                    (>= auth-status 1)))))
     (js/Promise.resolve false)))
@@ -128,7 +128,7 @@
   "Set up notification categories with actions for iOS.
    Must be called during app initialization."
   []
-  (when-let [notifee (get-notifee)]
+  (when-let [^js notifee (get-notifee)]
     (-> (.setNotificationCategories notifee
                                     (clj->js [{:id category-id
                                                :actions [{:id read-aloud-action-id
@@ -160,7 +160,7 @@
    - session-name: Optional session name for subtitle
    - working-directory: Optional working directory for voice rotation"
   [{:keys [text session-name working-directory]}]
-  (when-let [notifee (get-notifee)]
+  (when-let [^js notifee (get-notifee)]
     (when (app-in-background?)
       ;; Clean up expired responses before adding new one
       (cleanup-expired-responses!)
@@ -198,7 +198,7 @@
 
 (defn- handle-notification-action!
   "Handle notification action (e.g., Read Aloud button tap)."
-  [event]
+  [^js event]
   (let [action-type (some-> event .-detail .-pressAction .-id)
         notification (some-> event .-detail .-notification)
         notification-id (some-> notification .-id)
@@ -233,7 +233,7 @@
 (defn- setup-action-handler!
   "Set up notification action handler."
   []
-  (when-let [notifee (get-notifee)]
+  (when-let [^js notifee (get-notifee)]
     (.onForegroundEvent notifee handle-notification-action!)
     (.onBackgroundEvent notifee
                         (fn [event]
@@ -248,7 +248,7 @@
 (defn- setup-android-channel!
   "Create Android notification channel (required for Android 8+)."
   []
-  (when-let [notifee (get-notifee)]
+  (when-let [^js notifee (get-notifee)]
     (-> (.createChannel notifee
                         (clj->js {:id "claude-responses"
                                   :name "Claude Responses"
@@ -278,7 +278,7 @@
 (defn clear-all-notifications!
   "Clear all delivered notifications and pending responses."
   []
-  (when-let [notifee (get-notifee)]
+  (when-let [^js notifee (get-notifee)]
     (.cancelAllNotifications notifee)
     (reset! pending-responses {})
     (js/console.log "📬 [Notifications] Cleared all notifications")))
@@ -286,7 +286,7 @@
 (defn clear-notification!
   "Clear a specific notification by ID."
   [notification-id]
-  (when-let [notifee (get-notifee)]
+  (when-let [^js notifee (get-notifee)]
     (.cancelNotification notifee notification-id)
     (swap! pending-responses dissoc notification-id)
     (js/console.log "📬 [Notifications] Cleared notification:" notification-id)))
