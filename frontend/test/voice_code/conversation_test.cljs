@@ -583,3 +583,74 @@
    ;; 2. The hide-*-modal! functions reset state to {:visible? false ...}
    ;; 3. component-will-unmount calls these functions (code review verified)
    ))
+
+;; ============================================================================
+;; Compaction Timestamp Display Tests (VCMOB-h669)
+;; ============================================================================
+;; Tests verify that compaction timestamps are properly formatted and displayed.
+;; iOS parity: ConversationView.swift line 561 shows relative timestamp.
+
+(deftest compaction-timestamp-formatting-test
+  "Tests the compaction timestamp formatting matches iOS parity.
+   iOS shows 'This session was compacted X time ago' with relative formatting.
+   Fixes VCMOB-h669."
+  (testing "format-relative-time formats compaction timestamps correctly"
+    ;; Test 'Just now' case - within 1 minute
+    (let [now (js/Date.)
+          just-now-ts (js/Date. (- (.getTime now) 30000))] ; 30 seconds ago
+      (is (= "Just now" (utils/format-relative-time just-now-ts))))
+
+    ;; Test minutes ago
+    (let [now (js/Date.)
+          five-min-ago (js/Date. (- (.getTime now) (* 5 60000)))] ; 5 minutes ago
+      (is (= "5 min ago" (utils/format-relative-time five-min-ago))))
+
+    ;; Test hours ago
+    (let [now (js/Date.)
+          two-hours-ago (js/Date. (- (.getTime now) (* 2 60 60000)))] ; 2 hours ago
+      (is (= "2 hours ago" (utils/format-relative-time two-hours-ago))))
+
+    ;; Test singular hour
+    (let [now (js/Date.)
+          one-hour-ago (js/Date. (- (.getTime now) (* 1 60 60000)))] ; 1 hour ago
+      (is (= "1 hour ago" (utils/format-relative-time one-hour-ago))))
+
+    ;; Test days ago
+    (let [now (js/Date.)
+          two-days-ago (js/Date. (- (.getTime now) (* 2 24 60 60000)))] ; 2 days ago
+      (is (= "2 days ago" (utils/format-relative-time two-days-ago))))
+
+    ;; Test nil timestamp
+    (is (nil? (utils/format-relative-time nil)))))
+
+(deftest compaction-timestamp-subscription-test
+  "Tests the compaction timestamp subscriptions work correctly."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "no compaction timestamp initially"
+     (is (nil? @(rf/subscribe [:ui/compaction-timestamp "test-session"])))
+     (is (false? @(rf/subscribe [:ui/session-recently-compacted? "test-session"]))))
+
+   (testing "compaction timestamp stored on compaction_complete"
+     (rf/dispatch-sync [:sessions/handle-compaction-complete {:session-id "test-session"}])
+     (let [timestamp @(rf/subscribe [:ui/compaction-timestamp "test-session"])]
+       (is (some? timestamp))
+       (is (instance? js/Date timestamp))
+       (is @(rf/subscribe [:ui/session-recently-compacted? "test-session"]))))
+
+   (testing "compaction timestamp cleared on sending prompt"
+     ;; Set up the session first
+     (rf/dispatch-sync [:sessions/add {:id "test-session"
+                                       :backend-name "Test Session"
+                                       :working-directory "/test/path"}])
+     ;; Set connection status and API key for prompt sending
+     (rf/dispatch-sync [:connection/set-status :connected])
+     (swap! re-frame.db/app-db assoc :api-key "test-key")
+     (swap! re-frame.db/app-db assoc :ios-session-id "ios-123")
+     ;; Send a prompt which should clear the compaction timestamp
+     (rf/dispatch-sync [:prompt/send {:text "Hello"
+                                      :session-id "test-session"
+                                      :working-directory "/test/path"}])
+     ;; Compaction timestamp should now be cleared
+     (is (nil? @(rf/subscribe [:ui/compaction-timestamp "test-session"]))))))

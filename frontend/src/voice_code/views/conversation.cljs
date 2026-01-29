@@ -1207,22 +1207,29 @@
 (defn- header-compact-button
   "Compact button for compressing session history.
    Shows loading state during compaction, green checkmark if recently compacted.
-   Disabled when session is locked or currently compacting."
+   Disabled when session is locked or currently compacting.
+   Shows relative timestamp when re-compacting (iOS parity: ConversationView.swift line 561)."
   [session-id]
   (let [compacting? @(rf/subscribe [:ui/compacting-session? session-id])
         recently-compacted? @(rf/subscribe [:ui/session-recently-compacted? session-id])
+        compaction-timestamp @(rf/subscribe [:ui/compaction-timestamp session-id])
         locked? @(rf/subscribe [:session/locked? session-id])
         Alert (.-Alert rn)
-        colors (theme/use-theme-colors)]
+        colors (theme/use-theme-colors)
+        ;; Format relative time for re-compaction message
+        relative-time (when compaction-timestamp
+                        (utils/format-relative-time compaction-timestamp))]
     [:> rn/TouchableOpacity
      {:style {:padding 8}
       :disabled (or compacting? locked?)
       :on-press (fn []
                   (if recently-compacted?
-                    ;; Show confirmation for re-compaction
+                    ;; Show confirmation for re-compaction with relative timestamp
                     (.alert Alert
                             "Session Already Compacted"
-                            "This session was recently compacted. Compact again?"
+                            (if relative-time
+                              (str "This session was compacted " relative-time ".\n\nCompact again?")
+                              "This session was recently compacted.\n\nCompact again?")
                             (clj->js [{:text "Cancel" :style "cancel"}
                                       {:text "Compact Again"
                                        :style "destructive"
