@@ -159,10 +159,17 @@ Using Clojure multimethods instead of protocols because:
     true (into ["--output-format" "stream-json" "--print" "final" "--verbose"])
     system-prompt (into ["--append-system-prompt" system-prompt])
     true (conj prompt)))
-(defmethod build-cli-command :copilot [_ {:keys [session-id prompt working-dir]}]
-  (cond-> ["copilot"]
-    session-id (into ["--resume" session-id])
-    true (conj prompt)))
+(defmethod build-cli-command :copilot [_ {:keys [prompt resume-session-id model]}]
+  ;; Verified CLI flags (Jan 2026, v0.0.398):
+  ;; - `-p, --prompt <text>` - Non-interactive mode (required)
+  ;; - `--allow-all-tools` - Required for non-interactive execution
+  ;; - `--resume [sessionId]` - Resume with optional session ID
+  ;; - `--model <model>` - Set AI model
+  ;; - `--no-color` - Cleaner output for parsing
+  ;; Note: No JSON output mode available (unlike Claude CLI)
+  (cond-> ["copilot" "--no-color" "--allow-all-tools" "-p" prompt]
+    resume-session-id (into ["--resume" resume-session-id])
+    model (into ["--model" model])))
 
 ;; Session file path
 (defmulti get-session-file (fn [provider _] provider))
@@ -488,18 +495,28 @@ This prevents a breaking change later and makes debugging clearer (logs show whi
   (io/file (System/getProperty "user.home") ".voice-code" "session-index.edn"))
 ```
 
-#### Issue 5: Copilot CLI Flags Unknown
+#### Issue 5: Copilot CLI Flags ~~Unknown~~ RESOLVED
 
-**Problem:** The `build-cli-command :copilot` example shows `["copilot" "--resume" session-id prompt]` but this is speculative. The Copilot CLI may have different flags.
+**Status:** ✅ Resolved (January 2026)
 
-**Recommendation:** Mark as "needs verification" and add a research task:
-```markdown
-### Pre-Implementation Research Required
-1. Verify Copilot CLI resume flag: `copilot --help` or source code
-2. Confirm output format flags (stream-json equivalent?)
-3. Test system prompt support (may not exist)
-4. Verify session compaction command (if any)
-```
+**Research Findings (Copilot CLI v0.0.398):**
+
+| Flag | Description |
+|------|-------------|
+| `-p, --prompt <text>` | Execute prompt in non-interactive mode (exits after completion) |
+| `--allow-all-tools` | Required for non-interactive mode |
+| `--resume [sessionId]` | Resume session, optionally with specific session ID |
+| `--model <model>` | Set AI model (e.g., "gpt-5.2-codex", "claude-sonnet-4") |
+| `--no-color` | Disable color output for cleaner parsing |
+| `--continue` | Resume most recently closed session |
+
+**Key Differences from Claude CLI:**
+- ❌ No JSON output mode - output is plain text only
+- ❌ No `--session-id` for new sessions - Copilot auto-generates UUIDs
+- ❌ No `--append-system-prompt` equivalent
+- ✅ Session ID discovery via filesystem watching (existing feature)
+
+See `docs/research/copilot-cli-storage-web-research.md` for full CLI documentation.
 
 #### Issue 6: No Default Provider Selection Logic
 

@@ -509,10 +509,58 @@ another_key: another value
                             (providers/build-cli-command :claude {:prompt "test"}))))))
 
 (deftest test-build-cli-command-copilot
-  (testing "throws not-implemented error for Copilot"
+  (testing "builds basic Copilot CLI command with prompt"
+    (let [result (providers/build-cli-command :copilot {:prompt "test prompt"})]
+      (is (vector? result))
+      (is (= "copilot" (first result)))
+      (is (some #{"--no-color"} result))
+      (is (some #{"--allow-all-tools"} result))
+      (is (some #{"-p"} result))
+      (is (some #{"test prompt"} result))))
+
+  (testing "includes --resume for resumed sessions"
+    (let [result (providers/build-cli-command :copilot {:prompt "test"
+                                                        :resume-session-id "abc-123-def"})]
+      (is (some #{"--resume"} result))
+      (is (some #{"abc-123-def"} result))))
+
+  (testing "includes --model when specified"
+    (let [result (providers/build-cli-command :copilot {:prompt "test"
+                                                        :model "gpt-5.2-codex"})]
+      (is (some #{"--model"} result))
+      (is (some #{"gpt-5.2-codex"} result))))
+
+  (testing "works with both resume and model"
+    (let [result (providers/build-cli-command :copilot {:prompt "fix bug"
+                                                        :resume-session-id "session-uuid"
+                                                        :model "claude-sonnet-4"})]
+      (is (some #{"copilot"} result))
+      (is (some #{"-p"} result))
+      (is (some #{"fix bug"} result))
+      (is (some #{"--resume"} result))
+      (is (some #{"session-uuid"} result))
+      (is (some #{"--model"} result))
+      (is (some #{"claude-sonnet-4"} result))))
+
+  (testing "throws when prompt is missing"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                          #"Copilot CLI invocation not yet implemented"
-                          (providers/build-cli-command :copilot {:prompt "test"})))))
+                          #"Prompt is required"
+                          (providers/build-cli-command :copilot {}))))
+
+  (testing "ignores system-prompt (not supported by Copilot CLI)"
+    ;; Copilot CLI doesn't have --append-system-prompt equivalent
+    (let [result (providers/build-cli-command :copilot {:prompt "test"
+                                                        :system-prompt "Be concise"})]
+      ;; system-prompt should not appear in command
+      (is (not (some #{"--append-system-prompt"} result)))
+      (is (not (some #{"Be concise"} result)))))
+
+  (testing "ignores new-session-id (Copilot auto-generates session IDs)"
+    ;; Copilot doesn't have --session-id for new sessions
+    (let [result (providers/build-cli-command :copilot {:prompt "test"
+                                                        :new-session-id "my-custom-id"})]
+      (is (not (some #{"--session-id"} result)))
+      (is (not (some #{"my-custom-id"} result))))))
 
 (deftest test-build-cli-command-cursor
   (testing "throws not-implemented error for Cursor"

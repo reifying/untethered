@@ -373,12 +373,31 @@
       has-system-prompt? (into ["--append-system-prompt" trimmed-system-prompt])
       true (conj prompt))))
 
-(defmethod build-cli-command :copilot [_ _opts]
-  ;; Per design review Issue 5: Copilot CLI flags need verification before implementation.
-  ;; Until the Copilot CLI interface is researched and documented, throw an error.
-  (throw (ex-info "Copilot CLI invocation not yet implemented. Copilot CLI interface needs research."
-                  {:provider :copilot
-                   :reason "CLI flags and output format need verification"})))
+(defmethod build-cli-command :copilot [_ opts]
+  ;; Copilot CLI invocation using non-interactive mode.
+  ;; Research (Jan 2026) confirmed these flags:
+  ;; - `-p, --prompt <text>` - Execute prompt in non-interactive mode
+  ;; - `--allow-all-tools` - Required for non-interactive mode
+  ;; - `--resume [sessionId]` - Resume session with optional ID
+  ;; - `--model <model>` - Set AI model
+  ;; - `--no-color` - Disable color output for cleaner parsing
+  ;;
+  ;; Note: Unlike Claude CLI, Copilot does not have a JSON output mode.
+  ;; Output is plain text. Session ID for new sessions comes from
+  ;; filesystem watching (the new session directory is created in
+  ;; ~/.copilot/session-state/<uuid>/).
+  (let [{:keys [prompt resume-session-id model]} opts]
+    (when-not prompt
+      (throw (ex-info "Prompt is required for Copilot CLI invocation"
+                      {:provider :copilot})))
+    (cond-> ["copilot"
+             "--no-color"
+             "--allow-all-tools"
+             "-p" prompt]
+      ;; Resume existing session if specified
+      resume-session-id (into ["--resume" resume-session-id])
+      ;; Set model if specified
+      model (into ["--model" model]))))
 
 (defmethod build-cli-command :cursor [_ _opts]
   (throw (ex-info "Cursor CLI invocation not yet implemented."
