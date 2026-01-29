@@ -1467,3 +1467,88 @@
           ;; Message count should still be 1 (not updated)
           (let [metadata (repl/get-session-metadata "abc123de-4567-89ab-cdef-000000000002")]
             (is (= 1 (:message-count metadata)))))))))
+
+(deftest test-get-index-file-path
+  (testing "get-index-file-path returns provider-agnostic location"
+    (let [path (repl/get-index-file-path)
+          home (System/getProperty "user.home")]
+      (is (str/includes? path ".voice-code"))
+      (is (str/includes? path "session-index.edn"))
+      (is (not (str/includes? path ".claude")))
+      (is (= (str home "/.voice-code/session-index.edn") path)))))
+
+(deftest test-index-migration
+  (testing "Migration from legacy location to new location"
+    (let [test-home (str test-dir "/home")
+          legacy-claude-dir (io/file test-home ".claude")
+          new-voice-code-dir (io/file test-home ".voice-code")
+          legacy-index-file (io/file legacy-claude-dir ".session-index.edn")
+          new-index-file (io/file new-voice-code-dir "session-index.edn")
+          test-data {:sessions {"test-uuid" {:session-id "test-uuid" :name "Test"}}}]
+
+      ;; Create legacy directory and index file
+      (.mkdirs legacy-claude-dir)
+      (spit legacy-index-file (pr-str test-data))
+
+      ;; Verify legacy file exists
+      (is (.exists legacy-index-file))
+      (is (not (.exists new-index-file)))
+
+      ;; Mock the path functions and call load-index
+      (with-redefs [repl/get-index-file-path (fn [] (.getAbsolutePath new-index-file))
+                    repl/get-legacy-index-file-path (fn [] (.getAbsolutePath legacy-index-file))]
+        ;; Load index should trigger migration
+        (let [loaded (repl/load-index)]
+          ;; Should have loaded the data
+          (is (= {"test-uuid" {:session-id "test-uuid" :name "Test"}} loaded))
+          ;; New file should exist
+          (is (.exists new-index-file))
+          ;; Legacy file should be deleted
+          (is (not (.exists legacy-index-file)))))))
+
+  (testing "No migration when new file already exists"
+    (let [test-home (str test-dir "/home2")
+          legacy-claude-dir (io/file test-home ".claude")
+          new-voice-code-dir (io/file test-home ".voice-code")
+          legacy-index-file (io/file legacy-claude-dir ".session-index.edn")
+          new-index-file (io/file new-voice-code-dir "session-index.edn")
+          legacy-data {:sessions {"old-uuid" {:session-id "old-uuid" :name "Old"}}}
+          new-data {:sessions {"new-uuid" {:session-id "new-uuid" :name "New"}}}]
+
+      ;; Create both directories and files
+      (.mkdirs legacy-claude-dir)
+      (.mkdirs new-voice-code-dir)
+      (spit legacy-index-file (pr-str legacy-data))
+      (spit new-index-file (pr-str new-data))
+
+      ;; Both files exist
+      (is (.exists legacy-index-file))
+      (is (.exists new-index-file))
+
+      (with-redefs [repl/get-index-file-path (fn [] (.getAbsolutePath new-index-file))
+                    repl/get-legacy-index-file-path (fn [] (.getAbsolutePath legacy-index-file))]
+        ;; Load index should use new file, not migrate
+        (let [loaded (repl/load-index)]
+          ;; Should load from new location
+          (is (= {"new-uuid" {:session-id "new-uuid" :name "New"}} loaded))
+          ;; Legacy file should still exist (not deleted)
+          (is (.exists legacy-index-file))))))
+
+  (testing "No migration when legacy file doesn't exist"
+    (let [test-home (str test-dir "/home3")
+          new-voice-code-dir (io/file test-home ".voice-code")
+          legacy-index-file (io/file test-home ".claude" ".session-index.edn")
+          new-index-file (io/file new-voice-code-dir "session-index.edn")]
+
+      ;; Neither file exists
+      (is (not (.exists legacy-index-file)))
+      (is (not (.exists new-index-file)))
+
+      (with-redefs [repl/get-index-file-path (fn [] (.getAbsolutePath new-index-file))
+                    repl/get-legacy-index-file-path (fn [] (.getAbsolutePath legacy-index-file))]
+        ;; Load index should return nil (no file to load)
+        (let [loaded (repl/load-index)]
+          (is (nil? loaded))
+          ;; Neither file should exist
+          (is (not (.exists new-index-file)))
+          (is (not (.exists legacy-index-file))))))))

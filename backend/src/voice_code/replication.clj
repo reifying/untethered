@@ -61,10 +61,13 @@
     (io/file claude-dir)))
 
 (defn get-index-file-path
-  "Get path to the persisted session index file"
+  "Get path to the persisted session index file.
+   
+   Uses ~/.voice-code/session-index.edn for provider-agnostic storage.
+   This allows voice-code to work even without Claude installed."
   []
   (let [home (System/getProperty "user.home")]
-    (str home "/.claude/.session-index.edn")))
+    (str home "/.voice-code/session-index.edn")))
 
 (defn find-jsonl-files
   "Recursively find all .jsonl files in the Claude projects directory.
@@ -434,9 +437,45 @@
     (catch Exception e
       (log/error e "Failed to save session index"))))
 
-(defn load-index
-  "Load session index from disk. Returns nil if file doesn't exist or is invalid."
+(defn get-legacy-index-file-path
+  "Get path to the legacy index location at ~/.claude/.session-index.edn.
+   Used for one-time migration to new provider-agnostic location."
   []
+  (let [home (System/getProperty "user.home")]
+    (str home "/.claude/.session-index.edn")))
+
+(defn- migrate-index-if-needed!
+  "Migrate session index from legacy ~/.claude location to ~/.voice-code if needed.
+   Returns true if migration occurred, false otherwise."
+  []
+  (let [new-path (get-index-file-path)
+        new-file (io/file new-path)
+        legacy-path (get-legacy-index-file-path)
+        legacy-file (io/file legacy-path)]
+    (when (and (.exists legacy-file)
+               (not (.exists new-file)))
+      (log/info "Migrating session index to provider-agnostic location"
+                {:from legacy-path :to new-path})
+      (try
+        ;; Ensure target directory exists
+        (io/make-parents new-file)
+        ;; Copy the file
+        (io/copy legacy-file new-file)
+        ;; Remove the old file
+        (.delete legacy-file)
+        (log/info "Session index migration complete")
+        true
+        (catch Exception e
+          (log/error e "Failed to migrate session index, will use legacy location")
+          false)))))
+
+(defn load-index
+  "Load session index from disk. Returns nil if file doesn't exist or is invalid.
+   
+   On first call, migrates index from legacy ~/.claude location if needed."
+  []
+  ;; Attempt migration from legacy location on first load
+  (migrate-index-if-needed!)
   (try
     (let [index-path (get-index-file-path)
           index-file (io/file index-path)]
