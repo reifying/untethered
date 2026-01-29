@@ -35,6 +35,11 @@
 (defonce ^:private speaking? (atom false))
 (defonce ^:private paused? (atom false))
 
+;; Track event listener subscriptions for cleanup.
+;; react-native-tts addEventListener returns a subscription object with .remove() method.
+;; Storing these enables proper cleanup to prevent memory leaks on hot reload.
+(defonce ^:private event-subscriptions (atom []))
+
 (defn- get-tts-default
   "Get the default export from the TTS module."
   []
@@ -87,18 +92,50 @@
                   (js/console.error "Failed to set voice:" error))))))
 
 ;; ============================================================================
-;; Setup
+;; Setup and Cleanup
 ;; ============================================================================
+
+(defn cleanup-tts!
+  "Remove all TTS event listeners and reset state.
+   Call this before re-initializing TTS or when the app unmounts.
+   Prevents memory leaks from accumulated event listeners on hot reload."
+  []
+  ;; Remove all stored event subscriptions
+  (doseq [sub @event-subscriptions]
+    (try
+      (when (and sub (.-remove sub))
+        (.remove sub))
+      (catch :default e
+        (js/console.warn "Failed to remove TTS listener:" e))))
+  (reset! event-subscriptions [])
+  ;; Reset state atoms
+  (reset! speaking? false)
+  (reset! paused? false)
+  (js/console.log "TTS event listeners cleaned up"))
+
+(defn- add-tts-listener!
+  "Add a TTS event listener and track it for cleanup.
+   Returns the subscription object."
+  [^js Tts event-name handler]
+  (let [sub (.addEventListener Tts event-name handler)]
+    (swap! event-subscriptions conj sub)
+    sub))
 
 (defn setup-tts!
   "Initialize text-to-speech event handlers.
    Must be called once at app startup.
-   Optionally accepts settings map to configure audio behavior."
+   Optionally accepts settings map to configure audio behavior.
+
+   This function is idempotent - calling it multiple times will clean up
+   existing listeners before adding new ones, preventing memory leaks."
   ([]
    (setup-tts! {}))
   ([{:keys [respect-silent-mode voice-speech-rate]
      :or {respect-silent-mode true voice-speech-rate 0.5}}]
    (when-let [^js Tts (get-tts-default)]
+     ;; Clean up any existing listeners first (idempotent setup)
+     (cleanup-tts!)
+
      ;; Set default language
      (-> (.setDefaultLanguage Tts "en-US")
          (.catch (fn [error]
@@ -112,34 +149,34 @@
        (set-speech-rate! voice-speech-rate))
 
      ;; TTS finished speaking
-     (.addEventListener Tts "tts-finish"
+     (add-tts-listener! Tts "tts-finish"
                         (fn [_]
                           (reset! speaking? false)
                           (reset! paused? false)
                           (rf/dispatch [:voice/speech-finished])))
 
      ;; TTS started speaking
-     (.addEventListener Tts "tts-start"
+     (add-tts-listener! Tts "tts-start"
                         (fn [_]
                           (reset! speaking? true)
                           (reset! paused? false)
                           (rf/dispatch [:voice/tts-started])))
 
      ;; TTS cancelled
-     (.addEventListener Tts "tts-cancel"
+     (add-tts-listener! Tts "tts-cancel"
                         (fn [_]
                           (reset! speaking? false)
                           (reset! paused? false)
                           (rf/dispatch [:voice/tts-cancelled])))
 
      ;; TTS paused
-     (.addEventListener Tts "tts-pause"
+     (add-tts-listener! Tts "tts-pause"
                         (fn [_]
                           (reset! paused? true)
                           (rf/dispatch [:voice/tts-paused])))
 
      ;; TTS resumed
-     (.addEventListener Tts "tts-resume"
+     (add-tts-listener! Tts "tts-resume"
                         (fn [_]
                           (reset! paused? false)
                           (rf/dispatch [:voice/tts-resumed])))
