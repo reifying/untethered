@@ -40,7 +40,11 @@
                   ;; Set a timeout to call on-complete after speech finishes
                   ;; TTS events will fire, but we also provide this callback
                   (when on-complete
-                    (js/setTimeout on-complete 8000))))))))
+                    (js/setTimeout on-complete 8000))))
+         (.catch (fn [_]
+                   ;; tts/speak! already handles errors internally via :voice/error
+                   ;; This catch prevents unhandled promise rejection warnings
+                   nil))))))
 
 (rf/reg-fx
  :voice/stop-speaking
