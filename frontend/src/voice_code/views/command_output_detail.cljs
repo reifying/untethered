@@ -4,9 +4,9 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :refer [Share] :as rn]
-            ["@react-native-clipboard/clipboard" :as Clipboard]
             [voice-code.haptic :as haptic]
-            [voice-code.theme :as theme]))
+            [voice-code.theme :as theme]
+            [voice-code.views.components :refer [copy-to-clipboard!]]))
 
 ;; ============================================================================
 ;; Helper Functions
@@ -188,10 +188,7 @@
     {:icon "📋"
      :label "Copy"
      :colors colors
-     :on-press (fn []
-                 (let [clipboard (or (.-default Clipboard) Clipboard)]
-                   (.setString clipboard output)
-                   (haptic/success!)))}]])
+     :on-press #(copy-to-clipboard! output nil)}]])
 
 ;; ============================================================================
 ;; Main View
