@@ -461,8 +461,54 @@
       [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
        (str "Full URL: ws://" (:server-url settings) ":" (:server-port settings))]]]))
 
+(def ^:private all-premium-voices-id
+  "Special identifier for 'All Premium Voices' rotation mode.
+   Matches voice-code.voice.utils/all-premium-voices-identifier."
+  "com.voicecode.all-premium-voices")
+
+(defn- voice-metadata-row
+  "Display voice quality and language metadata below voice picker.
+   Matches iOS SettingsView.swift lines 68-77.
+   Only shown when a specific voice is selected (not System Default or All Premium)."
+  [{:keys [quality language colors]}]
+  (let [;; Map quality value to human-readable label
+        quality-label (cond
+                        (nil? quality) nil
+                        (>= quality 500) "Premium"
+                        (>= quality 400) "Enhanced"
+                        (>= quality 300) "High Quality"
+                        :else "Standard")]
+    [:> rn/View {:style {:padding-horizontal 16
+                         :padding-bottom 8
+                         :background-color (:card-background colors)
+                         :border-bottom-width 1
+                         :border-bottom-color (:separator colors)}}
+     (when quality-label
+       [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
+        (str "Quality: " quality-label)])
+     (when language
+       [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)
+                            :margin-top (if quality-label 2 0)}}
+        (str "Language: " language)])]))
+
+(defn- voice-rotation-info-row
+  "Display rotation info when 'All Premium Voices' is selected.
+   Matches iOS SettingsView.swift lines 58-67."
+  [{:keys [premium-count colors]}]
+  [:> rn/View {:style {:padding-horizontal 16
+                       :padding-bottom 8
+                       :background-color (:card-background colors)
+                       :border-bottom-width 1
+                       :border-bottom-color (:separator colors)}}
+   [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
+    (str "Rotates between " premium-count " premium voice"
+         (when (not= premium-count 1) "s"))]
+   [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors) :margin-top 2}}
+    "Each project uses a consistent voice"]])
+
 (defn- voice-settings-section
-  "Voice selection and preview."
+  "Voice selection and preview.
+   Includes quality/language metadata per iOS SettingsView.swift lines 68-77."
   []
   (let [picker-visible? (r/atom false)]
     (fn []
@@ -472,15 +518,31 @@
             voice-id (:voice-identifier settings)
             ;; Get selected voice name from available voices
             voices @(rf/subscribe [:voice/available-voices])
+            premium-voices @(rf/subscribe [:voice/premium-voices])
             selected-voice (some #(when (= (:id %) voice-id) %) voices)
-            display-name (or (:name selected-voice)
-                             (when voice-id "Custom Voice")
-                             "System Default")]
+            is-all-premium? (= voice-id all-premium-voices-id)
+            is-system-default? (nil? voice-id)
+            display-name (cond
+                           is-all-premium? "All Premium Voices"
+                           selected-voice (:name selected-voice)
+                           voice-id "Custom Voice"
+                           :else "System Default")]
         [:> rn/View
          [section-header "Voice Selection"]
          [setting-row {:label "Voice"
                        :value display-name
                        :on-press #(reset! picker-visible? true)}]
+         ;; Voice metadata: quality/language for specific voice, rotation info for all-premium
+         (cond
+           ;; Show rotation info for "All Premium Voices" mode
+           is-all-premium?
+           [voice-rotation-info-row {:premium-count (count premium-voices)
+                                     :colors colors}]
+           ;; Show quality/language for specific voice (not system default)
+           (and selected-voice (not is-system-default?))
+           [voice-metadata-row {:quality (:quality selected-voice)
+                                :language (:language selected-voice)
+                                :colors colors}])
          [:> rn/View {:style {:padding-horizontal 16
                               :padding-bottom 8
                               :background-color (:card-background colors)
