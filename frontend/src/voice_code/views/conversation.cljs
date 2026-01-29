@@ -1335,7 +1335,12 @@
 
       :component-will-unmount
       (fn [_]
-        (rf/dispatch [:sessions/set-active nil]))
+        ;; Clear active session
+        (rf/dispatch [:sessions/set-active nil])
+        ;; Clear modal states to prevent stale data references
+        ;; Fixes VCMOB-66cc: Global atoms could reference deleted sessions
+        (hide-rename-modal!)
+        (hide-message-detail!))
 
       :reagent-render
       (fn [_]
