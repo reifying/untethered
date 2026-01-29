@@ -4,7 +4,8 @@
             [clojure.string :as str]
             [clojure.edn :as edn]
             [cheshire.core :as json]
-            [clojure.tools.logging :as log])
+            [clojure.tools.logging :as log]
+            [voice-code.providers :as providers])
   (:import [java.nio.file FileSystems Path Paths WatchService WatchKey StandardWatchEventKinds]
            [java.io RandomAccessFile]))
 
@@ -373,7 +374,9 @@
                   :first-message (:first-message file-metadata)
                   :last-message (:last-message file-metadata)
                   :ios-notified false
-                  :first-notification nil}]
+                  :first-notification nil
+                  ;; Provider field for multi-provider support (Phase 1)
+                  :provider :claude}]
     (log/info "Built session metadata"
               {:session-id session-id
                :working-directory working-dir
@@ -381,7 +384,8 @@
                :message-count (:message-count file-metadata)
                :last-modified last-modified
                :used-message-timestamp (boolean (:last-message-timestamp file-metadata))
-               :used-claude-summary (boolean claude-summary)})
+               :used-claude-summary (boolean claude-summary)
+               :provider :claude})
     metadata)) ; Timestamp when iOS first notified
 
 (defn build-index!

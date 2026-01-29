@@ -125,10 +125,24 @@
   (testing "creates database when missing"
     (let [temp-dir (create-temp-dir!)]
       (try
-        (let [result (env/ensure-beads-local! temp-dir "test-wt")]
-          (is (:success result))
-          (is (:created result))
-          (is (.exists (io/file temp-dir ".beads-local/local.db"))))
+        ;; Mock shell/sh to simulate successful bd init
+        ;; This avoids issues with bd detecting git worktrees
+        (with-redefs [shell/sh (fn [& args]
+                                 ;; Verify correct args were passed
+                                 (let [str-args (take-while string? args)]
+                                   (is (= "bd" (first str-args)))
+                                   (is (= "init" (second str-args))))
+                                 ;; Create the database file to simulate bd init success
+                                 (let [opts (apply hash-map (drop-while string? args))
+                                       db-path (get (:env opts) "BEADS_DB")]
+                                   (when db-path
+                                     (.mkdirs (.getParentFile (io/file db-path)))
+                                     (spit db-path "")))
+                                 {:exit 0 :out "" :err ""})]
+          (let [result (env/ensure-beads-local! temp-dir "test-wt")]
+            (is (:success result))
+            (is (:created result))
+            (is (.exists (io/file temp-dir ".beads-local/local.db")))))
         (finally
           (cleanup-temp-dir! temp-dir))))))
 
@@ -136,9 +150,11 @@
   (testing "returns success when database already exists"
     (let [temp-dir (create-temp-dir!)]
       (try
-        ;; First call creates
-        (env/ensure-beads-local! temp-dir "test-wt")
-        ;; Second call should detect existing
+        ;; Pre-create the database file to simulate already-exists scenario
+        (let [beads-dir (io/file temp-dir ".beads-local")]
+          (.mkdirs beads-dir)
+          (spit (io/file beads-dir "local.db") "existing-db"))
+        ;; Call should detect existing and return :existed true
         (let [result (env/ensure-beads-local! temp-dir "test-wt")]
           (is (:success result))
           (is (:existed result)))

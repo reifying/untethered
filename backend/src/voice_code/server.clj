@@ -474,18 +474,20 @@
   "Send the recent sessions list to a connected client.
   Uses the new recent_sessions message type (distinct from session-list).
   Converts :last-modified from milliseconds to ISO-8601 string for JSON.
-  Sends session-id, name, working-directory, last-modified."
+  Sends session-id, name, working-directory, last-modified, provider."
   [channel limit]
   (let [sessions (repl/get-recent-sessions limit)
         ;; Convert to format with ISO-8601 timestamp
         ;; Include name field (generated from Claude summary or fallback to dir-timestamp)
+        ;; Include provider field for multi-provider support
         sessions-minimal (mapv
                           (fn [session]
                             {:session-id (:session-id session)
                              :name (:name session)
                              :working-directory (:working-directory session)
                              :last-modified (.format (java.time.format.DateTimeFormatter/ISO_INSTANT)
-                                                     (java.time.Instant/ofEpochMilli (:last-modified session)))})
+                                                     (java.time.Instant/ofEpochMilli (:last-modified session)))
+                             :provider (or (:provider session) :claude)})
                           sessions)]
     (log/info "Sending recent sessions" {:count (count sessions-minimal) :limit limit})
     (send-to-client! channel
@@ -941,7 +943,8 @@
                :message-count (:message-count session-metadata)
                :total-clients client-count
                :eligible-clients eligible-count
-               :has-preview (boolean (seq (:preview session-metadata)))})
+               :has-preview (boolean (seq (:preview session-metadata)))
+               :provider (:provider session-metadata)})
 
     ;; Check if this is a pending new session and send session_ready first
     (when-let [pending-channel (get @pending-new-sessions session-id)]
@@ -967,7 +970,8 @@
                         :working-directory (:working-directory session-metadata)
                         :last-modified (:last-modified session-metadata)
                         :message-count (:message-count session-metadata)
-                        :preview (:preview session-metadata)})
+                        :preview (:preview session-metadata)
+                        :provider (or (:provider session-metadata) :claude)})
 
       ;; Send updated recent sessions list to each client
       (let [limit (get client-info :recent-sessions-limit 5)]
@@ -1072,7 +1076,7 @@
                                      (take 50)
                                      ;; Remove heavy fields to reduce payload size
                                      (mapv #(select-keys % [:session-id :name :working-directory
-                                                            :last-modified :message-count])))
+                                                            :last-modified :message-count :provider])))
                 total-non-empty (count (filter #(pos? (or (:message-count %) 0)) all-sessions))
                 ;; Log any sessions with placeholder working directories
                 placeholder-sessions (filter #(str/starts-with? (or (:working-directory %) "") "[from project:") recent-sessions)]
@@ -1821,7 +1825,7 @@
                                          (sort-by :last-modified >)
                                          (take 50)
                                          (mapv #(select-keys % [:session-id :name :working-directory
-                                                                :last-modified :message-count])))
+                                                                :last-modified :message-count :provider])))
                     total-non-empty (count (filter #(pos? (or (:message-count %) 0)) all-sessions))]
                 (log/info "Sending refreshed session list" {:count (count recent-sessions) :total total-non-empty})
                 (send-to-client! channel
