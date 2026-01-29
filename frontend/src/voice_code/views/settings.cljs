@@ -678,6 +678,22 @@
       [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors)}}
        "4. Make sure your server is running on the specified port"]]]))
 
+(defn- examples-section
+  "Server address examples to help users configure connection.
+   Matches iOS SettingsView.swift lines 215-222."
+  []
+  (let [colors (theme/use-theme-colors)]
+    [:> rn/View
+     [section-header "Examples"]
+     [:> rn/View {:style {:background-color (:card-background colors)
+                          :padding 16
+                          :border-bottom-width 1
+                          :border-bottom-color (:separator colors)}}
+      [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors) :margin-bottom 4}}
+       "Local network: 192.168.1.100"]
+      [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors)}}
+       "Localhost: 127.0.0.1 (testing only)"]]]))
+
 (defn- about-section
   "App information."
   []
@@ -729,4 +745,5 @@
       [account-section]
       [debug-section navigation]
       [help-section]
+      [examples-section]
       [about-section]]]))
