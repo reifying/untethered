@@ -4,7 +4,8 @@
    
    Uses debouncing for high-frequency updates (locked-sessions, command output)
    to prevent UI thrashing. Matches iOS VoiceCodeClient.swift behavior."
-  (:require [re-frame.core :as rf]
+  (:require [clojure.string :as str]
+            [re-frame.core :as rf]
             [voice-code.websocket :as ws]
             [voice-code.db :as db]
             [voice-code.json :as json]
@@ -443,7 +444,7 @@
                               ;; Filter out internal messages (no role) and messages with no displayable text
                               (filter (fn [m]
                                         (and (:role m)
-                                             (not (clojure.string/blank? (:text m))))))
+                                             (not (str/blank? (:text m))))))
                               (vec))
          ;; For delta sync, merge with existing; for full sync, replace
          final-messages (if is-delta-sync?

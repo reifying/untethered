@@ -1,6 +1,7 @@
 (ns voice-code.events.core
   "Core re-frame events for app initialization and general state management."
-  (:require [re-frame.core :as rf]
+  (:require [clojure.string :as str]
+            [re-frame.core :as rf]
             [voice-code.db :as db]
             [voice-code.voice :as voice]
             [voice-code.notifications :as notifications]))
@@ -328,7 +329,7 @@
 (rf/reg-event-fx
  :sessions/rename
  (fn [{:keys [db]} [_ session-id new-name]]
-   (let [trimmed-name (when new-name (clojure.string/trim new-name))
+   (let [trimmed-name (when new-name (str/trim new-name))
          final-name (when (seq trimmed-name) trimmed-name)]
      {:db (assoc-in db [:sessions session-id :custom-name] final-name)
       :dispatch [:persistence/save-session-name session-id final-name]})))

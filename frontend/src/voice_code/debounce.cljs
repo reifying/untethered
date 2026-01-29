@@ -26,7 +26,8 @@
        {:db (assoc db :my-key value)}))
    
    iOS Reference: VoiceCodeClient.swift lines 150-252"
-  (:require [re-frame.core :as rf]))
+  (:require [clojure.string :as str]
+            [re-frame.core :as rf]))
 
 ;; ============================================================================
 ;; Configuration
@@ -68,7 +69,7 @@
                           (map #(if (vector? %) (last %) %))
                           (map name)
                           sort
-                          (clojure.string/join ", "))]
+                          (str/join ", "))]
         (js/console.log "🔄 [Debounce] Applying updates:" keys-str))
       ;; Apply all updates in a single dispatch-sync for immediate effect
       ;; Note: This cannot be called from within an event handler

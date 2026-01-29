@@ -11,7 +11,8 @@
      ;; Use stub implementations in unit tests
      (if testing-env/unit-testing?
        (stub-implementation)
-       (real-implementation))")
+       (real-implementation))"
+  (:require [clojure.string :as str]))
 
 ;; ============================================================================
 ;; Environment Detection
@@ -33,10 +34,10 @@
   (or
    ;; Check for global flag set by test harness
    (and (exists? js/globalThis)
-        (aget js/globalThis (str "__TEST_" (clojure.string/upper-case arg-name) "__")))
+        (aget js/globalThis (str "__TEST_" (str/upper-case arg-name) "__")))
    ;; Check for global flag on window (web/dev context)
    (and (exists? js/window)
-        (aget js/window (str "__TEST_" (clojure.string/upper-case arg-name) "__")))))
+        (aget js/window (str "__TEST_" (str/upper-case arg-name) "__")))))
 
 (def ui-testing?
   "Returns true when app is launched by UI tests with uitesting flag.

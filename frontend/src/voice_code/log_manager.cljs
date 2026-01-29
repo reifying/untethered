@@ -5,7 +5,8 @@
    
    Uses a single atom for log state to ensure atomic updates and avoid
    race conditions between entry count and size tracking."
-  (:require [reagent.core :as r]
+  (:require [clojure.string :as str]
+            [reagent.core :as r]
             [re-frame.core :as rf]))
 
 ;; Configuration
@@ -122,7 +123,7 @@
   (->> (:entries @log-state)
        (map (fn [{:keys [timestamp level message]}]
               (str "[" timestamp "] [" level "] " message)))
-       (clojure.string/join "\n")))
+       (str/join "\n")))
 
 (defn clear-logs!
   "Clear all log entries."

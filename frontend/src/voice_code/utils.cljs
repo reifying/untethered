@@ -1,5 +1,6 @@
 (ns voice-code.utils
-  "Utility functions for voice-code - pure functions without React Native dependencies.")
+  "Utility functions for voice-code - pure functions without React Native dependencies."
+  (:require [clojure.string :as str]))
 
 (defn format-relative-time
   "Format a timestamp as relative time (e.g., '2 hours ago').
@@ -106,7 +107,7 @@
                   total-cost
                   (conj (format-cost total-cost)))]
       (when (seq parts)
-        (clojure.string/join " • " parts)))))
+        (str/join " • " parts)))))
 
 ;; ============================================================================
 ;; Content Block Extraction for Claude Messages
@@ -135,7 +136,7 @@
       (let [param-summary (or
                            ;; File path
                            (when-let [path (or (:file-path input) (:path input))]
-                             (last (clojure.string/split path #"/")))
+                             (last (str/split path #"/")))
                            ;; Pattern search
                            (when-let [pattern (:pattern input)]
                              (str "pattern \"" (subs pattern 0 (min 30 (count pattern)))
@@ -163,7 +164,7 @@
   (->> blocks
        (filter #(= "text" (:type %)))
        (map :text)
-       (clojure.string/join "\n")))
+       (str/join "\n")))
 
 (defn summarize-tool-result
   "Summarize a tool_result content block.
@@ -177,7 +178,7 @@
                        (sequential? content) (extract-text-from-content-blocks content)
                        :else nil)
           error-msg (when error-text
-                      (first (clojure.string/split-lines error-text)))
+                      (first (str/split-lines error-text)))
           truncated (when error-msg
                       (if (> (count error-msg) 60)
                         (str (subs error-msg 0 60) "...")
@@ -239,7 +240,7 @@
                          (remove empty?)
                          (vec))]
       (when (seq summaries)
-        (clojure.string/join "\n\n" summaries)))
+        (str/join "\n\n" summaries)))
 
     ;; Fallback
     :else nil))
@@ -328,7 +329,7 @@
   [value]
   (when (and (string? value)
              ;; Must start with 'untethered-' prefix
-             (clojure.string/starts-with? value "untethered-")
+             (str/starts-with? value "untethered-")
              ;; Must be exactly 43 characters (11 prefix + 32 hex)
              (= 43 (count value))
              ;; Characters after prefix must be lowercase hex (0-9, a-f)

@@ -1,6 +1,7 @@
 (ns voice-code.views.conversation
   "Conversation view for a single session showing messages and input."
-  (:require [reagent.core :as r]
+  (:require [clojure.string :as str]
+            [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [Modal]]
             [voice-code.views.components :as components :refer [copy-to-clipboard! toast-overlay show-toast!]]
@@ -82,7 +83,7 @@
   [:f>
    (fn []
      (let [{:keys [visible? input-value on-rename]} @rename-modal-state
-           trimmed-value (when input-value (clojure.string/trim input-value))
+           trimmed-value (when input-value (str/trim input-value))
            is-empty? (or (nil? trimmed-value) (empty? trimmed-value))
            colors (theme/use-theme-colors)]
        [:> Modal
