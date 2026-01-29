@@ -89,7 +89,13 @@
         :previewing-voice? false
         :compacting-sessions #{} ; Set of session IDs currently being compacted
         :compaction-timestamps {} ; session-id -> timestamp of last compaction
-        :compaction-success nil}}) ; Temporary success message
+        :compaction-success nil ; Temporary success message
+        ;; Voice recognition and TTS state (managed by voice/events.cljs)
+        :voice-listening? false ; Whether voice recognition is active
+        :voice-speaking? false ; Whether TTS is currently playing audio
+        :voice-paused? false ; Whether TTS playback is paused
+        :voice-partial nil ; Partial speech recognition results
+        :voice-error nil}}) ; Last voice-related error message
 
 (defn session-locked?
   "Check if a session is currently locked (processing a prompt)."

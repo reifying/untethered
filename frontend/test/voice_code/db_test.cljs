@@ -33,7 +33,17 @@
       (is (= "localhost" (:server-url settings)))
       (is (= 8080 (:server-port settings)))
       (is (= 10 (:recent-sessions-limit settings)))
-      (is (= 200 (:max-message-size-kb settings))))))
+      (is (= 200 (:max-message-size-kb settings)))))
+
+  (testing "ui has voice state initialized"
+    ;; Voice UI state is managed by voice/events.cljs but should be declared
+    ;; in default-db for schema documentation and consistent initialization.
+    (let [ui (:ui db/default-db)]
+      (is (false? (:voice-listening? ui)) "voice-listening? should start false")
+      (is (false? (:voice-speaking? ui)) "voice-speaking? should start false")
+      (is (false? (:voice-paused? ui)) "voice-paused? should start false")
+      (is (nil? (:voice-partial ui)) "voice-partial should start nil")
+      (is (nil? (:voice-error ui)) "voice-error should start nil"))))
 
 (deftest session-locked-test
   (testing "returns false for unlocked session"
