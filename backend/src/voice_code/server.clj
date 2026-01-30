@@ -1152,10 +1152,12 @@
                   ;; Get session metadata
                   (if-let [metadata (repl/get-session-metadata session-id)]
                     (let [file-path (:file metadata)
+                          provider (:provider metadata :claude)
                           ;; Get current file size to update position BEFORE reading
                           file (io/file file-path)
                           current-size (.length file)
-                          all-messages (repl/parse-jsonl-file file-path)
+                          ;; Use provider-aware parser for correct message format
+                          all-messages (repl/parse-session-messages provider file-path)
                           ;; Filter internal messages (sidechain, summary, system)
                           filtered (vec (repl/filter-internal-messages all-messages))
                           ;; Get client's max message size setting

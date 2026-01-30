@@ -337,6 +337,46 @@
       (is (= "msg1" (:text (first parsed))))
       (is (= "msg2" (:text (second parsed)))))))
 
+(deftest test-parse-session-messages
+  (testing "Claude provider uses parse-jsonl-file"
+    (let [messages ["{\"role\":\"user\",\"text\":\"msg1\"}"
+                    "{\"role\":\"assistant\",\"text\":\"msg2\"}"]
+          file (create-test-jsonl-file "claude-session.jsonl" messages)
+          parsed (repl/parse-session-messages :claude (.getAbsolutePath file))]
+      (is (= 2 (count parsed)))
+      (is (= "user" (:role (first parsed))))
+      (is (= "msg1" (:text (first parsed))))))
+
+  (testing "Copilot provider parses events.jsonl format"
+    (let [;; Create Copilot session directory structure
+          session-id "abc12345-1234-5678-9012-abcdef123456"
+          session-dir (io/file test-dir session-id)
+          events-file (io/file session-dir "events.jsonl")]
+      (.mkdirs session-dir)
+      ;; Copilot events.jsonl format
+      (spit events-file (str/join "\n"
+                                  ["{\"type\":\"user.message\",\"timestamp\":\"2026-01-28T10:00:00Z\",\"data\":{\"content\":\"Hello\",\"messageId\":\"msg-1\"}}"
+                                   "{\"type\":\"assistant.message\",\"timestamp\":\"2026-01-28T10:00:05Z\",\"data\":{\"content\":\"Hi there\",\"messageId\":\"msg-2\"}}"]))
+      ;; Test with directory path
+      (let [parsed (repl/parse-session-messages :copilot (.getAbsolutePath session-dir))]
+        (is (= 2 (count parsed)))
+        (is (= :user (:role (first parsed))))
+        (is (= "Hello" (:text (first parsed))))
+        (is (= :copilot (:provider (first parsed))))
+        (is (= :assistant (:role (second parsed))))
+        (is (= "Hi there" (:text (second parsed)))))
+      ;; Test with direct events.jsonl path
+      (let [parsed (repl/parse-session-messages :copilot (.getAbsolutePath events-file))]
+        (is (= 2 (count parsed)))
+        (is (= :user (:role (first parsed)))))))
+
+  (testing "Unknown provider defaults to Claude parser"
+    (let [messages ["{\"role\":\"user\",\"text\":\"test\"}"]
+          file (create-test-jsonl-file "unknown-provider.jsonl" messages)
+          parsed (repl/parse-session-messages :unknown-provider (.getAbsolutePath file))]
+      (is (= 1 (count parsed)))
+      (is (= "test" (:text (first parsed)))))))
+
 (deftest test-parse-jsonl-incremental
   (testing "Parse only new lines from file"
     (let [initial-messages ["{\"role\":\"user\",\"text\":\"msg1\"}"]

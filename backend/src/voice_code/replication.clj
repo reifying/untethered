@@ -768,6 +768,27 @@
       (log/error e "Failed to parse .jsonl file" {:file file-path})
       [])))
 
+(defn parse-session-messages
+  "Parse messages from a session file, using the appropriate provider parser.
+   For Claude sessions: parses .jsonl with Claude message format
+   For Copilot sessions: parses events.jsonl and transforms to canonical format
+   Returns vector of canonical message maps."
+  [provider file-path]
+  (case provider
+    :claude (parse-jsonl-file file-path)
+    :copilot (let [file (io/file file-path)]
+               ;; Copilot file-path may point to events.jsonl or session directory
+               (if (.isDirectory file)
+                 (let [events-file (io/file file "events.jsonl")]
+                   (when (.exists events-file)
+                     (parse-copilot-events-file events-file)))
+                 ;; Assume it's events.jsonl directly
+                 (parse-copilot-events-file file)))
+    ;; Default to Claude parser for unknown providers
+    (do
+      (log/warn "Unknown provider, using Claude parser" {:provider provider})
+      (parse-jsonl-file file-path))))
+
 (defn parse-jsonl-incremental
   "Parse only new lines from a .jsonl file since last read position.
   Updates tracked position after successful read.
