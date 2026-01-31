@@ -503,7 +503,10 @@
   ;; Output is plain text. Session ID for new sessions comes from
   ;; filesystem watching (the new session directory is created in
   ;; ~/.copilot/session-state/<uuid>/).
-  (let [{:keys [prompt resume-session-id model]} opts]
+  ;;
+  ;; HARDCODED MODEL: gpt-5-mini is used for all invocations during
+  ;; development to control costs. Remove when ready for production.
+  (let [{:keys [prompt resume-session-id]} opts]
     (when-not prompt
       (throw (ex-info "Prompt is required for Copilot CLI invocation"
                       {:provider :copilot})))
@@ -513,8 +516,8 @@
              "-p" prompt]
       ;; Resume existing session if specified
       resume-session-id (into ["--resume" resume-session-id])
-      ;; Set model if specified
-      model (into ["--model" model]))))
+      ;; Always use cheap model during development
+      true (into ["--model" "gpt-5-mini"]))))
 
 (defmethod build-cli-command :cursor [_ _opts]
   (throw (ex-info "Cursor CLI invocation not yet implemented."
@@ -644,7 +647,7 @@
    Parameters:
    - prompt: The prompt text to send
    - :resume-session-id: Optional session ID to resume
-   - :model: Optional model to use
+   - :model: Optional model to use (currently ignored - hardcoded during development)
    - :working-directory: Optional working directory for CLI
    - :timeout: Timeout in milliseconds (default: 1 hour)
    
@@ -660,10 +663,13 @@
   ;; Capture existing sessions before invocation (for new session discovery)
   (let [sessions-before (when-not resume-session-id
                           (get-copilot-sessions-before))
-        ;; Build command args
-        args (cond-> ["--no-color" "--allow-all-tools" "-p" prompt]
-               resume-session-id (into ["--resume" resume-session-id])
-               model (into ["--model" model]))
+        ;; Build command args using build-cli-command for consistency
+        ;; Note: model arg is ignored by build-cli-command (hardcoded during development)
+        full-cmd (build-cli-command :copilot {:prompt prompt
+                                              :resume-session-id resume-session-id
+                                              :model model})
+        ;; Remove the "copilot" prefix since run-copilot-process adds it
+        args (vec (rest full-cmd))
         ;; Use resume-session-id for tracking, or nil for new sessions
         tracking-id resume-session-id
 
