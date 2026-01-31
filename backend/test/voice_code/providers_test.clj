@@ -523,29 +523,29 @@ branch: main")
       (is (= "" (:text result))))))
 
 (deftest test-parse-message-copilot
-  (testing "parses user.message event"
+  (testing "parses user.message event with canonical format validation"
     (let [raw-msg {:type "user.message"
                    :timestamp "2026-01-28T10:00:00Z"
                    :data {:content "Hello, help me with this code"
-                          :messageId "msg-123"}}
+                          :messageId "550e8400-e29b-41d4-a716-446655440000"}}
           result (providers/parse-message :copilot raw-msg)]
 
-      (is (some? result))
-      (is (= "msg-123" (:uuid result)))
+      (is (valid-canonical-message? result) "Result should conform to canonical format")
+      (is (= "550e8400-e29b-41d4-a716-446655440000" (:uuid result)))
       (is (= "user" (:role result)))
       (is (= "Hello, help me with this code" (:text result)))
       (is (= "2026-01-28T10:00:00Z" (:timestamp result)))
       (is (= :copilot (:provider result)))))
 
-  (testing "parses assistant.message event"
+  (testing "parses assistant.message event with canonical format validation"
     (let [raw-msg {:type "assistant.message"
                    :timestamp "2026-01-28T10:00:05Z"
                    :data {:content "I can help you with that code."
-                          :messageId "msg-456"}}
+                          :messageId "660e8400-e29b-41d4-a716-446655440001"}}
           result (providers/parse-message :copilot raw-msg)]
 
-      (is (some? result))
-      (is (= "msg-456" (:uuid result)))
+      (is (valid-canonical-message? result) "Result should conform to canonical format")
+      (is (= "660e8400-e29b-41d4-a716-446655440001" (:uuid result)))
       (is (= "assistant" (:role result)))
       (is (= "I can help you with that code." (:text result)))
       (is (= :copilot (:provider result)))))
@@ -554,17 +554,19 @@ branch: main")
     (let [raw-msg {:type "user.message"
                    :timestamp "2026-01-28T10:00:00Z"
                    :data {:transformedContent "Transformed content here"
-                          :messageId "msg-789"}}
+                          :messageId "770e8400-e29b-41d4-a716-446655440002"}}
           result (providers/parse-message :copilot raw-msg)]
 
+      (is (valid-canonical-message? result))
       (is (= "Transformed content here" (:text result)))))
 
-  (testing "generates UUID when messageId is missing"
+  (testing "generates valid UUID when messageId is missing"
     (let [raw-msg {:type "user.message"
                    :timestamp "2026-01-28T10:00:00Z"
                    :data {:content "Test message"}}
           result (providers/parse-message :copilot raw-msg)]
 
+      (is (valid-canonical-message? result) "Generated UUID should be valid format")
       (is (some? (:uuid result)))
       (is (string? (:uuid result)))))
 
@@ -581,11 +583,31 @@ branch: main")
   (testing "handles empty content gracefully"
     (let [raw-msg {:type "user.message"
                    :timestamp "2026-01-28T10:00:00Z"
-                   :data {:messageId "msg-empty"}}
+                   :data {:messageId "880e8400-e29b-41d4-a716-446655440003"}}
           result (providers/parse-message :copilot raw-msg)]
 
-      (is (some? result))
-      (is (= "" (:text result))))))
+      (is (valid-canonical-message? result))
+      (is (= "" (:text result)))))
+
+  (testing "falls back to raw-msg :id when messageId missing"
+    (let [raw-msg {:type "user.message"
+                   :timestamp "2026-01-28T10:00:00Z"
+                   :id "990e8400-e29b-41d4-a716-446655440004"
+                   :data {:content "Test with id fallback"}}
+          result (providers/parse-message :copilot raw-msg)]
+
+      (is (valid-canonical-message? result))
+      (is (= "990e8400-e29b-41d4-a716-446655440004" (:uuid result)))))
+
+  (testing "canonical format has all required fields"
+    (let [raw-msg {:type "user.message"
+                   :timestamp "2026-01-28T10:00:00Z"
+                   :data {:content "Test"
+                          :messageId "aa0e8400-e29b-41d4-a716-446655440005"}}
+          result (providers/parse-message :copilot raw-msg)]
+      ;; Verify exact set of keys matches canonical spec
+      (is (= #{:uuid :role :text :timestamp :provider} (set (keys result)))
+          "Message should have exactly the canonical fields"))))
 
 ;; ============================================================================
 ;; Provider Resolution Tests
