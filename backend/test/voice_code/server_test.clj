@@ -1489,17 +1489,18 @@
     (reset! server/api-key nil)))
 
 (deftest test-subscribe-filters-internal-messages
-  (testing "Subscribe filters out internal messages (sidechain, summary, system)"
+  (testing "Subscribe filters out internal messages via parse-session-messages transformation"
+    ;; With canonical format, parse-session-messages now handles all filtering
+    ;; via providers/parse-message (filters summary, system, sidechain)
+    ;; and the subsequent filter-internal-messages call is a no-op for canonical format
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
     (let [sent-messages (atom [])
-          ;; Create mock messages including internal ones
-          mock-messages [{:uuid "uuid-1" :type "user" :text "Real message 1" :message {:role "user" :content "Real message 1"}}
-                         {:uuid "uuid-2" :type "summary" :summary "Error summary"}
-                         {:uuid "uuid-3" :type "assistant" :text "Real message 2" :message {:role "assistant" :content "Real message 2"}}
-                         {:uuid "uuid-4" :type "system" :content "System notification"}
-                         {:uuid "uuid-5" :type "user" :text "Real message 3" :isSidechain true}
-                         {:uuid "uuid-6" :type "user" :text "Real message 4" :message {:role "user" :content "Real message 4"}}]]
+          ;; Create canonical format messages (already transformed)
+          ;; parse-session-messages filters out summary/system/sidechain during transformation
+          canonical-messages [{:uuid "uuid-1" :role "user" :text "Real message 1" :timestamp "2026-01-30T12:00:00Z" :provider :claude}
+                              {:uuid "uuid-3" :role "assistant" :text "Real message 2" :timestamp "2026-01-30T12:00:05Z" :provider :claude}
+                              {:uuid "uuid-6" :role "user" :text "Real message 4" :timestamp "2026-01-30T12:00:15Z" :provider :claude}]]
       (with-redefs [org.httpkit.server/send!
                     (fn [ch msg]
                       (swap! sent-messages conj (json/parse-string msg true)))
@@ -1508,16 +1509,15 @@
                     (fn [session-id]
                       {:session-id session-id
                        :file "/tmp/test-session.jsonl"
-                       :message-count 6})
-                    voice-code.replication/parse-jsonl-file
-                    (fn [_] mock-messages)
+                       :provider :claude
+                       :message-count 3})
+                    ;; Mock parse-session-messages to return canonical format directly
+                    voice-code.replication/parse-session-messages
+                    (fn [_provider _file-path] canonical-messages)
                     voice-code.replication/filter-internal-messages
-                    ;; Use actual filtering logic
-                    (fn [msgs]
-                      (remove #(or (:isSidechain %)
-                                   (= "summary" (:type %))
-                                   (= "system" (:type %)))
-                              msgs))
+                    ;; With canonical format, filter-internal-messages is a no-op
+                    ;; (sidechain/summary/system already filtered by parse-message)
+                    identity
                     voice-code.replication/reset-file-position! (fn [_] nil)
                     voice-code.replication/file-positions (atom {})
                     clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
@@ -1526,12 +1526,12 @@
 
         (server/handle-message :test-ch "{\"type\":\"subscribe\",\"session_id\":\"test-session-456\"}")
 
-        ;; Verify only non-internal messages are sent
+        ;; Verify all canonical messages are sent (already filtered at parse time)
         (is (= 1 (count @sent-messages)))
         (let [response (first @sent-messages)]
           (is (= "session_history" (:type response)))
           (is (= 3 (count (:messages response)))
-              "Should only send 3 real messages, filtering out summary, system, and sidechain")
+              "Should send all 3 canonical messages (filtering happened at parse time)")
           ;; Total count reflects displayable (filtered) messages
           (is (= 3 (:total_count response))))))
     (reset! server/api-key nil)))

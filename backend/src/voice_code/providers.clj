@@ -249,10 +249,15 @@
 
 (defmethod parse-message :claude [_ raw-msg]
   ;; Transform Claude .jsonl message to canonical wire format
+  ;; Filter out:
+  ;; - Non user/assistant types (summary, system, init, etc.)
+  ;; - Sidechain messages (warmup, internal overhead)
   (let [msg-type (:type raw-msg)
+        is-sidechain (:isSidechain raw-msg)
         message (:message raw-msg)
         content (:content message)]
-    (when (contains? #{"user" "assistant"} msg-type)
+    (when (and (contains? #{"user" "assistant"} msg-type)
+               (not is-sidechain))
       {:uuid (or (:uuid raw-msg) (str (java.util.UUID/randomUUID)))
        :role msg-type
        :text (extract-text-from-content content)

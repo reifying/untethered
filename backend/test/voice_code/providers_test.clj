@@ -504,6 +504,21 @@ branch: main")
     (is (nil? (providers/parse-message :claude {:type "system" :content "Command executed"})))
     (is (nil? (providers/parse-message :claude {:type "init" :content "Initializing"}))))
 
+  (testing "sidechain messages return nil"
+    ;; Sidechain messages are warmup/internal overhead and should be filtered
+    (is (nil? (providers/parse-message :claude
+                                       {:type "user"
+                                        :uuid "dd0e8400-e29b-41d4-a716-446655440000"
+                                        :timestamp "2026-01-30T12:34:56.789Z"
+                                        :isSidechain true
+                                        :message {:role "user" :content "Warmup message"}})))
+    (is (nil? (providers/parse-message :claude
+                                       {:type "assistant"
+                                        :uuid "ee0e8400-e29b-41d4-a716-446655440001"
+                                        :timestamp "2026-01-30T12:35:00.000Z"
+                                        :isSidechain true
+                                        :message {:role "assistant" :content "Internal response"}}))))
+
   (testing "handles nil content gracefully"
     (let [raw {:type "user"
                :uuid "bb0e8400-e29b-41d4-a716-446655440000"

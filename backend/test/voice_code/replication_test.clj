@@ -338,14 +338,33 @@
       (is (= "msg2" (:text (second parsed)))))))
 
 (deftest test-parse-session-messages
-  (testing "Claude provider uses parse-jsonl-file"
-    (let [messages ["{\"role\":\"user\",\"text\":\"msg1\"}"
-                    "{\"role\":\"assistant\",\"text\":\"msg2\"}"]
+  (testing "Claude provider transforms to canonical format"
+    (let [;; Raw Claude JSONL format with nested message structure
+          messages ["{\"type\":\"user\",\"uuid\":\"550e8400-e29b-41d4-a716-446655440000\",\"timestamp\":\"2026-01-30T12:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"Hello Claude\"}}"
+                    "{\"type\":\"assistant\",\"uuid\":\"660e8400-e29b-41d4-a716-446655440001\",\"timestamp\":\"2026-01-30T12:00:05.000Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hi there!\"}]}}"]
           file (create-test-jsonl-file "claude-session.jsonl" messages)
           parsed (repl/parse-session-messages :claude (.getAbsolutePath file))]
       (is (= 2 (count parsed)))
+      ;; Verify canonical format fields
       (is (= "user" (:role (first parsed))))
-      (is (= "msg1" (:text (first parsed))))))
+      (is (= "Hello Claude" (:text (first parsed))))
+      (is (= "550e8400-e29b-41d4-a716-446655440000" (:uuid (first parsed))))
+      (is (= :claude (:provider (first parsed))))
+      (is (= "assistant" (:role (second parsed))))
+      (is (= "Hi there!" (:text (second parsed))))
+      (is (= :claude (:provider (second parsed))))))
+
+  (testing "Claude provider filters internal messages"
+    (let [messages ["{\"type\":\"user\",\"uuid\":\"550e8400-e29b-41d4-a716-446655440000\",\"timestamp\":\"2026-01-30T12:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"Hello\"}}"
+                    "{\"type\":\"summary\",\"summary\":\"Session summary\"}"
+                    "{\"type\":\"system\",\"content\":\"System message\"}"
+                    "{\"type\":\"assistant\",\"uuid\":\"660e8400-e29b-41d4-a716-446655440001\",\"timestamp\":\"2026-01-30T12:00:05.000Z\",\"message\":{\"role\":\"assistant\",\"content\":\"Response\"}}"]
+          file (create-test-jsonl-file "claude-internal.jsonl" messages)
+          parsed (repl/parse-session-messages :claude (.getAbsolutePath file))]
+      ;; Only user and assistant messages, internal types filtered out
+      (is (= 2 (count parsed)))
+      (is (= "user" (:role (first parsed))))
+      (is (= "assistant" (:role (second parsed))))))
 
   (testing "Copilot provider parses events.jsonl format"
     (let [;; Create Copilot session directory structure
@@ -355,8 +374,8 @@
       (.mkdirs session-dir)
       ;; Copilot events.jsonl format
       (spit events-file (str/join "\n"
-                                  ["{\"type\":\"user.message\",\"timestamp\":\"2026-01-28T10:00:00Z\",\"data\":{\"content\":\"Hello\",\"messageId\":\"msg-1\"}}"
-                                   "{\"type\":\"assistant.message\",\"timestamp\":\"2026-01-28T10:00:05Z\",\"data\":{\"content\":\"Hi there\",\"messageId\":\"msg-2\"}}"]))
+                                  ["{\"type\":\"user.message\",\"timestamp\":\"2026-01-28T10:00:00Z\",\"data\":{\"content\":\"Hello\",\"messageId\":\"msg-00000000-0000-0000-0000-000000000001\"}}"
+                                   "{\"type\":\"assistant.message\",\"timestamp\":\"2026-01-28T10:00:05Z\",\"data\":{\"content\":\"Hi there\",\"messageId\":\"msg-00000000-0000-0000-0000-000000000002\"}}"]))
       ;; Test with directory path
       (let [parsed (repl/parse-session-messages :copilot (.getAbsolutePath session-dir))]
         (is (= 2 (count parsed)))
@@ -370,12 +389,13 @@
         (is (= 2 (count parsed)))
         (is (= "user" (:role (first parsed)))))))
 
-  (testing "Unknown provider defaults to Claude parser"
-    (let [messages ["{\"role\":\"user\",\"text\":\"test\"}"]
+  (testing "Unknown provider defaults to Claude parser with canonical output"
+    (let [messages ["{\"type\":\"user\",\"uuid\":\"550e8400-e29b-41d4-a716-446655440000\",\"timestamp\":\"2026-01-30T12:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"test message\"}}"]
           file (create-test-jsonl-file "unknown-provider.jsonl" messages)
           parsed (repl/parse-session-messages :unknown-provider (.getAbsolutePath file))]
       (is (= 1 (count parsed)))
-      (is (= "test" (:text (first parsed)))))))
+      (is (= "test message" (:text (first parsed))))
+      (is (= :claude (:provider (first parsed)))))))
 
 (deftest test-parse-jsonl-incremental
   (testing "Parse only new lines from file"

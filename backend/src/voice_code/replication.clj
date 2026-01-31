@@ -770,12 +770,17 @@
 
 (defn parse-session-messages
   "Parse messages from a session file, using the appropriate provider parser.
-   For Claude sessions: parses .jsonl with Claude message format
+   For Claude sessions: parses .jsonl and transforms to canonical format
    For Copilot sessions: parses events.jsonl and transforms to canonical format
    Returns vector of canonical message maps."
   [provider file-path]
   (case provider
-    :claude (parse-jsonl-file file-path)
+    :claude (let [raw-messages (parse-jsonl-file file-path)]
+              ;; Transform each raw message to canonical format
+              (->> raw-messages
+                   (map #(providers/parse-message :claude %))
+                   (filter some?) ; Remove nil (internal messages like summary, system)
+                   (vec)))
     :copilot (let [file (io/file file-path)]
                ;; Copilot file-path may point to events.jsonl or session directory
                (if (.isDirectory file)
@@ -787,7 +792,10 @@
     ;; Default to Claude parser for unknown providers
     (do
       (log/warn "Unknown provider, using Claude parser" {:provider provider})
-      (parse-jsonl-file file-path))))
+      (->> (parse-jsonl-file file-path)
+           (map #(providers/parse-message :claude %))
+           (filter some?)
+           (vec)))))
 
 (defn parse-jsonl-incremental
   "Parse only new lines from a .jsonl file since last read position.
