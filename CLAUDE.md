@@ -42,15 +42,16 @@ Before working on Clojure backend code, verify MCP tools are available. If not:
 ```bash
 cd backend && clojure -M:nrepl &
 ```
-Creates `backend/.nrepl-port` with port number.
+Creates `backend/.nrepl-port` with the assigned port number.
 
 **2. Add MCP config to `~/.claude.json`:**
 ```bash
 PROJECT_PATH=$(pwd)
+# Note: Requires Java 17+ for MCP. Adjust Java path as needed.
 jq --arg path "$PROJECT_PATH" '.projects[$path].mcpServers["clojure-mcp"] = {
   "type": "stdio",
   "command": "/bin/sh",
-  "args": ["-c", "PORT=$(cat backend/.nrepl-port); cd backend && clojure -X:mcp :port $PORT"],
+  "args": ["-c", "export PATH=/opt/homebrew/opt/sdkman-cli/libexec/candidates/java/17.0.13-tem/bin:$PATH && cd '"$PROJECT_PATH"'/backend && clojure -X:mcp :port $(cat .nrepl-port)"],
   "env": {}
 }' ~/.claude.json > ~/.claude.json.tmp && mv ~/.claude.json.tmp ~/.claude.json
 ```
