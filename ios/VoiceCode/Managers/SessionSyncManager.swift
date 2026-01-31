@@ -509,198 +509,22 @@ class SessionSyncManager {
     
     // MARK: - Private Helpers
 
-    /// Format content size in human-readable format
-    /// - Parameter bytes: Size in bytes
-    /// - Returns: Formatted string (e.g., "1.2KB", "345 bytes")
-    private func formatContentSize(_ bytes: Int) -> String {
-        if bytes < 1024 {
-            return "\(bytes) bytes"
-        } else if bytes < 1024 * 1024 {
-            let kb = Double(bytes) / 1024.0
-            return String(format: "%.1fKB", kb)
-        } else {
-            let mb = Double(bytes) / (1024.0 * 1024.0)
-            return String(format: "%.1fMB", mb)
-        }
-    }
-
-    /// Summarize a tool_use content block
-    /// - Parameter block: Content block dictionary
-    /// - Returns: Abbreviated summary string
-    private func summarizeToolUse(_ block: [String: Any]) -> String {
-        guard let toolName = block["name"] as? String else {
-            return "🔧 Tool call"
-        }
-
-        // Get input parameters
-        guard let input = block["input"] as? [String: Any], !input.isEmpty else {
-            return "🔧 \(toolName)"
-        }
-
-        // Format abbreviated parameters
-        var paramSummary: String = ""
-
-        // Common parameter patterns
-        if let path = input["file_path"] as? String ?? input["path"] as? String {
-            let fileName = (path as NSString).lastPathComponent
-            paramSummary = fileName
-        } else if let pattern = input["pattern"] as? String {
-            paramSummary = "pattern \"\(pattern.prefix(30))\(pattern.count > 30 ? "..." : "")\""
-        } else if let command = input["command"] as? String {
-            paramSummary = command.prefix(40) + (command.count > 40 ? "..." : "")
-        } else if let code = input["code"] as? String {
-            paramSummary = code.prefix(40) + (code.count > 40 ? "..." : "")
-        } else {
-            // Generic: show first key-value pair
-            if let firstKey = input.keys.first, let value = input[firstKey] {
-                let valueStr = String(describing: value)
-                paramSummary = "\(firstKey): \(valueStr.prefix(30))\(valueStr.count > 30 ? "..." : "")"
-            }
-        }
-
-        if paramSummary.isEmpty {
-            return "🔧 \(toolName)"
-        } else {
-            return "🔧 \(toolName): \(paramSummary)"
-        }
-    }
-
-    /// Summarize a tool_result content block
-    /// - Parameter block: Content block dictionary
-    /// - Returns: Abbreviated summary string
-    private func summarizeToolResult(_ block: [String: Any]) -> String {
-        // Check for error
-        if let isError = block["is_error"] as? Bool, isError {
-            // Error content can be a string or array of text blocks
-            if let content = block["content"] as? String {
-                // Extract error message (first line or first 60 chars)
-                let errorMessage = content.components(separatedBy: .newlines).first ?? content
-                let truncated = errorMessage.prefix(60)
-                return "✗ Error: \(truncated)\(errorMessage.count > 60 ? "..." : "")"
-            } else if let contentArray = block["content"] as? [[String: Any]] {
-                // Extract text from array content blocks
-                let errorText = extractTextFromContentBlocks(contentArray)
-                let errorMessage = errorText.components(separatedBy: .newlines).first ?? errorText
-                let truncated = errorMessage.prefix(60)
-                return "✗ Error: \(truncated)\(errorMessage.count > 60 ? "..." : "")"
-            } else {
-                return "✗ Error"
-            }
-        }
-
-        // Success - show size
-        if let content = block["content"] as? String {
-            let size = content.utf8.count
-            return "✓ Result (\(formatContentSize(size)))"
-        } else if let contentArray = block["content"] as? [[String: Any]] {
-            // Content is array of text blocks - extract and measure total size
-            let totalText = extractTextFromContentBlocks(contentArray)
-            let size = totalText.utf8.count
-            return "✓ Result (\(formatContentSize(size)))"
-        } else {
-            return "✓ Result"
-        }
-    }
-
-    /// Extract text from an array of content blocks
-    /// - Parameter blocks: Array of content block dictionaries
-    /// - Returns: Combined text from all text blocks
-    private func extractTextFromContentBlocks(_ blocks: [[String: Any]]) -> String {
-        var texts: [String] = []
-        for block in blocks {
-            if let blockType = block["type"] as? String, blockType == "text",
-               let text = block["text"] as? String {
-                texts.append(text)
-            }
-        }
-        return texts.joined(separator: "\n")
-    }
-
-    /// Summarize a thinking content block
-    /// - Parameter block: Content block dictionary
-    /// - Returns: Abbreviated summary string
-    private func summarizeThinking(_ block: [String: Any]) -> String {
-        guard let thinking = block["thinking"] as? String else {
-            return "💭 Thinking..."
-        }
-
-        // Take first ~60 chars and find a good break point
-        let maxLength = 60
-        if thinking.count <= maxLength {
-            return "💭 \(thinking)"
-        }
-
-        let truncated = thinking.prefix(maxLength)
-        // Try to break at a sentence or word boundary
-        if let lastSpace = truncated.lastIndex(of: " ") {
-            let breakPoint = truncated[..<lastSpace]
-            return "💭 \(breakPoint)..."
-        } else {
-            return "💭 \(truncated)..."
-        }
-    }
-
-    /// Extract text from Claude Code message format
-    /// - Parameter messageData: Raw .jsonl message data
-    /// - Returns: Extracted text string, or nil if extraction fails
+    /// Extract text from canonical wire format
+    /// - Parameter messageData: Canonical message from backend
+    /// - Returns: Text content string, or nil if extraction fails
     internal func extractText(from messageData: [String: Any]) -> String? {
-        // Try nested message.content first (user/assistant messages)
-        if let message = messageData["message"] as? [String: Any] {
-            // User messages have simple string content
-            if let content = message["content"] as? String {
-                return content
-            }
-
-            // Assistant messages have array of content blocks
-            if let contentArray = message["content"] as? [[String: Any]] {
-                var summaries: [String] = []
-
-                for block in contentArray {
-                    guard let blockType = block["type"] as? String else { continue }
-
-                    switch blockType {
-                    case "text":
-                        if let text = block["text"] as? String {
-                            summaries.append(text)
-                        }
-                    case "tool_use":
-                        summaries.append(summarizeToolUse(block))
-                    case "tool_result":
-                        summaries.append(summarizeToolResult(block))
-                    case "thinking":
-                        summaries.append(summarizeThinking(block))
-                    default:
-                        // Unknown block type - show placeholder
-                        summaries.append("[\(blockType)]")
-                    }
-                }
-
-                return summaries.isEmpty ? nil : summaries.joined(separator: "\n\n")
-            }
-        }
-
-        // Fall back to top-level content (system messages)
-        if let content = messageData["content"] as? String {
-            return content
-        }
-
-        // Fall back to summary field (summary messages)
-        if let summary = messageData["summary"] as? String {
-            return summary
-        }
-
-        return nil
+        return messageData["text"] as? String
     }
 
-    /// Extract role from Claude Code message format
-    /// - Parameter messageData: Raw .jsonl message data
+    /// Extract role from canonical wire format
+    /// - Parameter messageData: Canonical message from backend
     /// - Returns: Role string ("user" or "assistant"), or nil if extraction fails
     internal func extractRole(from messageData: [String: Any]) -> String? {
-        return messageData["type"] as? String
+        return messageData["role"] as? String
     }
 
-    /// Extract timestamp from Claude Code message format
-    /// - Parameter messageData: Raw .jsonl message data
+    /// Extract timestamp from canonical wire format
+    /// - Parameter messageData: Canonical message from backend
     /// - Returns: Date object, or nil if extraction fails
     internal func extractTimestamp(from messageData: [String: Any]) -> Date? {
         guard let timestampString = messageData["timestamp"] as? String else {
@@ -712,14 +536,21 @@ class SessionSyncManager {
         return formatter.date(from: timestampString)
     }
 
-    /// Extract message UUID from Claude Code message format
-    /// - Parameter messageData: Raw .jsonl message data
+    /// Extract message UUID from canonical wire format
+    /// - Parameter messageData: Canonical message from backend
     /// - Returns: UUID, or nil if extraction fails
     internal func extractMessageId(from messageData: [String: Any]) -> UUID? {
         guard let uuidString = messageData["uuid"] as? String else {
             return nil
         }
         return UUID(uuidString: uuidString)
+    }
+
+    /// Extract provider from canonical wire format
+    /// - Parameter messageData: Canonical message from backend
+    /// - Returns: Provider string ("claude" or "copilot"), or nil if extraction fails
+    internal func extractProvider(from messageData: [String: Any]) -> String? {
+        return messageData["provider"] as? String
     }
 
     /// Upsert (update or insert) a session in CoreData

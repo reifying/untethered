@@ -193,21 +193,15 @@ class SmartSpeakingTests: XCTestCase {
         // Mark session as active
         ActiveSessionManager.shared.setActiveSession(sessionId)
 
-        // Simulate backend sending assistant message to active session
+        // Simulate backend sending assistant message to active session (canonical wire format)
         let testMessage = "This should be spoken aloud"
         let messages: [[String: Any]] = [
             [
-                "type": "assistant",
-                "message": [
-                    "role": "assistant",
-                    "content": [
-                        [
-                            "type": "text",
-                            "text": testMessage
-                        ]
-                    ]
-                ],
-                "timestamp": "2024-01-01T12:00:00.000Z"
+                "uuid": UUID().uuidString.lowercased(),
+                "role": "assistant",
+                "text": testMessage,
+                "timestamp": "2024-01-01T12:00:00.000Z",
+                "provider": "claude"
             ]
         ]
 
@@ -250,20 +244,14 @@ class SmartSpeakingTests: XCTestCase {
 
         // DO NOT mark session as active (it's in background)
 
-        // Simulate backend sending assistant message to inactive session
+        // Simulate backend sending assistant message to inactive session (canonical wire format)
         let messages: [[String: Any]] = [
             [
-                "type": "assistant",
-                "message": [
-                    "role": "assistant",
-                    "content": [
-                        [
-                            "type": "text",
-                            "text": "This should NOT be spoken"
-                        ]
-                    ]
-                ],
-                "timestamp": "2024-01-01T12:00:00.000Z"
+                "uuid": UUID().uuidString.lowercased(),
+                "role": "assistant",
+                "text": "This should NOT be spoken",
+                "timestamp": "2024-01-01T12:00:00.000Z",
+                "provider": "claude"
             ]
         ]
 

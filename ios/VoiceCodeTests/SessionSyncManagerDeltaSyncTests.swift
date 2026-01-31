@@ -49,12 +49,14 @@ final class SessionSyncManagerDeltaSyncTests: XCTestCase {
         return message
     }
 
-    private func messageDataDict(id: UUID, role: String = "user", text: String = "Test", timestamp: Date = Date()) -> [String: Any] {
+    /// Create a canonical wire format message dictionary
+    private func messageDataDict(id: UUID, role: String = "user", text: String = "Test", timestamp: Date = Date(), provider: String = "claude") -> [String: Any] {
         return [
             "uuid": id.uuidString.lowercased(),
-            "type": role == "user" ? "human" : "assistant",
-            "message": ["content": [["type": "text", "text": text]]],
-            "timestamp": ISO8601DateFormatter().string(from: timestamp)
+            "role": role,
+            "text": text,
+            "timestamp": ISO8601DateFormatter().string(from: timestamp),
+            "provider": provider
         ]
     }
 
@@ -288,51 +290,55 @@ final class SessionSyncManagerDeltaSyncTests: XCTestCase {
         XCTAssertTrue(true)
     }
 
-    // MARK: - Tool Result Array Content Tests
+    // MARK: - Canonical Wire Format Tests
 
-    func testExtractTextFromUserMessageWithToolResultArrayContent() throws {
-        // This is the new Claude Code format where user messages with tool results
-        // have message.content as an array instead of a string
-
-        // Create message data with tool_result array content format
+    func testExtractRoleFromCanonicalFormat() throws {
+        // Canonical format has role at top level
         let messageData: [String: Any] = [
-            "type": "user",
-            "uuid": UUID().uuidString.lowercased(),
-            "timestamp": ISO8601DateFormatter().string(from: Date()),
-            "message": [
-                "role": "user",
-                "content": [
-                    [
-                        "type": "tool_result",
-                        "tool_use_id": "toolu_test123",
-                        "content": [
-                            ["type": "text", "text": "File contents from tool result"]
-                        ]
-                    ]
-                ]
-            ],
-            "toolUseResult": [
-                ["type": "text", "text": "File contents from tool result"]
-            ]
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "role": "user",
+            "text": "Hello",
+            "timestamp": "2025-01-30T12:34:56.789Z",
+            "provider": "claude"
         ]
 
-        // Test extractText handles the new format
-        let extractedText = sessionSyncManager.extractText(from: messageData)
-
-        XCTAssertNotNil(extractedText, "Should extract text from tool_result array content")
-        XCTAssertTrue(extractedText?.contains("Result") ?? false, "Should contain tool result summary")
+        let role = sessionSyncManager.extractRole(from: messageData)
+        XCTAssertEqual(role, "user")
     }
 
-    func testExtractTextFromUserMessageWithStringContent() throws {
-        // Original format - user messages with simple string content
+    func testExtractRoleAssistant() throws {
         let messageData: [String: Any] = [
-            "type": "user",
-            "uuid": UUID().uuidString.lowercased(),
-            "timestamp": ISO8601DateFormatter().string(from: Date()),
-            "message": [
-                "role": "user",
-                "content": "Say hello"
-            ]
+            "uuid": "550e8400-e29b-41d4-a716-446655440001",
+            "role": "assistant",
+            "text": "Hello! How can I help?",
+            "timestamp": "2025-01-30T12:34:56.789Z",
+            "provider": "claude"
+        ]
+
+        let role = sessionSyncManager.extractRole(from: messageData)
+        XCTAssertEqual(role, "assistant")
+    }
+
+    func testExtractRoleMissingField() throws {
+        // Missing role field should return nil
+        let messageData: [String: Any] = [
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "text": "Hello",
+            "timestamp": "2025-01-30T12:34:56.789Z"
+        ]
+
+        let role = sessionSyncManager.extractRole(from: messageData)
+        XCTAssertNil(role)
+    }
+
+    func testExtractTextFromCanonicalFormat() throws {
+        // Canonical format has text at top level
+        let messageData: [String: Any] = [
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "role": "user",
+            "text": "Say hello",
+            "timestamp": "2025-01-30T12:34:56.789Z",
+            "provider": "claude"
         ]
 
         let extractedText = sessionSyncManager.extractText(from: messageData)
@@ -341,50 +347,86 @@ final class SessionSyncManagerDeltaSyncTests: XCTestCase {
         XCTAssertEqual(extractedText, "Say hello")
     }
 
-    func testExtractTextFromAssistantMessageWithTextBlocks() throws {
-        // Assistant messages have content as array of blocks
+    func testExtractTextWithToolSummary() throws {
+        // Backend provides pre-formatted tool summaries in text field
         let messageData: [String: Any] = [
-            "type": "assistant",
-            "uuid": UUID().uuidString.lowercased(),
-            "timestamp": ISO8601DateFormatter().string(from: Date()),
-            "message": [
-                "role": "assistant",
-                "content": [
-                    ["type": "text", "text": "Hello! How can I help you?"]
-                ]
-            ]
+            "uuid": "550e8400-e29b-41d4-a716-446655440001",
+            "role": "assistant",
+            "text": "Let me read that file.\n\n[Tool: Read file_path=/tmp/test.txt]",
+            "timestamp": "2025-01-30T12:34:56.789Z",
+            "provider": "claude"
         ]
 
         let extractedText = sessionSyncManager.extractText(from: messageData)
 
         XCTAssertNotNil(extractedText)
-        XCTAssertEqual(extractedText, "Hello! How can I help you?")
+        XCTAssertTrue(extractedText?.contains("Let me read that file.") ?? false)
+        XCTAssertTrue(extractedText?.contains("[Tool: Read") ?? false)
     }
 
-    func testExtractTextFromAssistantMessageWithToolUseBlock() throws {
-        // Assistant messages can have tool_use blocks with no text
+    func testExtractTextMissingField() throws {
+        // Missing text field should return nil
         let messageData: [String: Any] = [
-            "type": "assistant",
-            "uuid": UUID().uuidString.lowercased(),
-            "timestamp": ISO8601DateFormatter().string(from: Date()),
-            "message": [
-                "role": "assistant",
-                "content": [
-                    [
-                        "type": "tool_use",
-                        "id": "toolu_test123",
-                        "name": "mcp__clojure-mcp__read_file",
-                        "input": ["path": "/test/path.clj"]
-                    ]
-                ]
-            ]
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "role": "user",
+            "timestamp": "2025-01-30T12:34:56.789Z"
         ]
 
         let extractedText = sessionSyncManager.extractText(from: messageData)
+        XCTAssertNil(extractedText)
+    }
 
-        XCTAssertNotNil(extractedText, "Should extract text summary for tool_use block")
-        XCTAssertTrue(extractedText?.contains("🔧") ?? false, "Should contain tool emoji")
-        XCTAssertTrue(extractedText?.contains("read_file") ?? false, "Should contain tool name")
+    func testExtractProviderClaude() throws {
+        let messageData: [String: Any] = [
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "role": "user",
+            "text": "Hello",
+            "timestamp": "2025-01-30T12:34:56.789Z",
+            "provider": "claude"
+        ]
+
+        let provider = sessionSyncManager.extractProvider(from: messageData)
+        XCTAssertEqual(provider, "claude")
+    }
+
+    func testExtractProviderCopilot() throws {
+        let messageData: [String: Any] = [
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "role": "user",
+            "text": "Hello",
+            "timestamp": "2025-01-30T12:34:56.789Z",
+            "provider": "copilot"
+        ]
+
+        let provider = sessionSyncManager.extractProvider(from: messageData)
+        XCTAssertEqual(provider, "copilot")
+    }
+
+    func testExtractProviderMissingField() throws {
+        // Missing provider field should return nil
+        let messageData: [String: Any] = [
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "role": "user",
+            "text": "Hello",
+            "timestamp": "2025-01-30T12:34:56.789Z"
+        ]
+
+        let provider = sessionSyncManager.extractProvider(from: messageData)
+        XCTAssertNil(provider)
+    }
+
+    func testExtractMessageIdFromCanonicalFormat() throws {
+        let messageData: [String: Any] = [
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "role": "user",
+            "text": "Hello",
+            "timestamp": "2025-01-30T12:34:56.789Z",
+            "provider": "claude"
+        ]
+
+        let messageId = sessionSyncManager.extractMessageId(from: messageData)
+        XCTAssertNotNil(messageId)
+        XCTAssertEqual(messageId?.uuidString.lowercased(), "550e8400-e29b-41d4-a716-446655440000")
     }
 
     // MARK: - Regression Test for Loading Bug
