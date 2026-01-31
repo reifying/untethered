@@ -90,7 +90,7 @@
    
    Returns canonical message format:
    {:uuid \"message-uuid\"
-    :role :user | :assistant
+    :role \"user\" | \"assistant\"
     :text \"content string\"
     :timestamp \"ISO-8601\"
     :provider :claude | :copilot}"
@@ -180,11 +180,84 @@
   ;; For now, return nil to indicate the caller should use the existing logic.
   nil)
 
+(defn- summarize-tool-use
+  "Summarize a tool_use block for display."
+  [{:keys [name input]}]
+  (let [;; Extract key parameters for common tools
+        params (cond
+                 (= name "Read")
+                 (str "file_path=" (:file_path input))
+
+                 (= name "Write")
+                 (str "file_path=" (:file_path input))
+
+                 (= name "Edit")
+                 (str "file_path=" (:file_path input))
+
+                 (= name "Bash")
+                 (let [cmd (str (:command input))]
+                   (str "command=" (subs cmd 0 (min 50 (count cmd)))
+                        (when (> (count cmd) 50) "...")))
+
+                 (= name "Grep")
+                 (str "pattern=" (:pattern input))
+
+                 :else
+                 nil)]
+    (if params
+      (str "[Tool: " name " " params "]")
+      (str "[Tool: " name "]"))))
+
+(defn- summarize-thinking
+  "Summarize a thinking block for display."
+  [{:keys [thinking]}]
+  (let [thinking-text (or thinking "")
+        preview (subs thinking-text 0 (min 50 (count thinking-text)))]
+    (str "[Thinking: " preview (when (> (count thinking-text) 50) "...") "]")))
+
+(defn- extract-text-from-content
+  "Extract human-readable text from Claude message content.
+   Handles string content, text blocks, tool_use, tool_result, and thinking."
+  [content]
+  (cond
+    ;; Simple string content
+    (string? content)
+    content
+
+    ;; Array of content blocks
+    (sequential? content)
+    (let [summaries
+          (for [block content
+                :let [block-type (:type block)]
+                :when block-type]
+            (case block-type
+              "text" (:text block)
+              "tool_use" (summarize-tool-use block)
+              "tool_result" (str "[Tool Result]\n"
+                                 (if-let [c (:content block)]
+                                   (if (string? c)
+                                     c
+                                     (pr-str c))
+                                   ""))
+              "thinking" (summarize-thinking block)
+              ;; Unknown block type
+              (str "[" block-type "]")))]
+      (str/join "\n\n" (filter some? summaries)))
+
+    :else
+    ""))
+
 (defmethod parse-message :claude [_ raw-msg]
-  ;; Note: Claude message parsing is handled by existing code in replication.clj
-  ;; This multimethod exists for future providers that have different formats.
-  ;; For Claude, the caller should use the existing parsing logic.
-  nil)
+  ;; Transform Claude .jsonl message to canonical wire format
+  (let [msg-type (:type raw-msg)
+        message (:message raw-msg)
+        content (:content message)]
+    (when (contains? #{"user" "assistant"} msg-type)
+      {:uuid (or (:uuid raw-msg) (str (java.util.UUID/randomUUID)))
+       :role msg-type
+       :text (extract-text-from-content content)
+       :timestamp (:timestamp raw-msg)
+       :provider :claude})))
 
 ;; ============================================================================
 ;; Copilot Provider Implementation (:copilot)
@@ -281,7 +354,7 @@
                        (:id raw-msg)
                        (str (java.util.UUID/randomUUID)))]
         {:uuid msg-id
-         :role (if (= "user.message" event-type) :user :assistant)
+         :role (if (= "user.message" event-type) "user" "assistant")
          :text content
          :timestamp (:timestamp raw-msg)
          :provider :copilot}))))

@@ -399,7 +399,7 @@
   "Extract a session name from Copilot events.
    Uses first user message content truncated to 60 chars."
   [messages]
-  (when-let [first-user-msg (first (filter #(= :user (:role %)) messages))]
+  (when-let [first-user-msg (first (filter #(= "user" (:role %)) messages))]
     (when-let [content (:text first-user-msg)]
       (when (and (string? content)
                  (>= (count content) 5))
@@ -1225,7 +1225,7 @@
           last-pos (get @file-positions file-path 0)
           current-size (.length file)]
       (if (<= current-size last-pos)
-        []  ;; No new data
+        [] ;; No new data
         (with-open [raf (java.io.RandomAccessFile. file "r")]
           (.seek raf last-pos)
           (let [remaining-bytes (- current-size last-pos)
@@ -1566,7 +1566,7 @@
            :watch-thread nil
            :watch-keys {}
            :subscribed-sessions #{}
-           :copilot-session-dirs #{}  ;; Clear Copilot session tracking
+           :copilot-session-dirs #{} ;; Clear Copilot session tracking
            :on-session-created nil
            :on-session-updated nil
            :on-session-deleted nil)

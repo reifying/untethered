@@ -360,15 +360,15 @@
       ;; Test with directory path
       (let [parsed (repl/parse-session-messages :copilot (.getAbsolutePath session-dir))]
         (is (= 2 (count parsed)))
-        (is (= :user (:role (first parsed))))
+        (is (= "user" (:role (first parsed))))
         (is (= "Hello" (:text (first parsed))))
         (is (= :copilot (:provider (first parsed))))
-        (is (= :assistant (:role (second parsed))))
+        (is (= "assistant" (:role (second parsed))))
         (is (= "Hi there" (:text (second parsed)))))
       ;; Test with direct events.jsonl path
       (let [parsed (repl/parse-session-messages :copilot (.getAbsolutePath events-file))]
         (is (= 2 (count parsed)))
-        (is (= :user (:role (first parsed)))))))
+        (is (= "user" (:role (first parsed)))))))
 
   (testing "Unknown provider defaults to Claude parser"
     (let [messages ["{\"role\":\"user\",\"text\":\"test\"}"]
@@ -1377,7 +1377,7 @@
 (deftest test-get-recent-sessions-sorting
   (testing "get-recent-sessions returns sessions sorted by last-modified descending"
     (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))
-                  providers/find-session-files (fn [provider] [])]  ;; Mock Copilot to return empty
+                  providers/find-session-files (fn [provider] [])] ;; Mock Copilot to return empty
       ;; Create test files with different timestamps
       (let [session-id-1 "abc123de-4567-89ab-cdef-000000000001"
             session-id-2 "abc123de-4567-89ab-cdef-000000000002"
@@ -1413,7 +1413,7 @@
 (deftest test-get-recent-sessions-limit
   (testing "get-recent-sessions respects limit parameter"
     (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))
-                  providers/find-session-files (fn [provider] [])]  ;; Mock Copilot to return empty
+                  providers/find-session-files (fn [provider] [])] ;; Mock Copilot to return empty
       ;; Create 5 test sessions
       (doseq [i (range 5)]
         (let [session-id (format "abc123de-4567-89ab-cdef-%012d" i)
@@ -1436,7 +1436,7 @@
 (deftest test-get-recent-sessions-empty-index
   (testing "get-recent-sessions handles empty index gracefully"
     (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))
-                  providers/find-session-files (fn [provider] [])]  ;; Mock Copilot to return empty
+                  providers/find-session-files (fn [provider] [])] ;; Mock Copilot to return empty
       (repl/initialize-index!)
       (let [recent (repl/get-recent-sessions 10)]
         (is (empty? recent))
@@ -1445,7 +1445,7 @@
 (deftest test-get-recent-sessions-filters-invalid-uuids
   (testing "get-recent-sessions only includes sessions with valid UUIDs"
     (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))
-                  providers/find-session-files (fn [provider] [])]  ;; Mock Copilot to return empty
+                  providers/find-session-files (fn [provider] [])] ;; Mock Copilot to return empty
       ;; Create one valid UUID session and one invalid
       (let [valid-id "abc123de-4567-89ab-cdef-000000000001"
             invalid-file (io/file test-dir "not-a-uuid.jsonl")]
@@ -1715,5 +1715,5 @@
                                                       :messageId "msg-1"}})])
           metadata (repl/build-copilot-session-metadata copilot-dir)]
       ;; Name should be truncated
-      (is (<= (count (:name metadata)) 63))  ;; 60 chars + "..."
+      (is (<= (count (:name metadata)) 63)) ;; 60 chars + "..."
       (is (str/ends-with? (:name metadata) "...")))))

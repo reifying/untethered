@@ -1,6 +1,7 @@
 (ns voice-code.providers-test
   "Tests for the multi-provider abstraction."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [clojure.string :as str]
             [voice-code.providers :as providers]
             [clojure.java.io :as io]))
 
@@ -280,6 +281,247 @@ branch: main")
 
       (is (nil? (providers/extract-working-dir :copilot session-dir))))))
 
+;; ============================================================================
+;; Canonical Message Format Tests
+;; ============================================================================
+
+(defn valid-canonical-message?
+  "Validate that a message conforms to canonical wire format."
+  [msg]
+  (and (map? msg)
+       ;; Required fields present
+       (string? (:uuid msg))
+       (contains? #{"user" "assistant"} (:role msg))
+       (string? (:text msg))
+       (string? (:timestamp msg))
+       (keyword? (:provider msg))
+       ;; UUID format valid
+       (re-matches #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                   (str/lower-case (:uuid msg)))))
+
+(deftest test-parse-message-claude
+  (testing "user message with string content"
+    (let [raw {:type "user"
+               :uuid "550e8400-e29b-41d4-a716-446655440000"
+               :timestamp "2026-01-30T12:34:56.789Z"
+               :message {:role "user" :content "Hello"}}
+          result (providers/parse-message :claude raw)]
+      (is (valid-canonical-message? result))
+      (is (= "user" (:role result)))
+      (is (= "Hello" (:text result)))
+      (is (= :claude (:provider result)))))
+
+  (testing "user message with text array content"
+    (let [raw {:type "user"
+               :uuid "550e8400-e29b-41d4-a716-446655440001"
+               :timestamp "2026-01-30T12:34:56.789Z"
+               :message {:role "user"
+                         :content [{:type "text" :text "Hello from array"}]}}
+          result (providers/parse-message :claude raw)]
+      (is (valid-canonical-message? result))
+      (is (= "user" (:role result)))
+      (is (= "Hello from array" (:text result)))))
+
+  (testing "assistant message with text content"
+    (let [raw {:type "assistant"
+               :uuid "660e8400-e29b-41d4-a716-446655440001"
+               :timestamp "2026-01-30T12:35:00.000Z"
+               :message {:role "assistant"
+                         :content [{:type "text" :text "Hello! How can I help?"}]}}
+          result (providers/parse-message :claude raw)]
+      (is (valid-canonical-message? result))
+      (is (= "assistant" (:role result)))
+      (is (= "Hello! How can I help?" (:text result)))))
+
+  (testing "assistant message with tool_use content"
+    (let [raw {:type "assistant"
+               :uuid "660e8400-e29b-41d4-a716-446655440002"
+               :timestamp "2026-01-30T12:35:00.000Z"
+               :message {:role "assistant"
+                         :content [{:type "text" :text "Let me read that."}
+                                   {:type "tool_use"
+                                    :name "Read"
+                                    :input {:file_path "/tmp/test.txt"}}]}}
+          result (providers/parse-message :claude raw)]
+      (is (valid-canonical-message? result))
+      (is (= "assistant" (:role result)))
+      (is (str/includes? (:text result) "Let me read that."))
+      (is (str/includes? (:text result) "[Tool: Read"))
+      (is (str/includes? (:text result) "file_path=/tmp/test.txt"))))
+
+  (testing "assistant message with Write tool"
+    (let [raw {:type "assistant"
+               :uuid "660e8400-e29b-41d4-a716-446655440003"
+               :timestamp "2026-01-30T12:35:00.000Z"
+               :message {:role "assistant"
+                         :content [{:type "tool_use"
+                                    :name "Write"
+                                    :input {:file_path "/tmp/output.txt"}}]}}
+          result (providers/parse-message :claude raw)]
+      (is (str/includes? (:text result) "[Tool: Write file_path=/tmp/output.txt]"))))
+
+  (testing "assistant message with Edit tool"
+    (let [raw {:type "assistant"
+               :uuid "660e8400-e29b-41d4-a716-446655440004"
+               :timestamp "2026-01-30T12:35:00.000Z"
+               :message {:role "assistant"
+                         :content [{:type "tool_use"
+                                    :name "Edit"
+                                    :input {:file_path "/tmp/edit.txt"}}]}}
+          result (providers/parse-message :claude raw)]
+      (is (str/includes? (:text result) "[Tool: Edit file_path=/tmp/edit.txt]"))))
+
+  (testing "assistant message with Bash tool (truncated command)"
+    (let [long-command (apply str (repeat 100 "x"))
+          raw {:type "assistant"
+               :uuid "660e8400-e29b-41d4-a716-446655440005"
+               :timestamp "2026-01-30T12:35:00.000Z"
+               :message {:role "assistant"
+                         :content [{:type "tool_use"
+                                    :name "Bash"
+                                    :input {:command long-command}}]}}
+          result (providers/parse-message :claude raw)]
+      (is (str/includes? (:text result) "[Tool: Bash command="))
+      (is (str/includes? (:text result) "..."))
+      ;; Should truncate to ~50 chars
+      (is (< (count (:text result)) 100))))
+
+  (testing "assistant message with Grep tool"
+    (let [raw {:type "assistant"
+               :uuid "660e8400-e29b-41d4-a716-446655440006"
+               :timestamp "2026-01-30T12:35:00.000Z"
+               :message {:role "assistant"
+                         :content [{:type "tool_use"
+                                    :name "Grep"
+                                    :input {:pattern "foo.*bar"}}]}}
+          result (providers/parse-message :claude raw)]
+      (is (str/includes? (:text result) "[Tool: Grep pattern=foo.*bar]"))))
+
+  (testing "assistant message with unknown tool (no params shown)"
+    (let [raw {:type "assistant"
+               :uuid "660e8400-e29b-41d4-a716-446655440007"
+               :timestamp "2026-01-30T12:35:00.000Z"
+               :message {:role "assistant"
+                         :content [{:type "tool_use"
+                                    :name "CustomTool"
+                                    :input {:some "param"}}]}}
+          result (providers/parse-message :claude raw)]
+      (is (= "[Tool: CustomTool]" (:text result)))))
+
+  (testing "tool result message"
+    (let [raw {:type "user"
+               :uuid "770e8400-e29b-41d4-a716-446655440002"
+               :timestamp "2026-01-30T12:35:05.000Z"
+               :message {:role "user"
+                         :content [{:type "tool_result"
+                                    :tool_use_id "toolu_123"
+                                    :content "File contents here"}]}}
+          result (providers/parse-message :claude raw)]
+      (is (valid-canonical-message? result))
+      (is (= "user" (:role result)))
+      (is (str/includes? (:text result) "[Tool Result]"))
+      (is (str/includes? (:text result) "File contents here"))))
+
+  (testing "tool result with non-string content"
+    (let [raw {:type "user"
+               :uuid "770e8400-e29b-41d4-a716-446655440003"
+               :timestamp "2026-01-30T12:35:05.000Z"
+               :message {:role "user"
+                         :content [{:type "tool_result"
+                                    :tool_use_id "toolu_456"
+                                    :content {:key "value"}}]}}
+          result (providers/parse-message :claude raw)]
+      (is (str/includes? (:text result) "[Tool Result]"))
+      (is (str/includes? (:text result) ":key"))))
+
+  (testing "thinking block"
+    (let [raw {:type "assistant"
+               :uuid "880e8400-e29b-41d4-a716-446655440000"
+               :timestamp "2026-01-30T12:35:10.000Z"
+               :message {:role "assistant"
+                         :content [{:type "thinking"
+                                    :thinking "Let me analyze this problem step by step..."}]}}
+          result (providers/parse-message :claude raw)]
+      (is (valid-canonical-message? result))
+      (is (str/includes? (:text result) "[Thinking:"))))
+
+  (testing "thinking block with long content gets truncated"
+    (let [long-thinking (apply str (repeat 100 "x"))
+          raw {:type "assistant"
+               :uuid "880e8400-e29b-41d4-a716-446655440001"
+               :timestamp "2026-01-30T12:35:10.000Z"
+               :message {:role "assistant"
+                         :content [{:type "thinking"
+                                    :thinking long-thinking}]}}
+          result (providers/parse-message :claude raw)]
+      (is (str/includes? (:text result) "[Thinking:"))
+      (is (str/includes? (:text result) "..."))
+      ;; Should truncate to ~50 chars preview
+      (is (< (count (:text result)) 100))))
+
+  (testing "mixed content (text + tool_use)"
+    (let [raw {:type "assistant"
+               :uuid "990e8400-e29b-41d4-a716-446655440000"
+               :timestamp "2026-01-30T12:35:15.000Z"
+               :message {:role "assistant"
+                         :content [{:type "text" :text "Let me check that file."}
+                                   {:type "tool_use"
+                                    :name "Read"
+                                    :input {:file_path "/path/to/file.txt"}}
+                                   {:type "text" :text "And also run a command."}
+                                   {:type "tool_use"
+                                    :name "Bash"
+                                    :input {:command "ls -la"}}]}}
+          result (providers/parse-message :claude raw)]
+      (is (valid-canonical-message? result))
+      (is (str/includes? (:text result) "Let me check that file."))
+      (is (str/includes? (:text result) "[Tool: Read"))
+      (is (str/includes? (:text result) "And also run a command."))
+      (is (str/includes? (:text result) "[Tool: Bash"))
+      ;; Content blocks should be separated by double newlines
+      (is (str/includes? (:text result) "\n\n"))))
+
+  (testing "unknown block type becomes marker"
+    (let [raw {:type "assistant"
+               :uuid "aa0e8400-e29b-41d4-a716-446655440000"
+               :timestamp "2026-01-30T12:35:20.000Z"
+               :message {:role "assistant"
+                         :content [{:type "future_block_type"
+                                    :data "some data"}]}}
+          result (providers/parse-message :claude raw)]
+      (is (= "[future_block_type]" (:text result)))))
+
+  (testing "generates UUID when missing"
+    (let [raw {:type "user"
+               :timestamp "2026-01-30T12:34:56.789Z"
+               :message {:role "user" :content "Hello"}}
+          result (providers/parse-message :claude raw)]
+      (is (some? (:uuid result)))
+      (is (valid-canonical-message? result))))
+
+  (testing "internal message types return nil"
+    (is (nil? (providers/parse-message :claude {:type "summary" :summary "Session title"})))
+    (is (nil? (providers/parse-message :claude {:type "system" :content "Command executed"})))
+    (is (nil? (providers/parse-message :claude {:type "init" :content "Initializing"}))))
+
+  (testing "handles nil content gracefully"
+    (let [raw {:type "user"
+               :uuid "bb0e8400-e29b-41d4-a716-446655440000"
+               :timestamp "2026-01-30T12:34:56.789Z"
+               :message {:role "user" :content nil}}
+          result (providers/parse-message :claude raw)]
+      (is (valid-canonical-message? result))
+      (is (= "" (:text result)))))
+
+  (testing "handles empty array content"
+    (let [raw {:type "user"
+               :uuid "cc0e8400-e29b-41d4-a716-446655440000"
+               :timestamp "2026-01-30T12:34:56.789Z"
+               :message {:role "user" :content []}}
+          result (providers/parse-message :claude raw)]
+      (is (valid-canonical-message? result))
+      (is (= "" (:text result))))))
+
 (deftest test-parse-message-copilot
   (testing "parses user.message event"
     (let [raw-msg {:type "user.message"
@@ -290,7 +532,7 @@ branch: main")
 
       (is (some? result))
       (is (= "msg-123" (:uuid result)))
-      (is (= :user (:role result)))
+      (is (= "user" (:role result)))
       (is (= "Hello, help me with this code" (:text result)))
       (is (= "2026-01-28T10:00:00Z" (:timestamp result)))
       (is (= :copilot (:provider result)))))
@@ -304,7 +546,7 @@ branch: main")
 
       (is (some? result))
       (is (= "msg-456" (:uuid result)))
-      (is (= :assistant (:role result)))
+      (is (= "assistant" (:role result)))
       (is (= "I can help you with that code." (:text result)))
       (is (= :copilot (:provider result)))))
 
