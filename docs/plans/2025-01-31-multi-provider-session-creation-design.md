@@ -4,6 +4,28 @@
 
 Enable iOS frontend to create sessions with provider of choice (Claude or Copilot) and continue sessions seamlessly using stored provider metadata.
 
+## Testing Constraints
+
+**No CLI invocation in tests.** All tests must mock provider CLI calls. Do not:
+- Write tests that invoke `claude` or `copilot` CLI
+- Manually test with real CLI during development (use mocks/stubs)
+- Create integration tests that spawn CLI processes
+
+Rationale: CLI calls are slow, costly, and non-deterministic. Test the adapter boundaries, message parsing, and protocol handling—not the CLI itself.
+
+## Copilot Model Override
+
+Hardcode `gpt-5-mini` model for all Copilot CLI invocations during initial development:
+
+```clojure
+;; In providers.clj build-cli-command :copilot
+(cond-> ["copilot" "--no-color" "--allow-all-tools" "-p" prompt]
+  resume-session-id (into ["--resume" resume-session-id])
+  true (into ["--model" "gpt-5-mini"]))  ;; Always use cheap model
+```
+
+This is intentionally not configurable. Remove hardcoding when ready for production use.
+
 ## Design Decisions
 
 | Decision | Choice |
@@ -142,6 +164,7 @@ This already works - no changes needed for continuation.
 
 | File | Changes |
 |------|---------|
+| `backend/.../providers.clj` | Hardcode `gpt-5-mini` model for Copilot |
 | `ios/.../AppSettings.swift` | Add `defaultProvider` property |
 | `ios/.../SettingsView.swift` | Add provider picker, update system prompt footer |
 | `ios/.../ConversationView.swift` | Add provider picker for new sessions, include in message |
