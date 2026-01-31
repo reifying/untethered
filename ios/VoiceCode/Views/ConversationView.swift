@@ -627,6 +627,15 @@ struct ConversationView: View {
             // This ensures messages are refreshed when navigating back to session
             hasSubscribedThisAppear = false
         }
+        .onReceive(NotificationCenter.default.publisher(for: .sessionHistoryDidUpdate)) { notification in
+            // Refresh view when session_history adds new messages (e.g., after backend reconnection)
+            // This ensures UI updates even when @FetchRequest doesn't auto-refresh
+            if let notificationSessionId = notification.userInfo?["sessionId"] as? String,
+               notificationSessionId == session.id.uuidString.lowercased() {
+                logger.info("📚 [ConversationView] Received sessionHistoryDidUpdate for current session, refreshing context")
+                viewContext.refresh(session, mergeChanges: true)
+            }
+        }
         .swipeToBack()
     }
     

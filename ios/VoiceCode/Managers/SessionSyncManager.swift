@@ -12,6 +12,10 @@ private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "S
 extension Notification.Name {
     /// Posted when session list is updated from backend
     static let sessionListDidUpdate = Notification.Name("sessionListDidUpdate")
+
+    /// Posted when session history is updated (messages added via session_history)
+    /// userInfo contains "sessionId" key with the session UUID string
+    static let sessionHistoryDidUpdate = Notification.Name("sessionHistoryDidUpdate")
 }
 
 /// Manages synchronization of session metadata between backend and CoreData
@@ -223,6 +227,19 @@ class SessionSyncManager {
                     try backgroundContext.save()
                     logger.info("⏱️ +\(Int(Date().timeIntervalSince(saveStart) * 1000))ms - saved to CoreData")
                     logger.info("⏱️ handleSessionHistory COMPLETE - total: \(Int(Date().timeIntervalSince(historyStart) * 1000))ms, \(addedCount) new messages, \(prunedCount) pruned")
+
+                    // Post notification on main thread to trigger UI refresh
+                    // This is needed because @FetchRequest may not auto-update when messages are
+                    // added via background context merge (especially after backend reconnection)
+                    if addedCount > 0 {
+                        DispatchQueue.main.async {
+                            NotificationCenter.default.post(
+                                name: .sessionHistoryDidUpdate,
+                                object: nil,
+                                userInfo: ["sessionId": sessionId]
+                            )
+                        }
+                    }
                 } else {
                     logger.info("⏱️ handleSessionHistory COMPLETE - no changes to save")
                 }

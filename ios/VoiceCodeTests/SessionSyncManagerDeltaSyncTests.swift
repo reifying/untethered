@@ -602,4 +602,80 @@ final class SessionSyncManagerDeltaSyncTests: XCTestCase {
             XCTAssertTrue(remainingIds.contains(cachedId), "Message \(cachedId) was incorrectly deleted")
         }
     }
+
+    // MARK: - UI Refresh Notification Tests
+
+    func testHandleSessionHistoryPostsNotificationWhenNewMessagesAdded() throws {
+        // Given: A session exists
+        let sessionId = UUID()
+        _ = createSession(id: sessionId, messageCount: 0)
+        try context.save()
+
+        // Set up expectation for notification
+        let notificationExpectation = expectation(forNotification: .sessionHistoryDidUpdate, object: nil) { notification in
+            guard let notifiedSessionId = notification.userInfo?["sessionId"] as? String else {
+                return false
+            }
+            return notifiedSessionId == sessionId.uuidString.lowercased()
+        }
+
+        // When: Handling session_history with new messages
+        let newMsgId = UUID()
+        let newMessages: [[String: Any]] = [
+            messageDataDict(id: newMsgId, text: "New message from backend")
+        ]
+
+        sessionSyncManager.handleSessionHistory(sessionId: sessionId.uuidString.lowercased(), messages: newMessages)
+
+        // Then: Notification should be posted
+        wait(for: [notificationExpectation], timeout: 2.0)
+    }
+
+    func testHandleSessionHistoryDoesNotPostNotificationWhenNoNewMessages() throws {
+        // Given: A session with existing messages
+        let sessionId = UUID()
+        let session = createSession(id: sessionId, messageCount: 2)
+
+        let existingMsg1Id = UUID()
+        let existingMsg2Id = UUID()
+        _ = createMessage(id: existingMsg1Id, sessionId: sessionId, session: session, text: "Existing 1")
+        _ = createMessage(id: existingMsg2Id, sessionId: sessionId, session: session, text: "Existing 2")
+        try context.save()
+
+        // Set up expectation that should NOT be fulfilled
+        let notificationExpectation = expectation(forNotification: .sessionHistoryDidUpdate, object: nil, handler: nil)
+        notificationExpectation.isInverted = true  // Should NOT receive notification
+
+        // When: Handling session_history with only duplicate messages
+        let duplicateMessages: [[String: Any]] = [
+            messageDataDict(id: existingMsg1Id, text: "Existing 1"),
+            messageDataDict(id: existingMsg2Id, text: "Existing 2")
+        ]
+
+        sessionSyncManager.handleSessionHistory(sessionId: sessionId.uuidString.lowercased(), messages: duplicateMessages)
+
+        waitForBackgroundTask()
+
+        // Then: No notification should be posted (duplicates skipped, addedCount = 0)
+        wait(for: [notificationExpectation], timeout: 1.0)
+    }
+
+    func testHandleSessionHistoryDoesNotPostNotificationForEmptyMessages() throws {
+        // Given: A session exists
+        let sessionId = UUID()
+        _ = createSession(id: sessionId, messageCount: 0)
+        try context.save()
+
+        // Set up expectation that should NOT be fulfilled
+        let notificationExpectation = expectation(forNotification: .sessionHistoryDidUpdate, object: nil, handler: nil)
+        notificationExpectation.isInverted = true  // Should NOT receive notification
+
+        // When: Handling empty session_history (delta sync with no new messages)
+        sessionSyncManager.handleSessionHistory(sessionId: sessionId.uuidString.lowercased(), messages: [])
+
+        waitForBackgroundTask()
+
+        // Then: No notification should be posted
+        wait(for: [notificationExpectation], timeout: 1.0)
+    }
 }
