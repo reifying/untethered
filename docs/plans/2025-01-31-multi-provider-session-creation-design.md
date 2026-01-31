@@ -177,3 +177,7 @@ This already works - no changes needed for continuation.
 - Dynamic provider discovery from backend
 - Cost/usage display changes
 - Cursor provider support
+
+## Reminder: No CLI Invocation in Tests
+
+All tests must mock provider CLI calls. Do not write tests that invoke `claude` or `copilot` CLI. Do not manually test with real CLI during development. Test the boundaries, not the CLI.
