@@ -351,16 +351,68 @@
     (when (contains? #{"user.message" "assistant.message"} event-type)
       (let [data (:data raw-msg)
             ;; Extract content from the data field
-            content (or (:content data)
-                        (:transformedContent data)
-                        "")
+            ;; For assistant messages, content is often empty and text is in reasoningText
+            raw-content (or (:content data)
+                            (:transformedContent data)
+                            "")
+            reasoning-text (:reasoningText data)
+            tool-requests (:toolRequests data)
+            ;; Build text content: prefer content, fall back to reasoningText for assistant
+            text-content (if (and (= "assistant.message" event-type)
+                                  (str/blank? raw-content)
+                                  (not (str/blank? reasoning-text)))
+                           reasoning-text
+                           raw-content)
+            ;; Summarize tool requests if present (similar to Claude's tool_use)
+            tool-summaries (when (and (= "assistant.message" event-type)
+                                      (seq tool-requests))
+                             (->> tool-requests
+                                  (map (fn [{:keys [name arguments]}]
+                                         (let [params (cond
+                                                        (= name "read_file")
+                                                        (str "path=" (:path arguments))
+
+                                                        (= name "write_file")
+                                                        (str "path=" (:path arguments))
+
+                                                        (= name "edit_file")
+                                                        (str "path=" (:path arguments))
+
+                                                        (= name "run_terminal_cmd")
+                                                        (let [cmd (str (:command arguments))]
+                                                          (str "command=" (subs cmd 0 (min 50 (count cmd)))
+                                                               (when (> (count cmd) 50) "...")))
+
+                                                        (= name "rg")
+                                                        (str "pattern=" (:pattern arguments))
+
+                                                        (= name "glob")
+                                                        (str "pattern=" (:pattern arguments))
+
+                                                        :else nil)]
+                                           (if params
+                                             (str "[Tool: " name " " params "]")
+                                             (str "[Tool: " name "]")))))
+                                  (str/join "\n")))
+            ;; Combine text content and tool summaries
+            final-text (cond
+                         (and (not (str/blank? text-content)) (not (str/blank? tool-summaries)))
+                         (str text-content "\n\n" tool-summaries)
+
+                         (not (str/blank? text-content))
+                         text-content
+
+                         (not (str/blank? tool-summaries))
+                         tool-summaries
+
+                         :else "")
             ;; Generate a UUID if messageId not present
             msg-id (or (:messageId data)
                        (:id raw-msg)
                        (str (java.util.UUID/randomUUID)))]
         {:uuid msg-id
          :role (if (= "user.message" event-type) "user" "assistant")
-         :text content
+         :text final-text
          :timestamp (:timestamp raw-msg)
          :provider :copilot}))))
 

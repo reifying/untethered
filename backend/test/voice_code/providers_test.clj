@@ -576,6 +576,44 @@ branch: main")
       (is (valid-canonical-message? result))
       (is (= "Transformed content here" (:text result)))))
 
+  (testing "uses reasoningText when content is empty for assistant messages"
+    (let [raw-msg {:type "assistant.message"
+                   :timestamp "2026-01-28T10:00:05Z"
+                   :data {:content ""
+                          :reasoningText "**Planning the task**\n\nI'm going to search for the files."
+                          :messageId "880e8400-e29b-41d4-a716-446655440010"}}
+          result (providers/parse-message :copilot raw-msg)]
+
+      (is (valid-canonical-message? result))
+      (is (str/includes? (:text result) "Planning the task"))
+      (is (str/includes? (:text result) "search for the files"))))
+
+  (testing "includes tool request summaries for assistant messages"
+    (let [raw-msg {:type "assistant.message"
+                   :timestamp "2026-01-28T10:00:05Z"
+                   :data {:content ""
+                          :reasoningText "Searching codebase"
+                          :toolRequests [{:name "rg" :arguments {:pattern "test"}}
+                                         {:name "glob" :arguments {:pattern "**/*.clj"}}]
+                          :messageId "990e8400-e29b-41d4-a716-446655440011"}}
+          result (providers/parse-message :copilot raw-msg)]
+
+      (is (valid-canonical-message? result))
+      (is (str/includes? (:text result) "Searching codebase"))
+      (is (str/includes? (:text result) "[Tool: rg pattern=test]"))
+      (is (str/includes? (:text result) "[Tool: glob pattern=**/*.clj]"))))
+
+  (testing "shows only tool summaries when both content and reasoningText are empty"
+    (let [raw-msg {:type "assistant.message"
+                   :timestamp "2026-01-28T10:00:05Z"
+                   :data {:content ""
+                          :toolRequests [{:name "read_file" :arguments {:path "/test/file.clj"}}]
+                          :messageId "aa0e8400-e29b-41d4-a716-446655440012"}}
+          result (providers/parse-message :copilot raw-msg)]
+
+      (is (valid-canonical-message? result))
+      (is (= "[Tool: read_file path=/test/file.clj]" (:text result)))))
+
   (testing "generates valid UUID when messageId is missing"
     (let [raw-msg {:type "user.message"
                    :timestamp "2026-01-28T10:00:00Z"
