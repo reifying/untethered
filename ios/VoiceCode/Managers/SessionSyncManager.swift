@@ -489,6 +489,17 @@ class SessionSyncManager {
                     logger.info("Updated session: \(sessionId)")
                 }
 
+                // Post notification to trigger UI refresh (same pattern as handleSessionHistory)
+                if newMessageCount > 0 {
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(
+                            name: .sessionHistoryDidUpdate,
+                            object: nil,
+                            userInfo: ["sessionId": sessionId]
+                        )
+                    }
+                }
+
                 // Prune old messages if threshold exceeded
                 // This keeps CoreData footprint bounded during long conversations
                 if CDMessage.needsPruning(sessionId: sessionUUID, in: backgroundContext) {

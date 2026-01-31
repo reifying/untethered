@@ -224,7 +224,8 @@ struct ConversationView: View {
             // Input area
             VStack(spacing: 12) {
                 // Provider picker for new sessions (shown only before first prompt)
-                if session.backendName == nil {
+                // Use messageCount == 0 to detect new sessions (backendName is always set on creation)
+                if session.messageCount == 0 {
                     Picker("Provider", selection: $selectedProvider) {
                         Text("Claude").tag("claude")
                         Text("Copilot").tag("copilot")
