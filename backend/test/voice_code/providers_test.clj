@@ -3,7 +3,8 @@
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
             [voice-code.providers :as providers]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [cheshire.core :as json]))
 
 ;; ============================================================================
 ;; Test Fixtures and Helpers
@@ -623,6 +624,222 @@ branch: main")
       ;; Verify exact set of keys matches canonical spec
       (is (= #{:uuid :role :text :timestamp :provider} (set (keys result)))
           "Message should have exactly the canonical fields"))))
+
+;; =============================================================================
+;; CONTRACT TESTS - Canonical Message Wire Format
+;; =============================================================================
+;; These tests verify the exact JSON structure that iOS expects.
+;; Reference: docs/design/canonical-message-wire-format.md
+;;
+;; iOS depends on these exact field names and types:
+;;   - uuid: string (UUID v4, lowercase)
+;;   - role: string ("user" or "assistant")
+;;   - text: string (plain text, never nil)
+;;   - timestamp: string (ISO-8601)
+;;   - provider: keyword (:claude or :copilot, serializes to string in JSON)
+;;
+;; IMPORTANT: If these tests fail, iOS message parsing will break.
+;; =============================================================================
+
+(deftest contract-test-canonical-message-format-claude
+  (testing "Claude messages conform to canonical wire format contract"
+    (let [sample-raw {:type "user"
+                      :uuid "550e8400-e29b-41d4-a716-446655440000"
+                      :timestamp "2026-01-30T12:34:56.789Z"
+                      :message {:role "user" :content "Hello, Claude"}}
+          msg (providers/parse-message :claude sample-raw)]
+
+      ;; Contract: All required fields must be present
+      (is (contains? msg :uuid) "Contract: :uuid field required")
+      (is (contains? msg :role) "Contract: :role field required")
+      (is (contains? msg :text) "Contract: :text field required")
+      (is (contains? msg :timestamp) "Contract: :timestamp field required")
+      (is (contains? msg :provider) "Contract: :provider field required")
+
+      ;; Contract: No extra fields (iOS expects exactly these 5 fields)
+      (is (= #{:uuid :role :text :timestamp :provider} (set (keys msg)))
+          "Contract: Message must have exactly 5 fields")
+
+      ;; Contract: Field types
+      (is (string? (:uuid msg)) "Contract: :uuid must be string")
+      (is (string? (:role msg)) "Contract: :role must be string")
+      (is (string? (:text msg)) "Contract: :text must be string")
+      (is (string? (:timestamp msg)) "Contract: :timestamp must be string")
+      (is (keyword? (:provider msg)) "Contract: :provider must be keyword (serializes to string)")
+
+      ;; Contract: UUID format (lowercase, v4)
+      (is (re-matches #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                      (:uuid msg))
+          "Contract: :uuid must be lowercase UUID v4 format")
+
+      ;; Contract: Role values
+      (is (contains? #{"user" "assistant"} (:role msg))
+          "Contract: :role must be 'user' or 'assistant'")
+
+      ;; Contract: Provider value
+      (is (= :claude (:provider msg))
+          "Contract: :provider must be :claude for Claude messages")
+
+      ;; Contract: Timestamp format (ISO-8601)
+      (is (re-matches #"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*" (:timestamp msg))
+          "Contract: :timestamp must be ISO-8601 format")))
+
+  (testing "Claude assistant messages conform to contract"
+    (let [sample-raw {:type "assistant"
+                      :uuid "660e8400-e29b-41d4-a716-446655440001"
+                      :timestamp "2026-01-30T12:35:00.000Z"
+                      :message {:role "assistant"
+                                :content [{:type "text" :text "Hello!"}]}}
+          msg (providers/parse-message :claude sample-raw)]
+
+      (is (= #{:uuid :role :text :timestamp :provider} (set (keys msg))))
+      (is (= "assistant" (:role msg)))
+      (is (= :claude (:provider msg)))))
+
+  (testing "Claude messages with tool calls produce text summaries"
+    (let [sample-raw {:type "assistant"
+                      :uuid "770e8400-e29b-41d4-a716-446655440002"
+                      :timestamp "2026-01-30T12:35:05.000Z"
+                      :message {:role "assistant"
+                                :content [{:type "tool_use"
+                                           :name "Read"
+                                           :input {:file_path "/tmp/test.txt"}}]}}
+          msg (providers/parse-message :claude sample-raw)]
+
+      ;; Contract: text is always a string, never nested content
+      (is (string? (:text msg)) "Contract: tool calls produce string text")
+      (is (str/includes? (:text msg) "[Tool:")
+          "Contract: tool calls are summarized with [Tool: ...] format"))))
+
+(deftest contract-test-canonical-message-format-copilot
+  (testing "Copilot messages conform to canonical wire format contract"
+    (let [sample-raw {:type "user.message"
+                      :timestamp "2026-01-30T12:36:00.000Z"
+                      :data {:messageId "880e8400-e29b-41d4-a716-446655440003"
+                             :content "Hello, Copilot"}}
+          msg (providers/parse-message :copilot sample-raw)]
+
+      ;; Contract: All required fields must be present
+      (is (contains? msg :uuid) "Contract: :uuid field required")
+      (is (contains? msg :role) "Contract: :role field required")
+      (is (contains? msg :text) "Contract: :text field required")
+      (is (contains? msg :timestamp) "Contract: :timestamp field required")
+      (is (contains? msg :provider) "Contract: :provider field required")
+
+      ;; Contract: No extra fields
+      (is (= #{:uuid :role :text :timestamp :provider} (set (keys msg)))
+          "Contract: Message must have exactly 5 fields")
+
+      ;; Contract: Field types
+      (is (string? (:uuid msg)) "Contract: :uuid must be string")
+      (is (string? (:role msg)) "Contract: :role must be string")
+      (is (string? (:text msg)) "Contract: :text must be string")
+      (is (string? (:timestamp msg)) "Contract: :timestamp must be string")
+      (is (keyword? (:provider msg)) "Contract: :provider must be keyword")
+
+      ;; Contract: UUID format
+      (is (re-matches #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                      (:uuid msg))
+          "Contract: :uuid must be lowercase UUID v4 format")
+
+      ;; Contract: Role values
+      (is (= "user" (:role msg))
+          "Contract: user.message produces role='user'")
+
+      ;; Contract: Provider value
+      (is (= :copilot (:provider msg))
+          "Contract: :provider must be :copilot for Copilot messages")))
+
+  (testing "Copilot assistant messages conform to contract"
+    (let [sample-raw {:type "assistant.message"
+                      :timestamp "2026-01-30T12:36:05.000Z"
+                      :data {:messageId "990e8400-e29b-41d4-a716-446655440004"
+                             :content "I can help with that!"}}
+          msg (providers/parse-message :copilot sample-raw)]
+
+      (is (= #{:uuid :role :text :timestamp :provider} (set (keys msg))))
+      (is (= "assistant" (:role msg)))
+      (is (= :copilot (:provider msg))))))
+
+(deftest contract-test-cross-provider-consistency
+  (testing "Both providers produce identical message structure"
+    (let [claude-msg (providers/parse-message :claude
+                                              {:type "user"
+                                               :uuid "aa0e8400-e29b-41d4-a716-446655440005"
+                                               :timestamp "2026-01-30T12:00:00.000Z"
+                                               :message {:content "test"}})
+          copilot-msg (providers/parse-message :copilot
+                                               {:type "user.message"
+                                                :timestamp "2026-01-30T12:00:00.000Z"
+                                                :data {:messageId "bb0e8400-e29b-41d4-a716-446655440006"
+                                                       :content "test"}})]
+
+      ;; Contract: Same fields regardless of provider
+      (is (= (set (keys claude-msg)) (set (keys copilot-msg)))
+          "Contract: All providers produce same field set")
+
+      ;; Contract: Same field types
+      (is (= (class (:uuid claude-msg)) (class (:uuid copilot-msg))))
+      (is (= (class (:role claude-msg)) (class (:role copilot-msg))))
+      (is (= (class (:text claude-msg)) (class (:text copilot-msg))))
+      (is (= (class (:timestamp claude-msg)) (class (:timestamp copilot-msg))))
+      (is (= (class (:provider claude-msg)) (class (:provider copilot-msg))))
+
+      ;; Contract: Role values are consistent across providers
+      (is (= "user" (:role claude-msg)))
+      (is (= "user" (:role copilot-msg)))))
+
+  (testing "text field is never nil for either provider"
+    ;; iOS does: messageData["text"] as? String - nil would fail
+    (let [claude-empty (providers/parse-message :claude
+                                                {:type "user"
+                                                 :uuid "cc0e8400-e29b-41d4-a716-446655440007"
+                                                 :timestamp "2026-01-30T12:00:00.000Z"
+                                                 :message {:content nil}})
+          copilot-empty (providers/parse-message :copilot
+                                                 {:type "user.message"
+                                                  :timestamp "2026-01-30T12:00:00.000Z"
+                                                  :data {:messageId "dd0e8400-e29b-41d4-a716-446655440008"}})]
+
+      (is (string? (:text claude-empty))
+          "Contract: Claude text must be string even when content is nil")
+      (is (string? (:text copilot-empty))
+          "Contract: Copilot text must be string even when content is missing"))))
+
+(deftest contract-test-json-serialization
+  (testing "Canonical message serializes to expected JSON structure"
+    ;; This test verifies the JSON that iOS actually receives
+    (let [msg (providers/parse-message :claude
+                                       {:type "user"
+                                        :uuid "ee0e8400-e29b-41d4-a716-446655440009"
+                                        :timestamp "2026-01-30T12:34:56.789Z"
+                                        :message {:content "Hello"}})
+          ;; Simulate JSON serialization (keyword keys become strings)
+          json-str (json/generate-string msg)
+          parsed (json/parse-string json-str)]
+
+      ;; Contract: JSON has string keys (not keyword keys)
+      (is (contains? parsed "uuid") "Contract: JSON uses string key 'uuid'")
+      (is (contains? parsed "role") "Contract: JSON uses string key 'role'")
+      (is (contains? parsed "text") "Contract: JSON uses string key 'text'")
+      (is (contains? parsed "timestamp") "Contract: JSON uses string key 'timestamp'")
+      (is (contains? parsed "provider") "Contract: JSON uses string key 'provider'")
+
+      ;; Contract: provider keyword serializes to string
+      (is (= "claude" (get parsed "provider"))
+          "Contract: :claude keyword serializes to 'claude' string")))
+
+  (testing "Copilot provider serializes correctly"
+    (let [msg (providers/parse-message :copilot
+                                       {:type "user.message"
+                                        :timestamp "2026-01-30T12:36:00.000Z"
+                                        :data {:messageId "ff0e8400-e29b-41d4-a716-44665544000a"
+                                               :content "Hello"}})
+          json-str (json/generate-string msg)
+          parsed (json/parse-string json-str)]
+
+      (is (= "copilot" (get parsed "provider"))
+          "Contract: :copilot keyword serializes to 'copilot' string"))))
 
 ;; ============================================================================
 ;; Provider Resolution Tests
