@@ -1218,7 +1218,13 @@
                   prompt-text (:text data)
                   ios-working-dir (:working-directory data)
                   system-prompt (:system-prompt data)
-                  _ (log/info "🔍 System prompt received from iOS" {:value system-prompt :has-value? (some? system-prompt)})
+                  ;; Extract explicit provider from message (only for new sessions)
+                  explicit-provider-str (:provider data)
+                  _ (log/info "Prompt message received"
+                              {:system-prompt system-prompt
+                               :explicit-provider explicit-provider-str
+                               :new-session new-session-id
+                               :resume-session resume-session-id})
                   ;; Determine actual working directory to use:
                   ;; - For resumed sessions: Use stored working dir from session metadata (extracted from .jsonl cwd)
                   ;; - For new sessions: Use iOS-provided dir, with fallback if placeholder
@@ -1264,12 +1270,32 @@
                              {:type :error
                               :message "Cannot specify both new_session_id and resume_session_id"}))
 
+                ;; Validate explicit provider if specified for new session
+                (and new-session-id
+                     explicit-provider-str
+                     (not (contains? providers/known-providers (keyword explicit-provider-str))))
+                (do
+                  (log/warn "Invalid provider specified"
+                            {:provider explicit-provider-str
+                             :valid-providers (mapv name providers/known-providers)})
+                  (http/send! channel
+                              (generate-json
+                               {:type :error
+                                :message (str "Invalid provider: '" explicit-provider-str
+                                              "'. Valid providers: "
+                                              (str/join ", " (mapv name providers/known-providers)))})))
+
                 :else
                 (let [claude-session-id (or resume-session-id new-session-id)
-                      ;; Determine provider: from session metadata for resumed sessions, or default
+                      ;; Extract explicit provider only for new sessions
+                      ;; For resumed sessions, provider field is silently ignored
+                      explicit-provider (when (and new-session-id explicit-provider-str)
+                                          (keyword explicit-provider-str))
+                      ;; Get session metadata for resumed sessions
                       session-metadata (when resume-session-id
                                          (repl/get-session-metadata resume-session-id))
-                      provider (providers/resolve-provider nil session-metadata)
+                      ;; Resolve provider: explicit > session metadata > smart default
+                      provider (providers/resolve-provider explicit-provider session-metadata)
                       ;; Validate CLI is available before attempting to acquire lock
                       cli-validation-error (providers/validate-cli-available provider)
                       orch-state (get-session-recipe-state claude-session-id)
@@ -1299,6 +1325,7 @@
                                    :resume-session-id resume-session-id
                                    :working-directory working-dir
                                    :provider provider
+                                   :explicit-provider explicit-provider
                                    :in-recipe (some? orch-state)
                                    :session-locked false})
 

@@ -70,7 +70,10 @@ struct ConversationView: View {
     // Compaction feedback state
     @State private var wasRecentlyCompacted: Bool = false
     @State private var compactionTimestamps: [UUID: Date] = [:]
-    
+
+    // Provider selection for new sessions
+    @State private var selectedProvider: String = "claude"
+
     // Auto-scroll state
     @State private var hasPerformedInitialScroll = false
     @State private var autoScrollEnabled = true  // Auto-scroll on by default
@@ -220,6 +223,16 @@ struct ConversationView: View {
             
             // Input area
             VStack(spacing: 12) {
+                // Provider picker for new sessions (shown only before first prompt)
+                if session.backendName == nil {
+                    Picker("Provider", selection: $selectedProvider) {
+                        Text("Claude").tag("claude")
+                        Text("Copilot").tag("copilot")
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+                }
+
                 // Mode toggle and connection status
                 HStack {
                     Button(action: { isVoiceMode.toggle() }) {
@@ -607,6 +620,9 @@ struct ConversationView: View {
             } else {
                 wasRecentlyCompacted = false
             }
+
+            // Initialize provider selection from settings default
+            selectedProvider = settings.defaultProvider
         }
         .onChange(of: promptText) { oldValue, newValue in
             // Only save draft if value actually changed (prevents duplicate saves on restoration)
@@ -796,7 +812,8 @@ struct ConversationView: View {
 
         if isNewSession {
             message["new_session_id"] = sessionId
-            print("📤 [ConversationView] Sending prompt with new_session_id: \(sessionId)")
+            message["provider"] = selectedProvider
+            print("📤 [ConversationView] Sending prompt with new_session_id: \(sessionId), provider: \(selectedProvider)")
             // Note: Subscribe will happen when we receive turn_complete (after backend creates session)
         } else {
             message["resume_session_id"] = sessionId

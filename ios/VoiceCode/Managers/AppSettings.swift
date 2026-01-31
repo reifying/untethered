@@ -79,6 +79,13 @@ class AppSettings: ObservableObject {
         }
     }
 
+    /// Default AI provider for new sessions. Values: "claude", "copilot"
+    @Published var defaultProvider: String {
+        didSet {
+            UserDefaults.standard.set(defaultProvider, forKey: "defaultProvider")
+        }
+    }
+
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
         let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
@@ -262,6 +269,7 @@ class AppSettings: ObservableObject {
         self.respectSilentMode = UserDefaults.standard.object(forKey: "respectSilentMode") as? Bool ?? true
         self.systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? ""
         self.maxMessageSizeKB = UserDefaults.standard.object(forKey: "maxMessageSizeKB") as? Int ?? 200
+        self.defaultProvider = UserDefaults.standard.string(forKey: "defaultProvider") ?? "claude"
 
         // Set up debounced publishers for text fields (serverURL and serverPort)
         // dropFirst() skips the initial value to avoid writing on init

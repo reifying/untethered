@@ -329,6 +329,104 @@
         (is (= "resume-456" (:resume-session-id @claude-args)))))
     (reset! server/api-key nil)))
 
+(deftest test-prompt-provider-extraction-for-new-session
+  (testing "Prompt with explicit provider for new session uses that provider"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [provider-used (atom nil)]
+      (with-redefs [voice-code.providers/invoke-provider-async
+                    (fn [provider prompt callback & opts]
+                      (reset! provider-used provider)
+                      (callback {:success true :session-id "test-123"}))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-123\",\"provider\":\"copilot\"}")
+        (is (= :copilot @provider-used) "Should use explicit provider for new session")))
+    (reset! server/api-key nil))
+
+  (testing "Prompt without explicit provider defaults via resolve-provider"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [provider-used (atom nil)]
+      (with-redefs [voice-code.providers/invoke-provider-async
+                    (fn [provider prompt callback & opts]
+                      (reset! provider-used provider)
+                      (callback {:success true :session-id "test-123"}))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-456\"}")
+        ;; Default provider is :claude when no explicit and no metadata
+        (is (= :claude @provider-used) "Should default to claude when no provider specified")))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-provider-ignored-for-resume
+  (testing "Prompt with provider field is silently ignored for resumed sessions"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [provider-used (atom nil)]
+      (with-redefs [voice-code.providers/invoke-provider-async
+                    (fn [provider prompt callback & opts]
+                      (reset! provider-used provider)
+                      (callback {:success true :session-id "resume-123"}))
+                    ;; Mock session metadata to return :copilot as stored provider
+                    voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      {:session-id session-id
+                       :provider :copilot
+                       :working-directory "/test/dir"})
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        ;; Send provider="claude" but resuming a copilot session
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"continue\",\"resume_session_id\":\"resume-123\",\"provider\":\"claude\"}")
+        ;; Should use stored provider :copilot, not explicit :claude
+        (is (= :copilot @provider-used) "Should use session metadata provider, not explicit")))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-invalid-provider-returns-error
+  (testing "Prompt with invalid provider returns error for new session"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [sent-messages (atom [])
+          provider-invoked (atom false)]
+      (with-redefs [voice-code.providers/invoke-provider-async
+                    (fn [& _]
+                      (reset! provider-invoked true))
+                    org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))]
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-789\",\"provider\":\"unknown-provider\"}")
+
+        (is (not @provider-invoked) "Should not invoke provider for invalid provider")
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (str/includes? (:message response) "Invalid provider"))
+          (is (str/includes? (:message response) "unknown-provider"))
+          (is (str/includes? (:message response) "claude"))
+          (is (str/includes? (:message response) "copilot")))))
+    (reset! server/api-key nil))
+
+  (testing "Invalid provider on resume is silently ignored (uses metadata)"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [provider-used (atom nil)]
+      (with-redefs [voice-code.providers/invoke-provider-async
+                    (fn [provider prompt callback & opts]
+                      (reset! provider-used provider)
+                      (callback {:success true :session-id "resume-456"}))
+                    voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      {:session-id session-id
+                       :provider :claude
+                       :working-directory "/test/dir"})
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        ;; Even invalid provider is ignored for resume - uses metadata
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"continue\",\"resume_session_id\":\"resume-456\",\"provider\":\"invalid\"}")
+        (is (= :claude @provider-used) "Should use session metadata provider for resume")))
+    (reset! server/api-key nil)))
+
 ;; Compaction Tests
 
 (deftest test-handle-compact-session-missing-session-id

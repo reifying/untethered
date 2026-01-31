@@ -142,22 +142,35 @@ iOS → Backend: {
 
 #### Client → Backend
 
-**Prompt Request**
+**Prompt Request (New Session)**
 ```json
 {
   "type": "prompt",
   "text": "<prompt-text>",
-  "session_id": "<claude-session-id>",  // Optional: nil = new session
+  "new_session_id": "<uuid>",            // Required for new sessions
   "working_directory": "<path>",         // Optional: overrides session default
+  "provider": "copilot",                 // Optional: provider for new session (defaults to "claude")
   "system_prompt": "<custom-prompt>"     // Optional: appends to Claude's system prompt
+}
+```
+
+**Prompt Request (Resumed Session)**
+```json
+{
+  "type": "prompt",
+  "text": "<prompt-text>",
+  "resume_session_id": "<uuid>"          // Required for resumed sessions
+  // No provider field - backend uses stored session metadata
 }
 ```
 
 **Fields:**
 - `text` (required): The prompt text to send to Claude
-- `session_id` (optional): Claude session ID to resume, or nil for new session
+- `new_session_id` (optional): UUID for a new session. Mutually exclusive with `resume_session_id`.
+- `resume_session_id` (optional): UUID of existing session to resume. Mutually exclusive with `new_session_id`.
 - `working_directory` (optional): Override session's default working directory
-- `system_prompt` (optional): Custom system prompt to append via `--append-system-prompt`. Empty or whitespace-only values are ignored.
+- `provider` (optional): Provider to use for new session. Values: `"claude"`, `"copilot"`. Only valid with `new_session_id`. Silently ignored for resumed sessions. Defaults to `"claude"` if not specified.
+- `system_prompt` (optional): Custom system prompt to append via `--append-system-prompt`. Empty or whitespace-only values are ignored. Only applies to Claude provider.
 
 **Set Working Directory**
 ```json

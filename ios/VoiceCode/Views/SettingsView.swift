@@ -155,7 +155,19 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
 
-            Section(header: Text("System Prompt")) {
+            Section(header: Text("Provider")) {
+                Picker("Default Provider", selection: $settings.defaultProvider) {
+                    Text("Claude").tag("claude")
+                    Text("Copilot").tag("copilot")
+                }
+
+                Text("AI provider used for new sessions. Can be changed per-session when creating a new conversation.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Section(header: Text("System Prompt"),
+                    footer: Text("Appended to Claude's system prompt when applicable")) {
                 #if os(macOS)
                 TextEditor(text: $localSystemPrompt)
                     .frame(minHeight: 80)
@@ -171,10 +183,6 @@ struct SettingsView: View {
                         settings.systemPrompt = newValue
                     }
                 #endif
-
-                Text("Optional instructions to append to Claude's system prompt on every message. Leave empty to use default behavior.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
             }
 
             Section(header: Text("Connection Test")) {
