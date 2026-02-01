@@ -1089,6 +1089,7 @@ another_key: another value
       (is (= "copilot" (first result)))
       (is (some #{"--no-color"} result))
       (is (some #{"--allow-all-tools"} result))
+      (is (some #{"--no-ask-user"} result))
       (is (some #{"-p"} result))
       (is (some #{"test prompt"} result))
       ;; No model flag when not specified

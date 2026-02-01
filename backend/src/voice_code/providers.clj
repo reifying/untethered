@@ -547,6 +547,7 @@
   ;; Research (Jan 2026) confirmed these flags:
   ;; - `-p, --prompt <text>` - Execute prompt in non-interactive mode
   ;; - `--allow-all-tools` - Required for non-interactive mode
+  ;; - `--no-ask-user` - Disable user prompts for non-interactive mode
   ;; - `--resume [sessionId]` - Resume session with optional ID
   ;; - `--model <model>` - Set AI model
   ;; - `--no-color` - Disable color output for cleaner parsing
@@ -562,6 +563,7 @@
     (cond-> ["copilot"
              "--no-color"
              "--allow-all-tools"
+             "--no-ask-user"
              "-p" prompt]
       ;; Resume existing session if specified
       resume-session-id (into ["--resume" resume-session-id])
