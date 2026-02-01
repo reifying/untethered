@@ -555,10 +555,7 @@
   ;; Output is plain text. Session ID for new sessions comes from
   ;; filesystem watching (the new session directory is created in
   ;; ~/.copilot/session-state/<uuid>/).
-  ;;
-  ;; HARDCODED MODEL: gpt-5-mini is used for all invocations during
-  ;; development to control costs. Remove when ready for production.
-  (let [{:keys [prompt resume-session-id]} opts]
+  (let [{:keys [prompt resume-session-id model]} opts]
     (when-not prompt
       (throw (ex-info "Prompt is required for Copilot CLI invocation"
                       {:provider :copilot})))
@@ -568,8 +565,8 @@
              "-p" prompt]
       ;; Resume existing session if specified
       resume-session-id (into ["--resume" resume-session-id])
-      ;; Always use cheap model during development
-      true (into ["--model" "gpt-5-mini"]))))
+      ;; Use specified model if provided
+      model (into ["--model" model]))))
 
 (defmethod build-cli-command :cursor [_ _opts]
   (throw (ex-info "Cursor CLI invocation not yet implemented."
@@ -699,7 +696,7 @@
    Parameters:
    - prompt: The prompt text to send
    - :resume-session-id: Optional session ID to resume
-   - :model: Optional model to use (currently ignored - hardcoded during development)
+   - :model: Optional model to use (e.g., \"gpt-5\", \"claude-sonnet-4\")
    - :working-directory: Optional working directory for CLI
    - :timeout: Timeout in milliseconds (default: 1 hour)
    
@@ -716,7 +713,6 @@
   (let [sessions-before (when-not resume-session-id
                           (get-copilot-sessions-before))
         ;; Build command args using build-cli-command for consistency
-        ;; Note: model arg is ignored by build-cli-command (hardcoded during development)
         full-cmd (build-cli-command :copilot {:prompt prompt
                                               :resume-session-id resume-session-id
                                               :model model})

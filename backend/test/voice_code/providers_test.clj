@@ -1083,7 +1083,7 @@ another_key: another value
                             (providers/build-cli-command :claude {:prompt "test"}))))))
 
 (deftest test-build-cli-command-copilot
-  (testing "builds basic Copilot CLI command with prompt and hardcoded model"
+  (testing "builds basic Copilot CLI command with prompt (no model by default)"
     (let [result (providers/build-cli-command :copilot {:prompt "test prompt"})]
       (is (vector? result))
       (is (= "copilot" (first result)))
@@ -1091,29 +1091,22 @@ another_key: another value
       (is (some #{"--allow-all-tools"} result))
       (is (some #{"-p"} result))
       (is (some #{"test prompt"} result))
-      ;; Model is always hardcoded during development
-      (is (some #{"--model"} result))
-      (is (some #{"gpt-5-mini"} result))))
+      ;; No model flag when not specified
+      (is (not (some #{"--model"} result)))))
 
   (testing "includes --resume for resumed sessions"
     (let [result (providers/build-cli-command :copilot {:prompt "test"
                                                         :resume-session-id "abc-123-def"})]
       (is (some #{"--resume"} result))
-      (is (some #{"abc-123-def"} result))
-      ;; Model still hardcoded on resumed sessions
-      (is (some #{"--model"} result))
-      (is (some #{"gpt-5-mini"} result))))
+      (is (some #{"abc-123-def"} result))))
 
-  (testing "ignores passed model and uses hardcoded gpt-5-mini"
-    ;; During development, the model is hardcoded - passed model is ignored
+  (testing "includes --model when specified"
     (let [result (providers/build-cli-command :copilot {:prompt "test"
                                                         :model "gpt-5.2-codex"})]
       (is (some #{"--model"} result))
-      ;; The passed model should NOT appear, only the hardcoded one
-      (is (not (some #{"gpt-5.2-codex"} result)))
-      (is (some #{"gpt-5-mini"} result))))
+      (is (some #{"gpt-5.2-codex"} result))))
 
-  (testing "works with resume and hardcoded model"
+  (testing "works with resume and model together"
     (let [result (providers/build-cli-command :copilot {:prompt "fix bug"
                                                         :resume-session-id "session-uuid"
                                                         :model "claude-sonnet-4"})]
@@ -1123,9 +1116,7 @@ another_key: another value
       (is (some #{"--resume"} result))
       (is (some #{"session-uuid"} result))
       (is (some #{"--model"} result))
-      ;; Hardcoded model, not passed model
-      (is (not (some #{"claude-sonnet-4"} result)))
-      (is (some #{"gpt-5-mini"} result))))
+      (is (some #{"claude-sonnet-4"} result))))
 
   (testing "throws when prompt is missing"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo
@@ -1301,7 +1292,7 @@ another_key: another value
             (is (= "existing-session-id" (:session-id @captured-args)))))))))
 
 (deftest test-invoke-copilot-with-model
-  (testing "passes hardcoded model to CLI process (ignores passed model)"
+  (testing "passes model to CLI process when specified"
     (let [captured-args (atom nil)]
       (with-redefs-fn {#'providers/provider-installed? (constantly true)
                        #'providers/run-copilot-process (fn [args _dir _timeout _session-id]
@@ -1309,13 +1300,20 @@ another_key: another value
                                                          {:exit 0 :out "Done" :err ""})
                        #'providers/find-newest-copilot-session (fn [_] "new-session")}
         (fn []
-          ;; Pass a custom model, but it should be ignored - hardcoded model used instead
           (providers/invoke-copilot "test" :model "claude-sonnet-4")
           (is (some #{"--model"} @captured-args))
-          ;; The passed model should NOT appear
-          (is (not (some #{"claude-sonnet-4"} @captured-args)))
-          ;; The hardcoded model should be used
-          (is (some #{"gpt-5-mini"} @captured-args)))))))
+          (is (some #{"claude-sonnet-4"} @captured-args))))))
+
+  (testing "omits model flag when not specified"
+    (let [captured-args (atom nil)]
+      (with-redefs-fn {#'providers/provider-installed? (constantly true)
+                       #'providers/run-copilot-process (fn [args _dir _timeout _session-id]
+                                                         (reset! captured-args args)
+                                                         {:exit 0 :out "Done" :err ""})
+                       #'providers/find-newest-copilot-session (fn [_] "new-session")}
+        (fn []
+          (providers/invoke-copilot "test")
+          (is (not (some #{"--model"} @captured-args))))))))
 
 (deftest test-invoke-copilot-failure
   (testing "returns error response when CLI fails"
