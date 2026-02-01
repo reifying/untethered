@@ -201,6 +201,62 @@
     (is (server/is-session-deleted-for-client? :ch1 "session-1"))
     (is (not (server/is-session-deleted-for-client? :ch2 "session-1")))))
 
+(deftest test-subscription-cleanup-on-disconnect
+  (testing "Subscriptions are cleaned up when client disconnects"
+    ;; Setup: one client subscribed to two sessions
+    (reset! server/connected-clients
+            {:ch1 {:deleted-sessions #{}
+                   :subscribed-sessions #{"session-1" "session-2"}}})
+    (reset! repl/watcher-state {:subscribed-sessions #{"session-1" "session-2"}})
+
+    ;; Disconnect the client
+    (server/unregister-channel! :ch1)
+
+    ;; Verify client removed
+    (is (not (contains? @server/connected-clients :ch1)))
+
+    ;; Verify global subscriptions cleaned up
+    (is (not (repl/is-subscribed? "session-1")))
+    (is (not (repl/is-subscribed? "session-2"))))
+
+  (testing "Shared subscriptions preserved when other client still needs them"
+    ;; Setup: two clients, both subscribed to session-1, only ch1 to session-2
+    (reset! server/connected-clients
+            {:ch1 {:deleted-sessions #{}
+                   :subscribed-sessions #{"session-1" "session-2"}}
+             :ch2 {:deleted-sessions #{}
+                   :subscribed-sessions #{"session-1"}}})
+    (reset! repl/watcher-state {:subscribed-sessions #{"session-1" "session-2"}})
+
+    ;; Disconnect ch1
+    (server/unregister-channel! :ch1)
+
+    ;; session-1 should still be subscribed (ch2 needs it)
+    (is (repl/is-subscribed? "session-1"))
+    ;; session-2 should be unsubscribed (only ch1 needed it)
+    (is (not (repl/is-subscribed? "session-2"))))
+
+  (testing "Client with no subscriptions disconnects cleanly"
+    (reset! server/connected-clients
+            {:ch1 {:deleted-sessions #{}
+                   :subscribed-sessions #{}}})
+    (reset! repl/watcher-state {:subscribed-sessions #{}})
+
+    ;; Should not throw
+    (server/unregister-channel! :ch1)
+
+    (is (not (contains? @server/connected-clients :ch1))))
+
+  (testing "Client with nil subscribed-sessions disconnects cleanly"
+    (reset! server/connected-clients
+            {:ch1 {:deleted-sessions #{}}}) ;; no :subscribed-sessions key
+    (reset! repl/watcher-state {:subscribed-sessions #{}})
+
+    ;; Should not throw
+    (server/unregister-channel! :ch1)
+
+    (is (not (contains? @server/connected-clients :ch1)))))
+
 (deftest test-watcher-callbacks
   (testing "on-session-created broadcasts to all clients"
     (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :recent-sessions-limit 5}

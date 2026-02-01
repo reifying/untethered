@@ -95,7 +95,11 @@
 ;; Persistent session data comes from the replication system (filesystem-based)
 
 (defonce connected-clients
-  ;; Track all connected WebSocket clients: channel -> {:deleted-sessions #{} :recent-sessions-limit 5 :max-message-size-kb 200}
+  ;; Track all connected WebSocket clients: 
+  ;; channel -> {:deleted-sessions #{} 
+  ;;             :subscribed-sessions #{}  ; Sessions this client is subscribed to
+  ;;             :recent-sessions-limit 5 
+  ;;             :max-message-size-kb 200}
   (atom {}))
 
 ;; Default max message size in KB (conservative default well below iOS 256KB limit)
@@ -434,9 +438,30 @@
       (subs auth-header 7))))
 
 (defn unregister-channel!
-  "Remove WebSocket channel from connected clients"
+  "Remove WebSocket channel from connected clients and clean up subscriptions.
+   Any sessions that are no longer subscribed by any client are unsubscribed globally."
   [channel]
-  (swap! connected-clients dissoc channel))
+  (let [client-info (get @connected-clients channel)
+        client-subscriptions (or (:subscribed-sessions client-info) #{})]
+    ;; Remove the channel first
+    (swap! connected-clients dissoc channel)
+    ;; For each session this client was subscribed to, check if any other client still needs it
+    (when (seq client-subscriptions)
+      (let [remaining-clients @connected-clients
+            ;; Compute all sessions still needed by remaining clients
+            all-remaining-subscriptions (reduce
+                                         (fn [acc [_ info]]
+                                           (into acc (or (:subscribed-sessions info) #{})))
+                                         #{}
+                                         remaining-clients)
+            ;; Sessions to unsubscribe globally
+            orphaned-sessions (clojure.set/difference client-subscriptions all-remaining-subscriptions)]
+        (when (seq orphaned-sessions)
+          (log/info "Cleaning up orphaned subscriptions on disconnect"
+                    {:orphaned-count (count orphaned-sessions)
+                     :session-ids orphaned-sessions})
+          (doseq [session-id orphaned-sessions]
+            (repl/unsubscribe-from-session! session-id)))))))
 
 (defn generate-message-id
   "Generate a UUID v4 for message tracking"
@@ -1065,6 +1090,7 @@
           (let [limit (or (:recent-sessions-limit data) 5)]
             (swap! connected-clients update channel merge
                    {:deleted-sessions #{}
+                    :subscribed-sessions #{}
                     :recent-sessions-limit limit}))
 
           ;; Send session list (limit to 50 most recent, lightweight fields only)
@@ -1146,8 +1172,10 @@
                              :last-message-id last-message-id
                              :has-delta-sync (some? last-message-id)})
 
-                  ;; Subscribe in replication system
+                  ;; Subscribe in replication system (global) and track per-client
                   (repl/subscribe-to-session! session-id)
+                  (swap! connected-clients update-in [channel :subscribed-sessions]
+                         (fnil conj #{}) session-id)
 
                   ;; Get session metadata
                   (if-let [metadata (repl/get-session-metadata session-id)]
@@ -1200,7 +1228,17 @@
             (let [session-id (:session-id data)]
               (when session-id
                 (log/info "Client unsubscribing from session" {:session-id session-id})
-                (repl/unsubscribe-from-session! session-id)))
+                ;; Remove from this client's subscribed-sessions
+                (swap! connected-clients update-in [channel :subscribed-sessions]
+                       (fnil disj #{}) session-id)
+                ;; Only unsubscribe globally if no other client needs this session
+                (let [other-clients-need-it?
+                      (some (fn [[ch info]]
+                              (and (not= ch channel)
+                                   (contains? (or (:subscribed-sessions info) #{}) session-id)))
+                            @connected-clients)]
+                  (when-not other-clients-need-it?
+                    (repl/unsubscribe-from-session! session-id)))))
 
             "session_deleted"
             ;; Client marks session as deleted locally
@@ -1208,7 +1246,17 @@
               (when session-id
                 (log/info "Client deleted session locally" {:session-id session-id})
                 (mark-session-deleted-for-client! channel session-id)
-                (repl/unsubscribe-from-session! session-id)))
+                ;; Remove from this client's subscribed-sessions
+                (swap! connected-clients update-in [channel :subscribed-sessions]
+                       (fnil disj #{}) session-id)
+                ;; Only unsubscribe globally if no other client needs this session
+                (let [other-clients-need-it?
+                      (some (fn [[ch info]]
+                              (and (not= ch channel)
+                                   (contains? (or (:subscribed-sessions info) #{}) session-id)))
+                            @connected-clients)]
+                  (when-not other-clients-need-it?
+                    (repl/unsubscribe-from-session! session-id)))))
 
             "prompt"
             ;; Updated to use new_session_id vs resume_session_id
