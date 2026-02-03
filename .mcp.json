@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "clojure-mcp": {
-      "command": "clojure",
-      "args": ["-X:mcp", ":port", "7889"]
-    }
-  }
-}
