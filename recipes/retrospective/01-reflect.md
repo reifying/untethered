@@ -1,15 +1,4 @@
-# Retrospective
-
-Reflect on the session and identify areas for improvement
-
-**Recipe ID:** `retrospective`
-**Initial Step:** `reflect`
-
----
-
-### Reflect
-
-**Prompt:**
+# Reflect
 
 Perform a retrospective on the session that just took place.
 
@@ -51,9 +40,3 @@ Perform a retrospective on the session that just took place.
 **Transitions:**
 - `complete` → **exit** (retrospective-complete)
 - `other` → **exit** (user-provided-other)
-
-## Guardrails
-
-- Max visits per step: 3
-- Max total steps: 100
-- Exit on other: true
