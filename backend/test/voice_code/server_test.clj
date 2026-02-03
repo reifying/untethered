@@ -2027,3 +2027,67 @@
           (is (true? (:is_complete response))))))
     (reset! server/api-key nil)))
 
+
+;; ============================================================================
+;; Tests for Task 1.4: Inherit Provider on implement-and-review-all Restart
+;; ============================================================================
+
+(deftest test-start-recipe-restart-inherits-provider
+  (testing "start-recipe-for-session call with provider parameter preserves provider"
+    (reset! server/session-orchestration-state {})
+    
+    ;; Test 1: Restart with copilot provider
+    (let [session-id-1 "restart-session-copilot"
+          orch-state-1 (server/start-recipe-for-session session-id-1 :implement-and-review true :provider :copilot)]
+      (is (= :copilot (:provider orch-state-1)))
+      (is (= :copilot (get-in @server/session-orchestration-state [session-id-1 :provider]))))
+    
+    ;; Test 2: Restart with claude provider (default)
+    (let [session-id-2 "restart-session-claude"
+          orch-state-2 (server/start-recipe-for-session session-id-2 :implement-and-review true)]
+      (is (= :claude (:provider orch-state-2)))
+      (is (= :claude (get-in @server/session-orchestration-state [session-id-2 :provider]))))
+    
+    (reset! server/session-orchestration-state {})))
+
+(deftest test-recipe-restart-provider-inheritance
+  (testing "Provider is correctly inherited when restarting recipe in new session"
+    (reset! server/session-orchestration-state {})
+    
+    ;; Create original session with copilot
+    (server/start-recipe-for-session "old-session-123" :implement-and-review false :provider :copilot)
+    (let [old-orch-state (server/get-session-recipe-state "old-session-123")]
+      
+      ;; Verify old provider is copilot
+      (is (= :copilot (:provider old-orch-state)))
+      
+      ;; Simulate restarting with new session, inheriting provider
+      (let [inherited-provider (:provider old-orch-state)
+            new-orch-state (server/start-recipe-for-session "new-session-456" :implement-and-review true :provider inherited-provider)]
+        
+        ;; Verify new session inherited the provider
+        (is (= :copilot (:provider new-orch-state)))
+        (is (= :copilot (get-in @server/session-orchestration-state ["new-session-456" :provider])))))
+    
+    (reset! server/session-orchestration-state {})))
+
+(deftest test-recipe-restart-multiple-iterations
+  (testing "Provider inheritance works across multiple restart iterations"
+    (reset! server/session-orchestration-state {})
+    
+    ;; Start with copilot in first session
+    (server/start-recipe-for-session "iter-1" :implement-and-review false :provider :copilot)
+    (let [prov-1 (:provider (server/get-session-recipe-state "iter-1"))]
+      (is (= :copilot prov-1))
+      
+      ;; Restart in second session, inheriting provider
+      (server/start-recipe-for-session "iter-2" :implement-and-review true :provider prov-1)
+      (let [prov-2 (:provider (server/get-session-recipe-state "iter-2"))]
+        (is (= :copilot prov-2))
+        
+        ;; Restart again in third session, still inheriting provider
+        (server/start-recipe-for-session "iter-3" :implement-and-review true :provider prov-2)
+        (let [prov-3 (:provider (server/get-session-recipe-state "iter-3"))]
+          (is (= :copilot prov-3) "Provider should be preserved across multiple restarts"))))
+    
+    (reset! server/session-orchestration-state {})))

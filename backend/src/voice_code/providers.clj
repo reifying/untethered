@@ -841,14 +841,15 @@
     :claude
     ;; Delegate to existing Claude implementation
     ;; Use requiring-resolve to avoid circular dependency
-    (let [invoke-fn (requiring-resolve 'voice-code.claude/invoke-claude-async)]
-      (invoke-fn prompt callback-fn
-                 :new-session-id new-session-id
-                 :resume-session-id resume-session-id
-                 :working-directory working-directory
-                 :timeout-ms timeout-ms
-                 :system-prompt system-prompt
-                 :model model))
+    (let [invoke-fn (requiring-resolve 'voice-code.claude/invoke-claude-async)
+          ;; Build keyword args list, filtering out nil values to avoid passing unused session params
+          opts (concat (if new-session-id [:new-session-id new-session-id] [])
+                       (if resume-session-id [:resume-session-id resume-session-id] [])
+                       (if working-directory [:working-directory working-directory] [])
+                       [:timeout-ms timeout-ms]
+                       (if system-prompt [:system-prompt system-prompt] [])
+                       (if model [:model model] []))]
+      (apply invoke-fn prompt callback-fn opts))
 
     :copilot
     ;; Delegate to Copilot implementation

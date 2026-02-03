@@ -557,14 +557,17 @@
 
 (defn start-recipe-for-session
   "Initialize orchestration state for a session.
-   is-new-session? indicates whether this is a brand new session with no Claude history."
-  [session-id recipe-id is-new-session?]
+   is-new-session? indicates whether this is a brand new session with no Claude history.
+   Provider defaults to :claude for backward compatibility."
+  [session-id recipe-id is-new-session? & {:keys [provider]}]
   (if-let [state (orch/create-orchestration-state recipe-id)]
-    (let [state-with-session-flag (assoc state :session-created? (not is-new-session?))]
+    (let [state-with-session-flag (assoc state 
+                                          :session-created? (not is-new-session?)
+                                          :provider (or provider :claude))]
       (swap! session-orchestration-state assoc session-id state-with-session-flag)
       (orch/log-orchestration-event "recipe-started" session-id recipe-id
                                     (:current-step state)
-                                    {:is-new-session is-new-session?})
+                                    {:is-new-session is-new-session? :provider (or provider :claude)})
       state-with-session-flag)
     (do
       (log/error "Recipe not found" {:recipe-id recipe-id :session-id session-id})
@@ -706,7 +709,7 @@
 (defn execute-recipe-step
   "Execute a single step of a recipe and handle the response.
    This function handles the full orchestration loop:
-   1. Send the step prompt to Claude
+   1. Send the step prompt to the provider (Claude, Copilot, etc.)
    2. Parse the outcome from the response
    3. If next step: update state and recursively continue
    4. If retry: send reminder prompt and try again (once per step)
@@ -716,11 +719,13 @@
    The lock is only released when the recipe exits (success, error, or guardrail).
    Recursive calls (:next-step, :retry) keep the lock held.
    
+   Provider is read from orchestration state (:provider field), enabling multi-provider support.
+   
    Parameters:
    - channel: WebSocket channel to send messages to
    - session-id: Claude session ID
-   - working-dir: Working directory for Claude
-   - orch-state: Current orchestration state
+   - working-dir: Working directory for the provider
+   - orch-state: Current orchestration state (includes :provider field)
    - recipe: Recipe definition
    - prompt-override: Optional prompt to use instead of step prompt (for retries)"
   ([channel session-id working-dir orch-state recipe]
@@ -735,6 +740,7 @@
                    {:session-id session-id
                     :recipe-id (:recipe-id orch-state)
                     :step current-step
+                    :provider (:provider orch-state)
                     :model (get-step-model recipe current-step)
                     :step-count (:step-count orch-state)
                     :session-created? session-created?
@@ -748,7 +754,8 @@
                              :step current-step
                              :step-count (:step-count orch-state)}))
 
-         (claude/invoke-claude-async
+         (apply providers/invoke-provider-async
+          (:provider orch-state)
           step-prompt
           (fn [response]
             (try
@@ -837,11 +844,13 @@
                         ;; Recipe finished, start new recipe in fresh session
                         ;; Used by implement-and-review to loop after commit
                         (let [new-session-id (str (java.util.UUID/randomUUID))
-                              new-recipe-id (:recipe-id result)]
+                              new-recipe-id (:recipe-id result)
+                              old-provider (:provider orch-state)]
                           (log/info "Recipe restarting with new session"
                                     {:old-session-id session-id
                                      :new-session-id new-session-id
                                      :recipe-id new-recipe-id
+                                     :old-provider old-provider
                                      :working-directory working-dir})
                           ;; Exit current recipe and release lock
                           (exit-recipe-for-session session-id "restart-new-session")
@@ -854,7 +863,7 @@
                                            {:type :turn-complete
                                             :session-id session-id})
                           ;; Start new recipe with fresh session
-                          (if-let [new-orch-state (start-recipe-for-session new-session-id new-recipe-id true)]
+                          (if-let [new-orch-state (start-recipe-for-session new-session-id new-recipe-id true :provider old-provider)]
                             (let [new-recipe (recipes/get-recipe new-recipe-id)]
                               (send-to-client! channel
                                                {:type :recipe-started
@@ -927,10 +936,12 @@
           ;; Conditionally use new-session-id or resume-session-id based on session-created?
           ;; For new sessions (session-created? = false), use :new-session-id (--session-id flag)
           ;; For existing sessions (session-created? = true), use :resume-session-id (--resume flag)
-          (if session-created? :resume-session-id :new-session-id) session-id
-          :working-directory working-dir
-          :model (get-step-model recipe current-step)
-          :timeout-ms 86400000))
+          (concat (if session-created?
+                    [:resume-session-id session-id]
+                    [:new-session-id session-id])
+                  [:working-directory working-dir
+                   :model (get-step-model recipe current-step)
+                   :timeout-ms 86400000])))
        ;; No step prompt available - this shouldn't happen in normal operation
        ;; but we must release the lock if it does
        (do
@@ -1838,7 +1849,13 @@
             (let [recipe-id (keyword (:recipe-id data))
                   session-id (:session-id data)
                   working-directory (:working-directory data)
-                  is-new-session? (not (session-exists? session-id))]
+                  is-new-session? (not (session-exists? session-id))
+                  ;; Extract optional provider field (defaults to session's provider or Claude)
+                  message-provider (when-let [p (:provider data)] (keyword p))
+                  provider (or message-provider
+                               (when-not is-new-session?
+                                 (:provider (repl/get-session-metadata session-id)))
+                               :claude)]
               (cond
                 (not session-id)
                 (send-to-client! channel
@@ -1861,7 +1878,7 @@
                                     :session-id session-id}))
 
                 :else
-                (if-let [orch-state (start-recipe-for-session session-id recipe-id is-new-session?)]
+                (if-let [orch-state (start-recipe-for-session session-id recipe-id is-new-session? :provider provider)]
                   (let [recipe (recipes/get-recipe recipe-id)]
                     (log/info "Recipe started" {:recipe-id recipe-id :session-id session-id})
                     (send-to-client! channel
