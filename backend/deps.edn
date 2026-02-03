@@ -44,4 +44,7 @@
                                       {:git/tag "v0.5.1"
                                        :git/sha "dfb30dd"}
                                       stylefruits/gniazdo {:mvn/version "1.2.2"}}
-                         :main-opts ["-m" "cognitect.test-runner"]}}}
+                         :main-opts ["-m" "cognitect.test-runner"]}
+
+           ;; CLI for utility commands (recipe sync, etc.)
+           :main {:main-opts ["-m" "voice-code.cli"]}}}

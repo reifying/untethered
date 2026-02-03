@@ -1,5 +1,31 @@
 # Document Design
 
+Create a detailed design document with examples and verification
+
+**Recipe ID:** `document-design`
+**Initial Step:** `document`
+
+---
+
+### Commit
+
+**Prompt:**
+
+Commit and push the design document. Use a descriptive commit message that summarizes what is being designed.
+
+**Model:** `haiku`
+
+**Outcomes:** committed, nothing-to-commit, other
+
+**Transitions:**
+- `committed` → **exit** (design-committed)
+- `nothing-to-commit` → **exit** (no-changes-to-commit)
+- `other` → **exit** (user-provided-other)
+
+### Document
+
+**Prompt:**
+
 Create a detailed design document for the requested feature or change. Store as a markdown file following the repository's conventions for location and naming.
 
 ## Document Structure
@@ -87,3 +113,48 @@ Before marking complete, verify:
 - [ ] Verification steps are specific and actionable
 - [ ] Cross-references to related files use @filename.md format
 - [ ] No placeholder text remains
+
+**Outcomes:** complete, needs-input, other
+
+**Transitions:**
+- `complete` → **Review**
+- `needs-input` → **exit** (clarification-needed)
+- `other` → **exit** (user-provided-other)
+
+### Fix
+
+**Prompt:**
+
+Address the issues found in the design document review.
+
+**Outcomes:** complete, other
+
+**Transitions:**
+- `complete` → **Review**
+- `other` → **exit** (user-provided-other)
+
+### Review
+
+**Prompt:**
+
+Review the design document you created. Check for:
+- Completeness: Are all sections filled in with substantive content?
+- Correctness: Do code examples compile/parse correctly?
+- Clarity: Would another developer understand the design?
+- Consistency: Does it align with existing patterns in the codebase?
+- Actionability: Are verification steps specific enough to execute?
+
+Report any gaps or issues found. Do not make changes yet.
+
+**Outcomes:** issues-found, no-issues, other
+
+**Transitions:**
+- `issues-found` → **Fix**
+- `no-issues` → **Commit**
+- `other` → **exit** (user-provided-other)
+
+## Guardrails
+
+- Max visits per step: 3
+- Max total steps: 100
+- Exit on other: true

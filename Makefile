@@ -11,7 +11,7 @@ BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
 .PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
-.PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
+.PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop recipe-sync
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 .PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
@@ -74,6 +74,9 @@ help:
 	@echo "Backend manual test suites:"
 	@echo "  backend-test-manual-free          - Run all FREE manual tests"
 	@echo "  backend-test-manual-all           - Run ALL manual tests (COSTS MONEY)"
+	@echo ""
+	@echo "Recipe Management:"
+	@echo "  recipe-sync       - Regenerate recipe markdown from recipes.clj (always run before committing recipe changes)"
 	@echo ""
 	@echo "Utility:"
 	@echo "  backend-clean     - Remove backend test artifacts"
@@ -408,3 +411,11 @@ release-mac-notarize:
 # Create distribution zip from notarized app
 release-mac-package:
 	./scripts/publish-mac.sh package
+
+# Recipe markdown generation
+# Regenerates all recipe markdown files from the canonical definitions in recipes.clj
+# Run this before committing any changes to recipes.clj to keep docs in sync
+recipe-sync:
+	@echo "Regenerating recipe markdown from recipes.clj..."
+	@cd $(BACKEND_DIR) && clojure -M:main -m voice-code.cli sync ../recipes
+	@echo "✅ Recipe markdown files synced"
