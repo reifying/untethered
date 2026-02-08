@@ -27,7 +27,7 @@
   (testing "commit step exits on completion"
     (let [step (:commit recipes/review-commit-steps)]
       (is (= :exit (get-in step [:on-outcome :committed :action])))
-      (is (= "haiku" (:model step))))))
+      (is (nil? (:model step))))))
 
 ;; ============================================================================
 ;; Review & Commit Recipe Tests
@@ -226,7 +226,7 @@
 
   (testing "valid step-level model passes validation"
     (let [recipe (recipes/implement-and-review-recipe)]
-      ;; commit step has :model "haiku" - should pass
+      ;; commit step no longer has :model - should pass
       (is (nil? (recipes/validate-recipe recipe)))))
 
   (testing "invalid step-level model fails validation"
@@ -252,10 +252,10 @@
           outcomes (get-in recipe [:steps :commit :outcomes])]
       (is (= #{:committed :nothing-to-commit :other} outcomes))))
 
-  (testing "commit step uses haiku model"
+  (testing "commit step has no model override"
     (let [recipe (recipes/get-recipe :implement-and-review)
           model (get-in recipe [:steps :commit :model])]
-      (is (= "haiku" model))))
+      (is (nil? model))))
 
   (testing "commit step mentions beads and push"
     (let [recipe (recipes/get-recipe :implement-and-review)
@@ -389,10 +389,10 @@
           outcomes (get-in recipe [:steps :complete :outcomes])]
       (is (= #{:done :other} outcomes))))
 
-  (testing "complete step uses haiku model"
+  (testing "complete step has no model override"
     (let [recipe (recipes/get-recipe :rebase)
           model (get-in recipe [:steps :complete :model])]
-      (is (= "haiku" model))))
+      (is (nil? model))))
 
   (testing "has valid guardrails"
     (let [recipe (recipes/get-recipe :rebase)]

@@ -1256,8 +1256,8 @@
 
   (testing "works with implement-and-review recipe"
     (let [recipe (recipes/get-recipe :implement-and-review)]
-      ;; :commit step has "haiku" model
-      (is (= "haiku" (server/get-step-model recipe :commit)))
+      ;; :commit step no longer has a model override
+      (is (nil? (server/get-step-model recipe :commit)))
       ;; :implement step has no model
       (is (nil? (server/get-step-model recipe :implement)))
       ;; :code-review step has no model
@@ -1276,7 +1276,7 @@
       (reset! voice-code.replication/session-locks #{})
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
 
-      ;; Start recipe at commit step (which has model "haiku")
+      ;; Start recipe at commit step (which no longer has a model override)
       (server/start-recipe-for-session session-id :implement-and-review false)
       (swap! server/session-orchestration-state assoc-in [session-id :current-step] :commit)
 
@@ -1291,9 +1291,9 @@
               recipe (recipes/get-recipe :implement-and-review)]
           (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
 
-          ;; Verify model was passed correctly
-          (is (= "haiku" @captured-model)
-              "Commit step should use haiku model")))))
+          ;; Verify model is nil (no model override on commit step)
+          (is (nil? @captured-model)
+              "Commit step should have no model override")))))
 
   (testing "execute-recipe-step passes nil model for steps without model"
     (let [session-id "test-no-model"

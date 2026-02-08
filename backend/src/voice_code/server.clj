@@ -763,6 +763,18 @@
                 (let [response-text (:result response)
                       ;; Get fresh state in case retry count was updated or user exited
                       current-orch-state (get-session-recipe-state session-id)]
+                  ;; Capture Copilot session ID from first successful invocation
+                  (when (and current-orch-state
+                             (= (:provider orch-state) :copilot)
+                             (not (:copilot-session-id orch-state))
+                             (:session-id response))
+                    (log/info "Captured Copilot session ID from first response"
+                              {:copilot-session-id (:session-id response)
+                               :orchestration-session-id session-id})
+                    (swap! session-orchestration-state
+                           update session-id
+                           assoc :copilot-session-id (:session-id response)))
+
                   ;; Mark session as created after first successful invocation
                   (when (and current-orch-state (not session-created?))
                     (log/info "Marking session as created after first successful invocation"
@@ -845,12 +857,14 @@
                         ;; Used by implement-and-review to loop after commit
                         (let [new-session-id (str (java.util.UUID/randomUUID))
                               new-recipe-id (:recipe-id result)
-                              old-provider (:provider orch-state)]
+                              old-provider (:provider orch-state)
+                              old-copilot-session-id (:copilot-session-id orch-state)]
                           (log/info "Recipe restarting with new session"
                                     {:old-session-id session-id
                                      :new-session-id new-session-id
                                      :recipe-id new-recipe-id
                                      :old-provider old-provider
+                                     :old-copilot-session-id old-copilot-session-id
                                      :working-directory working-dir})
                           ;; Exit current recipe and release lock
                           (exit-recipe-for-session session-id "restart-new-session")
@@ -936,12 +950,19 @@
           ;; Conditionally use new-session-id or resume-session-id based on session-created?
           ;; For new sessions (session-created? = false), use :new-session-id (--session-id flag)
           ;; For existing sessions (session-created? = true), use :resume-session-id (--resume flag)
-          (concat (if session-created?
-                    [:resume-session-id session-id]
-                    [:new-session-id session-id])
-                  [:working-directory working-dir
-                   :model (get-step-model recipe current-step)
-                   :timeout-ms 86400000])))
+          ;; For Copilot: if we've captured the copilot-session-id, use that for resume instead of client UUID
+          (let [copilot-session-id (:copilot-session-id orch-state)
+                provider (:provider orch-state)
+                ;; For Copilot, prefer the captured copilot-session-id if available
+                actual-session-id (if (and (= provider :copilot) copilot-session-id)
+                                    copilot-session-id
+                                    session-id)]
+            (concat (if session-created?
+                      [:resume-session-id actual-session-id]
+                      [:new-session-id session-id])  ;; New sessions always use client UUID initially
+                    [:working-directory working-dir
+                     :model (get-step-model recipe current-step)
+                     :timeout-ms 86400000]))))
        ;; No step prompt available - this shouldn't happen in normal operation
        ;; but we must release the lock if it does
        (do
@@ -1850,7 +1871,7 @@
                   session-id (:session-id data)
                   working-directory (:working-directory data)
                   is-new-session? (not (session-exists? session-id))
-                  ;; Extract optional provider field (defaults to session's provider or Claude)
+                   ;; Extract optional provider field (defaults to session's provider or Claude)
                   message-provider (when-let [p (:provider data)] (keyword p))
                   provider (or message-provider
                                (when-not is-new-session?

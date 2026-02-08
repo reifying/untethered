@@ -27,11 +27,3 @@ Before marking complete:
 
 **Only one task.** Only implement the one task. Do not start on a second beads task.
 **Do not commit yet.** Code review happens next.
-
-**Outcomes:** blocked, complete, no-tasks, other
-
-**Transitions:**
-- `blocked` → **exit** (implementation-blocked)
-- `complete` → **Code Review**
-- `no-tasks` → **exit** (no-tasks-available)
-- `other` → **exit** (user-provided-other)
