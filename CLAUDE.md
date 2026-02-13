@@ -32,7 +32,7 @@ bd sync               # Sync with git
 
 ---
 
-This is January 2026 or later
+This is Feb 2026 or later
 
 ## Clojure MCP Setup (Required First Step)
 
@@ -73,4 +73,13 @@ Run `make test` (or other test targets) directly—never redirect to `/dev/null`
 Always log the actual invalid values with sufficient context (names, paths) when validation fails so we can diagnose issues from logs alone.
 
 See @STANDARDS.md for coding conventions.
+
+## Server
+
+Logs are typically at backend/server.out
+
+"Restart the backend" means run `make backend-restart`. "backend" refers to the Untethered (voice-code) server, not the nREPL server.
+
+
+
 
