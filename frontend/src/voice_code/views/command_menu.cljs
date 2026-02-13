@@ -274,9 +274,11 @@
         working-directory (when params (.-workingDirectory params))]
     ;; Form-2: Return a render function that reads subscriptions
     (fn [_props]
-      (let [colors (theme/use-theme-colors)
-            commands @(rf/subscribe [:commands/for-directory working-directory])]
-        [:> rn/SafeAreaView {:style {:flex 1 :background-color (:background colors)}}
+      [:f>
+       (fn []
+         (let [colors (theme/use-theme-colors)
+               commands @(rf/subscribe [:commands/for-directory working-directory])]
+           [:> rn/SafeAreaView {:style {:flex 1 :background-color (:background colors)}}
          [running-commands-list {:navigation navigation
                                  :working-directory working-directory
                                  :colors colors}]
@@ -331,4 +333,4 @@
                                    (when navigation
                                      (.navigate navigation "CommandExecution"
                                                 #js {:workingDirectory working-directory})))}])])]
-           [empty-state colors])]))))
+           [empty-state colors])]))])))

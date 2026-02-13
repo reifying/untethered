@@ -174,11 +174,13 @@
 
       :reagent-render
       (fn [_props]
-        (let [colors (theme/use-theme-colors)
-              history @(rf/subscribe [:commands/history])
-              refreshing? @(rf/subscribe [:ui/refreshing-command-history?])
-              loading? false] ; Could track loading state if needed
-          [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
+        [:f>
+         (fn []
+           (let [colors (theme/use-theme-colors)
+                 history @(rf/subscribe [:commands/history])
+                 refreshing? @(rf/subscribe [:ui/refreshing-command-history?])
+                 loading? false] ; Could track loading state if needed
+             [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
            (cond
              loading?
              [loading-state colors]
@@ -223,4 +225,4 @@
                   :on-refresh #(rf/dispatch [:commands/refresh-history working-directory])
                   :tint-color (:accent colors)
                   :colors #js [(:accent colors)]}])
-               :content-container-style {:padding-vertical 8}}])]))})))
+               :content-container-style {:padding-vertical 8}}])]))])})))

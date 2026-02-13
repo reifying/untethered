@@ -120,14 +120,16 @@
         working-directory (r/atom "")
         create-worktree? (r/atom false)]
     (fn [_props]
-      (let [colors (theme/use-theme-colors)
-            name-value @session-name
-            dir-value @working-directory
-            worktree? @create-worktree?
-            ;; Create is disabled if name is empty, or if worktree is enabled and directory is empty
-            create-disabled? (or (empty? name-value)
-                                 (and worktree? (empty? dir-value)))]
-        [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
+      [:f>
+       (fn []
+         (let [colors (theme/use-theme-colors)
+               name-value @session-name
+               dir-value @working-directory
+               worktree? @create-worktree?
+               ;; Create is disabled if name is empty, or if worktree is enabled and directory is empty
+               create-disabled? (or (empty? name-value)
+                                    (and worktree? (empty? dir-value)))]
+           [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
          [:> rn/ScrollView
           {:style {:flex 1}
            :content-container-style {:padding 16}
@@ -199,4 +201,4 @@
                                             :sessionName name-value}))))
             :on-cancel #(.goBack navigation)
             :create-disabled? create-disabled?
-            :colors colors}]]]))))
+            :colors colors}]]]))])))

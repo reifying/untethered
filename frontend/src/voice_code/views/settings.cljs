@@ -311,12 +311,15 @@
 
 (defn- api-key-section
   "API key management section showing key status and management options.
-   Features real-time validation feedback with character count and specific error messages."
+   Features real-time validation feedback with character count and specific error messages.
+   Wrapped in [:f>] to enable React hooks for theme colors."
   [navigation]
   (let [api-key-input (r/atom "")]
     (fn [navigation]
-      (let [colors (theme/use-theme-colors)
-            api-key @(rf/subscribe [:auth/api-key])
+      [:f>
+       (fn []
+         (let [colors (theme/use-theme-colors)
+               api-key @(rf/subscribe [:auth/api-key])
             has-key? (some? api-key)
             current-input @api-key-input
             validation (api-key-validation-status current-input)
@@ -435,7 +438,7 @@
                                  :border-bottom-width 1
                                  :border-bottom-color (:separator colors)}}
              [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
-              "Run 'make show-key-qr' on your server to display the QR code"]]])]))))
+              "Run 'make show-key-qr' on your server to display the QR code"]]])]))])))
 
 (defn- server-settings-section
   "Server URL and port configuration.
@@ -511,11 +514,14 @@
 
 (defn- voice-settings-section
   "Voice selection and preview.
-   Includes quality/language metadata per iOS SettingsView.swift lines 68-77."
+   Includes quality/language metadata per iOS SettingsView.swift lines 68-77.
+   Wrapped in [:f>] to enable React hooks for theme colors."
   []
   (let [picker-visible? (r/atom false)]
     (fn []
-      (let [colors (theme/use-theme-colors)
+      [:f>
+       (fn []
+         (let [colors (theme/use-theme-colors)
             settings @(rf/subscribe [:settings/all])
             previewing? @(rf/subscribe [:ui/previewing-voice?])
             voice-id (:voice-identifier settings)
@@ -563,7 +569,7 @@
                                       "▶"])]}]
          ;; Voice picker modal
          [voice-picker-modal {:visible @picker-visible?
-                              :on-close #(reset! picker-visible? false)}]]))))
+                              :on-close #(reset! picker-visible? false)}]]))])))
 
 (defn- audio-playback-section
   "Audio playback settings (iOS only)."

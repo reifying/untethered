@@ -225,8 +225,10 @@
         navigation (:navigation props)
         working-directory (when route (some-> route .-params .-workingDirectory))]
     (fn [_props]
-      (let [colors (theme/use-theme-colors)
-            running @(rf/subscribe [:commands/running])
+      [:f>
+       (fn []
+         (let [colors (theme/use-theme-colors)
+               running @(rf/subscribe [:commands/running])
             ;; Sort by start time (most recent first)
             sorted-commands (->> running
                                  (sort-by (fn [[_ cmd]]
@@ -272,4 +274,4 @@
                                   (.navigate navigation "CommandExecution"
                                              #js {:workingDirectory working-directory
                                                   :commandSessionId sid})))}])))
-              :content-container-style {:padding-vertical 8}}]])]))))
+              :content-container-style {:padding-vertical 8}}]])]))])))

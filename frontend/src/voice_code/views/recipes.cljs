@@ -282,8 +282,10 @@
         load-error (r/atom nil)]
     ;; Form-2: Return a render function that reads subscriptions
     (fn [^js _props]
-      (let [colors (theme/use-theme-colors)
-            available-recipes @(rf/subscribe [:recipes/available])
+      [:f>
+       (fn []
+         (let [colors (theme/use-theme-colors)
+               available-recipes @(rf/subscribe [:recipes/available])
             active-recipes @(rf/subscribe [:recipes/active])
             active-for-session (get active-recipes session-id)
             active-recipe-id (:recipe-id active-for-session)
@@ -486,5 +488,5 @@
                                                :recipe-id (:id recipe)
                                                :working-directory working-directory
                                                :is-new-session @use-new-session?}])))
-                  :on-stop #(rf/dispatch [:recipes/exit session-id])}])]))]))))
+                  :on-stop #(rf/dispatch [:recipes/exit session-id])}])]))]))])))
 

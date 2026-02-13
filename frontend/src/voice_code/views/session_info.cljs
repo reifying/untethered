@@ -122,7 +122,7 @@
   "Session information section."
   [{:keys [session git-branch git-loading? on-copy colors]}]
   (let [{:keys [id backend-name custom-name working-directory]} session
-        display-name (or custom-name backend-name (str "Session " (subs id 0 8)))]
+        display-name (or custom-name backend-name (str "Session " (subs (str id) 0 8)))]
     [:> rn/View
      [section-header "Session Information" colors]
      [info-row {:label "Name"
@@ -334,8 +334,10 @@
 
       :reagent-render
       (fn []
-        (let [colors (theme/use-theme-colors)
-              session @(rf/subscribe [:sessions/by-id session-id])
+        [:f>
+         (fn []
+           (let [colors (theme/use-theme-colors)
+                 session @(rf/subscribe [:sessions/by-id session-id])
               settings @(rf/subscribe [:settings/all])
               active-recipe @(rf/subscribe [:recipes/active-for-session session-id])
               working-directory (:working-directory session)
@@ -352,7 +354,7 @@
               ;; which fetches all messages from CoreData for export.
               handle-export (fn []
                               (let [{:keys [id backend-name custom-name working-directory]} session
-                                    display-name (or custom-name backend-name (str "Session " (subs id 0 8)))
+                                    display-name (or custom-name backend-name (str "Session " (subs (str id) 0 8)))
                                     ;; Build header first, then load all messages async
                                     header (str "# " display-name "\n"
                                                 "Session ID: " id "\n"
@@ -449,4 +451,4 @@
                                  :on-infer-name handle-infer-name
                                  :colors colors}]
                [danger-zone-section {:on-delete handle-delete
-                                     :colors colors}]])]]))})))
+                                     :colors colors}]])]]))])})))

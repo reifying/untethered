@@ -172,8 +172,10 @@
   [{:keys [on-close]}]
   ;; Form-2: Return a render function that reads subscriptions and uses hooks
   (fn [{:keys [on-close]}]
-    (let [colors (theme/use-theme-colors)
-          voices @(rf/subscribe [:voice/available-voices])
+    [:f>
+     (fn []
+       (let [colors (theme/use-theme-colors)
+             voices @(rf/subscribe [:voice/available-voices])
           loading? @(rf/subscribe [:voice/loading-voices?])
           current-voice @(rf/subscribe [:settings/voice-identifier])
           previewing-voice @(rf/subscribe [:voice/previewing-voice])
@@ -231,7 +233,7 @@
                          :selected? (= (:id v) current-voice)
                          :previewing? (= (:id v) previewing-voice)
                          :on-select handle-select
-                         :colors colors}])])])))
+                         :colors colors}])])]))]))
 
 (defn voice-picker-modal
   "Modal for selecting a TTS voice.

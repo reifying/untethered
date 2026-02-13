@@ -202,9 +202,11 @@
         command-session-id (when route (some-> route .-params .-commandSessionId))
         shell-command (when route (some-> route .-params .-shellCommand))]
     (fn [_props]
-      (let [colors (theme/use-theme-colors)
-            ;; Try to get from running commands first, then from output detail
-            running @(rf/subscribe [:commands/running])
+      [:f>
+       (fn []
+         (let [colors (theme/use-theme-colors)
+               ;; Try to get from running commands first, then from output detail
+               running @(rf/subscribe [:commands/running])
             running-cmd (get running command-session-id)
             output-detail @(rf/subscribe [:commands/output-detail])
 
@@ -245,4 +247,4 @@
                                           :duration-ms duration-ms
                                           :timestamp timestamp
                                           :output output}
-                             :colors colors}])]]))))
+                             :colors colors}])]]))])))

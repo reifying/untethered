@@ -211,20 +211,22 @@
         set-auto-scroll! (fn [v] (reset! auto-scroll? v))]
     ;; Form-2: Return a render function that reads subscriptions
     (fn [^js _props]
-      (let [colors (theme/use-theme-colors)
-            running @(rf/subscribe [:commands/running])
-            ;; Get the most recent running command
-            [session-id cmd] (first running)]
-        [:> rn/SafeAreaView {:style {:flex 1 :background-color (:background colors)}}
-         (if cmd
-           [:> rn/View {:style {:flex 1}}
-            [command-header cmd colors]
-            (when-not (:exit-code cmd)
-              [running-indicator colors])
-            [auto-scroll-toggle {:enabled? @auto-scroll?
-                                 :on-toggle #(swap! auto-scroll? not)
-                                 :colors colors}]
-            [output-view {:output-lines (:output-lines cmd)
-                          :auto-scroll-state [auto-scroll? set-auto-scroll!]
-                          :colors colors}]]
-           [empty-state colors])]))))
+      [:f>
+       (fn []
+         (let [colors (theme/use-theme-colors)
+               running @(rf/subscribe [:commands/running])
+               ;; Get the most recent running command
+               [session-id cmd] (first running)]
+           [:> rn/SafeAreaView {:style {:flex 1 :background-color (:background colors)}}
+            (if cmd
+              [:> rn/View {:style {:flex 1}}
+               [command-header cmd colors]
+               (when-not (:exit-code cmd)
+                 [running-indicator colors])
+               [auto-scroll-toggle {:enabled? @auto-scroll?
+                                    :on-toggle #(swap! auto-scroll? not)
+                                    :colors colors}]
+               [output-view {:output-lines (:output-lines cmd)
+                             :auto-scroll-state [auto-scroll? set-auto-scroll!]
+                             :colors colors}]]
+              [empty-state colors])]))])))
