@@ -2,9 +2,16 @@
 
 This is January 2026 or later
 
-## Clojure MCP Setup (Required First Step)
+## Clojure MCP Setup (MANDATORY — Do Not Skip)
 
-Before working on Clojure backend code, verify MCP tools are available. If not:
+**DO NOT edit any Clojure (.clj) or ClojureScript (.cljs) files until the clojure-mcp tools are confirmed working.** This is a hard requirement, not a suggestion. Without a working REPL connection, you cannot evaluate code, run tests properly, or verify your changes. Editing Clojure/ClojureScript blind leads to broken code that wastes everyone's time.
+
+**Before touching ANY .clj or .cljs file:**
+1. Verify MCP tools are available (try calling a clojure-mcp tool)
+2. If tools are not available, set them up using the steps below
+3. If setup fails, STOP and ask the user for help — do not proceed with edits
+
+If MCP tools are not available, set them up:
 
 **1. Start nREPL:**
 ```bash
