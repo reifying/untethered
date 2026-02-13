@@ -70,9 +70,12 @@
   (swap! rename-modal-state assoc :visible? false))
 
 (defn- rename-modal-input-change!
-  "Update the input value in rename modal."
+  "Update the input value in rename modal.
+   Calls r/flush to force synchronous re-render, preventing controlled
+   TextInput from fighting with native input state during fast typing."
   [text]
-  (swap! rename-modal-state assoc :input-value text))
+  (swap! rename-modal-state assoc :input-value text)
+  (r/flush))
 
 (defn- rename-session-modal
   "Modal for renaming a session with validation.
@@ -856,7 +859,7 @@
            :multiline true
            :value (or draft "")
            :editable (not locked?)
-           :on-change-text #(rf/dispatch [:ui/set-draft session-id %])}]
+           :on-change-text #(rf/dispatch-sync [:ui/set-draft session-id %])}]
 
          ;; Send button
          [:> rn/TouchableOpacity

@@ -103,40 +103,40 @@
 
 (defn- text-input-row
   "Setting row with editable text input.
-   Note: Wrapped in [:f>] to enable React hooks for theme colors."
-  [{:keys [label value placeholder on-change keyboard-type multiline]}]
-  [:f>
-   (fn []
-     (let [colors (theme/use-theme-colors)]
-       [:> rn/View {:style {:flex-direction (if multiline "column" "row")
-                            :align-items (if multiline "stretch" "center")
-                            :justify-content "space-between"
-                            :padding-horizontal 16
-                            :padding-vertical 10
-                            :background-color (:card-background colors)
-                            :border-bottom-width 1
-                            :border-bottom-color (:separator colors)}}
-        [:> rn/Text {:style {:font-size 16
-                             :color (:text-primary colors)
-                             :flex (if multiline 0 1)
-                             :margin-bottom (if multiline 8 0)}}
-         label]
-        [:> rn/TextInput
-         {:style {:font-size 16
-                  :color (:text-primary colors)
-                  :text-align (if multiline "left" "right")
-                  :min-width (if multiline nil 120)
-                  :padding-vertical 4
-                  :min-height (if multiline 80 nil)
-                  :text-align-vertical (if multiline "top" "center")}
-          :value (str value)
-          :placeholder placeholder
-          :placeholder-text-color (:text-placeholder colors)
-          :on-change-text on-change
-          :keyboard-type (or keyboard-type "default")
-          :auto-capitalize "none"
-          :auto-correct false
-          :multiline multiline}]]))])
+   Accepts colors as a prop from the parent (which obtains them via [:f>] hook).
+   Must NOT use [:f>] internally — doing so creates a new anonymous function on
+   each parent re-render, causing React to unmount/remount the TextInput and
+   making the input unusable (cursor resets, characters lost)."
+  [{:keys [label value placeholder on-change keyboard-type multiline colors]}]
+  [:> rn/View {:style {:flex-direction (if multiline "column" "row")
+                       :align-items (if multiline "stretch" "center")
+                       :justify-content "space-between"
+                       :padding-horizontal 16
+                       :padding-vertical 10
+                       :background-color (:card-background colors)
+                       :border-bottom-width 1
+                       :border-bottom-color (:separator colors)}}
+   [:> rn/Text {:style {:font-size 16
+                        :color (:text-primary colors)
+                        :flex (if multiline 0 1)
+                        :margin-bottom (if multiline 8 0)}}
+    label]
+   [:> rn/TextInput
+    {:style {:font-size 16
+             :color (:text-primary colors)
+             :text-align (if multiline "left" "right")
+             :min-width (if multiline nil 120)
+             :padding-vertical 4
+             :min-height (if multiline 80 nil)
+             :text-align-vertical (if multiline "top" "center")}
+     :value (str value)
+     :placeholder placeholder
+     :placeholder-text-color (:text-placeholder colors)
+     :on-change-text on-change
+     :keyboard-type (or keyboard-type "default")
+     :auto-capitalize "none"
+     :auto-correct false
+     :multiline multiline}]])
 
 (defn- toggle-row
   "Setting row with toggle switch. Includes haptic selection feedback on toggle.
@@ -406,7 +406,7 @@
                :value current-input
                :placeholder "Paste API key (untethered-...)"
                :placeholder-text-color (:text-placeholder colors)
-               :on-change-text #(reset! api-key-input %)
+               :on-change-text (fn [text] (reset! api-key-input text) (r/flush))
                :auto-capitalize "none"
                :auto-correct false
                :secure-text-entry false}]
@@ -453,12 +453,18 @@
         [text-input-row {:label "Server Address"
                          :value (:server-url settings)
                          :placeholder "192.168.1.100"
-                         :on-change #(rf/dispatch [:settings/save :server-url %])}]
+                         :on-change (fn [text]
+                                      (rf/dispatch-sync [:settings/save :server-url text])
+                                      (r/flush))
+                         :colors colors}]
         [text-input-row {:label "Port"
                          :value (:server-port settings)
                          :placeholder "8080"
                          :keyboard-type "number-pad"
-                         :on-change #(rf/dispatch [:settings/save :server-port (js/parseInt %)])}]
+                         :on-change (fn [text]
+                                      (rf/dispatch-sync [:settings/save :server-port (js/parseInt text)])
+                                      (r/flush))
+                         :colors colors}]
         [:> rn/View {:style {:padding-horizontal 16
                              :padding-vertical 8
                              :background-color (:card-background colors)
@@ -636,7 +642,10 @@
         [text-input-row {:label "Storage Location"
                          :value (:resource-storage-location settings)
                          :placeholder "~/Downloads"
-                         :on-change #(rf/dispatch [:settings/save :resource-storage-location %])}]
+                         :on-change (fn [text]
+                                      (rf/dispatch-sync [:settings/save :resource-storage-location text])
+                                      (r/flush))
+                         :colors colors}]
         [:> rn/View {:style {:padding-horizontal 16
                              :padding-bottom 8
                              :background-color (:card-background colors)
@@ -674,7 +683,10 @@
                          :value (:system-prompt settings)
                          :placeholder "Optional instructions to append..."
                          :multiline true
-                         :on-change #(rf/dispatch [:settings/save :system-prompt %])}]
+                         :on-change (fn [text]
+                                      (rf/dispatch-sync [:settings/save :system-prompt text])
+                                      (r/flush))
+                         :colors colors}]
         [:> rn/View {:style {:padding-horizontal 16
                              :padding-bottom 8
                              :background-color (:card-background colors)

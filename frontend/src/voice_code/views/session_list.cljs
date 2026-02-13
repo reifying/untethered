@@ -358,7 +358,7 @@
                :placeholder "Session Name (optional)"
                :placeholder-text-color (:text-tertiary colors)
                :value @session-name-atom
-               :on-change-text #(reset! session-name-atom %)}]
+               :on-change-text (fn [text] (reset! session-name-atom text) (r/flush))}]
              [:> rn/View {:style {:height 1
                                   :background-color (:separator colors)
                                   :margin-left 16}}]

@@ -68,7 +68,7 @@
            :placeholder "untethered-..."
            :placeholder-text-color (:text-tertiary colors)
            :value @api-key
-           :on-change-text #(reset! api-key %)
+           :on-change-text (fn [text] (reset! api-key text) (r/flush))
            :on-blur #(reset! touched? true)
            :editable (not connecting?)
            :auto-capitalize "none"
@@ -131,7 +131,7 @@
           :placeholder "Server URL"
           :placeholder-text-color (:text-tertiary colors)
           :value @server-url
-          :on-change-text #(reset! server-url %)
+          :on-change-text (fn [text] (reset! server-url text) (r/flush))
           :on-blur #(rf/dispatch [:settings/save :server-url @server-url])
           :auto-capitalize "none"
           :auto-correct false}]
@@ -148,7 +148,7 @@
           :placeholder "Port"
           :placeholder-text-color (:text-tertiary colors)
           :value @server-port
-          :on-change-text #(reset! server-port %)
+          :on-change-text (fn [text] (reset! server-port text) (r/flush))
           :on-blur #(rf/dispatch [:settings/save :server-port (js/parseInt @server-port)])
           :keyboard-type "number-pad"}]]])))
 

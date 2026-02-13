@@ -149,14 +149,14 @@
             {:label "Session Name"
              :placeholder "Enter session name"
              :value name-value
-             :on-change-text #(reset! session-name %)
+             :on-change-text (fn [text] (reset! session-name text) (r/flush))
              :colors colors}]
 
            [text-input-field
             {:label (if worktree? "Parent Repository Path" "Working Directory (Optional)")
              :placeholder (if worktree? "Path to git repository" "Path to project directory")
              :value dir-value
-             :on-change-text #(reset! working-directory %)
+             :on-change-text (fn [text] (reset! working-directory text) (r/flush))
              :colors colors}]]
 
           ;; Examples Section
