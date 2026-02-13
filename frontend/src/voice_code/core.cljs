@@ -10,6 +10,7 @@
             [voice-code.websocket]
             [voice-code.document-picker] ; Register document picker effect
             [voice-code.log-manager :as log-manager]
+            [voice-code.logger :as log]
             [voice-code.views.core :refer [app-root]]
             [voice-code.views.error-overlay :refer [with-error-overlay]]))
 
@@ -32,9 +33,9 @@
                             :stack (or (.-stack error) "No stack trace available")
                             :is-fatal is-fatal}])
              (catch :default e
-               (js/console.warn "Could not dispatch error to re-frame:" e)))
+               (log/warn "Could not dispatch error to re-frame:" e)))
            ;; Still log to console for Metro output
-           (js/console.error error)))))))
+           (log/error error)))))))
 
 (defn- app-root-with-overlay
   "App root wrapped with dev error overlay."
@@ -48,7 +49,7 @@
   (log-manager/install-console-capture!)
   ;; Install dev error handler for copy-to-clipboard support
   (install-dev-error-handler!)
-  (js/console.log "voice-code init")
+  (log/info "voice-code init")
   (rf/dispatch-sync [:initialize-db])
   ;; Load persisted settings, API key, and drafts
   (rf/dispatch [:app/initialize])

@@ -1,7 +1,7 @@
 (ns voice-code.events.websocket
   "re-frame event handlers for WebSocket messages.
    Implements all message types from STANDARDS.md protocol.
-   
+
    Uses debouncing for high-frequency updates (locked-sessions, command output)
    to prevent UI thrashing. Matches iOS VoiceCodeClient.swift behavior."
   (:require [clojure.string :as str]
@@ -11,7 +11,8 @@
             [voice-code.json :as json]
             [voice-code.utils :as utils]
             [voice-code.notifications :as notifications]
-            [voice-code.debounce :as debounce]))
+            [voice-code.debounce :as debounce]
+            [voice-code.logger :as log]))
 
 ;; ============================================================================
 ;; Constants
@@ -159,7 +160,7 @@
      "pong" nil
 
      ;; Unknown - log warning
-     (js/console.warn "Unknown message type:" type))))
+     (log/warn "Unknown message type:" type))))
 
 ;; ============================================================================
 ;; Hello/Connect Flow
@@ -554,9 +555,9 @@
  (fn [db [_ {:keys [session-id worktree-path branch-name]}]]
    ;; Log worktree creation - session will arrive via session_created
    ;; when backend filesystem watcher detects the new session
-   (js/console.log "✨ Worktree session created:" session-id)
-   (js/console.log "   Path:" worktree-path)
-   (js/console.log "   Branch:" branch-name)
+   (log/debug "✨ Worktree session created:" session-id)
+   (log/debug "   Path:" worktree-path)
+   (log/debug "   Branch:" branch-name)
    ;; Store worktree info in case we need it before session_created arrives
    (assoc-in db [:worktrees session-id]
              {:session-id session-id
@@ -567,7 +568,7 @@
 (rf/reg-event-db
  :worktree/handle-error
  (fn [db [_ {:keys [error]}]]
-   (js/console.error "❌ Worktree session error:" error)
+   (log/error "❌ Worktree session error:" error)
    (assoc-in db [:ui :current-error] error)))
 
 (rf/reg-event-fx
@@ -711,13 +712,13 @@
        ;; Edge case: command not found in running (e.g., duplicate complete message)
        ;; Just log and return db unchanged to avoid corrupting history
        (do
-         (js/console.warn "Command complete received for unknown session:" command-session-id)
+         (log/warn "Command complete received for unknown session:" command-session-id)
          db)))))
 
 (rf/reg-event-db
  :commands/handle-error
  (fn [db [_ {:keys [command-id error]}]]
-   (js/console.error "❌ Command error:" command-id error)
+   (log/error "❌ Command error:" command-id error)
    (assoc-in db [:ui :current-error] (str "Command failed: " error))))
 
 (rf/reg-event-db
@@ -987,7 +988,7 @@
 (rf/reg-event-db
  :resources/upload-error
  (fn [db [_ error]]
-   (js/console.error "Upload error:" error)
+   (log/error "Upload error:" error)
    (-> db
        (assoc-in [:resources :uploading?] false)
        (assoc-in [:resources :uploading-filename] nil)
@@ -1097,6 +1098,6 @@
    ;; Only clear if still loading (may have already received history)
    (if (contains? (:loading-sessions db) session-id)
      (do
-       (js/console.log "⏱️ Loading indicator hidden (5s timeout fallback) for session:" session-id)
+       (log/debug "⏱️ Loading indicator hidden (5s timeout fallback) for session:" session-id)
        (update db :loading-sessions disj session-id))
      db)))

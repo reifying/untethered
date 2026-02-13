@@ -2,7 +2,8 @@
   "WebSocket client for voice-code backend communication.
    Implements the full protocol from STANDARDS.md."
   (:require [re-frame.core :as rf]
-            [voice-code.json :as json]))
+            [voice-code.json :as json]
+            [voice-code.logger :as log]))
 
 (def ^:private ping-interval-ms 30000)
 (def ^:private max-reconnect-attempts 20)
@@ -23,7 +24,7 @@
     (try
       (js/require "react-native")
       (catch :default e
-        (js/console.warn "react-native module not available:" e)
+        (log/warn "react-native module not available:" e)
         nil))))
 
 (defn- get-app-state
@@ -125,7 +126,7 @@
 
       (reset! ws-atom ws))
     (catch :default e
-      (js/console.error "WebSocket creation failed:" e)
+      (log/error "WebSocket creation failed:" e)
       (rf/dispatch [:ws/error e]))))
 
 ;; ============================================================================
@@ -189,7 +190,7 @@
       ;; App became active (foreground) - check if we need to reconnect
       (and (not= prev-state "active") (= next-state "active"))
       (do
-        (js/console.log "📱 [WebSocket] App became active")
+        (log/debug "📱 [WebSocket] App became active")
         (rf/dispatch [:ws/app-became-active]))
 
       ;; App entered background - stop ping timer to save resources
@@ -197,7 +198,7 @@
       ;; This also ensures timers are cleaned up if app is terminated while backgrounded
       (and (= prev-state "active") (not= next-state "active"))
       (do
-        (js/console.log "📱 [WebSocket] App entering background - stopping ping timer")
+        (log/debug "📱 [WebSocket] App entering background - stopping ping timer")
         (stop-ping-timer!)))))
 
 (defn setup-app-state-listener!
@@ -208,7 +209,7 @@
     (when-not @app-state-subscription
       (reset! app-state-subscription
               (.addEventListener app-state "change" handle-app-state-change!))
-      (js/console.log "📱 [WebSocket] App state listener initialized"))))
+      (log/debug "📱 [WebSocket] App state listener initialized"))))
 
 (defn remove-app-state-listener!
   "Remove AppState change listener. Call on cleanup."
@@ -216,7 +217,7 @@
   (when-let [subscription @app-state-subscription]
     (.remove subscription)
     (reset! app-state-subscription nil)
-    (js/console.log "📱 [WebSocket] App state listener removed")))
+    (log/debug "📱 [WebSocket] App state listener removed")))
 
 ;; Effect handler to set up lifecycle listener
 (rf/reg-fx
@@ -234,7 +235,7 @@
    (when @reconnect-timer
      (js/clearTimeout @reconnect-timer)
      (reset! reconnect-timer nil))
-   (js/console.log "📱 [WebSocket] Cleaned up all listeners and timers")))
+   (log/debug "📱 [WebSocket] Cleaned up all listeners and timers")))
 
 ;; Event handler for when app becomes active
 (rf/reg-event-fx
@@ -249,13 +250,13 @@
        ;; Don't reconnect if reauthentication is required
        requires-reauth?
        (do
-         (js/console.log "📱 [WebSocket] Skipping reconnection - reauthentication required")
+         (log/debug "📱 [WebSocket] Skipping reconnection - reauthentication required")
          {})
 
        ;; Reconnect if disconnected
        (= status :disconnected)
        (do
-         (js/console.log "📱 [WebSocket] Attempting reconnection after foreground...")
+         (log/debug "📱 [WebSocket] Attempting reconnection after foreground...")
          ;; Reset reconnect attempts on foreground (iOS behavior)
          {:db (assoc-in db [:connection :reconnect-attempts] 0)
           :ws/connect {:server-url server-url :server-port server-port}})
@@ -264,7 +265,7 @@
        ;; (it was stopped when entering background to save resources)
        (and (= status :connected) authenticated?)
        (do
-         (js/console.log "📱 [WebSocket] Restarting ping timer after foreground")
+         (log/debug "📱 [WebSocket] Restarting ping timer after foreground")
          {:ws/start-ping-timer nil})
 
        ;; Other states (connecting, etc) - no action needed
