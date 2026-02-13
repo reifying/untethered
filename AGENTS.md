@@ -41,6 +41,18 @@ The frontend requires shadow-cljs watch running:
 cd frontend && JAVA_HOME=/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home npx shadow-cljs watch app &
 ```
 
+### Troubleshooting: UnsupportedClassVersionError
+
+If MCP tools fail with `UnsupportedClassVersionError` (class file version 61.0 vs 52.0), the `clojure` CLI is using the wrong Java version. SDKMAN puts Java 8 first in PATH, overriding `JAVA_HOME`.
+
+**Fix:** Ensure `JAVA_CMD` is set in the MCP server env config in `~/.claude.json`:
+```json
+"env": {
+  "JAVA_CMD": "/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java"
+}
+```
+The Clojure CLI checks `JAVA_CMD` before PATH lookup (line 177 of the clojure script).
+
 ### ClojureScript REPL: "No available JS runtime"
 
 If `clojurescript_eval` returns "No available JS runtime", this means shadow-cljs has no connected JavaScript runtime. The ClojureScript REPL requires a running React Native app because it evaluates code in the actual JavaScript runtime (not a separate Node.js process).
