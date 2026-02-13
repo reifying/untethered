@@ -154,13 +154,16 @@
 ;; Event Handlers - State Updates
 ;; ============================================================================
 
-(rf/reg-event-db
+(rf/reg-event-fx
  :voice/transcription-received
- (fn [db [_ text]]
+ (fn [{:keys [db]} [_ text]]
    (let [session-id (:active-session-id db)]
      (if session-id
-       (assoc-in db [:ui :drafts session-id] text)
-       db))))
+       {:db (assoc-in db [:ui :drafts session-id] text)
+        :dispatch [:prompt/send-from-draft session-id]}
+       (do
+         (js/console.warn "Voice transcription received but no active session, discarding:" text)
+         {})))))
 
 (rf/reg-event-db
  :voice/partial-result
