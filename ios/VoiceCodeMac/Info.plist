@@ -22,6 +22,8 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Untethered uses Bluetooth to communicate with your iPhone when Wi-Fi is unavailable.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Untethered needs to connect to your backend server on your local network.</string>
 	<key>NSMicrophoneUsageDescription</key>

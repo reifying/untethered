@@ -24,6 +24,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Untethered uses Bluetooth to communicate with your Mac when Wi-Fi is unavailable.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Untethered needs camera access to scan QR codes for API key authentication.</string>
 	<key>NSLocalNetworkUsageDescription</key>
@@ -42,6 +44,7 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>bluetooth-peripheral</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict>

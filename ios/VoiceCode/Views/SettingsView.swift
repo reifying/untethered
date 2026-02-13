@@ -220,6 +220,12 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
             }
+
+            Section(header: Text("Experimental")) {
+                NavigationLink("BLE Spike") {
+                    BLESpikeView()
+                }
+            }
         }
         #if os(macOS)
         .formStyle(.grouped)

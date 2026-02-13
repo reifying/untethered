@@ -45,12 +45,14 @@ targets:
         CFBundleDisplayName: Untethered
         CFBundleIconName: AppIcon
         NSCameraUsageDescription: Untethered needs camera access to scan QR codes for API key authentication.
+        NSBluetoothAlwaysUsageDescription: Untethered uses Bluetooth to communicate with your Mac when Wi-Fi is unavailable.
         NSMicrophoneUsageDescription: Untethered needs microphone access for voice input to control Claude.
         NSSpeechRecognitionUsageDescription: Untethered needs speech recognition to transcribe your voice commands.
         NSLocalNetworkUsageDescription: Untethered needs to connect to your backend server on your local network to send voice commands and receive Claude Code responses.
         NSPrivacyPolicyURL: https://raw.githubusercontent.com/reifying/untethered/main/docs/privacy-policy.md
         UIBackgroundModes:
           - audio
+          - bluetooth-peripheral
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
         UISupportedInterfaceOrientations:
@@ -148,6 +150,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleDisplayName: Untethered
         CFBundleIconName: AppIcon
+        NSBluetoothAlwaysUsageDescription: Untethered uses Bluetooth to communicate with your iPhone when Wi-Fi is unavailable.
         NSMicrophoneUsageDescription: Untethered needs microphone access for voice input to control Claude.
         NSSpeechRecognitionUsageDescription: Untethered needs speech recognition to transcribe your voice commands.
         NSLocalNetworkUsageDescription: Untethered needs to connect to your backend server on your local network.
@@ -157,6 +160,7 @@ targets:
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
         com.apple.security.device.audio-input: true
+        com.apple.security.device.bluetooth: true
         com.apple.security.files.user-selected.read-write: true
     settings:
       base:
