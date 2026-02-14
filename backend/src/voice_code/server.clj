@@ -1056,6 +1056,14 @@
           ;; Authentication succeeded, proceed with connect logic
           (log/info "Client connected and authenticated")
 
+          ;; Send connected confirmation per STANDARDS.md protocol
+          (let [session-id (:session-id data)]
+            (http/send! channel
+                        (generate-json
+                         {:type :connected
+                          :message "Session registered"
+                          :session-id session-id})))
+
           ;; Register client with initial state (merge to preserve :authenticated flag)
           (let [limit (or (:recent-sessions-limit data) 5)]
             (swap! connected-clients update channel merge

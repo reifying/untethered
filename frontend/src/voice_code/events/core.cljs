@@ -4,6 +4,7 @@
             [re-frame.core :as rf]
             [voice-code.db :as db]
             [voice-code.voice :as voice]
+            [voice-code.logger :as log]
             [voice-code.notifications :as notifications]))
 
 ;; ============================================================================
@@ -18,6 +19,7 @@
 (rf/reg-event-fx
  :app/initialize
  (fn [{:keys [db]} _]
+   (log/warn "[App] Initializing app")
    {:db (merge db/default-db db)
     ;; Initialize SQLite database first - loading happens after db-initialized
     :persistence/init-db nil

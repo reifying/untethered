@@ -64,6 +64,7 @@
 (rf/reg-event-fx
  :ws/disconnected
  (fn [{:keys [db]} [_ {:keys [code reason]}]]
+   (log/warn "[WS] Disconnected, code:" code "reason:" reason)
    (let [attempts (get-in db [:connection :reconnect-attempts] 0)
          max-attempts 20
          ;; Only auto-reconnect if we've successfully connected at least once
@@ -100,6 +101,8 @@
 (rf/reg-event-fx
  :ws/message-received
  (fn [_ [_ {:keys [type] :as msg}]]
+   (when-not (= type "pong")
+     (log/warn "[WS] Received message type:" type))
    (case type
      ;; Connection lifecycle
      "hello" {:dispatch [:ws/handle-hello msg]}
@@ -169,6 +172,7 @@
 (rf/reg-event-fx
  :ws/handle-hello
  (fn [{:keys [db]} [_ {:keys [auth-version]}]]
+   (log/warn "[WS] Hello received, auth-version:" auth-version "- sending connect")
    {:db (assoc-in db [:connection :status] :authenticating)
     :dispatch [:ws/send-connect]}))
 
@@ -185,6 +189,7 @@
 (rf/reg-event-fx
  :ws/handle-connected
  (fn [{:keys [db]} [_ {:keys [session-id]}]]
+   (log/warn "[WS] Authenticated successfully, session-id:" session-id)
    {:db (-> db
             (assoc-in [:connection :status] :connected)
             (assoc-in [:connection :authenticated?] true)
@@ -209,6 +214,7 @@
 (rf/reg-event-db
  :ws/handle-auth-error
  (fn [db [_ {:keys [message]}]]
+   (log/warn "[WS] Auth error:" (or message "Authentication failed"))
    (-> db
        (assoc-in [:connection :status] :disconnected)
        (assoc-in [:connection :authenticated?] false)
@@ -352,6 +358,7 @@
    ;; Also clears refreshing state if a refresh was in progress
    ;; Cancel any pending refresh timeout
    ;; Note: Per STANDARDS.md, all session IDs must be lowercase
+   (log/warn "[WS] Session list received:" (count sessions) "sessions")
    {:db (-> (reduce (fn [db session]
                       (let [session-id (json/normalize-session-id (:session-id session))]
                         (assoc-in db [:sessions session-id]
@@ -374,6 +381,7 @@
  (fn [db [_ {:keys [sessions]}]]
    ;; Also clears refreshing state if a refresh was in progress
    ;; Note: Per STANDARDS.md, all session IDs must be lowercase
+   (log/warn "[WS] Recent sessions received:" (count sessions) "sessions")
    (-> (reduce (fn [db session]
                  (let [session-id (json/normalize-session-id (:session-id session))]
                    (assoc-in db [:sessions session-id]

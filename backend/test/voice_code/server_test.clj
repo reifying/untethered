@@ -277,18 +277,23 @@
           ;; Verify client registered
           (is (contains? @server/connected-clients :test-ch))
 
-          ;; Verify three messages sent: session_list, recent_sessions, available_commands
-          (is (= 3 (count @sent-messages)))
+          ;; Verify four messages sent: connected, session_list, recent_sessions, available_commands
+          (is (= 4 (count @sent-messages)))
 
-          ;; First message should be session_list
-          (let [msg1 (json/parse-string (first @sent-messages) true)]
+          ;; First message should be connected confirmation
+          (let [msg0 (json/parse-string (first @sent-messages) true)]
+            (is (= "connected" (:type msg0)))
+            (is (= "Session registered" (:message msg0))))
+
+          ;; Second message should be session_list
+          (let [msg1 (json/parse-string (second @sent-messages) true)]
             (is (= "session_list" (:type msg1)))
             (is (= 2 (count (:sessions msg1))))
             ;; Sessions are sorted by last-modified descending, so s2 comes first
             (is (= "s2" (:session_id (first (:sessions msg1))))))
 
-          ;; Second message should be recent_sessions with default limit of 5
-          (let [msg2 (json/parse-string (second @sent-messages) true)]
+          ;; Third message should be recent_sessions with default limit of 5
+          (let [msg2 (json/parse-string (nth @sent-messages 2) true)]
             (is (= "recent_sessions" (:type msg2)))
             (is (= 5 (:limit msg2))) ;; Default limit is 5
             (is (vector? (:sessions msg2)))))))

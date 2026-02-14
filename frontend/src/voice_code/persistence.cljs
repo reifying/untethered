@@ -640,8 +640,6 @@
 (rf/reg-event-fx
  :persistence/settings-loaded
  (fn [{:keys [db]} [_ settings]]
-   (js/console.log "Settings loaded, configuring voice with respect-silent-mode:"
-                   (get settings :respect-silent-mode true))
    ;; Configure voice with loaded settings (especially respect-silent-mode for TTS)
    ;; Also attempt auto-connect if we have an API key but aren't connected yet
    (let [api-key (:api-key db)
@@ -649,10 +647,13 @@
          server-port (or (get settings :server-port) (get-in db [:settings :server-port]))
          has-server-config? (and (seq server-url) server-port)
          status (get-in db [:connection :status])
-         already-connecting-or-connected? (#{:connecting :connected :authenticating} status)]
+         already-connecting-or-connected? (#{:connecting :connected :authenticating} status)
+         will-connect? (and api-key has-server-config? (not already-connecting-or-connected?))]
+     (js/console.warn "[App] Settings loaded, api-key?" (boolean api-key)
+                      "server:" server-url ":" server-port
+                      "status:" status "will-connect?" will-connect?)
      (cond-> {:voice/configure-silent-switch (get settings :respect-silent-mode true)}
-       ;; Auto-connect if we have api-key, server config, and not already connected/connecting
-       (and api-key has-server-config? (not already-connecting-or-connected?))
+       will-connect?
        (assoc :dispatch [:auth/connect api-key])))))
 
 (rf/reg-event-db
@@ -670,10 +671,13 @@
          server-port (get-in db [:settings :server-port])
          has-server-config? (and (seq server-url) server-port)
          status (get-in db [:connection :status])
-         already-connecting-or-connected? (#{:connecting :connected :authenticating} status)]
+         already-connecting-or-connected? (#{:connecting :connected :authenticating} status)
+         will-connect? (and has-server-config? (not already-connecting-or-connected?))]
+     (js/console.warn "[App] API key loaded, has-key?" (boolean api-key)
+                      "server:" server-url ":" server-port
+                      "status:" status "will-connect?" will-connect?)
      (cond-> {:db (assoc db :api-key api-key)}
-       ;; Auto-connect if we have server config and not already connected/connecting
-       (and has-server-config? (not already-connecting-or-connected?))
+       will-connect?
        (assoc :dispatch [:auth/connect api-key])))))
 
 (rf/reg-event-db

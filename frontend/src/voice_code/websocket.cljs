@@ -105,9 +105,11 @@
   (try
     (let [url (str "ws://" server-url ":" server-port "/ws")
           ws (js/WebSocket. url)]
+      (log/warn "[WS] Connecting to" url)
 
       (set! (.-onopen ws)
             (fn [_]
+              (log/warn "[WS] Connection opened")
               (rf/dispatch [:ws/connected])))
 
       (set! (.-onmessage ws)
@@ -117,6 +119,7 @@
 
       (set! (.-onclose ws)
             (fn [event]
+              (log/warn "[WS] Connection closed, code:" (.-code event) "reason:" (.-reason event))
               (rf/dispatch [:ws/disconnected {:code (.-code event)
                                               :reason (.-reason event)}])))
 
