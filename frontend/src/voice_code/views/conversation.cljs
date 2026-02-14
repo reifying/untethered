@@ -752,19 +752,20 @@
         [:> rn/Text {:style {:font-size 14 :color (:text-primary colors) :font-style "italic"}}
          partial-result]])
 
-     ;; Microphone button
+     ;; Microphone button — matches iOS ConversationVoiceInputView:
+     ;; 100x100 circle with tinted background (Color.blue/red/gray.opacity(0.1))
+     ;; NOT solid-filled. Icon at 40pt system font equivalent.
      [:> rn/View {:style {:align-items "center"}}
       [touchable
-       {:style (merge {:width 72
-                       :height 72
-                       :border-radius 36
-                       :background-color (cond
-                                           locked? (:disabled colors)
-                                           listening? (:destructive colors)
-                                           :else (:accent colors))
-                       :justify-content "center"
-                       :align-items "center"}
-                      (platform/shadow {:shadow-color (:shadow colors)}))
+       {:style {:width 100
+                :height 100
+                :border-radius 50
+                :background-color (cond
+                                    locked? (theme/opacity (:disabled colors) 0.1)
+                                    listening? (theme/opacity (:destructive colors) 0.1)
+                                    :else (theme/opacity (:accent colors) 0.1))
+                :justify-content "center"
+                :align-items "center"}
         :disabled locked?
         :on-press (fn []
                     (when voice-error
@@ -772,31 +773,28 @@
                     (if listening?
                       (rf/dispatch [:voice/stop-listening])
                       (rf/dispatch [:voice/start-listening])))}
-       [icons/icon {:name (if listening? :stop :mic)
-                    :size 32
-                    :color (:button-text-on-accent colors)}]]
+       [icons/icon {:name (if listening? :mic :mic)
+                    :size 40
+                    :color (cond
+                             locked? (:disabled colors)
+                             listening? (:destructive colors)
+                             :else (:accent colors))}]]
 
-      ;; Status text - tappable unlock when locked
+      ;; Status text — matches iOS: "Tap to Stop" / "Tap to Speak" / "Tap to Unlock"
+      ;; Uses .caption font equivalent. Tappable unlock when locked.
       (if locked?
         [touchable
-         {:style {:margin-top 8
-                  :padding-horizontal 12
-                  :padding-vertical 6
-                  :background-color (:warning-background colors)
-                  :border-radius 12
-                  :border-width 1
-                  :border-color (:warning colors)}
+         {:style {:margin-top 8}
           :on-press #(rf/dispatch [:sessions/unlock session-id])}
          [:> rn/Text {:style {:font-size 12
-                              :color (:warning colors)
-                              :font-weight "500"}}
+                              :color (:disabled colors)}}
           "Tap to Unlock"]]
         [:> rn/Text {:style {:font-size 12
-                             :color (if listening? (:destructive colors) (:text-secondary colors))
+                             :color (if listening? (:destructive colors) (:text-primary colors))
                              :margin-top 8}}
          (if listening?
-           "Listening... Tap to stop"
-           "Tap to speak")])]]))])
+           "Tap to Stop"
+           "Tap to Speak")])]]))])
 
 (defn- text-input-area
   "Text input with send button."
@@ -843,20 +841,25 @@
            :editable (not locked?)
            :on-change-text #(rf/dispatch-sync [:ui/set-draft session-id %])}]
 
-         ;; Send button
+         ;; Send button — matches iOS ConversationTextInputView:
+         ;; lock.fill (orange) when locked, arrow.up.circle.fill (blue/gray) otherwise
+         ;; 32pt icon, no solid background — just the icon as a button
          [touchable
           {:style {:position "absolute"
-                   :right 4
-                   :bottom 4
-                   :width 36
-                   :height 36
-                   :border-radius 18
-                   :background-color (if can-send? (:accent colors) (:disabled colors))
-                   :justify-content "center"
-                   :align-items "center"}
-           :disabled (not can-send?)
-           :on-press #(rf/dispatch [:prompt/send-from-draft session-id])}
-          [icons/icon {:name :send :size 18 :color (:button-text-on-accent colors)}]]]
+                   :right 6
+                   :bottom 6
+                   :padding 2}
+           :disabled (and (not locked?) (empty? draft))
+           :on-press (fn []
+                       (if locked?
+                         (rf/dispatch [:sessions/unlock session-id])
+                         (rf/dispatch [:prompt/send-from-draft session-id])))}
+          [icons/icon {:name (if locked? :lock :send)
+                       :size 28
+                       :color (cond
+                                locked? (:warning colors)
+                                (seq draft) (:accent colors)
+                                :else (:disabled colors))}]]]
 
         ;; Locked state hint - tappable unlock button
         (when locked?
