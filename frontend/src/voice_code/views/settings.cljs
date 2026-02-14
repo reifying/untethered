@@ -611,6 +611,7 @@
 
 (defn- queue-settings-section
   "Queue management settings.
+   Matches iOS SettingsView.swift separate Queue section (lines 122-128).
    Wrapped in [:f>] to enable React hooks for theme colors."
   []
   [:f>
@@ -621,12 +622,24 @@
         [toggle-row {:label "Enable Queue"
                      :value (:queue-enabled settings)
                      :on-change #(rf/dispatch [:settings/save :queue-enabled %])
-                     :description "Show threads in queue on the Projects view. Threads are added when you send a message and removed manually."}]
+                     :last? true
+                     :description "Show threads in queue on the Projects view. Threads are added when you send a message and removed manually."}]]))])
+
+(defn- priority-queue-settings-section
+  "Priority queue management settings.
+   Matches iOS SettingsView.swift separate Priority Queue section (lines 130-136).
+   Wrapped in [:f>] to enable React hooks for theme colors."
+  []
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           settings @(rf/subscribe [:settings/all])]
+       [section-card {:header "Priority Queue" :colors colors}
         [toggle-row {:label "Enable Priority Queue"
                      :value (:priority-queue-enabled settings)
                      :on-change #(rf/dispatch [:settings/save :priority-queue-enabled %])
                      :last? true
-                     :description "Track sessions in priority-based queue. Add sessions manually via toolbar button and adjust priorities to control sort order."}]]))])
+                     :description "Track sessions in priority-based queue. Add sessions manually via toolbar button and adjust priorities to control sort order. Lower numbers = higher priority."}]]))])
 
 (defn- resources-section
   "Resource storage configuration.
@@ -826,6 +839,7 @@
            [audio-playback-section]
            [recent-sessions-section]
            [queue-settings-section]
+           [priority-queue-settings-section]
            [resources-section]
            [message-size-section]
            [system-prompt-section]
