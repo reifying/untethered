@@ -52,6 +52,71 @@ See @STANDARDS.md for coding conventions.
 
 We conform to the test pyramid philosophy for testing.
 
-## Manual Verification
+## Cross-Platform Verification (MANDATORY)
 
-For changes involving native modules or platform-specific code, manually verify functionality on the simulator/emulator before committing. Use the ClojureScript REPL to test native integrations directly.
+This is a React Native app targeting **both iOS and Android**. Do not treat Android as an afterthought. Every UI change, new screen, or behavioral modification must be verified on both platforms before work is considered complete.
+
+**Core rule:** If you can't verify it on both platforms, say so explicitly — don't silently assume it works.
+
+### Verification Workflow
+
+1. **iOS Simulator** — `make rn-ios`, `make rn-screenshot`, `make rn-restart`
+2. **Android Emulator** — `make rn-android`, `make rn-android-screenshot`, `make rn-android-restart`
+3. **REPL testing** — `clojurescript_eval` works on whichever platform is running (it connects through the JS runtime, not the native layer)
+4. **E2E tests** — Maestro flows should target both platforms when platform-specific behavior is involved
+
+After any UI or layout change, take screenshots on both platforms and compare. Platform rendering differences are real and frequent.
+
+### Native Look and Feel
+
+Do not build a single "cross-platform" UI that looks identical on both platforms. Each platform has distinct conventions that users expect. Violating these makes the app feel foreign.
+
+**Navigation:**
+- iOS: Bottom tab bar for top-level navigation. Swipe-from-left-edge to go back.
+- Android: Top app bar with optional navigation drawer. Hardware/gesture back button. No swipe-from-edge expectation.
+
+**Typography:**
+- iOS: San Francisco font. Hierarchy through font weight variation more than size.
+- Android: Roboto font. Hierarchy through contrasting font sizes. Material Design type scale.
+
+**Buttons and Touch Feedback:**
+- iOS: Opacity fade on press (`TouchableOpacity` or `Pressable` with opacity).
+- Android: Ripple effect on press (`TouchableNativeFeedback` or `Pressable` with `android_ripple`). Never use opacity-fade as the sole touch feedback on Android.
+
+**Alerts and Dialogs:**
+- iOS: Centered modal with stacked or side-by-side buttons, divider lines, sentence case.
+- Android: Material dialog with right-aligned text buttons, ALL CAPS button labels.
+
+**Icons:**
+- iOS: SF Symbols style — thin strokes, line-based.
+- Android: Material Icons style — bolder, geometric, filled variants.
+
+**Shadows and Elevation:**
+- iOS: `shadowColor`, `shadowOffset`, `shadowOpacity`, `shadowRadius` on Views.
+- Android: `elevation` prop only. iOS shadow properties are ignored on Android.
+
+**Safe Areas:**
+- iOS: Notch, Dynamic Island, home indicator — use `SafeAreaView` or `useSafeAreaInsets`.
+- Android: Status bar, navigation bar (gesture or button), punch-hole cameras — handle separately with `StatusBar.currentHeight` and edge-to-edge considerations.
+
+**Switches and Controls:**
+- iOS: Rounded toggle switch (UISwitch style).
+- Android: Material Design switch with track and thumb.
+
+### Implementation Strategy
+
+Use `Platform.OS` or `Platform.select` for minor differences. For components with significant platform divergence, use platform-specific file extensions (`.ios.cljs` / `.android.cljs`) rather than littering components with conditionals.
+
+When in doubt about a platform convention, refer to:
+- [Apple Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines/)
+- [Material Design Guidelines](https://m3.material.io/)
+
+### What Requires Dual-Platform Screenshots
+
+- Any new screen or view
+- Layout changes (flexbox behaves subtly differently in edge cases)
+- Custom styling (shadows, borders, fonts)
+- Safe area adjustments
+- Keyboard handling (Android `windowSoftInputMode` vs iOS keyboard avoidance)
+- Permission dialogs (each platform has its own native dialog)
+- Status bar styling

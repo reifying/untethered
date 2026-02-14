@@ -490,6 +490,34 @@
      (fn [resolve _reject]
        (resolve @keychain-atom)))))
 
+(defn retrieve-api-key-with-retry!
+  "Retrieve API key with retry logic for post-install Keychain race condition.
+   iOS securityd may need time to re-validate entitlements after app binary
+   replacement (e.g., devicectl device install app). On first launch after
+   install, getGenericPassword can return false before validation completes.
+   Returns a promise resolving to the API key or nil after all retries exhausted."
+  ([] (retrieve-api-key-with-retry! 3 500))
+  ([retries-remaining delay-ms]
+   (-> (retrieve-api-key!)
+       (.then (fn [result]
+                (if result
+                  result
+                  (if (pos? retries-remaining)
+                    (do
+                      (js/console.warn "[Keychain] Got falsy result, retrying in" delay-ms "ms"
+                                       "(" retries-remaining "retries remaining)")
+                      (js/Promise.
+                       (fn [resolve _]
+                         (js/setTimeout
+                          #(-> (retrieve-api-key-with-retry!
+                                (dec retries-remaining)
+                                (min (* delay-ms 2) 3000))
+                               (.then resolve))
+                          delay-ms))))
+                    (do
+                      (js/console.warn "[Keychain] All retries exhausted, no API key found")
+                      nil))))))))
+
 (defn delete-api-key!
   "Delete API key from Keychain.
    Returns a promise."
@@ -593,9 +621,13 @@
 (rf/reg-fx
  :persistence/load-api-key
  (fn [_]
-   (-> (retrieve-api-key!)
-       (.then #(when %
-                 (rf/dispatch [:persistence/api-key-loaded %])))
+   (-> (retrieve-api-key-with-retry!)
+       (.then (fn [result]
+                (if result
+                  (rf/dispatch [:persistence/api-key-loaded result])
+                  (do
+                    (js/console.warn "[App] No API key found after retries")
+                    (rf/dispatch [:persistence/api-key-not-found])))))
        (.catch (fn [error]
                  (js/console.error "Failed to load API key:" error)
                  (rf/dispatch [:persistence/error {:operation :load-api-key
@@ -620,9 +652,12 @@
  (fn [{:keys [db]} _]
    (js/console.log "Database initialized, loading persisted data")
    ;; Now that db is initialized, load all persisted data
+   ;; Load sessions from SQLite so the UI has cached data to show immediately
+   ;; while the WebSocket connects (mirrors iOS CoreData cache behavior)
    {:db db
     :dispatch-n [[:persistence/load-settings]
                  [:persistence/load-api-key]
+                 [:persistence/load-sessions]
                  [:persistence/load-drafts]
                  [:persistence/load-command-mru]]}))
 
@@ -680,6 +715,15 @@
        will-connect?
        (assoc :dispatch [:auth/connect api-key])))))
 
+(rf/reg-event-fx
+ :persistence/api-key-not-found
+ (fn [{:keys [db]} _]
+   ;; API key not found after retries. This can happen after app install when
+   ;; iOS securityd hasn't finished re-validating entitlements for Keychain.
+   ;; Log explicitly so the failure path is visible (not a silent dead-end).
+   (js/console.warn "[App] API key not found - user must authenticate via Settings or QR scan")
+   {:db (assoc db :api-key nil)}))
+
 (rf/reg-event-db
  :persistence/api-key-deleted
  (fn [db _]
@@ -690,7 +734,8 @@
  (fn [_ [_ api-key]]
    {:persistence/store-api-key api-key}))
 
-;; Placeholder events referenced in events/core.cljs
+;; Event handlers that trigger persistence effects
+;; These bridge dispatch-n event dispatches to the corresponding effect handlers
 (rf/reg-event-fx
  :persistence/load-api-key
  (fn [_ _]
@@ -700,6 +745,11 @@
  :persistence/load-settings
  (fn [_ _]
    {:persistence/load-settings nil}))
+
+(rf/reg-event-fx
+ :persistence/load-sessions
+ (fn [_ _]
+   {:persistence/load-sessions nil}))
 
 (rf/reg-event-fx
  :persistence/save-setting

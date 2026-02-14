@@ -573,6 +573,32 @@
         (is @destroy-called "destroy() should be called first")
         (is @destroy-forcibly-called "destroyForcibly() should be called if still alive")))))
 
+;; Environment Sanitization Tests
+
+(deftest test-run-process-strips-claudecode
+  (testing "CLAUDECODE env var is not passed to child process"
+    (let [result (#'claude/run-process-with-file-redirection
+                  "/bin/sh" ["-c" "echo ${CLAUDECODE:-NOT_SET}"] nil nil nil nil)]
+      (is (zero? (:exit result)))
+      (is (= "NOT_SET" (clojure.string/trim (:out result)))
+          "CLAUDECODE should not be set in child process"))))
+
+(deftest test-run-process-passes-custom-env-vars
+  (testing "Custom env vars are passed to child process"
+    (let [result (#'claude/run-process-with-file-redirection
+                  "/bin/sh" ["-c" "echo $BEADS_DB"] nil nil nil {"BEADS_DB" "/test/path"})]
+      (is (zero? (:exit result)))
+      (is (= "/test/path" (clojure.string/trim (:out result)))
+          "BEADS_DB should be set in child process"))))
+
+(deftest test-run-process-preserves-path
+  (testing "PATH is preserved in child process"
+    (let [result (#'claude/run-process-with-file-redirection
+                  "/bin/sh" ["-c" "echo $PATH"] nil nil nil nil)]
+      (is (zero? (:exit result)))
+      (is (not (clojure.string/blank? (clojure.string/trim (:out result))))
+          "PATH should be preserved in child process"))))
+
 (deftest test-process-tracking-on-invocation
   (testing "Session ID is passed to process execution function"
     (let [tracked-sessions (atom [])]

@@ -18,7 +18,7 @@ WRAP := ./scripts/wrap-command
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 .PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
-.PHONY: rn-ios rn-android rn-build-ios rn-deploy-device rn-deploy-device-release rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-list-apps rn-boot-sim rn-screenshot rn-restart rn-reload manual-ralph
+.PHONY: rn-ios rn-android rn-build-ios rn-deploy-device rn-deploy-device-release rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-list-apps rn-boot-sim rn-screenshot rn-restart rn-reload manual-ralph rn-android-screenshot rn-android-restart rn-android-grant-permissions rn-android-list-emulators rn-android-boot-emulator
 .PHONY: rn-test rn-e2e rn-e2e-smoke rn-e2e-auth rn-e2e-nav
 
 # React Native Configuration
@@ -27,6 +27,7 @@ RN_IOS_DIR := $(RN_DIR)/ios
 RUBY := /opt/homebrew/opt/ruby/bin
 JAVA_HOME := /opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home
 RN_BUNDLE_ID := org.reactjs.native.example.VoiceCodeMobile
+RN_ANDROID_PACKAGE := com.voicecodemobile
 
 # Default target
 help:
@@ -118,9 +119,14 @@ help:
 	@echo "  rn-metro           - Start Metro bundler"
 	@echo "  rn-pod-install     - Install CocoaPods dependencies"
 	@echo "  rn-clean           - Clean React Native build artifacts"
-	@echo "  rn-screenshot      - Take screenshot of simulator"
+	@echo "  rn-screenshot      - Take screenshot of iOS simulator"
 	@echo "  rn-restart         - Restart the iOS app (terminate and relaunch)"
 	@echo "  rn-reload          - Trigger JS bundle reload"
+	@echo "  rn-android-screenshot   - Take screenshot of Android emulator"
+	@echo "  rn-android-restart      - Restart the Android app (force-stop and relaunch)"
+	@echo "  rn-android-grant-permissions - Grant common permissions on Android"
+	@echo "  rn-android-list-emulators    - List available Android emulators"
+	@echo "  rn-android-boot-emulator     - Boot first available Android emulator"
 	@echo "  rn-test            - Run ClojureScript unit tests"
 	@echo "  rn-e2e             - Run all Maestro E2E tests (requires app + backend)"
 	@echo "  rn-e2e-smoke       - Run smoke E2E tests (no backend required)"
@@ -576,6 +582,62 @@ rn-dismiss-alert:
 # Accept any system alert dialog on simulator (e.g., permission prompts)
 rn-accept-alert:
 	@xcrun simctl ui booted alert accept 2>/dev/null && echo "Alert accepted" || echo "No alert to accept"
+
+# ── Android Emulator Targets ──
+
+# Android SDK auto-detection
+ANDROID_HOME ?= $(HOME)/Library/Android/sdk
+ADB := $(ANDROID_HOME)/platform-tools/adb
+EMULATOR := $(ANDROID_HOME)/emulator/emulator
+
+# Guard: check adb is available before running Android targets
+check-android-sdk:
+	@if [ ! -x "$(ADB)" ]; then \
+		echo "Error: Android SDK not found. Install Android Studio or set ANDROID_HOME."; \
+		echo "  Expected adb at: $(ADB)"; \
+		echo "  ANDROID_HOME is: $(ANDROID_HOME)"; \
+		exit 1; \
+	fi
+
+# Take screenshot of running Android emulator
+rn-android-screenshot: check-android-sdk
+	@$(ADB) exec-out screencap -p > /tmp/android-screenshot.png
+	@echo "Screenshot saved to /tmp/android-screenshot.png"
+
+# Restart the React Native Android app (force-stop and relaunch)
+rn-android-restart: check-android-sdk
+	@$(ADB) shell am force-stop $(RN_ANDROID_PACKAGE) 2>/dev/null || true
+	@sleep 1
+	@$(ADB) shell monkey -p $(RN_ANDROID_PACKAGE) -c android.intent.category.LAUNCHER 1 2>/dev/null
+	@echo "App restarted"
+
+# Grant common permissions on Android emulator
+rn-android-grant-permissions: check-android-sdk
+	@echo "Granting common permissions on Android..."
+	@$(ADB) shell pm grant $(RN_ANDROID_PACKAGE) android.permission.RECORD_AUDIO || true
+	@echo "Permissions granted"
+
+# List available Android emulators
+rn-android-list-emulators:
+	@if [ ! -x "$(EMULATOR)" ]; then \
+		echo "Error: Android emulator not found. Install Android Studio or set ANDROID_HOME."; \
+		exit 1; \
+	fi
+	@$(EMULATOR) -list-avds
+
+# Boot first available Android emulator
+rn-android-boot-emulator:
+	@if [ ! -x "$(EMULATOR)" ]; then \
+		echo "Error: Android emulator not found. Install Android Studio or set ANDROID_HOME."; \
+		exit 1; \
+	fi
+	@AVD=$$($(EMULATOR) -list-avds 2>/dev/null | head -1); \
+	if [ -z "$$AVD" ]; then \
+		echo "No emulators found. Create one via Android Studio AVD Manager."; \
+		exit 1; \
+	fi; \
+	echo "Booting emulator: $$AVD"; \
+	$(EMULATOR) -avd "$$AVD" &
 
 # Run ClojureScript unit tests
 rn-test:

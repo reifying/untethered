@@ -107,11 +107,18 @@
          stdout-file (.toFile stdout-path)
          stderr-file (.toFile stderr-path)]
      (try
-       (let [process-opts (cond-> {:out (ProcessBuilder$Redirect/to stdout-file)
+       (let [;; Build clean environment: inherit parent env, remove CLAUDECODE
+             ;; (prevents "cannot launch inside another Claude Code session" error
+             ;; when backend was started from within Claude Code), then merge
+             ;; any additional env-vars (e.g. BEADS_DB for worktrees)
+             clean-env (cond-> (dissoc (into {} (System/getenv)) "CLAUDECODE")
+                         (seq env-vars) (merge env-vars))
+             process-opts (cond-> {:out (ProcessBuilder$Redirect/to stdout-file)
                                    :err (ProcessBuilder$Redirect/to stderr-file)
-                                   :in :pipe}
-                            working-dir (assoc :dir working-dir)
-                            (seq env-vars) (assoc :env env-vars))
+                                   :in :pipe
+                                   :clear-env true
+                                   :env clean-env}
+                            working-dir (assoc :dir working-dir))
              _ (log/info "Starting process with opts" {:process-opts (dissoc process-opts :out :err :in)})
              all-args (into [cli-path] args)
              process (apply proc/start process-opts all-args)
