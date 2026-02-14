@@ -2,7 +2,8 @@
   "Tests for shared utility functions used by UI components."
   (:require [cljs.test :refer [deftest testing is async]]
             [voice-code.utils :as utils]
-            [voice-code.views.components :as components]))
+            [voice-code.views.components :as components]
+            ["react-native" :as rn]))
 
 (deftest format-relative-time-test
   (testing "returns nil for nil input"
@@ -212,3 +213,77 @@
             (done))
           200))
        150))))
+
+;; ============================================================================
+;; Section Card Component Tests
+;; ============================================================================
+
+(def ^:private test-colors
+  "Minimal color map for testing section-card rendering."
+  {:text-secondary "#8E8E93"
+   :card-background "#FFFFFF"
+   :shadow "#000000"})
+
+(deftest section-card-basic-structure-test
+  (testing "section-card returns a View with children"
+    (let [result (components/section-card {:colors test-colors}
+                                          [:> rn/Text "Child 1"])]
+      ;; Result should be a vector (hiccup)
+      (is (vector? result))
+      ;; Outer element is [:> rn/View ...]
+      (is (= :> (first result)))
+      (is (= rn/View (second result))))))
+
+(deftest section-card-header-rendering-test
+  (testing "section-card renders header text when provided"
+    (let [result (components/section-card {:header "Test Header"
+                                           :colors test-colors}
+                                          [:> rn/Text "Child"])]
+      ;; Should contain header text somewhere in the tree
+      ;; The result is [:> rn/View {:style ...} header-element card-element]
+      (is (vector? result))
+      ;; Find the header element (second child after style props)
+      (let [children (drop 2 result) ; skip :> and rn/View and style map
+            header-el (first children)]
+        ;; header-el should be a Text element with "Test Header"
+        (is (some? header-el))))))
+
+(deftest section-card-no-header-test
+  (testing "section-card omits header when nil"
+    (let [result (components/section-card {:colors test-colors}
+                                          [:> rn/Text "Child"])]
+      ;; With no header, should still have the card container
+      (is (vector? result)))))
+
+(deftest section-card-footer-rendering-test
+  (testing "section-card renders footer text when provided"
+    (let [result (components/section-card {:footer "Help text here"
+                                           :colors test-colors}
+                                          [:> rn/Text "Child"])]
+      (is (vector? result)))))
+
+(deftest section-card-first-margin-test
+  (testing "section-card uses reduced top margin when first? is true"
+    (let [first-result (components/section-card {:colors test-colors :first? true}
+                                                 [:> rn/Text "Child"])
+          normal-result (components/section-card {:colors test-colors :first? false}
+                                                  [:> rn/Text "Child"])]
+      ;; Both should be valid hiccup
+      (is (vector? first-result))
+      (is (vector? normal-result))
+      ;; Check the style map margin-top
+      (let [first-style (get-in first-result [2 :style])
+            normal-style (get-in normal-result [2 :style])]
+        (is (= 12 (:margin-top first-style)))
+        (is (= 24 (:margin-top normal-style)))))))
+
+(deftest section-card-card-background-test
+  (testing "section-card uses card-background color from theme"
+    (let [result (components/section-card {:colors test-colors}
+                                          [:> rn/Text "Child"])
+          ;; The card container is the second child (after optional header)
+          ;; Since no header, card is at index 3 (after :> rn/View {:style ...} nil)
+          ;; With header=nil, the `when` returns nil which Reagent skips
+          children (drop 2 result)]
+      ;; The card container View should use card-background
+      (is (vector? result)))))

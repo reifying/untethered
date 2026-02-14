@@ -11,6 +11,7 @@
             [re-frame.core :as rf]
             ["react-native" :as rn]
             [voice-code.auth :refer [api-key-validation-status mask-api-key]]
+            [voice-code.views.components :refer [section-card]]
             [voice-code.views.voice-picker :refer [voice-picker-modal]]
             [voice-code.haptic :as haptic]
             [voice-code.icons :as icons]
@@ -61,40 +62,23 @@
                                  :flex 1}}
              message])])))])
 
-(defn- section-header
-  "Section header for settings groups.
-   Note: Wrapped in [:f>] to enable React hooks for theme colors."
-  [title]
-  [:f>
-   (fn []
-     (let [colors (theme/use-theme-colors)]
-       [:> rn/View {:style {:padding-horizontal 16
-                            :padding-top 24
-                            :padding-bottom 8}}
-        [:> rn/Text {:style {:font-size 13
-                             :font-weight "600"
-                             :color (:text-secondary colors)
-                             :text-transform "uppercase"
-                             :letter-spacing 0.5}}
-         title]]))])
-
 (defn- setting-row
   "Single setting row with label and value/control.
+   Designed for use inside section-card (which provides background color).
    Note: Wrapped in [:f>] to enable React hooks for theme colors."
-  [{:keys [label value on-press accessory disabled?]}]
+  [{:keys [label value on-press accessory disabled? last?]}]
   [:f>
    (fn []
      (let [colors (theme/use-theme-colors)]
        [touchable
-        {:style {:flex-direction "row"
-                 :align-items "center"
-                 :justify-content "space-between"
-                 :padding-horizontal 16
-                 :padding-vertical 14
-                 :background-color (:card-background colors)
-                 :border-bottom-width 1
-                 :border-bottom-color (:separator colors)
-                 :opacity (if disabled? 0.5 1)}
+        {:style (cond-> {:flex-direction "row"
+                         :align-items "center"
+                         :justify-content "space-between"
+                         :padding-horizontal 16
+                         :padding-vertical 14
+                         :opacity (if disabled? 0.5 1)}
+                  (not last?) (merge {:border-bottom-width 1
+                                      :border-bottom-color (:separator colors)}))
          :on-press (when-not disabled? on-press)
          :disabled (or disabled? (nil? on-press))}
         [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
@@ -106,19 +90,19 @@
 
 (defn- text-input-row
   "Setting row with editable text input.
+   Designed for use inside section-card (which provides background color).
    Accepts colors as a prop from the parent (which obtains them via [:f>] hook).
    Must NOT use [:f>] internally — doing so creates a new anonymous function on
    each parent re-render, causing React to unmount/remount the TextInput and
    making the input unusable (cursor resets, characters lost)."
-  [{:keys [label value placeholder on-change keyboard-type multiline colors]}]
-  [:> rn/View {:style {:flex-direction (if multiline "column" "row")
-                       :align-items (if multiline "stretch" "center")
-                       :justify-content "space-between"
-                       :padding-horizontal 16
-                       :padding-vertical 10
-                       :background-color (:card-background colors)
-                       :border-bottom-width 1
-                       :border-bottom-color (:separator colors)}}
+  [{:keys [label value placeholder on-change keyboard-type multiline colors last?]}]
+  [:> rn/View {:style (cond-> {:flex-direction (if multiline "column" "row")
+                                :align-items (if multiline "stretch" "center")
+                                :justify-content "space-between"
+                                :padding-horizontal 16
+                                :padding-vertical 10}
+                        (not last?) (merge {:border-bottom-width 1
+                                            :border-bottom-color (:separator colors)}))}
    [:> rn/Text {:style {:font-size 16
                         :color (:text-primary colors)
                         :flex (if multiline 0 1)
@@ -143,14 +127,15 @@
 
 (defn- toggle-row
   "Setting row with toggle switch. Includes haptic selection feedback on toggle.
+   Designed for use inside section-card (which provides background color).
    Note: Wrapped in [:f>] to enable React hooks for theme colors."
-  [{:keys [label value on-change description]}]
+  [{:keys [label value on-change description last?]}]
   [:f>
    (fn []
      (let [colors (theme/use-theme-colors)]
-       [:> rn/View {:style {:background-color (:card-background colors)
-                            :border-bottom-width 1
-                            :border-bottom-color (:separator colors)}}
+       [:> rn/View {:style (cond-> {}
+                             (not last?) (merge {:border-bottom-width 1
+                                                 :border-bottom-color (:separator colors)}))}
         [:> rn/View {:style {:flex-direction "row"
                              :align-items "center"
                              :justify-content "space-between"
@@ -175,14 +160,15 @@
 
 (defn- stepper-row
   "Setting row with stepper controls.
+   Designed for use inside section-card (which provides background color).
    Note: Wrapped in [:f>] to enable React hooks for theme colors."
-  [{:keys [label value on-change min-value max-value step suffix description]}]
+  [{:keys [label value on-change min-value max-value step suffix description last?]}]
   [:f>
    (fn []
      (let [colors (theme/use-theme-colors)]
-       [:> rn/View {:style {:background-color (:card-background colors)
-                            :border-bottom-width 1
-                            :border-bottom-color (:separator colors)}}
+       [:> rn/View {:style (cond-> {}
+                             (not last?) (merge {:border-bottom-width 1
+                                                 :border-bottom-color (:separator colors)}))}
         [:> rn/View {:style {:flex-direction "row"
                              :align-items "center"
                              :justify-content "space-between"
@@ -229,7 +215,7 @@
   "Setting row with fine-grained stepper for speech rate (0.25-1.0).
    Shows speed labels (Slow, Normal, Fast) alongside numeric value.
    Note: Wrapped in [:f>] to enable React hooks for theme colors."
-  [{:keys [label value on-change description]}]
+  [{:keys [label value on-change description last?]}]
   [:f>
    (fn []
      (let [colors (theme/use-theme-colors)
@@ -243,9 +229,9 @@
                          (<= value 0.55) "Normal"
                          (<= value 0.75) "Fast"
                          :else "Very Fast")]
-       [:> rn/View {:style {:background-color (:card-background colors)
-                            :border-bottom-width 1
-                            :border-bottom-color (:separator colors)}}
+       [:> rn/View {:style (cond-> {}
+                             (not last?) (merge {:border-bottom-width 1
+                                                 :border-bottom-color (:separator colors)}))}
         [:> rn/View {:style {:flex-direction "row"
                              :align-items "center"
                              :justify-content "space-between"
@@ -299,18 +285,22 @@
 (defn- connection-status-section
   "Shows current connection status."
   []
-  (let [status @(rf/subscribe [:connection/status])
-        authenticated? @(rf/subscribe [:connection/authenticated?])
-        error @(rf/subscribe [:connection/error])]
-    [:> rn/View
-     [section-header "Connection"]
-     [setting-row {:label "Status"
-                   :value (name status)}]
-     [setting-row {:label "Authenticated"
-                   :value (if authenticated? "Yes" "No")}]
-     (when error
-       [setting-row {:label "Error"
-                     :value error}])]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           status @(rf/subscribe [:connection/status])
+           authenticated? @(rf/subscribe [:connection/authenticated?])
+           error @(rf/subscribe [:connection/error])]
+       [section-card {:header "Connection" :colors colors :first? true}
+        [setting-row {:label "Status"
+                      :value (name status)}]
+        [setting-row {:label "Authenticated"
+                      :value (if authenticated? "Yes" "No")
+                      :last? (nil? error)}]
+        (when error
+          [setting-row {:label "Error"
+                        :value error
+                        :last? true}])]))])
 
 (defn- api-key-section
   "API key management section showing key status and management options.
@@ -333,8 +323,9 @@
                                  (not has-input?) (:input-border colors)
                                  valid? (:success colors)
                                  :else (:destructive colors))]
-        [:> rn/View
-         [section-header "Authentication"]
+        [section-card {:header "Authentication"
+                      :footer "Run 'make show-key-qr' on your server to display the QR code"
+                      :colors colors}
          (if has-key?
            ;; Key is configured - show status and management
            [:<>
@@ -343,7 +334,6 @@
                                  :align-items "center"
                                  :padding-horizontal 16
                                  :padding-vertical 14
-                                 :background-color (:card-background colors)
                                  :border-bottom-width 1
                                  :border-bottom-color (:separator colors)}}
              [icons/icon {:name :checkmark :size 18 :color (:success colors) :style {:margin-right 8}}]
@@ -361,6 +351,7 @@
 
             ;; Delete key button
             [setting-row {:label "Delete Key"
+                          :last? true
                           :on-press (fn []
                                       (platform/show-alert!
                                        "Delete API Key?"
@@ -378,7 +369,6 @@
                                  :align-items "center"
                                  :padding-horizontal 16
                                  :padding-vertical 14
-                                 :background-color (:card-background colors)
                                  :border-bottom-width 1
                                  :border-bottom-color (:separator colors)}}
              [icons/icon {:name :warning :size 18 :color (:warning colors) :style {:margin-right 8}}]
@@ -391,10 +381,7 @@
                           :accessory [icons/icon {:name :qr-code :size 16 :color (:accent colors)}]}]
 
             ;; Manual entry field with real-time validation
-            [:> rn/View {:style {:background-color (:card-background colors)
-                                 :border-bottom-width 1
-                                 :border-bottom-color (:separator colors)
-                                 :padding-horizontal 16
+            [:> rn/View {:style {:padding-horizontal 16
                                  :padding-top 10
                                  :padding-bottom (if has-input? 0 10)}}
              [:> rn/TextInput
@@ -432,16 +419,7 @@
                                (rf/dispatch [:auth/connect current-input])
                                (reset! api-key-input "")))}
                 [:> rn/Text {:style {:color (:button-text-on-accent colors) :font-size 16 :font-weight "600"}}
-                 "Save API Key"]])]
-
-            ;; Help text
-            [:> rn/View {:style {:padding-horizontal 16
-                                 :padding-vertical 8
-                                 :background-color (:card-background colors)
-                                 :border-bottom-width 1
-                                 :border-bottom-color (:separator colors)}}
-             [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
-              "Run 'make show-key-qr' on your server to display the QR code"]]])]))])))
+                 "Save API Key"]])]])]))])))
 
 ;; Debounce timer for server settings reconnection (matches iOS 0.5s debounce)
 (defonce ^:private server-change-timer (atom nil))
@@ -466,8 +444,9 @@
    (fn []
      (let [colors (theme/use-theme-colors)
            settings @(rf/subscribe [:settings/all])]
-       [:> rn/View
-        [section-header "Server Configuration"]
+       [section-card {:header "Server Configuration"
+                     :footer (str "Full URL: ws://" (:server-url settings) ":" (:server-port settings))
+                     :colors colors}
         [text-input-row {:label "Server Address"
                          :value (:server-url settings)
                          :placeholder "192.168.1.100"
@@ -484,14 +463,8 @@
                                       (rf/dispatch-sync [:settings/save :server-port (js/parseInt text)])
                                       (r/flush)
                                       (schedule-server-reconnect!))
-                         :colors colors}]
-        [:> rn/View {:style {:padding-horizontal 16
-                             :padding-vertical 8
-                             :background-color (:card-background colors)
-                             :border-bottom-width 1
-                             :border-bottom-color (:separator colors)}}
-         [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
-          (str "Full URL: ws://" (:server-url settings) ":" (:server-port settings))]]]))])
+                         :colors colors
+                         :last? true}]]))])
 
 (def ^:private all-premium-voices-id
   "Special identifier for 'All Premium Voices' rotation mode.
@@ -502,7 +475,7 @@
   "Display voice quality and language metadata below voice picker.
    Matches iOS SettingsView.swift lines 68-77.
    Only shown when a specific voice is selected (not System Default or All Premium)."
-  [{:keys [quality language colors]}]
+  [{:keys [quality language colors last?]}]
   (let [;; Map quality value to human-readable label
         quality-label (cond
                         (nil? quality) nil
@@ -510,11 +483,10 @@
                         (>= quality 400) "Enhanced"
                         (>= quality 300) "High Quality"
                         :else "Standard")]
-    [:> rn/View {:style {:padding-horizontal 16
-                         :padding-bottom 8
-                         :background-color (:card-background colors)
-                         :border-bottom-width 1
-                         :border-bottom-color (:separator colors)}}
+    [:> rn/View {:style (cond-> {:padding-horizontal 16
+                                  :padding-bottom 8}
+                           (not last?) (merge {:border-bottom-width 1
+                                               :border-bottom-color (:separator colors)}))}
      (when quality-label
        [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
         (str "Quality: " quality-label)])
@@ -526,12 +498,11 @@
 (defn- voice-rotation-info-row
   "Display rotation info when 'All Premium Voices' is selected.
    Matches iOS SettingsView.swift lines 58-67."
-  [{:keys [premium-count colors]}]
-  [:> rn/View {:style {:padding-horizontal 16
-                       :padding-bottom 8
-                       :background-color (:card-background colors)
-                       :border-bottom-width 1
-                       :border-bottom-color (:separator colors)}}
+  [{:keys [premium-count colors last?]}]
+  [:> rn/View {:style (cond-> {:padding-horizontal 16
+                                :padding-bottom 8}
+                        (not last?) (merge {:border-bottom-width 1
+                                            :border-bottom-color (:separator colors)}))}
    [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
     (str "Rotates between " premium-count " premium voice"
          (when (not= premium-count 1) "s"))]
@@ -562,91 +533,100 @@
                            selected-voice (:name selected-voice)
                            voice-id "Custom Voice"
                            :else "System Default")]
-        [:> rn/View
-         [section-header "Voice Selection"]
-         [setting-row {:label "Voice"
-                       :value display-name
-                       :on-press #(reset! picker-visible? true)}]
-         ;; Voice metadata: quality/language for specific voice, rotation info for all-premium
-         (cond
-           ;; Show rotation info for "All Premium Voices" mode
-           is-all-premium?
-           [voice-rotation-info-row {:premium-count (count premium-voices)
-                                     :colors colors}]
-           ;; Show quality/language for specific voice (not system default)
-           (and selected-voice (not is-system-default?))
-           [voice-metadata-row {:quality (:quality selected-voice)
-                                :language (:language selected-voice)
-                                :colors colors}])
-         [:> rn/View {:style {:padding-horizontal 16
-                              :padding-bottom 8
-                              :background-color (:card-background colors)
-                              :border-bottom-width 1
-                              :border-bottom-color (:separator colors)}}
-          [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
-           "Premium voices require download in Settings → Accessibility → Spoken Content → Voices"]]
-         [setting-row {:label "Preview Voice"
-                       :disabled? previewing?
-                       :on-press #(rf/dispatch [:settings/preview-voice])
-                       :accessory [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-                                   (if previewing?
-                                     [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
-                                     [icons/icon {:name :play :size 16 :color (:accent colors)}])]}]
-         ;; Voice picker modal
+        [:<>
+         [section-card {:header "Voice Selection"
+                        :footer "Premium voices require download in Settings → Accessibility → Spoken Content → Voices"
+                        :colors colors}
+          [setting-row {:label "Voice"
+                        :value display-name
+                        :on-press #(reset! picker-visible? true)}]
+          ;; Voice metadata: quality/language for specific voice, rotation info for all-premium
+          (cond
+            ;; Show rotation info for "All Premium Voices" mode
+            is-all-premium?
+            [voice-rotation-info-row {:premium-count (count premium-voices)
+                                      :colors colors}]
+            ;; Show quality/language for specific voice (not system default)
+            (and selected-voice (not is-system-default?))
+            [voice-metadata-row {:quality (:quality selected-voice)
+                                 :language (:language selected-voice)
+                                 :colors colors}])
+          [setting-row {:label "Preview Voice"
+                        :last? true
+                        :disabled? previewing?
+                        :on-press #(rf/dispatch [:settings/preview-voice])
+                        :accessory [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+                                    (if previewing?
+                                      [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
+                                      [icons/icon {:name :play :size 16 :color (:accent colors)}])]}]]
+         ;; Voice picker modal (must be outside section-card for proper modal rendering)
          [voice-picker-modal {:visible @picker-visible?
                               :on-close #(reset! picker-visible? false)}]]))])))
 
 (defn- audio-playback-section
-  "Audio playback settings (iOS only)."
+  "Audio playback settings (iOS only).
+   Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [settings @(rf/subscribe [:settings/all])]
-    (when platform/ios?
-      [:> rn/View
-       [section-header "Audio Playback"]
-       [toggle-row {:label "Auto-speak responses"
-                    :value (:auto-speak-responses settings)
-                    :on-change #(rf/dispatch [:settings/save :auto-speak-responses %])
-                    :description "Automatically speak Claude's responses using text-to-speech"}]
-       [rate-stepper-row {:label "Speech Rate"
-                          :value (or (:voice-speech-rate settings) 0.5)
-                          :on-change #(rf/dispatch [:voice/set-speech-rate %])
-                          :description "Adjust how fast text-to-speech reads responses"}]
-       [toggle-row {:label "Silence speech when on vibrate"
-                    :value (:respect-silent-mode settings)
-                    :on-change #(rf/dispatch [:voice/set-respect-silent-mode %])
-                    :description "When enabled, speech will not play when your phone's ringer switch is on silent/vibrate"}]
-       [toggle-row {:label "Continue playback when locked"
-                    :value (:continue-playback-when-locked settings)
-                    :on-change #(rf/dispatch [:voice/set-continue-playback-when-locked %])
-                    :description "When enabled, audio will continue playing even when you lock your screen"}]])))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           settings @(rf/subscribe [:settings/all])]
+       (when platform/ios?
+         [section-card {:header "Audio Playback" :colors colors}
+          [toggle-row {:label "Auto-speak responses"
+                       :value (:auto-speak-responses settings)
+                       :on-change #(rf/dispatch [:settings/save :auto-speak-responses %])
+                       :description "Automatically speak Claude's responses using text-to-speech"}]
+          [rate-stepper-row {:label "Speech Rate"
+                             :value (or (:voice-speech-rate settings) 0.5)
+                             :on-change #(rf/dispatch [:voice/set-speech-rate %])
+                             :description "Adjust how fast text-to-speech reads responses"}]
+          [toggle-row {:label "Silence speech when on vibrate"
+                       :value (:respect-silent-mode settings)
+                       :on-change #(rf/dispatch [:voice/set-respect-silent-mode %])
+                       :description "When enabled, speech will not play when your phone's ringer switch is on silent/vibrate"}]
+          [toggle-row {:label "Continue playback when locked"
+                       :value (:continue-playback-when-locked settings)
+                       :on-change #(rf/dispatch [:voice/set-continue-playback-when-locked %])
+                       :last? true
+                       :description "When enabled, audio will continue playing even when you lock your screen"}]])))])
+
 
 (defn- recent-sessions-section
-  "Recent sessions limit configuration."
+  "Recent sessions limit configuration.
+   Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [settings @(rf/subscribe [:settings/all])]
-    [:> rn/View
-     [section-header "Recent"]
-     [stepper-row {:label "Show sessions"
-                   :value (:recent-sessions-limit settings)
-                   :on-change #(rf/dispatch [:settings/save :recent-sessions-limit %])
-                   :min-value 1
-                   :max-value 20
-                   :description "Number of recent sessions to display in the Projects view"}]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           settings @(rf/subscribe [:settings/all])]
+       [section-card {:header "Recent" :colors colors}
+        [stepper-row {:label "Show sessions"
+                      :value (:recent-sessions-limit settings)
+                      :on-change #(rf/dispatch [:settings/save :recent-sessions-limit %])
+                      :min-value 1
+                      :max-value 20
+                      :last? true
+                      :description "Number of recent sessions to display in the Projects view"}]]))])
 
 (defn- queue-settings-section
-  "Queue management settings."
+  "Queue management settings.
+   Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [settings @(rf/subscribe [:settings/all])]
-    [:> rn/View
-     [section-header "Queue"]
-     [toggle-row {:label "Enable Queue"
-                  :value (:queue-enabled settings)
-                  :on-change #(rf/dispatch [:settings/save :queue-enabled %])
-                  :description "Show threads in queue on the Projects view. Threads are added when you send a message and removed manually."}]
-     [toggle-row {:label "Enable Priority Queue"
-                  :value (:priority-queue-enabled settings)
-                  :on-change #(rf/dispatch [:settings/save :priority-queue-enabled %])
-                  :description "Track sessions in priority-based queue. Add sessions manually via toolbar button and adjust priorities to control sort order."}]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           settings @(rf/subscribe [:settings/all])]
+       [section-card {:header "Queue" :colors colors}
+        [toggle-row {:label "Enable Queue"
+                     :value (:queue-enabled settings)
+                     :on-change #(rf/dispatch [:settings/save :queue-enabled %])
+                     :description "Show threads in queue on the Projects view. Threads are added when you send a message and removed manually."}]
+        [toggle-row {:label "Enable Priority Queue"
+                     :value (:priority-queue-enabled settings)
+                     :on-change #(rf/dispatch [:settings/save :priority-queue-enabled %])
+                     :last? true
+                     :description "Track sessions in priority-based queue. Add sessions manually via toolbar button and adjust priorities to control sort order."}]]))])
 
 (defn- resources-section
   "Resource storage configuration.
@@ -656,37 +636,36 @@
    (fn []
      (let [colors (theme/use-theme-colors)
            settings @(rf/subscribe [:settings/all])]
-       [:> rn/View
-        [section-header "Resources"]
+       [section-card {:header "Resources"
+                     :footer "Directory where uploaded files will be saved on the backend"
+                     :colors colors}
         [text-input-row {:label "Storage Location"
                          :value (:resource-storage-location settings)
                          :placeholder "~/Downloads"
                          :on-change (fn [text]
                                       (rf/dispatch-sync [:settings/save :resource-storage-location text])
                                       (r/flush))
-                         :colors colors}]
-        [:> rn/View {:style {:padding-horizontal 16
-                             :padding-bottom 8
-                             :background-color (:card-background colors)
-                             :border-bottom-width 1
-                             :border-bottom-color (:separator colors)}}
-         [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
-          "Directory where uploaded files will be saved on the backend"]]]))])
+                         :colors colors
+                         :last? true}]]))])
 
 (defn- message-size-section
-  "Message size limit configuration."
+  "Message size limit configuration.
+   Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  (let [settings @(rf/subscribe [:settings/all])]
-    [:> rn/View
-     [section-header "Message Size Limit"]
-     [stepper-row {:label "Max size"
-                   :value (:max-message-size-kb settings)
-                   :on-change #(rf/dispatch [:settings/save :max-message-size-kb %])
-                   :min-value 50
-                   :max-value 250
-                   :step 10
-                   :suffix " KB"
-                   :description "Maximum WebSocket message size. Large responses will be truncated to fit. iOS has a 256 KB limit."}]]))
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           settings @(rf/subscribe [:settings/all])]
+       [section-card {:header "Message Size Limit" :colors colors}
+        [stepper-row {:label "Max size"
+                      :value (:max-message-size-kb settings)
+                      :on-change #(rf/dispatch [:settings/save :max-message-size-kb %])
+                      :min-value 50
+                      :max-value 250
+                      :step 10
+                      :suffix " KB"
+                      :last? true
+                      :description "Maximum WebSocket message size. Large responses will be truncated to fit. iOS has a 256 KB limit."}]]))])
 
 (defn- system-prompt-section
   "Custom system prompt configuration.
@@ -696,8 +675,9 @@
    (fn []
      (let [colors (theme/use-theme-colors)
            settings @(rf/subscribe [:settings/all])]
-       [:> rn/View
-        [section-header "System Prompt"]
+       [section-card {:header "System Prompt"
+                     :footer "Optional instructions to append to Claude's system prompt on every message. Leave empty to use default behavior."
+                     :colors colors}
         [text-input-row {:label "Custom System Prompt"
                          :value (:system-prompt settings)
                          :placeholder "Optional instructions to append..."
@@ -705,14 +685,8 @@
                          :on-change (fn [text]
                                       (rf/dispatch-sync [:settings/save :system-prompt text])
                                       (r/flush))
-                         :colors colors}]
-        [:> rn/View {:style {:padding-horizontal 16
-                             :padding-bottom 8
-                             :background-color (:card-background colors)
-                             :border-bottom-width 1
-                             :border-bottom-color (:separator colors)}}
-         [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
-          "Optional instructions to append to Claude's system prompt on every message. Leave empty to use default behavior."]]]))])
+                         :colors colors
+                         :last? true}]]))])
 
 (defn- connection-test-section
   "Connection test button and results.
@@ -723,11 +697,11 @@
      (let [colors (theme/use-theme-colors)
            testing? @(rf/subscribe [:ui/testing-connection?])
            result @(rf/subscribe [:ui/connection-test-result])]
-       [:> rn/View
-        [section-header "Connection Test"]
+       [section-card {:header "Connection Test" :colors colors}
         [setting-row {:label "Test Connection"
                       :disabled? testing?
                       :on-press #(rf/dispatch [:settings/test-connection])
+                      :last? (nil? result)
                       :accessory [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
                                   (cond
                                     testing?
@@ -742,10 +716,7 @@
                                     [icons/icon {:name :navigate-forward :size 16 :color (:accent colors)}])]}]
         (when result
           [:> rn/View {:style {:padding-horizontal 16
-                               :padding-vertical 8
-                               :background-color (:card-background colors)
-                               :border-bottom-width 1
-                               :border-bottom-color (:separator colors)}}
+                               :padding-vertical 8}}
            [:> rn/Text {:style {:font-size 12
                                 :color (if (:success result) (:success colors) (:destructive colors))}}
             (:message result)]])]))])
@@ -757,9 +728,9 @@
   [:f>
    (fn []
      (let [colors (theme/use-theme-colors)]
-       [:> rn/View
-        [section-header "Account"]
+       [section-card {:header "Account" :colors colors}
         [setting-row {:label "Disconnect"
+                      :last? true
                       :on-press (fn []
                                   (platform/show-alert!
                                    "Disconnect"
@@ -778,12 +749,8 @@
   [:f>
    (fn []
      (let [colors (theme/use-theme-colors)]
-       [:> rn/View
-        [section-header "Help"]
-        [:> rn/View {:style {:background-color (:card-background colors)
-                             :padding 16
-                             :border-bottom-width 1
-                             :border-bottom-color (:separator colors)}}
+       [section-card {:header "Help" :colors colors}
+        [:> rn/View {:style {:padding 16}}
          [:> rn/Text {:style {:font-size 14 :font-weight "600" :margin-bottom 8 :color (:text-primary colors)}}
           "Server Setup"]
          [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors) :margin-bottom 4}}
@@ -803,28 +770,28 @@
   [:f>
    (fn []
      (let [colors (theme/use-theme-colors)]
-       [:> rn/View
-        [section-header "Examples"]
-        [:> rn/View {:style {:background-color (:card-background colors)
-                             :padding 16
-                             :border-bottom-width 1
-                             :border-bottom-color (:separator colors)}}
+       [section-card {:header "Examples" :colors colors}
+        [:> rn/View {:style {:padding 16}}
          [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors) :margin-bottom 4}}
           "Local network: 192.168.1.100"]
          [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors)}}
           "Localhost: 127.0.0.1 (testing only)"]]]))])
 
 (defn- about-section
-  "App information."
+  "App information.
+   Wrapped in [:f>] to enable React hooks for theme colors."
   []
-  [:> rn/View
-   [section-header "About"]
-   [setting-row {:label "Version"
-                 :value "0.1.0"}]
-   [setting-row {:label "Build"
-                 :value "1"}]
-   [setting-row {:label "Platform"
-                 :value (.-OS rn/Platform)}]])
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [section-card {:header "About" :colors colors}
+        [setting-row {:label "Version"
+                      :value "0.1.0"}]
+        [setting-row {:label "Build"
+                      :value "1"}]
+        [setting-row {:label "Platform"
+                      :value (.-OS rn/Platform)
+                      :last? true}]]))])
 
 (defn- debug-section
   "Debug tools section with link to debug logs.
@@ -833,18 +800,13 @@
   [:f>
    (fn []
      (let [colors (theme/use-theme-colors)]
-       [:> rn/View
-        [section-header "Debug"]
+       [section-card {:header "Debug"
+                     :footer "View captured console logs for debugging"
+                     :colors colors}
         [setting-row {:label "Debug Logs"
+                      :last? true
                       :on-press #(when navigation (.navigate navigation "DebugLogs"))
-                      :accessory [icons/icon {:name :navigate-forward :size 16 :color (:accent colors)}]}]
-        [:> rn/View {:style {:padding-horizontal 16
-                             :padding-bottom 8
-                             :background-color (:card-background colors)
-                             :border-bottom-width 1
-                             :border-bottom-color (:separator colors)}}
-         [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
-          "View captured console logs for debugging"]]]))])
+                      :accessory [icons/icon {:name :navigate-forward :size 16 :color (:accent colors)}]}]]))])
 
 (defn settings-view
   "Main settings screen with full feature parity to iOS SettingsView.

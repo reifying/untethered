@@ -4,7 +4,7 @@
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [RefreshControl AppState]]
             [clojure.string :as str]
-            [voice-code.views.components :refer [relative-time-text copy-to-clipboard! toast-overlay]]
+            [voice-code.views.components :refer [relative-time-text copy-to-clipboard! toast-overlay section-card]]
             [voice-code.icons :as icons]
             [voice-code.platform :as platform]
             [voice-code.theme :as theme]
@@ -37,13 +37,12 @@
 (defn- directory-item
   "Single directory item in the list.
    Long-press shows context menu to copy directory path."
-  [{:keys [directory session-count last-modified unread-count on-press colors]}]
+  [{:keys [directory session-count last-modified unread-count on-press colors last?]}]
   [touchable
-     {:style {:padding-horizontal 16
-              :padding-vertical 14
-              :border-bottom-width 1
-              :border-bottom-color (:separator colors)
-              :background-color (:card-background colors)}
+     {:style (cond-> {:padding-horizontal 16
+                      :padding-vertical 14}
+               (not last?) (merge {:border-bottom-width 1
+                                   :border-bottom-color (:separator colors)}))
       :on-press on-press
       :on-long-press (fn []
                        (platform/show-alert!
@@ -99,16 +98,15 @@
 (defn- recent-session-item
   "Single recent session item.
    Long-press shows context menu with copy options."
-  [{:keys [session on-press colors]}]
+  [{:keys [session on-press colors last?]}]
   (let [unread-count (get session :unread-count 0)
         session-id (str (:id session))
         working-directory (:working-directory session)]
     [touchable
-     {:style {:padding-horizontal 16
-              :padding-vertical 12
-              :border-bottom-width 1
-              :border-bottom-color (:separator colors)
-              :background-color (:card-background colors)}
+     {:style (cond-> {:padding-horizontal 16
+                      :padding-vertical 12}
+               (not last?) (merge {:border-bottom-width 1
+                                   :border-bottom-color (:separator colors)}))
       :on-press on-press
       :on-long-press (fn []
                        (platform/show-alert!
@@ -153,15 +151,14 @@
 (defn- queue-session-item
   "Single session item in the queue section.
    Long-press shows context menu with copy options."
-  [{:keys [session on-press on-remove colors]}]
+  [{:keys [session on-press on-remove colors last?]}]
   (let [unread-count (get session :unread-count 0)
         session-id (str (:id session))
         working-directory (:working-directory session)]
-    [:> rn/View {:style {:flex-direction "row"
-                         :align-items "center"
-                         :background-color (:card-background colors)
-                         :border-bottom-width 1
-                         :border-bottom-color (:separator colors)}}
+    [:> rn/View {:style (cond-> {:flex-direction "row"
+                                  :align-items "center"}
+                          (not last?) (merge {:border-bottom-width 1
+                                              :border-bottom-color (:separator colors)}))}
      [touchable
       {:style {:flex 1
                :padding-horizontal 16
@@ -208,17 +205,17 @@
 (defn- priority-queue-session-item
   "Single session item in the priority queue section with priority tinting.
    Long-press shows context menu with copy options."
-  [{:keys [session on-press on-remove colors]}]
+  [{:keys [session on-press on-remove colors last?]}]
   (let [unread-count (get session :unread-count 0)
         priority (or (:priority session) 10)
         tint-color (priority-tint-color colors priority)
         session-id (str (:id session))
         working-directory (:working-directory session)]
-    [:> rn/View {:style {:flex-direction "row"
-                         :align-items "center"
-                         :background-color tint-color
-                         :border-bottom-width 1
-                         :border-bottom-color (:separator colors)}}
+    [:> rn/View {:style (cond-> {:flex-direction "row"
+                                  :align-items "center"
+                                  :background-color tint-color}
+                          (not last?) (merge {:border-bottom-width 1
+                                              :border-bottom-color (:separator colors)}))}
      [touchable
       {:style {:flex 1
                :padding-horizontal 16
@@ -262,16 +259,16 @@
          :on-press on-remove}
         [icons/icon {:name :close :size 16 :color (:destructive colors)}]])]))
 
-(defn- section-header
-  "Collapsible section header."
+(defn- collapsible-section-header
+  "Collapsible section header styled as iOS inset grouped header."
   [{:keys [title expanded? on-toggle count colors]}]
   [touchable
    {:style {:flex-direction "row"
             :align-items "center"
             :justify-content "space-between"
-            :padding-horizontal 16
-            :padding-vertical 10
-            :background-color (:separator colors)}
+            :margin-horizontal 20
+            :margin-bottom 6
+            :padding-vertical 4}
     :on-press on-toggle}
    [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
     [:> rn/Text {:style {:font-size 13
@@ -292,23 +289,25 @@
   [{:keys [sessions navigation colors]}]
   (let [expanded? (r/atom true)]
     (fn [{:keys [sessions navigation colors]}]
-      [:> rn/View
-       [section-header {:title "Recent"
-                        :expanded? @expanded?
-                        :on-toggle #(swap! expanded? not)
-                        :count (count sessions)
-                        :colors colors}]
-       (when @expanded?
-         [:> rn/View
-          (for [[idx session] (map-indexed vector sessions)]
-            ^{:key (or (:id session) (str "recent-" idx))}
-            [recent-session-item
-             {:session session
-              :colors colors
-              :on-press #(when navigation
-                           (.navigate navigation "Conversation"
-                                      #js {:sessionId (:id session)
-                                           :sessionName (session-name session)}))}])])])))
+      (let [n (count sessions)]
+        [:> rn/View {:style {:margin-top 12}}
+         [collapsible-section-header {:title "Recent"
+                          :expanded? @expanded?
+                          :on-toggle #(swap! expanded? not)
+                          :count n
+                          :colors colors}]
+         (when @expanded?
+           [section-card {:colors colors :first? true}
+            (for [[idx session] (map-indexed vector sessions)]
+              ^{:key (or (:id session) (str "recent-" idx))}
+              [recent-session-item
+               {:session session
+                :colors colors
+                :last? (= idx (dec n))
+                :on-press #(when navigation
+                             (.navigate navigation "Conversation"
+                                        #js {:sessionId (:id session)
+                                             :sessionName (session-name session)}))}])])]))))
 
 
 (defn- queue-section
@@ -316,50 +315,54 @@
   [{:keys [sessions navigation colors]}]
   (let [expanded? (r/atom true)]
     (fn [{:keys [sessions navigation colors]}]
-      (when (seq sessions)
-        [:> rn/View
-         [section-header {:title "Queue"
-                          :expanded? @expanded?
-                          :on-toggle #(swap! expanded? not)
-                          :count (count sessions)
-                          :colors colors}]
-         (when @expanded?
-           [:> rn/View
-            (for [[idx session] (map-indexed vector sessions)]
-              ^{:key (or (:id session) (str "queue-" idx))}
-              [queue-session-item
-               {:session session
-                :colors colors
-                :on-press #(when navigation
-                             (.navigate navigation "Conversation"
-                                        #js {:sessionId (:id session)
-                                             :sessionName (session-name session)}))
-                :on-remove #(rf/dispatch [:sessions/remove-from-queue (:id session)])}])])]))))
+      (let [n (count sessions)]
+        (when (seq sessions)
+          [:> rn/View {:style {:margin-top 12}}
+           [collapsible-section-header {:title "Queue"
+                            :expanded? @expanded?
+                            :on-toggle #(swap! expanded? not)
+                            :count n
+                            :colors colors}]
+           (when @expanded?
+             [section-card {:colors colors :first? true}
+              (for [[idx session] (map-indexed vector sessions)]
+                ^{:key (or (:id session) (str "queue-" idx))}
+                [queue-session-item
+                 {:session session
+                  :colors colors
+                  :last? (= idx (dec n))
+                  :on-press #(when navigation
+                               (.navigate navigation "Conversation"
+                                          #js {:sessionId (:id session)
+                                               :sessionName (session-name session)}))
+                  :on-remove #(rf/dispatch [:sessions/remove-from-queue (:id session)])}])])])))))
 
 (defn- priority-queue-section
   "Collapsible priority queue section with visual priority indicators."
   [{:keys [sessions navigation colors]}]
   (let [expanded? (r/atom true)]
     (fn [{:keys [sessions navigation colors]}]
-      (when (seq sessions)
-        [:> rn/View
-         [section-header {:title "Priority Queue"
-                          :expanded? @expanded?
-                          :on-toggle #(swap! expanded? not)
-                          :count (count sessions)
-                          :colors colors}]
-         (when @expanded?
-           [:> rn/View
-            (for [[idx session] (map-indexed vector sessions)]
-              ^{:key (or (:id session) (str "priority-" idx))}
-              [priority-queue-session-item
-               {:session session
-                :colors colors
-                :on-press #(when navigation
-                             (.navigate navigation "Conversation"
-                                        #js {:sessionId (:id session)
-                                             :sessionName (session-name session)}))
-                :on-remove #(rf/dispatch [:sessions/remove-from-priority-queue (:id session)])}])])]))))
+      (let [n (count sessions)]
+        (when (seq sessions)
+          [:> rn/View {:style {:margin-top 12}}
+           [collapsible-section-header {:title "Priority Queue"
+                            :expanded? @expanded?
+                            :on-toggle #(swap! expanded? not)
+                            :count n
+                            :colors colors}]
+           (when @expanded?
+             [section-card {:colors colors :first? true}
+              (for [[idx session] (map-indexed vector sessions)]
+                ^{:key (or (:id session) (str "priority-" idx))}
+                [priority-queue-session-item
+                 {:session session
+                  :colors colors
+                  :last? (= idx (dec n))
+                  :on-press #(when navigation
+                               (.navigate navigation "Conversation"
+                                          #js {:sessionId (:id session)
+                                               :sessionName (session-name session)}))
+                  :on-remove #(rf/dispatch [:sessions/remove-from-priority-queue (:id session)])}])])])))))
 
 (defn- empty-state
   "Shown when there are no directories/sessions.
@@ -497,58 +500,42 @@
   [{:keys [directories navigation colors]}]
   (let [expanded? (r/atom true)]
     (fn [{:keys [directories navigation colors]}]
-      [:> rn/View
-       [section-header {:title "Projects"
-                        :expanded? @expanded?
-                        :on-toggle #(swap! expanded? not)
-                        :count (count directories)
-                        :colors colors}]
-       (when @expanded?
-         [:> rn/View
-          (for [[idx dir] (map-indexed vector directories)]
-            ^{:key (or (:directory dir) (str "unknown-dir-" idx))}
-            [directory-item
-             (assoc dir
-                    :colors colors
-                    :on-press #(when navigation
-                                 (.navigate navigation "SessionList"
-                                            #js {:directory (:directory dir)
-                                                 :directoryName (directory-name (:directory dir))})))])])])))
+      (let [n (count directories)]
+        [:> rn/View {:style {:margin-top 12}}
+         [collapsible-section-header {:title "Projects"
+                          :expanded? @expanded?
+                          :on-toggle #(swap! expanded? not)
+                          :count n
+                          :colors colors}]
+         (when @expanded?
+           [section-card {:colors colors :first? true}
+            (for [[idx dir] (map-indexed vector directories)]
+              ^{:key (or (:directory dir) (str "unknown-dir-" idx))}
+              [directory-item
+               (assoc dir
+                      :colors colors
+                      :last? (= idx (dec n))
+                      :on-press #(when navigation
+                                   (.navigate navigation "SessionList"
+                                              #js {:directory (:directory dir)
+                                                   :directoryName (directory-name (:directory dir))})))])])]))))
 
 (defn- debug-section
   "Debug section with link to debug logs view."
   [{:keys [navigation colors]}]
-  [:> rn/View
-   [:> rn/View {:style {:flex-direction "row"
-                        :align-items "center"
-                        :justify-content "space-between"
-                        :padding-horizontal 16
-                        :padding-vertical 10
-                        :background-color (:separator colors)}}
-    [:> rn/Text {:style {:font-size 13
-                         :font-weight "600"
-                         :color (:text-secondary colors)
-                         :text-transform "uppercase"
-                         :letter-spacing 0.5}}
-     "Debug"]]
+  [section-card {:header "Debug"
+                 :footer "View and copy app logs for troubleshooting"
+                 :colors colors}
    [touchable
     {:style {:flex-direction "row"
              :align-items "center"
              :padding-horizontal 16
-             :padding-vertical 14
-             :background-color (:card-background colors)
-             :border-bottom-width 1
-             :border-bottom-color (:separator colors)}
+             :padding-vertical 14}
      :on-press #(when navigation (.navigate navigation "DebugLogs"))}
     [icons/icon {:name :bug :size 18 :color (:warning colors) :style {:margin-right 12}}]
     [:> rn/View {:style {:flex 1}}
      [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
-      "Debug Logs"]]]
-   [:> rn/View {:style {:padding-horizontal 16
-                        :padding-vertical 8
-                        :background-color (:grouped-background colors)}}
-    [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors)}}
-     "View and copy app logs for troubleshooting"]]])
+      "Debug Logs"]]]])
 
 (def ^:private debounce-ms
   "Debounce delay for queue cache updates (matches iOS 150ms)."

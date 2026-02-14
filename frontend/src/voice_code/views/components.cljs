@@ -4,6 +4,7 @@
             ["react-native" :as rn]
             ["@react-native-clipboard/clipboard" :as Clipboard]
             [voice-code.haptic :as haptic]
+            [voice-code.platform :as platform]
             [voice-code.utils :as utils]
             [voice-code.theme :as theme]))
 
@@ -174,3 +175,86 @@
                                 :color (:button-text-on-accent colors)
                                 :font-weight "500"}}
             message]]])))])
+
+;; ============================================================================
+;; Section Card — iOS Inset Grouped List Style
+;; ============================================================================
+;;
+;; Mimics the iOS Form/List insetGrouped style:
+;; - Rounded-corner white card on gray grouped background
+;; - Section header above the card (uppercase, secondary text)
+;; - Section footer below the card (caption text, secondary color)
+;; - Horizontal inset margins (16px)
+;; - Vertical spacing between sections (24px top, 6px bottom)
+;;
+;; On Android, uses elevation instead of iOS shadow properties.
+;; This is the single most recognizable iOS pattern for settings-style
+;; screens and its absence makes an app feel like a web view.
+
+(def ^:private section-card-radius
+  "Corner radius for section cards.
+   iOS Settings.app uses ~10px for inset grouped sections."
+  10)
+
+(def ^:private section-card-inset
+  "Horizontal inset for section cards.
+   iOS inset grouped style uses ~16px side margins."
+  16)
+
+(defn section-card
+  "Renders children inside an iOS-style inset grouped section card.
+
+   Provides the visual grouping that iOS Form/List insetGrouped gives
+   automatically: rounded white card on gray background with optional
+   header text above and footer/help text below.
+
+   Props:
+   - :header   - Optional section header string (rendered uppercase above card)
+   - :footer   - Optional footer/help text string (rendered below card)
+   - :colors   - Theme colors map (required)
+   - :style    - Optional additional style for the card container
+   - :first?   - If true, reduces top margin (for first section in a list)
+
+   Children are rendered inside the card with rounded corners and clipping.
+   Each child row should have its own bottom border except the last one.
+
+   Example:
+     [section-card {:header \"Server Configuration\"
+                    :footer \"Enter your server address and port.\"
+                    :colors colors}
+      [text-input-row {...}]
+      [text-input-row {...}]]"
+  [{:keys [header footer colors style first?]} & children]
+  [:> rn/View {:style {:margin-top (if first? 12 24)
+                        :margin-bottom 6}}
+   ;; Section header (uppercase label above card)
+   (when header
+     [:> rn/Text {:style {:font-size 13
+                          :color (:text-secondary colors)
+                          :text-transform "uppercase"
+                          :letter-spacing 0.5
+                          :margin-horizontal (+ section-card-inset 4)
+                          :margin-bottom 6}}
+      header])
+
+   ;; Card container with rounded corners
+   [:> rn/View {:style (merge {:margin-horizontal section-card-inset
+                                :border-radius section-card-radius
+                                :background-color (:card-background colors)
+                                :overflow "hidden"}
+                               (platform/shadow {:shadow-color (:shadow colors)
+                                                  :offset-y 1
+                                                  :opacity 0.08
+                                                  :radius 3
+                                                  :elevation 1})
+                               style)}
+    (into [:<>] children)]
+
+   ;; Section footer / help text (below card)
+   (when footer
+     [:> rn/Text {:style {:font-size 13
+                          :color (:text-secondary colors)
+                          :margin-horizontal (+ section-card-inset 4)
+                          :margin-top 6
+                          :line-height 18}}
+      footer])])
