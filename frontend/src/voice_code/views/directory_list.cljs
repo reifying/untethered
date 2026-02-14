@@ -8,6 +8,7 @@
             [voice-code.icons :as icons]
             [voice-code.platform :as platform]
             [voice-code.theme :as theme]
+            [voice-code.views.context-menu :refer [context-menu]]
             [voice-code.views.touchable :refer [touchable]]
             [voice-code.utils :as utils]))
 
@@ -36,59 +37,58 @@
 
 (defn- directory-item
   "Single directory item in the list.
-   Long-press shows context menu to copy directory path."
+   Long-press shows native context menu to copy directory path.
+   iOS parity: DirectoryListView.swift .contextMenu { Button(\"Copy Directory Path\") }"
   [{:keys [directory session-count last-modified unread-count on-press colors last?]}]
-  [touchable
-     {:style (cond-> {:padding-horizontal 16
-                      :padding-vertical 14}
-               (not last?) (merge {:border-bottom-width 1
-                                   :border-bottom-color (:separator colors)}))
-      :on-press on-press
-      :on-long-press (fn []
-                       (platform/show-alert!
-                        (directory-name directory)
-                        "Directory actions"
-                        [{:text "Copy Directory Path"
-                          :onPress #(copy-to-clipboard! directory "Directory path copied")}
-                         {:text "Cancel" :style "cancel"}]))}
-     [:> rn/View {:style {:flex-direction "row"
-                          :align-items "center"}}
-      ;; Folder icon (matches iOS folder.fill blue icon)
-      [icons/icon {:name :folder-fill
-                   :size 20
-                   :color (:accent colors)
-                   :style {:margin-right 8}}]
-      [:> rn/View {:style {:flex 1}}
-       ;; Line 1: Directory name + unread badge
-       [:> rn/View {:style {:flex-direction "row"
-                            :align-items "center"
-                            :margin-bottom 4}}
-        [:> rn/Text {:style {:font-size 17
-                             :font-weight (if (and unread-count (pos? unread-count)) "700" "600")
-                             :color (:text-primary colors)}}
-         (directory-name directory)]
-        [:> rn/View {:style {:flex 1}}]
-        [unread-badge unread-count colors]]
-       ;; Line 2: Full path
-       [:> rn/Text {:style {:font-size 13
-                            :color (:text-secondary colors)
-                            :margin-bottom 2}
-                    :number-of-lines 1}
-        directory]
-       ;; Line 3: Session count + bullet + timestamp (matches iOS layout)
-       [:> rn/View {:style {:flex-direction "row"
-                            :align-items "center"}}
-        [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors)}}
-         (str session-count " session" (when (not= session-count 1) "s"))]
-        [:> rn/Text {:style {:font-size 12
-                             :color (:text-tertiary colors)
-                             :margin-horizontal 6}}
-         "\u2022"]
-        [relative-time-text {:timestamp last-modified
-                             :style {:font-size 12
-                                     :color (:text-tertiary colors)}}]]]
-      ;; iOS disclosure indicator (chevron)
-      [disclosure-indicator {:colors colors}]]])
+  [context-menu
+   {:title (directory-name directory)
+    :actions [{:title "Copy Directory Path"
+               :system-icon "folder"
+               :on-press #(copy-to-clipboard! directory "Directory path copied")}]}
+   [touchable
+    {:style (cond-> {:padding-horizontal 16
+                     :padding-vertical 14}
+              (not last?) (merge {:border-bottom-width 1
+                                  :border-bottom-color (:separator colors)}))
+     :on-press on-press}
+    [:> rn/View {:style {:flex-direction "row"
+                         :align-items "center"}}
+     ;; Folder icon (matches iOS folder.fill blue icon)
+     [icons/icon {:name :folder-fill
+                  :size 20
+                  :color (:accent colors)
+                  :style {:margin-right 8}}]
+     [:> rn/View {:style {:flex 1}}
+      ;; Line 1: Directory name + unread badge
+      [:> rn/View {:style {:flex-direction "row"
+                           :align-items "center"
+                           :margin-bottom 4}}
+       [:> rn/Text {:style {:font-size 17
+                            :font-weight (if (and unread-count (pos? unread-count)) "700" "600")
+                            :color (:text-primary colors)}}
+        (directory-name directory)]
+       [:> rn/View {:style {:flex 1}}]
+       [unread-badge unread-count colors]]
+      ;; Line 2: Full path
+      [:> rn/Text {:style {:font-size 13
+                           :color (:text-secondary colors)
+                           :margin-bottom 2}
+                   :number-of-lines 1}
+       directory]
+      ;; Line 3: Session count + bullet + timestamp (matches iOS layout)
+      [:> rn/View {:style {:flex-direction "row"
+                           :align-items "center"}}
+       [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors)}}
+        (str session-count " session" (when (not= session-count 1) "s"))]
+       [:> rn/Text {:style {:font-size 12
+                            :color (:text-tertiary colors)
+                            :margin-horizontal 6}}
+        "\u2022"]
+       [relative-time-text {:timestamp last-modified
+                            :style {:font-size 12
+                                    :color (:text-tertiary colors)}}]]]
+     ;; iOS disclosure indicator (chevron)
+     [disclosure-indicator {:colors colors}]]]])
 
 (defn- session-name
   "Get display name for a session."
@@ -99,48 +99,48 @@
 
 (defn- recent-session-item
   "Single recent session item.
-   Long-press shows context menu with copy options."
+   Long-press shows native context menu with copy options.
+   iOS parity: DirectoryListView.swift .contextMenu on recent sessions."
   [{:keys [session on-press colors last?]}]
   (let [unread-count (get session :unread-count 0)
         session-id (str (:id session))
         working-directory (:working-directory session)]
-    [touchable
-     {:style (cond-> {:padding-horizontal 16
-                      :padding-vertical 12}
-               (not last?) (merge {:border-bottom-width 1
-                                   :border-bottom-color (:separator colors)}))
-      :on-press on-press
-      :on-long-press (fn []
-                       (platform/show-alert!
-                        (session-name session)
-                        "Session actions"
-                        [{:text "Copy Session ID"
-                          :onPress #(copy-to-clipboard! session-id "Session ID copied")}
-                         {:text "Copy Directory Path"
-                          :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
-                         {:text "Cancel" :style "cancel"}]))}
-     [:> rn/View {:style {:flex-direction "row"
-                          :align-items "center"}}
-      [:> rn/View {:style {:flex 1 :margin-right 12}}
-       ;; Session name with optional unread badge
-       [:> rn/View {:style {:flex-direction "row"
-                            :align-items "center"
-                            :margin-bottom 2}}
-        [:> rn/Text {:style {:font-size 15
-                             :font-weight (if (pos? unread-count) "600" "500")
-                             :color (:text-primary colors)}}
-         (session-name session)]
-        [unread-badge unread-count colors]]
-       ;; Directory name (last component)
-       [:> rn/Text {:style {:font-size 12
-                            :color (:text-secondary colors)}
-                    :number-of-lines 1}
-        (directory-name (:working-directory session))]]
-      ;; Timestamp - auto-updating
-      [relative-time-text {:timestamp (:last-modified session)
-                           :style {:font-size 12 :color (:text-tertiary colors)}}]
-      ;; iOS disclosure indicator (chevron)
-      [disclosure-indicator {:colors colors}]]]))
+    [context-menu
+     {:title (session-name session)
+      :actions [{:title "Copy Session ID"
+                 :system-icon "doc.on.clipboard"
+                 :on-press #(copy-to-clipboard! session-id "Session ID copied")}
+                {:title "Copy Directory Path"
+                 :system-icon "folder"
+                 :on-press #(copy-to-clipboard! working-directory "Directory path copied")}]}
+     [touchable
+      {:style (cond-> {:padding-horizontal 16
+                       :padding-vertical 12}
+                (not last?) (merge {:border-bottom-width 1
+                                    :border-bottom-color (:separator colors)}))
+       :on-press on-press}
+      [:> rn/View {:style {:flex-direction "row"
+                           :align-items "center"}}
+       [:> rn/View {:style {:flex 1 :margin-right 12}}
+        ;; Session name with optional unread badge
+        [:> rn/View {:style {:flex-direction "row"
+                             :align-items "center"
+                             :margin-bottom 2}}
+         [:> rn/Text {:style {:font-size 15
+                              :font-weight (if (pos? unread-count) "600" "500")
+                              :color (:text-primary colors)}}
+          (session-name session)]
+         [unread-badge unread-count colors]]
+        ;; Directory name (last component)
+        [:> rn/Text {:style {:font-size 12
+                             :color (:text-secondary colors)}
+                     :number-of-lines 1}
+         (directory-name (:working-directory session))]]
+       ;; Timestamp - auto-updating
+       [relative-time-text {:timestamp (:last-modified session)
+                            :style {:font-size 12 :color (:text-tertiary colors)}}]
+       ;; iOS disclosure indicator (chevron)
+       [disclosure-indicator {:colors colors}]]]]))
 
 (defn- priority-tint-color
   "Get background color based on priority level (like iOS).
@@ -153,7 +153,7 @@
 
 (defn- queue-session-item
   "Single session item in the queue section.
-   Long-press shows context menu with copy options."
+   Long-press shows native context menu with copy options."
   [{:keys [session on-press on-remove colors last?]}]
   (let [unread-count (get session :unread-count 0)
         session-id (str (:id session))
@@ -162,42 +162,41 @@
                                   :align-items "center"}
                           (not last?) (merge {:border-bottom-width 1
                                               :border-bottom-color (:separator colors)}))}
-     [touchable
-      {:style {:flex 1
-               :padding-horizontal 16
-               :padding-vertical 12}
-       :on-press on-press
-       :on-long-press (fn []
-                        (platform/show-alert!
-                         (session-name session)
-                         "Session actions"
-                         [{:text "Copy Session ID"
-                           :onPress #(copy-to-clipboard! session-id "Session ID copied")}
-                          {:text "Copy Directory Path"
-                           :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
-                          {:text "Cancel" :style "cancel"}]))}
-      [:> rn/View {:style {:flex-direction "row"
-                           :align-items "center"}}
-       [:> rn/View {:style {:flex 1 :margin-right 12}}
-        ;; Session name with optional unread badge
-        [:> rn/View {:style {:flex-direction "row"
-                             :align-items "center"
-                             :margin-bottom 2}}
-         [:> rn/Text {:style {:font-size 15
-                              :font-weight (if (pos? unread-count) "600" "500")
-                              :color (:text-primary colors)}}
-          (session-name session)]
-         [unread-badge unread-count colors]]
-        ;; Directory name (last component)
-        [:> rn/Text {:style {:font-size 12
-                             :color (:text-secondary colors)}
-                     :number-of-lines 1}
-         (directory-name (:working-directory session))]]
-       ;; Timestamp - auto-updating
-       [relative-time-text {:timestamp (:last-modified session)
-                            :style {:font-size 12 :color (:text-tertiary colors)}}]
-       ;; iOS disclosure indicator (chevron)
-       [disclosure-indicator {:colors colors}]]]
+     [context-menu
+      {:title (session-name session)
+       :actions [{:title "Copy Session ID"
+                  :system-icon "doc.on.clipboard"
+                  :on-press #(copy-to-clipboard! session-id "Session ID copied")}
+                 {:title "Copy Directory Path"
+                  :system-icon "folder"
+                  :on-press #(copy-to-clipboard! working-directory "Directory path copied")}]}
+      [touchable
+       {:style {:flex 1
+                :padding-horizontal 16
+                :padding-vertical 12}
+        :on-press on-press}
+       [:> rn/View {:style {:flex-direction "row"
+                            :align-items "center"}}
+        [:> rn/View {:style {:flex 1 :margin-right 12}}
+         ;; Session name with optional unread badge
+         [:> rn/View {:style {:flex-direction "row"
+                              :align-items "center"
+                              :margin-bottom 2}}
+          [:> rn/Text {:style {:font-size 15
+                               :font-weight (if (pos? unread-count) "600" "500")
+                               :color (:text-primary colors)}}
+           (session-name session)]
+          [unread-badge unread-count colors]]
+         ;; Directory name (last component)
+         [:> rn/Text {:style {:font-size 12
+                              :color (:text-secondary colors)}
+                      :number-of-lines 1}
+          (directory-name (:working-directory session))]]
+        ;; Timestamp - auto-updating
+        [relative-time-text {:timestamp (:last-modified session)
+                             :style {:font-size 12 :color (:text-tertiary colors)}}]
+        ;; iOS disclosure indicator (chevron)
+        [disclosure-indicator {:colors colors}]]]]
      ;; Remove button
      (when on-remove
        [touchable
@@ -208,7 +207,7 @@
 
 (defn- priority-queue-session-item
   "Single session item in the priority queue section with priority tinting.
-   Long-press shows context menu with copy options."
+   Long-press shows native context menu with copy options."
   [{:keys [session on-press on-remove colors last?]}]
   (let [unread-count (get session :unread-count 0)
         priority (or (:priority session) 10)
@@ -220,42 +219,41 @@
                                   :background-color tint-color}
                           (not last?) (merge {:border-bottom-width 1
                                               :border-bottom-color (:separator colors)}))}
-     [touchable
-      {:style {:flex 1
-               :padding-horizontal 16
-               :padding-vertical 12}
-       :on-press on-press
-       :on-long-press (fn []
-                        (platform/show-alert!
-                         (session-name session)
-                         "Session actions"
-                         [{:text "Copy Session ID"
-                           :onPress #(copy-to-clipboard! session-id "Session ID copied")}
-                          {:text "Copy Directory Path"
-                           :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
-                          {:text "Cancel" :style "cancel"}]))}
-      [:> rn/View {:style {:flex-direction "row"
-                           :align-items "center"}}
-       [:> rn/View {:style {:flex 1 :margin-right 12}}
-        ;; Session name with optional unread badge
-        [:> rn/View {:style {:flex-direction "row"
-                             :align-items "center"
-                             :margin-bottom 2}}
-         [:> rn/Text {:style {:font-size 15
-                              :font-weight (if (pos? unread-count) "600" "500")
-                              :color (:text-primary colors)}}
-          (session-name session)]
-         [unread-badge unread-count colors]]
-        ;; Directory name (last component)
-        [:> rn/Text {:style {:font-size 12
-                             :color (:text-secondary colors)}
-                     :number-of-lines 1}
-         (directory-name (:working-directory session))]]
-       ;; Timestamp - auto-updating
-       [relative-time-text {:timestamp (:last-modified session)
-                            :style {:font-size 12 :color (:text-tertiary colors)}}]
-       ;; iOS disclosure indicator (chevron)
-       [disclosure-indicator {:colors colors}]]]
+     [context-menu
+      {:title (session-name session)
+       :actions [{:title "Copy Session ID"
+                  :system-icon "doc.on.clipboard"
+                  :on-press #(copy-to-clipboard! session-id "Session ID copied")}
+                 {:title "Copy Directory Path"
+                  :system-icon "folder"
+                  :on-press #(copy-to-clipboard! working-directory "Directory path copied")}]}
+      [touchable
+       {:style {:flex 1
+                :padding-horizontal 16
+                :padding-vertical 12}
+        :on-press on-press}
+       [:> rn/View {:style {:flex-direction "row"
+                            :align-items "center"}}
+        [:> rn/View {:style {:flex 1 :margin-right 12}}
+         ;; Session name with optional unread badge
+         [:> rn/View {:style {:flex-direction "row"
+                              :align-items "center"
+                              :margin-bottom 2}}
+          [:> rn/Text {:style {:font-size 15
+                               :font-weight (if (pos? unread-count) "600" "500")
+                               :color (:text-primary colors)}}
+           (session-name session)]
+          [unread-badge unread-count colors]]
+         ;; Directory name (last component)
+         [:> rn/Text {:style {:font-size 12
+                              :color (:text-secondary colors)}
+                      :number-of-lines 1}
+          (directory-name (:working-directory session))]]
+        ;; Timestamp - auto-updating
+        [relative-time-text {:timestamp (:last-modified session)
+                             :style {:font-size 12 :color (:text-tertiary colors)}}]
+        ;; iOS disclosure indicator (chevron)
+        [disclosure-indicator {:colors colors}]]]]
      ;; Remove button
      (when on-remove
        [touchable

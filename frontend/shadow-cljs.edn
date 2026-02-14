@@ -56,4 +56,6 @@
                           "@react-native-vector-icons/ionicons" {:target :file
                                                                  :file "test/stubs/ionicons.js"}
                           "@react-native-vector-icons/material-icons" {:target :file
-                                                                       :file "test/stubs/material-icons.js"}}}}}}
+                                                                       :file "test/stubs/material-icons.js"}
+                          "react-native-context-menu-view" {:target :file
+                                                            :file "test/stubs/context-menu-view.js"}}}}}}

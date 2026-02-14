@@ -9,6 +9,7 @@
             [voice-code.icons :as icons]
             [voice-code.platform :as platform]
             [voice-code.theme :as theme]
+            [voice-code.views.context-menu :refer [context-menu]]
             [voice-code.views.touchable :refer [touchable]]))
 
 (defn- session-name
@@ -47,86 +48,91 @@
 
 (defn- session-item
   "Single session item in the list.
-   Long-press shows context menu with copy and delete options.
+   Long-press shows native context menu with copy and delete options.
+   Uses react-native-context-menu-view for platform-native menus:
+   - iOS: UIMenu with SF Symbol icons and haptic feedback
+   - Android: Native ContextMenu
    colors: theme colors map (required prop to avoid hook violation)"
   [{:keys [session locked? on-press on-delete colors]}]
   (let [unread-count (get session :unread-count 0)
         session-display-name (session-name session)
         session-id (str (:id session))
         working-directory (:working-directory session)]
-    [touchable
-     {:style {:padding-horizontal 16
-              :padding-vertical 14
-              :border-bottom-width 1
-              :border-bottom-color (:separator colors)
-              :background-color (:card-background colors)}
-      :on-press on-press
-      :on-long-press (fn []
-                       (platform/show-alert!
-                        session-display-name
-                        "Session actions"
-                        [{:text "Copy Session ID"
-                          :onPress #(copy-to-clipboard! session-id "Session ID copied")}
-                         {:text "Copy Directory Path"
-                          :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
-                         {:text "Delete"
-                          :style "destructive"
-                          :onPress on-delete}
-                         {:text "Cancel" :style "cancel"}]))}
-     [:> rn/View {:style {:flex-direction "row"
-                          :align-items "center"}}
-      ;; Locked indicator
-      (when locked?
-        [:> rn/View {:style {:width 8
-                             :height 8
-                             :border-radius 4
-                             :background-color (:warning colors)
-                             :margin-right 8}}])
+    ;; Native context menu wraps the entire row.
+    ;; iOS parity: SessionsForDirectoryView.swift .contextMenu { Button("Copy Session ID") }
+    [context-menu
+     {:title session-display-name
+      :actions [{:title "Copy Session ID"
+                 :system-icon "doc.on.clipboard"
+                 :on-press #(copy-to-clipboard! session-id "Session ID copied")}
+                {:title "Copy Directory Path"
+                 :system-icon "folder"
+                 :on-press #(copy-to-clipboard! working-directory "Directory path copied")}
+                {:title "Delete"
+                 :system-icon "trash"
+                 :destructive? true
+                 :on-press on-delete}]}
+     [touchable
+      {:style {:padding-horizontal 16
+               :padding-vertical 14
+               :border-bottom-width 1
+               :border-bottom-color (:separator colors)
+               :background-color (:card-background colors)}
+       :on-press on-press}
+      [:> rn/View {:style {:flex-direction "row"
+                           :align-items "center"}}
+       ;; Locked indicator
+       (when locked?
+         [:> rn/View {:style {:width 8
+                              :height 8
+                              :border-radius 4
+                              :background-color (:warning colors)
+                              :margin-right 8}}])
 
-      [:> rn/View {:style {:flex 1}}
-       ;; Session name row with unread badge
-       [:> rn/View {:style {:flex-direction "row"
-                            :align-items "center"
-                            :margin-bottom 4}}
-        [:> rn/Text {:style {:font-size 16
-                             :font-weight (if (pos? unread-count) "700" "600")
-                             :color (:text-primary colors)
-                             :flex 1}}
-         session-display-name]
-        [unread-badge unread-count colors]
-        ;; Timestamp - auto-updating
-        [relative-time-text {:timestamp (:last-modified session)
-                             :short? true
-                             :style {:font-size 12
-                                     :color (:text-tertiary colors)
-                                     :margin-left 8}}]]
+       [:> rn/View {:style {:flex 1}}
+        ;; Session name row with unread badge
+        [:> rn/View {:style {:flex-direction "row"
+                             :align-items "center"
+                             :margin-bottom 4}}
+         [:> rn/Text {:style {:font-size 16
+                              :font-weight (if (pos? unread-count) "700" "600")
+                              :color (:text-primary colors)
+                              :flex 1}}
+          session-display-name]
+         [unread-badge unread-count colors]
+         ;; Timestamp - auto-updating
+         [relative-time-text {:timestamp (:last-modified session)
+                              :short? true
+                              :style {:font-size 12
+                                      :color (:text-tertiary colors)
+                                      :margin-left 8}}]]
 
-       ;; Message count + preview on same row (iOS parity: CDSessionRowContent)
-       ;; Shows: "N messages • preview text" with bullet separator
-       [:> rn/View {:style {:flex-direction "row"
-                            :align-items "center"
-                            :margin-top 4}}
-        [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors)}}
-         (str (:message-count session 0) " messages")]
-        ;; Bullet separator before preview (iOS parity)
-        (when-let [preview (:preview session)]
-          [:<>
-           [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors) :margin-horizontal 6}}
-            "•"]
+        ;; Message count + preview on same row (iOS parity: CDSessionRowContent)
+        ;; Shows: "N messages • preview text" with bullet separator
+        [:> rn/View {:style {:flex-direction "row"
+                             :align-items "center"
+                             :margin-top 4}}
+         [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors)}}
+          (str (:message-count session 0) " messages")]
+         ;; Bullet separator before preview (iOS parity)
+         (when-let [preview (:preview session)]
+           [:<>
+            [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors) :margin-horizontal 6}}
+             "•"]
+            [:> rn/Text {:style {:font-size 12
+                                 :color (if (pos? unread-count) (:text-secondary colors) (:text-tertiary colors))
+                                 :flex 1
+                                 :flex-shrink 1}
+                         :number-of-lines 1}
+             preview]])
+         ;; Processing indicator (after preview if any, or after count)
+         (when locked?
            [:> rn/Text {:style {:font-size 12
-                                :color (if (pos? unread-count) (:text-secondary colors) (:text-tertiary colors))
-                                :flex 1
-                                :flex-shrink 1}
-                        :number-of-lines 1}
-            preview]])
-        ;; Processing indicator (after preview if any, or after count)
-        (when locked?
-          [:> rn/Text {:style {:font-size 12
-                               :color (:warning colors)
-                               :margin-left 6}}
-           "• Processing"])]]
-      ;; iOS disclosure indicator (chevron)
-      [disclosure-indicator {:colors colors}]]]))
+                                :color (:warning colors)
+                                :margin-left 6}}
+            "• Processing"])]]
+       ;; iOS disclosure indicator (chevron)
+       [disclosure-indicator {:colors colors}]]]]))
 
 (defn- swipeable-session-item
   "Session item with swipe-to-delete functionality.
