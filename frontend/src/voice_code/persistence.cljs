@@ -676,20 +676,11 @@
  :persistence/settings-loaded
  (fn [{:keys [db]} [_ settings]]
    ;; Configure voice with loaded settings (especially respect-silent-mode for TTS)
-   ;; Also attempt auto-connect if we have an API key but aren't connected yet
-   (let [api-key (:api-key db)
-         server-url (or (get settings :server-url) (get-in db [:settings :server-url]))
-         server-port (or (get settings :server-port) (get-in db [:settings :server-port]))
-         has-server-config? (and (seq server-url) server-port)
-         status (get-in db [:connection :status])
-         already-connecting-or-connected? (#{:connecting :connected :authenticating} status)
-         will-connect? (and api-key has-server-config? (not already-connecting-or-connected?))]
-     (js/console.warn "[App] Settings loaded, api-key?" (boolean api-key)
-                      "server:" server-url ":" server-port
-                      "status:" status "will-connect?" will-connect?)
-     (cond-> {:voice/configure-silent-switch (get settings :respect-silent-mode true)}
-       will-connect?
-       (assoc :dispatch [:auth/connect api-key])))))
+   ;; Then attempt auto-connect via centralized event
+   (js/console.warn "[App] Settings loaded, server:" (get settings :server-url)
+                    ":" (get settings :server-port))
+   {:voice/configure-silent-switch (get settings :respect-silent-mode true)
+    :dispatch [:connection/auto-connect]}))
 
 (rf/reg-event-db
  :persistence/api-key-stored
@@ -700,20 +691,10 @@
 (rf/reg-event-fx
  :persistence/api-key-loaded
  (fn [{:keys [db]} [_ api-key]]
-   ;; Store API key and attempt auto-connect if we have server settings
-   ;; This enables seamless reconnection after app restart
-   (let [server-url (get-in db [:settings :server-url])
-         server-port (get-in db [:settings :server-port])
-         has-server-config? (and (seq server-url) server-port)
-         status (get-in db [:connection :status])
-         already-connecting-or-connected? (#{:connecting :connected :authenticating} status)
-         will-connect? (and has-server-config? (not already-connecting-or-connected?))]
-     (js/console.warn "[App] API key loaded, has-key?" (boolean api-key)
-                      "server:" server-url ":" server-port
-                      "status:" status "will-connect?" will-connect?)
-     (cond-> {:db (assoc db :api-key api-key)}
-       will-connect?
-       (assoc :dispatch [:auth/connect api-key])))))
+   ;; Store API key and attempt auto-connect via centralized event
+   (js/console.warn "[App] API key loaded, has-key?" (boolean api-key))
+   {:db (assoc db :api-key api-key)
+    :dispatch [:connection/auto-connect]}))
 
 (rf/reg-event-fx
  :persistence/api-key-not-found

@@ -179,6 +179,28 @@
  (fn [db [_ key]]
    (update-in db [:settings key] not)))
 
+;; Disconnect and reconnect when server settings change.
+;; Mirrors iOS VoiceCodeClient.updateServerURL(_:) behavior:
+;; 1. Disconnect existing connection
+;; 2. Update settings
+;; 3. Reset reconnect attempts to 0
+;; 4. Reconnect with new settings
+;; Only reconnects if we have an API key (user has authenticated before).
+(rf/reg-event-fx
+ :settings/server-changed
+ (fn [{:keys [db]} _]
+   (let [api-key (:api-key db)
+         server-url (get-in db [:settings :server-url])
+         server-port (get-in db [:settings :server-port])
+         has-server-config? (and (seq server-url) server-port)]
+     (log/warn "[Settings] Server settings changed, url:" server-url "port:" server-port)
+     (cond-> {:db (assoc-in db [:connection :reconnect-attempts] 0)
+              :ws/disconnect nil}
+       ;; Only reconnect if we have both server config and API key
+       (and api-key has-server-config?)
+       (assoc :dispatch-later [{:ms 100
+                                 :dispatch [:auth/connect api-key]}])))))
+
 ;; ============================================================================
 ;; Connection Testing
 ;; ============================================================================
@@ -393,6 +415,29 @@
                  :server-port (get-in db [:settings :server-port])
                  :api-key api-key
                  :session-id (:ios-session-id db)}}))
+
+;; Centralized auto-connect: called by both :persistence/settings-loaded and
+;; :persistence/api-key-loaded. Connects only when all prerequisites are met.
+;; This eliminates the race condition where the two events independently tried
+;; to connect and could miss each other's data.
+;; Performs connection inline (instead of dispatching :auth/connect) to ensure
+;; the db update is atomic and testable with dispatch-sync.
+(rf/reg-event-fx
+ :connection/auto-connect
+ (fn [{:keys [db]} _]
+   (let [api-key (:api-key db)
+         server-url (get-in db [:settings :server-url])
+         server-port (get-in db [:settings :server-port])
+         has-server-config? (and (seq server-url) server-port)
+         status (get-in db [:connection :status])
+         already-connecting-or-connected? (#{:connecting :connected :authenticating} status)]
+     (when (and api-key has-server-config? (not already-connecting-or-connected?))
+       (log/warn "[App] Auto-connecting with server:" server-url ":" server-port)
+       {:db (-> db
+                (assoc-in [:connection :status] :connecting)
+                (assoc :api-key api-key))
+        :ws/connect {:server-url server-url
+                     :server-port server-port}}))))
 
 (rf/reg-event-fx
  :auth/disconnect

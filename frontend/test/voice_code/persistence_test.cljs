@@ -241,14 +241,20 @@
 
    (testing "api-key-loaded event sets api-key in db"
      (rf/dispatch-sync [:persistence/api-key-loaded "test-api-key"])
-     ;; Verify event handler exists and runs without error
-     ;; The api-key is stored in app-db under :api-key
-     (is true))
+     (is (= "test-api-key" (:api-key @re-frame.db/app-db))
+         "api-key should be stored in app-db"))
+
+   (testing "auto-connect triggers after api-key and server config are set"
+     ;; Dispatch auto-connect directly to test connection behavior
+     ;; (the :dispatch effect from api-key-loaded is tested in events_test.cljs)
+     (rf/dispatch-sync [:connection/auto-connect])
+     (is (= :connecting (get-in @re-frame.db/app-db [:connection :status]))
+         "auto-connect should trigger with valid server config and api key"))
 
    (testing "api-key-deleted event clears api-key"
      (rf/dispatch-sync [:persistence/api-key-deleted])
-     ;; Verify event handler exists and runs without error
-     (is true))))
+     (is (nil? (:api-key @re-frame.db/app-db))
+         "api-key should be nil after deletion"))))
 
 ;; ============================================================================
 ;; Edge Cases

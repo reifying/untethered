@@ -440,6 +440,21 @@
              [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
               "Run 'make show-key-qr' on your server to display the QR code"]]])]))])))
 
+;; Debounce timer for server settings reconnection (matches iOS 0.5s debounce)
+(defonce ^:private server-change-timer (atom nil))
+(def ^:private server-change-debounce-ms 500)
+
+(defn- schedule-server-reconnect!
+  "Schedule a debounced reconnection after server settings change.
+   Mirrors iOS AppSettings.swift debounced publisher -> VoiceCodeClient.updateServerURL."
+  []
+  (when-let [timer @server-change-timer]
+    (js/clearTimeout timer))
+  (reset! server-change-timer
+          (js/setTimeout
+           #(rf/dispatch [:settings/server-changed])
+           server-change-debounce-ms)))
+
 (defn- server-settings-section
   "Server URL and port configuration.
    Wrapped in [:f>] to enable React hooks for theme colors."
@@ -455,7 +470,8 @@
                          :placeholder "192.168.1.100"
                          :on-change (fn [text]
                                       (rf/dispatch-sync [:settings/save :server-url text])
-                                      (r/flush))
+                                      (r/flush)
+                                      (schedule-server-reconnect!))
                          :colors colors}]
         [text-input-row {:label "Port"
                          :value (:server-port settings)
@@ -463,7 +479,8 @@
                          :keyboard-type "number-pad"
                          :on-change (fn [text]
                                       (rf/dispatch-sync [:settings/save :server-port (js/parseInt text)])
-                                      (r/flush))
+                                      (r/flush)
+                                      (schedule-server-reconnect!))
                          :colors colors}]
         [:> rn/View {:style {:padding-horizontal 16
                              :padding-vertical 8

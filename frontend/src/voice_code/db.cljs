@@ -8,6 +8,11 @@
    Oldest messages are pruned first to keep newest."
   50)
 
+;; Stable session UUID for backend registration, persists across hot reloads.
+;; Generated once per app process lifecycle, matches iOS VoiceCodeClient behavior.
+;; Per STANDARDS.md, must be lowercase (random-uuid already produces lowercase).
+(defonce ios-session-id (str (random-uuid)))
+
 (def default-db
   "Initial application state."
   {:connection {:status :disconnected ; :disconnected | :connecting | :connected
@@ -30,7 +35,9 @@
    :active-session-id nil
 
    ;; iOS session UUID for backend registration
-   :ios-session-id nil
+   ;; Uses defonce value so it's stable across hot reloads but unique per process
+   ;; Matches iOS VoiceCodeClient session UUID behavior
+   :ios-session-id ios-session-id
 
    ;; Set of session IDs currently processing prompts
    :locked-sessions #{}

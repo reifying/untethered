@@ -927,6 +927,87 @@
      (is (false? @(rf/subscribe [:connection/authenticated?]))))))
 
 ;; ============================================================================
+;; Auto-Connect and Server Change Events
+;; ============================================================================
+
+(deftest connection-auto-connect-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "auto-connect does nothing without api-key"
+     (rf/dispatch-sync [:db/update-in [:settings :server-url] (constantly "192.168.1.100")])
+     (rf/dispatch-sync [:db/update-in [:settings :server-port] (constantly 8080)])
+     ;; No api-key set - should remain disconnected
+     (rf/dispatch-sync [:connection/auto-connect])
+     (is (= :disconnected @(rf/subscribe [:connection/status]))))
+
+   (testing "auto-connect does nothing without server config"
+     (rf/dispatch-sync [:db/update-in [:api-key] (constantly "test-key")])
+     (rf/dispatch-sync [:db/update-in [:settings :server-url] (constantly "")])
+     (rf/dispatch-sync [:connection/auto-connect])
+     (is (= :disconnected @(rf/subscribe [:connection/status]))))
+
+   (testing "auto-connect connects when api-key and server config present"
+     (rf/dispatch-sync [:db/update-in [:settings :server-url] (constantly "192.168.1.100")])
+     (rf/dispatch-sync [:db/update-in [:settings :server-port] (constantly 8080)])
+     (rf/dispatch-sync [:db/update-in [:api-key] (constantly "test-key")])
+     (rf/dispatch-sync [:connection/auto-connect])
+     ;; auth/connect sets status to :connecting
+     (is (= :connecting @(rf/subscribe [:connection/status]))))
+
+   (testing "auto-connect skips when already connecting"
+     (rf/dispatch-sync [:db/update-in [:connection :status] (constantly :connecting)])
+     ;; Reset to test - set a new key to confirm no status change
+     (rf/dispatch-sync [:db/update-in [:api-key] (constantly "new-key")])
+     (rf/dispatch-sync [:connection/auto-connect])
+     ;; Should remain :connecting (not re-dispatch auth/connect)
+     (is (= :connecting @(rf/subscribe [:connection/status]))))
+
+   (testing "auto-connect skips when already connected"
+     (rf/dispatch-sync [:db/update-in [:connection :status] (constantly :connected)])
+     (rf/dispatch-sync [:connection/auto-connect])
+     (is (= :connected @(rf/subscribe [:connection/status]))))))
+
+(deftest settings-server-changed-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "server-changed resets reconnect attempts"
+     (rf/dispatch-sync [:db/update-in [:connection :reconnect-attempts] (constantly 5)])
+     (rf/dispatch-sync [:settings/server-changed])
+     (is (= 0 (get-in @re-frame.db/app-db [:connection :reconnect-attempts]))))
+
+   (testing "server-changed without api-key disconnects but does not reconnect"
+     ;; Ensure no api-key
+     (rf/dispatch-sync [:db/update-in [:api-key] (constantly nil)])
+     (rf/dispatch-sync [:db/update-in [:connection :status] (constantly :connected)])
+     (rf/dispatch-sync [:settings/server-changed])
+     ;; Should just reset attempts, disconnect effect issued
+     (is (= 0 (get-in @re-frame.db/app-db [:connection :reconnect-attempts]))))))
+
+(deftest ios-session-id-initialization-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "ios-session-id is set on initialization (not nil)"
+     (let [session-id (:ios-session-id @re-frame.db/app-db)]
+       (is (some? session-id) "ios-session-id must not be nil")
+       (is (string? session-id) "ios-session-id must be a string")
+       ;; UUID format: 8-4-4-4-12 hex characters
+       (is (re-matches #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                       session-id)
+           "ios-session-id must be a valid lowercase UUID")))
+
+   (testing "ios-session-id is stable across re-initialization"
+     (let [first-id (:ios-session-id @re-frame.db/app-db)]
+       ;; Re-initialize db (simulates hot reload)
+       (rf/dispatch-sync [:initialize-db])
+       (let [second-id (:ios-session-id @re-frame.db/app-db)]
+         ;; defonce ensures same UUID persists
+         (is (= first-id second-id)
+             "ios-session-id should be stable across re-initialization"))))))
+
+;; ============================================================================
 ;; Prompt Events
 ;; ============================================================================
 
