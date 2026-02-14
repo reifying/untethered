@@ -12,6 +12,7 @@
             ["react-native" :as rn :refer [Alert]]
             [voice-code.persistence :as persistence]
             [voice-code.views.components :refer [copy-to-clipboard!]]
+            [voice-code.icons :as icons]
             [voice-code.theme :as theme]))
 
 ;; ============================================================================
@@ -63,10 +64,10 @@
             :border-bottom-color (:separator-opaque colors)}
     :on-press on-press}
    (when icon
-     [:> rn/Text {:style {:font-size 18
-                          :color (if destructive? (:destructive colors) (:accent colors))
-                          :margin-right 12}}
-      icon])
+     [icons/icon {:name icon
+                  :size 18
+                  :color (if destructive? (:destructive colors) (:accent colors))
+                  :style {:margin-right 12}}])
    [:> rn/Text {:style {:font-size 16
                         :color (if destructive? (:destructive colors) (:accent colors))}}
     label]])
@@ -189,7 +190,7 @@
                        :on-copy nil
                        :colors colors}])
           [action-button {:label "Remove from Priority Queue"
-                          :icon "☆"
+                          :icon :star-outline
                           :destructive? true
                           :on-press on-remove-from-queue
                           :colors colors}]
@@ -202,7 +203,7 @@
             "Change priority to adjust position in queue. Lower priority number = higher importance."]]]
          [:> rn/View
           [action-button {:label "Add to Priority Queue"
-                          :icon "★"
+                          :icon :star
                           :on-press on-add-to-queue
                           :colors colors}]
           [:> rn/View {:style {:padding-horizontal 16
@@ -233,7 +234,7 @@
                  :on-copy nil
                  :colors colors}]
       [action-button {:label "Exit Recipe"
-                      :icon "⏹"
+                      :icon :stop
                       :destructive? true
                       :on-press on-exit-recipe
                       :colors colors}]
@@ -246,7 +247,7 @@
         "Recipe is guiding this session through structured steps."]]]
      [:> rn/View
       [action-button {:label "Start Recipe"
-                      :icon "▶"
+                      :icon :play
                       :on-press on-start-recipe
                       :colors colors}]
       [:> rn/View {:style {:padding-horizontal 16
@@ -263,15 +264,15 @@
   [:> rn/View
    [section-header "Actions" colors]
    [action-button {:label "Infer Session Name"
-                   :icon "✨"
+                   :icon :sparkles
                    :on-press on-infer-name
                    :colors colors}]
    [action-button {:label "Export Conversation"
-                   :icon "↗"
+                   :icon :send
                    :on-press on-export
                    :colors colors}]
    [action-button {:label "Compact Session"
-                   :icon "⚡"
+                   :icon :compress
                    :on-press on-compact
                    :colors colors}]
    [:> rn/View {:style {:padding-horizontal 16
@@ -288,7 +289,7 @@
   [:> rn/View
    [section-header "Danger Zone" colors]
    [action-button {:label "Delete Session"
-                   :icon "🗑"
+                   :icon :trash
                    :destructive? true
                    :on-press on-delete
                    :colors colors}]

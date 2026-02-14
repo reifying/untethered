@@ -5,6 +5,7 @@
             [re-frame.core :as rf]
             ["react-native" :refer [Share] :as rn]
             [voice-code.haptic :as haptic]
+            [voice-code.icons :as icons]
             [voice-code.theme :as theme]
             [voice-code.views.components :refer [copy-to-clipboard!]]))
 
@@ -97,8 +98,12 @@
                            :align-items "center"
                            :margin-right 16
                            :margin-bottom 4}}
+       [icons/icon {:name :clock
+                    :size 13
+                    :color (:text-secondary colors)
+                    :style {:margin-right 4}}]
        [:> rn/Text {:style {:font-size 13 :color (:text-secondary colors)}}
-        (str "⏱ " (format-duration duration-ms))]])
+        (format-duration duration-ms)]])
 
     ;; Timestamp
     (when timestamp
@@ -110,9 +115,15 @@
 
    ;; Working directory
    (when working-directory
-     [:> rn/View {:style {:margin-top 8}}
+     [:> rn/View {:style {:margin-top 8
+                          :flex-direction "row"
+                          :align-items "center"}}
+      [icons/icon {:name :folder
+                   :size 12
+                   :color (:text-secondary colors)
+                   :style {:margin-right 4}}]
       [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
-       (str "📁 " working-directory)]])])
+       working-directory]])])
 
 (defn- output-view
   "Scrollable output display."
@@ -157,8 +168,9 @@
             :background-color (:overlay colors)
             :border-radius 6}
     :on-press on-press}
+   [icons/icon {:name icon :size 14 :color (:text-primary colors) :style {:margin-right 6}}]
    [:> rn/Text {:style {:font-size 14 :color (:text-primary colors)}}
-    (str icon " " label)]])
+    label]])
 
 (defn- action-buttons
   "Action buttons for copy and share functionality.
@@ -171,7 +183,7 @@
                        :gap 8}}
    ;; Share button
    [action-button
-    {:icon "↗"
+    {:icon :share
      :label "Share"
      :colors colors
      :on-press (fn []
@@ -185,7 +197,7 @@
                                  nil)))))}]
    ;; Copy button
    [action-button
-    {:icon "📋"
+    {:icon :clipboard
      :label "Copy"
      :colors colors
      :on-press #(copy-to-clipboard! output nil)}]])

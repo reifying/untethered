@@ -8,7 +8,8 @@
             [voice-code.voice :as voice]
             [voice-code.utils :as utils]
             [voice-code.performance :as perf]
-            [voice-code.theme :as theme]))
+            [voice-code.theme :as theme]
+            [voice-code.icons :as icons]))
 
 ;; Note: Toast components (copy-to-clipboard!, show-toast!, toast-overlay) are now
 ;; imported from voice-code.views.components for consistency across views.
@@ -178,10 +179,7 @@
                                    :background-color (:text-tertiary colors)
                                    :justify-content "center"
                                    :align-items "center"}}
-               [:> rn/Text {:style {:font-size 12
-                                    :color (:button-text-on-accent colors)
-                                    :font-weight "600"}}
-                "✕"]]])]]]]))])
+               [icons/icon {:name :close :size 10 :color (:button-text-on-accent colors)}]]])]]]]))])
 
 (defn- show-rename-dialog
   "Show the rename session modal (replaces Alert.prompt for cross-platform support).
@@ -228,7 +226,7 @@
                  :min-width 80}
          :on-press on-press
          :active-opacity 0.7}
-        [:> rn/Text {:style {:font-size 28 :margin-bottom 6}} icon]
+        [icons/icon {:name icon :size 28 :color (or color (:accent colors))}]
         [:> rn/Text {:style {:font-size 13
                              :color (or color (:accent colors))
                              :font-weight "500"}}
@@ -335,7 +333,7 @@
           ;; Copy button with animated state feedback
           ;; Matches iOS ConversationView.swift lines 1194-1220
           [action-button
-           {:icon (if copied? "✅" "📋")
+           {:icon (if copied? :checkmark-circle :clipboard)
             :label (if copied? "Copied!" "Copy")
             :color (when copied? (:success colors))
             :on-press (fn []
@@ -347,7 +345,7 @@
 
           ;; Read Aloud / Stop button
           [action-button
-           {:icon (if speaking? "⏹" "🔊")
+           {:icon (if speaking? :stop :speaker)
             :label (if speaking? "Stop" "Read Aloud")
             :color (if speaking? (:destructive colors) (:accent colors))
             :on-press (fn []
@@ -361,7 +359,7 @@
           ;; Infer Name button (only for assistant messages)
           (when is-assistant?
             [action-button
-             {:icon "✨"
+             {:icon :sparkles
               :label "Infer Name"
               :on-press (fn []
                           (reset-copy-confirmation!)
@@ -380,16 +378,16 @@
 ;; - Tool call: hammer.fill (orange)
 ;; - Tool result: doc.text.fill (purple)
 
-(defn- role-icon
-  "Get the icon emoji for a message role.
-   Matches iOS SF Symbol names with emoji equivalents."
+(defn- role-icon-name
+  "Get the icon keyword for a message role.
+   Matches iOS SF Symbol names: person.circle.fill, cpu, hammer.fill, doc.text.fill."
   [role]
   (case role
-    :user "👤"
-    :assistant "🤖"
-    :tool-call "🔧"
-    :tool-result "📄"
-    "❓"))
+    :user :person
+    :assistant :robot
+    :tool-call :wrench
+    :tool-result :document
+    :help))
 
 (defn- role-label
   "Get the display label for a message role."
@@ -477,9 +475,10 @@
              [:> rn/View {:style {:flex-direction "row"
                                   :align-items "center"
                                   :margin-bottom 6}}
-              [:> rn/Text {:style {:font-size 16
-                                   :margin-right 6}}
-               (role-icon role)]
+              [:> rn/View {:style {:margin-right 6}}
+               [icons/icon {:name (role-icon-name role)
+                            :size 16
+                            :color (role-color role colors)}]]
               [:> rn/Text {:style {:font-size 12
                                    :font-weight "600"
                                    :color (role-color role colors)
@@ -527,7 +526,7 @@
                [:> rn/Text {:style {:font-size 11
                                     :color (:destructive colors)
                                     :margin-left 4}}
-                " • ⚠️ Failed to send"]
+                " • Failed to send"]
                is-sending?
                [:> rn/Text {:style {:font-size 11
                                     :color (:text-tertiary colors)
@@ -586,7 +585,8 @@
                               :flex-direction "row"
                               :align-items "flex-start"}}
           ;; Error icon
-          [:> rn/Text {:style {:font-size 16 :margin-right 8}} "⚠️"]
+          [:> rn/View {:style {:margin-right 8}}
+           [icons/icon {:name :warning :size 16 :color (:destructive colors)}]]
           ;; Error content (tappable to copy)
           [:> rn/TouchableOpacity
            {:style {:flex 1}
@@ -626,8 +626,10 @@
                  :background-color (:accent-background colors)
                  :border-radius 8}
          :on-press #(rf/dispatch [:ui/toggle-input-mode])}
-        [:> rn/Text {:style {:font-size 16 :margin-right 6}}
-         (if voice-mode? "🎤" "⌨️")]
+        [:> rn/View {:style {:margin-right 6}}
+         [icons/icon {:name (if voice-mode? :mic :keyboard)
+                      :size 16
+                      :color (:accent colors)}]]
         [:> rn/Text {:style {:font-size 13
                              :color (:accent colors)
                              :font-weight "500"}}
@@ -717,7 +719,8 @@
         [:> rn/View {:style {:flex-direction "row"
                              :align-items "center"
                              :margin-bottom 8}}
-         [:> rn/Text {:style {:font-size 16 :margin-right 8}} "⚠️"]
+         [:> rn/View {:style {:margin-right 8}}
+          [icons/icon {:name :warning :size 16 :color (:destructive colors)}]]
          [:> rn/Text {:style {:font-size 14
                               :color (:destructive colors)
                               :font-weight "500"
@@ -791,8 +794,9 @@
                     (if listening?
                       (rf/dispatch [:voice/stop-listening])
                       (rf/dispatch [:voice/start-listening])))}
-       [:> rn/Text {:style {:font-size 32}}
-        (if listening? "⏹" "🎤")]]
+       [icons/icon {:name (if listening? :stop :mic)
+                    :size 32
+                    :color (:button-text-on-accent colors)}]]
 
       ;; Status text - tappable unlock when locked
       (if locked?
@@ -874,10 +878,7 @@
                    :align-items "center"}
            :disabled (not can-send?)
            :on-press #(rf/dispatch [:prompt/send-from-draft session-id])}
-          [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                               :font-size 18
-                               :font-weight "bold"}}
-           "↑"]]]
+          [icons/icon {:name :send :size 18 :color (:button-text-on-accent colors)}]]]
 
         ;; Locked state hint - tappable unlock button
         (when locked?
@@ -1074,7 +1075,8 @@
                             :justify-content "center"
                             :align-items "center"
                             :padding 40}}
-        [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "⚠️"]
+        [:> rn/View {:style {:margin-bottom 16}}
+         [icons/icon {:name :warning :size 48 :color (:warning colors)}]]
         [:> rn/Text {:style {:font-size 20
                              :font-weight "600"
                              :color (:text-primary colors)
@@ -1135,7 +1137,8 @@
            [:> rn/View {:style {:flex-direction "column" :align-items "flex-start"}}
             ;; Top row: recipe label
             [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-             [:> rn/Text {:style {:font-size 12 :margin-right 4}} "📋"]
+             [:> rn/View {:style {:margin-right 4}}
+            [icons/icon {:name :recipe-active :size 12 :color (:success colors)}]]
              [:> rn/Text {:style {:font-size 12
                                   :color (:success colors)
                                   :font-weight "600"
@@ -1170,7 +1173,7 @@
            :on-press #(.navigate navigation "Recipes"
                                  #js {:sessionId session-id
                                       :workingDirectory working-directory})}
-          [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "📝"]])))])
+          [icons/icon {:name :recipe :size 16 :color (:accent colors)}]])))])
 
 (defn- header-info-button
   "Info button for the conversation header.
@@ -1184,7 +1187,7 @@
         {:style {:padding 8}
          :on-press #(.navigate navigation "SessionInfo"
                                #js {:sessionId session-id})}
-        [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "ℹ️"]]))])
+        [icons/icon {:name :info-circle :size 16 :color (:accent colors)}]]))])
 
 (defn- header-refresh-button
   "Refresh button for the conversation header.
@@ -1200,7 +1203,7 @@
          :on-press #(rf/dispatch [:session/refresh session-id])}
         (if refreshing?
           [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
-          [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "↻"])]))])
+          [icons/icon {:name :refresh :size 16 :color (:accent colors)}])]))])
 
 (defn- header-queue-remove-button
   "Remove from queue button. Only shows when queue is enabled and session is in queue.
@@ -1222,10 +1225,7 @@
                                :background-color (:warning colors)
                                :justify-content "center"
                                :align-items "center"}}
-           [:> rn/Text {:style {:font-size 12
-                                :font-weight "bold"
-                                :color (:button-text-on-accent colors)
-                                :margin-top -1}} "✕"]]])))])
+           [icons/icon {:name :close :size 10 :color (:button-text-on-accent colors)}]]])))])
 
 (defn- header-stop-speech-button
   "Stop/Pause/Resume Speaking buttons for the conversation header.
@@ -1247,13 +1247,14 @@
             :on-press #(if paused?
                          (rf/dispatch [:voice/resume-speaking])
                          (rf/dispatch [:voice/pause-speaking]))}
-           [:> rn/Text {:style {:font-size 16 :color (if paused? (:accent colors) (:warning colors))}}
-            (if paused? "▶️" "⏸️")]]
+           [icons/icon {:name (if paused? :play :pause)
+                        :size 16
+                        :color (if paused? (:accent colors) (:warning colors))}]]
           ;; Stop button
           [:> rn/TouchableOpacity
            {:style {:padding 8}
             :on-press #(rf/dispatch [:voice/stop-speaking])}
-           [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}} "⏹"]]])))])
+           [icons/icon {:name :stop :size 16 :color (:destructive colors)}]]])))])
 
 (defn- header-kill-button
   "Kill button for canceling stuck prompts.
@@ -1274,7 +1275,7 @@
                                        :style "destructive"
                                        :onPress (fn []
                                                   (rf/dispatch [:session/kill session-id]))}]))}
-        [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}} "⏹"]]))])
+        [icons/icon {:name :close-circle :size 16 :color (:destructive colors)}]]))])
 
 (defn- header-compact-button
   "Compact button for compressing session history.
@@ -1322,11 +1323,11 @@
           [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
 
           recently-compacted?
-          [:> rn/Text {:style {:font-size 16 :color (:success colors)}} "⚡"]
+          [icons/icon {:name :compress :size 16 :color (:success colors)}]
 
           :else
-          [:> rn/Text {:style {:font-size 16
-                               :color (if locked? (:text-tertiary colors) (:accent colors))}} "⚡"])]))])
+          [icons/icon {:name :compress :size 16
+                       :color (if locked? (:text-tertiary colors) (:accent colors))}])]))])
 
 (defn- header-right-buttons
   "Combined header right buttons: Stop Speech, Kill (when locked), Compact, Recipe, Info, Queue Remove, Refresh."
@@ -1379,10 +1380,8 @@
                              :font-weight "600"
                              :color (:text-primary colors)}}
          display-name]
-        [:> rn/Text {:style {:font-size 12
-                             :color (:text-secondary colors)
-                             :margin-left 6}}
-         "✏️"]]))])
+        [:> rn/View {:style {:margin-left 6}}
+         [icons/icon {:name :edit :size 12 :color (:text-secondary colors)}]]]))])
 
 (defn conversation-view
   "Main conversation screen.

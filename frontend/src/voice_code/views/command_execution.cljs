@@ -4,6 +4,7 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn]
+            [voice-code.icons :as icons]
             [voice-code.theme :as theme]))
 
 (defn- format-duration
@@ -155,9 +156,10 @@
                                    (:accent colors)
                                    (:separator colors))}
     :on-press on-toggle}
-   [:> rn/Text {:style {:font-size 16
-                        :margin-right 8}}
-    (if enabled? "⬇️" "⏸️")]
+   [icons/icon {:name (if enabled? :arrow-down-circle :pause)
+                :size 16
+                :color (if enabled? (:accent colors) (:text-secondary colors))
+                :style {:margin-right 8}}]
    [:> rn/Text {:style {:font-size 14
                         :color (if enabled?
                                  (:accent colors)
@@ -190,7 +192,7 @@
                        :align-items "center"
                        :justify-content "center"
                        :padding 40}}
-   [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "⚡"]
+   [icons/icon {:name :terminal :size 48 :color (:text-secondary colors) :style {:margin-bottom 16}}]
    [:> rn/Text {:style {:font-size 18
                         :font-weight "600"
                         :color (:text-primary colors)

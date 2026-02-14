@@ -52,4 +52,8 @@
                           "react-native-safe-area-context" {:target :file
                                                             :file "test/stubs/safe-area-context.js"}
                           "react-native-screens" {:target :file
-                                                  :file "test/stubs/react-native-screens.js"}}}}}}
+                                                  :file "test/stubs/react-native-screens.js"}
+                          "@react-native-vector-icons/ionicons" {:target :file
+                                                                 :file "test/stubs/ionicons.js"}
+                          "@react-native-vector-icons/material-icons" {:target :file
+                                                                       :file "test/stubs/material-icons.js"}}}}}}

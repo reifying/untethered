@@ -4,6 +4,7 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn]
+            [voice-code.icons :as icons]
             [voice-code.theme :as theme]
             [voice-code.voice :as voice]))
 
@@ -59,9 +60,9 @@
        :on-press #(if previewing?
                     (rf/dispatch [:voice/stop-preview])
                     (rf/dispatch [:voice/preview id]))}
-      [:> rn/Text {:style {:font-size 20
-                           :color (if previewing? (:destructive colors) (:accent colors))}}
-       (if previewing? "⏹" "▶️")]]
+      [icons/icon {:name (if previewing? :stop :play)
+                   :size 20
+                   :color (if previewing? (:destructive colors) (:accent colors))}]]
      ;; Main content - tappable to select
      [:> rn/TouchableOpacity
       {:style {:flex 1}
@@ -80,7 +81,7 @@
                            :margin-top 2}}
        language]]
      (when selected?
-       [:> rn/Text {:style {:font-size 20 :color (:accent colors)}} "✓"])]))
+       [icons/icon {:name :checkmark :size 20 :color (:accent colors)}])]))
 
 (defn- system-default-item
   "The system default option."
@@ -104,7 +105,7 @@
                          :margin-top 2}}
      "Uses device's default voice"]]
    (when selected?
-     [:> rn/Text {:style {:font-size 20 :color (:accent colors)}} "✓"])])
+     [icons/icon {:name :checkmark :size 20 :color (:accent colors)}])])
 
 (defn- all-premium-voices-item
   "The 'All Premium Voices' rotation option.
@@ -139,7 +140,7 @@
                          :margin-top 2}}
      (str "Rotates between " premium-count " premium voices per project")]]
    (when selected?
-     [:> rn/Text {:style {:font-size 20 :color (:accent colors)}} "✓"])])
+     [icons/icon {:name :checkmark :size 20 :color (:accent colors)}])])
 
 (defn- loading-indicator
   "Loading spinner while fetching voices."

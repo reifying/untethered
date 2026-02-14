@@ -14,6 +14,7 @@
             [voice-code.log-manager :as log-manager]
             [voice-code.performance :as perf]
             [voice-code.views.components :refer [copy-to-clipboard!]]
+            [voice-code.icons :as icons]
             [voice-code.theme :as theme]))
 
 ;; ============================================================================
@@ -133,7 +134,7 @@
                        :justify-content "center"
                        :align-items "center"
                        :padding 40}}
-   [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "📋"]
+   [icons/icon {:name :clipboard :size 48 :color (:text-secondary colors) :style {:margin-bottom 16}}]
    [:> rn/Text {:style {:font-size 18
                         :font-weight "600"
                         :color (:text-primary colors)
@@ -230,7 +231,7 @@
                        :justify-content "center"
                        :align-items "center"
                        :padding 40}}
-   [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "📊"]
+   [icons/icon {:name :chart :size 48 :color (:text-secondary colors) :style {:margin-bottom 16}}]
    [:> rn/Text {:style {:font-size 18
                         :font-weight "600"
                         :color (:text-primary colors)
@@ -282,7 +283,7 @@
                     (perf/reset-stats!)
                     (show-toast! "Stats reset"))}
        [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-        [:> rn/Text {:style {:font-size 16 :margin-right 6}} "🗑️"]
+        [icons/icon {:name :trash :size 16 :color (:button-text-on-accent colors) :style {:margin-right 6}}]
         [:> rn/Text {:style {:font-size 16
                              :font-weight "600"
                              :color (:button-text-on-accent colors)}}
@@ -303,7 +304,7 @@
                        text
                        #(show-toast! "Logs copied to clipboard"))))}
        [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-        [:> rn/Text {:style {:font-size 16 :margin-right 6}} "📋"]
+        [icons/icon {:name :clipboard :size 16 :color (:button-text-on-accent colors) :style {:margin-right 6}}]
         [:> rn/Text {:style {:font-size 16
                              :font-weight "600"
                              :color (:button-text-on-accent colors)}}
@@ -320,7 +321,7 @@
                     (rf/dispatch [:logs/clear])
                     (show-toast! "Logs cleared"))}
        [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-        [:> rn/Text {:style {:font-size 16 :margin-right 6}} "🗑️"]
+        [icons/icon {:name :trash :size 16 :color (:button-text-on-accent colors) :style {:margin-right 6}}]
         [:> rn/Text {:style {:font-size 16
                              :font-weight "600"
                              :color (:button-text-on-accent colors)}}

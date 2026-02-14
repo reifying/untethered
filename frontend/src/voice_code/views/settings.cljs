@@ -14,6 +14,7 @@
             [voice-code.auth :refer [api-key-validation-status mask-api-key]]
             [voice-code.views.voice-picker :refer [voice-picker-modal]]
             [voice-code.haptic :as haptic]
+            [voice-code.icons :as icons]
             [voice-code.theme :as theme]))
 
 ;; ============================================================================
@@ -37,9 +38,10 @@
                               :padding-top 8
                               :padding-bottom (if message 4 8)}}
           ;; Status icon
-          [:> rn/Text {:style {:font-size 16
-                               :margin-right 8}}
-           (if valid? "✓" "✗")]
+          [icons/icon {:name (if valid? :checkmark :close)
+                       :size 16
+                       :color (if valid? (:success colors) (:destructive colors))
+                       :style {:margin-right 8}}]
 
           ;; Character count
           [:> rn/Text {:style {:font-size 14
@@ -198,7 +200,7 @@
                     :opacity (if (<= value (or min-value 0)) 0.3 1)}
             :disabled (<= value (or min-value 0))
             :on-press #(on-change (- value (or step 1)))}
-           [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "−"]]
+           [icons/icon {:name :remove :size 20 :color (:text-primary colors)}]]
           [:> rn/Text {:style {:font-size 16
                                :color (:text-primary colors)
                                :min-width 60
@@ -214,7 +216,7 @@
                     :opacity (if (>= value (or max-value 100)) 0.3 1)}
             :disabled (>= value (or max-value 100))
             :on-press #(on-change (+ value (or step 1)))}
-           [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "+"]]]]
+           [icons/icon {:name :add :size 20 :color (:text-primary colors)}]]]]
         (when description
           [:> rn/Text {:style {:font-size 12
                                :color (:text-secondary colors)
@@ -266,7 +268,7 @@
             :on-press (fn []
                         (haptic/selection!)
                         (on-change (max min-val (- value step))))}
-           [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "−"]]
+           [icons/icon {:name :remove :size 20 :color (:text-primary colors)}]]
           [:> rn/Text {:style {:font-size 16
                                :color (:accent colors)
                                :font-weight "500"
@@ -285,7 +287,7 @@
             :on-press (fn []
                         (haptic/selection!)
                         (on-change (min max-val (+ value step))))}
-           [:> rn/Text {:style {:font-size 20 :color (:text-primary colors)}} "+"]]]]
+           [icons/icon {:name :add :size 20 :color (:text-primary colors)}]]]]
         (when description
           [:> rn/Text {:style {:font-size 12
                                :color (:text-secondary colors)
@@ -343,7 +345,7 @@
                                  :background-color (:card-background colors)
                                  :border-bottom-width 1
                                  :border-bottom-color (:separator colors)}}
-             [:> rn/Text {:style {:font-size 18 :color (:success colors) :margin-right 8}} "✓"]
+             [icons/icon {:name :checkmark :size 18 :color (:success colors) :style {:margin-right 8}}]
              [:> rn/Text {:style {:font-size 16 :color (:text-primary colors) :flex 1}}
               "API Key Configured"]
              [:> rn/Text {:style {:font-size 14
@@ -354,7 +356,7 @@
             ;; Update key button (navigates to QR scanner)
             [setting-row {:label "Update Key"
                           :on-press #(when navigation (.navigate navigation "QRScanner"))
-                          :accessory [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "📷"]}]
+                          :accessory [icons/icon {:name :qr-code :size 16 :color (:accent colors)}]}]
 
             ;; Delete key button
             [setting-row {:label "Delete Key"
@@ -366,7 +368,7 @@
                                                         {:text "Delete"
                                                          :style "destructive"
                                                          :onPress #(rf/dispatch [:auth/disconnect])}])))
-                          :accessory [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}} "🗑"]}]]
+                          :accessory [icons/icon {:name :trash :size 16 :color (:destructive colors)}]}]]
 
            ;; Key not configured - show warning and entry options
            [:<>
@@ -378,14 +380,14 @@
                                  :background-color (:card-background colors)
                                  :border-bottom-width 1
                                  :border-bottom-color (:separator colors)}}
-             [:> rn/Text {:style {:font-size 18 :color (:warning colors) :margin-right 8}} "⚠️"]
+             [icons/icon {:name :warning :size 18 :color (:warning colors) :style {:margin-right 8}}]
              [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
               "API Key Required"]]
 
             ;; Scan QR button
             [setting-row {:label "Scan QR Code"
                           :on-press #(when navigation (.navigate navigation "QRScanner"))
-                          :accessory [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "📷"]}]
+                          :accessory [icons/icon {:name :qr-code :size 16 :color (:accent colors)}]}]
 
             ;; Manual entry field with real-time validation
             [:> rn/View {:style {:background-color (:card-background colors)
@@ -588,8 +590,7 @@
                        :accessory [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
                                    (if previewing?
                                      [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
-                                     [:> rn/Text {:style {:font-size 16 :color (:accent colors)}}
-                                      "▶"])]}]
+                                     [icons/icon {:name :play :size 16 :color (:accent colors)}])]}]
          ;; Voice picker modal
          [voice-picker-modal {:visible @picker-visible?
                               :on-close #(reset! picker-visible? false)}]]))])))
@@ -732,12 +733,12 @@
                                     [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
 
                                     (some? result)
-                                    [:> rn/Text {:style {:font-size 16
-                                                         :color (if (:success result) (:success colors) (:destructive colors))}}
-                                     (if (:success result) "✓" "✕")]
+                                    [icons/icon {:name (if (:success result) :checkmark-circle :close-circle)
+                                                 :size 18
+                                                 :color (if (:success result) (:success colors) (:destructive colors))}]
 
                                     :else
-                                    [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "→"])]}]
+                                    [icons/icon {:name :navigate-forward :size 16 :color (:accent colors)}])]}]
         (when result
           [:> rn/View {:style {:padding-horizontal 16
                                :padding-vertical 8
@@ -835,7 +836,7 @@
         [section-header "Debug"]
         [setting-row {:label "Debug Logs"
                       :on-press #(when navigation (.navigate navigation "DebugLogs"))
-                      :accessory [:> rn/Text {:style {:font-size 16 :color (:accent colors)}} "→"]}]
+                      :accessory [icons/icon {:name :navigate-forward :size 16 :color (:accent colors)}]}]
         [:> rn/View {:style {:padding-horizontal 16
                              :padding-bottom 8
                              :background-color (:card-background colors)

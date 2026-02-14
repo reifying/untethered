@@ -6,6 +6,7 @@
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [RefreshControl Animated PanResponder]]
             [voice-code.haptic :as haptic]
+            [voice-code.icons :as icons]
             [voice-code.theme :as theme]))
 
 (defn- format-file-size
@@ -36,12 +37,12 @@
                     (.split ".")
                     last)]
     (case ext
-      ("jpg" "jpeg" "png" "gif" "webp") "🖼️"
-      ("pdf") "📄"
-      ("txt" "md" "markdown") "📝"
-      ("json" "edn" "yaml" "yml") "📋"
-      ("zip" "tar" "gz") "📦"
-      "📎")))
+      ("jpg" "jpeg" "png" "gif" "webp") :image
+      ("pdf") :document
+      ("txt" "md" "markdown") :edit
+      ("json" "edn" "yaml" "yml") :data
+      ("zip" "tar" "gz") :file
+      :paper-clip)))
 
 ;; Swipe-to-delete constants
 (def ^:private swipe-threshold
@@ -69,8 +70,7 @@
                         :align-items "center"
                         :justify-content "center"
                         :margin-right 12}}
-    [:> rn/Text {:style {:font-size 22}}
-     (file-icon filename)]]
+    [icons/icon {:name (file-icon filename) :size 22 :color (:text-secondary colors)}]]
 
    ;; File info
    [:> rn/View {:style {:flex 1}}
@@ -168,7 +168,7 @@
                                         :duration 200
                                         :useNativeDriver false})
                           (.start (fn [_] (on-delete resource)))))}
-         [:> rn/Text {:style {:font-size 24}} "🗑️"]
+         [icons/icon {:name :trash :size 24 :color (:bubble-user-text colors)}]
          [:> rn/Text {:style {:color (:bubble-user-text colors)
                               :font-size 12
                               :font-weight "600"
@@ -215,7 +215,7 @@
                         :justify-content "center"
                         :margin-right 12
                         :opacity 0.8}}
-    [:> rn/Text {:style {:font-size 18}} "⬆️"]]
+    [icons/icon {:name :upload :size 18 :color (:warning-text colors)}]]
    [:> rn/View {:style {:flex 1}}
     [:> rn/Text {:style {:font-size 14
                          :color (:text-primary colors)
@@ -233,7 +233,7 @@
                        :justify-content "center"
                        :align-items "center"
                        :padding 40}}
-   [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "📁"]
+   [icons/icon {:name :folder :size 48 :color (:text-secondary colors) :style {:margin-bottom 16}}]
    [:> rn/Text {:style {:font-size 18
                         :font-weight "600"
                         :color (:text-primary colors)
@@ -268,9 +268,7 @@
               :opacity (if disabled? 0.6 1)}
       :disabled disabled?
       :on-press on-press}
-     [:> rn/Text {:style {:font-size 24
-                          :color (:bubble-user-text colors)}}
-      "📤"]]))
+     [icons/icon {:name :upload :size 24 :color (:bubble-user-text colors)}]]))
 
 (defn- resources-view-inner
   "Inner render component for resources view.

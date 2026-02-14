@@ -6,6 +6,7 @@
             ["react-native" :as rn :refer [Alert RefreshControl Modal Switch Animated PanResponder]]
             [voice-code.views.components :as components :refer [relative-time-text copy-to-clipboard! toast-overlay]]
             [voice-code.haptic :as haptic]
+            [voice-code.icons :as icons]
             [voice-code.theme :as theme]))
 
 (defn- session-name
@@ -442,7 +443,9 @@
       :on-press on-press
       :active-opacity 0.7}
      [:> rn/View {:style {:position "relative"}}
-      [:> rn/Text {:style {:font-size 20}} icon]
+      (if (keyword? icon)
+        [icons/icon {:name icon :size 20 :color (if active? active-text (:text-secondary colors))}]
+        [:> rn/Text {:style {:font-size 20}} icon])
       (when (and badge-count (pos? badge-count))
         [:> rn/View {:style {:position "absolute"
                              :top -4
@@ -489,7 +492,7 @@
      ;; Stop Speech button - only shown when TTS is speaking
      (when speaking?
        [toolbar-button
-        {:icon "🔇"
+        {:icon :speaker-slash
          :label "Stop"
          :active? true
          :active-color :green
@@ -497,7 +500,7 @@
          :on-press #(rf/dispatch [:voice/stop-speaking])}])
      ;; Commands button - badge shows available command count
      [toolbar-button
-      {:icon "⚡"
+      {:icon :terminal
        :label "Commands"
        :badge-count command-count
        :colors colors
@@ -508,7 +511,7 @@
      ;; iOS parity: This matches the "clock.arrow.circlepath" button that shows
      ;; ActiveCommandsListView (running commands), not completed history.
      [toolbar-button
-      {:icon "📜"
+      {:icon :document
        :label "Active"
        :active? running-commands
        :active-color :green
@@ -519,7 +522,7 @@
                                #js {:workingDirectory directory}))}]
      ;; Resources button
      [toolbar-button
-      {:icon "📎"
+      {:icon :paper-clip
        :label "Resources"
        :badge-count pending-uploads
        :colors colors
@@ -528,7 +531,7 @@
                                #js {:workingDirectory directory}))}]
      ;; Recipes button
      [toolbar-button
-      {:icon "📋"
+      {:icon :recipe
        :label "Recipes"
        :active? (some? active-recipe)
        :colors colors
@@ -537,20 +540,20 @@
                                #js {:workingDirectory directory}))}]
      ;; Refresh button - requests session list from backend (iOS parity)
      [toolbar-button
-      {:icon "🔄"
+      {:icon :refresh
        :label "Refresh"
        :active? refreshing?
        :colors colors
        :on-press #(rf/dispatch [:sessions/refresh])}]
      ;; New Session button - opens modal for session creation
      [toolbar-button
-      {:icon "+"
+      {:icon :add
        :label "New"
        :colors colors
        :on-press on-new-session}]
      ;; Settings button - navigates to Settings screen (iOS parity)
      [toolbar-button
-      {:icon "⚙️"
+      {:icon :gear
        :label "Settings"
        :colors colors
        :on-press #(when navigation

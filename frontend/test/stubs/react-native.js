@@ -1,41 +1,89 @@
 // Stub for react-native module in Node.js test environment
-// This provides minimal mock implementations for tests
+// This provides minimal mock implementations for tests.
+//
+// Uses ESM export syntax so shadow-cljs treats exports as top-level named
+// exports (not wrapped under .default), matching how the real react-native
+// package works.
 
-module.exports = {
-  AppState: {
-    currentState: 'active',
-    addEventListener: function() { return { remove: function() {} }; }
-  },
-  Platform: {
-    OS: 'ios',
-    select: function(obj) { return obj.ios || obj.default; }
-  },
-  StyleSheet: {
-    create: function(styles) { return styles; }
-  },
+export var Platform = {
+  OS: 'ios',
+  select: function(obj) { return obj.ios || obj.default; }
+};
+
+export var AppState = {
+  currentState: 'active',
+  addEventListener: function() { return { remove: function() {} }; }
+};
+
+export var StyleSheet = {
+  create: function(styles) { return styles; }
+};
+
+export var View = function() {};
+export var Text = function() {};
+export var TouchableOpacity = function() {};
+export var ScrollView = function() {};
+export var TextInput = function() {};
+export var ActivityIndicator = function() {};
+export var SafeAreaView = function() {};
+export var Modal = function() {};
+export var FlatList = function() {};
+export var Pressable = function() {};
+export var Switch = function() {};
+export var Image = function() {};
+
+export var Alert = {
+  alert: function() {}
+};
+
+export var Linking = {
+  openURL: function() { return Promise.resolve(); }
+};
+
+export var Dimensions = {
+  get: function() { return { width: 375, height: 812 }; }
+};
+
+export var PixelRatio = {
+  get: function() { return 2; }
+};
+
+export var Keyboard = {
+  dismiss: function() {},
+  addListener: function() { return { remove: function() {} }; }
+};
+
+export var Clipboard = {
+  setString: function() {},
+  getString: function() { return Promise.resolve(''); }
+};
+
+export var Animated = {
   View: function() {},
   Text: function() {},
-  TouchableOpacity: function() {},
-  ScrollView: function() {},
-  TextInput: function() {},
-  ActivityIndicator: function() {},
-  Alert: {
-    alert: function() {}
-  },
-  Linking: {
-    openURL: function() { return Promise.resolve(); }
-  },
-  Dimensions: {
-    get: function() { return { width: 375, height: 812 }; }
-  },
-  PixelRatio: {
-    get: function() { return 2; }
-  },
-  Keyboard: {
-    dismiss: function() {}
-  },
-  Clipboard: {
-    setString: function() {},
-    getString: function() { return Promise.resolve(''); }
-  }
+  Value: function(val) { this._value = val; },
+  timing: function() { return { start: function(cb) { if (cb) cb(); } }; },
+  spring: function() { return { start: function(cb) { if (cb) cb(); } }; },
+  event: function() { return function() {}; },
+  createAnimatedComponent: function(comp) { return comp; }
 };
+// ValueXY needs to reference Animated after it's defined
+Animated.ValueXY = function() { this.x = new Animated.Value(0); this.y = new Animated.Value(0); };
+
+export var StatusBar = {
+  setBarStyle: function() {},
+  setBackgroundColor: function() {},
+  currentHeight: 0
+};
+
+export var RefreshControl = function() {};
+export var PanResponder = {
+  create: function() { return { panHandlers: {} }; }
+};
+export var Share = {
+  share: function() { return Promise.resolve({ action: 'sharedAction' }); },
+  sharedAction: 'sharedAction',
+  dismissedAction: 'dismissedAction'
+};
+export var KeyboardAvoidingView = function() {};
+export var TouchableNativeFeedback = function() {};

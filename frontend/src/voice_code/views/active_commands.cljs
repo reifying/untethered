@@ -7,6 +7,7 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn]
+            [voice-code.icons :as icons]
             [voice-code.theme :as theme]))
 
 ;; ============================================================================
@@ -49,10 +50,10 @@
                               :color (:accent colors)}]
 
     (and (some? exit-code) (= 0 exit-code))
-    [:> rn/Text {:style {:font-size 20}} "✅"]
+    [icons/icon {:name :checkmark-circle :size 20 :color (:success colors)}]
 
     (some? exit-code)
-    [:> rn/Text {:style {:font-size 20}} "❌"]
+    [icons/icon {:name :close-circle :size 20 :color (:destructive colors)}]
 
     :else
     [:> rn/ActivityIndicator {:size "small"
@@ -170,7 +171,7 @@
             :border-bottom-width 1
             :border-bottom-color (:separator colors)}
     :on-press on-press}
-   [:> rn/Text {:style {:font-size 18 :margin-right 12}} "📜"]
+   [icons/icon {:name :document :size 18 :color (:text-primary colors) :style {:margin-right 12}}]
    [:> rn/View {:style {:flex 1}}
     [:> rn/Text {:style {:font-size 15
                          :font-weight "500"
@@ -180,9 +181,7 @@
                          :color (:text-secondary colors)
                          :margin-top 2}}
      "See previously executed commands"]]
-   [:> rn/Text {:style {:font-size 16
-                        :color (:text-secondary colors)}}
-    "›"]])
+   [icons/icon {:name :navigate-forward :size 16 :color (:text-secondary colors)}]])
 
 (defn- empty-state
   "Shown when there are no active commands.
@@ -199,7 +198,7 @@
                         :justify-content "center"
                         :align-items "center"
                         :padding 40}}
-    [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "💻"]
+    [icons/icon {:name :terminal :size 48 :color (:text-secondary colors) :style {:margin-bottom 16}}]
     [:> rn/Text {:style {:font-size 18
                          :font-weight "600"
                          :color (:text-primary colors)

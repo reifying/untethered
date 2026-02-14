@@ -5,6 +5,7 @@
             ["react-native" :as rn :refer [RefreshControl Alert AppState]]
             [clojure.string :as str]
             [voice-code.views.components :refer [relative-time-text copy-to-clipboard! toast-overlay]]
+            [voice-code.icons :as icons]
             [voice-code.theme :as theme]
             [voice-code.utils :as utils]))
 
@@ -194,7 +195,7 @@
         {:style {:padding 12
                  :justify-content "center"}
          :on-press on-remove}
-        [:> rn/Text {:style {:font-size 18 :color (:destructive colors)}} "✕"]])]))
+        [icons/icon {:name :close :size 16 :color (:destructive colors)}]])]))
 
 (defn- priority-queue-session-item
   "Single session item in the priority queue section with priority tinting.
@@ -214,7 +215,7 @@
      [:> rn/View {:style {:padding-left 12
                           :padding-vertical 12
                           :justify-content "center"}}
-      [:> rn/Text {:style {:font-size 16 :color (:text-tertiary colors)}} "☰"]]
+      [icons/icon {:name :ellipsis :size 16 :color (:text-tertiary colors)}]]
      [:> rn/TouchableOpacity
       {:style {:flex 1
                :padding-horizontal 8
@@ -269,7 +270,7 @@
         {:style {:padding 12
                  :justify-content "center"}
          :on-press on-remove}
-        [:> rn/Text {:style {:font-size 18 :color (:destructive colors)}} "✕"]])]))
+        [icons/icon {:name :close :size 16 :color (:destructive colors)}]])]))
 
 (defn- section-header
   "Collapsible section header."
@@ -295,8 +296,7 @@
                            :color (:text-tertiary colors)
                            :margin-left 8}}
        (str "(" count ")")])]
-   [:> rn/Text {:style {:font-size 14 :color (:text-tertiary colors)}}
-    (if expanded? "▼" "▶")]])
+   [icons/icon {:name (if expanded? :expand :navigate-forward) :size 14 :color (:text-tertiary colors)}]])
 
 (defn- recent-sessions-section
   "Collapsible recent sessions section."
@@ -398,7 +398,7 @@
                        :justify-content "center"
                        :align-items "center"
                        :padding 40}}
-   [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "🔧"]
+   [icons/icon {:name :wrench :size 48 :color (:accent colors) :style {:margin-bottom 16}}]
    [:> rn/Text {:style {:font-size 22
                         :font-weight "700"
                         :color (:text-primary colors)
@@ -441,7 +441,7 @@
      {:style {:padding 8 :margin-right 4}
       :on-press #(when navigation (.navigate navigation "Resources"))}
      [:> rn/View
-      [:> rn/Text {:style {:font-size 20}} "📄"]
+      [icons/icon {:name :paper-clip :size 20 :color (:text-secondary colors)}]
       ;; Red badge for pending uploads
       (when (and pending-count (pos? pending-count))
         [:> rn/View {:style {:position "absolute"
@@ -462,10 +462,13 @@
 (defn- settings-button
   "Settings button for the header."
   [navigation]
-  [:> rn/TouchableOpacity
-   {:style {:padding 8}
-    :on-press #(when navigation (.navigate navigation "Settings"))}
-   [:> rn/Text {:style {:font-size 22}} "⚙️"]])
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)]
+       [:> rn/TouchableOpacity
+        {:style {:padding 8}
+         :on-press #(when navigation (.navigate navigation "Settings"))}
+        [icons/icon {:name :gear :size 22 :color (:text-secondary colors)}]]))])
 
 (defn- header-right-buttons
   "Combined header buttons: New Session, Stop Speech, Resources and Settings.
@@ -486,13 +489,13 @@
         [:> rn/TouchableOpacity
          {:style {:padding 8 :margin-right 4}
           :on-press #(.navigate navigation "NewSession")}
-         [:> rn/Text {:style {:font-size 22 :color (:accent colors)}} "+"]]
+         [icons/icon {:name :add :size 22 :color (:accent colors)}]]
         ;; Stop Speech button - only shown when TTS is speaking
         (when speaking?
           [:> rn/TouchableOpacity
            {:style {:padding 8 :margin-right 4}
             :on-press #(rf/dispatch [:voice/stop-speaking])}
-           [:> rn/Text {:style {:font-size 20}} "🔇"]])
+           [icons/icon {:name :speaker-slash :size 20 :color (:text-secondary colors)}]])
         [resources-button navigation colors]
         [settings-button navigation]]))])
 
@@ -545,10 +548,7 @@
              :border-bottom-color (:separator colors)}
      :on-press #(when navigation (.navigate navigation "DebugLogs"))
      :active-opacity 0.7}
-    [:> rn/Text {:style {:font-size 18
-                         :color (:warning colors)
-                         :margin-right 12}}
-     "🐞"]
+    [icons/icon {:name :bug :size 18 :color (:warning colors) :style {:margin-right 12}}]
     [:> rn/View {:style {:flex 1}}
      [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
       "Debug Logs"]]]

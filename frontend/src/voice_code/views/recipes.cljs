@@ -9,6 +9,7 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [Alert]]
+            [voice-code.icons :as icons]
             [voice-code.theme :as theme]))
 
 (defn- format-duration
@@ -44,8 +45,9 @@
                            :align-items "center"
                            :justify-content "center"
                            :margin-right 12}}
-       [:> rn/Text {:style {:font-size 20}}
-        (if active? "▶️" "📋")]]
+       [icons/icon {:name (if active? :recipe-active :recipe)
+                    :size 20
+                    :color (if active? (:success colors) (:text-secondary colors))}]]
 
       ;; Recipe info
       [:> rn/View {:style {:flex 1}}
@@ -189,7 +191,10 @@
                        :justify-content "center"
                        :align-items "center"
                        :padding 40}}
-   [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "🧪"]
+   [icons/icon {:name :sparkles
+                :size 48
+                :color (:text-secondary colors)
+                :style {:margin-bottom 16}}]
    [:> rn/Text {:style {:font-size 18
                         :font-weight "600"
                         :color (:text-primary colors)
@@ -342,7 +347,10 @@
                                 :justify-content "center"
                                 :align-items "center"
                                 :padding 32}}
-            [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "⚠️"]
+            [icons/icon {:name :warning
+                         :size 48
+                         :color (:warning colors)
+                         :style {:margin-bottom 16}}]
             [:> rn/Text {:style {:font-size 18
                                  :font-weight "600"
                                  :color (:text-primary colors)
@@ -385,7 +393,10 @@
                                 :justify-content "center"
                                 :align-items "center"
                                 :padding 32}}
-            [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "⚠️"]
+            [icons/icon {:name :warning
+                         :size 48
+                         :color (:warning colors)
+                         :style {:margin-bottom 16}}]
             [:> rn/Text {:style {:font-size 18
                                  :font-weight "600"
                                  :color (:text-primary colors)

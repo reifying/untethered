@@ -4,6 +4,7 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [Platform]]
+            [voice-code.icons :as icons]
             [voice-code.theme :as theme]))
 
 (defn- command-item
@@ -25,9 +26,9 @@
                            :align-items "center"
                            :justify-content "center"
                            :margin-right 12}}
-       [:> rn/Text {:style {:font-size 14
-                            :color (:text-secondary colors)}}
-        (if (= type "group") "📁" "▶️")]]
+       [icons/icon {:name (if (= type "group") :folder :play)
+                    :size 14
+                    :color (:text-secondary colors)}]]
       [:> rn/View {:style {:flex 1}}
        [:> rn/Text {:style {:font-size 16
                             :font-weight "500"
@@ -63,8 +64,9 @@
                               :align-items "center"
                               :justify-content "center"
                               :margin-right 12}}
-          [:> rn/Text {:style {:font-size 14 :color (:text-secondary colors)}}
-           "📁"]]
+          [icons/icon {:name :folder
+                       :size 14
+                       :color (:text-secondary colors)}]]
          [:> rn/View {:style {:flex 1}}
           [:> rn/Text {:style {:font-size 16
                                :font-weight "600"
@@ -74,8 +76,9 @@
                                :color (:text-tertiary colors)
                                :margin-top 2}}
            (str (count children) " commands")]]
-         [:> rn/Text {:style {:font-size 18 :color (:text-tertiary colors)}}
-          (if @expanded? "▼" "▶")]]]
+         [icons/icon {:name (if @expanded? :expand :navigate-forward)
+                      :size 18
+                      :color (:text-tertiary colors)}]]]
        ;; Children (when expanded)
        (when @expanded?
          [:> rn/View {:style {:padding-left 16}}
@@ -198,8 +201,9 @@
               (str (count sorted-commands) " command"
                    (when (> (count sorted-commands) 1) "s")
                    " running")]]
-            [:> rn/Text {:style {:font-size 16 :color (:warning-text colors)}}
-             (if @expanded? "▼" "▶")]]
+            [icons/icon {:name (if @expanded? :expand :navigate-forward)
+                         :size 16
+                         :color (:warning-text colors)}]]
            ;; Expanded list
            (when @expanded?
              [:> rn/View {:style {:background-color (:row-background colors)}}
@@ -227,7 +231,10 @@
                        :align-items "center"
                        :justify-content "center"
                        :padding 40}}
-   [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "📋"]
+   [icons/icon {:name :clipboard
+                :size 48
+                :color (:text-secondary colors)
+                :style {:margin-bottom 16}}]
    [:> rn/Text {:style {:font-size 18
                         :font-weight "600"
                         :color (:text-primary colors)
@@ -254,7 +261,10 @@
             :border-width 1
             :border-color (:separator colors)}
     :on-press on-press}
-   [:> rn/Text {:style {:font-size 16 :margin-right 8}} "📜"]
+   [icons/icon {:name :document
+                :size 16
+                :color (:text-primary colors)
+                :style {:margin-right 8}}]
    [:> rn/Text {:style {:font-size 15
                         :font-weight "500"
                         :color (:text-primary colors)}}

@@ -4,6 +4,7 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [RefreshControl]]
+            [voice-code.icons :as icons]
             [voice-code.theme :as theme]))
 
 ;; ============================================================================
@@ -103,14 +104,22 @@
           [:> rn/Text {:style {:font-size 12
                                :color (:text-secondary colors)
                                :margin-left 12}}
-           (str "⏱ " (format-duration duration-ms))])
+           [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+            [icons/icon {:name :clock :size 12 :color (:text-secondary colors) :style {:margin-right 4}}]
+            [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
+             (format-duration duration-ms)]]])
         ;; Exit code
         (when (some? exit-code)
           [:> rn/Text {:style {:font-size 12
                                :color (if (= exit-code 0) (:success colors) (:destructive colors))
                                :margin-left 12
                                :font-weight "500"}}
-           (if (= exit-code 0) "✓ Success" (str "✗ Exit " exit-code))])]
+           [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
+            [icons/icon {:name (if (= exit-code 0) :checkmark :close)
+                         :size 12
+                         :color (if (= exit-code 0) (:success colors) (:destructive colors))
+                         :style {:margin-right 4}}]
+            (if (= exit-code 0) "Success" (str "Exit " exit-code))]])]
 
        ;; Output preview
        (when (and output-preview (seq output-preview))
@@ -131,7 +140,8 @@
                        :justify-content "center"
                        :align-items "center"
                        :padding 40}}
-   [:> rn/Text {:style {:font-size 48 :margin-bottom 16}} "📜"]
+   [:> rn/View {:style {:margin-bottom 16}}
+    [icons/icon {:name :history :size 48 :color (:text-secondary colors)}]]
    [:> rn/Text {:style {:font-size 18
                         :font-weight "600"
                         :color (:text-primary colors)
