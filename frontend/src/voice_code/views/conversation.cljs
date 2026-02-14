@@ -18,7 +18,8 @@
 
 (defn- compaction-success-toast
   "Toast notification shown when session is compacted.
-   This uses a subscription-based approach for compaction feedback."
+   Uses bottom positioning to avoid being hidden behind the native navigation
+   header (which is rendered above the content area, especially with iOS large titles)."
   []
   [:f>
    (fn []
@@ -26,7 +27,7 @@
            message @(rf/subscribe [:ui/compaction-success])]
        (when message
          [:> rn/View {:style {:position "absolute"
-                              :top 60
+                              :bottom components/toast-bottom-offset
                               :left 0
                               :right 0
                               :align-items "center"

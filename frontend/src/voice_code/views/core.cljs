@@ -3,6 +3,7 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react-native" :as rn]
+            ["react-native-safe-area-context" :refer [SafeAreaProvider]]
             ["@react-navigation/native" :refer [NavigationContainer createNavigationContainerRef]]
             ["@react-navigation/native-stack" :refer [createNativeStackNavigator]]
             [voice-code.platform :as platform]
@@ -237,6 +238,8 @@
    (go-back!)))
 
 (defn app-root
-  "Main app component with navigation."
+  "Main app component with navigation.
+   Wrapped in SafeAreaProvider to enable useSafeAreaInsets throughout the app."
   []
-  [root-navigator])
+  [:> SafeAreaProvider
+   [root-navigator]])

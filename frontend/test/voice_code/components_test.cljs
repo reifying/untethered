@@ -341,3 +341,37 @@
           icon-child (last result)
           icon-props (second icon-child)]
       (is (= 20 (:size icon-props))))))
+
+;; ============================================================================
+;; Toast Positioning Tests (VCMOB-8kk0)
+;; ============================================================================
+;; Tests verify that toast notifications use bottom positioning to avoid being
+;; hidden behind React Navigation's native header (especially with iOS large titles).
+
+(deftest toast-bottom-offset-constant-test
+  (testing "toast-bottom-offset is a positive number for positioning above input area"
+    (is (number? components/toast-bottom-offset))
+    (is (pos? components/toast-bottom-offset))
+    ;; Should be large enough to clear the tab/input area
+    (is (>= components/toast-bottom-offset 50)
+        "toast-bottom-offset should be high enough to clear input area")))
+
+(deftest toast-background-color-variants-test
+  (testing "show-toast! stores variant correctly for background color lookup"
+    (reset! components/toast-state {:visible? false :message "" :variant :success})
+    (components/show-toast! "Success" {:variant :success})
+    (is (= :success (:variant @components/toast-state)))
+
+    (components/show-toast! "Error" {:variant :error})
+    (is (= :error (:variant @components/toast-state)))
+
+    (components/show-toast! "Info" {:variant :info})
+    (is (= :info (:variant @components/toast-state)))))
+
+(deftest toast-overlay-component-structure-test
+  (testing "toast-overlay returns a functional component wrapper"
+    (let [result (components/toast-overlay)]
+      (is (vector? result))
+      ;; Should be [:f> fn]
+      (is (= :f> (first result)))
+      (is (fn? (second result))))))

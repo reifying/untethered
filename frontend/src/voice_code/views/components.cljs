@@ -138,12 +138,19 @@
     :info (:info-toast-background colors)
     (:success-toast-background colors)))
 
+(def toast-bottom-offset
+  "Bottom offset for toast positioning above the input/tab area.
+   The toast renders near the bottom of the content area to avoid being
+   hidden behind React Navigation's native header (especially large titles)."
+  100)
+
 (defn toast-overlay
   "Toast notification overlay component.
 
-   Renders at the top of the screen when toast-state is visible.
+   Renders near the bottom of the content area when toast-state is visible.
+   Uses bottom positioning to avoid being hidden behind the native navigation
+   header (which is especially tall with iOS large titles).
    Include this component once in your view hierarchy.
-   Uses theme colors for proper light/dark mode support.
 
    Example:
    [:> rn/View {:style {:flex 1}}
@@ -157,7 +164,7 @@
            {:keys [visible? message variant]} @toast-state]
        (when visible?
          [:> rn/View {:style {:position "absolute"
-                              :top 60
+                              :bottom toast-bottom-offset
                               :left 0
                               :right 0
                               :align-items "center"
