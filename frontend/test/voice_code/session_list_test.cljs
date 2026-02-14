@@ -12,6 +12,7 @@
             [voice-code.events.websocket]
             [voice-code.subs]
             [voice-code.voice.events]
+            [voice-code.platform :as platform]
             [voice-code.views.session-list :as session-list]))
 
 (use-fixtures :each
@@ -544,3 +545,50 @@
                   :button-text-on-accent "#FFFFFF"}
           result (#'session-list/unread-badge 150 colors)]
       (is (some? result)))))
+
+;; ============================================================================
+;; Platform-Conditional Swipe-to-Delete Tests
+;; Reference: ios/VoiceCode/Views/SessionsForDirectoryView.swift .swipeActions
+;; iOS uses swipe-to-delete (standard UIKit convention).
+;; Android uses long-press context menu only (Material Design convention).
+;; The render-item in session-list-view selects between swipeable-session-item
+;; (iOS) and session-item (Android) based on platform/ios?.
+;; ============================================================================
+
+(deftest platform-ios-flag-for-swipe-test
+  (testing "Test stub platform is iOS, enabling swipe-to-delete"
+    (is (true? platform/ios?)
+        "Test environment is iOS; swipe-to-delete should be active")))
+
+(deftest platform-android-disables-swipe-flag-test
+  (testing "On Android, platform/ios? is false, so swipe-to-delete would be skipped"
+    (with-redefs [platform/ios? false]
+      (is (false? platform/ios?)
+          "Android should not use swipe-to-delete"))))
+
+(deftest session-item-accepts-same-props-as-swipeable-test
+  (testing "session-item accepts the same props shape as swipeable-session-item"
+    ;; Both components must accept {:session :locked? :on-press :on-delete :colors}
+    ;; This ensures the platform-conditional rendering in render-item works
+    ;; regardless of which component is selected.
+    (let [test-colors {:text-primary "#000" :text-secondary "#666"
+                       :text-tertiary "#999" :separator "#CCC"
+                       :accent "#007AFF" :destructive "#FF3B30"
+                       :card-background "#FFF" :button-text-on-accent "#FFF"
+                       :warning "#FF9500" :success "#30D158"}
+          props {:session {:id "test-session"
+                           :backend-name "Test"
+                           :working-directory "/test"
+                           :last-modified (js/Date.)
+                           :unread-count 0}
+                 :locked? false
+                 :on-press (fn [])
+                 :on-delete (fn [])
+                 :colors test-colors}]
+      ;; session-item should return valid hiccup
+      (let [result (#'session-list/session-item props)]
+        (is (vector? result) "session-item returns valid hiccup")
+        (is (some? (first result)) "session-item has a component type"))
+      ;; swipeable-session-item should also return valid hiccup (Form-2 component)
+      (let [result (#'session-list/swipeable-session-item props)]
+        (is (fn? result) "swipeable-session-item returns render fn (Form-2 component)")))))

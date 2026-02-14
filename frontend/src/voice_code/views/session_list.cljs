@@ -606,17 +606,21 @@
                   (fn [^js obj]
                     (let [item (.-item obj)
                           session-data (js->clj item :keywordize-keys true)
-                          session-id (:id session-data)]
+                          session-id (:id session-data)
+                          item-props {:session session-data
+                                      :locked? (contains? locked-sessions session-id)
+                                      :colors colors
+                                      :on-press #(when navigation
+                                                   (.navigate navigation "Conversation"
+                                                              #js {:sessionId session-id
+                                                                   :sessionName (session-name session-data)}))
+                                      :on-delete #(rf/dispatch [:sessions/delete session-id])}]
                       (r/as-element
-                       [swipeable-session-item
-                        {:session session-data
-                         :locked? (contains? locked-sessions session-id)
-                         :colors colors
-                         :on-press #(when navigation
-                                      (.navigate navigation "Conversation"
-                                                 #js {:sessionId session-id
-                                                      :sessionName (session-name session-data)}))
-                         :on-delete #(rf/dispatch [:sessions/delete session-id])}])))
+                       ;; iOS: swipe-to-delete (standard iOS convention)
+                       ;; Android: context menu only (Material Design convention)
+                       (if platform/ios?
+                         [swipeable-session-item item-props]
+                         [session-item item-props]))))
                   :content-container-style {:padding-vertical 8}}])
 
               ;; New Session Modal
