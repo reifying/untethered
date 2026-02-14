@@ -154,16 +154,15 @@
 ;; Event Handlers - State Updates
 ;; ============================================================================
 
-(rf/reg-event-fx
+(rf/reg-event-db
  :voice/transcription-received
- (fn [{:keys [db]} [_ text]]
+ (fn [db [_ text]]
    (let [session-id (:active-session-id db)]
      (if session-id
-       {:db (assoc-in db [:ui :drafts session-id] text)
-        :dispatch [:prompt/send-from-draft session-id]}
+       (assoc-in db [:ui :drafts session-id] text)
        (do
          (js/console.warn "Voice transcription received but no active session, discarding:" text)
-         {})))))
+         db)))))
 
 (rf/reg-event-db
  :voice/partial-result
@@ -176,12 +175,17 @@
  (fn [db _]
    (assoc-in db [:ui :voice-listening?] true)))
 
-(rf/reg-event-db
+(rf/reg-event-fx
  :voice/speech-ended
- (fn [db _]
-   (-> db
-       (assoc-in [:ui :voice-listening?] false)
-       (assoc-in [:ui :voice-partial] nil))))
+ (fn [{:keys [db]} _]
+   (let [session-id (:active-session-id db)
+         draft (when session-id (get-in db [:ui :drafts session-id]))]
+     (cond-> {:db (-> db
+                      (assoc-in [:ui :voice-listening?] false)
+                      (assoc-in [:ui :voice-partial] nil))}
+       ;; Auto-send the transcription when speech recognition stops
+       (and session-id (seq draft))
+       (assoc :dispatch [:prompt/send-from-draft session-id])))))
 
 (rf/reg-event-db
  :voice/speech-finished
