@@ -3,6 +3,7 @@
   (:require [cljs.test :refer [deftest testing is async]]
             [voice-code.utils :as utils]
             [voice-code.views.components :as components]
+            [voice-code.platform :as platform]
             ["react-native" :as rn]))
 
 (deftest format-relative-time-test
@@ -287,3 +288,56 @@
           children (drop 2 result)]
       ;; The card container View should use card-background
       (is (vector? result)))))
+
+;; ============================================================================
+;; Disclosure Indicator Component Tests
+;; Reference: iOS UITableViewCell disclosure indicator (chevron-forward)
+;; ============================================================================
+
+(def ^:private disclosure-test-colors
+  "Minimal color map for testing disclosure-indicator."
+  {:text-tertiary "#3C3C4399"})
+
+(deftest disclosure-indicator-renders-on-ios-test
+  (testing "disclosure-indicator renders a View with icon on iOS"
+    ;; Test stub sets Platform.OS = 'ios', so platform/ios? is true
+    (let [result (components/disclosure-indicator {:colors disclosure-test-colors})]
+      (is (some? result) "Should render on iOS")
+      (is (vector? result))
+      ;; Should be [:> rn/View ...]
+      (is (= :> (first result)))
+      (is (= rn/View (second result))))))
+
+(deftest disclosure-indicator-hidden-on-android-test
+  (testing "disclosure-indicator returns nil on Android"
+    (with-redefs [platform/ios? false]
+      (let [result (components/disclosure-indicator {:colors disclosure-test-colors})]
+        (is (nil? result) "Should not render on Android")))))
+
+(deftest disclosure-indicator-uses-theme-color-test
+  (testing "disclosure-indicator uses text-tertiary color from theme"
+    (let [result (components/disclosure-indicator {:colors disclosure-test-colors})]
+      ;; The icon component is inside the View
+      ;; Result is [:> rn/View {:style ...} [icons/icon {...}]]
+      (is (some? result))
+      ;; Get the icon child (last element)
+      (let [icon-child (last result)]
+        (is (vector? icon-child))
+        ;; icon-child should be [icons/icon {:name :navigate-forward ...}]
+        (let [icon-props (second icon-child)]
+          (is (= :navigate-forward (:name icon-props)))
+          (is (= (:text-tertiary disclosure-test-colors) (:color icon-props))))))))
+
+(deftest disclosure-indicator-default-size-test
+  (testing "disclosure-indicator uses default size of 16"
+    (let [result (components/disclosure-indicator {:colors disclosure-test-colors})
+          icon-child (last result)
+          icon-props (second icon-child)]
+      (is (= 16 (:size icon-props))))))
+
+(deftest disclosure-indicator-custom-size-test
+  (testing "disclosure-indicator accepts custom size"
+    (let [result (components/disclosure-indicator {:colors disclosure-test-colors :size 20})
+          icon-child (last result)
+          icon-props (second icon-child)]
+      (is (= 20 (:size icon-props))))))

@@ -4,7 +4,7 @@
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [RefreshControl AppState]]
             [clojure.string :as str]
-            [voice-code.views.components :refer [relative-time-text copy-to-clipboard! toast-overlay section-card]]
+            [voice-code.views.components :refer [relative-time-text copy-to-clipboard! toast-overlay section-card disclosure-indicator]]
             [voice-code.icons :as icons]
             [voice-code.platform :as platform]
             [voice-code.theme :as theme]
@@ -52,12 +52,12 @@
                           :onPress #(copy-to-clipboard! directory "Directory path copied")}
                          {:text "Cancel" :style "cancel"}]))}
      [:> rn/View {:style {:flex-direction "row"
-                          :align-items "flex-start"}}
+                          :align-items "center"}}
       ;; Folder icon (matches iOS folder.fill blue icon)
       [icons/icon {:name :folder-fill
                    :size 20
                    :color (:accent colors)
-                   :style {:margin-right 8 :margin-top 2}}]
+                   :style {:margin-right 8}}]
       [:> rn/View {:style {:flex 1}}
        ;; Line 1: Directory name + unread badge
        [:> rn/View {:style {:flex-direction "row"
@@ -86,7 +86,9 @@
          "\u2022"]
         [relative-time-text {:timestamp last-modified
                              :style {:font-size 12
-                                     :color (:text-tertiary colors)}}]]]]])
+                                     :color (:text-tertiary colors)}}]]]
+      ;; iOS disclosure indicator (chevron)
+      [disclosure-indicator {:colors colors}]]])
 
 (defn- session-name
   "Get display name for a session."
@@ -118,7 +120,6 @@
                           :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
                          {:text "Cancel" :style "cancel"}]))}
      [:> rn/View {:style {:flex-direction "row"
-                          :justify-content "space-between"
                           :align-items "center"}}
       [:> rn/View {:style {:flex 1 :margin-right 12}}
        ;; Session name with optional unread badge
@@ -137,7 +138,9 @@
         (directory-name (:working-directory session))]]
       ;; Timestamp - auto-updating
       [relative-time-text {:timestamp (:last-modified session)
-                           :style {:font-size 12 :color (:text-tertiary colors)}}]]]))
+                           :style {:font-size 12 :color (:text-tertiary colors)}}]
+      ;; iOS disclosure indicator (chevron)
+      [disclosure-indicator {:colors colors}]]]))
 
 (defn- priority-tint-color
   "Get background color based on priority level (like iOS).
@@ -174,7 +177,6 @@
                            :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
                           {:text "Cancel" :style "cancel"}]))}
       [:> rn/View {:style {:flex-direction "row"
-                           :justify-content "space-between"
                            :align-items "center"}}
        [:> rn/View {:style {:flex 1 :margin-right 12}}
         ;; Session name with optional unread badge
@@ -193,7 +195,9 @@
          (directory-name (:working-directory session))]]
        ;; Timestamp - auto-updating
        [relative-time-text {:timestamp (:last-modified session)
-                            :style {:font-size 12 :color (:text-tertiary colors)}}]]]
+                            :style {:font-size 12 :color (:text-tertiary colors)}}]
+       ;; iOS disclosure indicator (chevron)
+       [disclosure-indicator {:colors colors}]]]
      ;; Remove button
      (when on-remove
        [touchable
@@ -231,7 +235,6 @@
                            :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
                           {:text "Cancel" :style "cancel"}]))}
       [:> rn/View {:style {:flex-direction "row"
-                           :justify-content "space-between"
                            :align-items "center"}}
        [:> rn/View {:style {:flex 1 :margin-right 12}}
         ;; Session name with optional unread badge
@@ -250,7 +253,9 @@
          (directory-name (:working-directory session))]]
        ;; Timestamp - auto-updating
        [relative-time-text {:timestamp (:last-modified session)
-                            :style {:font-size 12 :color (:text-tertiary colors)}}]]]
+                            :style {:font-size 12 :color (:text-tertiary colors)}}]
+       ;; iOS disclosure indicator (chevron)
+       [disclosure-indicator {:colors colors}]]]
      ;; Remove button
      (when on-remove
        [touchable
@@ -535,7 +540,8 @@
     [icons/icon {:name :bug :size 18 :color (:warning colors) :style {:margin-right 12}}]
     [:> rn/View {:style {:flex 1}}
      [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
-      "Debug Logs"]]]])
+      "Debug Logs"]]
+    [disclosure-indicator {:colors colors}]]])
 
 (def ^:private debounce-ms
   "Debounce delay for queue cache updates (matches iOS 150ms)."

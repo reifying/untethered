@@ -4,6 +4,7 @@
             ["react-native" :as rn]
             ["@react-native-clipboard/clipboard" :as Clipboard]
             [voice-code.haptic :as haptic]
+            [voice-code.icons :as icons]
             [voice-code.platform :as platform]
             [voice-code.utils :as utils]
             [voice-code.theme :as theme]))
@@ -258,3 +259,34 @@
                           :margin-top 6
                           :line-height 18}}
       footer])])
+
+;; ============================================================================
+;; Disclosure Indicator — iOS NavigationLink Chevron
+;; ============================================================================
+;;
+;; iOS convention: navigable list rows show a small gray chevron (>)
+;; on the trailing edge, matching UITableViewCell.accessoryType = .disclosureIndicator.
+;; This is the standard visual cue that tapping the row navigates forward.
+;;
+;; Android convention: no disclosure indicator. Forward navigation is implied
+;; by the touch ripple effect. Adding chevrons on Android looks foreign.
+
+(defn disclosure-indicator
+  "iOS-style disclosure indicator (chevron) for navigable list rows.
+
+   On iOS: renders a small gray forward chevron matching the system convention.
+   On Android: renders nothing (Android uses ripple feedback instead).
+
+   Props:
+   - :colors - Theme colors map (required)
+   - :size   - Icon size (default 16)
+
+   Example:
+     [disclosure-indicator {:colors colors}]"
+  [{:keys [colors size]}]
+  (when platform/ios?
+    [:> rn/View {:style {:margin-left 4
+                         :justify-content "center"}}
+     [icons/icon {:name :navigate-forward
+                  :size (or size 16)
+                  :color (:text-tertiary colors)}]]))

@@ -4,7 +4,7 @@
             [re-frame.core :as rf]
             [clojure.string :as str]
             ["react-native" :as rn :refer [RefreshControl Modal Switch Animated PanResponder]]
-            [voice-code.views.components :as components :refer [relative-time-text copy-to-clipboard! toast-overlay]]
+            [voice-code.views.components :as components :refer [relative-time-text copy-to-clipboard! toast-overlay disclosure-indicator]]
             [voice-code.haptic :as haptic]
             [voice-code.icons :as icons]
             [voice-code.platform :as platform]
@@ -124,7 +124,9 @@
           [:> rn/Text {:style {:font-size 12
                                :color (:warning colors)
                                :margin-left 6}}
-           "• Processing"])]]]]))
+           "• Processing"])]]
+      ;; iOS disclosure indicator (chevron)
+      [disclosure-indicator {:colors colors}]]]))
 
 (defn- swipeable-session-item
   "Session item with swipe-to-delete functionality.

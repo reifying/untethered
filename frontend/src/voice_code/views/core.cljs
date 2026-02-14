@@ -93,10 +93,17 @@
                                                         :color (:text-primary colors)}}}
 
            ;; Directory list (grouped sessions by working directory)
+           ;; iOS: large title matches DirectoryListView.swift default (.automatic → large on root)
+           ;; Android: standard top app bar (large titles are not an Android convention)
            [:> (.-Screen Stack)
             {:name "DirectoryList"
              :component (reactify-with-name directory-list-view "DirectoryListView")
-             :options #js {:title "Projects"}}]
+             :options (if platform/ios?
+                        #js {:title "Projects"
+                             :headerLargeTitle true
+                             :headerLargeStyle #js {:backgroundColor (:grouped-background colors)}
+                             :headerStyle #js {:backgroundColor (:grouped-background colors)}}
+                        #js {:title "Projects"})}]
 
            ;; New session creation
            [:> (.-Screen Stack)
@@ -106,14 +113,22 @@
                            :presentation "modal"}}]
 
            ;; Session list (sessions within a directory)
+           ;; iOS: large title matches SessionsForDirectoryView.swift (.large)
+           ;; Android: standard top app bar
            [:> (.-Screen Stack)
             {:name "SessionList"
              :component (reactify-with-name session-list-view "SessionListView")
              :options (fn [^js props]
                         (let [^js route (.-route props)
-                              ^js params (when route (.-params route))]
-                          #js {:title (or (when params (.-directoryName params))
-                                          "Sessions")}))}]
+                              ^js params (when route (.-params route))
+                              title (or (when params (.-directoryName params))
+                                        "Sessions")]
+                          (if platform/ios?
+                            #js {:title title
+                                 :headerLargeTitle true
+                                 :headerLargeStyle #js {:backgroundColor (:grouped-background colors)}
+                                 :headerStyle #js {:backgroundColor (:grouped-background colors)}}
+                            #js {:title title})))}]
 
            ;; Conversation view (individual session)
            [:> (.-Screen Stack)
