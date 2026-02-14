@@ -284,21 +284,31 @@
 
 (defn- empty-state
   "Shown when there are no sessions for this directory.
-   colors: theme colors map (required prop to avoid hook violation)"
-  [colors]
+   Matches iOS SessionsForDirectoryView.swift empty state:
+   Image(systemName: \"tray\") at 64pt + directory name in title.
+   colors: theme colors map (required prop to avoid hook violation)
+   directory-name: short name of the working directory"
+  [colors directory-name]
   [:> rn/View {:style {:flex 1
                        :justify-content "center"
                        :align-items "center"
                        :padding 40}}
-   [:> rn/Text {:style {:font-size 18
+   [icons/icon {:name :tray
+                :size 64
+                :color (:text-secondary colors)
+                :style {:margin-bottom 16}}]
+   [:> rn/Text {:style {:font-size 22
                         :font-weight "600"
-                        :color (:text-primary colors)
-                        :margin-bottom 8}}
-    "No Sessions"]
-   [:> rn/Text {:style {:font-size 14
                         :color (:text-secondary colors)
-                        :text-align "center"}}
-    "Start a new conversation from Claude Code to create a session."]])
+                        :margin-bottom 8}}
+    (if directory-name
+      (str "No sessions in " directory-name)
+      "No Sessions")]
+   [:> rn/Text {:style {:font-size 16
+                        :color (:text-secondary colors)
+                        :text-align "center"
+                        :padding-horizontal 32}}
+    "Create a new session with the + button to get started."]])
 
 (defn- new-session-modal
   "Modal for creating a new session with optional worktree support.
@@ -553,6 +563,7 @@
         ;; route is a JS object, so use .- for its properties
         ^js params (when route (.-params route))
         directory (when params (.-directory params))
+        directory-name (when params (.-directoryName params))
         ;; Local state for modal visibility
         show-new-session-modal? (r/atom false)]
     ;; Form-3: create-class with subscriptions inside :reagent-render
@@ -590,7 +601,7 @@
 
               ;; Session list content
               (if (empty? sessions)
-                [empty-state colors]
+                [empty-state colors directory-name]
                 [:> rn/FlatList
                  {:data (clj->js sessions)
                   :key-extractor (fn [item idx]

@@ -364,7 +364,8 @@
                                             (.goBack navigation))}]))]
           [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
            [toast-overlay]
-           [:> rn/ScrollView {:content-container-style {:padding-bottom 40}}
+           [:> rn/ScrollView {:content-container-style {:padding-bottom 40}
+                             :keyboard-should-persist-taps "handled"}
             (when session
               [:> rn/View
                [session-info-section {:session session

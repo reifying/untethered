@@ -12,6 +12,7 @@
             [voice-code.events.websocket]
             [voice-code.subs]
             [voice-code.voice.events]
+            [voice-code.icons :as icons]
             [voice-code.platform :as platform]
             [voice-code.views.session-list :as session-list]))
 
@@ -592,3 +593,59 @@
       ;; swipeable-session-item should also return valid hiccup (Form-2 component)
       (let [result (#'session-list/swipeable-session-item props)]
         (is (fn? result) "swipeable-session-item returns render fn (Form-2 component)")))))
+
+;; ============================================================================
+;; Icon Mapping Tests (tray icon for empty state)
+;; ============================================================================
+
+(deftest tray-icon-exists-in-icon-map-test
+  (testing ":tray icon exists in icon map for empty state rendering"
+    (let [entry (get icons/icon-map :tray)]
+      (is (some? entry) ":tray should be in icon-map")
+      (is (some? (:ios entry)) ":tray should have iOS icon name")
+      (is (some? (:android entry)) ":tray should have Android icon name"))))
+
+;; ============================================================================
+;; Empty State Tests (iOS Parity)
+;; Reference: ios/VoiceCode/Views/SessionsForDirectoryView.swift
+;; iOS uses Image(systemName: "tray") at 64pt + directory name in title
+;; ============================================================================
+
+(deftest empty-state-renders-icon-test
+  (testing "Empty state renders an icon matching iOS tray symbol"
+    (let [colors {:text-primary "#000"
+                  :text-secondary "#666"}
+          result (#'session-list/empty-state colors nil)]
+      ;; Result is [:> rn/View {:style ...} [icon] [:> rn/Text ...] [:> rn/Text ...]]
+      (is (vector? result))
+      ;; Children start at index 3 (after :>, rn/View, {:style})
+      (let [children (vec (drop 3 result))]
+        ;; First child should be the icon
+        (is (vector? (first children)))
+        (is (= icons/icon (ffirst children)))
+        ;; Icon should use :tray name
+        (is (= :tray (:name (second (first children)))))
+        ;; Icon should be 64pt matching iOS Image(systemName: "tray").font(.system(size: 64))
+        (is (= 64 (:size (second (first children)))))))))
+
+(deftest empty-state-shows-directory-name-test
+  (testing "Empty state includes directory name in title when provided"
+    (let [colors {:text-primary "#000"
+                  :text-secondary "#666"}
+          result (#'session-list/empty-state colors "my-project")]
+      ;; Children start at index 3
+      (let [children (vec (drop 3 result))
+            ;; Second child is the title [:> rn/Text {:style ...} "No sessions in my-project"]
+            title-element (second children)
+            title-text (last title-element)]
+        (is (= "No sessions in my-project" title-text))))))
+
+(deftest empty-state-generic-title-without-directory-name-test
+  (testing "Empty state shows generic title when no directory name provided"
+    (let [colors {:text-primary "#000"
+                  :text-secondary "#666"}
+          result (#'session-list/empty-state colors nil)]
+      (let [children (vec (drop 3 result))
+            title-element (second children)
+            title-text (last title-element)]
+        (is (= "No Sessions" title-text))))))

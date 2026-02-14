@@ -841,7 +841,9 @@
      (fn []
        (let [colors (theme/use-theme-colors)]
          [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
-          [:> rn/ScrollView {:content-container-style {:padding-bottom 40}}
+          [:> rn/ScrollView {:content-container-style {:padding-bottom 40}
+                           :keyboard-should-persist-taps "handled"
+                           :keyboard-dismiss-mode "on-drag"}
            [connection-status-section]
            [api-key-section navigation]
            [server-settings-section]

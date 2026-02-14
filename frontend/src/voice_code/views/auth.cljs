@@ -251,7 +251,9 @@
             {:content-container-style {:flex-grow 1
                                        :justify-content "center"
                                        :align-items "center"
-                                       :padding-vertical 40}}
+                                       :padding-vertical 40}
+             :keyboard-should-persist-taps "handled"
+             :keyboard-dismiss-mode "on-drag"}
             ;; Header - different based on whether this is reauth or initial setup
             (if requires-reauth?
               [reauthentication-header colors]
