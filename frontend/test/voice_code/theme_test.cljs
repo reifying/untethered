@@ -17,7 +17,7 @@
                           :text-primary :text-secondary :text-tertiary :text-placeholder
                           :separator :separator-opaque
                           :fill-primary :fill-secondary :fill-tertiary
-                          :accent :destructive :success :warning :info
+                          :accent :destructive :success :warning :info :purple
                           :accent-background :success-background :warning-background :destructive-background
                           :link :disabled
                           :bubble-user :bubble-user-text :bubble-assistant :bubble-assistant-text
@@ -35,7 +35,7 @@
                           :text-primary :text-secondary :text-tertiary :text-placeholder
                           :separator :separator-opaque
                           :fill-primary :fill-secondary :fill-tertiary
-                          :accent :destructive :success :warning :info
+                          :accent :destructive :success :warning :info :purple
                           :accent-background :success-background :warning-background :destructive-background
                           :link :disabled
                           :bubble-user :bubble-user-text :bubble-assistant :bubble-assistant-text
@@ -168,3 +168,39 @@
     ;; Assistant bubble in dark mode should have light text
     (is (= "#000000" (:bubble-assistant-text theme/light-colors)))
     (is (= "#FFFFFF" (:bubble-assistant-text theme/dark-colors)))))
+
+;; =============================================================================
+;; View Theme Key Coverage Test
+;; =============================================================================
+;; Validates that all theme keys used across view code exist in the palette.
+;; This prevents bugs where a view accesses (:some-typo colors) and gets nil.
+
+(deftest view-theme-keys-exist-in-palette-test
+  (testing "all theme keys referenced by views exist in both palettes"
+    (let [;; Comprehensive list of theme keys used across all view files.
+          ;; Extracted from grep of (:keyword colors) patterns in frontend/src/.
+          ;; Update this set when adding new theme key usage to views.
+          view-keys #{:background :background-secondary :background-tertiary :grouped-background
+                      :text-primary :text-secondary :text-tertiary :text-placeholder
+                      :separator :separator-opaque
+                      :fill-primary :fill-secondary :fill-tertiary
+                      :accent :destructive :success :warning :info :purple
+                      :accent-background :success-background :warning-background
+                      :warning-text :destructive-background
+                      :link :disabled
+                      :bubble-user :bubble-user-text :bubble-assistant :bubble-assistant-text
+                      :input-background :input-border :input-placeholder
+                      :card-background :row-background
+                      :nav-background :nav-border
+                      :status-connected :status-disconnected :status-connecting
+                      :shadow
+                      :toast-background :success-toast-background
+                      :error-toast-background :info-toast-background
+                      :button-text-on-accent
+                      :switch-thumb :switch-track-on
+                      :overlay-background}]
+      (doseq [k view-keys]
+        (is (contains? theme/light-colors k)
+            (str "View code uses :" (name k) " but it's missing from light-colors"))
+        (is (contains? theme/dark-colors k)
+            (str "View code uses :" (name k) " but it's missing from dark-colors"))))))

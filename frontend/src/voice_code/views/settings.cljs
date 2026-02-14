@@ -855,7 +855,7 @@
     [:f>
      (fn []
        (let [colors (theme/use-theme-colors)]
-         [:> rn/SafeAreaView {:style {:flex 1 :background-color (:background-grouped colors)}}
+         [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
           [:> rn/ScrollView {:content-container-style {:padding-bottom 40}}
            [connection-status-section]
            [api-key-section navigation]

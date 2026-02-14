@@ -49,6 +49,7 @@
    :success "#34C759" ; Color.green
    :warning "#FF9500" ; Color.orange
    :info "#007AFF" ; Color.blue
+   :purple "#AF52DE" ; Color.purple (tool-result messages)
 
    ;; Semantic background tints (for active states)
    :accent-background "#E8F4FD" ; Light blue tint for accent active states
@@ -134,6 +135,7 @@
    :success "#30D158" ; Color.green (dark)
    :warning "#FF9F0A" ; Color.orange (dark)
    :info "#0A84FF" ; Color.blue (dark)
+   :purple "#BF5AF2" ; Color.purple (dark)
 
    ;; Semantic background tints (for active states - darker versions)
    :accent-background "#0A84FF1A" ; Dark blue tint for accent active states

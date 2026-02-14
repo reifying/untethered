@@ -167,7 +167,7 @@
             :align-items "center"
             :padding-horizontal 12
             :padding-vertical 8
-            :background-color (:overlay colors)
+            :background-color (:overlay-background colors)
             :border-radius 6}
     :on-press on-press}
    [icons/icon {:name icon :size 14 :color (:text-primary colors) :style {:margin-right 6}}]
