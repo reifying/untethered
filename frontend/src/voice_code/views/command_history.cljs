@@ -5,6 +5,7 @@
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [RefreshControl]]
             [voice-code.icons :as icons]
+            [voice-code.platform :as platform]
             [voice-code.theme :as theme]
             [voice-code.views.touchable :refer [touchable]]))
 
@@ -85,7 +86,7 @@
        ;; Shell command
        [:> rn/Text {:style {:font-size 15
                             :font-weight "600"
-                            :font-family "monospace"
+                            :font-family platform/monospace-font
                             :color (:text-primary colors)
                             :margin-bottom 4}
                     :number-of-lines 1}
@@ -126,7 +127,7 @@
        (when (and output-preview (seq output-preview))
          [:> rn/Text {:style {:font-size 13
                               :color (:text-secondary colors)
-                              :font-family "monospace"
+                              :font-family platform/monospace-font
                               :background-color (:background-secondary colors)
                               :padding 8
                               :border-radius 6

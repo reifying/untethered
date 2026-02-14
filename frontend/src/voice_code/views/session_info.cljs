@@ -9,8 +9,9 @@
    - Session deletion"
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn :refer [Alert]]
+            ["react-native" :as rn]
             [voice-code.persistence :as persistence]
+            [voice-code.platform :as platform]
             [voice-code.views.components :refer [copy-to-clipboard!]]
             [voice-code.icons :as icons]
             [voice-code.theme :as theme]
@@ -382,14 +383,14 @@
                                               (show-confirmation! "Export failed"))))))
 
               handle-compact (fn []
-                               (.alert Alert
-                                       "Compact Session"
-                                       "This will summarize the conversation history to reduce context window usage. This cannot be undone."
-                                       (clj->js [{:text "Cancel" :style "cancel"}
-                                                 {:text "Compact"
-                                                  :onPress (fn []
-                                                             (rf/dispatch [:sessions/compact session-id])
-                                                             (show-confirmation! "Compaction started"))}])))
+                               (platform/show-alert!
+                                "Compact Session"
+                                "This will summarize the conversation history to reduce context window usage. This cannot be undone."
+                                [{:text "Cancel" :style "cancel"}
+                                 {:text "Compact"
+                                  :onPress (fn []
+                                             (rf/dispatch [:sessions/compact session-id])
+                                             (show-confirmation! "Compaction started"))}]))
 
               handle-add-to-queue (fn []
                                     (rf/dispatch [:sessions/add-to-priority-queue session-id])
@@ -417,15 +418,15 @@
                                   (show-confirmation! "Inferring session name..."))
 
               handle-delete (fn []
-                              (.alert Alert
-                                      "Delete Session"
-                                      "Are you sure you want to delete this session? This cannot be undone."
-                                      (clj->js [{:text "Cancel" :style "cancel"}
-                                                {:text "Delete"
-                                                 :style "destructive"
-                                                 :onPress (fn []
-                                                            (rf/dispatch [:sessions/delete session-id])
-                                                            (.goBack navigation))}])))]
+                              (platform/show-alert!
+                               "Delete Session"
+                               "Are you sure you want to delete this session? This cannot be undone."
+                               [{:text "Cancel" :style "cancel"}
+                                {:text "Delete"
+                                 :style "destructive"
+                                 :onPress (fn []
+                                            (rf/dispatch [:sessions/delete session-id])
+                                            (.goBack navigation))}]))]
           [:> rn/SafeAreaView {:style {:flex 1 :background-color (:grouped-background colors)}}
            [copy-confirmation-toast message visible? colors]
            [:> rn/ScrollView {:content-container-style {:padding-bottom 40}}

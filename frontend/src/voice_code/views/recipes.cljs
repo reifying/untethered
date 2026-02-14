@@ -8,8 +8,9 @@
    - Loading state during recipe start and load"
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn :refer [Alert]]
+            ["react-native" :as rn]
             [voice-code.icons :as icons]
+            [voice-code.platform :as platform]
             [voice-code.theme :as theme]
             [voice-code.views.touchable :refer [touchable]]))
 
@@ -329,12 +330,12 @@
             (reset! timeout-handle nil))
           ;; Show confirmation if started in new session
           (when (and @use-new-session? (not= @pending-session-id session-id))
-            (.alert Alert
-                    "Recipe Started"
-                    "Recipe is running in a new session. Go to Sessions to view it."
-                    (clj->js [{:text "OK"
-                               :onPress #(when navigation
-                                           (.goBack navigation))}])))
+            (platform/show-alert!
+             "Recipe Started"
+             "Recipe is running in a new session. Go to Sessions to view it."
+             [{:text "OK"
+               :onPress #(when navigation
+                           (.goBack navigation))}])))
           ;; If started in same session, just dismiss
           (when (= @pending-session-id session-id)
             (when navigation

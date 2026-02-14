@@ -5,6 +5,7 @@
             [re-frame.core :as rf]
             ["react-native" :as rn]
             [voice-code.views.components :refer [copy-to-clipboard!]]
+            [voice-code.platform :as platform]
             [voice-code.theme :as theme]
             [voice-code.views.touchable :refer [touchable]]))
 
@@ -67,9 +68,7 @@
                   [:> rn/Text {:style {:color (:text-primary colors)
                                        :fontSize 14
                                        :marginBottom 16
-                                       :fontFamily (if (= (.-OS rn/Platform) "ios")
-                                                     "Menlo"
-                                                     "monospace")}}
+                                       :fontFamily platform/monospace-font}}
                    (:message error)]
 
                   [:> rn/Text {:style {:color (:destructive colors)
@@ -79,9 +78,7 @@
                    "Stack Trace:"]
                   [:> rn/Text {:style {:color (:text-secondary colors)
                                        :fontSize 12
-                                       :fontFamily (if (= (.-OS rn/Platform) "ios")
-                                                     "Menlo"
-                                                     "monospace")
+                                       :fontFamily platform/monospace-font
                                        :lineHeight 18}}
                    (:stack error)]]
 

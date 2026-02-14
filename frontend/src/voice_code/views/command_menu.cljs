@@ -3,8 +3,9 @@
    Shows project-specific and general commands organized in groups."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn :refer [Platform]]
+            ["react-native" :as rn]
             [voice-code.icons :as icons]
+            [voice-code.platform :as platform]
             [voice-code.theme :as theme]
             [voice-code.views.touchable :refer [touchable]]))
 
@@ -160,8 +161,7 @@
      ;; Last output line preview
      (when last-line
        [:> rn/Text {:style {:font-size 12
-                            :font-family (if (= (.-OS Platform) "ios")
-                                           "Menlo" "monospace")
+                            :font-family platform/monospace-font
                             :color (if (= (:stream last-line) "stderr")
                                      (:destructive colors) (:text-secondary colors))
                             :margin-top 6

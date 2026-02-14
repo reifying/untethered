@@ -13,6 +13,7 @@
             ["react-native" :as rn]
             [voice-code.log-manager :as log-manager]
             [voice-code.performance :as perf]
+            [voice-code.platform :as platform]
             [voice-code.views.components :refer [copy-to-clipboard!]]
             [voice-code.icons :as icons]
             [voice-code.theme :as theme]
@@ -101,7 +102,7 @@
                         :align-items "center"
                         :margin-bottom 4}}
     [:> rn/Text {:style {:font-size 11
-                         :font-family "Menlo"
+                         :font-family platform/monospace-font
                          :color (:text-secondary colors)
                          :margin-right 8}}
      timestamp]
@@ -121,7 +122,7 @@
      "Long-press to copy"]]
    ;; Message
    [:> rn/Text {:style {:font-size 13
-                        :font-family "Menlo"
+                        :font-family platform/monospace-font
                         :color (level-color colors level)
                         :line-height 18}
                 :selectable true}
@@ -163,7 +164,7 @@
    [:> rn/Text {:style {:font-size 15 :color (:text-primary colors)}}
     label]
    [:> rn/Text {:style {:font-size 15
-                        :font-family "Menlo"
+                        :font-family platform/monospace-font
                         :color (:text-secondary colors)}}
     (str value)]])
 

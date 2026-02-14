@@ -10,6 +10,7 @@
             [voice-code.performance :as perf]
             [voice-code.theme :as theme]
             [voice-code.icons :as icons]
+            [voice-code.platform :as platform]
             [voice-code.views.touchable :refer [touchable]]))
 
 ;; Note: Toast components (copy-to-clipboard!, show-toast!, toast-overlay) are now
@@ -31,15 +32,11 @@
                               :align-items "center"
                               :z-index 1000
                               :pointer-events "none"}}
-          [:> rn/View {:style {:background-color (:success-toast-background colors)
-                               :padding-horizontal 16
-                               :padding-vertical 10
-                               :border-radius 8
-                               :shadow-color (:shadow colors)
-                               :shadow-offset {:width 0 :height 2}
-                               :shadow-opacity 0.25
-                               :shadow-radius 4
-                               :elevation 5}}
+          [:> rn/View {:style (merge {:background-color (:success-toast-background colors)
+                                      :padding-horizontal 16
+                                      :padding-vertical 10
+                                      :border-radius 8}
+                                     (platform/shadow {:shadow-color (:shadow colors)}))}
            [:> rn/Text {:style {:font-size 14
                                 :color (:button-text-on-accent colors)
                                 :font-weight "500"}}
@@ -771,20 +768,16 @@
      ;; Microphone button
      [:> rn/View {:style {:align-items "center"}}
       [touchable
-       {:style {:width 72
-                :height 72
-                :border-radius 36
-                :background-color (cond
-                                    locked? (:disabled colors)
-                                    listening? (:destructive colors)
-                                    :else (:accent colors))
-                :justify-content "center"
-                :align-items "center"
-                :shadow-color (:shadow colors)
-                :shadow-offset {:width 0 :height 2}
-                :shadow-opacity 0.25
-                :shadow-radius 4
-                :elevation 5}
+       {:style (merge {:width 72
+                       :height 72
+                       :border-radius 36
+                       :background-color (cond
+                                           locked? (:disabled colors)
+                                           listening? (:destructive colors)
+                                           :else (:accent colors))
+                       :justify-content "center"
+                       :align-items "center"}
+                      (platform/shadow {:shadow-color (:shadow colors)}))
         :disabled locked?
         :on-press (fn []
                     (when voice-error
@@ -1091,9 +1084,7 @@
                   :border-radius 8}
           :on-press #(copy-to-clipboard! session-id "Session ID copied")}
          [:> rn/Text {:style {:font-size 12
-                              :font-family (if (= (.-OS rn/Platform) "ios")
-                                             "Menlo"
-                                             "monospace")
+                              :font-family platform/monospace-font
                               :color (:text-secondary colors)}}
           session-id]]
         [:> rn/Text {:style {:font-size 11
@@ -1261,18 +1252,17 @@
   [session-id]
   [:f>
    (fn []
-     (let [Alert (.-Alert rn)
-           colors (theme/use-theme-colors)]
+     (let [colors (theme/use-theme-colors)]
        [touchable
         {:style {:padding 8}
-         :on-press #(.alert Alert
-                            "Stop Session?"
-                            "This will terminate the current Claude process. The session will be unlocked and you can send a new prompt."
-                            (clj->js [{:text "Cancel" :style "cancel"}
-                                      {:text "Stop"
-                                       :style "destructive"
-                                       :onPress (fn []
-                                                  (rf/dispatch [:session/kill session-id]))}]))}
+         :on-press #(platform/show-alert!
+                     "Stop Session?"
+                     "This will terminate the current Claude process. The session will be unlocked and you can send a new prompt."
+                     [{:text "Cancel" :style "cancel"}
+                      {:text "Stop"
+                       :style "destructive"
+                       :onPress (fn []
+                                  (rf/dispatch [:session/kill session-id]))}])}
         [icons/icon {:name :close-circle :size 16 :color (:destructive colors)}]]))])
 
 (defn- header-compact-button
@@ -1288,7 +1278,6 @@
            recently-compacted? @(rf/subscribe [:ui/session-recently-compacted? session-id])
            compaction-timestamp @(rf/subscribe [:ui/compaction-timestamp session-id])
            locked? @(rf/subscribe [:session/locked? session-id])
-           Alert (.-Alert rn)
            colors (theme/use-theme-colors)
            ;; Format relative time for re-compaction message
            relative-time (when compaction-timestamp
@@ -1299,23 +1288,23 @@
          :on-press (fn []
                      (if recently-compacted?
                        ;; Show confirmation for re-compaction with relative timestamp
-                       (.alert Alert
-                               "Session Already Compacted"
-                               (if relative-time
-                                 (str "This session was compacted " relative-time ".\n\nCompact again?")
-                                 "This session was recently compacted.\n\nCompact again?")
-                               (clj->js [{:text "Cancel" :style "cancel"}
-                                         {:text "Compact Again"
-                                          :style "destructive"
-                                          :onPress #(rf/dispatch [:session/compact session-id])}]))
+                       (platform/show-alert!
+                        "Session Already Compacted"
+                        (if relative-time
+                          (str "This session was compacted " relative-time ".\n\nCompact again?")
+                          "This session was recently compacted.\n\nCompact again?")
+                        [{:text "Cancel" :style "cancel"}
+                         {:text "Compact Again"
+                          :style "destructive"
+                          :onPress #(rf/dispatch [:session/compact session-id])}])
                        ;; First time compaction confirmation
-                       (.alert Alert
-                               "Compact Session?"
-                               "This will summarize conversation history to reduce context window usage."
-                               (clj->js [{:text "Cancel" :style "cancel"}
-                                         {:text "Compact"
-                                          :style "destructive"
-                                          :onPress #(rf/dispatch [:session/compact session-id])}]))))}
+                       (platform/show-alert!
+                        "Compact Session?"
+                        "This will summarize conversation history to reduce context window usage."
+                        [{:text "Cancel" :style "cancel"}
+                         {:text "Compact"
+                          :style "destructive"
+                          :onPress #(rf/dispatch [:session/compact session-id])}])))}
         (cond
           compacting?
           [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
@@ -1445,8 +1434,8 @@
 
               [:> rn/KeyboardAvoidingView
                {:style {:flex 1}
-                :behavior "padding"
-                :keyboard-vertical-offset 90}
+                :behavior platform/keyboard-avoiding-behavior
+                :keyboard-vertical-offset (platform/keyboard-vertical-offset)}
 
                ;; Toast notifications (float above content)
                [toast-overlay]

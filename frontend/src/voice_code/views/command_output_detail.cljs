@@ -6,6 +6,7 @@
             ["react-native" :refer [Share] :as rn]
             [voice-code.haptic :as haptic]
             [voice-code.icons :as icons]
+            [voice-code.platform :as platform]
             [voice-code.theme :as theme]
             [voice-code.views.components :refer [copy-to-clipboard!]]
             [voice-code.views.touchable :refer [touchable]]))
@@ -68,7 +69,7 @@
     "Command"]
    [:> rn/Text {:style {:font-size 16
                         :font-weight "600"
-                        :font-family "monospace"
+                        :font-family platform/monospace-font
                         :color (:text-primary colors)
                         :margin-bottom 12}}
     (or shell-command "Unknown")]
@@ -133,13 +134,13 @@
                              :background-color (:background-secondary colors)}
                      :content-container-style {:padding 12}}
    (if (and output (seq output))
-     [:> rn/Text {:style {:font-family "monospace"
+     [:> rn/Text {:style {:font-family platform/monospace-font
                           :font-size 13
                           :line-height 20
                           :color (:text-primary colors)}
                   :selectable true}
       output]
-     [:> rn/Text {:style {:font-family "monospace"
+     [:> rn/Text {:style {:font-family platform/monospace-font
                           :font-size 13
                           :color (:text-secondary colors)
                           :font-style "italic"}}

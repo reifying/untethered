@@ -8,6 +8,7 @@
             [re-frame.core :as rf]
             ["react-native" :as rn]
             [voice-code.icons :as icons]
+            [voice-code.platform :as platform]
             [voice-code.theme :as theme]
             [voice-code.views.touchable :refer [touchable]]))
 
@@ -83,7 +84,7 @@
   (when-let [last-line (last output-lines)]
     (let [is-stderr? (= (:stream last-line) "stderr")]
       [:> rn/Text {:style {:font-size 12
-                           :font-family "monospace"
+                           :font-family platform/monospace-font
                            :color (if is-stderr?
                                     (:warning colors)
                                     (:text-secondary colors))
@@ -124,7 +125,7 @@
        ;; Shell command
        [:> rn/Text {:style {:font-size 15
                             :font-weight "600"
-                            :font-family "monospace"
+                            :font-family platform/monospace-font
                             :color (:text-primary colors)}
                     :number-of-lines 1}
         (or shell-command command-id "Unknown command")]

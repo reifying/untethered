@@ -3,10 +3,11 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             [clojure.string :as str]
-            ["react-native" :as rn :refer [Alert RefreshControl Modal Switch Animated PanResponder]]
+            ["react-native" :as rn :refer [RefreshControl Modal Switch Animated PanResponder]]
             [voice-code.views.components :as components :refer [relative-time-text copy-to-clipboard! toast-overlay]]
             [voice-code.haptic :as haptic]
             [voice-code.icons :as icons]
+            [voice-code.platform :as platform]
             [voice-code.theme :as theme]
             [voice-code.views.touchable :refer [touchable]]))
 
@@ -61,17 +62,17 @@
               :background-color (:card-background colors)}
       :on-press on-press
       :on-long-press (fn []
-                       (.alert Alert
-                               session-display-name
-                               "Session actions"
-                               (clj->js [{:text "Copy Session ID"
-                                          :onPress #(copy-to-clipboard! session-id "Session ID copied")}
-                                         {:text "Copy Directory Path"
-                                          :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
-                                         {:text "Delete"
-                                          :style "destructive"
-                                          :onPress on-delete}
-                                         {:text "Cancel" :style "cancel"}])))}
+                       (platform/show-alert!
+                        session-display-name
+                        "Session actions"
+                        [{:text "Copy Session ID"
+                          :onPress #(copy-to-clipboard! session-id "Session ID copied")}
+                         {:text "Copy Directory Path"
+                          :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
+                         {:text "Delete"
+                          :style "destructive"
+                          :onPress on-delete}
+                         {:text "Cancel" :style "cancel"}]))}
      [:> rn/View {:style {:flex-direction "row"
                           :align-items "center"}}
       ;; Locked indicator
@@ -219,22 +220,22 @@
         handle-delete (fn []
                         ;; Haptic warning feedback before destructive action
                         (haptic/warning!)
-                        (.alert Alert
-                                "Delete Session"
-                                "Are you sure you want to delete this session?"
-                                (clj->js [{:text "Cancel"
-                                           :style "cancel"
-                                           :onPress close-swipe}
-                                          {:text "Delete"
-                                           :style "destructive"
-                                           :onPress (fn []
-                                                      ;; Animate out before deleting
-                                                      (.start
-                                                       (Animated.timing translate-x
-                                                                        #js {:toValue -500
-                                                                             :duration 200
-                                                                             :useNativeDriver true})
-                                                       on-delete))}])))]
+                        (platform/show-alert!
+                         "Delete Session"
+                         "Are you sure you want to delete this session?"
+                         [{:text "Cancel"
+                           :style "cancel"
+                           :onPress close-swipe}
+                          {:text "Delete"
+                           :style "destructive"
+                           :onPress (fn []
+                                      ;; Animate out before deleting
+                                      (.start
+                                       (Animated.timing translate-x
+                                                        #js {:toValue -500
+                                                             :duration 200
+                                                             :useNativeDriver true})
+                                       on-delete))}]))]
     (fn [{:keys [session locked? on-press on-delete colors]}]
       ;; Note: colors passed as prop from parent, not obtained from hook
       [:> rn/View {:style {:overflow "hidden"}}

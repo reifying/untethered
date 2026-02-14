@@ -5,6 +5,7 @@
             [re-frame.core :as rf]
             ["react-native" :as rn]
             [voice-code.icons :as icons]
+            [voice-code.platform :as platform]
             [voice-code.theme :as theme]
             [voice-code.views.touchable :refer [touchable]]))
 
@@ -53,7 +54,7 @@
       "Command"]
      [:> rn/Text {:style {:font-size 16
                           :font-weight "600"
-                          :font-family "monospace"
+                          :font-family platform/monospace-font
                           :color (:text-primary colors)}}
       (or shell-command "...")]]
     (when (some? exit-code)
@@ -93,7 +94,7 @@
                          :padding-vertical 2}}
      [stream-indicator stream colors]
      [:> rn/Text {:style {:flex 1
-                          :font-family "monospace"
+                          :font-family platform/monospace-font
                           :font-size 13
                           :line-height 20
                           :color (if is-stderr?

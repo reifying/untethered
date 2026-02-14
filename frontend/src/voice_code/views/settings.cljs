@@ -9,12 +9,12 @@
    - Connection testing"
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn :refer [Alert]]
-            ["react-native" :refer [Platform]]
+            ["react-native" :as rn]
             [voice-code.auth :refer [api-key-validation-status mask-api-key]]
             [voice-code.views.voice-picker :refer [voice-picker-modal]]
             [voice-code.haptic :as haptic]
             [voice-code.icons :as icons]
+            [voice-code.platform :as platform]
             [voice-code.theme :as theme]
             [voice-code.views.touchable :refer [touchable]]))
 
@@ -46,7 +46,7 @@
 
           ;; Character count
           [:> rn/Text {:style {:font-size 14
-                               :font-family (when (= "ios" (.-OS Platform)) "Menlo")
+                               :font-family platform/monospace-font
                                :color (cond
                                         valid? (:success colors)
                                         (> char-count expected-count) (:destructive colors)
@@ -350,7 +350,7 @@
              [:> rn/Text {:style {:font-size 16 :color (:text-primary colors) :flex 1}}
               "API Key Configured"]
              [:> rn/Text {:style {:font-size 14
-                                  :font-family (when (= "ios" (.-OS Platform)) "Menlo")
+                                  :font-family platform/monospace-font
                                   :color (:text-tertiary colors)}}
               (mask-api-key api-key)]]
 
@@ -362,13 +362,13 @@
             ;; Delete key button
             [setting-row {:label "Delete Key"
                           :on-press (fn []
-                                      (.alert Alert
-                                              "Delete API Key?"
-                                              "You will need to re-scan the QR code to connect to the backend."
-                                              (clj->js [{:text "Cancel" :style "cancel"}
-                                                        {:text "Delete"
-                                                         :style "destructive"
-                                                         :onPress #(rf/dispatch [:auth/disconnect])}])))
+                                      (platform/show-alert!
+                                       "Delete API Key?"
+                                       "You will need to re-scan the QR code to connect to the backend."
+                                       [{:text "Cancel" :style "cancel"}
+                                        {:text "Delete"
+                                         :style "destructive"
+                                         :onPress #(rf/dispatch [:auth/disconnect])}]))
                           :accessory [icons/icon {:name :trash :size 16 :color (:destructive colors)}]}]]
 
            ;; Key not configured - show warning and entry options
@@ -399,7 +399,7 @@
                                  :padding-bottom (if has-input? 0 10)}}
              [:> rn/TextInput
               {:style {:font-size 14
-                       :font-family (when (= "ios" (.-OS Platform)) "Menlo")
+                       :font-family platform/monospace-font
                        :color (:text-primary colors)
                        :padding-vertical 8
                        :border-width 1
@@ -600,7 +600,7 @@
   "Audio playback settings (iOS only)."
   []
   (let [settings @(rf/subscribe [:settings/all])]
-    (when (= "ios" (.-OS Platform))
+    (when platform/ios?
       [:> rn/View
        [section-header "Audio Playback"]
        [toggle-row {:label "Auto-speak responses"
@@ -761,13 +761,13 @@
         [section-header "Account"]
         [setting-row {:label "Disconnect"
                       :on-press (fn []
-                                  (.alert Alert
-                                          "Disconnect"
-                                          "Are you sure you want to disconnect? Your API key will be deleted."
-                                          (clj->js [{:text "Cancel" :style "cancel"}
-                                                    {:text "Disconnect"
-                                                     :style "destructive"
-                                                     :onPress #(rf/dispatch [:auth/disconnect])}])))
+                                  (platform/show-alert!
+                                   "Disconnect"
+                                   "Are you sure you want to disconnect? Your API key will be deleted."
+                                   [{:text "Cancel" :style "cancel"}
+                                    {:text "Disconnect"
+                                     :style "destructive"
+                                     :onPress #(rf/dispatch [:auth/disconnect])}]))
                       :accessory [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}}
                                   "Disconnect"]}]]))])
 
@@ -824,7 +824,7 @@
    [setting-row {:label "Build"
                  :value "1"}]
    [setting-row {:label "Platform"
-                 :value (.-OS Platform)}]])
+                 :value (.-OS rn/Platform)}]])
 
 (defn- debug-section
   "Debug tools section with link to debug logs.

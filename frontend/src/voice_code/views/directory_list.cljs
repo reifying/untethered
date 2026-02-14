@@ -2,10 +2,11 @@
   "Directory list view showing sessions grouped by working directory."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn :refer [RefreshControl Alert AppState]]
+            ["react-native" :as rn :refer [RefreshControl AppState]]
             [clojure.string :as str]
             [voice-code.views.components :refer [relative-time-text copy-to-clipboard! toast-overlay]]
             [voice-code.icons :as icons]
+            [voice-code.platform :as platform]
             [voice-code.theme :as theme]
             [voice-code.views.touchable :refer [touchable]]
             [voice-code.utils :as utils]))
@@ -45,12 +46,12 @@
               :background-color (:card-background colors)}
       :on-press on-press
       :on-long-press (fn []
-                       (.alert Alert
-                               (directory-name directory)
-                               "Directory actions"
-                               (clj->js [{:text "Copy Directory Path"
-                                          :onPress #(copy-to-clipboard! directory "Directory path copied")}
-                                         {:text "Cancel" :style "cancel"}])))}
+                       (platform/show-alert!
+                        (directory-name directory)
+                        "Directory actions"
+                        [{:text "Copy Directory Path"
+                          :onPress #(copy-to-clipboard! directory "Directory path copied")}
+                         {:text "Cancel" :style "cancel"}]))}
      [:> rn/View {:style {:flex-direction "row"
                           :justify-content "space-between"
                           :align-items "flex-start"}}
@@ -101,14 +102,14 @@
               :background-color (:card-background colors)}
       :on-press on-press
       :on-long-press (fn []
-                       (.alert Alert
-                               (session-name session)
-                               "Session actions"
-                               (clj->js [{:text "Copy Session ID"
-                                          :onPress #(copy-to-clipboard! session-id "Session ID copied")}
-                                         {:text "Copy Directory Path"
-                                          :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
-                                         {:text "Cancel" :style "cancel"}])))}
+                       (platform/show-alert!
+                        (session-name session)
+                        "Session actions"
+                        [{:text "Copy Session ID"
+                          :onPress #(copy-to-clipboard! session-id "Session ID copied")}
+                         {:text "Copy Directory Path"
+                          :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
+                         {:text "Cancel" :style "cancel"}]))}
      [:> rn/View {:style {:flex-direction "row"
                           :justify-content "space-between"
                           :align-items "center"}}
@@ -158,14 +159,14 @@
                :padding-vertical 12}
        :on-press on-press
        :on-long-press (fn []
-                        (.alert Alert
-                                (session-name session)
-                                "Session actions"
-                                (clj->js [{:text "Copy Session ID"
-                                           :onPress #(copy-to-clipboard! session-id "Session ID copied")}
-                                          {:text "Copy Directory Path"
-                                           :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
-                                          {:text "Cancel" :style "cancel"}])))}
+                        (platform/show-alert!
+                         (session-name session)
+                         "Session actions"
+                         [{:text "Copy Session ID"
+                           :onPress #(copy-to-clipboard! session-id "Session ID copied")}
+                          {:text "Copy Directory Path"
+                           :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
+                          {:text "Cancel" :style "cancel"}]))}
       [:> rn/View {:style {:flex-direction "row"
                            :justify-content "space-between"
                            :align-items "center"}}
@@ -220,14 +221,14 @@
                :padding-vertical 12}
        :on-press on-press
        :on-long-press (fn []
-                        (.alert Alert
-                                (session-name session)
-                                "Session actions"
-                                (clj->js [{:text "Copy Session ID"
-                                           :onPress #(copy-to-clipboard! session-id "Session ID copied")}
-                                          {:text "Copy Directory Path"
-                                           :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
-                                          {:text "Cancel" :style "cancel"}])))}
+                        (platform/show-alert!
+                         (session-name session)
+                         "Session actions"
+                         [{:text "Copy Session ID"
+                           :onPress #(copy-to-clipboard! session-id "Session ID copied")}
+                          {:text "Copy Directory Path"
+                           :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
+                          {:text "Cancel" :style "cancel"}]))}
       [:> rn/View {:style {:flex-direction "row"
                            :justify-content "space-between"
                            :align-items "center"}}
@@ -408,15 +409,15 @@
                         :line-height 22}}
     "Connect to your backend server to get started. You'll need your server URL and API key."]
    [touchable
-    {:style {:background-color (:accent colors)
-             :border-radius 12
-             :padding-horizontal 32
-             :padding-vertical 14
-             :shadow-color (:accent colors)
-             :shadow-offset #js {:width 0 :height 4}
-             :shadow-opacity 0.3
-             :shadow-radius 8
-             :elevation 4}
+    {:style (merge {:background-color (:accent colors)
+                    :border-radius 12
+                    :padding-horizontal 32
+                    :padding-vertical 14}
+                   (platform/shadow {:shadow-color (:accent colors)
+                                     :offset-y 4
+                                     :opacity 0.3
+                                     :radius 8
+                                     :elevation 4}))
      :on-press #(when navigation (.navigate navigation "Settings"))}
     [:> rn/Text {:style {:color (:button-text-on-accent colors)
                          :font-size 16
