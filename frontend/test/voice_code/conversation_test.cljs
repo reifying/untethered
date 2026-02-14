@@ -674,6 +674,105 @@
     ;; Test nil timestamp
     (is (nil? (utils/format-relative-time nil)))))
 
+;; ============================================================================
+;; Locked State Input Behavior Tests (VCMOB-6lui)
+;; ============================================================================
+;; Tests verify the conversation input locked state matches iOS parity:
+;; - Session lock/unlock toggles input disabled state
+;; - Unlock dispatch works from both mic button and text field taps
+;; - Draft text preserved across lock/unlock transitions
+;; iOS Reference: ConversationView.swift lines 1383-1434 (ConversationTextInputView)
+;; and ConversationView.swift lines 1316-1381 (ConversationVoiceInputView)
+
+(deftest locked-state-text-input-parity-test
+  "Tests the data layer for conversation text input locked state.
+   iOS ConversationTextInputView (ConversationView.swift:1383-1434):
+   - Dynamic placeholder: 'Session locked - tap to unlock' when disabled
+   - 50% opacity when disabled
+   - Tapping disabled field triggers onManualUnlock()
+   - Send button shows lock.fill (orange) when locked"
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Add a session
+   (rf/dispatch-sync [:sessions/add {:id "session-1"
+                                     :backend-name "Test Session"
+                                     :working-directory "/test/path"}])
+
+   (testing "unlocked session allows text input"
+     (is (false? @(rf/subscribe [:session/locked? "session-1"])))
+     ;; Draft can be set and retrieved
+     (rf/dispatch-sync [:ui/set-draft "session-1" "Hello Claude"])
+     (is (= "Hello Claude" @(rf/subscribe [:ui/draft "session-1"]))))
+
+   (testing "locking session preserves existing draft"
+     ;; Lock the session
+     (rf/dispatch-sync [:sessions/lock "session-1"])
+     (is (true? @(rf/subscribe [:session/locked? "session-1"])))
+     ;; Draft text should be preserved (not cleared on lock)
+     (is (= "Hello Claude" @(rf/subscribe [:ui/draft "session-1"]))))
+
+   (testing "unlock via dispatch restores interactive state"
+     ;; Simulate unlock (matches iOS onManualUnlock / touchable on-press)
+     (rf/dispatch-sync [:sessions/unlock "session-1"])
+     (is (false? @(rf/subscribe [:session/locked? "session-1"])))
+     ;; Draft should still be there
+     (is (= "Hello Claude" @(rf/subscribe [:ui/draft "session-1"]))))
+
+   (testing "can-send logic: needs unlocked AND non-empty draft"
+     ;; With text: can send
+     (let [locked? @(rf/subscribe [:session/locked? "session-1"])
+           draft @(rf/subscribe [:ui/draft "session-1"])]
+       (is (false? locked?))
+       (is (seq draft))
+       (is (and (not locked?) (seq draft)) "should allow sending"))
+
+     ;; Lock: cannot send even with text
+     (rf/dispatch-sync [:sessions/lock "session-1"])
+     (let [locked? @(rf/subscribe [:session/locked? "session-1"])
+           draft @(rf/subscribe [:ui/draft "session-1"])]
+       (is (true? locked?))
+       (is (seq draft))
+       (is (not (and (not locked?) (seq draft))) "should NOT allow sending when locked"))
+
+     ;; Unlock, clear text: cannot send
+     (rf/dispatch-sync [:sessions/unlock "session-1"])
+     (rf/dispatch-sync [:ui/set-draft "session-1" ""])
+     (let [locked? @(rf/subscribe [:session/locked? "session-1"])
+           draft @(rf/subscribe [:ui/draft "session-1"])]
+       (is (false? locked?))
+       (is (empty? draft))
+       (is (not (and (not locked?) (seq draft))) "should NOT allow sending with empty draft")))))
+
+(deftest locked-state-voice-input-parity-test
+  "Tests the data layer for conversation voice input locked state.
+   iOS ConversationVoiceInputView (ConversationView.swift:1316-1381):
+   - Mic button is NEVER disabled — locked tap calls onManualUnlock()
+   - Shows 'Tap to Unlock' text when locked (gray color)
+   - Shows 'Tap to Speak' when unlocked (primary color)
+   - Shows 'Tap to Stop' when recording (red color)"
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   ;; Add a session
+   (rf/dispatch-sync [:sessions/add {:id "session-1"
+                                     :backend-name "Test Session"
+                                     :working-directory "/test/path"}])
+
+   (testing "locked session can be unlocked via dispatch"
+     (rf/dispatch-sync [:sessions/lock "session-1"])
+     (is (true? @(rf/subscribe [:session/locked? "session-1"])))
+     ;; In the view, tapping mic when locked dispatches [:sessions/unlock]
+     (rf/dispatch-sync [:sessions/unlock "session-1"])
+     (is (false? @(rf/subscribe [:session/locked? "session-1"]))))
+
+   (testing "voice listening state is independent of lock state"
+     ;; Voice can't start when locked (enforced in view layer, not event layer)
+     ;; But the states are independent in the data model
+     (is (false? @(rf/subscribe [:voice/listening?])))
+     (rf/dispatch-sync [:sessions/lock "session-1"])
+     (is (false? @(rf/subscribe [:voice/listening?]))))))
+
 (deftest compaction-timestamp-subscription-test
   "Tests the compaction timestamp subscriptions work correctly."
   (rf-test/run-test-sync

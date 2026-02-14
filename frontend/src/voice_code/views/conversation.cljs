@@ -759,6 +759,8 @@
      ;; Microphone button — matches iOS ConversationVoiceInputView:
      ;; 100x100 circle with tinted background (Color.blue/red/gray.opacity(0.1))
      ;; NOT solid-filled. Icon at 40pt system font equivalent.
+     ;; iOS ConversationView.swift line 1352-1370: button is NEVER disabled — when locked,
+     ;; tapping calls onManualUnlock() instead of starting recording.
      [:> rn/View {:style {:align-items "center"}}
       [touchable
        {:style {:width 100
@@ -770,14 +772,20 @@
                                     :else (theme/opacity (:accent colors) 0.1))
                 :justify-content "center"
                 :align-items "center"}
-        :disabled locked?
         :on-press (fn []
-                    (when voice-error
-                      (rf/dispatch [:voice/clear-error]))
-                    (if listening?
-                      (rf/dispatch [:voice/stop-listening])
-                      (rf/dispatch [:voice/start-listening])))}
-       [icons/icon {:name (if listening? :mic :mic)
+                    (cond
+                      ;; Locked: unlock session (iOS line 1353-1354)
+                      locked?
+                      (rf/dispatch [:sessions/unlock session-id])
+                      ;; Listening: stop recording
+                      listening?
+                      (do (when voice-error (rf/dispatch [:voice/clear-error]))
+                          (rf/dispatch [:voice/stop-listening]))
+                      ;; Idle: start recording
+                      :else
+                      (do (when voice-error (rf/dispatch [:voice/clear-error]))
+                          (rf/dispatch [:voice/start-listening]))))}
+       [icons/icon {:name :mic
                     :size 40
                     :color (cond
                              locked? (:disabled colors)
@@ -785,23 +793,25 @@
                              :else (:accent colors))}]]
 
       ;; Status text — matches iOS: "Tap to Stop" / "Tap to Speak" / "Tap to Unlock"
-      ;; Uses .caption font equivalent. Tappable unlock when locked.
-      (if locked?
-        [touchable
-         {:style {:margin-top 8}
-          :on-press #(rf/dispatch [:sessions/unlock session-id])}
-         [:> rn/Text {:style {:font-size 12
-                              :color (:disabled colors)}}
-          "Tap to Unlock"]]
-        [:> rn/Text {:style {:font-size 12
-                             :color (if listening? (:destructive colors) (:text-primary colors))
-                             :margin-top 8}}
-         (if listening?
-           "Tap to Stop"
-           "Tap to Speak")])]]))])
+      ;; Uses .caption font equivalent.
+      [:> rn/Text {:style {:font-size 12
+                           :color (cond
+                                    locked? (:disabled colors)
+                                    listening? (:destructive colors)
+                                    :else (:text-primary colors))
+                           :margin-top 8}}
+       (cond
+         locked? "Tap to Unlock"
+         listening? "Tap to Stop"
+         :else "Tap to Speak")]]]))])
 
 (defn- text-input-area
-  "Text input with send button."
+  "Text input with send button.
+   Matches iOS ConversationTextInputView (ConversationView.swift:1383-1434):
+   - Dynamic placeholder changes when locked ('Session locked - tap to unlock')
+   - 50% opacity on text field when locked for clear disabled visual state
+   - Tapping the disabled text field itself triggers unlock (no separate button)
+   - Send icon at 32pt matching iOS system font size"
   [{:keys [session-id]}]
   [:f>
    (fn []
@@ -826,28 +836,57 @@
         ;; Text input row
         [:> rn/View {:style {:flex-direction "row"
                              :align-items "flex-end"}}
-         [:> rn/TextInput
-          {:style {:flex 1
-                   :border-width 1
-                   :border-color (:input-border colors)
-                   :border-radius 20
-                   :padding-horizontal 16
-                   :padding-vertical 10
-                   :padding-right 44
-                   :font-size 16
-                   :max-height 120
-                   :background-color (:input-background colors)
-                   :color (:text-primary colors)}
-           :placeholder "Message..."
-           :placeholder-text-color (:input-placeholder colors)
-           :multiline true
-           :value (or draft "")
-           :editable (not locked?)
-           :on-change-text #(rf/dispatch-sync [:ui/set-draft session-id %])}]
+         ;; When locked, wrap the TextInput in a touchable overlay so tapping
+         ;; the disabled field triggers unlock — matches iOS .onTapGesture behavior.
+         ;; iOS ConversationView.swift line 1399: .onTapGesture { if isDisabled { onManualUnlock() } }
+         (if locked?
+           [touchable
+            {:style {:flex 1}
+             :on-press #(rf/dispatch [:sessions/unlock session-id])}
+            [:> rn/View {:pointer-events "none"}
+             [:> rn/TextInput
+              {:style {:flex 1
+                       :border-width 1
+                       :border-color (:input-border colors)
+                       :border-radius 20
+                       :padding-horizontal 16
+                       :padding-vertical 10
+                       :padding-right 44
+                       :font-size 16
+                       :max-height 120
+                       :background-color (:input-background colors)
+                       :color (:text-primary colors)
+                       ;; iOS ConversationView.swift line 1398: .opacity(isDisabled ? 0.5 : 1.0)
+                       :opacity 0.5}
+               ;; iOS ConversationView.swift line 1394: dynamic placeholder when locked
+               :placeholder "Session locked \u2014 tap to unlock"
+               :placeholder-text-color (:input-placeholder colors)
+               :multiline true
+               :value (or draft "")
+               :editable false}]]]
+           ;; Normal (unlocked) text input
+           [:> rn/TextInput
+            {:style {:flex 1
+                     :border-width 1
+                     :border-color (:input-border colors)
+                     :border-radius 20
+                     :padding-horizontal 16
+                     :padding-vertical 10
+                     :padding-right 44
+                     :font-size 16
+                     :max-height 120
+                     :background-color (:input-background colors)
+                     :color (:text-primary colors)}
+             :placeholder "Type your message..."
+             :placeholder-text-color (:input-placeholder colors)
+             :multiline true
+             :value (or draft "")
+             :editable true
+             :on-change-text #(rf/dispatch-sync [:ui/set-draft session-id %])}])
 
          ;; Send button — matches iOS ConversationTextInputView:
          ;; lock.fill (orange) when locked, arrow.up.circle.fill (blue/gray) otherwise
-         ;; 32pt icon, no solid background — just the icon as a button
+         ;; iOS uses .font(.system(size: 32)) — match that size
          [touchable
           {:style {:position "absolute"
                    :right 6
@@ -859,29 +898,11 @@
                          (rf/dispatch [:sessions/unlock session-id])
                          (rf/dispatch [:prompt/send-from-draft session-id])))}
           [icons/icon {:name (if locked? :lock :send)
-                       :size 28
+                       :size 32
                        :color (cond
                                 locked? (:warning colors)
                                 (seq draft) (:accent colors)
-                                :else (:disabled colors))}]]]
-
-        ;; Locked state hint - tappable unlock button
-        (when locked?
-          [touchable
-           {:style {:margin-top 8
-                    :padding-horizontal 12
-                    :padding-vertical 6
-                    :align-self "center"
-                    :background-color (:warning-background colors)
-                    :border-radius 12
-                    :border-width 1
-                    :border-color (:warning colors)}
-            :on-press #(rf/dispatch [:sessions/unlock session-id])}
-           [:> rn/Text {:style {:font-size 12
-                                :color (:warning colors)
-                                :font-weight "500"
-                                :text-align "center"}}
-            "Tap to Unlock"]])]))])
+                                :else (:disabled colors))}]]]]))])
 
 (defn- input-area
   "Switches between voice and text input based on current mode."
