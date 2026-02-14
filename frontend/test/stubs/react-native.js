@@ -87,3 +87,9 @@ export var Share = {
 };
 export var KeyboardAvoidingView = function() {};
 export var TouchableNativeFeedback = function() {};
+
+export var Appearance = {
+  getColorScheme: function() { return 'light'; },
+  addChangeListener: function() { return { remove: function() {} }; },
+  setColorScheme: null
+};

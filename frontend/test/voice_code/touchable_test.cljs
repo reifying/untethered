@@ -170,3 +170,49 @@
           ^js props (.-props result)]
       ;; Should not have onLongPress property
       (is (not (js/Object.prototype.hasOwnProperty.call props "onLongPress"))))))
+
+;; ============================================================================
+;; Dark Mode Ripple Color Tests
+;; ============================================================================
+
+(deftest light-ripple-color-defined-test
+  (testing "light-ripple-color is a dark semi-transparent color"
+    (is (= "rgba(0,0,0,0.1)" touchable/light-ripple-color))))
+
+(deftest dark-ripple-color-defined-test
+  (testing "dark-ripple-color is a light semi-transparent color"
+    (is (= "rgba(255,255,255,0.15)" touchable/dark-ripple-color))))
+
+(deftest current-ripple-color-light-mode-test
+  (testing "current-ripple-color returns dark ripple in light mode"
+    ;; Test stub Appearance.getColorScheme returns 'light'
+    (is (= touchable/light-ripple-color (touchable/current-ripple-color)))))
+
+(deftest current-ripple-color-dark-mode-test
+  (testing "current-ripple-color returns light ripple in dark mode"
+    ;; Temporarily set Appearance to return 'dark'
+    (let [appearance (.-Appearance rn)
+          original-fn (.-getColorScheme appearance)]
+      (set! (.-getColorScheme appearance) (fn [] "dark"))
+      (is (= touchable/dark-ripple-color (touchable/current-ripple-color)))
+      ;; Restore original
+      (set! (.-getColorScheme appearance) original-fn))))
+
+(deftest current-ripple-color-nil-appearance-test
+  (testing "current-ripple-color falls back to light color when Appearance is unavailable"
+    ;; Temporarily remove Appearance
+    (let [original (.-Appearance rn)]
+      (set! (.-Appearance rn) nil)
+      (is (= touchable/light-ripple-color (touchable/current-ripple-color)))
+      ;; Restore
+      (set! (.-Appearance rn) original))))
+
+(deftest current-ripple-color-nil-get-color-scheme-test
+  (testing "current-ripple-color falls back to light when getColorScheme is nil"
+    ;; Temporarily set getColorScheme to nil
+    (let [appearance (.-Appearance rn)
+          original-fn (.-getColorScheme appearance)]
+      (set! (.-getColorScheme appearance) nil)
+      (is (= touchable/light-ripple-color (touchable/current-ripple-color)))
+      ;; Restore
+      (set! (.-getColorScheme appearance) original-fn))))
