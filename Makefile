@@ -512,9 +512,12 @@ rn-ios:
 	cd $(RN_DIR) && npm run ios -- --no-packager
 
 # Run React Native Android app
-rn-android:
+rn-android: check-android-sdk
 	@echo "Running React Native Android app..."
-	cd $(RN_DIR) && npm run android
+	@echo "Setting up adb reverse for Metro..."
+	@$(ADB) reverse tcp:8081 tcp:8081 2>/dev/null || true
+	@$(ADB) reverse tcp:9630 tcp:9630 2>/dev/null || true
+	cd $(RN_DIR) && JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home npm run android
 
 # Clean React Native build artifacts
 rn-clean:
@@ -615,6 +618,7 @@ rn-android-restart: check-android-sdk
 rn-android-grant-permissions: check-android-sdk
 	@echo "Granting common permissions on Android..."
 	@$(ADB) shell pm grant $(RN_ANDROID_PACKAGE) android.permission.RECORD_AUDIO || true
+	@$(ADB) shell pm grant $(RN_ANDROID_PACKAGE) android.permission.POST_NOTIFICATIONS || true
 	@echo "Permissions granted"
 
 # List available Android emulators
@@ -637,7 +641,7 @@ rn-android-boot-emulator:
 		exit 1; \
 	fi; \
 	echo "Booting emulator: $$AVD"; \
-	$(EMULATOR) -avd "$$AVD" &
+	$(EMULATOR) -avd "$$AVD" -no-window -no-audio -gpu swiftshader_indirect &
 
 # Run ClojureScript unit tests
 rn-test:

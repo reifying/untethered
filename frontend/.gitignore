@@ -14,6 +14,8 @@ ios/build/
 android/.gradle/
 android/app/build/
 android/build/
+android/local.properties
+android/app/debug.keystore
 *.apk
 *.aab
 
