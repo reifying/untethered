@@ -24,14 +24,14 @@
     [:> rn/View {:style {:min-width 20
                          :height 20
                          :border-radius 10
-                         :background-color (:accent colors)
+                         :background-color (:destructive colors)
                          :justify-content "center"
                          :align-items "center"
                          :padding-horizontal 6
                          :margin-left 8}}
-     [:> rn/Text {:style {:color (:button-text-on-accent colors)
+     [:> rn/Text {:style {:color "#FFFFFF"
                           :font-size 12
-                          :font-weight "600"}}
+                          :font-weight "700"}}
       (if (> count 99) "99+" (str count))]]))
 
 (defn- directory-item
@@ -53,10 +53,14 @@
                           :onPress #(copy-to-clipboard! directory "Directory path copied")}
                          {:text "Cancel" :style "cancel"}]))}
      [:> rn/View {:style {:flex-direction "row"
-                          :justify-content "space-between"
                           :align-items "flex-start"}}
-      [:> rn/View {:style {:flex 1 :margin-right 12}}
-       ;; Directory name with optional unread badge
+      ;; Folder icon (matches iOS folder.fill blue icon)
+      [icons/icon {:name :folder-fill
+                   :size 20
+                   :color (:accent colors)
+                   :style {:margin-right 8 :margin-top 2}}]
+      [:> rn/View {:style {:flex 1}}
+       ;; Line 1: Directory name + unread badge
        [:> rn/View {:style {:flex-direction "row"
                             :align-items "center"
                             :margin-bottom 4}}
@@ -64,21 +68,26 @@
                              :font-weight (if (and unread-count (pos? unread-count)) "700" "600")
                              :color (:text-primary colors)}}
          (directory-name directory)]
+        [:> rn/View {:style {:flex 1}}]
         [unread-badge unread-count colors]]
-       ;; Full path
+       ;; Line 2: Full path
        [:> rn/Text {:style {:font-size 13
                             :color (:text-secondary colors)
                             :margin-bottom 2}
                     :number-of-lines 1}
         directory]
-       ;; Session count
-       [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors)}}
-        (str session-count " session" (when (not= session-count 1) "s"))]]
-
-      ;; Last modified time - auto-updating
-      [relative-time-text {:timestamp last-modified
-                           :style {:font-size 12
-                                   :color (:text-tertiary colors)}}]]])
+       ;; Line 3: Session count + bullet + timestamp (matches iOS layout)
+       [:> rn/View {:style {:flex-direction "row"
+                            :align-items "center"}}
+        [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors)}}
+         (str session-count " session" (when (not= session-count 1) "s"))]
+        [:> rn/Text {:style {:font-size 12
+                             :color (:text-tertiary colors)
+                             :margin-horizontal 6}}
+         "\u2022"]
+        [relative-time-text {:timestamp last-modified
+                             :style {:font-size 12
+                                     :color (:text-tertiary colors)}}]]]]])
 
 (defn- session-name
   "Get display name for a session."
@@ -210,14 +219,9 @@
                          :background-color tint-color
                          :border-bottom-width 1
                          :border-bottom-color (:separator colors)}}
-     ;; Drag handle placeholder (visual indicator)
-     [:> rn/View {:style {:padding-left 12
-                          :padding-vertical 12
-                          :justify-content "center"}}
-      [icons/icon {:name :ellipsis :size 16 :color (:text-tertiary colors)}]]
      [touchable
       {:style {:flex 1
-               :padding-horizontal 8
+               :padding-horizontal 16
                :padding-vertical 12}
        :on-press on-press
        :on-long-press (fn []
@@ -241,19 +245,7 @@
                               :font-weight (if (pos? unread-count) "600" "500")
                               :color (:text-primary colors)}}
           (session-name session)]
-         [unread-badge unread-count colors]
-         ;; Priority indicator
-         [:> rn/Text {:style {:font-size 10
-                              :color (:text-secondary colors)
-                              :margin-left 8
-                              :background-color (if (= priority 1) (:accent-background colors) (:fill-tertiary colors))
-                              :padding-horizontal 6
-                              :padding-vertical 2
-                              :border-radius 4}}
-          (case priority
-            1 "HIGH"
-            5 "MED"
-            "LOW")]]
+         [unread-badge unread-count colors]]
         ;; Directory name (last component)
         [:> rn/Text {:style {:font-size 12
                              :color (:text-secondary colors)}
@@ -358,8 +350,6 @@
                           :colors colors}]
          (when @expanded?
            [:> rn/View
-            ;; Note: Drag-to-reorder would require react-native-draggable-flatlist
-            ;; For now, show sessions with priority tinting and drag handle visual
             (for [[idx session] (map-indexed vector sessions)]
               ^{:key (or (:id session) (str "priority-" idx))}
               [priority-queue-session-item
@@ -372,21 +362,27 @@
                 :on-remove #(rf/dispatch [:sessions/remove-from-priority-queue (:id session)])}])])]))))
 
 (defn- empty-state
-  "Shown when there are no directories/sessions."
+  "Shown when there are no directories/sessions.
+   Matches iOS DirectoryListView.swift empty state with folder icon."
   [colors]
   [:> rn/View {:style {:flex 1
                        :justify-content "center"
                        :align-items "center"
                        :padding 40}}
-   [:> rn/Text {:style {:font-size 18
+   [icons/icon {:name :folder
+                :size 64
+                :color (:text-secondary colors)
+                :style {:margin-bottom 16}}]
+   [:> rn/Text {:style {:font-size 22
                         :font-weight "600"
-                        :color (:text-primary colors)
-                        :margin-bottom 8}}
-    "No Projects Yet"]
-   [:> rn/Text {:style {:font-size 14
                         :color (:text-secondary colors)
-                        :text-align "center"}}
-    "Sessions will appear here grouped by their working directory."]])
+                        :margin-bottom 8}}
+    "No sessions yet"]
+   [:> rn/Text {:style {:font-size 16
+                        :color (:text-secondary colors)
+                        :text-align "center"
+                        :padding-horizontal 32}}
+    "Sessions will appear here automatically when you use Claude Code in the terminal or create a new session."]])
 
 (defn- configure-server-state
   "Shown when server is not yet configured (first-run experience)."
@@ -680,6 +676,12 @@
                   :on-refresh #(rf/dispatch [:sessions/refresh])
                   :tint-color (:accent colors)
                   :colors #js [(:accent colors)]}])}
+              ;; Section order matches iOS: Recent → Queue → Priority Queue → Projects → Debug
+              ;; Recent sessions section
+              (when (seq recent-sessions)
+                [recent-sessions-section {:sessions recent-sessions
+                                          :navigation nav
+                                          :colors colors}])
               ;; Queue section (FIFO, if enabled and has sessions)
               (when (seq queue-sessions)
                 [queue-section {:sessions queue-sessions
@@ -690,11 +692,6 @@
                 [priority-queue-section {:sessions priority-queue-sessions
                                          :navigation nav
                                          :colors colors}])
-              ;; Recent sessions section (if any)
-              (when (seq recent-sessions)
-                [recent-sessions-section {:sessions recent-sessions
-                                          :navigation nav
-                                          :colors colors}])
               ;; Projects/Directories section
               (when (seq directories)
                 [directories-section {:directories directories

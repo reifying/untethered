@@ -335,7 +335,7 @@
              "Recipe is running in a new session. Go to Sessions to view it."
              [{:text "OK"
                :onPress #(when navigation
-                           (.goBack navigation))}])))
+                           (.goBack navigation))}]))
           ;; If started in same session, just dismiss
           (when (= @pending-session-id session-id)
             (when navigation

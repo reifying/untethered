@@ -86,7 +86,8 @@
    :clock                {:ios "time"              :android "schedule"}
    :history              {:ios "time"              :android "history"}
    :share                {:ios "share"             :android "share"}
-   :arrow-up             {:ios "arrow-up"          :android "arrow-upward"}})
+   :arrow-up             {:ios "arrow-up"          :android "arrow-upward"}
+   :chatbubble           {:ios "chatbubbles"       :android "chat"}})
 
 (defn icon
   "Render a platform-appropriate vector icon.

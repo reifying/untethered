@@ -1021,6 +1021,7 @@
 
 (defn- empty-conversation
   "Shown when there are no messages.
+   Matches iOS ConversationView.swift empty state with message icon.
    Note: Wrapped in [:f>] to enable React hooks for theme colors."
   []
   [:f>
@@ -1030,15 +1031,20 @@
                             :justify-content "center"
                             :align-items "center"
                             :padding 40}}
-        [:> rn/Text {:style {:font-size 18
+        [icons/icon {:name :chatbubble
+                     :size 64
+                     :color (:text-secondary colors)
+                     :style {:margin-bottom 16}}]
+        [:> rn/Text {:style {:font-size 22
                              :font-weight "600"
-                             :color (:text-primary colors)
-                             :margin-bottom 8}}
-         "Start a Conversation"]
-        [:> rn/Text {:style {:font-size 14
                              :color (:text-secondary colors)
-                             :text-align "center"}}
-         "Type a message below to begin chatting with Claude."]]))])
+                             :margin-bottom 8}}
+         "No messages yet"]
+        [:> rn/Text {:style {:font-size 16
+                             :color (:text-secondary colors)
+                             :text-align "center"
+                             :padding-horizontal 32}}
+         "Start a conversation to see messages here."]]))])
 
 (defn- session-not-found
   "Shown when the requested session doesn't exist (deleted or invalid ID).
