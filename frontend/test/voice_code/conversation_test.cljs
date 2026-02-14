@@ -464,7 +464,7 @@
        ))))
 
 (deftest message-status-display-states-test
-  "Tests the three display states for message status as shown in message-bubble UI.
+  "Tests the three display states for message status as shown in message-row UI.
    Matches iOS ConversationView.swift lines 1139-1147:
    - .sending shows clock icon
    - .error shows exclamation triangle
@@ -486,7 +486,7 @@
      (let [msg (->> @(rf/subscribe [:messages/for-session "session-1"])
                     (filter #(= "msg-1" (:id %)))
                     first)]
-       ;; These are the exact comparisons used in conversation.cljs message-bubble
+       ;; These are the exact comparisons used in conversation.cljs message-row
        (is (= :sending (:status msg)))
        (is (true? (= :sending (:status msg))))))
 

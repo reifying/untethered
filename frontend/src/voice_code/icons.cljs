@@ -63,6 +63,8 @@
    :navigate-forward     {:ios "chevron-forward"   :android "chevron-right"}
    :navigate-back        {:ios "chevron-back"      :android "chevron-left"}
    :expand               {:ios "chevron-down"      :android "expand-more"}
+   :expand-arrows         {:ios "expand"            :android "open-in-full"}
+   :ellipsis-circle       {:ios "ellipsis-horizontal-circle" :android "more-horiz"}
    :collapse             {:ios "chevron-up"        :android "expand-less"}
    :edit                 {:ios "create"            :android "edit"}
    :ellipsis             {:ios "ellipsis-horizontal" :android "more-horiz"}

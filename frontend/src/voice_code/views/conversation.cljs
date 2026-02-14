@@ -423,138 +423,125 @@
 
 ;; Cost/usage formatting: utils/format-cost, utils/format-usage-summary
 
-(defn- message-bubble
-  "Single message bubble with truncation support for long messages.
+(defn- message-row
+  "Single message row in list layout matching iOS CDMessageView.
+   iOS ConversationView.swift:1090-1163 uses HStack with role icon + VStack of content,
+   full-width rows with subtle background tints, 12px corner radius.
    Tap to open message detail modal with Copy, Read Aloud, and Infer Name actions.
-   Long-press to quickly copy message text to clipboard.
-   For assistant messages, shows token usage and cost metadata."
+   Long-press to quickly copy message text to clipboard."
   [{:keys [role text timestamp status working-directory session-id usage cost]}]
-  ;; Form-2 component: outer let runs once at mount, inner fn runs each render
-  ;; Only put truly static values (atoms) in outer let
-  ;; All derived state must be in inner let to react to prop changes
-  (let [expanded? (r/atom false)]
-    (fn [{:keys [role text timestamp status working-directory session-id usage cost]}]
-      ;; Track renders for performance monitoring
-      (perf/use-render-tracking "message-bubble")
-      ;; Wrap in [:f> ...] to enable React hooks for theme colors
-      [:f>
-       (fn []
-         (let [colors (theme/use-theme-colors)
-               {:keys [truncated? display-text full-text]} (utils/truncate-text text)
-               show-text (if (and truncated? (not @expanded?))
-                           display-text
-                           full-text)
-               speaking? @(rf/subscribe [:voice/speaking?])
-               is-user? (= role :user)
-               is-sending? (= status :sending)
-               is-error? (= status :error)
-               is-assistant? (= role :assistant)
-               usage-summary (when is-assistant? (utils/format-usage-summary usage cost))]
-           [touchable
-            {:style {:align-self (if is-user? "flex-end" "flex-start")
-                     :max-width "85%"
-                     :margin-vertical 4
-                     :margin-horizontal 12}
-             :on-press #(show-message-detail! {:role role :text full-text} session-id working-directory)
-             :on-long-press #(copy-to-clipboard! full-text "Message copied")}
-            ;; Message bubble
-            [:> rn/View {:style {:background-color (if is-user?
-                                                     (:bubble-user colors)
-                                                     (:bubble-assistant colors))
-                                 :border-radius 18
-                                 :padding-horizontal 14
-                                 :padding-vertical 10
-                                 :border-bottom-right-radius (if is-user? 4 18)
-                                 :border-bottom-left-radius (if is-user? 18 4)}}
-             ;; Role indicator header (icon + label)
-             ;; Matches iOS ConversationView.swift lines 1101-1110
-             [:> rn/View {:style {:flex-direction "row"
-                                  :align-items "center"
-                                  :margin-bottom 6}}
-              [:> rn/View {:style {:margin-right 6}}
-               [icons/icon {:name (role-icon-name role)
-                            :size 16
-                            :color (role-color role colors)}]]
-              [:> rn/Text {:style {:font-size 12
-                                   :font-weight "600"
-                                   :color (role-color role colors)
-                                   :text-transform "uppercase"
-                                   :letter-spacing 0.5}}
-               (role-label role)]]
-             ;; Message text
-             ;; Uses numberOfLines=20 when collapsed to match iOS ConversationView.swift:1117
-             ;; lineLimit(20) - prevents excessive layout calculations for long messages
-             [:> rn/Text (cond-> {:style {:color (if is-user?
-                                                   (:bubble-user-text colors)
-                                                   (:bubble-assistant-text colors))
-                                          :font-size 16
-                                          :line-height 22}
-                                  :selectable true}
-                           ;; Apply native line limit only when not expanded
-                           (not @expanded?)
-                           (assoc :number-of-lines 20))
-              show-text]
+  ;; Track renders for performance monitoring
+  (perf/use-render-tracking "message-row")
+  ;; Wrap in [:f> ...] to enable React hooks for theme colors
+  [:f>
+     (fn []
+       (let [colors (theme/use-theme-colors)
+             {:keys [truncated?  full-text]} (utils/truncate-text text)
+             is-user? (= role :user)
+             is-sending? (= status :sending)
+             is-error? (= status :error)
+             is-assistant? (= role :assistant)
+             usage-summary (when is-assistant? (utils/format-usage-summary usage cost))
+             ;; iOS uses systemBlue/systemGreen at 0.1 opacity for row backgrounds
+             bg-color (theme/opacity (role-color role colors) 0.1)]
+         [touchable
+          {:style {:margin-vertical 4
+                   :margin-horizontal 12}
+           :on-press #(show-message-detail! {:role role :text full-text} session-id working-directory)
+           :on-long-press #(copy-to-clipboard! full-text "Message copied")}
+          ;; Row container: HStack with icon + content, matching iOS CDMessageView
+          [:> rn/View {:style {:flex-direction "row"
+                               :align-items "flex-start"
+                               :padding 12
+                               :background-color bg-color
+                               :border-radius 12}}
+           ;; Role icon (left side) — iOS uses .title3 font (~20pt)
+           [:> rn/View {:style {:margin-right 12
+                                :margin-top 2}}
+            [icons/icon {:name (role-icon-name role)
+                         :size 22
+                         :color (role-color role colors)}]]
 
-             ;; Show more/less toggle for truncated messages
-             (when truncated?
-               [touchable
-                {:style {:margin-top 8
-                         :padding-vertical 4}
-                 :on-press #(swap! expanded? not)}
-                [:> rn/Text {:style {:color (if is-user?
-                                              (theme/opacity (:bubble-user-text colors) 0.7)
-                                              (:accent colors))
-                                     :font-size 14
-                                     :font-weight "500"}}
-                 (if @expanded? "Show less" "Show more")]])]
+           ;; Content VStack (right side)
+           [:> rn/View {:style {:flex 1}}
+            ;; Role label — iOS: .caption, .semibold, .secondary
+            [:> rn/Text {:style {:font-size 12
+                                 :font-weight "600"
+                                 :color (:text-secondary colors)
+                                 :margin-bottom 4}}
+             (role-label role)]
 
-            ;; Timestamp, status, usage/cost, and interaction hints
+            ;; Message text — iOS: .body font, lineLimit(20)
+            [:> rn/Text {:style {:color (:text-primary colors)
+                                 :font-size 16
+                                 :line-height 22}
+                         :selectable true
+                         :number-of-lines 20}
+             full-text]
+
+            ;; "View Full" / "Actions" button — matches iOS ConversationView.swift:1120-1135
+            [touchable
+             {:style {:margin-top 8
+                      :flex-direction "row"
+                      :align-items "center"}
+              :on-press #(show-message-detail! {:role role :text full-text} session-id working-directory)}
+             (if truncated?
+               [:<>
+                [icons/icon {:name :expand-arrows :size 12 :color (:accent colors) :style {:margin-right 4}}]
+                [:> rn/Text {:style {:font-size 12
+                                     :color (:accent colors)}}
+                 "View Full"]]
+               [:<>
+                [icons/icon {:name :ellipsis-circle :size 12 :color (:accent colors) :style {:margin-right 4}}]
+                [:> rn/Text {:style {:font-size 12
+                                     :color (:accent colors)}}
+                 "Actions"]])]
+
+            ;; Status and timestamp row — iOS: HStack with status icon, Spacer, timestamp
             [:> rn/View {:style {:flex-direction "row"
                                  :align-items "center"
-                                 :flex-wrap "wrap"
-                                 :margin-top 2
-                                 :padding-horizontal 4}}
-             [:> rn/Text {:style {:font-size 11
-                                  :color (:text-tertiary colors)}}
-              (format-time timestamp)]
+                                 :margin-top 4}}
+             ;; Status indicators (sending/error)
              (cond
-               is-error?
-               [:> rn/Text {:style {:font-size 11
-                                    :color (:destructive colors)
-                                    :margin-left 4}}
-                " • Failed to send"]
                is-sending?
-               [:> rn/Text {:style {:font-size 11
-                                    :color (:text-tertiary colors)
-                                    :margin-left 4}}
-                " • Sending..."])
-             ;; Usage/cost display for assistant messages
+               [:> rn/View {:style {:margin-right 8}}
+                [icons/icon {:name :clock :size 12 :color (:text-secondary colors)}]]
+
+               is-error?
+               [:> rn/View {:style {:margin-right 8}}
+                [icons/icon {:name :warning :size 12 :color (:destructive colors)}]])
+
+             ;; Usage/cost for assistant messages
              (when usage-summary
                [:> rn/Text {:style {:font-size 11
                                     :color (:text-secondary colors)
-                                    :margin-left 6}}
-                (str " • " usage-summary)])
-             ;; Tap hint - ellipsis indicates actions available
+                                    :margin-right 8}}
+                usage-summary])
+
+             ;; Spacer pushes timestamp to right
+             [:> rn/View {:style {:flex 1}}]
+
+             ;; Timestamp — iOS: .caption2, .secondary
              [:> rn/Text {:style {:font-size 11
-                                  :color (:text-tertiary colors)
-                                  :margin-left 8}}
-              "•••"]]]))])))
+                                  :color (:text-secondary colors)}}
+              (format-time timestamp)]]]]]))])
 
 (defn- typing-indicator
-  "Shows when Claude is processing."
+  "Shows when Claude is processing.
+   Matches the list-row layout style used by message-row."
   []
   [:f>
    (fn []
      (let [colors (theme/use-theme-colors)]
-       [:> rn/View {:style {:align-self "flex-start"
-                            :margin-horizontal 12
-                            :margin-vertical 8}}
-        [:> rn/View {:style {:background-color (:bubble-assistant colors)
-                             :border-radius 18
-                             :padding-horizontal 14
-                             :padding-vertical 10
-                             :flex-direction "row"
-                             :align-items "center"}}
+       [:> rn/View {:style {:margin-vertical 4
+                            :margin-horizontal 12}}
+        [:> rn/View {:style {:flex-direction "row"
+                             :align-items "center"
+                             :padding 12
+                             :background-color (theme/opacity (:success colors) 0.1)
+                             :border-radius 12}}
+         [:> rn/View {:style {:margin-right 12}}
+          [icons/icon {:name :robot :size 22 :color (:success colors)}]]
          [:> rn/ActivityIndicator {:size "small" :color (:text-secondary colors)}]
          [:> rn/Text {:style {:color (:text-secondary colors)
                               :margin-left 8
@@ -1006,7 +993,7 @@
                              ;; Cost data from backend response (input-cost, output-cost, total-cost)
                              :cost (when-let [c (.-cost item)]
                                      (js->clj c :keywordize-keys true))}]
-                    (r/as-element [message-bubble msg])))
+                    (r/as-element [message-row msg])))
                 :content-container-style {:padding-vertical 8}
                 :inverted false
                 :keyboard-dismiss-mode "interactive"
