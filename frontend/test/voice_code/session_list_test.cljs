@@ -590,9 +590,9 @@
       (let [result (#'session-list/session-item props)]
         (is (vector? result) "session-item returns valid hiccup")
         (is (some? (first result)) "session-item has a component type"))
-      ;; swipeable-session-item should also return valid hiccup (Form-2 component)
+      ;; swipeable-session-item should also return valid hiccup (delegates to swipeable-row)
       (let [result (#'session-list/swipeable-session-item props)]
-        (is (fn? result) "swipeable-session-item returns render fn (Form-2 component)")))))
+        (is (vector? result) "swipeable-session-item returns hiccup vector")))))
 
 ;; ============================================================================
 ;; Icon Mapping Tests (tray icon for empty state)

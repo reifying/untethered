@@ -706,7 +706,7 @@
                  :colors test-colors
                  :last? false}]
       (let [result (#'dir-list/swipeable-queue-item props)]
-        (is (fn? result) "swipeable-queue-item returns render fn (Form-2 component)")))))
+        (is (vector? result) "swipeable-queue-item returns hiccup vector (delegates to swipeable-row)")))))
 
 (deftest swipeable-priority-queue-item-returns-form-2-test
   (testing "swipeable-priority-queue-item returns Form-2 render fn for iOS swipe gesture"
@@ -726,7 +726,7 @@
                  :colors test-colors
                  :last? false}]
       (let [result (#'dir-list/swipeable-priority-queue-item props)]
-        (is (fn? result) "swipeable-priority-queue-item returns render fn (Form-2 component)")))))
+        (is (vector? result) "swipeable-priority-queue-item returns hiccup vector (delegates to swipeable-row)")))))
 
 (deftest queue-session-item-delegates-per-platform-test
   (testing "queue-session-item delegates to swipeable on iOS and row-content on Android"

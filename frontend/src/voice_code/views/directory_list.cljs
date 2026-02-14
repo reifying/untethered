@@ -2,14 +2,14 @@
   "Directory list view showing sessions grouped by working directory."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            ["react-native" :as rn :refer [RefreshControl AppState Animated PanResponder]]
+            ["react-native" :as rn :refer [RefreshControl AppState]]
             [clojure.string :as str]
             [voice-code.views.components :refer [relative-time-text copy-to-clipboard! toast-overlay section-card disclosure-indicator]]
-            [voice-code.haptic :as haptic]
             [voice-code.icons :as icons]
             [voice-code.platform :as platform]
             [voice-code.theme :as theme]
             [voice-code.views.context-menu :refer [context-menu]]
+            [voice-code.views.swipeable-row :as swipeable]
             [voice-code.views.touchable :refer [touchable]]
             [voice-code.utils :as utils]))
 
@@ -31,7 +31,7 @@
                          :align-items "center"
                          :padding-horizontal 6
                          :margin-left 8}}
-     [:> rn/Text {:style {:color "#FFFFFF"
+     [:> rn/Text {:style {:color (:button-text-on-accent colors)
                           :font-size 12
                           :font-weight "700"}}
       (if (> count 99) "99+" (str count))]]))
@@ -152,15 +152,9 @@
     5 (str (:accent colors) "1A") ; Medium - lighter accent tint (~10% opacity)
     "transparent")) ; Low (10) or default - no tint
 
-;; Swipe-to-remove constants (iOS only)
-;; iOS parity: DirectoryListView.swift .swipeActions(edge: .trailing, allowsFullSwipe: true)
-(def ^:private remove-button-width
-  "Width of the remove button revealed on swipe."
-  80)
-
-(def ^:private swipe-threshold
-  "Minimum swipe distance to trigger remove action reveal."
-  -80)
+;; Re-export swipe constants from shared module for backward compatibility
+(def remove-button-width swipeable/action-button-width)
+(def swipe-threshold swipeable/swipe-threshold)
 
 (defn- queue-session-row-content
   "Row content for a queue session item.
@@ -219,126 +213,17 @@
         [icons/icon {:name :close :size 16 :color (:destructive colors)}]])]))
 
 (defn- swipeable-queue-item
-  "Queue item with swipe-to-remove on iOS.
-   Swipe left to reveal 'Remove' button matching iOS DirectoryListView.swift.
-   Uses PanResponder for gesture handling with haptic feedback.
-
-   iOS parity: .swipeActions(edge: .trailing, allowsFullSwipe: true)
-   with Button(role: .destructive) { Label(\"Remove\", systemImage: \"xmark.circle\") }"
-  [{:keys [_session _on-press on-remove _colors _last?]}]
-  (let [translate-x (Animated.Value. 0)
-        is-open (r/atom false)
-
-        pan-responder
-        (.create PanResponder
-                 #js {:onStartShouldSetPanResponder (fn [] false)
-                      :onMoveShouldSetPanResponder
-                      (fn [_ gesture-state]
-                        (and (> (js/Math.abs (.-dx gesture-state)) 10)
-                             (> (js/Math.abs (.-dx gesture-state))
-                                (js/Math.abs (.-dy gesture-state)))))
-
-                      :onPanResponderGrant
-                      (fn [_ _]
-                        (.setOffset translate-x (.-_value translate-x))
-                        (.setValue translate-x 0))
-
-                      :onPanResponderMove
-                      (fn [_ gesture-state]
-                        (let [dx (.-dx gesture-state)
-                              current-offset (.-_offset translate-x)
-                              new-value (+ current-offset dx)
-                              clamped (max (- remove-button-width) (min 0 new-value))]
-                          (.setValue translate-x (- clamped current-offset))))
-
-                      :onPanResponderRelease
-                      (fn [_ gesture-state]
-                        (.flattenOffset translate-x)
-                        (let [current-value (.-_value translate-x)
-                              velocity-x (.-vx gesture-state)]
-                          (cond
-                            ;; Fast swipe or past threshold — reveal remove button
-                            (or (< velocity-x -0.5) (< current-value swipe-threshold))
-                            (do
-                              (reset! is-open true)
-                              (haptic/impact! :medium)
-                              (.start
-                               (Animated.spring translate-x
-                                                #js {:toValue (- remove-button-width)
-                                                     :useNativeDriver true
-                                                     :friction 8})))
-
-                            ;; Snap back to closed
-                            :else
-                            (do
-                              (reset! is-open false)
-                              (.start
-                               (Animated.spring translate-x
-                                                #js {:toValue 0
-                                                     :useNativeDriver true
-                                                     :friction 8}))))))
-
-                      :onPanResponderTerminate
-                      (fn [_ _]
-                        (.flattenOffset translate-x)
-                        (reset! is-open false)
-                        (.start
-                         (Animated.spring translate-x
-                                          #js {:toValue 0
-                                               :useNativeDriver true
-                                               :friction 8})))})
-
-        close-swipe (fn []
-                      (when @is-open
-                        (reset! is-open false)
-                        (.start
-                         (Animated.spring translate-x
-                                          #js {:toValue 0
-                                               :useNativeDriver true
-                                               :friction 8}))))
-
-        handle-remove (fn []
-                        (haptic/success!)
-                        ;; Animate out, then remove
-                        (.start
-                         (Animated.timing translate-x
-                                          #js {:toValue -500
-                                               :duration 200
-                                               :useNativeDriver true})
-                         on-remove))]
-    (fn [{:keys [session on-press on-remove colors last?] :as props}]
-      [:> rn/View {:style {:overflow "hidden"}}
-       ;; Remove button background (revealed on swipe)
-       [:> rn/View {:style {:position "absolute"
-                            :right 0
-                            :top 0
-                            :bottom 0
-                            :width remove-button-width
-                            :background-color (:destructive colors)
-                            :justify-content "center"
-                            :align-items "center"}}
-        [touchable
-         {:style {:flex 1
-                  :width "100%"
-                  :justify-content "center"
-                  :align-items "center"}
-          :on-press handle-remove}
-         [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                              :font-size 14
-                              :font-weight "600"}}
-          "Remove"]]]
-
-       ;; Animated row content
-       [:> (.-View Animated)
-        (merge
-         {:style #js {:transform #js [#js {:translateX translate-x}]}}
-         (js->clj (.-panHandlers pan-responder)))
-        [queue-session-row-content
-         (assoc props
-                :on-press (fn []
-                            (if @is-open
-                              (close-swipe)
-                              (on-press))))]]])))
+  "Queue item with swipe-to-remove using shared swipeable-row component.
+   iOS parity: DirectoryListView.swift .swipeActions(edge: .trailing)"
+  [{:keys [session on-press on-remove colors last?] :as props}]
+  [swipeable/swipeable-row
+   {:action-label "Remove"
+    :on-action on-remove
+    :on-press on-press
+    :colors colors
+    :render-content
+    (fn [effective-on-press]
+      [queue-session-row-content (assoc props :on-press effective-on-press)])}])
 
 (defn- queue-session-item
   "Single session item in the queue section.
@@ -408,122 +293,17 @@
         [icons/icon {:name :close :size 16 :color (:destructive colors)}]])]))
 
 (defn- swipeable-priority-queue-item
-  "Priority queue item with swipe-to-remove on iOS.
-   Same swipe behavior as queue items but with priority tint background.
-
-   iOS parity: DirectoryListView.swift lines 210-216
-   .swipeActions(edge: .trailing, allowsFullSwipe: true)"
-  [{:keys [_session _on-press on-remove _colors _last?]}]
-  (let [translate-x (Animated.Value. 0)
-        is-open (r/atom false)
-
-        pan-responder
-        (.create PanResponder
-                 #js {:onStartShouldSetPanResponder (fn [] false)
-                      :onMoveShouldSetPanResponder
-                      (fn [_ gesture-state]
-                        (and (> (js/Math.abs (.-dx gesture-state)) 10)
-                             (> (js/Math.abs (.-dx gesture-state))
-                                (js/Math.abs (.-dy gesture-state)))))
-
-                      :onPanResponderGrant
-                      (fn [_ _]
-                        (.setOffset translate-x (.-_value translate-x))
-                        (.setValue translate-x 0))
-
-                      :onPanResponderMove
-                      (fn [_ gesture-state]
-                        (let [dx (.-dx gesture-state)
-                              current-offset (.-_offset translate-x)
-                              new-value (+ current-offset dx)
-                              clamped (max (- remove-button-width) (min 0 new-value))]
-                          (.setValue translate-x (- clamped current-offset))))
-
-                      :onPanResponderRelease
-                      (fn [_ gesture-state]
-                        (.flattenOffset translate-x)
-                        (let [current-value (.-_value translate-x)
-                              velocity-x (.-vx gesture-state)]
-                          (cond
-                            (or (< velocity-x -0.5) (< current-value swipe-threshold))
-                            (do
-                              (reset! is-open true)
-                              (haptic/impact! :medium)
-                              (.start
-                               (Animated.spring translate-x
-                                                #js {:toValue (- remove-button-width)
-                                                     :useNativeDriver true
-                                                     :friction 8})))
-
-                            :else
-                            (do
-                              (reset! is-open false)
-                              (.start
-                               (Animated.spring translate-x
-                                                #js {:toValue 0
-                                                     :useNativeDriver true
-                                                     :friction 8}))))))
-
-                      :onPanResponderTerminate
-                      (fn [_ _]
-                        (.flattenOffset translate-x)
-                        (reset! is-open false)
-                        (.start
-                         (Animated.spring translate-x
-                                          #js {:toValue 0
-                                               :useNativeDriver true
-                                               :friction 8})))})
-
-        close-swipe (fn []
-                      (when @is-open
-                        (reset! is-open false)
-                        (.start
-                         (Animated.spring translate-x
-                                          #js {:toValue 0
-                                               :useNativeDriver true
-                                               :friction 8}))))
-
-        handle-remove (fn []
-                        (haptic/success!)
-                        (.start
-                         (Animated.timing translate-x
-                                          #js {:toValue -500
-                                               :duration 200
-                                               :useNativeDriver true})
-                         on-remove))]
-    (fn [{:keys [session on-press on-remove colors last?] :as props}]
-      [:> rn/View {:style {:overflow "hidden"}}
-       ;; Remove button background (revealed on swipe)
-       [:> rn/View {:style {:position "absolute"
-                            :right 0
-                            :top 0
-                            :bottom 0
-                            :width remove-button-width
-                            :background-color (:destructive colors)
-                            :justify-content "center"
-                            :align-items "center"}}
-        [touchable
-         {:style {:flex 1
-                  :width "100%"
-                  :justify-content "center"
-                  :align-items "center"}
-          :on-press handle-remove}
-         [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                              :font-size 14
-                              :font-weight "600"}}
-          "Remove"]]]
-
-       ;; Animated row content
-       [:> (.-View Animated)
-        (merge
-         {:style #js {:transform #js [#js {:translateX translate-x}]}}
-         (js->clj (.-panHandlers pan-responder)))
-        [priority-queue-row-content
-         (assoc props
-                :on-press (fn []
-                            (if @is-open
-                              (close-swipe)
-                              (on-press))))]]])))
+  "Priority queue item with swipe-to-remove using shared swipeable-row component.
+   iOS parity: DirectoryListView.swift .swipeActions(edge: .trailing)"
+  [{:keys [session on-press on-remove colors last?] :as props}]
+  [swipeable/swipeable-row
+   {:action-label "Remove"
+    :on-action on-remove
+    :on-press on-press
+    :colors colors
+    :render-content
+    (fn [effective-on-press]
+      [priority-queue-row-content (assoc props :on-press effective-on-press)])}])
 
 (defn- priority-queue-session-item
   "Single session item in the priority queue section.
