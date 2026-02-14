@@ -938,13 +938,21 @@
         prev-message-count (r/atom 0)
         ;; Local atom for auto-scroll state - synced from subscription in render
         ;; This avoids subscription deref in component-did-update (not reactive)
-        local-auto-scroll? (r/atom true)]
+        local-auto-scroll? (r/atom true)
+        ;; Track previous auto-scroll state to detect false->true transitions
+        prev-auto-scroll? (r/atom true)]
     (r/create-class
      {:component-did-update
       (fn [this _]
         (let [auto-scroll? @local-auto-scroll?
+              was-auto-scroll? @prev-auto-scroll?
               new-count (count messages)
               old-count @prev-message-count]
+          ;; Scroll to bottom when auto-scroll is re-enabled (false->true transition)
+          ;; Matches iOS ConversationView.swift toggleAutoScroll() behavior
+          (when (and auto-scroll? (not was-auto-scroll?) @list-ref)
+            (.scrollToEnd ^js @list-ref #js {:animated true}))
+          (reset! prev-auto-scroll? auto-scroll?)
           ;; Only scroll if messages increased (not on re-renders)
           (when (and auto-scroll? @list-ref (> new-count old-count))
             ;; Cancel any pending scroll
@@ -980,36 +988,7 @@
              (when (not= @local-auto-scroll? auto-scroll?)
                (reset! local-auto-scroll? auto-scroll?))
              [:> rn/View {:style {:flex 1}}
-              ;; Auto-scroll toggle button
-              [:> rn/View {:style {:flex-direction "row"
-                                   :justify-content "flex-end"
-                                   :padding-horizontal 12
-                                   :padding-vertical 4
-                                   :border-bottom-width 1
-                                   :border-bottom-color (:separator colors)}}
-               [touchable
-                {:style {:flex-direction "row"
-                         :align-items "center"
-                         :padding-horizontal 8
-                         :padding-vertical 4
-                         :background-color (if auto-scroll?
-                                             (theme/opacity (:accent colors) 0.15)
-                                             (:fill-secondary colors))
-                         :border-radius 12}
-                 :on-press (fn []
-                             ;; If re-enabling, scroll to bottom immediately
-                             (when (not auto-scroll?)
-                               (when @list-ref
-                                 (.scrollToEnd ^js @list-ref #js {:animated true})))
-                             (rf/dispatch [:ui/toggle-auto-scroll]))}
-                [:> rn/Text {:style {:font-size 12
-                                     :color (if auto-scroll? (:accent colors) (:text-secondary colors))
-                                     :margin-right 4}}
-                 "Auto-scroll"]
-                [:> rn/Text {:style {:font-size 10
-                                     :color (if auto-scroll? (:accent colors) (:text-tertiary colors))}}
-                 (if auto-scroll? "ON" "OFF")]]]
-              ;; Message list
+              ;; Message list (auto-scroll toggle is now in header toolbar per iOS parity)
               [:> rn/FlatList
                {:ref #(reset! list-ref %)
                 :style {:flex 1}
@@ -1348,8 +1327,27 @@
           [icons/icon {:name :compress :size 16
                        :color (if locked? (:text-tertiary colors) (:accent colors))}])]))])
 
+(defn- header-auto-scroll-button
+  "Auto-scroll toggle button for the conversation header toolbar.
+   Matches iOS ConversationView.swift toolbar: arrow.down.circle.fill (blue) when
+   enabled, arrow.down.circle (gray) when disabled.
+   Note: Wrapped in [:f>] to enable React hooks for theme colors."
+  []
+  [:f>
+   (fn []
+     (let [auto-scroll? @(rf/subscribe [:ui/auto-scroll?])
+           colors (theme/use-theme-colors)]
+       [touchable
+        {:style {:padding 8}
+         :on-press #(rf/dispatch [:ui/toggle-auto-scroll])}
+        [icons/icon {:name (if auto-scroll? :arrow-down-circle-fill :arrow-down-circle)
+                     :size 16
+                     :color (if auto-scroll? (:accent colors) (:text-tertiary colors))}]]))])
+
 (defn- header-right-buttons
-  "Combined header right buttons: Stop Speech, Kill (when locked), Compact, Recipe, Info, Queue Remove, Refresh."
+  "Combined header right buttons matching iOS ConversationView.swift toolbar order:
+   Kill (when locked), Recipe, Info, Auto-scroll, Compact, Refresh, Queue Remove.
+   Stop Speech buttons shown when TTS is active."
   [session-id working-directory ^js navigation]
   (let [locked? @(rf/subscribe [:session/locked? session-id])]
     [:> rn/View {:style {:flex-direction "row"
@@ -1359,13 +1357,18 @@
      ;; Kill button only visible when session is locked
      (when locked?
        [header-kill-button session-id])
+     ;; Recipe button
+     [header-recipe-button session-id working-directory navigation]
+     ;; Session info button
+     [header-info-button session-id navigation]
+     ;; Auto-scroll toggle (iOS: arrow.down.circle / arrow.down.circle.fill)
+     [header-auto-scroll-button]
      ;; Compact button always visible (shows state via color)
      [header-compact-button session-id]
-     [header-recipe-button session-id working-directory navigation]
-     [header-info-button session-id navigation]
+     ;; Refresh button
+     [header-refresh-button session-id]
      ;; Queue remove button (only visible when queue enabled and session in queue)
-     [header-queue-remove-button session-id]
-     [header-refresh-button session-id]]))
+     [header-queue-remove-button session-id]]))
 
 (defn- header-right-buttons-wrapper
   "Wrapper that subscribes to session data and passes working-directory to header buttons.

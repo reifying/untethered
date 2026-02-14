@@ -51,7 +51,8 @@
    :document             {:ios "document-text"     :android "description"}
    :help                 {:ios "help-circle"       :android "help"}
    :sparkles             {:ios "sparkles"          :android "auto-awesome"}
-   :arrow-down-circle    {:ios "arrow-down-circle" :android "arrow-circle-down"}
+   :arrow-down-circle    {:ios "arrow-down-circle-outline" :android "arrow-circle-down"}
+   :arrow-down-circle-fill {:ios "arrow-down-circle" :android "arrow-circle-down"}
    :compress             {:ios "contract"          :android "compress"}
    :paper-clip           {:ios "attach"            :android "attach-file"}
    :upload               {:ios "cloud-upload"      :android "cloud-upload"}

@@ -7,7 +7,8 @@
             [voice-code.events.core]
             [voice-code.events.websocket]
             [voice-code.subs]
-            [voice-code.utils :as utils]))
+            [voice-code.utils :as utils]
+            [voice-code.icons :as icons]))
 
 (use-fixtures :each
   {:before (fn [] (rf/dispatch-sync [:initialize-db]))})
@@ -882,3 +883,61 @@
           "Empty draft should not trigger send")
       (is (seq non-empty-draft)
           "Non-empty draft should trigger send"))))
+
+;; ============================================================================
+;; Auto-scroll Header Toolbar Tests (VCMOB-j463)
+;; ============================================================================
+;; Tests verify the auto-scroll toggle moved from inline banner to header toolbar.
+;; iOS parity: ConversationView.swift toolbar order includes arrow.down.circle
+;; between Info and Compact buttons.
+
+(deftest auto-scroll-icon-map-entries-test
+  "Tests that auto-scroll icon map entries exist with correct platform icons.
+   iOS uses arrow-down-circle (filled) and arrow-down-circle-outline.
+   Android uses arrow-circle-down for both (state conveyed via color per Material Design)."
+  (testing ":arrow-down-circle has outline variants"
+    (let [entry (get icons/icon-map :arrow-down-circle)]
+      (is (some? entry) ":arrow-down-circle should be in icon-map")
+      (is (= "arrow-down-circle-outline" (:ios entry))
+          "iOS should use outline variant for disabled state")
+      (is (= "arrow-circle-down" (:android entry))
+          "Android should use arrow-circle-down")))
+
+  (testing ":arrow-down-circle-fill has filled variants"
+    (let [entry (get icons/icon-map :arrow-down-circle-fill)]
+      (is (some? entry) ":arrow-down-circle-fill should be in icon-map")
+      (is (= "arrow-down-circle" (:ios entry))
+          "iOS should use filled variant for enabled state")
+      (is (= "arrow-circle-down" (:android entry))
+          "Android should use arrow-circle-down (same icon, state conveyed by color)")))
+
+  (testing "outline and fill icons are distinct on iOS"
+    (let [outline-ios (get-in icons/icon-map [:arrow-down-circle :ios])
+          fill-ios (get-in icons/icon-map [:arrow-down-circle-fill :ios])]
+      (is (not= outline-ios fill-ios)
+          "iOS outline and fill variants should be different icon names"))))
+
+(deftest auto-scroll-toggle-for-header-toolbar-test
+  "Tests auto-scroll toggle state transitions used by header-auto-scroll-button.
+   The button shows :arrow-down-circle-fill (blue) when enabled,
+   :arrow-down-circle (gray) when disabled. This matches iOS ConversationView.swift
+   toolbar: arrow.down.circle.fill (blue) / arrow.down.circle (gray)."
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "auto-scroll starts enabled (toolbar shows filled icon)"
+     (is (true? @(rf/subscribe [:ui/auto-scroll?]))))
+
+   (testing "toggle switches to disabled (toolbar shows outline icon)"
+     (rf/dispatch-sync [:ui/toggle-auto-scroll])
+     (is (false? @(rf/subscribe [:ui/auto-scroll?]))))
+
+   (testing "toggle back to enabled (toolbar shows filled icon again)"
+     (rf/dispatch-sync [:ui/toggle-auto-scroll])
+     (is (true? @(rf/subscribe [:ui/auto-scroll?]))))
+
+   (testing "set-auto-scroll can directly enable/disable"
+     (rf/dispatch-sync [:ui/set-auto-scroll false])
+     (is (false? @(rf/subscribe [:ui/auto-scroll?])))
+     (rf/dispatch-sync [:ui/set-auto-scroll true])
+     (is (true? @(rf/subscribe [:ui/auto-scroll?]))))))
