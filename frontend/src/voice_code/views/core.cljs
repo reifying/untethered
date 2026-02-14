@@ -212,7 +212,7 @@
              :component (reactify-with-name qr-scanner-view "QRScannerView")
              :options #js {:title "Scan QR Code"
                            :presentation "fullScreenModal"
-                           :headerShown false}}]]])]))])
+                           :headerShown false}}]]]])))]) ;; Screen, Navigator, NavContainer, :<>, if, let, fn, :f>, defn
 
 (defn navigate!
   "Navigate to a screen programmatically. Useful for REPL testing.

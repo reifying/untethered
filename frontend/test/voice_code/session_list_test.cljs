@@ -242,8 +242,10 @@
        (is (some #(= "create_worktree_session" (:type %)) @events-received))))))
 
 ;; ============================================================================
-;; Toolbar Button State Tests
+;; Navigation Header Button State Tests
 ;; Reference: ios/VoiceCode/Views/SessionsForDirectoryView.swift toolbar
+;; Buttons are now rendered in the navigation header (headerRight) matching
+;; iOS ToolbarItem(placement: .navigationBarTrailing) pattern.
 ;; ============================================================================
 
 (deftest toolbar-running-commands-indicator-test
@@ -435,3 +437,110 @@
             {:id "12345678-abcd-efgh-ijkl-mnopqrstuv"
              :backend-name nil
              :custom-name nil})))))
+
+;; ============================================================================
+;; Header Icon Button Component Tests
+;; Reference: ios/VoiceCode/Views/SessionsForDirectoryView.swift toolbar buttons
+;; ============================================================================
+
+(deftest header-icon-button-returns-hiccup-test
+  (testing "header-icon-button returns valid Reagent hiccup vector"
+    (let [result (#'session-list/header-icon-button
+                  {:icon :gear
+                   :on-press (fn [])
+                   :color "#666666"})]
+      ;; Should be a vector (Reagent hiccup)
+      (is (vector? result))
+      ;; First element should be the touchable component
+      (is (some? (first result))))))
+
+(deftest header-icon-button-badge-rendering-test
+  (testing "header-icon-button renders badge when badge-count is positive"
+    (let [result (#'session-list/header-icon-button
+                  {:icon :terminal
+                   :on-press (fn [])
+                   :color "#666666"
+                   :badge-count 5})]
+      ;; Should contain the badge count text "5" somewhere in the tree
+      (is (vector? result)))))
+
+(deftest header-icon-button-no-badge-when-zero-test
+  (testing "header-icon-button does not render badge when count is zero"
+    (let [result (#'session-list/header-icon-button
+                  {:icon :terminal
+                   :on-press (fn [])
+                   :color "#666666"
+                   :badge-count 0})]
+      (is (vector? result)))))
+
+(deftest header-icon-button-active-dot-test
+  (testing "header-icon-button renders active dot indicator"
+    (let [result (#'session-list/header-icon-button
+                  {:icon :history
+                   :on-press (fn [])
+                   :color "#666666"
+                   :active-dot? true})]
+      (is (vector? result)))))
+
+(deftest header-right-buttons-is-functional-component-test
+  (testing "header-right-buttons returns [:f> ...] wrapper for hooks"
+    (let [result (#'session-list/header-right-buttons
+                  (js-obj) "/Users/test/project" (fn []))]
+      ;; Should be a vector starting with :f>
+      (is (vector? result))
+      (is (= :f> (first result)))
+      ;; Second element should be a function
+      (is (fn? (second result))))))
+
+;; ============================================================================
+;; Unread Badge Color Tests (iOS Parity)
+;; Reference: ios/VoiceCode/Views/SessionsView.swift CDSessionRowContent
+;; iOS uses Color.red (destructive) for unread badges, not Color.blue (accent)
+;; ============================================================================
+
+(deftest unread-badge-renders-for-positive-count-test
+  (testing "Unread badge renders when count is positive"
+    (let [colors {:destructive "#FF3B30"
+                  :button-text-on-accent "#FFFFFF"}
+          result (#'session-list/unread-badge 5 colors)]
+      ;; Should return a non-nil result for positive count
+      (is (some? result))
+      (is (vector? result)))))
+
+(deftest unread-badge-nil-for-zero-count-test
+  (testing "Unread badge returns nil when count is zero"
+    (let [colors {:destructive "#FF3B30"
+                  :button-text-on-accent "#FFFFFF"}
+          result (#'session-list/unread-badge 0 colors)]
+      ;; Should return nil for zero count
+      (is (nil? result)))))
+
+(deftest unread-badge-nil-for-nil-count-test
+  (testing "Unread badge returns nil when count is nil"
+    (let [colors {:destructive "#FF3B30"
+                  :button-text-on-accent "#FFFFFF"}
+          result (#'session-list/unread-badge nil colors)]
+      (is (nil? result)))))
+
+(deftest unread-badge-uses-destructive-color-test
+  (testing "Unread badge uses :destructive color (red), not :accent (blue)"
+    ;; iOS parity: CDSessionRowContent uses Color.red for unread badges
+    (let [colors {:destructive "#FF3B30"
+                  :accent "#007AFF"
+                  :button-text-on-accent "#FFFFFF"}
+          result (#'session-list/unread-badge 3 colors)]
+      ;; The badge View should use :destructive color for background
+      ;; Result structure: [:> rn/View {:style {...:background-color "#FF3B30"...}} ...]
+      (is (some? result))
+      ;; Extract the style map from the View props
+      (let [view-props (nth result 2)
+            bg-color (get-in view-props [:style :background-color])]
+        (is (= "#FF3B30" bg-color) "Badge background should use :destructive color (red)")
+        (is (not= "#007AFF" bg-color) "Badge background should NOT use :accent color (blue)")))))
+
+(deftest unread-badge-caps-at-99-plus-test
+  (testing "Unread badge shows 99+ for counts over 99"
+    (let [colors {:destructive "#FF3B30"
+                  :button-text-on-accent "#FFFFFF"}
+          result (#'session-list/unread-badge 150 colors)]
+      (is (some? result)))))

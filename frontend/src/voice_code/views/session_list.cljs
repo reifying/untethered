@@ -28,7 +28,7 @@
     [:> rn/View {:style {:min-width 20
                          :height 20
                          :border-radius 10
-                         :background-color (:accent colors)
+                         :background-color (:destructive colors)
                          :justify-content "center"
                          :align-items "center"
                          :padding-horizontal 6}}
@@ -424,142 +424,116 @@
                                    :color (:warning colors)}}
                "Session name is required when creating a git worktree."]])]]])))
 
-(defn- toolbar-button
-  "Single toolbar button with icon and label.
-   active? shows highlighted background (green for running state, blue otherwise).
-   badge-count shows red badge with count (or green if active).
-   active-color can be :green (for running commands) or :blue (default).
-   colors: theme colors map (required prop to avoid hook violation)"
-  [{:keys [icon label on-press active? badge-count active-color colors]}]
-  (let [is-green? (= active-color :green)
-        active-bg (if is-green? (:success-background colors) (:accent-background colors))
-        active-text (if is-green? (:success colors) (:accent colors))
-        badge-bg (if active? (:success colors) (:destructive colors))]
-    [touchable
-     {:style {:flex 1
-              :align-items "center"
-              :justify-content "center"
-              :padding-vertical 8
-              :background-color (if active? active-bg "transparent")
-              :border-radius 8
-              :margin-horizontal 4}
-      :on-press on-press}
-     [:> rn/View {:style {:position "relative"}}
-      (if (keyword? icon)
-        [icons/icon {:name icon :size 20 :color (if active? active-text (:text-secondary colors))}]
-        [:> rn/Text {:style {:font-size 20}} icon])
-      (when (and badge-count (pos? badge-count))
-        [:> rn/View {:style {:position "absolute"
-                             :top -4
-                             :right -8
-                             :min-width 16
-                             :height 16
-                             :border-radius 8
-                             :background-color badge-bg
-                             :justify-content "center"
-                             :align-items "center"
-                             :padding-horizontal 4}}
-         [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                              :font-size 10
-                              :font-weight "600"}}
-          (if (> badge-count 99) "99+" (str badge-count))]])]
-     [:> rn/Text {:style {:font-size 11
-                          :color (if active? active-text (:text-secondary colors))
-                          :margin-top 2
-                          :font-weight (if active? "600" "400")}}
-      label]]))
+(defn- header-icon-button
+  "Small icon button for the navigation header bar.
+   Renders an icon with optional badge indicator.
+   Used in headerRight/headerLeft for iOS-native toolbar placement.
 
-(defn- session-toolbar
-  "Toolbar with action buttons for Commands, History, Resources, Recipes, Refresh, New, and Settings.
-   Commands shows badge with available command count.
-   History shows green indicator when commands are running.
-   Stop Speech shows only when TTS is actively speaking.
-   Refresh requests session list from backend (iOS parity: arrow.clockwise button).
-   Settings navigates to Settings screen (iOS parity: gear button).
-   colors: theme colors map (required prop to avoid hook violation)"
-  [{:keys [navigation directory on-new-session colors]}]
-  (let [running-commands @(rf/subscribe [:commands/running-any?])
-        running-count @(rf/subscribe [:commands/running-count])
-        command-count @(rf/subscribe [:commands/count-for-directory directory])
-        pending-uploads @(rf/subscribe [:resources/pending-uploads])
-        active-recipe @(rf/subscribe [:recipes/active-for-session nil])
-        speaking? @(rf/subscribe [:voice/speaking?])
-        refreshing? @(rf/subscribe [:ui/refreshing?])]
-    [:> rn/View {:style {:flex-direction "row"
-                         :background-color (:card-background colors)
-                         :border-bottom-width 1
-                         :border-bottom-color (:separator colors)
-                         :padding-horizontal 8
-                         :padding-vertical 4}}
-     ;; Stop Speech button - only shown when TTS is speaking
-     (when speaking?
-       [toolbar-button
-        {:icon :speaker-slash
-         :label "Stop"
-         :active? true
-         :active-color :green
-         :colors colors
-         :on-press #(rf/dispatch [:voice/stop-speaking])}])
-     ;; Commands button - badge shows available command count
-     [toolbar-button
-      {:icon :terminal
-       :label "Commands"
-       :badge-count command-count
-       :colors colors
-       :on-press #(when navigation
-                    (.navigate navigation "CommandMenu"
-                               #js {:workingDirectory directory}))}]
-     ;; Active Commands button - green indicator when commands are running
-     ;; iOS parity: This matches the "clock.arrow.circlepath" button that shows
-     ;; ActiveCommandsListView (running commands), not completed history.
-     [toolbar-button
-      {:icon :document
-       :label "Active"
-       :active? running-commands
-       :active-color :green
-       :badge-count (when running-commands running-count)
-       :colors colors
-       :on-press #(when navigation
-                    (.navigate navigation "ActiveCommands"
-                               #js {:workingDirectory directory}))}]
-     ;; Resources button
-     [toolbar-button
-      {:icon :paper-clip
-       :label "Resources"
-       :badge-count pending-uploads
-       :colors colors
-       :on-press #(when navigation
-                    (.navigate navigation "Resources"
-                               #js {:workingDirectory directory}))}]
-     ;; Recipes button
-     [toolbar-button
-      {:icon :recipe
-       :label "Recipes"
-       :active? (some? active-recipe)
-       :colors colors
-       :on-press #(when navigation
-                    (.navigate navigation "Recipes"
-                               #js {:workingDirectory directory}))}]
-     ;; Refresh button - requests session list from backend (iOS parity)
-     [toolbar-button
-      {:icon :refresh
-       :label "Refresh"
-       :active? refreshing?
-       :colors colors
-       :on-press #(rf/dispatch [:sessions/refresh])}]
-     ;; New Session button - opens modal for session creation
-     [toolbar-button
-      {:icon :add
-       :label "New"
-       :colors colors
-       :on-press on-new-session}]
-     ;; Settings button - navigates to Settings screen (iOS parity)
-     [toolbar-button
-      {:icon :gear
-       :label "Settings"
-       :colors colors
-       :on-press #(when navigation
-                    (.navigate navigation "Settings"))}]]))
+   Props:
+   - :icon      - Keyword icon name from icons/icon-map
+   - :on-press  - Press handler
+   - :color     - Icon color (default: text-secondary)
+   - :badge-count - Optional badge number (red circle)
+   - :active-dot? - Show green activity dot (e.g. running commands)
+   - :size      - Icon size (default 22)"
+  [{:keys [icon on-press color badge-count active-dot? size]}]
+  [touchable
+   {:style {:padding 8 :margin-left 2}
+    :on-press on-press}
+   [:> rn/View
+    [icons/icon {:name icon :size (or size 22) :color color}]
+    ;; Badge count (red circle with number)
+    (when (and badge-count (pos? badge-count))
+      [:> rn/View {:style {:position "absolute"
+                           :top 0
+                           :right -2
+                           :min-width 16
+                           :height 16
+                           :border-radius 8
+                           :background-color "#FF3B30"
+                           :justify-content "center"
+                           :align-items "center"
+                           :padding-horizontal 4}}
+       [:> rn/Text {:style {:color "#FFFFFF"
+                            :font-size 10
+                            :font-weight "600"}}
+        (if (> badge-count 99) "99+" (str badge-count))]])
+    ;; Active dot (green circle indicator, e.g. running commands)
+    ;; iOS parity: SessionsForDirectoryView.swift uses green dot on clock.arrow.circlepath
+    (when active-dot?
+      [:> rn/View {:style {:position "absolute"
+                           :top 2
+                           :right 0
+                           :width 8
+                           :height 8
+                           :border-radius 4
+                           :background-color "#34C759"}}])]])
+
+(defn- header-right-buttons
+  "Navigation header trailing buttons matching iOS SessionsForDirectoryView.swift toolbar.
+
+   iOS reference (lines 144-212): ToolbarItem(placement: .navigationBarTrailing) with HStack:
+   - speaker.slash (when speaking, red)
+   - play.rectangle (commands, with blue badge count)
+   - clock.arrow.circlepath (active commands, with green dot)
+   - arrow.clockwise (refresh)
+   - plus (new session)
+   - gear (settings)
+
+   Wrapped in [:f>] for React hooks (theme colors, subscriptions).
+   Rendered via r/as-element from React Navigation's headerRight callback."
+  [navigation directory on-new-session]
+  [:f>
+   (fn []
+     (let [colors (theme/use-theme-colors)
+           speaking? @(rf/subscribe [:voice/speaking?])
+           running-commands @(rf/subscribe [:commands/running-any?])
+           running-count @(rf/subscribe [:commands/running-count])
+           command-count @(rf/subscribe [:commands/count-for-directory directory])]
+       [:> rn/View {:style {:flex-direction "row"
+                            :align-items "center"}}
+        ;; Stop Speech button - only shown when TTS is speaking
+        ;; iOS parity: speaker.slash.fill in red
+        (when speaking?
+          [header-icon-button
+           {:icon :speaker-slash
+            :color (:destructive colors)
+            :on-press #(rf/dispatch [:voice/stop-speaking])}])
+        ;; Commands button - badge shows available command count
+        ;; iOS parity: play.rectangle with blue badge
+        (when command-count
+          [header-icon-button
+           {:icon :terminal
+            :color (:text-secondary colors)
+            :badge-count command-count
+            :on-press #(.navigate navigation "CommandMenu"
+                                  #js {:workingDirectory directory})}])
+        ;; Active Commands button - green dot when commands are running
+        ;; iOS parity: clock.arrow.circlepath with green dot
+        [header-icon-button
+         {:icon :history
+          :color (:text-secondary colors)
+          :active-dot? running-commands
+          :on-press #(.navigate navigation "ActiveCommands"
+                                #js {:workingDirectory directory})}]
+        ;; Refresh button
+        ;; iOS parity: arrow.clockwise
+        [header-icon-button
+         {:icon :refresh
+          :color (:text-secondary colors)
+          :on-press #(rf/dispatch [:sessions/refresh])}]
+        ;; New Session button
+        ;; iOS parity: plus
+        [header-icon-button
+         {:icon :add
+          :color (:accent colors)
+          :on-press on-new-session}]
+        ;; Settings button
+        ;; iOS parity: gear
+        [header-icon-button
+         {:icon :gear
+          :color (:text-secondary colors)
+          :on-press #(.navigate navigation "Settings")}]]))])
 
 (defn session-list-view
   "Main session list screen for a directory.
@@ -582,7 +556,16 @@
         ;; Set the working directory on the backend when this view mounts.
         ;; This ensures available_commands are stored under the correct directory key.
         (when directory
-          (rf/dispatch [:directory/set directory])))
+          (rf/dispatch [:directory/set directory]))
+        ;; Set up navigation header buttons (iOS parity: toolbar items in navigation bar)
+        ;; Reference: SessionsForDirectoryView.swift .toolbar { ToolbarItem(...) }
+        (when navigation
+          (.setOptions navigation
+                       #js {:headerRight
+                            (fn []
+                              (r/as-element
+                               [header-right-buttons navigation directory
+                                #(reset! show-new-session-modal? true)]))})))
 
       :reagent-render
       (fn [_]
@@ -598,12 +581,6 @@
              [:> rn/View {:style {:flex 1 :background-color (:grouped-background colors)}}
               ;; Toast overlay for copy confirmations (iOS parity: non-blocking auto-dismiss)
               [toast-overlay]
-
-              ;; Toolbar at top
-              [session-toolbar {:navigation navigation
-                                :directory directory
-                                :colors colors
-                                :on-new-session #(reset! show-new-session-modal? true)}]
 
               ;; Session list content
               (if (empty? sessions)
