@@ -5,7 +5,8 @@
             [re-frame.core :as rf]
             ["react-native" :as rn]
             [voice-code.icons :as icons]
-            [voice-code.theme :as theme]))
+            [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]))
 
 (defn- format-duration
   "Format duration in milliseconds to human-readable string."
@@ -143,7 +144,7 @@
 (defn- auto-scroll-toggle
   "Toggle button for auto-scroll functionality."
   [{:keys [enabled? on-toggle colors]}]
-  [:> rn/TouchableOpacity
+  [touchable
    {:style {:flex-direction "row"
             :align-items "center"
             :padding-horizontal 12

@@ -15,7 +15,8 @@
             [voice-code.views.voice-picker :refer [voice-picker-modal]]
             [voice-code.haptic :as haptic]
             [voice-code.icons :as icons]
-            [voice-code.theme :as theme]))
+            [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]))
 
 ;; ============================================================================
 ;; Helper Components
@@ -84,7 +85,7 @@
   [:f>
    (fn []
      (let [colors (theme/use-theme-colors)]
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:flex-direction "row"
                  :align-items "center"
                  :justify-content "space-between"
@@ -190,7 +191,7 @@
          [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
           label]
          [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-          [:> rn/TouchableOpacity
+          [touchable
            {:style {:width 32
                     :height 32
                     :border-radius 6
@@ -206,7 +207,7 @@
                                :min-width 60
                                :text-align "center"}}
            (str value (or suffix ""))]
-          [:> rn/TouchableOpacity
+          [touchable
            {:style {:width 32
                     :height 32
                     :border-radius 6
@@ -256,7 +257,7 @@
           [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors) :margin-top 2}}
            speed-label]]
          [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-          [:> rn/TouchableOpacity
+          [touchable
            {:style {:width 32
                     :height 32
                     :border-radius 6
@@ -275,7 +276,7 @@
                                :min-width 50
                                :text-align "center"}}
            (str display-val "x")]
-          [:> rn/TouchableOpacity
+          [touchable
            {:style {:width 32
                     :height 32
                     :border-radius 6
@@ -418,7 +419,7 @@
 
              ;; Save button - enabled only when valid
              (when has-input?
-               [:> rn/TouchableOpacity
+               [touchable
                 {:style {:margin-top 4
                          :margin-bottom 10
                          :background-color (if valid? (:accent colors) (:disabled colors))

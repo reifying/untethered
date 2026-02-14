@@ -7,7 +7,8 @@
             ["react-native" :as rn :refer [RefreshControl Animated PanResponder]]
             [voice-code.haptic :as haptic]
             [voice-code.icons :as icons]
-            [voice-code.theme :as theme]))
+            [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]))
 
 (defn- format-file-size
   "Format file size in bytes to human-readable string."
@@ -154,7 +155,7 @@
                             :background-color (:destructive colors)
                             :justify-content "center"
                             :align-items "center"}}
-        [:> rn/TouchableOpacity
+        [touchable
          {:style {:flex 1
                   :width "100%"
                   :justify-content "center"
@@ -250,7 +251,7 @@
    Disabled when on-press is nil (during upload)."
   [on-press colors]
   (let [disabled? (nil? on-press)]
-    [:> rn/TouchableOpacity
+    [touchable
      {:style {:position "absolute"
               :bottom 24
               :right 24

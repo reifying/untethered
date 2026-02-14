@@ -15,7 +15,8 @@
             [voice-code.performance :as perf]
             [voice-code.views.components :refer [copy-to-clipboard!]]
             [voice-code.icons :as icons]
-            [voice-code.theme :as theme]))
+            [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]))
 
 ;; ============================================================================
 ;; Log Sources - matches iOS DebugLogsView.swift LogSource enum (lines 18-22)
@@ -38,7 +39,7 @@
                        :padding 2}}
    (for [{:keys [id label]} log-sources]
      ^{:key id}
-     [:> rn/TouchableOpacity
+     [touchable
       {:style {:flex 1
                :padding-vertical 8
                :padding-horizontal 12
@@ -83,7 +84,7 @@
 (defn- log-entry-item
   "Single log entry display with long-press to copy."
   [{:keys [timestamp level message id on-copy-toast colors]}]
-  [:> rn/TouchableOpacity
+  [touchable
    {:style {:padding-horizontal 12
             :padding-vertical 8
             :background-color (level-background colors level)
@@ -94,8 +95,7 @@
                       (format-log-for-copy {:timestamp timestamp
                                             :level level
                                             :message message})
-                      #(when on-copy-toast (on-copy-toast "Entry copied"))))
-    :active-opacity 0.7}
+                      #(when on-copy-toast (on-copy-toast "Entry copied"))))}
    ;; Header row with timestamp and level
    [:> rn/View {:style {:flex-direction "row"
                         :align-items "center"
@@ -273,7 +273,7 @@
    (if (= source :render-stats)
      ;; Render stats: Reset button (matches iOS line 53-66)
      [:<>
-      [:> rn/TouchableOpacity
+      [touchable
        {:style {:flex 1
                 :padding-vertical 12
                 :background-color (:destructive colors)
@@ -291,7 +291,7 @@
 
      ;; Captured logs: Copy and Clear buttons (matches iOS lines 68-82)
      [:<>
-      [:> rn/TouchableOpacity
+      [touchable
        {:style {:flex 1
                 :padding-vertical 12
                 :background-color (:accent colors)
@@ -310,7 +310,7 @@
                              :color (:button-text-on-accent colors)}}
          "Copy Logs"]]]
 
-      [:> rn/TouchableOpacity
+      [touchable
        {:style {:flex 1
                 :padding-vertical 12
                 :background-color (:destructive colors)

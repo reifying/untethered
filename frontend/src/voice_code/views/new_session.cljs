@@ -4,6 +4,7 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]
             ["react-native" :as rn :refer [Alert]]))
 
 (defn- text-input-field
@@ -82,7 +83,7 @@
   [:> rn/View {:style {:flex-direction "row"
                        :justify-content "space-between"
                        :margin-top 24}}
-   [:> rn/TouchableOpacity
+   [touchable
     {:style {:flex 1
              :margin-right 8
              :padding-vertical 14
@@ -94,7 +95,7 @@
                          :font-weight "600"
                          :color (:text-secondary colors)}}
      "Cancel"]]
-   [:> rn/TouchableOpacity
+   [touchable
     {:style {:flex 1
              :margin-left 8
              :padding-vertical 14

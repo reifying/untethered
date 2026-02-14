@@ -7,6 +7,7 @@
             [voice-code.views.components :refer [relative-time-text copy-to-clipboard! toast-overlay]]
             [voice-code.icons :as icons]
             [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]
             [voice-code.utils :as utils]))
 
 (defn- directory-name
@@ -36,7 +37,7 @@
   "Single directory item in the list.
    Long-press shows context menu to copy directory path."
   [{:keys [directory session-count last-modified unread-count on-press colors]}]
-  [:> rn/TouchableOpacity
+  [touchable
      {:style {:padding-horizontal 16
               :padding-vertical 14
               :border-bottom-width 1
@@ -49,8 +50,7 @@
                                "Directory actions"
                                (clj->js [{:text "Copy Directory Path"
                                           :onPress #(copy-to-clipboard! directory "Directory path copied")}
-                                         {:text "Cancel" :style "cancel"}])))
-      :active-opacity 0.7}
+                                         {:text "Cancel" :style "cancel"}])))}
      [:> rn/View {:style {:flex-direction "row"
                           :justify-content "space-between"
                           :align-items "flex-start"}}
@@ -93,7 +93,7 @@
   (let [unread-count (get session :unread-count 0)
         session-id (str (:id session))
         working-directory (:working-directory session)]
-    [:> rn/TouchableOpacity
+    [touchable
      {:style {:padding-horizontal 16
               :padding-vertical 12
               :border-bottom-width 1
@@ -108,8 +108,7 @@
                                           :onPress #(copy-to-clipboard! session-id "Session ID copied")}
                                          {:text "Copy Directory Path"
                                           :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
-                                         {:text "Cancel" :style "cancel"}])))
-      :active-opacity 0.7}
+                                         {:text "Cancel" :style "cancel"}])))}
      [:> rn/View {:style {:flex-direction "row"
                           :justify-content "space-between"
                           :align-items "center"}}
@@ -153,7 +152,7 @@
                          :background-color (:card-background colors)
                          :border-bottom-width 1
                          :border-bottom-color (:separator colors)}}
-     [:> rn/TouchableOpacity
+     [touchable
       {:style {:flex 1
                :padding-horizontal 16
                :padding-vertical 12}
@@ -166,8 +165,7 @@
                                            :onPress #(copy-to-clipboard! session-id "Session ID copied")}
                                           {:text "Copy Directory Path"
                                            :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
-                                          {:text "Cancel" :style "cancel"}])))
-       :active-opacity 0.7}
+                                          {:text "Cancel" :style "cancel"}])))}
       [:> rn/View {:style {:flex-direction "row"
                            :justify-content "space-between"
                            :align-items "center"}}
@@ -191,7 +189,7 @@
                             :style {:font-size 12 :color (:text-tertiary colors)}}]]]
      ;; Remove button
      (when on-remove
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:padding 12
                  :justify-content "center"}
          :on-press on-remove}
@@ -216,7 +214,7 @@
                           :padding-vertical 12
                           :justify-content "center"}}
       [icons/icon {:name :ellipsis :size 16 :color (:text-tertiary colors)}]]
-     [:> rn/TouchableOpacity
+     [touchable
       {:style {:flex 1
                :padding-horizontal 8
                :padding-vertical 12}
@@ -229,8 +227,7 @@
                                            :onPress #(copy-to-clipboard! session-id "Session ID copied")}
                                           {:text "Copy Directory Path"
                                            :onPress #(copy-to-clipboard! working-directory "Directory path copied")}
-                                          {:text "Cancel" :style "cancel"}])))
-       :active-opacity 0.7}
+                                          {:text "Cancel" :style "cancel"}])))}
       [:> rn/View {:style {:flex-direction "row"
                            :justify-content "space-between"
                            :align-items "center"}}
@@ -266,7 +263,7 @@
                             :style {:font-size 12 :color (:text-tertiary colors)}}]]]
      ;; Remove button
      (when on-remove
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:padding 12
                  :justify-content "center"}
          :on-press on-remove}
@@ -275,15 +272,14 @@
 (defn- section-header
   "Collapsible section header."
   [{:keys [title expanded? on-toggle count colors]}]
-  [:> rn/TouchableOpacity
+  [touchable
    {:style {:flex-direction "row"
             :align-items "center"
             :justify-content "space-between"
             :padding-horizontal 16
             :padding-vertical 10
             :background-color (:separator colors)}
-    :on-press on-toggle
-    :active-opacity 0.7}
+    :on-press on-toggle}
    [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
     [:> rn/Text {:style {:font-size 13
                          :font-weight "600"
@@ -411,7 +407,7 @@
                         :margin-bottom 24
                         :line-height 22}}
     "Connect to your backend server to get started. You'll need your server URL and API key."]
-   [:> rn/TouchableOpacity
+   [touchable
     {:style {:background-color (:accent colors)
              :border-radius 12
              :padding-horizontal 32
@@ -437,7 +433,7 @@
   "Resources button with badge for pending uploads."
   [navigation colors]
   (let [pending-count @(rf/subscribe [:resources/pending-uploads])]
-    [:> rn/TouchableOpacity
+    [touchable
      {:style {:padding 8 :margin-right 4}
       :on-press #(when navigation (.navigate navigation "Resources"))}
      [:> rn/View
@@ -465,7 +461,7 @@
   [:f>
    (fn []
      (let [colors (theme/use-theme-colors)]
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:padding 8}
          :on-press #(when navigation (.navigate navigation "Settings"))}
         [icons/icon {:name :gear :size 22 :color (:text-secondary colors)}]]))])
@@ -486,13 +482,13 @@
        [:> rn/View {:style {:flex-direction "row"
                             :align-items "center"}}
         ;; New Session button
-        [:> rn/TouchableOpacity
+        [touchable
          {:style {:padding 8 :margin-right 4}
           :on-press #(.navigate navigation "NewSession")}
          [icons/icon {:name :add :size 22 :color (:accent colors)}]]
         ;; Stop Speech button - only shown when TTS is speaking
         (when speaking?
-          [:> rn/TouchableOpacity
+          [touchable
            {:style {:padding 8 :margin-right 4}
             :on-press #(rf/dispatch [:voice/stop-speaking])}
            [icons/icon {:name :speaker-slash :size 20 :color (:text-secondary colors)}]])
@@ -538,7 +534,7 @@
                          :text-transform "uppercase"
                          :letter-spacing 0.5}}
      "Debug"]]
-   [:> rn/TouchableOpacity
+   [touchable
     {:style {:flex-direction "row"
              :align-items "center"
              :padding-horizontal 16
@@ -546,8 +542,7 @@
              :background-color (:card-background colors)
              :border-bottom-width 1
              :border-bottom-color (:separator colors)}
-     :on-press #(when navigation (.navigate navigation "DebugLogs"))
-     :active-opacity 0.7}
+     :on-press #(when navigation (.navigate navigation "DebugLogs"))}
     [icons/icon {:name :bug :size 18 :color (:warning colors) :style {:margin-right 12}}]
     [:> rn/View {:style {:flex 1}}
      [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}

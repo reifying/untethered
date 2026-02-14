@@ -5,13 +5,14 @@
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [Platform]]
             [voice-code.icons :as icons]
-            [voice-code.theme :as theme]))
+            [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]))
 
 (defn- command-item
   "Single command item in the menu."
   [{:keys [command on-press colors]}]
   (let [{:keys [id label description type]} command]
-    [:> rn/TouchableOpacity
+    [touchable
      {:style {:padding-vertical 12
               :padding-horizontal 16
               :border-bottom-width 1
@@ -48,7 +49,7 @@
     (fn [{:keys [group on-command-press colors]}]
       [:> rn/View
        ;; Group header
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:padding-vertical 12
                  :padding-horizontal 16
                  :background-color (:grouped-background colors)
@@ -122,7 +123,7 @@
   (let [{:keys [command-id shell-command output-lines started-at]} command
         line-count (count output-lines)
         last-line (last output-lines)]
-    [:> rn/TouchableOpacity
+    [touchable
      {:style {:padding 12
               :background-color (:row-background colors)
               :border-bottom-width 1
@@ -185,7 +186,7 @@
                                :border-bottom-width 1
                                :border-bottom-color (:warning colors)}}
            ;; Header - tap to expand/collapse
-           [:> rn/TouchableOpacity
+           [touchable
             {:style {:padding 12
                      :flex-direction "row"
                      :align-items "center"
@@ -249,7 +250,7 @@
 (defn- history-button
   "Button to navigate to command history."
   [{:keys [on-press colors]}]
-  [:> rn/TouchableOpacity
+  [touchable
    {:style {:flex-direction "row"
             :align-items "center"
             :justify-content "center"

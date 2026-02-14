@@ -7,7 +7,8 @@
             [voice-code.haptic :as haptic]
             [voice-code.icons :as icons]
             [voice-code.theme :as theme]
-            [voice-code.views.components :refer [copy-to-clipboard!]]))
+            [voice-code.views.components :refer [copy-to-clipboard!]]
+            [voice-code.views.touchable :refer [touchable]]))
 
 ;; ============================================================================
 ;; Helper Functions
@@ -160,7 +161,7 @@
 (defn- action-button
   "Individual action button component."
   [{:keys [icon label on-press colors]}]
-  [:> rn/TouchableOpacity
+  [touchable
    {:style {:flex-direction "row"
             :align-items "center"
             :padding-horizontal 12

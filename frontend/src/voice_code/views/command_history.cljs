@@ -5,7 +5,8 @@
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [RefreshControl]]
             [voice-code.icons :as icons]
-            [voice-code.theme :as theme]))
+            [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]))
 
 ;; ============================================================================
 ;; Helper Functions
@@ -66,7 +67,7 @@
   [{:keys [command on-press colors]}]
   (let [{:keys [command-session-id command-id shell-command working-directory
                 timestamp exit-code duration-ms output-preview]} command]
-    [:> rn/TouchableOpacity
+    [touchable
      {:style {:padding-horizontal 16
               :padding-vertical 14
               :background-color (:row-background colors)

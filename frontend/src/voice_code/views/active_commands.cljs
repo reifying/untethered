@@ -8,7 +8,8 @@
             [re-frame.core :as rf]
             ["react-native" :as rn]
             [voice-code.icons :as icons]
-            [voice-code.theme :as theme]))
+            [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]))
 
 ;; ============================================================================
 ;; Helper Functions
@@ -100,7 +101,7 @@
                  :else :running)
         ;; Calculate live duration for running commands
         display-duration (or duration-ms (calculate-duration started-at))]
-    [:> rn/TouchableOpacity
+    [touchable
      {:style {:padding-horizontal 16
               :padding-vertical 12
               :background-color (:row-background colors)
@@ -163,7 +164,7 @@
 (defn- history-button
   "Button to navigate to command history (completed commands)."
   [{:keys [on-press colors]}]
-  [:> rn/TouchableOpacity
+  [touchable
    {:style {:flex-direction "row"
             :align-items "center"
             :padding 16

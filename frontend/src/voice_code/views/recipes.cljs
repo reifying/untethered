@@ -10,7 +10,8 @@
             [re-frame.core :as rf]
             ["react-native" :as rn :refer [Alert]]
             [voice-code.icons :as icons]
-            [voice-code.theme :as theme]))
+            [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]))
 
 (defn- format-duration
   "Format duration since start time."
@@ -72,7 +73,7 @@
            "Running..."]])]
 
       ;; Action button
-      [:> rn/TouchableOpacity
+      [touchable
        {:style {:padding-horizontal 16
                 :padding-vertical 8
                 :border-radius 6
@@ -146,7 +147,7 @@
                                 :color (:text-secondary colors)
                                 :margin-top 2}}
             (str "Running for " @duration)]]
-          [:> rn/TouchableOpacity
+          [touchable
            {:style {:padding-horizontal 16
                     :padding-vertical 8
                     :background-color (:destructive-background colors)
@@ -362,7 +363,7 @@
                                  :margin-top 12
                                  :margin-horizontal 32}}
              @load-error]
-            [:> rn/TouchableOpacity
+            [touchable
              {:style {:margin-top 24
                       :padding-horizontal 24
                       :padding-vertical 12
@@ -408,7 +409,7 @@
                                  :margin-top 12
                                  :margin-horizontal 32}}
              @start-error]
-            [:> rn/TouchableOpacity
+            [touchable
              {:style {:margin-top 24
                       :padding-horizontal 24
                       :padding-vertical 12

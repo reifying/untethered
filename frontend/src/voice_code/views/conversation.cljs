@@ -9,7 +9,8 @@
             [voice-code.utils :as utils]
             [voice-code.performance :as perf]
             [voice-code.theme :as theme]
-            [voice-code.icons :as icons]))
+            [voice-code.icons :as icons]
+            [voice-code.views.touchable :refer [touchable]]))
 
 ;; Note: Toast components (copy-to-clipboard!, show-toast!, toast-overlay) are now
 ;; imported from voice-code.views.components for consistency across views.
@@ -106,7 +107,7 @@
                               :border-bottom-width 1
                               :border-bottom-color (:separator colors)}}
           ;; Cancel button
-          [:> rn/TouchableOpacity
+          [touchable
            {:on-press hide-rename-modal!
             :style {:padding 8}}
            [:> rn/Text {:style {:font-size 17 :color (:accent colors)}} "Cancel"]]
@@ -118,7 +119,7 @@
            "Rename Session"]
 
           ;; Save button (disabled when empty)
-          [:> rn/TouchableOpacity
+          [touchable
            {:on-press (fn []
                         (when (and on-rename (not is-empty?))
                           (on-rename trimmed-value)
@@ -170,7 +171,7 @@
 
            ;; Clear button (X) - only shown when input is not empty
            (when (not is-empty?)
-             [:> rn/TouchableOpacity
+             [touchable
               {:on-press #(rename-modal-input-change! "")
                :style {:padding 8}}
               [:> rn/View {:style {:width 20
@@ -219,13 +220,12 @@
   [:f>
    (fn []
      (let [colors (theme/use-theme-colors)]
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:align-items "center"
                  :padding-vertical 12
                  :padding-horizontal 16
                  :min-width 80}
-         :on-press on-press
-         :active-opacity 0.7}
+         :on-press on-press}
         [icons/icon {:name icon :size 28 :color (or color (:accent colors))}]
         [:> rn/Text {:style {:font-size 13
                              :color (or color (:accent colors))
@@ -305,7 +305,7 @@
                                :font-weight "600"
                                :color (:text-primary colors)}}
            (if (= role :user) "Your Message" "Claude's Response")]
-          [:> rn/TouchableOpacity
+          [touchable
            {:on-press (fn []
                         (reset-copy-confirmation!)
                         (hide-message-detail!))
@@ -453,12 +453,11 @@
                is-error? (= status :error)
                is-assistant? (= role :assistant)
                usage-summary (when is-assistant? (utils/format-usage-summary usage cost))]
-           [:> rn/TouchableOpacity
+           [touchable
             {:style {:align-self (if is-user? "flex-end" "flex-start")
                      :max-width "85%"
                      :margin-vertical 4
                      :margin-horizontal 12}
-             :active-opacity 0.8
              :on-press #(show-message-detail! {:role role :text full-text} session-id working-directory)
              :on-long-press #(copy-to-clipboard! full-text "Message copied")}
             ;; Message bubble
@@ -501,7 +500,7 @@
 
              ;; Show more/less toggle for truncated messages
              (when truncated?
-               [:> rn/TouchableOpacity
+               [touchable
                 {:style {:margin-top 8
                          :padding-vertical 4}
                  :on-press #(swap! expanded? not)}
@@ -588,7 +587,7 @@
           [:> rn/View {:style {:margin-right 8}}
            [icons/icon {:name :warning :size 16 :color (:destructive colors)}]]
           ;; Error content (tappable to copy)
-          [:> rn/TouchableOpacity
+          [touchable
            {:style {:flex 1}
             :on-press #(copy-to-clipboard! error "Error copied")}
            [:> rn/Text {:style {:color (:destructive colors)
@@ -605,7 +604,7 @@
                                 :font-style "italic"}}
             "Tap to copy"]]
           ;; Dismiss button
-          [:> rn/TouchableOpacity
+          [touchable
            {:style {:padding 4}
             :on-press #(rf/dispatch [:ui/clear-error])}
            [:> rn/Text {:style {:font-size 18 :color (:text-tertiary colors)}} "×"]]])))])
@@ -618,7 +617,7 @@
    (fn []
      (let [voice-mode? @(rf/subscribe [:ui/voice-mode?])
            colors (theme/use-theme-colors)]
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:flex-direction "row"
                  :align-items "center"
                  :padding-horizontal 12
@@ -646,7 +645,7 @@
            connected? (= status :connected)
            connecting? (= status :connecting)
            colors (theme/use-theme-colors)]
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:flex-direction "row"
                  :align-items "center"
                  :padding-horizontal 8
@@ -656,7 +655,6 @@
                                      connecting? (:warning-background colors)
                                      connected? "transparent"
                                      :else (:destructive-background colors))}
-         :active-opacity 0.7
          :on-press (when-not connecting?
                      #(rf/dispatch [:ws/force-reconnect]))}
         ;; Status dot
@@ -736,7 +734,7 @@
          (or (:message voice-error) "Please try again")]
         [:> rn/View {:style {:flex-direction "row"
                              :justify-content "flex-end"}}
-         [:> rn/TouchableOpacity
+         [touchable
           {:style {:padding-horizontal 16
                    :padding-vertical 8
                    :background-color (:destructive-background colors)
@@ -746,7 +744,7 @@
           [:> rn/Text {:style {:font-size 13
                                :color (:destructive colors)}}
            "Dismiss"]]
-         [:> rn/TouchableOpacity
+         [touchable
           {:style {:padding-horizontal 16
                    :padding-vertical 8
                    :background-color (:destructive colors)
@@ -772,7 +770,7 @@
 
      ;; Microphone button
      [:> rn/View {:style {:align-items "center"}}
-      [:> rn/TouchableOpacity
+      [touchable
        {:style {:width 72
                 :height 72
                 :border-radius 36
@@ -800,7 +798,7 @@
 
       ;; Status text - tappable unlock when locked
       (if locked?
-        [:> rn/TouchableOpacity
+        [touchable
          {:style {:margin-top 8
                   :padding-horizontal 12
                   :padding-vertical 6
@@ -866,7 +864,7 @@
            :on-change-text #(rf/dispatch-sync [:ui/set-draft session-id %])}]
 
          ;; Send button
-         [:> rn/TouchableOpacity
+         [touchable
           {:style {:position "absolute"
                    :right 4
                    :bottom 4
@@ -882,7 +880,7 @@
 
         ;; Locked state hint - tappable unlock button
         (when locked?
-          [:> rn/TouchableOpacity
+          [touchable
            {:style {:margin-top 8
                     :padding-horizontal 12
                     :padding-vertical 6
@@ -970,7 +968,7 @@
                                    :padding-vertical 4
                                    :border-bottom-width 1
                                    :border-bottom-color (:separator colors)}}
-               [:> rn/TouchableOpacity
+               [touchable
                 {:style {:flex-direction "row"
                          :align-items "center"
                          :padding-horizontal 8
@@ -1087,7 +1085,7 @@
                              :text-align "center"
                              :margin-bottom 16}}
          "This session may have been deleted."]
-        [:> rn/TouchableOpacity
+        [touchable
          {:style {:padding 12
                   :background-color (:fill-tertiary colors)
                   :border-radius 8}
@@ -1130,7 +1128,7 @@
                               :padding-horizontal 8
                               :padding-vertical 4
                               :margin-right 4}}
-          [:> rn/TouchableOpacity
+          [touchable
            {:on-press #(.navigate navigation "Recipes"
                                   #js {:sessionId session-id
                                        :workingDirectory working-directory})}
@@ -1160,7 +1158,7 @@
                             :number-of-lines 1}
                 (:current-step active-recipe)])]]]
           ;; Exit button
-          [:> rn/TouchableOpacity
+          [touchable
            {:style {:margin-left 6
                     :padding 4
                     :background-color (:destructive-background colors)
@@ -1168,7 +1166,7 @@
             :on-press #(rf/dispatch [:recipes/exit session-id])}
            [:> rn/Text {:style {:font-size 10 :color (:destructive colors) :font-weight "600"}} "Exit"]]]
          ;; No active recipe: show icon to open recipes
-         [:> rn/TouchableOpacity
+         [touchable
           {:style {:padding 8}
            :on-press #(.navigate navigation "Recipes"
                                  #js {:sessionId session-id
@@ -1183,7 +1181,7 @@
   [:f>
    (fn []
      (let [colors (theme/use-theme-colors)]
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:padding 8}
          :on-press #(.navigate navigation "SessionInfo"
                                #js {:sessionId session-id})}
@@ -1197,7 +1195,7 @@
    (fn []
      (let [refreshing? @(rf/subscribe [:ui/refreshing-session?])
            colors (theme/use-theme-colors)]
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:padding 8}
          :disabled refreshing?
          :on-press #(rf/dispatch [:session/refresh session-id])}
@@ -1216,7 +1214,7 @@
            in-queue? @(rf/subscribe [:session/in-queue? session-id])
            colors (theme/use-theme-colors)]
        (when (and queue-enabled? in-queue?)
-         [:> rn/TouchableOpacity
+         [touchable
           {:style {:padding 8}
            :on-press #(rf/dispatch [:sessions/remove-from-queue session-id])}
           [:> rn/View {:style {:width 20
@@ -1242,7 +1240,7 @@
        (when (or speaking? paused?)
          [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
           ;; Pause/Resume button
-          [:> rn/TouchableOpacity
+          [touchable
            {:style {:padding 8}
             :on-press #(if paused?
                          (rf/dispatch [:voice/resume-speaking])
@@ -1251,7 +1249,7 @@
                         :size 16
                         :color (if paused? (:accent colors) (:warning colors))}]]
           ;; Stop button
-          [:> rn/TouchableOpacity
+          [touchable
            {:style {:padding 8}
             :on-press #(rf/dispatch [:voice/stop-speaking])}
            [icons/icon {:name :stop :size 16 :color (:destructive colors)}]]])))])
@@ -1265,7 +1263,7 @@
    (fn []
      (let [Alert (.-Alert rn)
            colors (theme/use-theme-colors)]
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:padding 8}
          :on-press #(.alert Alert
                             "Stop Session?"
@@ -1295,7 +1293,7 @@
            ;; Format relative time for re-compaction message
            relative-time (when compaction-timestamp
                            (utils/format-relative-time compaction-timestamp))]
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:padding 8}
          :disabled (or compacting? locked?)
          :on-press (fn []
@@ -1365,7 +1363,7 @@
      (let [session @(rf/subscribe [:sessions/by-id session-id])
            display-name (session-display-name session)
            colors (theme/use-theme-colors)]
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:flex-direction "row"
                  :align-items "center"}
          :on-press #(show-rename-dialog

@@ -13,7 +13,8 @@
             [voice-code.persistence :as persistence]
             [voice-code.views.components :refer [copy-to-clipboard!]]
             [voice-code.icons :as icons]
-            [voice-code.theme :as theme]))
+            [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]))
 
 ;; ============================================================================
 ;; Components
@@ -35,7 +36,7 @@
 (defn- info-row
   "Tappable info row with label, value, and copy functionality."
   [{:keys [label value on-copy colors]}]
-  [:> rn/TouchableOpacity
+  [touchable
    {:style {:padding-horizontal 16
             :padding-vertical 12
             :background-color (:row-background colors)
@@ -54,7 +55,7 @@
 (defn- action-button
   "Action button for session actions."
   [{:keys [label icon on-press destructive? colors]}]
-  [:> rn/TouchableOpacity
+  [touchable
    {:style {:flex-direction "row"
             :align-items "center"
             :padding-horizontal 16
@@ -86,7 +87,7 @@
    [:> rn/View {:style {:flex-direction "row" :flex 1 :justify-content "space-around"}}
     (for [[label priority-value] [["High (1)" 1] ["Medium (5)" 5] ["Low (10)" 10]]]
       ^{:key priority-value}
-      [:> rn/TouchableOpacity
+      [touchable
        {:style {:padding-horizontal 16
                 :padding-vertical 8
                 :border-radius 6

@@ -7,7 +7,8 @@
             ["react-native" :as rn]
             [voice-code.auth :refer [validate-api-key]]
             [voice-code.qr-scanner :refer [qr-scanner-view]]
-            [voice-code.theme :as theme]))
+            [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]))
 
 ;; ============================================================================
 ;; Components
@@ -89,7 +90,7 @@
                                 :margin-top 4}}
             "Valid API key format"])
 
-         [:> rn/TouchableOpacity
+         [touchable
           {:style {:background-color (if can-connect? (:accent colors) (:separator colors))
                    :border-radius 8
                    :padding-vertical 14
@@ -202,7 +203,7 @@
   [colors]
   (let [status @(rf/subscribe [:connection/status])
         connecting? (= status :connecting)]
-    [:> rn/TouchableOpacity
+    [touchable
      {:style {:margin-top 16
               :padding-horizontal 24
               :padding-vertical 12}
@@ -263,7 +264,7 @@
              [api-key-input colors]]
 
             ;; QR code option
-            [:> rn/TouchableOpacity
+            [touchable
              {:style {:margin-top 24}
               :on-press #(rf/dispatch [:auth/scan-qr])}
              [:> rn/Text {:style {:color (:accent colors) :font-size 14}}

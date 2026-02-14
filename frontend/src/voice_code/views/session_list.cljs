@@ -7,7 +7,8 @@
             [voice-code.views.components :as components :refer [relative-time-text copy-to-clipboard! toast-overlay]]
             [voice-code.haptic :as haptic]
             [voice-code.icons :as icons]
-            [voice-code.theme :as theme]))
+            [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]))
 
 (defn- session-name
   "Get display name for a session."
@@ -52,7 +53,7 @@
         session-display-name (session-name session)
         session-id (str (:id session))
         working-directory (:working-directory session)]
-    [:> rn/TouchableOpacity
+    [touchable
      {:style {:padding-horizontal 16
               :padding-vertical 14
               :border-bottom-width 1
@@ -70,8 +71,7 @@
                                          {:text "Delete"
                                           :style "destructive"
                                           :onPress on-delete}
-                                         {:text "Cancel" :style "cancel"}])))
-      :active-opacity 0.7}
+                                         {:text "Cancel" :style "cancel"}])))}
      [:> rn/View {:style {:flex-direction "row"
                           :align-items "center"}}
       ;; Locked indicator
@@ -247,7 +247,7 @@
                               :background-color (:destructive colors)
                               :justify-content "center"
                               :align-items "center"}}
-          [:> rn/TouchableOpacity
+          [touchable
            {:style {:flex 1
                     :width "100%"
                     :justify-content "center"
@@ -316,13 +316,13 @@
                                :border-bottom-width 1
                                :border-bottom-color (:separator colors)
                                :background-color (:card-background colors)}}
-           [:> rn/TouchableOpacity
+           [touchable
             {:on-press on-close}
             [:> rn/Text {:style {:font-size 17 :color (:accent colors)}} "Cancel"]]
            [:> rn/Text {:style {:font-size 17
                                 :font-weight "600"
                                 :color (:text-primary colors)}} "New Session"]
-           [:> rn/TouchableOpacity
+           [touchable
             {:on-press (fn []
                          (on-create {:name @session-name-atom
                                      :create-worktree? @create-worktree?})
@@ -432,7 +432,7 @@
         active-bg (if is-green? (:success-background colors) (:accent-background colors))
         active-text (if is-green? (:success colors) (:accent colors))
         badge-bg (if active? (:success colors) (:destructive colors))]
-    [:> rn/TouchableOpacity
+    [touchable
      {:style {:flex 1
               :align-items "center"
               :justify-content "center"
@@ -440,8 +440,7 @@
               :background-color (if active? active-bg "transparent")
               :border-radius 8
               :margin-horizontal 4}
-      :on-press on-press
-      :active-opacity 0.7}
+      :on-press on-press}
      [:> rn/View {:style {:position "relative"}}
       (if (keyword? icon)
         [icons/icon {:name icon :size 20 :color (if active? active-text (:text-secondary colors))}]

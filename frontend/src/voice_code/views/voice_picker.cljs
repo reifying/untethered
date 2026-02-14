@@ -6,6 +6,7 @@
             ["react-native" :as rn]
             [voice-code.icons :as icons]
             [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]
             [voice-code.voice :as voice]))
 
 (def ^:private quality-labels
@@ -54,7 +55,7 @@
               :border-bottom-width 1
               :border-bottom-color (:separator colors)}}
      ;; Preview button
-     [:> rn/TouchableOpacity
+     [touchable
       {:style {:padding 8
                :margin-right 8}
        :on-press #(if previewing?
@@ -64,7 +65,7 @@
                    :size 20
                    :color (if previewing? (:destructive colors) (:accent colors))}]]
      ;; Main content - tappable to select
-     [:> rn/TouchableOpacity
+     [touchable
       {:style {:flex 1}
        :on-press #(on-select id)}
       [:> rn/View {:style {:flex-direction "row"
@@ -86,7 +87,7 @@
 (defn- system-default-item
   "The system default option."
   [{:keys [selected? on-select colors]}]
-  [:> rn/TouchableOpacity
+  [touchable
    {:style {:flex-direction "row"
             :align-items "center"
             :padding-vertical 12
@@ -111,7 +112,7 @@
   "The 'All Premium Voices' rotation option.
    When selected, rotates through premium voices based on working directory."
   [{:keys [selected? on-select premium-count colors]}]
-  [:> rn/TouchableOpacity
+  [touchable
    {:style {:flex-direction "row"
             :align-items "center"
             :padding-vertical 12
@@ -198,7 +199,7 @@
                              :font-weight "600"
                              :color (:text-primary colors)}}
          "Select Voice"]
-        [:> rn/TouchableOpacity
+        [touchable
          {:style {:width 60 :align-items "flex-end"}
           :on-press on-close}
          [:> rn/Text {:style {:font-size 17

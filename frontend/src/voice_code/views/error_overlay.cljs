@@ -5,7 +5,8 @@
             [re-frame.core :as rf]
             ["react-native" :as rn]
             [voice-code.views.components :refer [copy-to-clipboard!]]
-            [voice-code.theme :as theme]))
+            [voice-code.theme :as theme]
+            [voice-code.views.touchable :refer [touchable]]))
 
 (defn- format-error
   "Format error and stack trace for display/copying."
@@ -48,7 +49,7 @@
                                        :fontSize 18
                                        :fontWeight "600"}}
                    "Error (Dev)"]
-                  [:> rn/TouchableOpacity
+                  [touchable
                    {:onPress #(rf/dispatch [:dev/clear-error])
                     :style {:padding 8}}
                    [:> rn/Text {:style {:color (:button-text-on-accent colors)
@@ -87,7 +88,7 @@
                  ;; Copy button
                  [:> rn/View {:style {:padding 16
                                       :paddingBottom 32}}
-                  [:> rn/TouchableOpacity
+                  [touchable
                    {:onPress (fn []
                                (copy-to-clipboard!
                                 (format-error error)

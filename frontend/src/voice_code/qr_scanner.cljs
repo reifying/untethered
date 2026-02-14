@@ -5,7 +5,8 @@
             [re-frame.core :as rf]
             ["react-native" :as rn]
             [voice-code.haptic :as haptic]
-            [voice-code.utils :refer [parse-qr-code]]))
+            [voice-code.utils :refer [parse-qr-code]]
+            [voice-code.views.touchable :refer [touchable]]))
 
 ;; ============================================================================
 ;; Module Loading
@@ -157,7 +158,7 @@
          [:> rn/View {:style {:align-items "center"}}
           [:> rn/Text {:style {:font-size 14 :text-align "center" :color "#666" :margin-bottom 16}}
            "Camera access was denied. Please enable it in Settings."]
-          [:> rn/TouchableOpacity
+          [touchable
            {:style {:background-color "#007AFF"
                     :padding-horizontal 24
                     :padding-vertical 12
@@ -166,7 +167,7 @@
            [:> rn/Text {:style {:color "#FFFFFF" :font-size 16}}
             "Open Settings"]]]
          ;; First attempt - request permission
-         [:> rn/TouchableOpacity
+         [touchable
           {:style {:background-color "#007AFF"
                    :padding-horizontal 24
                    :padding-vertical 12
@@ -234,7 +235,7 @@
                         :left 0
                         :right 0
                         :align-items "center"}}
-    [:> rn/TouchableOpacity
+    [touchable
      {:style {:background-color "rgba(255,255,255,0.2)"
               :padding-horizontal 32
               :padding-vertical 14
@@ -269,7 +270,7 @@
                             :font-size 14
                             :text-align "center"}}
         error]
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:position "absolute"
                  :top 8
                  :right 8}
@@ -307,7 +308,7 @@
                            :background-color "#F5F5F5"}}
        [:> rn/Text {:style {:font-size 18 :color "#666"}}
         "Camera not available"]
-       [:> rn/TouchableOpacity
+       [touchable
         {:style {:margin-top 24
                  :padding-horizontal 24
                  :padding-vertical 12
