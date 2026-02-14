@@ -21,8 +21,10 @@
 (defn- text-input-row
   "Text input row for use inside section-card.
    Matches settings text-input-row pattern: label left, input right.
-   Accepts colors as a prop (no [:f>] — avoids TextInput remount issues)."
-  [{:keys [label placeholder value on-change-text colors last?]}]
+   Accepts colors as a prop (no [:f>] — avoids TextInput remount issues).
+   iOS ref: InputModifiers.swift for keyboard configuration per input type."
+  [{:keys [label placeholder value on-change-text colors last? auto-capitalize
+           return-key-type]}]
   [:> rn/View {:style (cond-> {:flex-direction "row"
                                 :align-items "center"
                                 :justify-content "space-between"
@@ -44,8 +46,9 @@
      :placeholder placeholder
      :placeholder-text-color (:text-placeholder colors)
      :on-change-text on-change-text
-     :auto-capitalize "none"
-     :auto-correct false}]])
+     :auto-capitalize (or auto-capitalize "none")
+     :auto-correct false
+     :return-key-type (or return-key-type "done")}]])
 
 (defn- toggle-row
   "Toggle row for use inside section-card.
@@ -215,10 +218,13 @@
                [section-card {:header "Session Details"
                               :colors colors
                               :first? true}
+                ;; Session name should capitalize words (like iOS .autocapitalization(.words))
                 [text-input-row {:label "Session Name"
                                  :placeholder "Enter name"
                                  :value name-value
                                  :on-change-text (fn [text] (reset! session-name text) (r/flush))
+                                 :auto-capitalize "words"
+                                 :return-key-type "next"
                                  :colors colors}]
                 [text-input-row {:label (if worktree? "Repository Path" "Working Directory")
                                  :placeholder (if worktree? "Path to git repo" "Optional")

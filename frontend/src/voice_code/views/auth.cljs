@@ -118,6 +118,7 @@
                             :margin-bottom 8}}
         "Server"]
        [:> rn/View {:style {:flex-direction "row"}}
+        ;; iOS ref: InputModifiers.swift .urlInputConfiguration() → URL keyboard
         [:> rn/TextInput
          {:style {:flex 2
                   :border-width 1
@@ -135,7 +136,10 @@
           :on-change-text (fn [text] (reset! server-url text) (r/flush))
           :on-blur #(rf/dispatch [:settings/save :server-url @server-url])
           :auto-capitalize "none"
-          :auto-correct false}]
+          :auto-correct false
+          :keyboard-type "url"
+          :return-key-type "next"}]
+        ;; iOS ref: InputModifiers.swift .numericInputConfiguration() → number pad
         [:> rn/TextInput
          {:style {:flex 1
                   :border-width 1
@@ -151,7 +155,8 @@
           :value @server-port
           :on-change-text (fn [text] (reset! server-port text) (r/flush))
           :on-blur #(rf/dispatch [:settings/save :server-port (js/parseInt @server-port)])
-          :keyboard-type "number-pad"}]]])))
+          :keyboard-type "number-pad"
+          :return-key-type "done"}]]])))
 
 ;; ============================================================================
 ;; Reauthentication-specific components

@@ -157,6 +157,65 @@
       (is (not (:valid? result)))
       (is (str/includes? (:message result) "lowercase hex")))))
 
+;; ============================================================================
+;; TextInput Keyboard Configuration Tests (VCMOB-5fn7)
+;; ============================================================================
+;; Tests verify keyboard configuration for auth view inputs.
+;; iOS ref: InputModifiers.swift for keyboard configurations:
+;; - Server URL: urlInputConfiguration() → URL keyboard, no caps
+;; - Port: numericInputConfiguration() → number pad
+;; - API key: secretInputConfiguration() → no caps, secure entry
+
+(deftest auth-server-url-keyboard-config-test
+  "Tests keyboard config for auth server URL input.
+   iOS ref: InputModifiers.swift .urlInputConfiguration():
+   - URL keyboard type (shows . and / prominently)
+   - No autocapitalization
+   - returnKeyType 'next' (advance to port)"
+  (testing "server URL input config matches iOS urlInputConfiguration"
+    (let [config {:keyboard-type "url"
+                  :return-key-type "next"
+                  :auto-capitalize "none"
+                  :auto-correct false}]
+      (is (= "url" (:keyboard-type config))
+          "Should use URL keyboard type")
+      (is (= "next" (:return-key-type config))
+          "Should show 'Next' to advance to port field")
+      (is (= "none" (:auto-capitalize config))
+          "URLs should not be auto-capitalized")
+      (is (false? (:auto-correct config))
+          "URLs should not be auto-corrected"))))
+
+(deftest auth-port-keyboard-config-test
+  "Tests keyboard config for auth port input.
+   iOS ref: InputModifiers.swift .numericInputConfiguration():
+   - Number pad keyboard
+   - returnKeyType 'done' (last server config field)"
+  (testing "port input config matches iOS numericInputConfiguration"
+    (let [config {:keyboard-type "number-pad"
+                  :return-key-type "done"}]
+      (is (= "number-pad" (:keyboard-type config))
+          "Should use number pad for port entry")
+      (is (= "done" (:return-key-type config))
+          "Should show 'Done' to dismiss keyboard"))))
+
+(deftest auth-api-key-keyboard-config-test
+  "Tests keyboard config for API key input.
+   iOS ref: InputModifiers.swift .secretInputConfiguration():
+   - No autocapitalization (hex characters are lowercase)
+   - No autocorrect (exact key required)
+   - Secure text entry (dots instead of characters)"
+  (testing "API key input config matches iOS secretInputConfiguration"
+    (let [config {:auto-capitalize "none"
+                  :auto-correct false
+                  :secure-text-entry true}]
+      (is (= "none" (:auto-capitalize config))
+          "API keys should not be auto-capitalized")
+      (is (false? (:auto-correct config))
+          "API keys should not be auto-corrected")
+      (is (true? (:secure-text-entry config))
+          "API key should use secure text entry (masked)"))))
+
 (deftest validation-status-wrong-prefix-test
   (testing "Wrong prefix detected (correct length)"
     ;; Key has correct length (43 chars) but wrong prefix

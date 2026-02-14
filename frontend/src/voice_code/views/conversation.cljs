@@ -862,9 +862,13 @@
                :placeholder "Session locked \u2014 tap to unlock"
                :placeholder-text-color (:input-placeholder colors)
                :multiline true
+               :blur-on-submit false
+               :auto-capitalize "sentences"
                :value (or draft "")
                :editable false}]]]
            ;; Normal (unlocked) text input
+           ;; iOS ref: ConversationView.swift ConversationTextInputView (lines 1383-1434)
+           ;; .textInputConfiguration() → sentence capitalization for natural language
            [:> rn/TextInput
             {:style {:flex 1
                      :border-width 1
@@ -880,9 +884,16 @@
              :placeholder "Type your message..."
              :placeholder-text-color (:input-placeholder colors)
              :multiline true
+             :blur-on-submit false
+             :return-key-type "send"
+             :enable-return-key-automatically true
+             :auto-capitalize "sentences"
              :value (or draft "")
              :editable true
-             :on-change-text #(rf/dispatch-sync [:ui/set-draft session-id %])}])
+             :on-change-text #(rf/dispatch-sync [:ui/set-draft session-id %])
+             :on-submit-editing (fn []
+                                  (when (seq draft)
+                                    (rf/dispatch [:prompt/send-from-draft session-id])))}])
 
          ;; Send button — matches iOS ConversationTextInputView:
          ;; lock.fill (orange) when locked, arrow.up.circle.fill (blue/gray) otherwise

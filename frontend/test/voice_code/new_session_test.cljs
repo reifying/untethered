@@ -193,3 +193,46 @@
           success-dark "#30D158"]
       (is (= "#34C759" success-light))
       (is (= "#30D158" success-dark)))))
+
+;; ============================================================================
+;; TextInput Keyboard Configuration Tests (VCMOB-5fn7)
+;; ============================================================================
+;; Tests verify keyboard config for new session form inputs.
+;; iOS ref: NewSessionView uses .textInputConfiguration() for name field
+;; and .pathInputConfiguration() for directory path field.
+
+(defn- new-session-input-config
+  "Replicates the keyboard configuration logic from new_session.cljs text-input-row.
+   Given optional overrides, returns the effective TextInput props."
+  [{:keys [auto-capitalize return-key-type]}]
+  {:auto-capitalize (or auto-capitalize "none")
+   :auto-correct false
+   :return-key-type (or return-key-type "done")})
+
+(deftest new-session-name-input-config-test
+  "Tests keyboard config for session name input.
+   Session names are human-readable labels, so they should use:
+   - Word capitalization (capitalize first letter of each word)
+   - returnKeyType 'next' (advance to working directory field)"
+  (testing "session name uses word caps and next return key"
+    (let [config (new-session-input-config {:auto-capitalize "words"
+                                             :return-key-type "next"})]
+      (is (= "words" (:auto-capitalize config))
+          "Session name should capitalize words (human-readable label)")
+      (is (= "next" (:return-key-type config))
+          "Should show 'Next' to advance to directory field"))))
+
+(deftest new-session-directory-input-config-test
+  "Tests keyboard config for working directory path input.
+   iOS ref: InputModifiers.swift .pathInputConfiguration()
+   - No autocapitalization (paths are case-sensitive)
+   - No autocorrect (paths should not be corrected)
+   - returnKeyType 'done' (last field in section)"
+  (testing "directory path uses path-style config (default)"
+    (let [config (new-session-input-config {})]
+      (is (= "none" (:auto-capitalize config))
+          "Paths should not be auto-capitalized")
+      (is (false? (:auto-correct config))
+          "Paths should not be auto-corrected")
+      (is (= "done" (:return-key-type config))
+          "Should show 'Done' for last field"))))

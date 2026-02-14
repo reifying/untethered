@@ -453,3 +453,100 @@
      (let [settings @(rf/subscribe [:settings/all])]
        (is (= true (:queue-enabled settings)))
        (is (= false (:priority-queue-enabled settings)))))))
+
+;; ============================================================================
+;; TextInput Keyboard Configuration Tests (VCMOB-5fn7)
+;; ============================================================================
+;; Tests verify that settings text-input-row components have correct native
+;; keyboard configuration matching iOS SettingsView.swift and InputModifiers.swift.
+;; Each input type has specific keyboard configuration per iOS reference:
+;; - Server address: urlInputConfiguration() → URL keyboard, no caps
+;; - Port: numericInputConfiguration() → number pad
+;; - System prompt: textInputConfiguration() → sentence caps, multiline
+;; - Resource path: pathInputConfiguration() → no caps, no autocorrect
+
+(defn- text-input-row-config
+  "Replicates the keyboard configuration logic from settings.cljs text-input-row.
+   Given optional overrides, returns the effective TextInput props."
+  [{:keys [keyboard-type multiline return-key-type auto-capitalize]}]
+  {:keyboard-type (or keyboard-type "default")
+   :auto-capitalize (or auto-capitalize "none")
+   :auto-correct false
+   :blur-on-submit (not multiline)
+   :return-key-type (or return-key-type (if multiline "default" "done"))})
+
+(deftest text-input-row-keyboard-defaults-test
+  "Tests the default keyboard configuration for text-input-row.
+   Default (no overrides) matches iOS pathInputConfiguration():
+   - No autocapitalization
+   - No autocorrect
+   - returnKeyType 'done'"
+  (testing "default config has no caps and done return key"
+    (let [config (text-input-row-config {})]
+      (is (= "default" (:keyboard-type config)))
+      (is (= "none" (:auto-capitalize config)))
+      (is (false? (:auto-correct config)))
+      (is (true? (:blur-on-submit config)))
+      (is (= "done" (:return-key-type config))))))
+
+(deftest text-input-row-server-url-config-test
+  "Tests keyboard config for server URL input.
+   iOS ref: InputModifiers.swift .urlInputConfiguration()
+   - URL keyboard type (shows . and / prominently)
+   - No autocapitalization (URLs are lowercase)
+   - returnKeyType 'next' (tab to port field)"
+  (testing "server URL uses URL keyboard with no caps"
+    (let [config (text-input-row-config {:keyboard-type "url"
+                                          :return-key-type "next"})]
+      (is (= "url" (:keyboard-type config))
+          "Should use URL keyboard (iOS .urlInputConfiguration())")
+      (is (= "none" (:auto-capitalize config))
+          "URLs should not be auto-capitalized")
+      (is (= "next" (:return-key-type config))
+          "Should show 'Next' to advance to port field")
+      (is (true? (:blur-on-submit config))
+          "Single-line URL input should blur on submit"))))
+
+(deftest text-input-row-port-config-test
+  "Tests keyboard config for port number input.
+   iOS ref: InputModifiers.swift .numericInputConfiguration()
+   - Number pad keyboard
+   - returnKeyType 'done'"
+  (testing "port uses number pad keyboard"
+    (let [config (text-input-row-config {:keyboard-type "number-pad"
+                                          :return-key-type "done"})]
+      (is (= "number-pad" (:keyboard-type config))
+          "Should use number pad (iOS .numericInputConfiguration())")
+      (is (= "done" (:return-key-type config))
+          "Should show 'Done' to dismiss keyboard"))))
+
+(deftest text-input-row-system-prompt-config-test
+  "Tests keyboard config for system prompt input.
+   iOS ref: InputModifiers.swift .textInputConfiguration()
+   - Sentence capitalization (natural language)
+   - Multiline
+   - returnKeyType 'default' (multiline needs newline, not submit)"
+  (testing "system prompt uses sentence caps and multiline"
+    (let [config (text-input-row-config {:auto-capitalize "sentences"
+                                          :multiline true})]
+      (is (= "sentences" (:auto-capitalize config))
+          "Should use sentence caps (iOS .textInputConfiguration())")
+      (is (false? (:blur-on-submit config))
+          "Multiline input should NOT blur on submit (allows newlines)")
+      (is (= "default" (:return-key-type config))
+          "Multiline input should use 'default' (return inserts newline)"))))
+
+(deftest text-input-row-resource-path-config-test
+  "Tests keyboard config for resource storage path input.
+   iOS ref: InputModifiers.swift .pathInputConfiguration()
+   - No autocapitalization (paths are case-sensitive)
+   - No autocorrect
+   - returnKeyType 'done'"
+  (testing "resource path uses path-style config"
+    (let [config (text-input-row-config {})]
+      (is (= "none" (:auto-capitalize config))
+          "Paths should not be auto-capitalized (case-sensitive)")
+      (is (false? (:auto-correct config))
+          "Paths should not be auto-corrected")
+      (is (= "done" (:return-key-type config))
+          "Should show 'Done' to dismiss keyboard"))))

@@ -94,8 +94,10 @@
    Accepts colors as a prop from the parent (which obtains them via [:f>] hook).
    Must NOT use [:f>] internally — doing so creates a new anonymous function on
    each parent re-render, causing React to unmount/remount the TextInput and
-   making the input unusable (cursor resets, characters lost)."
-  [{:keys [label value placeholder on-change keyboard-type multiline colors last?]}]
+   making the input unusable (cursor resets, characters lost).
+   iOS ref: InputModifiers.swift for keyboard configuration per input type."
+  [{:keys [label value placeholder on-change keyboard-type multiline colors last?
+           return-key-type auto-capitalize]}]
   [:> rn/View {:style (cond-> {:flex-direction (if multiline "column" "row")
                                 :align-items (if multiline "stretch" "center")
                                 :justify-content "space-between"
@@ -121,9 +123,13 @@
      :placeholder-text-color (:text-placeholder colors)
      :on-change-text on-change
      :keyboard-type (or keyboard-type "default")
-     :auto-capitalize "none"
+     :auto-capitalize (or auto-capitalize "none")
      :auto-correct false
-     :multiline multiline}]])
+     :multiline multiline
+     ;; Multiline inputs should not dismiss keyboard on submit
+     :blur-on-submit (not multiline)
+     ;; Use "done" as default for single-line settings inputs
+     :return-key-type (or return-key-type (if multiline "default" "done"))}]])
 
 (defn- toggle-row
   "Setting row with toggle switch. Includes haptic selection feedback on toggle.
@@ -447,9 +453,11 @@
        [section-card {:header "Server Configuration"
                      :footer (str "Full URL: ws://" (:server-url settings) ":" (:server-port settings))
                      :colors colors}
+        ;; iOS ref: SettingsView.swift .urlInputConfiguration() → URL keyboard, no caps, no autocorrect
         [text-input-row {:label "Server Address"
                          :value (:server-url settings)
                          :placeholder "192.168.1.100"
+                         :keyboard-type "url"
                          :on-change (fn [text]
                                       (rf/dispatch-sync [:settings/save :server-url text])
                                       (r/flush)
@@ -691,10 +699,12 @@
        [section-card {:header "System Prompt"
                      :footer "Optional instructions to append to Claude's system prompt on every message. Leave empty to use default behavior."
                      :colors colors}
+        ;; iOS ref: SettingsView.swift .textInputConfiguration() → sentence capitalization
         [text-input-row {:label "Custom System Prompt"
                          :value (:system-prompt settings)
                          :placeholder "Optional instructions to append..."
                          :multiline true
+                         :auto-capitalize "sentences"
                          :on-change (fn [text]
                                       (rf/dispatch-sync [:settings/save :system-prompt text])
                                       (r/flush))
