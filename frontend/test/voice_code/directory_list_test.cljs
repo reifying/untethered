@@ -10,6 +10,7 @@
             [voice-code.db :as db]
             [voice-code.events.core]
             [voice-code.events.websocket]
+            [voice-code.platform :as platform]
             [voice-code.subs]
             [voice-code.voice.events]
             [voice-code.views.directory-list :as dir-list]))
@@ -618,3 +619,141 @@
      (let [recent @(rf/subscribe [:sessions/recent])]
        ;; All 3 sessions should be in recent (default limit is higher)
        (is (= 3 (count recent)))))))
+
+;; ============================================================================
+;; Swipe-to-Remove Constants and Platform Tests
+;; Reference: ios/VoiceCode/Views/DirectoryListView.swift .swipeActions
+;; iOS uses swipe-to-remove for queue items (standard UIKit convention).
+;; Android uses X button (Material Design convention).
+;; ============================================================================
+
+(deftest swipe-remove-button-width-constant-test
+  (testing "Remove button width constant exists and is reasonable"
+    (is (= 80 dir-list/remove-button-width)
+        "Remove button should be 80px wide (matching session list delete button)")))
+
+(deftest swipe-threshold-constant-test
+  (testing "Swipe threshold constant exists and is negative (left swipe)"
+    (is (= -80 dir-list/swipe-threshold)
+        "Swipe threshold should be -80px (left swipe to reveal)")))
+
+(deftest platform-ios-enables-swipe-for-queue-test
+  (testing "Test stub platform is iOS, enabling swipe-to-remove for queue items"
+    (is (true? platform/ios?)
+        "Test environment is iOS; swipe-to-remove should be active")))
+
+(deftest platform-android-disables-swipe-for-queue-test
+  (testing "On Android, platform/ios? is false, so X button is used instead"
+    (with-redefs [platform/ios? false]
+      (is (false? platform/ios?)
+          "Android should use X button, not swipe-to-remove"))))
+
+(deftest queue-session-row-content-accepts-props-test
+  (testing "queue-session-row-content accepts the standard props shape"
+    (let [test-colors {:text-primary "#000" :text-secondary "#666"
+                       :text-tertiary "#999" :separator "#CCC"
+                       :accent "#007AFF" :destructive "#FF3B30"
+                       :card-background "#FFF" :button-text-on-accent "#FFF"
+                       :warning "#FF9500" :success "#30D158"}
+          props {:session {:id "test-session"
+                           :backend-name "Test Queue Item"
+                           :working-directory "/Users/test/project"
+                           :last-modified (js/Date.)
+                           :unread-count 0}
+                 :on-press (fn [])
+                 :on-remove (fn [])
+                 :colors test-colors
+                 :last? false}]
+      (let [result (#'dir-list/queue-session-row-content props)]
+        (is (vector? result) "queue-session-row-content returns valid hiccup")
+        (is (some? (first result)) "queue-session-row-content has a component type")))))
+
+(deftest priority-queue-row-content-accepts-props-test
+  (testing "priority-queue-row-content accepts the standard props shape"
+    (let [test-colors {:text-primary "#000" :text-secondary "#666"
+                       :text-tertiary "#999" :separator "#CCC"
+                       :accent "#007AFF" :destructive "#FF3B30"
+                       :card-background "#FFF" :button-text-on-accent "#FFF"
+                       :warning "#FF9500" :success "#30D158"}
+          props {:session {:id "test-priority-session"
+                           :backend-name "Test Priority Item"
+                           :working-directory "/Users/test/project"
+                           :last-modified (js/Date.)
+                           :unread-count 0
+                           :priority 5}
+                 :on-press (fn [])
+                 :on-remove (fn [])
+                 :colors test-colors
+                 :last? false}]
+      (let [result (#'dir-list/priority-queue-row-content props)]
+        (is (vector? result) "priority-queue-row-content returns valid hiccup")
+        (is (some? (first result)) "priority-queue-row-content has a component type")))))
+
+(deftest swipeable-queue-item-returns-form-2-test
+  (testing "swipeable-queue-item returns Form-2 render fn for iOS swipe gesture"
+    (let [test-colors {:text-primary "#000" :text-secondary "#666"
+                       :text-tertiary "#999" :separator "#CCC"
+                       :accent "#007AFF" :destructive "#FF3B30"
+                       :card-background "#FFF" :button-text-on-accent "#FFF"
+                       :warning "#FF9500" :success "#30D158"}
+          props {:session {:id "test-swipe-session"
+                           :backend-name "Swipeable"
+                           :working-directory "/Users/test/project"
+                           :last-modified (js/Date.)
+                           :unread-count 0}
+                 :on-press (fn [])
+                 :on-remove (fn [])
+                 :colors test-colors
+                 :last? false}]
+      (let [result (#'dir-list/swipeable-queue-item props)]
+        (is (fn? result) "swipeable-queue-item returns render fn (Form-2 component)")))))
+
+(deftest swipeable-priority-queue-item-returns-form-2-test
+  (testing "swipeable-priority-queue-item returns Form-2 render fn for iOS swipe gesture"
+    (let [test-colors {:text-primary "#000" :text-secondary "#666"
+                       :text-tertiary "#999" :separator "#CCC"
+                       :accent "#007AFF" :destructive "#FF3B30"
+                       :card-background "#FFF" :button-text-on-accent "#FFF"
+                       :warning "#FF9500" :success "#30D158"}
+          props {:session {:id "test-swipe-priority-session"
+                           :backend-name "Swipeable Priority"
+                           :working-directory "/Users/test/project"
+                           :last-modified (js/Date.)
+                           :unread-count 0
+                           :priority 1}
+                 :on-press (fn [])
+                 :on-remove (fn [])
+                 :colors test-colors
+                 :last? false}]
+      (let [result (#'dir-list/swipeable-priority-queue-item props)]
+        (is (fn? result) "swipeable-priority-queue-item returns render fn (Form-2 component)")))))
+
+(deftest queue-session-item-delegates-per-platform-test
+  (testing "queue-session-item delegates to swipeable on iOS and row-content on Android"
+    (let [test-colors {:text-primary "#000" :text-secondary "#666"
+                       :text-tertiary "#999" :separator "#CCC"
+                       :accent "#007AFF" :destructive "#FF3B30"
+                       :card-background "#FFF" :button-text-on-accent "#FFF"
+                       :warning "#FF9500" :success "#30D158"}
+          props {:session {:id "test-platform-session"
+                           :backend-name "Platform Test"
+                           :working-directory "/Users/test/project"
+                           :last-modified (js/Date.)
+                           :unread-count 0}
+                 :on-press (fn [])
+                 :on-remove (fn [])
+                 :colors test-colors
+                 :last? false}]
+      ;; iOS: should use swipeable-queue-item
+      (let [result (#'dir-list/queue-session-item props)]
+        (is (vector? result) "queue-session-item returns valid hiccup on iOS")
+        ;; On iOS (test default), first element should be the swipeable-queue-item function
+        (is (= @#'dir-list/swipeable-queue-item (first result))
+            "iOS should delegate to swipeable-queue-item"))
+
+      ;; Android: should use queue-session-row-content
+      (with-redefs [platform/ios? false]
+        (let [result (#'dir-list/queue-session-item props)]
+          (is (vector? result) "queue-session-item returns valid hiccup on Android")
+          (is (= @#'dir-list/queue-session-row-content (first result))
+              "Android should delegate to queue-session-row-content"))))))
