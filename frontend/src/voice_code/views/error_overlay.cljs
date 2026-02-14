@@ -36,69 +36,69 @@
                                     :left 0
                                     :right 0
                                     :bottom 0
-                                    :backgroundColor (:overlay-background colors)
-                                    :zIndex 9999}}
+                                    :background-color (:overlay-background colors)
+                                    :z-index 9999}}
                 [:> rn/SafeAreaView {:style {:flex 1}}
                  ;; Header
-                 [:> rn/View {:style {:flexDirection "row"
-                                      :justifyContent "space-between"
-                                      :alignItems "center"
-                                      :paddingHorizontal 16
-                                      :paddingVertical 12
-                                      :backgroundColor (:destructive colors)}}
+                 [:> rn/View {:style {:flex-direction "row"
+                                      :justify-content "space-between"
+                                      :align-items "center"
+                                      :padding-horizontal 16
+                                      :padding-vertical 12
+                                      :background-color (:destructive colors)}}
                   [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                                       :fontSize 18
-                                       :fontWeight "600"}}
+                                       :font-size 18
+                                       :font-weight "600"}}
                    "Error (Dev)"]
                   [touchable
-                   {:onPress #(rf/dispatch [:dev/clear-error])
+                   {:on-press #(rf/dispatch [:dev/clear-error])
                     :style {:padding 8}}
                    [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                                        :fontSize 16}}
+                                        :font-size 16}}
                     "Dismiss"]]]
 
                  ;; Error message
                  [:> rn/ScrollView {:style {:flex 1
                                             :padding 16}}
                   [:> rn/Text {:style {:color (:destructive colors)
-                                       :fontSize 16
-                                       :fontWeight "600"
-                                       :marginBottom 8}}
+                                       :font-size 16
+                                       :font-weight "600"
+                                       :margin-bottom 8}}
                    "Message:"]
                   [:> rn/Text {:style {:color (:text-primary colors)
-                                       :fontSize 14
-                                       :marginBottom 16
-                                       :fontFamily platform/monospace-font}}
+                                       :font-size 14
+                                       :margin-bottom 16
+                                       :font-family platform/monospace-font}}
                    (:message error)]
 
                   [:> rn/Text {:style {:color (:destructive colors)
-                                       :fontSize 16
-                                       :fontWeight "600"
-                                       :marginBottom 8}}
+                                       :font-size 16
+                                       :font-weight "600"
+                                       :margin-bottom 8}}
                    "Stack Trace:"]
                   [:> rn/Text {:style {:color (:text-secondary colors)
-                                       :fontSize 12
-                                       :fontFamily platform/monospace-font
-                                       :lineHeight 18}}
+                                       :font-size 12
+                                       :font-family platform/monospace-font
+                                       :line-height 18}}
                    (:stack error)]]
 
                  ;; Copy button
                  [:> rn/View {:style {:padding 16
-                                      :paddingBottom 32}}
+                                      :padding-bottom 32}}
                   [touchable
-                   {:onPress (fn []
-                               (copy-to-clipboard!
-                                (format-error error)
-                                (fn []
-                                  (reset! copied? true)
-                                  (js/setTimeout #(reset! copied? false) 2000))))
-                    :style {:backgroundColor (if @copied? (:success colors) (:accent colors))
-                            :borderRadius 12
+                   {:on-press (fn []
+                                (copy-to-clipboard!
+                                 (format-error error)
+                                 (fn []
+                                   (reset! copied? true)
+                                   (js/setTimeout #(reset! copied? false) 2000))))
+                    :style {:background-color (if @copied? (:success colors) (:accent colors))
+                            :border-radius 12
                             :padding 16
-                            :alignItems "center"}}
+                            :align-items "center"}}
                    [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                                        :fontSize 16
-                                        :fontWeight "600"}}
+                                        :font-size 16
+                                        :font-weight "600"}}
                     (if @copied? "Copied!" "Copy to Clipboard")]]]]]))])))))
 
 (defn with-error-overlay
