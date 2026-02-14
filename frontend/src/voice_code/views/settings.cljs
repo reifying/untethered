@@ -150,12 +150,11 @@
          [:> rn/Text {:style {:font-size 16 :color (:text-primary colors) :flex 1}}
           label]
          [:> rn/Switch
-          {:value value
-           :on-value-change (fn [new-value]
-                              (haptic/selection!)
-                              (on-change new-value))
-           :track-color #js {:false (:fill-secondary colors) :true (:success colors)}
-           :thumb-color (:switch-thumb colors)}]]
+          (merge {:value value
+                  :on-value-change (fn [new-value]
+                                     (haptic/selection!)
+                                     (on-change new-value))}
+                 (platform/switch-props colors value))]]
         (when description
           [:> rn/Text {:style {:font-size 12
                                :color (:text-secondary colors)

@@ -3,12 +3,13 @@
    Matches iOS NewSessionView (SessionsView.swift lines 63-121):
    - SwiftUI Form with inset-grouped sections → section-card
    - Cancel/Create toolbar buttons → headerLeft/headerRight
-   - Standard Toggle → native Switch with success track color
+   - Standard Toggle → native Switch with platform-adaptive colors
    Allows users to create new Claude sessions with optional worktree support."
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             ["react" :as react]
             [voice-code.haptic :as haptic]
+            [voice-code.platform :as platform]
             [voice-code.theme :as theme]
             [voice-code.views.components :refer [section-card]]
             [voice-code.views.touchable :refer [touchable]]
@@ -53,7 +54,7 @@
 (defn- toggle-row
   "Toggle row for use inside section-card.
    Matches settings toggle-row: label left, Switch right, optional description below.
-   Uses native iOS track colors (success green when on, fill-secondary when off).
+   Uses platform-adaptive colors via platform/switch-props.
    Includes haptic selection feedback on toggle."
   [{:keys [label description value on-change colors last?]}]
   [:f>
@@ -70,12 +71,11 @@
          [:> rn/Text {:style {:font-size 16 :color (:text-primary colors) :flex 1}}
           label]
          [:> rn/Switch
-          {:value value
-           :on-value-change (fn [new-value]
-                              (haptic/selection!)
-                              (on-change new-value))
-           :track-color #js {:false (:fill-secondary colors) :true (:success colors)}
-           :thumb-color (:switch-thumb colors)}]]
+          (merge {:value value
+                  :on-value-change (fn [new-value]
+                                     (haptic/selection!)
+                                     (on-change new-value))}
+                 (platform/switch-props colors value))]]
         (when description
           [:> rn/Text {:style {:font-size 12
                                :color (:text-secondary colors)

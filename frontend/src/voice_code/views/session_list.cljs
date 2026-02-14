@@ -418,10 +418,9 @@
               [:> rn/Text {:style {:font-size 17
                                    :color (:text-primary colors)}} "Create Git Worktree"]
               [:> Switch
-               {:value @create-worktree?
-                :on-value-change #(reset! create-worktree? %)
-                :track-color #js {:false (:separator colors) :true (:success colors)}
-                :thumb-color (:switch-thumb colors)}]]]
+               (merge {:value @create-worktree?
+                       :on-value-change #(reset! create-worktree? %)}
+                      (platform/switch-props colors @create-worktree?))]]]
             [:> rn/Text {:style {:font-size 13
                                  :color (:text-secondary colors)
                                  :margin-horizontal 16

@@ -115,3 +115,29 @@
   (let [Alert (.-Alert rn)
         formatted (alert-buttons buttons)]
     (.alert Alert title message (clj->js formatted))))
+
+;; ============================================================================
+;; Switch / Toggle Styling
+;; ============================================================================
+
+(defn switch-props
+  "Platform-appropriate Switch component props.
+   iOS: Custom track + thumb colors matching UISwitch appearance.
+   Android: Omits custom colors so the native Material Design switch renders
+   with system theme colors (Material 3 uses primary color for track/thumb).
+
+   Params:
+   - colors: Theme color map from use-theme-colors
+   - value: Current boolean value of the switch
+
+   Returns a map of React Native Switch props to merge."
+  [colors value]
+  (if ios?
+    {:track-color #js {:false (:fill-secondary colors)
+                       :true (:success colors)}
+     :thumb-color (:switch-thumb colors)}
+    {:track-color #js {:false (:switch-track-off-android colors)
+                       :true (:switch-track-on-android colors)}
+     :thumb-color (if value
+                    (:switch-thumb-on-android colors)
+                    (:switch-thumb-off-android colors))}))

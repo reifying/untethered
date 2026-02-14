@@ -153,6 +153,63 @@
         (is (= "Message" (:message (first @calls))))))))
 
 ;; ============================================================================
+;; Switch Props Tests
+;; ============================================================================
+
+(deftest switch-props-ios-test
+  (testing "iOS switch-props returns iOS-style track and thumb colors"
+    (let [colors {:fill-secondary "#78788028"
+                  :success "#34C759"
+                  :switch-thumb "#FFFFFF"
+                  :switch-track-on-android "#007AFF"
+                  :switch-track-off-android "#E0E0E0"
+                  :switch-thumb-on-android "#FFFFFF"
+                  :switch-thumb-off-android "#FAFAFA"}
+          props-on (platform/switch-props colors true)
+          props-off (platform/switch-props colors false)]
+      ;; iOS uses success (green) for track-on, fill-secondary for track-off
+      (is (contains? props-on :track-color) "Should have track-color")
+      (is (contains? props-on :thumb-color) "Should have thumb-color")
+      ;; Thumb is always white on iOS
+      (is (= "#FFFFFF" (:thumb-color props-on)))
+      (is (= "#FFFFFF" (:thumb-color props-off))))))
+
+(deftest switch-props-android-test
+  (testing "Android switch-props returns Material Design colors"
+    (with-redefs [platform/ios? false]
+      (let [colors {:fill-secondary "#78788028"
+                    :success "#34C759"
+                    :switch-thumb "#FFFFFF"
+                    :switch-track-on-android "#007AFF"
+                    :switch-track-off-android "#E0E0E0"
+                    :switch-thumb-on-android "#FFFFFF"
+                    :switch-thumb-off-android "#FAFAFA"}
+            props-on (platform/switch-props colors true)
+            props-off (platform/switch-props colors false)]
+        ;; Android uses Material Design colors from theme
+        (is (contains? props-on :track-color))
+        (is (contains? props-on :thumb-color))
+        ;; Android thumb changes based on value
+        (is (= "#FFFFFF" (:thumb-color props-on))
+            "Selected thumb should be white")
+        (is (= "#FAFAFA" (:thumb-color props-off))
+            "Unselected thumb should be light gray")))))
+
+(deftest switch-props-returns-js-track-color-test
+  (testing "switch-props track-color is a JS object (for React Native)"
+    (let [colors {:fill-secondary "#78788028"
+                  :success "#34C759"
+                  :switch-thumb "#FFFFFF"
+                  :switch-track-on-android "#007AFF"
+                  :switch-track-off-android "#E0E0E0"
+                  :switch-thumb-on-android "#FFFFFF"
+                  :switch-thumb-off-android "#FAFAFA"}
+          props (platform/switch-props colors true)]
+      ;; track-color should be a JS object, not a Clojure map
+      (is (object? (:track-color props))
+          "track-color should be a JS object for React Native"))))
+
+;; ============================================================================
 ;; Module Exports Tests
 ;; ============================================================================
 
@@ -166,4 +223,5 @@
     (is (fn? platform/shadow))
     (is (fn? platform/alert-button-text))
     (is (fn? platform/alert-buttons))
-    (is (fn? platform/show-alert!))))
+    (is (fn? platform/show-alert!))
+    (is (fn? platform/switch-props))))

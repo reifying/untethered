@@ -198,6 +198,8 @@
                       :error-toast-background :info-toast-background
                       :button-text-on-accent
                       :switch-thumb :switch-track-on
+                      :switch-track-on-android :switch-track-off-android
+                      :switch-thumb-on-android :switch-thumb-off-android
                       :overlay-background}]
       (doseq [k view-keys]
         (is (contains? theme/light-colors k)

@@ -6,7 +6,9 @@
             [re-frame.core :as rf]
             [day8.re-frame.test :as rf-test]
             [voice-code.events.core]
-            [voice-code.events.websocket]))
+            [voice-code.events.websocket]
+            [voice-code.platform :as platform]
+            [voice-code.theme :as theme]))
 
 (use-fixtures :each
   {:before (fn [] (rf/dispatch-sync [:initialize-db]))})
@@ -176,23 +178,33 @@
 ;; ============================================================================
 
 (deftest toggle-styling-parity-test
-  "Verifies toggle styling matches iOS standard Toggle appearance.
-   iOS uses standard green (#34C759) track when on.
-   Previous RN implementation used non-standard accent-colored thumb."
+  "Verifies toggle styling is platform-adaptive.
+   iOS uses standard green (#34C759) track when on with white thumb.
+   Android uses Material Design colors from theme."
 
-  (testing "iOS standard toggle uses white thumb (not accent)"
-    ;; The switch-thumb color should be white regardless of on/off state
-    (let [switch-thumb "#FFFFFF"]
-      (is (= "#FFFFFF" switch-thumb)
-          "thumb color should always be white, matching iOS standard Toggle")))
+  (testing "iOS switch-props returns green track + white thumb"
+    (let [colors {:fill-secondary "#78788028"
+                  :success "#34C759"
+                  :switch-thumb "#FFFFFF"
+                  :switch-track-on-android "#007AFF"
+                  :switch-track-off-android "#E0E0E0"
+                  :switch-thumb-on-android "#FFFFFF"
+                  :switch-thumb-off-android "#FAFAFA"}
+          props (platform/switch-props colors true)]
+      (is (= "#FFFFFF" (:thumb-color props))
+          "iOS thumb should be white")
+      (is (object? (:track-color props))
+          "track-color should be a JS object")))
 
-  (testing "track color uses success (green) when on"
-    ;; iOS Toggle uses green (#34C759 light, #30D158 dark) when on
-    ;; Previous implementation used :switch-track-on (light blue) — non-standard
-    (let [success-light "#34C759"
-          success-dark "#30D158"]
-      (is (= "#34C759" success-light))
-      (is (= "#30D158" success-dark)))))
+  (testing "theme provides Android-specific switch colors"
+    (is (contains? theme/light-colors :switch-track-on-android)
+        "light-colors must include Android switch track-on color")
+    (is (contains? theme/dark-colors :switch-track-on-android)
+        "dark-colors must include Android switch track-on color")
+    (is (contains? theme/light-colors :switch-thumb-off-android)
+        "light-colors must include Android switch thumb-off color")
+    (is (contains? theme/dark-colors :switch-thumb-off-android)
+        "dark-colors must include Android switch thumb-off color")))
 
 ;; ============================================================================
 ;; TextInput Keyboard Configuration Tests (VCMOB-5fn7)

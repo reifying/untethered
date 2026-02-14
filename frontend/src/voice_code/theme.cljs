@@ -99,9 +99,16 @@
    ;; Always white for proper contrast in both modes
    :button-text-on-accent "#FFFFFF"
 
-   ;; Switch component colors
+   ;; Switch component colors (iOS)
    :switch-thumb "#FFFFFF" ; Standard iOS white thumb
-   :switch-track-on "#81B0FF" ; iOS-style light blue when on
+   :switch-track-on "#81B0FF" ; iOS-style light blue when on (legacy, unused by platform/switch-props)
+
+   ;; Switch component colors (Android - Material Design 3)
+   ;; Material 3 switch: selected uses primary color, unselected uses outline/surface
+   :switch-track-on-android "#007AFF" ; Primary color for selected track
+   :switch-track-off-android "#E0E0E0" ; Surface variant for unselected track
+   :switch-thumb-on-android "#FFFFFF" ; White thumb when selected
+   :switch-thumb-off-android "#FAFAFA" ; Light thumb when unselected
 
    ;; Modal/overlay backgrounds
    :overlay-background "rgba(0,0,0,0.95)"})
@@ -185,9 +192,16 @@
    ;; Always white for proper contrast in both modes
    :button-text-on-accent "#FFFFFF"
 
-   ;; Switch component colors
+   ;; Switch component colors (iOS)
    :switch-thumb "#FFFFFF" ; Standard iOS white thumb
-   :switch-track-on "#4CD964" ; iOS green when on (dark mode version)
+   :switch-track-on "#4CD964" ; iOS green when on (dark mode version, legacy)
+
+   ;; Switch component colors (Android - Material Design 3, dark)
+   ;; Material 3 dark: selected uses primary-dark, unselected uses outline-dark
+   :switch-track-on-android "#0A84FF" ; Primary color for selected track (dark)
+   :switch-track-off-android "#3D3D41" ; Surface variant for unselected track (dark)
+   :switch-thumb-on-android "#FFFFFF" ; White thumb when selected (dark)
+   :switch-thumb-off-android "#9E9E9E" ; Medium gray thumb when unselected (dark)
 
    ;; Modal/overlay backgrounds
    :overlay-background "rgba(0,0,0,0.95)"})

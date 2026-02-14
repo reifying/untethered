@@ -255,11 +255,10 @@
                           :color (:text-secondary colors)
                           :margin-top 4}}
       "Creates a fresh session for this recipe instead of using the current session."]]
-    [:> rn/Switch {:value enabled?
-                   :on-value-change on-change
-                   :track-color #js {:false (:fill-secondary colors) :true (:success colors)}
-                   :thumb-color (:switch-thumb colors)
-                   :ios-background-color (:fill-secondary colors)}]]])
+    [:> rn/Switch (merge {:value enabled?
+                         :on-value-change on-change
+                         :ios-background-color (:fill-secondary colors)}
+                        (platform/switch-props colors enabled?))]]])
 
 (defn recipes-view
   "Main recipes screen showing available and active recipes.
