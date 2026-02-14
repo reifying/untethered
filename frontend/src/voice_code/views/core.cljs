@@ -5,6 +5,7 @@
             ["react-native" :as rn]
             ["@react-navigation/native" :refer [NavigationContainer createNavigationContainerRef]]
             ["@react-navigation/native-stack" :refer [createNativeStackNavigator]]
+            [voice-code.platform :as platform]
             [voice-code.theme :as theme]
             [voice-code.views.auth :refer [auth-view]]
             [voice-code.views.directory-list :refer [directory-list-view]]
@@ -72,8 +73,16 @@
          [auth-view]
          ;; Otherwise always show full navigation
          ;; DirectoryListView handles "Configure Server" state for first-run experience
-         [:> NavigationContainer {:ref nav-ref
-                                  :theme (navigation-theme dark?)}
+         [:<>
+          ;; StatusBar adapts to theme on both platforms.
+          ;; iOS: Sets bar style (light/dark text) to match color scheme.
+          ;; Android: Sets background color to match nav header and translucent mode.
+          [:> rn/StatusBar
+           {:bar-style (if dark? "light-content" "dark-content")
+            :background-color (when platform/android? (:card-background colors))
+            :animated true}]
+          [:> NavigationContainer {:ref nav-ref
+                                   :theme (navigation-theme dark?)}
           [:> (.-Navigator Stack)
            {:initial-route-name "DirectoryList"
             :screen-options #js {:headerShown true
@@ -188,7 +197,7 @@
              :component (reactify-with-name qr-scanner-view "QRScannerView")
              :options #js {:title "Scan QR Code"
                            :presentation "fullScreenModal"
-                           :headerShown false}}]]])))])
+                           :headerShown false}}]]])]))])
 
 (defn navigate!
   "Navigate to a screen programmatically. Useful for REPL testing.

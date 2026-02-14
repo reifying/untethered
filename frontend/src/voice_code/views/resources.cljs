@@ -7,6 +7,7 @@
             ["react-native" :as rn :refer [RefreshControl Animated PanResponder]]
             [voice-code.haptic :as haptic]
             [voice-code.icons :as icons]
+            [voice-code.platform :as platform]
             [voice-code.theme :as theme]
             [voice-code.views.touchable :refer [touchable]]))
 
@@ -252,21 +253,21 @@
   [on-press colors]
   (let [disabled? (nil? on-press)]
     [touchable
-     {:style {:position "absolute"
-              :bottom 24
-              :right 24
-              :width 56
-              :height 56
-              :border-radius 28
-              :background-color (if disabled? (:disabled colors) (:accent colors))
-              :justify-content "center"
-              :align-items "center"
-              :shadow-color (:shadow colors)
-              :shadow-offset #js {:width 0 :height 2}
-              :shadow-opacity (if disabled? 0.1 0.25)
-              :shadow-radius 4
-              :elevation (if disabled? 1 5)
-              :opacity (if disabled? 0.6 1)}
+     {:style (merge {:position "absolute"
+                     :bottom 24
+                     :right 24
+                     :width 56
+                     :height 56
+                     :border-radius 28
+                     :background-color (if disabled? (:disabled colors) (:accent colors))
+                     :justify-content "center"
+                     :align-items "center"
+                     :opacity (if disabled? 0.6 1)}
+                    (platform/shadow {:shadow-color (:shadow colors)
+                                      :offset-y 2
+                                      :opacity (if disabled? 0.1 0.25)
+                                      :radius 4
+                                      :elevation (if disabled? 1 5)}))
       :disabled disabled?
       :on-press on-press}
      [icons/icon {:name :upload :size 24 :color (:bubble-user-text colors)}]]))

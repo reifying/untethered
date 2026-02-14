@@ -162,15 +162,15 @@
                               :align-items "center"
                               :z-index 1000
                               :pointer-events "none"}}
-          [:> rn/View {:style {:background-color (toast-background-color colors variant)
-                               :padding-horizontal 16
-                               :padding-vertical 10
-                               :border-radius 8
-                               :shadow-color (:shadow colors)
-                               :shadow-offset {:width 0 :height 2}
-                               :shadow-opacity 0.25
-                               :shadow-radius 4
-                               :elevation 5}}
+          [:> rn/View {:style (merge {:background-color (toast-background-color colors variant)
+                                      :padding-horizontal 16
+                                      :padding-vertical 10
+                                      :border-radius 8}
+                                     (platform/shadow {:shadow-color (:shadow colors)
+                                                       :offset-y 2
+                                                       :opacity 0.25
+                                                       :radius 4
+                                                       :elevation 5}))}
            [:> rn/Text {:style {:font-size 14
                                 :color (:button-text-on-accent colors)
                                 :font-weight "500"}}
