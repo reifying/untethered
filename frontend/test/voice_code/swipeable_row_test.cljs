@@ -13,6 +13,26 @@
             [voice-code.views.swipeable-row :as swipeable]))
 
 ;; ============================================================================
+;; kebab->camel Conversion Tests
+;; React Native requires camelCase style properties on JS objects.
+;; ============================================================================
+
+(deftest kebab->camel-simple-test
+  (testing "Converts kebab-case to camelCase"
+    (is (= "backgroundColor" (#'swipeable/kebab->camel :background-color)))
+    (is (= "fontSize" (#'swipeable/kebab->camel :font-size)))
+    (is (= "fontWeight" (#'swipeable/kebab->camel :font-weight)))))
+
+(deftest kebab->camel-no-hyphens-test
+  (testing "Single-word keys pass through unchanged"
+    (is (= "padding" (#'swipeable/kebab->camel :padding)))
+    (is (= "flex" (#'swipeable/kebab->camel :flex)))))
+
+(deftest kebab->camel-multi-hyphen-test
+  (testing "Multiple hyphens are all converted"
+    (is (= "borderTopLeftRadius" (#'swipeable/kebab->camel :border-top-left-radius)))))
+
+;; ============================================================================
 ;; Constants Tests
 ;; ============================================================================
 
@@ -240,11 +260,11 @@
           animated-view (last result)
           animated-props (nth animated-view 2)
           style-obj (:style animated-props)]
-      ;; style-obj is a JS object; content-style keys are set via (name k)
-      ;; so :background-color becomes "background-color" on the JS object
+      ;; style-obj is a JS object; content-style keys are converted via kebab->camel
+      ;; so :background-color becomes "backgroundColor" on the JS object
       (is (some? style-obj) "Animated view should have a style")
-      (is (= "#1C1C1E" (unchecked-get style-obj "background-color"))
-          "content-style background-color should be applied"))))
+      (is (= "#1C1C1E" (.-backgroundColor style-obj))
+          "content-style background-color should be applied as camelCase"))))
 
 ;; ============================================================================
 ;; Action Label Configurability Tests

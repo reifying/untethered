@@ -19,9 +19,18 @@
                                       [my-row {:on-press override-on-press}])}]"
   (:require [reagent.core :as r]
             ["react-native" :as rn :refer [Animated PanResponder]]
+            [clojure.string :as str]
             [voice-code.haptic :as haptic]
             [voice-code.platform :as platform]
             [voice-code.views.touchable :refer [touchable]]))
+
+(defn- kebab->camel
+  "Convert kebab-case keyword to camelCase string for React Native style props.
+   :background-color → \"backgroundColor\""
+  [k]
+  (let [s (name k)
+        parts (str/split s #"-")]
+    (apply str (first parts) (map str/capitalize (rest parts)))))
 
 (def action-button-width
   "Width of the action button revealed on swipe."
@@ -182,7 +191,7 @@
            {:style (let [base #js {:transform #js [#js {:translateX translate-x}]}]
                      (when content-style
                        (doseq [[k v] content-style]
-                         (unchecked-set base (name k) v)))
+                         (unchecked-set base (kebab->camel k) v)))
                      base)}
            (js->clj (.-panHandlers pan-responder)))
           (render-content effective-on-press)]]))))
