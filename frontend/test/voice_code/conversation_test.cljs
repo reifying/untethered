@@ -60,7 +60,28 @@
       (is (true? (:truncated? result)))
       ;; Display text should start with As and end with Zs
       (is (clojure.string/starts-with? (:display-text result) "AAAA"))
-      (is (clojure.string/ends-with? (:display-text result) "ZZZZ")))))
+      (is (clojure.string/ends-with? (:display-text result) "ZZZZ"))))
+
+  (testing "display-text is shorter than full-text for list rendering performance"
+    ;; message-row uses display-text (pre-truncated) in the FlatList cell,
+    ;; matching iOS CDMessageView which uses message.displayText.
+    ;; full-text is used for the detail modal and clipboard copy.
+    (let [text (apply str (repeat 5000 "x"))
+          result (utils/truncate-text text)]
+      (is (true? (:truncated? result)))
+      (is (= 5000 (count (:full-text result))))
+      ;; display-text should be significantly shorter than the original
+      ;; It contains 2 * truncation-preview-chars + truncation marker
+      (is (< (count (:display-text result)) 600))
+      ;; full-text remains unmodified for modal/clipboard use
+      (is (= text (:full-text result)))))
+
+  (testing "non-truncated messages have identical display-text and full-text"
+    ;; When not truncated, display-text === full-text (no overhead)
+    (let [short-text "Short message"
+          result (utils/truncate-text short-text)]
+      (is (false? (:truncated? result)))
+      (is (= (:display-text result) (:full-text result))))))
 
 ;; ============================================================================
 ;; Session Infer Name Tests

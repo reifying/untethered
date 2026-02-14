@@ -437,7 +437,7 @@
   [:f>
      (fn []
        (let [colors (theme/use-theme-colors)
-             {:keys [truncated?  full-text]} (utils/truncate-text text)
+             {:keys [truncated? display-text full-text]} (utils/truncate-text text)
              is-user? (= role :user)
              is-sending? (= status :sending)
              is-error? (= status :error)
@@ -473,12 +473,15 @@
              (role-label role)]
 
             ;; Message text — iOS: .body font, lineLimit(20)
+            ;; Uses display-text (pre-truncated with char count marker) for list
+            ;; performance, matching iOS CDMessageView which renders message.displayText.
+            ;; Full text is available via the detail modal (tap) and clipboard (long-press).
             [:> rn/Text {:style {:color (:text-primary colors)
                                  :font-size 16
                                  :line-height 22}
                          :selectable true
                          :number-of-lines 20}
-             full-text]
+             display-text]
 
             ;; "View Full" / "Actions" button — matches iOS ConversationView.swift:1120-1135
             [touchable
