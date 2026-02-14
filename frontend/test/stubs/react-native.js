@@ -61,12 +61,20 @@ export var Clipboard = {
 export var Animated = {
   View: function() {},
   Text: function() {},
-  Value: function(val) { this._value = val; },
+  Value: function(val) {
+    this._value = val;
+    this._offset = 0;
+  },
   timing: function() { return { start: function(cb) { if (cb) cb(); } }; },
   spring: function() { return { start: function(cb) { if (cb) cb(); } }; },
+  parallel: function() { return { start: function(cb) { if (cb) cb(); } }; },
+  sequence: function() { return { start: function(cb) { if (cb) cb(); } }; },
   event: function() { return function() {}; },
   createAnimatedComponent: function(comp) { return comp; }
 };
+Animated.Value.prototype.setValue = function(val) { this._value = val; };
+Animated.Value.prototype.setOffset = function(val) { this._offset = val; };
+Animated.Value.prototype.flattenOffset = function() { this._value += this._offset; this._offset = 0; };
 // ValueXY needs to reference Animated after it's defined
 Animated.ValueXY = function() { this.x = new Animated.Value(0); this.y = new Animated.Value(0); };
 

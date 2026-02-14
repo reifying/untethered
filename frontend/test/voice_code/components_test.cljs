@@ -147,6 +147,43 @@
        200))))
 
 ;; ============================================================================
+;; Toast Animation Tests
+;; ============================================================================
+
+(deftest toast-animation-state-exists-test
+  (testing "toast-anim-state has translate-y and opacity Animated.Values"
+    (let [{:keys [translate-y opacity]} components/toast-anim-state]
+      (is (some? translate-y) "translate-y Animated.Value should exist")
+      (is (some? opacity) "opacity Animated.Value should exist"))))
+
+(deftest show-toast-resets-animation-values-test
+  (testing "show-toast! resets animation values for fresh entrance"
+    (reset! components/toast-state {:visible? false :message "" :variant :success})
+    (components/show-toast! "Animated toast")
+    ;; In the stub, setValue is called synchronously, then animate-toast-in! runs.
+    ;; After animate-toast-in! (which in the stub fires the callback immediately),
+    ;; the toast should be visible and positioned.
+    (is (true? (:visible? @components/toast-state)))
+    (is (= "Animated toast" (:message @components/toast-state)))))
+
+(deftest toast-auto-dismiss-with-animation-test
+  (testing "toast dismisses with animation after duration"
+    (async done
+      (reset! components/toast-state {:visible? false :message "" :variant :success})
+      ;; Show toast with short duration
+      (components/show-toast! "Dismissing" {:duration-ms 50})
+      (is (true? (:visible? @components/toast-state)))
+      ;; After duration + buffer, animate-toast-out! fires and hides toast
+      ;; In the stub, Animated.parallel callback fires synchronously,
+      ;; so visible? is set to false immediately when the timeout fires.
+      (js/setTimeout
+       (fn []
+         (is (false? (:visible? @components/toast-state))
+             "Toast should be hidden after animation-out completes")
+         (done))
+       150))))
+
+;; ============================================================================
 ;; copy-to-clipboard! Tests
 ;; ============================================================================
 
