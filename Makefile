@@ -19,7 +19,7 @@ WRAP := ./scripts/wrap-command
 .PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
 .PHONY: rn-ios rn-android rn-build-ios rn-deploy-device rn-deploy-device-release rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-list-apps rn-boot-sim rn-screenshot rn-restart rn-reload manual-ralph rn-android-screenshot rn-android-restart rn-android-grant-permissions rn-android-list-emulators rn-android-boot-emulator
-.PHONY: rn-test rn-e2e rn-e2e-smoke rn-e2e-auth rn-e2e-nav
+.PHONY: rn-metro-stop rn-test rn-e2e rn-e2e-smoke rn-e2e-auth rn-e2e-nav
 
 # React Native Configuration
 RN_DIR := $(PROJECT_ROOT)frontend
@@ -116,7 +116,8 @@ help:
 	@echo "  rn-deploy-device   - Build and install to connected iPhone (Debug)"
 	@echo "  rn-deploy-device-release - Build and install Release build to iPhone (faster startup)"
 	@echo "  rn-shadow          - Start shadow-cljs watch"
-	@echo "  rn-metro           - Start Metro bundler"
+	@echo "  rn-metro           - Ensure Metro bundler is running (idempotent)"
+	@echo "  rn-metro-stop      - Stop Metro bundler"
 	@echo "  rn-pod-install     - Install CocoaPods dependencies"
 	@echo "  rn-clean           - Clean React Native build artifacts"
 	@echo "  rn-screenshot      - Take screenshot of iOS simulator"
@@ -463,11 +464,21 @@ rn-shadow:
 	cd $(RN_DIR) && JAVA_HOME=$(JAVA_HOME) npx shadow-cljs watch app &
 	@echo "shadow-cljs started in background"
 
-# Start Metro bundler
+# Ensure Metro bundler is running (idempotent - safe to call multiple times)
 rn-metro:
-	@echo "Starting Metro bundler..."
-	cd $(RN_DIR) && npx metro serve --config metro.config.js &
-	@echo "Metro started in background"
+	@./scripts/ensure-metro.sh $(RN_DIR)
+
+# Stop Metro bundler
+rn-metro-stop:
+	@if [ -f $(RN_DIR)/.metro-pid ]; then \
+		echo "Stopping Metro bundler (PID: $$(cat $(RN_DIR)/.metro-pid))..."; \
+		kill $$(cat $(RN_DIR)/.metro-pid) 2>/dev/null || true; \
+		rm -f $(RN_DIR)/.metro-pid; \
+		echo "Metro stopped"; \
+	else \
+		echo "No Metro PID file found. Checking port 8081..."; \
+		lsof -ti :8081 | xargs kill 2>/dev/null && echo "Killed process on port 8081" || echo "Nothing running on port 8081"; \
+	fi
 
 # List available iOS simulators
 rn-list-sims:
@@ -506,13 +517,13 @@ rn-deploy-device-release:
 	cd $(RN_IOS_DIR) && xcrun devicectl device install app --device $$(xcrun devicectl list devices | grep -i "iphone" | grep -E "(connected|available)" | grep -o '[0-9A-F]\{8\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{12\}' | head -1) build/Build/Products/Release-iphoneos/VoiceCodeMobile.app
 	@echo "✅ Release build deployed to iPhone! Launch the app manually."
 
-# Run React Native iOS app
-rn-ios:
+# Run React Native iOS app (ensures Metro is running first)
+rn-ios: rn-metro
 	@echo "Running React Native iOS app..."
 	cd $(RN_DIR) && npm run ios -- --no-packager
 
-# Run React Native Android app
-rn-android: check-android-sdk
+# Run React Native Android app (ensures Metro is running first)
+rn-android: check-android-sdk rn-metro
 	@echo "Running React Native Android app..."
 	@echo "Setting up adb reverse for Metro..."
 	@$(ADB) reverse tcp:8081 tcp:8081 2>/dev/null || true

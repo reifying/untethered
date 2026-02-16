@@ -16,6 +16,10 @@ make help              # List all available targets
 make help | grep ios   # Find iOS-related targets
 ```
 
+## Metro Bundler
+
+`make rn-metro` is idempotent — it health-checks port 8081 and skips startup if Metro is already running. `rn-ios` and `rn-android` depend on it automatically, so you never need to start Metro manually.
+
 ## Clojure MCP Setup
 
 This project has two MCP servers configured:
