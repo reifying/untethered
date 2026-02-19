@@ -1534,16 +1534,100 @@
   [watched-dir]
   (contains? (:copilot-session-dirs @watcher-state) watched-dir))
 
+(defn- is-cursor-project-dir?
+  "Check if watched-dir is a Cursor project-hash directory we're watching."
+  [watched-dir]
+  (contains? (:cursor-project-dirs @watcher-state) watched-dir))
+
+(defn- is-opencode-session-dir?
+  "Check if watched-dir is an OpenCode session project-hash directory."
+  [watched-dir]
+  (when-let [dirs (:opencode-dirs @watcher-state)]
+    (let [session-dir (:session-dir dirs)]
+      (and session-dir
+           (.exists watched-dir)
+           (= (.getPath (.getParentFile watched-dir))
+              (.getPath session-dir))))))
+
+(defn- is-opencode-message-dir?
+  "Check if watched-dir is the OpenCode message directory."
+  [watched-dir]
+  (when-let [dirs (:opencode-dirs @watcher-state)]
+    (let [message-dir (:message-dir dirs)]
+      (and message-dir
+           (= (.getPath watched-dir) (.getPath message-dir))))))
+
+(defn handle-cursor-session-created
+  "Handle creation of a new Cursor session directory."
+  [session-dir]
+  (when (and (.isDirectory session-dir)
+             (valid-uuid? (.getName session-dir)))
+    (try
+      (let [session-id (.getName session-dir)
+            meta (read-cursor-session-meta session-dir)
+            metadata {:session-id session-id
+                      :file (.getAbsolutePath (io/file session-dir "store.db"))
+                      :name (or (:name meta) "Cursor Session")
+                      :working-directory (or (providers/extract-working-dir :cursor session-dir) "[unknown]")
+                      :created-at (or (:createdAt meta) (.lastModified session-dir))
+                      :last-modified (.lastModified session-dir)
+                      :message-count 1
+                      :preview nil :first-message nil :last-message nil
+                      :ios-notified false :first-notification nil
+                      :provider :cursor}]
+        (swap! session-index assoc session-id metadata)
+        (save-index! @session-index)
+        (when-let [callback (:on-session-created @watcher-state)]
+          (callback metadata))
+        (log/info "Cursor session discovered" {:session-id session-id}))
+      (catch Exception e
+        (log/error e "Failed to handle Cursor session creation" {:dir (.getPath session-dir)})))))
+
+(defn handle-opencode-session-created
+  "Handle creation of a new OpenCode session file (ses_*.json)."
+  [session-file]
+  (when (and (.isFile session-file)
+             (str/starts-with? (.getName session-file) "ses_")
+             (str/ends-with? (.getName session-file) ".json"))
+    (try
+      (let [session-id (providers/session-id-from-file :opencode session-file)
+            info (json/parse-string (slurp session-file) true)
+            msgs-dir (io/file (opencode-storage-base) "message" (:id info))
+            msg-count (if (.exists msgs-dir)
+                        (max 1 (count (filter #(str/ends-with? (.getName %) ".json")
+                                              (.listFiles msgs-dir))))
+                        1)
+            metadata {:session-id session-id
+                      :file (.getAbsolutePath session-file)
+                      :name (or (:title info) (:slug info) "OpenCode Session")
+                      :working-directory (or (:directory info) "[unknown]")
+                      :created-at (get-in info [:time :created])
+                      :last-modified (get-in info [:time :updated])
+                      :message-count msg-count
+                      :preview nil :first-message nil :last-message nil
+                      :ios-notified false :first-notification nil
+                      :provider :opencode}]
+        (swap! session-index assoc session-id metadata)
+        (save-index! @session-index)
+        (when-let [callback (:on-session-created @watcher-state)]
+          (callback metadata))
+        (log/info "OpenCode session discovered" {:session-id session-id}))
+      (catch Exception e
+        (log/error e "Failed to handle OpenCode session creation" {:file (.getPath session-file)})))))
+
 (defn process-watch-events
   "Process watch events from the WatchService.
-  Handles events for both Claude and Copilot directories.
+  Handles events for Claude, Copilot, Cursor, and OpenCode directories.
   watch-key: The WatchKey that triggered the events
   watched-dir: The File object of the directory being watched"
   [watch-key watched-dir]
   (let [projects-dir (get-claude-projects-dir)
         is-claude-parent (= (.getPath watched-dir) (.getPath projects-dir))
         is-copilot-parent (is-copilot-parent-dir? watched-dir)
-        is-copilot-session (is-copilot-session-watch-dir? watched-dir)]
+        is-copilot-session (is-copilot-session-watch-dir? watched-dir)
+        is-cursor-project (is-cursor-project-dir? watched-dir)
+        is-opencode-session (is-opencode-session-dir? watched-dir)
+        is-opencode-message (is-opencode-message-dir? watched-dir)]
     (doseq [event (.pollEvents watch-key)]
       (let [kind (.kind event)
             context (.context event)
@@ -1593,6 +1677,26 @@
                 (= kind StandardWatchEventKinds/ENTRY_DELETE)
                 (let [session-id (.getName watched-dir)]
                   (log/warn "Copilot events.jsonl deleted" {:session-id session-id})))))
+
+          ;; Cursor project directory event - watch for new session subdirectories
+          is-cursor-project
+          (when (= kind StandardWatchEventKinds/ENTRY_CREATE)
+            (let [dir (io/file watched-dir file-name)]
+              (when (.isDirectory dir)
+                (handle-cursor-session-created dir))))
+
+          ;; OpenCode session directory event - watch for new ses_*.json files
+          is-opencode-session
+          (when (and (= kind StandardWatchEventKinds/ENTRY_CREATE)
+                     (str/starts-with? file-name "ses_")
+                     (str/ends-with? file-name ".json"))
+            (let [file (io/file watched-dir file-name)]
+              (handle-opencode-session-created file)))
+
+          ;; OpenCode message directory event - new message dirs for subscribed sessions
+          is-opencode-message
+          (when (= kind StandardWatchEventKinds/ENTRY_CREATE)
+            (log/debug "OpenCode message directory created" {:name file-name}))
 
           ;; Claude project directory event - watch for .jsonl file changes
           :else
@@ -1660,11 +1764,75 @@
                   {:expected-dir (when copilot-dir (.getPath copilot-dir))})
         {}))))
 
+(defn- register-cursor-watches!
+  "Register watches for Cursor chats directory.
+   Watches for new session directories (session creation/deletion only).
+   Returns a map of watch-key -> directory."
+  [watch-service]
+  (let [chats-dir (providers/get-sessions-dir :cursor)]
+    (if (and chats-dir (.exists chats-dir))
+      (do
+        (log/info "Setting up Cursor directory watching" {:dir (.getPath chats-dir)})
+        (let [project-dirs (->> (.listFiles chats-dir)
+                                (filter #(.isDirectory %)))
+              watch-keys (reduce (fn [acc dir]
+                                   (try
+                                     (let [wk (.register (.toPath dir) watch-service
+                                                         (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                                                      StandardWatchEventKinds/ENTRY_DELETE]))]
+                                       (assoc acc wk dir))
+                                     (catch Exception e
+                                       (log/warn e "Failed to watch Cursor project dir" {:dir (.getPath dir)})
+                                       acc)))
+                                 {} project-dirs)]
+          (swap! watcher-state assoc :cursor-project-dirs (set (map val watch-keys)))
+          watch-keys))
+      (do
+        (log/info "Cursor chats directory does not exist, skipping" {:expected-dir (when chats-dir (.getPath chats-dir))})
+        {}))))
+
+(defn- register-opencode-watches!
+  "Register watches for OpenCode storage directories.
+   Watches session dirs for new sessions and message dirs for subscribed sessions.
+   Returns a map of watch-key -> directory."
+  [watch-service]
+  (let [session-dir (providers/get-sessions-dir :opencode)
+        message-dir (io/file (opencode-storage-base) "message")]
+    (let [watch-keys (atom {})]
+      ;; Watch each project-hash directory under session/ for new ses_*.json files
+      (when (and session-dir (.exists session-dir))
+        (log/info "Setting up OpenCode session watching" {:dir (.getPath session-dir)})
+        (doseq [project-dir (->> (.listFiles session-dir) (filter #(.isDirectory %)))]
+          (try
+            (let [wk (.register (.toPath project-dir) watch-service
+                                (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                             StandardWatchEventKinds/ENTRY_MODIFY]))]
+              (swap! watch-keys assoc wk project-dir))
+            (catch Exception e
+              (log/warn e "Failed to watch OpenCode project dir" {:dir (.getPath project-dir)})))))
+
+      ;; Watch message/ for new message directories (for subscribed session updates)
+      (when (and message-dir (.exists message-dir))
+        (log/info "Setting up OpenCode message watching" {:dir (.getPath message-dir)})
+        (try
+          (let [wk (.register (.toPath message-dir) watch-service
+                              (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                           StandardWatchEventKinds/ENTRY_MODIFY]))]
+            (swap! watch-keys assoc wk message-dir))
+          (catch Exception e
+            (log/warn e "Failed to watch OpenCode message dir" {:dir (.getPath message-dir)}))))
+
+      (swap! watcher-state assoc :opencode-dirs
+             {:session-dir session-dir :message-dir message-dir})
+      @watch-keys)))
+
 (defn start-watcher!
   "Start the filesystem watcher thread.
   Watches:
   - ~/.claude/projects/ for Claude project directories and .jsonl files
   - ~/.copilot/session-state/ for Copilot session directories and events.jsonl files
+  - ~/.cursor/chats/ for Cursor session directories (if installed)
+  - ~/.local/share/opencode/storage/ for OpenCode session and message files (if installed)
   Callbacks:
   - :on-session-created (fn [session-metadata])
   - :on-session-updated (fn [session-id new-messages])
@@ -1717,8 +1885,17 @@
             ;; Register watches for Copilot directories
             copilot-watch-keys (register-copilot-watches! watch-service)
 
+            ;; Register watches for Cursor directories (only if installed)
+            cursor-watch-keys (when (providers/provider-installed? :cursor)
+                                (register-cursor-watches! watch-service))
+
+            ;; Register watches for OpenCode directories (only if installed)
+            opencode-watch-keys (when (providers/provider-installed? :opencode)
+                                  (register-opencode-watches! watch-service))
+
             ;; Combine all watch keys
-            watch-keys (merge claude-watch-keys copilot-watch-keys)]
+            watch-keys (merge claude-watch-keys copilot-watch-keys
+                              cursor-watch-keys opencode-watch-keys)]
 
         ;; Update state with callbacks and watch keys
         (swap! watcher-state assoc
@@ -1734,7 +1911,9 @@
                               (fn []
                                 (log/info "Filesystem watcher started (multi-provider)"
                                           {:claude-dirs (count claude-watch-keys)
-                                           :copilot-dirs (count copilot-watch-keys)})
+                                           :copilot-dirs (count copilot-watch-keys)
+                                           :cursor-dirs (count (or cursor-watch-keys {}))
+                                           :opencode-dirs (count (or opencode-watch-keys {}))})
                                 (try
                                   (while (:running @watcher-state)
                                     (try
@@ -1776,6 +1955,8 @@
            :watch-keys {}
            :subscribed-sessions #{}
            :copilot-session-dirs #{} ;; Clear Copilot session tracking
+           :cursor-project-dirs #{} ;; Clear Cursor project tracking
+           :opencode-dirs nil ;; Clear OpenCode dir tracking
            :on-session-created nil
            :on-session-updated nil
            :on-session-deleted nil)

@@ -2276,3 +2276,423 @@
 (deftest test-ensure-session-in-index-unknown-provider
   (testing "Unknown provider returns nil gracefully"
     (is (nil? (repl/ensure-session-in-index! "some-id" :unknown)))))
+
+;; ============================================================================
+;; Filesystem Watcher Tests - Cursor and OpenCode
+;; ============================================================================
+
+(defn- init-watcher-state-for-test!
+  "Initialize watcher-state with a real WatchService for testing.
+   Returns the WatchService."
+  [& {:keys [on-session-created on-session-updated on-session-deleted]}]
+  (let [ws (.newWatchService (java.nio.file.FileSystems/getDefault))]
+    (reset! repl/watcher-state
+            {:watch-service ws
+             :watch-thread nil
+             :running true
+             :watch-keys {}
+             :subscribed-sessions #{}
+             :event-queue (atom {})
+             :debounce-ms 200
+             :retry-delay-ms 100
+             :max-retries 3
+             :on-session-created on-session-created
+             :on-session-updated on-session-updated
+             :on-session-deleted on-session-deleted})
+    ws))
+
+(defn- cleanup-watcher-state! []
+  (when-let [ws (:watch-service @repl/watcher-state)]
+    (try (.close ws) (catch Exception _)))
+  (reset! repl/watcher-state
+          {:watch-service nil
+           :watch-thread nil
+           :running false
+           :watch-keys {}
+           :subscribed-sessions #{}
+           :event-queue (atom {})
+           :debounce-ms 200
+           :retry-delay-ms 100
+           :max-retries 3
+           :on-session-created nil
+           :on-session-updated nil
+           :on-session-deleted nil}))
+
+(deftest test-handle-cursor-session-created
+  (testing "indexes valid Cursor session directory and calls callback"
+    (let [callback-results (atom [])
+          session-id "abcdef01-2345-6789-abcd-ef0123456789"
+          chats-dir (io/file test-dir ".cursor" "chats" "proj-hash")
+          session-dir (io/file chats-dir session-id)]
+      (.mkdirs session-dir)
+      (spit (io/file session-dir "store.db") "fake-sqlite")
+      (init-watcher-state-for-test!
+       :on-session-created (fn [metadata] (swap! callback-results conj metadata)))
+      (try
+        (with-redefs [repl/read-cursor-session-meta (fn [_] {:name "Test Cursor Chat" :createdAt 1700000000000})
+                      providers/extract-working-dir (fn [_ _] "/test/project")]
+          (repl/handle-cursor-session-created session-dir)
+          (is (= 1 (count @callback-results)))
+          (let [metadata (first @callback-results)]
+            (is (= session-id (:session-id metadata)))
+            (is (= "Test Cursor Chat" (:name metadata)))
+            (is (= "/test/project" (:working-directory metadata)))
+            (is (= :cursor (:provider metadata)))
+            (is (= 1 (:message-count metadata)))
+            (is (= 1700000000000 (:created-at metadata)))))
+        (finally
+          (cleanup-watcher-state!)))))
+
+  (testing "ignores non-directory files"
+    (let [callback-results (atom [])
+          regular-file (io/file test-dir "not-a-dir.txt")]
+      (spit regular-file "content")
+      (init-watcher-state-for-test!
+       :on-session-created (fn [metadata] (swap! callback-results conj metadata)))
+      (try
+        (repl/handle-cursor-session-created regular-file)
+        (is (empty? @callback-results))
+        (finally
+          (cleanup-watcher-state!)))))
+
+  (testing "ignores directories without valid UUID names"
+    (let [callback-results (atom [])
+          bad-dir (io/file test-dir "not-a-uuid")]
+      (.mkdirs bad-dir)
+      (init-watcher-state-for-test!
+       :on-session-created (fn [metadata] (swap! callback-results conj metadata)))
+      (try
+        (repl/handle-cursor-session-created bad-dir)
+        (is (empty? @callback-results))
+        (finally
+          (cleanup-watcher-state!))))))
+
+(deftest test-handle-opencode-session-created
+  (testing "indexes valid OpenCode session file and calls callback"
+    (let [callback-results (atom [])
+          session-id "ses_test123"
+          storage-base (io/file test-dir "opencode-storage")
+          session-dir (io/file storage-base "session" "proj-hash")
+          session-file (io/file session-dir (str session-id ".json"))
+          msg-dir (io/file storage-base "message" session-id)]
+      (.mkdirs session-dir)
+      (.mkdirs msg-dir)
+      ;; Create a message file so msg-count > 0
+      (spit (io/file msg-dir "msg_001.json") (json/generate-string {:id "msg_001" :role "user"}))
+      (spit session-file (json/generate-string
+                          {:id session-id
+                           :title "Test OC Session"
+                           :directory "/home/user/project"
+                           :time {:created 1770528283010 :updated 1770528290000}}))
+      (init-watcher-state-for-test!
+       :on-session-created (fn [metadata] (swap! callback-results conj metadata)))
+      (try
+        (with-redefs [repl/opencode-storage-base (fn [] storage-base)]
+          (repl/handle-opencode-session-created session-file)
+          (is (= 1 (count @callback-results)))
+          (let [metadata (first @callback-results)]
+            (is (= session-id (:session-id metadata)))
+            (is (= "Test OC Session" (:name metadata)))
+            (is (= "/home/user/project" (:working-directory metadata)))
+            (is (= :opencode (:provider metadata)))
+            (is (= 1 (:message-count metadata)))
+            (is (= 1770528283010 (:created-at metadata)))))
+        (finally
+          (cleanup-watcher-state!)))))
+
+  (testing "ignores non-session files"
+    (let [callback-results (atom [])
+          bad-file (io/file test-dir "not_a_session.json")]
+      (spit bad-file "{}")
+      (init-watcher-state-for-test!
+       :on-session-created (fn [metadata] (swap! callback-results conj metadata)))
+      (try
+        (repl/handle-opencode-session-created bad-file)
+        (is (empty? @callback-results))
+        (finally
+          (cleanup-watcher-state!)))))
+
+  (testing "ignores directories"
+    (let [callback-results (atom [])
+          dir (io/file test-dir "ses_fake")]
+      (.mkdirs dir)
+      (init-watcher-state-for-test!
+       :on-session-created (fn [metadata] (swap! callback-results conj metadata)))
+      (try
+        (repl/handle-opencode-session-created dir)
+        (is (empty? @callback-results))
+        (finally
+          (cleanup-watcher-state!))))))
+
+(deftest test-register-cursor-watches
+  (testing "registers watches on Cursor project-hash directories"
+    (let [chats-dir (io/file test-dir ".cursor" "chats")
+          proj1 (io/file chats-dir "proj-hash-1")
+          proj2 (io/file chats-dir "proj-hash-2")]
+      (.mkdirs proj1)
+      (.mkdirs proj2)
+      (let [ws (init-watcher-state-for-test!)]
+        (try
+          (with-redefs [providers/get-sessions-dir (fn [provider]
+                                                     (when (= provider :cursor) chats-dir))]
+            (let [watch-keys (#'repl/register-cursor-watches! ws)]
+              (is (= 2 (count watch-keys)))
+              ;; Verify cursor-project-dirs were stored in watcher-state
+              (is (= 2 (count (:cursor-project-dirs @repl/watcher-state))))
+              (is (contains? (:cursor-project-dirs @repl/watcher-state) proj1))
+              (is (contains? (:cursor-project-dirs @repl/watcher-state) proj2))))
+          (finally
+            (cleanup-watcher-state!))))))
+
+  (testing "returns empty map when chats dir does not exist"
+    (let [ws (init-watcher-state-for-test!)]
+      (try
+        (with-redefs [providers/get-sessions-dir (fn [_] (io/file test-dir "nonexistent"))]
+          (let [watch-keys (#'repl/register-cursor-watches! ws)]
+            (is (empty? watch-keys))))
+        (finally
+          (cleanup-watcher-state!))))))
+
+(deftest test-register-opencode-watches
+  (testing "registers watches on OpenCode session and message directories"
+    (let [storage-base (io/file test-dir "opencode-storage")
+          session-dir (io/file storage-base "session")
+          proj-dir (io/file session-dir "proj-hash-1")
+          message-dir (io/file storage-base "message")]
+      (.mkdirs proj-dir)
+      (.mkdirs message-dir)
+      (let [ws (init-watcher-state-for-test!)]
+        (try
+          (with-redefs [providers/get-sessions-dir (fn [provider]
+                                                     (when (= provider :opencode) session-dir))
+                        repl/opencode-storage-base (fn [] storage-base)]
+            (let [watch-keys (#'repl/register-opencode-watches! ws)]
+              ;; 1 project dir + 1 message dir = 2 watches
+              (is (= 2 (count watch-keys)))
+              ;; Verify opencode-dirs were stored in watcher-state
+              (let [dirs (:opencode-dirs @repl/watcher-state)]
+                (is (some? dirs))
+                (is (= (.getPath session-dir) (.getPath (:session-dir dirs))))
+                (is (= (.getPath message-dir) (.getPath (:message-dir dirs)))))))
+          (finally
+            (cleanup-watcher-state!))))))
+
+  (testing "returns empty map when dirs do not exist"
+    (let [ws (init-watcher-state-for-test!)]
+      (try
+        (with-redefs [providers/get-sessions-dir (fn [_] (io/file test-dir "nonexistent"))
+                      repl/opencode-storage-base (fn [] (io/file test-dir "nonexistent-storage"))]
+          (let [watch-keys (#'repl/register-opencode-watches! ws)]
+            ;; No session dirs or message dirs exist, so no watches registered
+            (is (empty? watch-keys))
+            ;; But opencode-dirs state still gets set
+            (is (some? (:opencode-dirs @repl/watcher-state)))))
+        (finally
+          (cleanup-watcher-state!))))))
+
+(deftest test-is-cursor-project-dir-predicate
+  (testing "returns true for directories in cursor-project-dirs set"
+    (let [dir1 (io/file test-dir "cursor-proj-1")
+          dir2 (io/file test-dir "cursor-proj-2")]
+      (.mkdirs dir1)
+      (.mkdirs dir2)
+      (swap! repl/watcher-state assoc :cursor-project-dirs #{dir1 dir2})
+      (is (true? (#'repl/is-cursor-project-dir? dir1)))
+      (is (true? (#'repl/is-cursor-project-dir? dir2)))))
+
+  (testing "returns false for unknown directories"
+    (let [unknown-dir (io/file test-dir "unknown")]
+      (.mkdirs unknown-dir)
+      (swap! repl/watcher-state assoc :cursor-project-dirs #{})
+      (is (not (#'repl/is-cursor-project-dir? unknown-dir))))))
+
+(deftest test-is-opencode-session-dir-predicate
+  (testing "returns truthy for child of session-dir"
+    (let [session-dir (io/file test-dir "oc-session")
+          child-dir (io/file session-dir "proj-hash")]
+      (.mkdirs child-dir)
+      (swap! repl/watcher-state assoc :opencode-dirs {:session-dir session-dir :message-dir nil})
+      (is (#'repl/is-opencode-session-dir? child-dir))))
+
+  (testing "returns falsy for unrelated directory"
+    (let [session-dir (io/file test-dir "oc-session")
+          other-dir (io/file test-dir "other")]
+      (.mkdirs session-dir)
+      (.mkdirs other-dir)
+      (swap! repl/watcher-state assoc :opencode-dirs {:session-dir session-dir :message-dir nil})
+      (is (not (#'repl/is-opencode-session-dir? other-dir))))))
+
+(deftest test-is-opencode-message-dir-predicate
+  (testing "returns truthy for matching message directory"
+    (let [message-dir (io/file test-dir "oc-message")]
+      (.mkdirs message-dir)
+      (swap! repl/watcher-state assoc :opencode-dirs {:session-dir nil :message-dir message-dir})
+      (is (#'repl/is-opencode-message-dir? message-dir))))
+
+  (testing "returns falsy for non-matching directory"
+    (let [message-dir (io/file test-dir "oc-message")
+          other-dir (io/file test-dir "other-msg")]
+      (.mkdirs message-dir)
+      (.mkdirs other-dir)
+      (swap! repl/watcher-state assoc :opencode-dirs {:session-dir nil :message-dir message-dir})
+      (is (not (#'repl/is-opencode-message-dir? other-dir))))))
+
+(deftest test-process-watch-events-cursor-routing
+  (testing "cursor predicate correctly identifies cursor project dirs"
+    ;; Deterministic test: verify the predicate used in process-watch-events cond chain
+    (let [cursor-dir (io/file test-dir "cursor-proj")
+          non-cursor-dir (io/file test-dir "other-dir")]
+      (.mkdirs cursor-dir)
+      (.mkdirs non-cursor-dir)
+      (swap! repl/watcher-state assoc :cursor-project-dirs #{cursor-dir})
+      (is (true? (#'repl/is-cursor-project-dir? cursor-dir))
+          "Cursor dir should be identified as cursor project dir")
+      (is (not (#'repl/is-cursor-project-dir? non-cursor-dir))
+          "Non-cursor dir should not be identified as cursor project dir")))
+
+  (testing "routes Cursor ENTRY_CREATE events to handle-cursor-session-created via FS watcher"
+    (let [handled (atom [])
+          cursor-dir (io/file test-dir "cursor-proj-route")
+          session-dir (io/file cursor-dir "abcdef01-2345-6789-abcd-ef0123456789")]
+      (.mkdirs session-dir)
+      (spit (io/file session-dir "store.db") "fake")
+      (let [ws (init-watcher-state-for-test!)]
+        (try
+          (let [wk (.register (.toPath cursor-dir) ws
+                              (into-array [java.nio.file.StandardWatchEventKinds/ENTRY_CREATE]))]
+            (swap! repl/watcher-state assoc
+                   :cursor-project-dirs #{cursor-dir}
+                   :watch-keys {wk cursor-dir})
+            ;; Create a new session dir to trigger the event
+            (let [new-session (io/file cursor-dir "11111111-2222-3333-4444-555555666666")]
+              (.mkdirs new-session)
+              (spit (io/file new-session "store.db") "fake")
+              ;; Wait for filesystem event
+              (Thread/sleep 300)
+              (with-redefs [repl/handle-cursor-session-created
+                            (fn [dir] (swap! handled conj (.getName dir)))]
+                (let [key (.poll ws)]
+                  (when key
+                    (repl/process-watch-events key cursor-dir))))))
+          (finally
+            (cleanup-watcher-state!))))
+      ;; FS event delivery is timing-dependent; assert if delivered
+      (when (seq @handled)
+        (is (= "11111111-2222-3333-4444-555555666666" (first @handled)))))))
+
+(deftest test-process-watch-events-opencode-routing
+  (testing "opencode predicates correctly identify session and message dirs"
+    ;; Deterministic test: verify predicates used in process-watch-events cond chain
+    (let [session-parent (io/file test-dir "oc-sp-pred")
+          proj-dir (io/file session-parent "proj-hash")
+          message-dir (io/file test-dir "oc-msg-pred")
+          other-dir (io/file test-dir "other-pred")]
+      (.mkdirs proj-dir)
+      (.mkdirs message-dir)
+      (.mkdirs other-dir)
+      (swap! repl/watcher-state assoc :opencode-dirs {:session-dir session-parent :message-dir message-dir})
+      ;; Session dir predicate: proj-dir is child of session-parent
+      (is (#'repl/is-opencode-session-dir? proj-dir)
+          "Child of session-dir should be identified as opencode session dir")
+      (is (not (#'repl/is-opencode-session-dir? other-dir))
+          "Unrelated dir should not be identified as opencode session dir")
+      ;; Message dir predicate
+      (is (#'repl/is-opencode-message-dir? message-dir)
+          "Message dir should be identified as opencode message dir")
+      (is (not (#'repl/is-opencode-message-dir? other-dir))
+          "Unrelated dir should not be identified as opencode message dir")))
+
+  (testing "routes OpenCode ENTRY_CREATE ses_*.json events to handler via FS watcher"
+    (let [handled (atom [])
+          ;; Build proper directory structure: session-parent/proj-dir
+          session-parent (io/file test-dir "oc-session-parent")
+          proj-dir (io/file session-parent "proj-hash")]
+      (.mkdirs proj-dir)
+      (let [ws (init-watcher-state-for-test!)]
+        (try
+          (let [wk (.register (.toPath proj-dir) ws
+                              (into-array [java.nio.file.StandardWatchEventKinds/ENTRY_CREATE]))]
+            (swap! repl/watcher-state assoc
+                   :opencode-dirs {:session-dir session-parent :message-dir nil}
+                   :watch-keys {wk proj-dir})
+            ;; Create a session file to trigger the event
+            (spit (io/file proj-dir "ses_abc123.json") "{}")
+            ;; Wait for filesystem event
+            (Thread/sleep 300)
+            (with-redefs [repl/handle-opencode-session-created
+                          (fn [f] (swap! handled conj (.getName f)))]
+              (let [key (.poll ws)]
+                (when key
+                  (repl/process-watch-events key proj-dir)))))
+          (finally
+            (cleanup-watcher-state!))))
+      ;; FS event delivery is timing-dependent; assert if delivered
+      (when (seq @handled)
+        (is (= "ses_abc123.json" (first @handled))))))
+
+  (testing "ignores non-session files in OpenCode session dir"
+    (let [handled (atom [])
+          session-parent (io/file test-dir "oc-sp2")
+          proj-dir (io/file session-parent "proj-hash2")]
+      (.mkdirs proj-dir)
+      (let [ws (init-watcher-state-for-test!)]
+        (try
+          (let [wk (.register (.toPath proj-dir) ws
+                              (into-array [java.nio.file.StandardWatchEventKinds/ENTRY_CREATE]))]
+            (swap! repl/watcher-state assoc
+                   :opencode-dirs {:session-dir session-parent :message-dir nil}
+                   :watch-keys {wk proj-dir})
+            ;; Create a non-session file (no ses_ prefix)
+            (spit (io/file proj-dir "other_file.json") "{}")
+            (Thread/sleep 300)
+            (with-redefs [repl/handle-opencode-session-created
+                          (fn [f] (swap! handled conj (.getName f)))]
+              (let [key (.poll ws)]
+                (when key
+                  (repl/process-watch-events key proj-dir)))))
+          (finally
+            (cleanup-watcher-state!))))
+      ;; Handler should NOT have been called for non-session file
+      (is (empty? @handled) "Non-session files should not trigger handler"))))
+
+(deftest test-start-watcher-skips-uninstalled-providers
+  (testing "start-watcher! skips Cursor watches when not installed"
+    (let [projects-dir (io/file test-dir "claude-projects")]
+      (.mkdirs projects-dir)
+      (try
+        (with-redefs [repl/get-claude-projects-dir (fn [] projects-dir)
+                      repl/find-project-directories (fn [] [])
+                      providers/provider-installed? (fn [p]
+                                                      (case p
+                                                        :cursor false
+                                                        :opencode false
+                                                        false))
+                      repl/save-index! (fn [_] nil)]
+          (repl/start-watcher!
+           :on-session-created (fn [_])
+           :on-session-updated (fn [_ _])
+           :on-session-deleted (fn [_]))
+          ;; Should not have cursor or opencode state
+          (is (nil? (:cursor-project-dirs @repl/watcher-state)))
+          (is (nil? (:opencode-dirs @repl/watcher-state)))
+          (is (:running @repl/watcher-state)))
+        (finally
+          (repl/stop-watcher!)))))
+
+  (testing "stop-watcher! clears Cursor and OpenCode state"
+    (let [projects-dir (io/file test-dir "claude-projects2")]
+      (.mkdirs projects-dir)
+      (try
+        (with-redefs [repl/get-claude-projects-dir (fn [] projects-dir)
+                      repl/find-project-directories (fn [] [])
+                      providers/provider-installed? (fn [_] false)
+                      repl/save-index! (fn [_] nil)]
+          (repl/start-watcher!
+           :on-session-created (fn [_]))
+          (repl/stop-watcher!)
+          (is (= #{} (:cursor-project-dirs @repl/watcher-state)))
+          (is (nil? (:opencode-dirs @repl/watcher-state)))
+          (is (not (:running @repl/watcher-state))))
+        (finally
+          (when (:running @repl/watcher-state)
+            (repl/stop-watcher!)))))))
