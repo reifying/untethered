@@ -4,14 +4,46 @@
 import SwiftUI
 
 #if os(macOS)
+/// Visual feedback indicator shown during push-to-talk recording.
+/// Displays a pulsing red dot with instructional text in a tinted pill.
+struct RecordingIndicator: View {
+    let isActive: Bool
+    @State private var pulseAnimation = false
+
+    var body: some View {
+        if isActive {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 8, height: 8)
+                    .opacity(pulseAnimation ? 1 : 0.5)
+                    .animation(.easeInOut(duration: 0.5).repeatForever(), value: pulseAnimation)
+                Text("Recording... (release Option+Space to stop)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.red.opacity(0.1))
+            .cornerRadius(8)
+            .onAppear { pulseAnimation = true }
+        }
+    }
+}
+
 /// ViewModifier that enables push-to-talk voice input via Option+Space.
 /// Records while the key combination is held down, stops on release.
+/// Shows a RecordingIndicator overlay when recording is active.
 struct PushToTalkModifier: ViewModifier {
     @ObservedObject var voiceInput: VoiceInputManager
     @State private var isHolding = false
 
     func body(content: Content) -> some View {
         content
+            .overlay(alignment: .top) {
+                RecordingIndicator(isActive: isHolding)
+                    .padding(.top, 8)
+            }
             .onKeyPress(" ", phases: [.down, .up]) { press in
                 guard press.modifiers == .option else { return .ignored }
 
