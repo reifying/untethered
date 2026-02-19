@@ -1615,6 +1615,54 @@ another_key: another value
                           #"Unknown provider"
                           (providers/build-cli-command :unknown {:prompt "test"})))))
 
+(deftest test-build-cli-command-opencode
+  (testing "builds basic OpenCode CLI command with prompt"
+    (let [cmd (providers/build-cli-command :opencode {:prompt "hello"})]
+      (is (vector? cmd))
+      (is (= "opencode" (first cmd)))
+      (is (= "run" (second cmd)))
+      (is (some #{"--format"} cmd))
+      (is (some #{"json"} cmd))
+      (is (some #{"hello"} cmd))
+      ;; No --session or --model when not specified
+      (is (not (some #{"--session"} cmd)))
+      (is (not (some #{"--model"} cmd)))))
+
+  (testing "includes --session when resume-session-id provided"
+    (let [cmd (providers/build-cli-command :opencode
+                                           {:prompt "hello" :resume-session-id "ses_abc123"})]
+      (is (some #{"--session"} cmd))
+      (is (some #{"ses_abc123"} cmd))))
+
+  (testing "includes --model when model provided"
+    (let [cmd (providers/build-cli-command :opencode
+                                           {:prompt "hello" :model "github-copilot/claude-opus-4.6"})]
+      (is (some #{"--model"} cmd))
+      (is (some #{"github-copilot/claude-opus-4.6"} cmd))))
+
+  (testing "works with resume and model together"
+    (let [cmd (providers/build-cli-command :opencode
+                                           {:prompt "fix bug"
+                                            :resume-session-id "ses_xyz789"
+                                            :model "github-copilot/claude-opus-4.6"})]
+      (is (= "opencode" (first cmd)))
+      (is (= "run" (second cmd)))
+      (is (some #{"fix bug"} cmd))
+      (is (some #{"--session"} cmd))
+      (is (some #{"ses_xyz789"} cmd))
+      (is (some #{"--model"} cmd))
+      (is (some #{"github-copilot/claude-opus-4.6"} cmd))))
+
+  (testing "throws when prompt is missing"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Prompt is required"
+                          (providers/build-cli-command :opencode {}))))
+
+  (testing "throws when prompt is nil"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Prompt is required"
+                          (providers/build-cli-command :opencode {:prompt nil})))))
+
 ;; ============================================================================
 ;; invoke-provider-async Tests
 ;; ============================================================================
@@ -1698,6 +1746,48 @@ another_key: another value
       (let [result-promise (promise)
             callback-fn (fn [result] (deliver result-promise result))]
         (providers/invoke-provider-async :cursor "test" callback-fn
+                                         :new-session-id "ignored"
+                                         :system-prompt "also ignored")
+        (let [result (deref result-promise 1000 :timeout)]
+          (is (not= :timeout result))
+          (is (:success result)))))))
+
+(deftest test-invoke-provider-async-opencode
+  (testing "delegates to invoke-opencode-async"
+    (let [invoke-called (atom false)
+          received-args (atom nil)]
+      (with-redefs [providers/invoke-opencode-async
+                    (fn [prompt callback-fn & {:keys [resume-session-id working-directory
+                                                      timeout-ms model]}]
+                      (reset! invoke-called true)
+                      (reset! received-args {:prompt prompt
+                                             :resume-session-id resume-session-id
+                                             :working-directory working-directory
+                                             :timeout-ms timeout-ms
+                                             :model model})
+                      (callback-fn {:success true :result "opencode response" :provider :opencode}))]
+        (let [result-promise (promise)
+              callback-fn (fn [result] (deliver result-promise result))]
+          (providers/invoke-provider-async :opencode "test prompt" callback-fn
+                                           :resume-session-id "ses_abc123"
+                                           :working-directory "/test/dir"
+                                           :model "github-copilot/claude-opus-4.6")
+          (let [result (deref result-promise 1000 :timeout)]
+            (is (not= :timeout result))
+            (is @invoke-called)
+            (is (:success result))
+            (is (= "test prompt" (:prompt @received-args)))
+            (is (= "ses_abc123" (:resume-session-id @received-args)))
+            (is (= "/test/dir" (:working-directory @received-args)))
+            (is (= "github-copilot/claude-opus-4.6" (:model @received-args))))))))
+
+  (testing "ignores Claude-specific options (new-session-id, system-prompt)"
+    (with-redefs [providers/invoke-opencode-async
+                  (fn [prompt callback-fn & opts]
+                    (callback-fn {:success true :result "ok" :provider :opencode}))]
+      (let [result-promise (promise)
+            callback-fn (fn [result] (deliver result-promise result))]
+        (providers/invoke-provider-async :opencode "test" callback-fn
                                          :new-session-id "ignored"
                                          :system-prompt "also ignored")
         (let [result (deref result-promise 1000 :timeout)]
@@ -1960,6 +2050,170 @@ another_key: another value
           (is (some #{"abc-123"} @captured-cmd))
           (is (some #{"--model"} @captured-cmd))
           (is (some #{"auto"} @captured-cmd)))))))
+
+;; ============================================================================
+;; parse-opencode-ndjson Tests
+;; ============================================================================
+
+(deftest test-parse-opencode-ndjson
+  ;; parse-opencode-ndjson is defn- (private), so use var reference to access it
+  (let [parse-ndjson @#'providers/parse-opencode-ndjson]
+    (testing "extracts text from multiple NDJSON text events"
+      (let [output (str/join "\n"
+                             ["{\"type\":\"step_start\",\"sessionID\":\"ses_abc\"}"
+                              "{\"type\":\"text\",\"sessionID\":\"ses_abc\",\"part\":{\"type\":\"text\",\"text\":\"Hello \"}}"
+                              "{\"type\":\"text\",\"sessionID\":\"ses_abc\",\"part\":{\"type\":\"text\",\"text\":\"world\"}}"
+                              "{\"type\":\"step_finish\",\"sessionID\":\"ses_abc\",\"part\":{\"type\":\"step-finish\",\"reason\":\"stop\"}}"])
+            result (parse-ndjson output)]
+        (is (:success result))
+        (is (= "Hello world" (:result result)))
+        (is (= "ses_abc" (:session-id result)))
+        (is (= :opencode (:provider result)))))
+
+    (testing "extracts text from single text event"
+      (let [output "{\"type\":\"text\",\"sessionID\":\"ses_xyz\",\"part\":{\"type\":\"text\",\"text\":\"Response\"}}"
+            result (parse-ndjson output)]
+        (is (:success result))
+        (is (= "Response" (:result result)))
+        (is (= "ses_xyz" (:session-id result)))))
+
+    (testing "handles error events"
+      (let [output "{\"type\":\"error\",\"sessionID\":\"ses_abc\",\"error\":{\"data\":{\"message\":\"Model not supported\"}}}"
+            result (parse-ndjson output)]
+        (is (not (:success result)))
+        (is (= "Model not supported" (:error result)))
+        (is (= "ses_abc" (:session-id result)))
+        (is (= :opencode (:provider result)))))
+
+    (testing "handles error events without nested message"
+      (let [output "{\"type\":\"error\",\"sessionID\":\"ses_abc\",\"error\":{}}"
+            result (parse-ndjson output)]
+        (is (not (:success result)))
+        (is (= "OpenCode error" (:error result)))))
+
+    (testing "handles empty/malformed lines gracefully"
+      (let [output (str/join "\n"
+                             [""
+                              "not valid json"
+                              "{\"type\":\"text\",\"sessionID\":\"ses_abc\",\"part\":{\"type\":\"text\",\"text\":\"OK\"}}"
+                              ""])
+            result (parse-ndjson output)]
+        (is (:success result))
+        (is (= "OK" (:result result)))
+        (is (= "ses_abc" (:session-id result)))))
+
+    (testing "returns empty result when no text events"
+      (let [output "{\"type\":\"step_start\",\"sessionID\":\"ses_abc\"}"
+            result (parse-ndjson output)]
+        (is (:success result))
+        (is (= "" (:result result)))
+        (is (= "ses_abc" (:session-id result)))))
+
+    (testing "returns nil session-id when no sessionID in events"
+      (let [output "{\"type\":\"text\",\"part\":{\"type\":\"text\",\"text\":\"Hello\"}}"
+            result (parse-ndjson output)]
+        (is (:success result))
+        (is (= "Hello" (:result result)))
+        (is (nil? (:session-id result)))))))
+
+;; ============================================================================
+;; invoke-opencode-async Tests
+;; ============================================================================
+
+(deftest test-invoke-opencode-async-success
+  (testing "calls callback with success response from mock process"
+    (let [ndjson-output (str/join "\n"
+                                  ["{\"type\":\"step_start\",\"sessionID\":\"ses_3c44a6687ffeIUxzaoccbjukLU\"}"
+                                   "{\"type\":\"text\",\"sessionID\":\"ses_3c44a6687ffeIUxzaoccbjukLU\",\"part\":{\"type\":\"text\",\"text\":\"Hello from OpenCode\"}}"
+                                   "{\"type\":\"step_finish\",\"sessionID\":\"ses_3c44a6687ffeIUxzaoccbjukLU\",\"part\":{\"type\":\"step-finish\",\"reason\":\"stop\"}}"])]
+      (with-redefs [providers/run-provider-process
+                    (fn [full-cmd _working-dir _timeout-ms _session-id _provider]
+                      {:exit 0 :out ndjson-output :err ""})]
+        (let [result-promise (promise)
+              callback-fn (fn [result] (deliver result-promise result))]
+          (providers/invoke-opencode-async "test prompt" callback-fn)
+          (let [result (deref result-promise 5000 :timeout)]
+            (is (not= :timeout result))
+            (is (:success result))
+            (is (= "Hello from OpenCode" (:result result)))
+            (is (= "ses_3c44a6687ffeIUxzaoccbjukLU" (:session-id result)))
+            (is (= :opencode (:provider result)))))))))
+
+(deftest test-invoke-opencode-async-error-in-ndjson
+  (testing "calls callback with error when NDJSON contains error event"
+    (let [ndjson-output "{\"type\":\"error\",\"sessionID\":\"ses_abc\",\"error\":{\"data\":{\"message\":\"Model not supported\"}}}"]
+      (with-redefs [providers/run-provider-process
+                    (fn [full-cmd _working-dir _timeout-ms _session-id _provider]
+                      {:exit 0 :out ndjson-output :err ""})]
+        (let [result-promise (promise)
+              callback-fn (fn [result] (deliver result-promise result))]
+          (providers/invoke-opencode-async "test prompt" callback-fn)
+          (let [result (deref result-promise 5000 :timeout)]
+            (is (not= :timeout result))
+            (is (false? (:success result)))
+            (is (= "Model not supported" (:error result)))
+            (is (= :opencode (:provider result)))))))))
+
+(deftest test-invoke-opencode-async-nonzero-exit
+  (testing "calls callback with error when process exits non-zero"
+    (with-redefs [providers/run-provider-process
+                  (fn [full-cmd _working-dir _timeout-ms _session-id _provider]
+                    {:exit 1 :out "" :err "opencode: command not found"})]
+      (let [result-promise (promise)
+            callback-fn (fn [result] (deliver result-promise result))]
+        (providers/invoke-opencode-async "test prompt" callback-fn)
+        (let [result (deref result-promise 5000 :timeout)]
+          (is (not= :timeout result))
+          (is (false? (:success result)))
+          (is (= "opencode: command not found" (:error result)))
+          (is (= :opencode (:provider result))))))))
+
+(deftest test-invoke-opencode-async-nonzero-exit-empty-stderr
+  (testing "provides exit code message when stderr is empty"
+    (with-redefs [providers/run-provider-process
+                  (fn [full-cmd _working-dir _timeout-ms _session-id _provider]
+                    {:exit 2 :out "" :err ""})]
+      (let [result-promise (promise)
+            callback-fn (fn [result] (deliver result-promise result))]
+        (providers/invoke-opencode-async "test prompt" callback-fn)
+        (let [result (deref result-promise 5000 :timeout)]
+          (is (not= :timeout result))
+          (is (false? (:success result)))
+          (is (str/includes? (:error result) "exited with code 2"))
+          (is (= :opencode (:provider result))))))))
+
+(deftest test-invoke-opencode-async-exception
+  (testing "calls callback with error when exception occurs"
+    (with-redefs [providers/run-provider-process
+                  (fn [& _] (throw (Exception. "Process spawn failed")))]
+      (let [result-promise (promise)
+            callback-fn (fn [result] (deliver result-promise result))]
+        (providers/invoke-opencode-async "test prompt" callback-fn)
+        (let [result (deref result-promise 5000 :timeout)]
+          (is (not= :timeout result))
+          (is (false? (:success result)))
+          (is (str/includes? (:error result) "Process spawn failed"))
+          (is (= :opencode (:provider result))))))))
+
+(deftest test-invoke-opencode-async-passes-options
+  (testing "passes resume-session-id and model to build-cli-command"
+    (let [captured-cmd (atom nil)]
+      (with-redefs [providers/run-provider-process
+                    (fn [full-cmd _working-dir _timeout-ms _session-id _provider]
+                      (reset! captured-cmd full-cmd)
+                      {:exit 0
+                       :out "{\"type\":\"text\",\"sessionID\":\"ses_abc\",\"part\":{\"type\":\"text\",\"text\":\"ok\"}}"
+                       :err ""})]
+        (let [result-promise (promise)
+              callback-fn (fn [result] (deliver result-promise result))]
+          (providers/invoke-opencode-async "fix bug" callback-fn
+                                           :resume-session-id "ses_abc123"
+                                           :model "github-copilot/claude-opus-4.6")
+          (deref result-promise 5000 :timeout)
+          (is (some #{"--session"} @captured-cmd))
+          (is (some #{"ses_abc123"} @captured-cmd))
+          (is (some #{"--model"} @captured-cmd))
+          (is (some #{"github-copilot/claude-opus-4.6"} @captured-cmd)))))))
 
 (deftest test-kill-copilot-session
   (testing "kills tracked process and removes from registry"

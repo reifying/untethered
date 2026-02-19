@@ -709,6 +709,17 @@
       resume-session-id (into ["--resume" resume-session-id])
       model (into ["--model" model]))))
 
+(defmethod build-cli-command :opencode [_ opts]
+  (let [{:keys [prompt resume-session-id model]} opts]
+    (when-not prompt
+      (throw (ex-info "Prompt is required for OpenCode CLI invocation"
+                      {:provider :opencode})))
+    (cond-> ["opencode" "run"
+             "--format" "json"
+             prompt]
+      resume-session-id (into ["--session" resume-session-id])
+      model (into ["--model" model]))))
+
 (defmethod build-cli-command :default [provider _opts]
   (throw (ex-info (str "Unknown provider: " (name provider))
                   {:provider provider
@@ -1064,6 +1075,72 @@
          {:success false :error "Request timed out" :timeout true :provider :cursor}))))
   nil)
 
+(defn- parse-opencode-ndjson
+  "Parse OpenCode NDJSON output into a result map.
+   Collects text parts and extracts session ID."
+  [output]
+  (let [lines (str/split-lines (str/trim output))
+        events (keep #(try (json/parse-string % true) (catch Exception _ nil)) lines)
+        session-id (some :sessionID events)
+        text-parts (->> events
+                        (filter #(= "text" (:type %)))
+                        (map #(get-in % [:part :text]))
+                        (filter some?))
+        error-event (first (filter #(= "error" (:type %)) events))
+        ;; Concatenate without separators — text events are streamed chunks
+        result-text (apply str text-parts)]
+    (if error-event
+      {:success false
+       :error (get-in error-event [:error :data :message] "OpenCode error")
+       :session-id session-id
+       :provider :opencode}
+      {:success true
+       :result result-text
+       :session-id session-id
+       :provider :opencode})))
+
+(defn invoke-opencode-async
+  "Invoke OpenCode CLI asynchronously with timeout handling.
+
+   Parameters:
+   - prompt: The prompt to send to OpenCode
+   - callback-fn: Function to call with result (takes one arg: response map)
+   - :resume-session-id: Optional session ID for resuming
+   - :working-directory: Optional working directory for OpenCode
+   - :model: Optional model to use (e.g. github-copilot/claude-opus-4.6)
+   - :timeout-ms: Timeout in milliseconds (default: 24 hours)
+
+   Returns nil immediately. Calls callback-fn when done or on timeout.
+   Response map will have :success true/false and either :result or :error."
+  [prompt callback-fn & {:keys [resume-session-id working-directory model timeout-ms]
+                         :or {timeout-ms 86400000}}]
+  (async/go
+    (let [response-ch
+          (async/thread
+            (try
+              (let [full-cmd (build-cli-command :opencode
+                                                {:prompt prompt
+                                                 :resume-session-id resume-session-id
+                                                 :model model})
+                    result (run-provider-process full-cmd working-directory timeout-ms
+                                                 resume-session-id :opencode)]
+                (if (zero? (:exit result))
+                  (parse-opencode-ndjson (:out result))
+                  {:success false
+                   :error (or (not-empty (str/trim (:err result)))
+                              (str "OpenCode CLI exited with code " (:exit result)))
+                   :provider :opencode}))
+              (catch Exception e
+                {:success false
+                 :error (str "Exception: " (ex-message e))
+                 :provider :opencode})))
+          [response port] (async/alts! [response-ch (async/timeout timeout-ms)])]
+      (callback-fn
+       (if (= port response-ch)
+         response
+         {:success false :error "Request timed out" :timeout true :provider :opencode}))))
+  nil)
+
 (defn invoke-provider-async
   "Invoke a provider's CLI asynchronously.
    
@@ -1118,6 +1195,13 @@
                          :working-directory working-directory
                          :model model
                          :timeout-ms timeout-ms)
+
+    :opencode
+    (invoke-opencode-async prompt callback-fn
+                           :resume-session-id resume-session-id
+                           :working-directory working-directory
+                           :model model
+                           :timeout-ms timeout-ms)
 
     ;; Default: unknown provider
     (callback-fn {:success false
