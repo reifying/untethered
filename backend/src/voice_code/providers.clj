@@ -603,6 +603,22 @@
 ;; Copilot CLI Invocation
 ;; ============================================================================
 
+(defonce active-provider-processes
+  ;; Atom tracking active CLI processes by [provider session-id] for kill support.
+  ;; Keyed by [provider session-id] vector to support multiple concurrent providers.
+  (atom {}))
+
+(defn kill-provider-session
+  "Kill an active CLI process for a given provider and session-id.
+   Returns true if a process was found and killed, nil otherwise."
+  [provider session-id]
+  (let [key [provider session-id]]
+    (when-let [process (get @active-provider-processes key)]
+      (log/info "Killing provider process" {:provider provider :session-id session-id})
+      (.destroyForcibly process)
+      (swap! active-provider-processes dissoc key)
+      true)))
+
 (defonce active-copilot-processes
   ;; Atom tracking active Copilot CLI processes by session-id for kill support.
   (atom {}))
@@ -645,6 +661,62 @@
            (filter #(valid-uuid? (.getName %)))
            set)
       #{})))
+
+(defn- run-provider-process
+  "Run a CLI process with stdout/stderr capture.
+   Returns {:exit int :out string :err string}.
+
+   Unlike run-copilot-process (which prepends 'copilot' to args),
+   this function takes the FULL command vector from build-cli-command.
+   Callers pass the complete args including the binary name.
+
+   Parameters:
+   - full-cmd: Complete command vector (e.g. [\"copilot\" \"-p\" \"hello\"])
+   - working-dir: Optional working directory
+   - timeout-ms: Timeout in milliseconds
+   - session-id: Optional session ID for process tracking
+   - provider: Provider keyword for process tracking and temp file naming"
+  [full-cmd working-dir timeout-ms session-id provider]
+  (let [perms (java.nio.file.attribute.PosixFilePermissions/asFileAttribute
+               (java.nio.file.attribute.PosixFilePermissions/fromString "rw-------"))
+        stdout-path (java.nio.file.Files/createTempFile
+                     (str (name provider) "-stdout-") ".txt"
+                     (into-array java.nio.file.attribute.FileAttribute [perms]))
+        stderr-path (java.nio.file.Files/createTempFile
+                     (str (name provider) "-stderr-") ".txt"
+                     (into-array java.nio.file.attribute.FileAttribute [perms]))
+        stdout-file (.toFile stdout-path)
+        stderr-file (.toFile stderr-path)]
+    (try
+      (let [process-opts (cond-> {:out (ProcessBuilder$Redirect/to stdout-file)
+                                  :err (ProcessBuilder$Redirect/to stderr-file)
+                                  :in :pipe}
+                           working-dir (assoc :dir working-dir))
+            _ (log/info "Starting provider CLI process"
+                        {:provider provider
+                         :args (vec (take 4 full-cmd))
+                         :working-dir working-dir
+                         :session-id session-id})
+            process (apply proc/start process-opts full-cmd)
+            exit-ref (proc/exit-ref process)]
+        (when session-id
+          (swap! active-provider-processes assoc [provider session-id] process)
+          (log/debug "Tracking provider process" {:provider provider :session-id session-id}))
+        (.close (.getOutputStream process))
+        (try
+          (let [exit-code (if timeout-ms
+                            (deref exit-ref timeout-ms :timeout)
+                            @exit-ref)]
+            (when (= exit-code :timeout)
+              (.destroyForcibly process)
+              (throw (ex-info "Process timeout" {:timeout-ms timeout-ms :provider provider})))
+            {:exit exit-code :out (slurp stdout-file) :err (slurp stderr-file)})
+          (finally
+            (when session-id
+              (swap! active-provider-processes dissoc [provider session-id])))))
+      (finally
+        (try (.delete stdout-file) (catch Exception _ nil))
+        (try (.delete stderr-file) (catch Exception _ nil))))))
 
 (defn- run-copilot-process
   "Run a Copilot CLI process with stdout/stderr capture.
@@ -733,12 +805,10 @@
   ;; Capture existing sessions before invocation (for new session discovery)
   (let [sessions-before (when-not resume-session-id
                           (get-copilot-sessions-before))
-        ;; Build command args using build-cli-command for consistency
+        ;; Build full command vector using build-cli-command
         full-cmd (build-cli-command :copilot {:prompt prompt
                                               :resume-session-id resume-session-id
                                               :model model})
-        ;; Remove the "copilot" prefix since run-copilot-process adds it
-        args (vec (rest full-cmd))
         ;; Use resume-session-id for tracking, or nil for new sessions
         tracking-id resume-session-id
 
@@ -749,7 +819,8 @@
                      :has-sessions-before (some? sessions-before)
                      :sessions-before-count (count sessions-before)})
 
-        result (run-copilot-process args working-directory timeout tracking-id)]
+        ;; Use run-provider-process with full command vector
+        result (run-provider-process full-cmd working-directory timeout tracking-id :copilot)]
 
     (log/debug "Copilot CLI completed"
                {:exit (:exit result)

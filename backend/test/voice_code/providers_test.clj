@@ -1317,15 +1317,16 @@ another_key: another value
                             (providers/invoke-copilot "test prompt"))))))
 
 (deftest test-invoke-copilot-success-with-mock
-  (testing "returns success response when CLI succeeds"
+  (testing "returns success response when CLI succeeds (via run-provider-process)"
     (let [mock-output "Here is the solution to your problem:\n\n```clojure\n(defn hello [] \"world\")\n```"
-          run-process-var (var providers/run-copilot-process)
           find-newest-var (var providers/find-newest-copilot-session)]
       (with-redefs-fn {#'providers/provider-installed? (constantly true)
-                       run-process-var (fn [_args _dir _timeout _session-id]
-                                         {:exit 0
-                                          :out mock-output
-                                          :err ""})
+                       #'providers/run-provider-process (fn [full-cmd _dir _timeout _session-id _provider]
+                                                          ;; Verify the full command includes "copilot" as first element
+                                                          (is (= "copilot" (first full-cmd)))
+                                                          {:exit 0
+                                                           :out mock-output
+                                                           :err ""})
                        find-newest-var (fn [_] "mock-session-12345678-1234-1234-1234-123456789012")}
         (fn []
           (let [result (providers/invoke-copilot "help me write code")]
@@ -1335,52 +1336,56 @@ another_key: another value
             (is (= :copilot (:provider result)))))))))
 
 (deftest test-invoke-copilot-resume-session
-  (testing "passes resume-session-id to CLI process"
+  (testing "passes resume-session-id to CLI process via run-provider-process"
     (let [captured-args (atom nil)]
       (with-redefs-fn {#'providers/provider-installed? (constantly true)
-                       #'providers/run-copilot-process (fn [args _dir _timeout session-id]
-                                                         (reset! captured-args {:args args :session-id session-id})
-                                                         {:exit 0 :out "Response" :err ""})}
+                       #'providers/run-provider-process (fn [full-cmd _dir _timeout session-id provider]
+                                                          (reset! captured-args {:full-cmd full-cmd
+                                                                                 :session-id session-id
+                                                                                 :provider provider})
+                                                          {:exit 0 :out "Response" :err ""})}
         (fn []
           (let [result (providers/invoke-copilot "continue working"
                                                  :resume-session-id "existing-session-id")]
             (is (:success result))
             (is (= "existing-session-id" (:session-id result)))
-            (is (some #{"--resume"} (:args @captured-args)))
-            (is (some #{"existing-session-id"} (:args @captured-args)))
-            (is (= "existing-session-id" (:session-id @captured-args)))))))))
+            (is (= "copilot" (first (:full-cmd @captured-args))))
+            (is (some #{"--resume"} (:full-cmd @captured-args)))
+            (is (some #{"existing-session-id"} (:full-cmd @captured-args)))
+            (is (= "existing-session-id" (:session-id @captured-args)))
+            (is (= :copilot (:provider @captured-args)))))))))
 
 (deftest test-invoke-copilot-with-model
   (testing "passes model to CLI process when specified"
-    (let [captured-args (atom nil)]
+    (let [captured-cmd (atom nil)]
       (with-redefs-fn {#'providers/provider-installed? (constantly true)
-                       #'providers/run-copilot-process (fn [args _dir _timeout _session-id]
-                                                         (reset! captured-args args)
-                                                         {:exit 0 :out "Done" :err ""})
+                       #'providers/run-provider-process (fn [full-cmd _dir _timeout _session-id _provider]
+                                                          (reset! captured-cmd full-cmd)
+                                                          {:exit 0 :out "Done" :err ""})
                        #'providers/find-newest-copilot-session (fn [_] "new-session")}
         (fn []
           (providers/invoke-copilot "test" :model "claude-sonnet-4")
-          (is (some #{"--model"} @captured-args))
-          (is (some #{"claude-sonnet-4"} @captured-args))))))
+          (is (some #{"--model"} @captured-cmd))
+          (is (some #{"claude-sonnet-4"} @captured-cmd))))))
 
   (testing "omits model flag when not specified"
-    (let [captured-args (atom nil)]
+    (let [captured-cmd (atom nil)]
       (with-redefs-fn {#'providers/provider-installed? (constantly true)
-                       #'providers/run-copilot-process (fn [args _dir _timeout _session-id]
-                                                         (reset! captured-args args)
-                                                         {:exit 0 :out "Done" :err ""})
+                       #'providers/run-provider-process (fn [full-cmd _dir _timeout _session-id _provider]
+                                                          (reset! captured-cmd full-cmd)
+                                                          {:exit 0 :out "Done" :err ""})
                        #'providers/find-newest-copilot-session (fn [_] "new-session")}
         (fn []
           (providers/invoke-copilot "test")
-          (is (not (some #{"--model"} @captured-args))))))))
+          (is (not (some #{"--model"} @captured-cmd))))))))
 
 (deftest test-invoke-copilot-failure
   (testing "returns error response when CLI fails"
     (with-redefs-fn {#'providers/provider-installed? (constantly true)
-                     #'providers/run-copilot-process (fn [_args _dir _timeout _session-id]
-                                                       {:exit 1
-                                                        :out ""
-                                                        :err "Error: Authentication required"})}
+                     #'providers/run-provider-process (fn [_full-cmd _dir _timeout _session-id _provider]
+                                                        {:exit 1
+                                                         :out ""
+                                                         :err "Error: Authentication required"})}
       (fn []
         (let [result (providers/invoke-copilot "test prompt")]
           (is (false? (:success result)))
@@ -1445,6 +1450,107 @@ another_key: another value
 
   (testing "returns nil when session not found"
     (is (nil? (providers/kill-copilot-session "nonexistent-session")))))
+
+(deftest test-kill-provider-session
+  (testing "kills tracked process and removes from registry"
+    (let [mock-process (proxy [Process] []
+                         (destroyForcibly [] nil))
+          provider :copilot
+          session-id "provider-kill-test-session"]
+      ;; Add a mock process to the registry
+      (swap! providers/active-provider-processes assoc [provider session-id] mock-process)
+
+      (is (true? (providers/kill-provider-session provider session-id)))
+      (is (nil? (get @providers/active-provider-processes [provider session-id])))))
+
+  (testing "returns nil when session not found"
+    (is (nil? (providers/kill-provider-session :copilot "nonexistent-session"))))
+
+  (testing "supports multiple providers with same session ID"
+    (let [copilot-process (proxy [Process] []
+                            (destroyForcibly [] nil))
+          cursor-process (proxy [Process] []
+                           (destroyForcibly [] nil))
+          session-id "shared-session-id"]
+      ;; Track processes for two different providers with the same session-id
+      (swap! providers/active-provider-processes assoc
+             [:copilot session-id] copilot-process
+             [:cursor session-id] cursor-process)
+
+      ;; Kill only the copilot one
+      (is (true? (providers/kill-provider-session :copilot session-id)))
+      (is (nil? (get @providers/active-provider-processes [:copilot session-id])))
+      ;; Cursor one should still be there
+      (is (some? (get @providers/active-provider-processes [:cursor session-id])))
+
+      ;; Clean up
+      (swap! providers/active-provider-processes dissoc [:cursor session-id]))))
+
+(deftest test-run-provider-process-creates-temp-files-with-correct-permissions
+  (testing "creates temp files with owner-only permissions"
+    ;; Use 'echo' as a simple command that always succeeds
+    (let [result (#'providers/run-provider-process
+                  ["echo" "hello world"]
+                  nil ;; no working dir
+                  5000 ;; 5 second timeout
+                  nil ;; no session-id
+                  :test)]
+      (is (= 0 (:exit result)))
+      (is (str/includes? (:out result) "hello world"))
+      (is (= "" (:err result)))))
+
+  (testing "tracks and unregisters process by [provider session-id]"
+    (let [session-id "track-test-session"
+          provider :copilot
+          ;; Use sleep to give us time to check the atom
+          result-promise (promise)]
+      ;; Run in background to check atom during execution
+      (future
+        (try
+          (deliver result-promise
+                   (#'providers/run-provider-process
+                    ["sleep" "0.1"]
+                    nil 5000 session-id provider))
+          (catch Exception e
+            (deliver result-promise {:error (ex-message e)}))))
+      ;; Give it a moment to start and register
+      (Thread/sleep 50)
+      ;; Process should be tracked
+      (is (some? (get @providers/active-provider-processes [provider session-id]))
+          "Process should be registered in active-provider-processes")
+      ;; Wait for completion
+      (let [result (deref result-promise 3000 :timeout)]
+        (is (not= :timeout result))
+        (is (= 0 (:exit result))))
+      ;; After completion, process should be unregistered
+      (is (nil? (get @providers/active-provider-processes [provider session-id]))
+          "Process should be unregistered after completion")))
+
+  (testing "passes working directory to process"
+    (let [tmp-dir (System/getProperty "java.io.tmpdir")
+          result (#'providers/run-provider-process
+                  ["pwd"]
+                  tmp-dir 5000 nil :test)
+          ;; Resolve symlinks for comparison (macOS /var -> /private/var)
+          expected-path (.getCanonicalPath (io/file tmp-dir))
+          actual-path (str/trim (:out result))]
+      (is (= 0 (:exit result)))
+      (is (= expected-path actual-path)
+          (str "Expected working dir " expected-path ", got: " actual-path))))
+
+  (testing "captures stderr separately"
+    (let [result (#'providers/run-provider-process
+                  ["sh" "-c" "echo stdout-msg && echo stderr-msg >&2"]
+                  nil 5000 nil :test)]
+      (is (= 0 (:exit result)))
+      (is (str/includes? (:out result) "stdout-msg"))
+      (is (str/includes? (:err result) "stderr-msg"))))
+
+  (testing "returns non-zero exit code without throwing"
+    (let [result (#'providers/run-provider-process
+                  ["sh" "-c" "exit 42"]
+                  nil 5000 nil :test)]
+      (is (= 42 (:exit result))))))
 
 (deftest test-find-newest-copilot-session
   (testing "finds new session directory"
