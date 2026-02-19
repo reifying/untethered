@@ -350,7 +350,8 @@ class ConversationRecipeTests: XCTestCase {
         XCTAssertNoThrow(client.startRecipe(
             sessionId: sessionId,
             recipeId: "implement-and-review",
-            workingDirectory: session.workingDirectory
+            workingDirectory: session.workingDirectory,
+            provider: "claude"
         ))
     }
 

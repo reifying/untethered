@@ -1509,13 +1509,14 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
-    func startRecipe(sessionId: String, recipeId: String, workingDirectory: String) {
-        print("📤 [VoiceCodeClient] Starting recipe \(recipeId) for session \(sessionId) in \(workingDirectory)")
+    func startRecipe(sessionId: String, recipeId: String, workingDirectory: String, provider: String) {
+        print("📤 [VoiceCodeClient] Starting recipe \(recipeId) for session \(sessionId) in \(workingDirectory) with provider \(provider)")
         let message: [String: Any] = [
             "type": "start_recipe",
             "session_id": sessionId,
             "recipe_id": recipeId,
-            "working_directory": workingDirectory
+            "working_directory": workingDirectory,
+            "provider": provider
         ]
         sendMessage(message)
     }

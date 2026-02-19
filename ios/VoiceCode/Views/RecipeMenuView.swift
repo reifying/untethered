@@ -8,6 +8,7 @@ struct RecipeMenuView: View {
     @ObservedObject var client: VoiceCodeClient
     let sessionId: String
     let workingDirectory: String
+    @ObservedObject var settings: AppSettings
     @Environment(\.dismiss) private var dismiss
 
     @State private var isLoading = false
@@ -16,6 +17,7 @@ struct RecipeMenuView: View {
     @State private var cancellables = Set<AnyCancellable>()
     @State private var useNewSession = false
     @State private var showingNewSessionConfirmation = false
+    @State private var selectedProvider: String = "claude"
 
     var body: some View {
         let _ = RenderTracker.count(Self.self)
@@ -86,8 +88,14 @@ struct RecipeMenuView: View {
                         // Toggle section at top
                         Section {
                             Toggle("Start in new session", isOn: $useNewSession)
+
+                            Picker("Provider", selection: $selectedProvider) {
+                                Text("Claude").tag("claude")
+                                Text("Copilot").tag("copilot")
+                            }
+                            .pickerStyle(.segmented)
                         } footer: {
-                            Text("Creates a fresh session for this recipe instead of using the current session.")
+                            Text("Select the AI provider and whether to use a new session for this recipe.")
                         }
 
                         // Recipe list section
@@ -113,6 +121,7 @@ struct RecipeMenuView: View {
             ToolbarBuilder.cancelButton { dismiss() }
         }
         .onAppear {
+            selectedProvider = settings.defaultProvider
             if client.availableRecipes.isEmpty && !hasRequestedRecipes {
                 hasRequestedRecipes = true
                 isLoading = true
@@ -162,7 +171,7 @@ struct RecipeMenuView: View {
         isLoading = true
         errorMessage = nil
 
-        client.startRecipe(sessionId: targetSessionId, recipeId: recipeId, workingDirectory: workingDirectory)
+        client.startRecipe(sessionId: targetSessionId, recipeId: recipeId, workingDirectory: workingDirectory, provider: selectedProvider)
 
         // Wait for recipe_started confirmation (15 second timeout)
         // Capture bindings for use in closure
@@ -236,7 +245,8 @@ struct RecipeMenuView_Previews: PreviewProvider {
         return RecipeMenuView(
             client: client,
             sessionId: "test-session-123",
-            workingDirectory: "/Users/test/project"
+            workingDirectory: "/Users/test/project",
+            settings: AppSettings()
         )
     }
 }

@@ -234,7 +234,7 @@ struct SessionInfoView: View {
                 }
             }
         .sheet(isPresented: $showingRecipeMenu) {
-            RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased(), workingDirectory: session.workingDirectory)
+            RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased(), workingDirectory: session.workingDirectory, settings: settings)
         }
         .task {
             await loadGitBranch()

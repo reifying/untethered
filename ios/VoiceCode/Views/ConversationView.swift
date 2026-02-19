@@ -594,7 +594,7 @@ struct ConversationView: View {
                 .environment(\.managedObjectContext, viewContext)
         }
         .sheet(isPresented: $showingRecipeMenu) {
-            RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased(), workingDirectory: session.workingDirectory)
+            RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased(), workingDirectory: session.workingDirectory, settings: settings)
         }
         .onAppear {
             // Reset scroll flags when view appears (handles navigation back to session)

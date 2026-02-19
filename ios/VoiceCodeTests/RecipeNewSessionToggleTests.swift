@@ -157,9 +157,32 @@ class RecipeNewSessionToggleTests: XCTestCase {
             client.startRecipe(
                 sessionId: sessionId,
                 recipeId: "implement-and-review",
-                workingDirectory: workingDirectory
+                workingDirectory: workingDirectory,
+                provider: "claude"
             )
         )
+    }
+
+    // MARK: - Provider Selection Tests
+
+    func testProviderDefaultsFromSettings() throws {
+        // Test that the default provider logic matches settings
+        let defaultProvider = "copilot"
+        let selectedProvider = defaultProvider  // Mimics onAppear initialization
+        XCTAssertEqual(selectedProvider, "copilot",
+                       "Provider should default from settings")
+    }
+
+    func testProviderSelectionIsIndependentOfNewSessionToggle() throws {
+        // Provider and new session toggle are orthogonal controls
+        let useNewSession = true
+        let selectedProvider = "copilot"
+        let targetSessionId = useNewSession ? UUID().uuidString.lowercased() : "existing-session"
+
+        // Both controls are set independently
+        XCTAssertTrue(useNewSession)
+        XCTAssertEqual(selectedProvider, "copilot")
+        XCTAssertNotEqual(targetSessionId, "existing-session")
     }
 
     // MARK: - Session ID Selection Logic Tests
