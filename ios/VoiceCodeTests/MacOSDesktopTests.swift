@@ -275,5 +275,58 @@ final class MacOSDesktopTests: XCTestCase {
         XCTAssertNotNil(row)
     }
 
+    // MARK: - Deep Link URL Parsing Tests
+
+    func testDeepLinkParseValidSessionURL() {
+        let uuid = UUID()
+        let url = URL(string: "voicecode://session/\(uuid.uuidString.lowercased())")!
+        let result = DeepLinkURL.parse(url)
+
+        switch result {
+        case .session(let parsedId):
+            XCTAssertEqual(parsedId, uuid)
+        case nil:
+            XCTFail("Expected .session, got nil")
+        }
+    }
+
+    func testDeepLinkParseUppercaseUUID() {
+        let uuid = UUID()
+        let url = URL(string: "voicecode://session/\(uuid.uuidString)")!
+        let result = DeepLinkURL.parse(url)
+
+        switch result {
+        case .session(let parsedId):
+            XCTAssertEqual(parsedId, uuid)
+        case nil:
+            XCTFail("Expected .session, got nil")
+        }
+    }
+
+    func testDeepLinkParseWrongScheme() {
+        let url = URL(string: "https://session/\(UUID().uuidString)")!
+        XCTAssertNil(DeepLinkURL.parse(url))
+    }
+
+    func testDeepLinkParseUnknownHost() {
+        let url = URL(string: "voicecode://settings/general")!
+        XCTAssertNil(DeepLinkURL.parse(url))
+    }
+
+    func testDeepLinkParseInvalidUUID() {
+        let url = URL(string: "voicecode://session/not-a-uuid")!
+        XCTAssertNil(DeepLinkURL.parse(url))
+    }
+
+    func testDeepLinkParseMissingSessionId() {
+        let url = URL(string: "voicecode://session/")!
+        XCTAssertNil(DeepLinkURL.parse(url))
+    }
+
+    func testDeepLinkParseEmptyPath() {
+        let url = URL(string: "voicecode://session")!
+        XCTAssertNil(DeepLinkURL.parse(url))
+    }
+
     #endif
 }

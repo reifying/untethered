@@ -300,6 +300,9 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .selectNextSession)) { _ in
             selectAdjacentSession(direction: 1)
         }
+        .onOpenURL { url in
+            handleDeepLink(url)
+        }
         .task {
             loadSessionsForNavigation()
         }
@@ -389,6 +392,34 @@ struct RootView: View {
         }
     }
 
+    private func handleDeepLink(_ url: URL) {
+        guard let deepLink = DeepLinkURL.parse(url) else { return }
+
+        switch deepLink {
+        case .session(let sessionId):
+            logger.info("Deep link: navigating to session \(sessionId)")
+            do {
+                // First try direct UUID match (CDBackendSession.id)
+                let request = CDBackendSession.fetchBackendSession(id: sessionId)
+                if let session = try viewContext.fetch(request).first {
+                    selectedSessionId = session.id
+                    NSApp.activate(ignoringOtherApps: true)
+                    return
+                }
+                // Fall back to matching by backendName (Claude session ID as string)
+                let nameRequest = CDBackendSession.fetchBackendSession(backendName: sessionId.uuidString.lowercased())
+                if let match = try viewContext.fetch(nameRequest).first {
+                    selectedSessionId = match.id
+                    NSApp.activate(ignoringOtherApps: true)
+                    return
+                }
+                logger.warning("Deep link: session \(sessionId) not found in CoreData")
+            } catch {
+                logger.error("Deep link: CoreData fetch failed for session \(sessionId): \(error.localizedDescription)")
+            }
+        }
+    }
+
     private func handleCommandPaletteAction(_ action: CommandPaletteAction) {
         switch action {
         case .newSession:
@@ -412,6 +443,37 @@ struct RootView: View {
         }
     }
     #endif
+}
+
+// MARK: - Deep Link URL Parsing
+
+/// Parses voicecode:// deep link URLs into navigation actions.
+/// Supports: voicecode://session/{uuid}
+enum DeepLinkURL {
+    case session(UUID)
+
+    /// Parse a voicecode:// URL into a DeepLinkURL action.
+    /// Returns nil if the URL is not a valid voicecode deep link.
+    static func parse(_ url: URL) -> DeepLinkURL? {
+        guard url.scheme == "voicecode" else {
+            logger.warning("Deep link ignored: unexpected scheme '\(url.scheme ?? "nil")' in URL: \(url)")
+            return nil
+        }
+        guard url.host == "session" else {
+            logger.warning("Deep link ignored: unknown host '\(url.host ?? "nil")' in URL: \(url)")
+            return nil
+        }
+        let pathComponent = url.lastPathComponent
+        guard !pathComponent.isEmpty, pathComponent != "/" else {
+            logger.warning("Deep link ignored: missing session ID in URL: \(url)")
+            return nil
+        }
+        guard let uuid = UUID(uuidString: pathComponent) else {
+            logger.warning("Deep link ignored: invalid UUID '\(pathComponent)' in URL: \(url)")
+            return nil
+        }
+        return .session(uuid)
+    }
 }
 
 // MARK: - Command Notifications

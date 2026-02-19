@@ -28,5 +28,16 @@
 	<string>Untethered needs microphone access for voice input to control Claude.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Untethered needs speech recognition to transcribe your voice commands.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>voicecode</string>
+			</array>
+			<key>CFBundleURLName</key>
+			<string>dev.910labs.voice-code-mac</string>
+		</dict>
+	</array>
 </dict>
 </plist>

@@ -94,6 +94,14 @@ extension CDBackendSession {
         request.fetchLimit = 1
         return request
     }
+
+    /// Fetch a specific session by backend name (Claude session ID)
+    static func fetchBackendSession(backendName: String) -> NSFetchRequest<CDBackendSession> {
+        let request = fetchRequest()
+        request.predicate = NSPredicate(format: "backendName == %@", backendName)
+        request.fetchLimit = 1
+        return request
+    }
 }
 
 // MARK: - Generated accessors for messages
