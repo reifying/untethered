@@ -2027,7 +2027,6 @@
           (is (true? (:is_complete response))))))
     (reset! server/api-key nil)))
 
-
 ;; ============================================================================
 ;; Tests for Task 1.4: Inherit Provider on implement-and-review-all Restart
 ;; ============================================================================
@@ -2035,59 +2034,148 @@
 (deftest test-start-recipe-restart-inherits-provider
   (testing "start-recipe-for-session call with provider parameter preserves provider"
     (reset! server/session-orchestration-state {})
-    
+
     ;; Test 1: Restart with copilot provider
     (let [session-id-1 "restart-session-copilot"
           orch-state-1 (server/start-recipe-for-session session-id-1 :implement-and-review true :provider :copilot)]
       (is (= :copilot (:provider orch-state-1)))
       (is (= :copilot (get-in @server/session-orchestration-state [session-id-1 :provider]))))
-    
+
     ;; Test 2: Restart with claude provider (default)
     (let [session-id-2 "restart-session-claude"
           orch-state-2 (server/start-recipe-for-session session-id-2 :implement-and-review true)]
       (is (= :claude (:provider orch-state-2)))
       (is (= :claude (get-in @server/session-orchestration-state [session-id-2 :provider]))))
-    
+
     (reset! server/session-orchestration-state {})))
 
 (deftest test-recipe-restart-provider-inheritance
   (testing "Provider is correctly inherited when restarting recipe in new session"
     (reset! server/session-orchestration-state {})
-    
+
     ;; Create original session with copilot
     (server/start-recipe-for-session "old-session-123" :implement-and-review false :provider :copilot)
     (let [old-orch-state (server/get-session-recipe-state "old-session-123")]
-      
+
       ;; Verify old provider is copilot
       (is (= :copilot (:provider old-orch-state)))
-      
+
       ;; Simulate restarting with new session, inheriting provider
       (let [inherited-provider (:provider old-orch-state)
             new-orch-state (server/start-recipe-for-session "new-session-456" :implement-and-review true :provider inherited-provider)]
-        
+
         ;; Verify new session inherited the provider
         (is (= :copilot (:provider new-orch-state)))
         (is (= :copilot (get-in @server/session-orchestration-state ["new-session-456" :provider])))))
-    
+
     (reset! server/session-orchestration-state {})))
 
 (deftest test-recipe-restart-multiple-iterations
   (testing "Provider inheritance works across multiple restart iterations"
     (reset! server/session-orchestration-state {})
-    
+
     ;; Start with copilot in first session
     (server/start-recipe-for-session "iter-1" :implement-and-review false :provider :copilot)
     (let [prov-1 (:provider (server/get-session-recipe-state "iter-1"))]
       (is (= :copilot prov-1))
-      
+
       ;; Restart in second session, inheriting provider
       (server/start-recipe-for-session "iter-2" :implement-and-review true :provider prov-1)
       (let [prov-2 (:provider (server/get-session-recipe-state "iter-2"))]
         (is (= :copilot prov-2))
-        
+
         ;; Restart again in third session, still inheriting provider
         (server/start-recipe-for-session "iter-3" :implement-and-review true :provider prov-2)
         (let [prov-3 (:provider (server/get-session-recipe-state "iter-3"))]
           (is (= :copilot prov-3) "Provider should be preserved across multiple restarts"))))
-    
+
     (reset! server/session-orchestration-state {})))
+
+;; ============================================================================
+;; Direct Response Delivery Tests
+;; ============================================================================
+
+(deftest test-cursor-prompt-sends-direct-response
+  (testing "Cursor prompt callback sends :response message with text"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}
+                                                :authenticated true
+                                                :max-message-size-kb 200}})
+    (let [sent-messages (atom [])]
+      (with-redefs [voice-code.providers/invoke-provider-async
+                    (fn [provider prompt callback & opts]
+                      (callback {:success true
+                                 :result "Cursor response text"
+                                 :session-id "cursor-session-123"
+                                 :provider :cursor}))
+                    org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    repl/ensure-session-in-index! (fn [& _] nil)]
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"cursor-session-123\",\"provider\":\"cursor\"}")
+        ;; Should have: ack, response (direct), turn_complete
+        (let [parsed (mapv #(json/parse-string % true) @sent-messages)
+              types (mapv :type parsed)
+              response-msg (first (filter #(= "response" (:type %)) parsed))]
+          (is (some #(= "ack" %) types) "Should send ack")
+          (is (some #(= "response" %) types) "Should send direct response for Cursor")
+          (is (some #(= "turn_complete" %) types) "Should send turn_complete")
+          ;; Verify response content
+          (is (= true (:success response-msg)))
+          (is (= "Cursor response text" (:text response-msg)))
+          (is (= "cursor-session-123" (:session_id response-msg)))
+          (is (= "cursor" (:provider response-msg)))
+          (is (some? (:message_id response-msg)) "Should include message_id"))))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {})))
+
+(deftest test-claude-prompt-does-not-send-direct-response
+  (testing "Claude prompt callback does NOT send :response (relies on watcher)"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}
+                                                :authenticated true
+                                                :max-message-size-kb 200}})
+    (let [sent-messages (atom [])]
+      (with-redefs [voice-code.providers/invoke-provider-async
+                    (fn [provider prompt callback & opts]
+                      (callback {:success true
+                                 :result "Claude response text"
+                                 :session-id "claude-session-456"
+                                 :provider :claude}))
+                    org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    repl/ensure-session-in-index! (fn [& _] nil)]
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"claude-session-456\"}")
+        ;; Should have: ack, turn_complete (NO response)
+        (let [parsed (mapv #(json/parse-string % true) @sent-messages)
+              types (mapv :type parsed)]
+          (is (some #(= "ack" %) types) "Should send ack")
+          (is (not (some #(= "response" %) types)) "Should NOT send direct response for Claude")
+          (is (some #(= "turn_complete" %) types) "Should send turn_complete"))))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {})))
+
+(deftest test-prompt-callback-calls-ensure-session-in-index
+  (testing "Prompt callback calls ensure-session-in-index! with provider"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}
+                                                :authenticated true
+                                                :max-message-size-kb 200}})
+    (let [ensure-calls (atom [])]
+      (with-redefs [voice-code.providers/invoke-provider-async
+                    (fn [provider prompt callback & opts]
+                      (callback {:success true
+                                 :result "test"
+                                 :session-id "ses_opencode123"
+                                 :provider :opencode}))
+                    org.httpkit.server/send! (fn [_ _] nil)
+                    repl/ensure-session-in-index!
+                    (fn [session-id provider]
+                      (swap! ensure-calls conj {:session-id session-id :provider provider})
+                      nil)]
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"ses_opencode123\",\"provider\":\"opencode\"}")
+        (is (= 1 (count @ensure-calls)))
+        (is (= "ses_opencode123" (:session-id (first @ensure-calls))))
+        (is (= :opencode (:provider (first @ensure-calls))))))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {})))

@@ -2137,3 +2137,142 @@
       (is (some #(= "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" (:session-id %)) sessions))
       (is (some #(= "ses_test123" (:session-id %)) sessions))
       (is (not (some #(= "invalid-id" (:session-id %)) sessions))))))
+
+;; ============================================================================
+;; ensure-session-in-index! Multi-Arity Tests
+;; ============================================================================
+
+(deftest test-ensure-session-in-index-1-arity-backward-compat
+  (testing "1-arity ensure-session-in-index! defaults to :claude provider"
+    (reset! repl/session-index {})
+    (reset! repl/file-positions {})
+    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))]
+      (let [session-id "11111111-aaaa-bbbb-cccc-111111111111"
+            messages [(json/generate-string
+                       {:role "user"
+                        :text "Test message"
+                        :timestamp "2025-10-27T00:00:00.000Z"
+                        :cwd test-dir
+                        :sessionId session-id})]
+            file (create-test-jsonl-file (str session-id ".jsonl") messages)]
+        ;; Verify not in index
+        (is (nil? (repl/get-session-metadata session-id)))
+        ;; Call 1-arity (should default to :claude)
+        (let [metadata (repl/ensure-session-in-index! session-id)]
+          (is (some? metadata))
+          (is (= session-id (:session-id metadata))))))))
+
+(deftest test-ensure-session-in-index-2-arity-claude
+  (testing "2-arity with :claude works the same as 1-arity"
+    (reset! repl/session-index {})
+    (reset! repl/file-positions {})
+    (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))]
+      (let [session-id "22222222-aaaa-bbbb-cccc-222222222222"
+            messages [(json/generate-string
+                       {:role "user"
+                        :text "Test message"
+                        :timestamp "2025-10-27T00:00:00.000Z"
+                        :cwd test-dir
+                        :sessionId session-id})]
+            file (create-test-jsonl-file (str session-id ".jsonl") messages)]
+        (is (nil? (repl/get-session-metadata session-id)))
+        (let [metadata (repl/ensure-session-in-index! session-id :claude)]
+          (is (some? metadata))
+          (is (= session-id (:session-id metadata))))))))
+
+(deftest test-ensure-session-in-index-cursor
+  (testing "2-arity with :cursor indexes session from directory"
+    (let [session-id "aabbccdd-eeff-0011-2233-445566778899"
+          cursor-chats-dir (io/file test-dir ".cursor" "chats")
+          project-dir (io/file cursor-chats-dir "test-hash")
+          session-dir (io/file project-dir session-id)]
+      (.mkdirs session-dir)
+      ;; Create store.db (can't read real metadata, but session dir is found)
+      (spit (io/file session-dir "store.db") "fake-sqlite-data")
+      ;; Mock get-session-file to find our test session
+      (with-redefs [providers/get-session-file
+                    (fn [provider sid]
+                      (when (and (= provider :cursor) (= sid session-id))
+                        session-dir))
+                    repl/read-cursor-session-meta
+                    (fn [_dir] {:name "Test Cursor Session" :createdAt 1770000000000})]
+        (is (nil? (repl/get-session-metadata session-id)))
+        (let [metadata (repl/ensure-session-in-index! session-id :cursor)]
+          (is (some? metadata))
+          (is (= session-id (:session-id metadata)))
+          (is (= :cursor (:provider metadata)))
+          (is (= "Test Cursor Session" (:name metadata)))
+          (is (= 1 (:message-count metadata))))))))
+
+(deftest test-ensure-session-in-index-opencode
+  (testing "2-arity with :opencode indexes session from JSON file"
+    (let [session-id "ses_testensure123"
+          opencode-base (io/file test-dir "opencode-storage")
+          session-dir (io/file opencode-base "storage" "session" "test-hash")
+          session-file (io/file session-dir (str session-id ".json"))
+          msgs-dir (io/file opencode-base "storage" "message" session-id)]
+      (.mkdirs session-dir)
+      (.mkdirs msgs-dir)
+      ;; Write session info JSON
+      (spit session-file (json/generate-string
+                          {:id session-id
+                           :title "Test OpenCode Session"
+                           :directory "/tmp/test-project"
+                           :time {:created 1770528283010
+                                  :updated 1770528290000}}))
+      ;; Create a message file so msg-count > 0
+      (spit (io/file msgs-dir "msg_001.json")
+            (json/generate-string {:id "msg_001" :role "user"}))
+      ;; Mock get-session-file and opencode-storage-base
+      (with-redefs [providers/get-session-file
+                    (fn [provider sid]
+                      (when (and (= provider :opencode) (= sid session-id))
+                        session-file))
+                    repl/opencode-storage-base
+                    (fn [] (io/file opencode-base "storage"))]
+        (is (nil? (repl/get-session-metadata session-id)))
+        (let [metadata (repl/ensure-session-in-index! session-id :opencode)]
+          (is (some? metadata))
+          (is (= session-id (:session-id metadata)))
+          (is (= :opencode (:provider metadata)))
+          (is (= "Test OpenCode Session" (:name metadata)))
+          (is (= "/tmp/test-project" (:working-directory metadata)))
+          (is (pos? (:message-count metadata))))))))
+
+(deftest test-ensure-session-in-index-copilot
+  (testing "2-arity with :copilot indexes session from directory"
+    (let [session-id "bbccddee-ffaa-1122-3344-556677889900"
+          session-dir (create-copilot-test-session
+                       session-id
+                       "/tmp/copilot-project"
+                       [(json/generate-string
+                         {:type "user.message"
+                          :data {:content "Hello copilot"}
+                          :id "msg-1"
+                          :timestamp "2026-01-01T00:00:00.000Z"})])]
+      ;; Mock get-session-file to find our test session
+      (with-redefs [providers/get-session-file
+                    (fn [provider sid]
+                      (when (and (= provider :copilot) (= sid session-id))
+                        session-dir))]
+        (is (nil? (repl/get-session-metadata session-id)))
+        (let [metadata (repl/ensure-session-in-index! session-id :copilot)]
+          (is (some? metadata))
+          (is (= session-id (:session-id metadata)))
+          (is (= :copilot (:provider metadata))))))))
+
+(deftest test-ensure-session-in-index-idempotent-2-arity
+  (testing "2-arity returns existing metadata without rebuilding"
+    (let [session-id "ccddeeaa-bbcc-2233-4455-667788990011"
+          existing {:session-id session-id :provider :cursor :name "Already indexed"}]
+      (swap! repl/session-index assoc session-id existing)
+      (let [metadata (repl/ensure-session-in-index! session-id :cursor)]
+        (is (= existing metadata))))))
+
+(deftest test-ensure-session-in-index-nil-session-id-2-arity
+  (testing "2-arity returns nil for nil session-id"
+    (is (nil? (repl/ensure-session-in-index! nil :cursor)))))
+
+(deftest test-ensure-session-in-index-unknown-provider
+  (testing "Unknown provider returns nil gracefully"
+    (is (nil? (repl/ensure-session-in-index! "some-id" :unknown)))))

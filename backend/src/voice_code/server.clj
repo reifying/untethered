@@ -1436,7 +1436,20 @@
                                  (log/info "Prompt completed successfully"
                                            {:session-id (:session-id response)
                                             :provider provider})
-                               ;; Send turn_complete message so iOS can unlock
+                                 ;; Ensure session is in index before sending response
+                                 (repl/ensure-session-in-index! (:session-id response) provider)
+                                 ;; For providers without parseable session files (e.g. Cursor),
+                                 ;; send the response text directly — the watcher+subscribe mechanism
+                                 ;; can't deliver it because parse-message returns nil.
+                                 (when-not (providers/supports-session-history? provider)
+                                   (send-to-client! channel
+                                                    {:type :response
+                                                     :message-id (str (java.util.UUID/randomUUID))
+                                                     :success true
+                                                     :text (:result response)
+                                                     :session-id (:session-id response)
+                                                     :provider (name provider)}))
+                                 ;; Send turn_complete message so iOS can unlock
                                  (send-to-client! channel
                                                   {:type :turn-complete
                                                    :session-id claude-session-id}))
@@ -1444,7 +1457,7 @@
                                  (log/error "Prompt failed" {:error (:error response)
                                                              :session-id claude-session-id
                                                              :provider provider})
-                               ;; Still send error responses directly - include session-id so iOS can unlock
+                                 ;; Still send error responses directly - include session-id so iOS can unlock
                                  (send-to-client! channel
                                                   {:type :error
                                                    :message (:error response)

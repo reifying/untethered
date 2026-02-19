@@ -1335,6 +1335,22 @@ branch: main")
   (testing "rejects ses_ with no suffix"
     (is (false? (providers/valid-opencode-session-id? "ses_")))))
 
+(deftest test-supports-session-history
+  (testing "Claude supports session history"
+    (is (true? (providers/supports-session-history? :claude))))
+
+  (testing "Copilot supports session history"
+    (is (true? (providers/supports-session-history? :copilot))))
+
+  (testing "Cursor does NOT support session history (SQLite binary blobs)"
+    (is (false? (providers/supports-session-history? :cursor))))
+
+  (testing "OpenCode supports session history"
+    (is (true? (providers/supports-session-history? :opencode))))
+
+  (testing "Unknown providers return false"
+    (is (false? (providers/supports-session-history? :unknown)))))
+
 ;; ============================================================================
 ;; CLI Validation Tests
 ;; ============================================================================

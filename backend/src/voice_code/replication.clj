@@ -564,6 +564,26 @@
                     {:dir (.getAbsolutePath session-dir) :error (ex-message e)})
           nil)))))
 
+(defn build-cursor-session-metadata
+  "Build metadata map for a single Cursor session directory."
+  [session-id session-dir]
+  (let [meta (read-cursor-session-meta session-dir)]
+    {:session-id session-id
+     :file (.getAbsolutePath (io/file session-dir "store.db"))
+     :name (or (:name meta) "Cursor Session")
+     :working-directory (or (providers/extract-working-dir :cursor session-dir) "[unknown]")
+     :created-at (or (:createdAt meta) (.lastModified session-dir))
+     :last-modified (.lastModified session-dir)
+     ;; Set to 1 (not 0) so sessions appear in get-recent-sessions.
+     ;; Cannot get actual count from SQLite binary blobs.
+     :message-count 1
+     :preview nil
+     :first-message nil
+     :last-message nil
+     :ios-notified false
+     :first-notification nil
+     :provider :cursor}))
+
 (defn- build-cursor-sessions-index
   "Build index entries for all Cursor sessions.
    Returns map of session-id -> metadata."
@@ -574,24 +594,7 @@
           (keep (fn [session-dir]
                   (try
                     (let [session-id (providers/session-id-from-file :cursor session-dir)
-                          meta (read-cursor-session-meta session-dir)
-                          metadata {:session-id session-id
-                                    :file (.getAbsolutePath (io/file session-dir "store.db"))
-                                    :name (or (:name meta) "Cursor Session")
-                                    :working-directory (or (providers/extract-working-dir :cursor session-dir)
-                                                           "[unknown]")
-                                    :created-at (or (:createdAt meta) (.lastModified session-dir))
-                                    :last-modified (.lastModified session-dir)
-                                    ;; Set to 1 (not 0) so sessions appear in get-recent-sessions.
-                                    ;; We know at least one exchange happened if store.db exists.
-                                    ;; Cannot get actual count from SQLite binary blobs.
-                                    :message-count 1
-                                    :preview nil
-                                    :first-message nil
-                                    :last-message nil
-                                    :ios-notified false
-                                    :first-notification nil
-                                    :provider :cursor}]
+                          metadata (build-cursor-session-metadata session-id session-dir)]
                       [session-id metadata])
                     (catch Exception e
                       (log/warn "Failed to index Cursor session" {:error (ex-message e)})
@@ -605,6 +608,31 @@
   (let [home (System/getProperty "user.home")]
     (io/file home ".local" "share" "opencode" "storage")))
 
+(defn build-opencode-session-metadata
+  "Build metadata map for a single OpenCode session file.
+   min-msg-count controls the floor for message-count (0 for discovery, 1 for post-CLI)."
+  [session-id session-file min-msg-count]
+  (let [info (json/parse-string (slurp session-file) true)
+        msgs-dir (io/file (opencode-storage-base) "message" (:id info))
+        msg-count (if (.exists msgs-dir)
+                    (max min-msg-count
+                         (count (filter #(str/ends-with? (.getName %) ".json")
+                                        (.listFiles msgs-dir))))
+                    min-msg-count)]
+    {:session-id session-id
+     :file (.getAbsolutePath session-file)
+     :name (or (:title info) (:slug info) "OpenCode Session")
+     :working-directory (or (:directory info) "[unknown]")
+     :created-at (get-in info [:time :created])
+     :last-modified (get-in info [:time :updated])
+     :message-count msg-count
+     :preview nil
+     :first-message nil
+     :last-message nil
+     :ios-notified false
+     :first-notification nil
+     :provider :opencode}))
+
 (defn- build-opencode-sessions-index
   "Build index entries for all OpenCode sessions.
    Returns map of session-id -> metadata."
@@ -615,25 +643,7 @@
           (keep (fn [session-file]
                   (try
                     (let [session-id (providers/session-id-from-file :opencode session-file)
-                          info (json/parse-string (slurp session-file) true)
-                          msgs-dir (io/file (opencode-storage-base) "message" (:id info))
-                          msg-count (if (.exists msgs-dir)
-                                      (count (filter #(str/ends-with? (.getName %) ".json")
-                                                     (.listFiles msgs-dir)))
-                                      0)
-                          metadata {:session-id session-id
-                                    :file (.getAbsolutePath session-file)
-                                    :name (or (:title info) (:slug info) "OpenCode Session")
-                                    :working-directory (or (:directory info) "[unknown]")
-                                    :created-at (get-in info [:time :created])
-                                    :last-modified (get-in info [:time :updated])
-                                    :message-count msg-count
-                                    :preview nil
-                                    :first-message nil
-                                    :last-message nil
-                                    :ios-notified false
-                                    :first-notification nil
-                                    :provider :opencode}]
+                          metadata (build-opencode-session-metadata session-id session-file 0)]
                       [session-id metadata])
                     (catch Exception e
                       (log/warn "Failed to index OpenCode session" {:error (ex-message e)})
@@ -998,73 +1008,102 @@
   (swap! file-positions dissoc file-path))
 
 (defn ensure-session-in-index!
-  "Ensure a session is in the index by building metadata if not present.
-  Called synchronously after Claude CLI completes to eliminate subscribe race condition.
-  Idempotent: safely handles concurrent calls from prompt handler and watcher.
-  Returns metadata map if session was added or already exists, nil if file doesn't exist."
-  [session-id]
-  (when session-id
-    ;; Fast path: check if already in index
-    (if-let [existing (get @session-index session-id)]
-      (do
-        (log/debug "Session already in index" {:session-id session-id})
-        existing)
-      ;; Slow path: need to build metadata
-      (try
-        (log/info "Adding session to index synchronously" {:session-id session-id})
-        ;; Find the .jsonl file for this session
-        (let [files (find-jsonl-files)
-              matching-file (first (filter #(= session-id (extract-session-id-from-path %)) files))]
-          (if matching-file
-            (let [file-path (.getAbsolutePath matching-file)
-                  ;; Wait briefly for file to be fully written (Claude CLI may still be flushing)
-                  _ (Thread/sleep 50)
-                  ;; Verify file exists and has content
-                  file (io/file file-path)
-                  file-size (.length file)]
-              (if (> file-size 0)
-                (let [metadata (build-session-metadata matching-file)]
-                  ;; Use swap! with conditional to prevent overwriting if watcher beat us
-                  (swap! session-index
-                         (fn [idx]
-                           (if (contains? idx session-id)
-                             (do
-                               (log/debug "Session added by watcher while we were building metadata"
-                                          {:session-id session-id})
-                               idx)
-                             (do
-                               (log/info "Session added to index"
-                                         {:session-id session-id
-                                          :message-count (:message-count metadata)
-                                          :source :prompt-handler})
-                               (assoc idx session-id metadata)))))
+  "Ensure a session is in the index after CLI invocation.
+   Provider-aware: uses the correct file finder and metadata builder per provider.
+   Called synchronously after CLI completes to eliminate subscribe race condition.
+   Idempotent: safely handles concurrent calls from prompt handler and watcher.
+   1-arity: legacy Claude-only (backward compatible with existing tests).
+   2-arity: provider-aware dispatch.
+   Returns metadata map if session was added or already exists, nil if file doesn't exist."
+  ([session-id] (ensure-session-in-index! session-id :claude))
+  ([session-id provider]
+   (when session-id
+     ;; Fast path: check if already in index
+     (if-let [existing (get @session-index session-id)]
+       (do
+         (log/debug "Session already in index" {:session-id session-id})
+         existing)
+       ;; Slow path: need to build metadata
+       (try
+         (log/info "Adding session to index" {:session-id session-id :provider provider})
+         (case provider
+           :claude
+           ;; Existing logic: find .jsonl file, build metadata
+           (let [files (find-jsonl-files)
+                 matching-file (first (filter #(= session-id (extract-session-id-from-path %)) files))]
+             (if matching-file
+               (let [file-path (.getAbsolutePath matching-file)
+                     _ (Thread/sleep 50)
+                     file (io/file file-path)
+                     file-size (.length file)]
+                 (if (> file-size 0)
+                   (let [metadata (build-session-metadata matching-file)]
+                     (swap! session-index
+                            (fn [idx]
+                              (if (contains? idx session-id)
+                                (do
+                                  (log/debug "Session added by watcher while we were building metadata"
+                                             {:session-id session-id})
+                                  idx)
+                                (do
+                                  (log/info "Session added to index"
+                                            {:session-id session-id
+                                             :message-count (:message-count metadata)
+                                             :source :prompt-handler})
+                                  (assoc idx session-id metadata)))))
+                     ;; Initialize file position using max to handle concurrent updates
+                     (swap! file-positions
+                            (fn [positions]
+                              (update positions file-path
+                                      (fn [old-pos]
+                                        (let [new-pos (max (or old-pos 0) file-size)]
+                                          (when (and old-pos (not= old-pos new-pos))
+                                            (log/debug "File position updated"
+                                                       {:file-path file-path
+                                                        :old old-pos
+                                                        :new new-pos}))
+                                          new-pos)))))
+                     (get @session-index session-id))
+                   (do
+                     (log/warn "Session file exists but is empty, waiting for content"
+                               {:session-id session-id :file-path file-path})
+                     nil)))
+               (do
+                 (log/warn "No file found for session during ensure-session-in-index"
+                           {:session-id session-id})
+                 nil)))
 
-                  ;; Initialize file position using max to handle concurrent updates
-                  (swap! file-positions
-                         (fn [positions]
-                           (update positions file-path
-                                   (fn [old-pos]
-                                     (let [new-pos (max (or old-pos 0) file-size)]
-                                       (when (and old-pos (not= old-pos new-pos))
-                                         (log/debug "File position updated"
-                                                    {:file-path file-path
-                                                     :old old-pos
-                                                     :new new-pos}))
-                                       new-pos)))))
+           :copilot
+           (let [session-dir (providers/get-session-file :copilot session-id)]
+             (when session-dir
+               (let [metadata (build-copilot-session-metadata session-dir)]
+                 (swap! session-index
+                        (fn [idx] (if (contains? idx session-id) idx (assoc idx session-id metadata))))
+                 (get @session-index session-id))))
 
-                  ;; Return the metadata (from index in case watcher updated it)
-                  (get @session-index session-id))
-                (do
-                  (log/warn "Session file exists but is empty, waiting for content"
-                            {:session-id session-id :file-path file-path})
-                  nil)))
-            (do
-              (log/warn "No file found for session during ensure-session-in-index"
-                        {:session-id session-id})
-              nil)))
-        (catch Exception e
-          (log/error e "Failed to ensure session in index" {:session-id session-id})
-          nil)))))
+           :cursor
+           (let [session-dir (providers/get-session-file :cursor session-id)]
+             (when session-dir
+               (let [metadata (build-cursor-session-metadata session-id session-dir)]
+                 (swap! session-index
+                        (fn [idx] (if (contains? idx session-id) idx (assoc idx session-id metadata))))
+                 (get @session-index session-id))))
+
+           :opencode
+           (let [session-file (providers/get-session-file :opencode session-id)]
+             (when session-file
+               ;; min-msg-count 1: called post-CLI, so at least one exchange happened.
+               (let [metadata (build-opencode-session-metadata session-id session-file 1)]
+                 (swap! session-index
+                        (fn [idx] (if (contains? idx session-id) idx (assoc idx session-id metadata))))
+                 (get @session-index session-id))))
+
+           ;; Unknown provider
+           (do (log/warn "Unknown provider for ensure-session-in-index!" {:provider provider})
+               nil))
+         (catch Exception e
+           (log/error e "Failed to ensure session in index" {:session-id session-id :provider provider})
+           nil))))))
 
 ;; ============================================================================
 ;; Filesystem Watching with Debouncing

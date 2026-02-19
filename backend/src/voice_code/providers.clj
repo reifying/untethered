@@ -535,6 +535,18 @@
 ;; Provider Resolution
 ;; ============================================================================
 
+(defn supports-session-history?
+  "Returns true if a provider's session files can be parsed for message history.
+   Used by server.clj to decide whether to send response text directly
+   or rely on the watcher+subscribe mechanism."
+  [provider]
+  (case provider
+    :claude true
+    :copilot true
+    :cursor false
+    :opencode true
+    false))
+
 (defn resolve-provider
   "Resolves the provider for a given context.
 
