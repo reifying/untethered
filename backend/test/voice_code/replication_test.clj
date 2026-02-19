@@ -295,7 +295,7 @@
           readme-file (create-test-jsonl-file "README.jsonl" messages)]
       ;; Mock find-jsonl-files to return our test files and mock Copilot provider to return empty
       (with-redefs [repl/find-jsonl-files (fn [] [lowercase-uuid-file uppercase-uuid-file mixed-case-uuid-file non-uuid-file numeric-file readme-file])
-                    providers/find-session-files (fn [provider] (if (= provider :copilot) [] (providers/find-session-files provider)))]
+                    providers/find-session-files (fn [_provider] [])]
         (let [index (repl/build-index!)]
           ;; Should include all 3 valid UUID sessions (normalized to lowercase keys)
           (is (= 3 (count index)))
@@ -319,7 +319,7 @@
 
         ;; Mock find-jsonl-files to return both normal and inference files, mock Copilot to return empty
         (with-redefs [repl/find-jsonl-files (fn [] [normal-file inference-file])
-                      providers/find-session-files (fn [provider] (if (= provider :copilot) [] (providers/find-session-files provider)))]
+                      providers/find-session-files (fn [_provider] [])]
           (let [index (repl/build-index!)]
             ;; Should only include the normal session, not the inference session
             (is (= 1 (count index)))
@@ -1819,3 +1819,321 @@
       (with-redefs [shell/sh (fn [& _args]
                                {:exit 0 :out "" :err ""})]
         (is (nil? (repl/read-cursor-session-meta session-dir)))))))
+
+(defn- create-cursor-test-session
+  "Create a test Cursor session directory with store.db."
+  [parent-dir project-hash session-id]
+  (let [session-dir (io/file parent-dir project-hash session-id)]
+    (.mkdirs session-dir)
+    (spit (io/file session-dir "store.db") "fake-sqlite")
+    session-dir))
+
+(deftest test-build-cursor-sessions-index
+  (testing "builds index from Cursor session directories"
+    (let [chats-dir (io/file test-dir ".cursor" "chats")
+          uuid1 "11111111-1111-1111-1111-111111111111"
+          uuid2 "22222222-2222-2222-2222-222222222222"
+          session1-dir (create-cursor-test-session chats-dir "hash1" uuid1)
+          session2-dir (create-cursor-test-session chats-dir "hash2" uuid2)
+          meta-json (json/generate-string {:name "My Session" :createdAt 1771473695508 :mode "default"})
+          hex-output (str->hex meta-json)]
+      (with-redefs [providers/find-session-files
+                    (fn [p] (if (= p :cursor) [session1-dir session2-dir] []))
+                    shell/sh (fn [& args]
+                               (if (= "sqlite3" (first args))
+                                 {:exit 0 :out (str hex-output "\n") :err ""}
+                                 {:exit 1 :out "" :err ""}))]
+        (let [build-fn @#'repl/build-cursor-sessions-index
+              index (build-fn)]
+          (is (= 2 (count index)))
+          (is (contains? index uuid1))
+          (is (contains? index uuid2))
+          ;; Verify metadata structure
+          (let [meta1 (get index uuid1)]
+            (is (= uuid1 (:session-id meta1)))
+            (is (= "My Session" (:name meta1)))
+            (is (= :cursor (:provider meta1)))
+            (is (= 1 (:message-count meta1)))
+            (is (= "[unknown]" (:working-directory meta1))))))))
+
+  (testing "handles empty session list"
+    (with-redefs [providers/find-session-files (fn [p] [])]
+      (let [build-fn @#'repl/build-cursor-sessions-index
+            index (build-fn)]
+        (is (= 0 (count index))))))
+
+  (testing "skips sessions that fail metadata read"
+    (let [session-dir (io/file test-dir "cursor-err" "hash" "33333333-3333-3333-3333-333333333333")]
+      (.mkdirs session-dir)
+      (spit (io/file session-dir "store.db") "fake")
+      (with-redefs [providers/find-session-files
+                    (fn [p] (if (= p :cursor) [session-dir] []))
+                    providers/session-id-from-file
+                    (fn [_ _] (throw (Exception. "test error")))]
+        (let [build-fn @#'repl/build-cursor-sessions-index
+              index (build-fn)]
+          (is (= 0 (count index))))))))
+
+(defn- create-opencode-test-storage
+  "Create OpenCode test directory structure with session, message, and part files.
+   Returns the session file path."
+  [base-dir session-id title directory messages]
+  (let [session-dir (io/file base-dir "storage" "session" "test-hash")
+        session-file (io/file session-dir (str session-id ".json"))
+        msg-dir (io/file base-dir "storage" "message" session-id)]
+    (.mkdirs session-dir)
+    (spit session-file (json/generate-string
+                        {:id session-id
+                         :title title
+                         :directory directory
+                         :time {:created 1770528283010
+                                :updated 1770528290000}}))
+    ;; Create message files
+    (when (seq messages)
+      (.mkdirs msg-dir)
+      (doseq [[idx {:keys [msg-id role text]}] (map-indexed vector messages)]
+        (let [msg-file (io/file msg-dir (str msg-id ".json"))]
+          (spit msg-file (json/generate-string
+                          {:id msg-id
+                           :role role
+                           :sessionID session-id
+                           :time {:created (+ 1770528283010 (* idx 1000))}}))
+          ;; Create text part
+          (let [parts-dir (io/file base-dir "storage" "part" msg-id)
+                part-file (io/file parts-dir (str "prt_" (format "%03d" idx) ".json"))]
+            (.mkdirs parts-dir)
+            (spit part-file (json/generate-string {:type "text" :text text}))))))
+    session-file))
+
+(deftest test-build-opencode-sessions-index
+  (testing "builds index from OpenCode session files"
+    (let [base-dir (io/file test-dir "opencode")
+          session-id "ses_abc123test"
+          session-file (create-opencode-test-storage
+                        base-dir session-id "Test Session" "/test/project"
+                        [{:msg-id "msg_001" :role "user" :text "Hello"}
+                         {:msg-id "msg_002" :role "assistant" :text "Hi there"}])]
+      (with-redefs [providers/find-session-files
+                    (fn [p] (if (= p :opencode) [session-file] []))
+                    repl/opencode-storage-base
+                    (fn [] (io/file base-dir "storage"))]
+        (let [build-fn @#'repl/build-opencode-sessions-index
+              index (build-fn)]
+          (is (= 1 (count index)))
+          (is (contains? index session-id))
+          (let [meta (get index session-id)]
+            (is (= session-id (:session-id meta)))
+            (is (= "Test Session" (:name meta)))
+            (is (= "/test/project" (:working-directory meta)))
+            (is (= :opencode (:provider meta)))
+            (is (= 2 (:message-count meta)))
+            (is (= 1770528283010 (:created-at meta)))
+            (is (= 1770528290000 (:last-modified meta))))))))
+
+  (testing "handles sessions with no messages"
+    (let [base-dir (io/file test-dir "opencode-empty")
+          session-id "ses_nomsgs"
+          session-file (create-opencode-test-storage
+                        base-dir session-id "Empty Session" "/test" [])]
+      (with-redefs [providers/find-session-files
+                    (fn [p] (if (= p :opencode) [session-file] []))
+                    repl/opencode-storage-base
+                    (fn [] (io/file base-dir "storage"))]
+        (let [build-fn @#'repl/build-opencode-sessions-index
+              index (build-fn)]
+          (is (= 1 (count index)))
+          (is (= 0 (:message-count (get index session-id))))))))
+
+  (testing "handles empty session list"
+    (with-redefs [providers/find-session-files (fn [p] [])]
+      (let [build-fn @#'repl/build-opencode-sessions-index
+            index (build-fn)]
+        (is (= 0 (count index)))))))
+
+(deftest test-build-index-with-all-four-providers
+  (testing "build-index! discovers sessions from all four providers"
+    (let [claude-id "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+          claude-file (create-test-jsonl-file (str claude-id ".jsonl")
+                                              ["{\"role\":\"user\",\"text\":\"Claude message\"}"])
+          copilot-id "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+          copilot-dir (create-copilot-test-session
+                       copilot-id "/copilot/project"
+                       [(json/generate-string {:type "user.message"
+                                               :timestamp "2026-01-28T10:00:00Z"
+                                               :data {:content "Copilot message"
+                                                      :messageId "msg-1"}})])
+          cursor-id "cccccccc-cccc-cccc-cccc-cccccccccccc"
+          cursor-dir (io/file test-dir "cursor-chats" "hash1" cursor-id)
+          _ (do (.mkdirs cursor-dir)
+                (spit (io/file cursor-dir "store.db") "fake"))
+          opencode-base (io/file test-dir "opencode-idx")
+          opencode-id "ses_testindex123"
+          opencode-file (create-opencode-test-storage
+                         opencode-base opencode-id "OC Session" "/oc/project"
+                         [{:msg-id "msg_oc1" :role "user" :text "Hello OC"}])
+          meta-json (json/generate-string {:name "Cursor Session" :createdAt 1771473695508})
+          hex-meta (str->hex meta-json)]
+      (with-redefs [repl/find-jsonl-files (fn [] [claude-file])
+                    providers/find-session-files
+                    (fn [provider]
+                      (case provider
+                        :copilot [copilot-dir]
+                        :cursor [cursor-dir]
+                        :opencode [opencode-file]
+                        []))
+                    shell/sh (fn [& args]
+                               (if (= "sqlite3" (first args))
+                                 {:exit 0 :out (str hex-meta "\n") :err ""}
+                                 {:exit 1 :out "" :err ""}))
+                    repl/opencode-storage-base
+                    (fn [] (io/file opencode-base "storage"))]
+        (let [index (repl/build-index!)]
+          (is (= 4 (count index)))
+          (is (= :claude (:provider (get index claude-id))))
+          (is (= :copilot (:provider (get index copilot-id))))
+          (is (= :cursor (:provider (get index cursor-id))))
+          (is (= :opencode (:provider (get index opencode-id)))))))))
+
+(deftest test-build-index-four-provider-precedence
+  (testing "Claude takes precedence over all other providers for same ID"
+    (let [same-id "dddddddd-dddd-dddd-dddd-dddddddddddd"
+          claude-file (create-test-jsonl-file (str same-id ".jsonl")
+                                              ["{\"role\":\"user\",\"text\":\"Claude version\"}"])
+          copilot-dir (create-copilot-test-session
+                       same-id "/copilot/project"
+                       [(json/generate-string {:type "user.message"
+                                               :timestamp "2026-01-28T10:00:00Z"
+                                               :data {:content "Copilot version"
+                                                      :messageId "msg-1"}})])
+          cursor-dir (io/file test-dir "cursor-prec" "hash1" same-id)]
+      (.mkdirs cursor-dir)
+      (spit (io/file cursor-dir "store.db") "fake")
+      (with-redefs [repl/find-jsonl-files (fn [] [claude-file])
+                    providers/find-session-files
+                    (fn [provider]
+                      (case provider
+                        :copilot [copilot-dir]
+                        :cursor [cursor-dir]
+                        :opencode []
+                        []))
+                    shell/sh (fn [& args]
+                               (if (= "sqlite3" (first args))
+                                 {:exit 0 :out (str (str->hex "{}") "\n") :err ""}
+                                 {:exit 1 :out "" :err ""}))]
+        (let [index (repl/build-index!)]
+          (is (= 1 (count index)))
+          (is (= :claude (:provider (get index same-id)))))))))
+
+(deftest test-assemble-opencode-message-text
+  (let [assemble-fn @#'repl/assemble-opencode-message-text]
+    (testing "concatenates text parts from part files"
+      (let [msg-id "msg_test123"
+            parts-dir (io/file test-dir "opencode-parts" "storage" "part" msg-id)]
+        (.mkdirs parts-dir)
+        (spit (io/file parts-dir "prt_001.json")
+              (json/generate-string {:type "text" :text "Hello "}))
+        (spit (io/file parts-dir "prt_002.json")
+              (json/generate-string {:type "text" :text "world"}))
+        ;; Non-text part should be skipped
+        (spit (io/file parts-dir "prt_003.json")
+              (json/generate-string {:type "tool_use" :name "Read"}))
+
+        (with-redefs [repl/opencode-storage-base
+                      (fn [] (io/file test-dir "opencode-parts" "storage"))]
+          (let [text (assemble-fn msg-id)]
+            (is (= "Hello world" text))))))
+
+    (testing "returns empty string when parts dir doesn't exist"
+      (with-redefs [repl/opencode-storage-base
+                    (fn [] (io/file test-dir "nonexistent-home" "storage"))]
+        (is (= "" (assemble-fn "msg_nonexistent")))))
+
+    (testing "handles malformed part files gracefully"
+      (let [msg-id "msg_malformed"
+            parts-dir (io/file test-dir "opencode-malformed" "storage" "part" msg-id)]
+        (.mkdirs parts-dir)
+        (spit (io/file parts-dir "prt_001.json") "not valid json")
+        (spit (io/file parts-dir "prt_002.json")
+              (json/generate-string {:type "text" :text "OK"}))
+
+        (with-redefs [repl/opencode-storage-base
+                      (fn [] (io/file test-dir "opencode-malformed" "storage"))]
+          (let [text (assemble-fn msg-id)]
+            (is (= "OK" text))))))))
+
+(deftest test-parse-opencode-messages
+  (let [parse-fn @#'repl/parse-opencode-messages]
+    (testing "parses messages from OpenCode session with text assembly"
+      (let [base-dir (io/file test-dir "oc-parse")
+            session-id "ses_parsetest"
+            session-file (create-opencode-test-storage
+                          base-dir session-id "Parse Test" "/test/dir"
+                          [{:msg-id "msg_001" :role "user" :text "Hello OC"}
+                           {:msg-id "msg_002" :role "assistant" :text "Hi there"}])]
+        (with-redefs [repl/opencode-storage-base
+                      (fn [] (io/file base-dir "storage"))]
+          (let [messages (parse-fn (.getAbsolutePath session-file))]
+            (is (= 2 (count messages)))
+            ;; Verify canonical format (sorted by filename)
+            (let [first-msg (first messages)]
+              (is (= "msg_001" (:uuid first-msg)))
+              (is (= "user" (:role first-msg)))
+              (is (= "Hello OC" (:text first-msg)))
+              (is (= :opencode (:provider first-msg)))
+              (is (string? (:timestamp first-msg))))
+            (let [second-msg (second messages)]
+              (is (= "msg_002" (:uuid second-msg)))
+              (is (= "assistant" (:role second-msg)))
+              (is (= "Hi there" (:text second-msg))))))))
+
+    (testing "returns empty vector when messages directory doesn't exist"
+      (let [base-dir (io/file test-dir "oc-nomsg")
+            session-dir (io/file base-dir "storage" "session" "test-hash")]
+        (.mkdirs session-dir)
+        (let [session-file (io/file session-dir "ses_nomsg.json")]
+          (spit session-file (json/generate-string
+                              {:id "ses_nomsg" :title "No Messages" :time {:created 1}}))
+          (with-redefs [repl/opencode-storage-base
+                        (fn [] (io/file base-dir "storage"))]
+            (is (= [] (parse-fn (.getAbsolutePath session-file))))))))))
+
+(deftest test-parse-session-messages-cursor
+  (testing "Cursor provider returns empty vector"
+    (is (= [] (repl/parse-session-messages :cursor "/any/path")))))
+
+(deftest test-parse-session-messages-opencode
+  (testing "OpenCode provider parses session messages"
+    (let [base-dir (io/file test-dir "oc-session-msgs")
+          session-id "ses_fulltest"
+          session-file (create-opencode-test-storage
+                        base-dir session-id "Full Test" "/test"
+                        [{:msg-id "msg_f1" :role "user" :text "User message"}
+                         {:msg-id "msg_f2" :role "assistant" :text "Assistant response"}])]
+      (with-redefs [repl/opencode-storage-base
+                    (fn [] (io/file base-dir "storage"))]
+        (let [parsed (repl/parse-session-messages :opencode (.getAbsolutePath session-file))]
+          (is (= 2 (count parsed)))
+          (is (= "user" (:role (first parsed))))
+          (is (= "User message" (:text (first parsed))))
+          (is (= :opencode (:provider (first parsed))))
+          (is (= "assistant" (:role (second parsed))))
+          (is (= "Assistant response" (:text (second parsed)))))))))
+
+(deftest test-get-all-sessions-includes-opencode
+  (testing "get-all-sessions includes OpenCode ses_* sessions"
+    (reset! repl/session-index
+            {"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+             {:session-id "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+              :provider :claude :name "Claude"}
+             "ses_test123"
+             {:session-id "ses_test123"
+              :provider :opencode :name "OpenCode"}
+             "invalid-id"
+             {:session-id "invalid-id"
+              :provider :cursor :name "Invalid"}})
+    (let [sessions (repl/get-all-sessions)]
+      ;; Should include UUID and ses_* but not invalid
+      (is (= 2 (count sessions)))
+      (is (some #(= "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" (:session-id %)) sessions))
+      (is (some #(= "ses_test123" (:session-id %)) sessions))
+      (is (not (some #(= "invalid-id" (:session-id %)) sessions))))))

@@ -564,23 +564,102 @@
                     {:dir (.getAbsolutePath session-dir) :error (ex-message e)})
           nil)))))
 
+(defn- build-cursor-sessions-index
+  "Build index entries for all Cursor sessions.
+   Returns map of session-id -> metadata."
+  []
+  (let [sessions (providers/find-session-files :cursor)
+        _ (log/info "Found Cursor session directories" {:count (count sessions)})]
+    (into {}
+          (keep (fn [session-dir]
+                  (try
+                    (let [session-id (providers/session-id-from-file :cursor session-dir)
+                          meta (read-cursor-session-meta session-dir)
+                          metadata {:session-id session-id
+                                    :file (.getAbsolutePath (io/file session-dir "store.db"))
+                                    :name (or (:name meta) "Cursor Session")
+                                    :working-directory (or (providers/extract-working-dir :cursor session-dir)
+                                                           "[unknown]")
+                                    :created-at (or (:createdAt meta) (.lastModified session-dir))
+                                    :last-modified (.lastModified session-dir)
+                                    ;; Set to 1 (not 0) so sessions appear in get-recent-sessions.
+                                    ;; We know at least one exchange happened if store.db exists.
+                                    ;; Cannot get actual count from SQLite binary blobs.
+                                    :message-count 1
+                                    :preview nil
+                                    :first-message nil
+                                    :last-message nil
+                                    :ios-notified false
+                                    :first-notification nil
+                                    :provider :cursor}]
+                      [session-id metadata])
+                    (catch Exception e
+                      (log/warn "Failed to index Cursor session" {:error (ex-message e)})
+                      nil)))
+                sessions))))
+
+(defn opencode-storage-base
+  "Return the base directory for OpenCode file storage.
+   Extracted as a function for testability (System/getProperty can't be redefed)."
+  []
+  (let [home (System/getProperty "user.home")]
+    (io/file home ".local" "share" "opencode" "storage")))
+
+(defn- build-opencode-sessions-index
+  "Build index entries for all OpenCode sessions.
+   Returns map of session-id -> metadata."
+  []
+  (let [sessions (providers/find-session-files :opencode)
+        _ (log/info "Found OpenCode session files" {:count (count sessions)})]
+    (into {}
+          (keep (fn [session-file]
+                  (try
+                    (let [session-id (providers/session-id-from-file :opencode session-file)
+                          info (json/parse-string (slurp session-file) true)
+                          msgs-dir (io/file (opencode-storage-base) "message" (:id info))
+                          msg-count (if (.exists msgs-dir)
+                                      (count (filter #(str/ends-with? (.getName %) ".json")
+                                                     (.listFiles msgs-dir)))
+                                      0)
+                          metadata {:session-id session-id
+                                    :file (.getAbsolutePath session-file)
+                                    :name (or (:title info) (:slug info) "OpenCode Session")
+                                    :working-directory (or (:directory info) "[unknown]")
+                                    :created-at (get-in info [:time :created])
+                                    :last-modified (get-in info [:time :updated])
+                                    :message-count msg-count
+                                    :preview nil
+                                    :first-message nil
+                                    :last-message nil
+                                    :ios-notified false
+                                    :first-notification nil
+                                    :provider :opencode}]
+                      [session-id metadata])
+                    (catch Exception e
+                      (log/warn "Failed to index OpenCode session" {:error (ex-message e)})
+                      nil)))
+                sessions))))
+
 (defn build-index!
   "Scan all session files from all providers and build the session index.
    Returns map of session-id -> metadata.
-   Discovers sessions from Claude (~/.claude/projects/) and Copilot (~/.copilot/session-state/).
-   Filters out files with non-UUID session IDs and inference sessions."
+   Discovers sessions from Claude, Copilot, Cursor, and OpenCode.
+   Merge order: opencode, cursor, copilot, claude (later entries win, Claude takes final precedence)."
   []
   (log/info "Building session index from filesystem (multi-provider)...")
   (let [start-time (System/currentTimeMillis)
-        ;; Build indices for each provider
         claude-index (build-claude-sessions-index)
         copilot-index (build-copilot-sessions-index)
-        ;; Merge indices (Claude sessions take precedence in case of ID collision)
-        index (merge copilot-index claude-index)
+        cursor-index (build-cursor-sessions-index)
+        opencode-index (build-opencode-sessions-index)
+        ;; Merge order: later entries win. Claude takes final precedence.
+        index (merge opencode-index cursor-index copilot-index claude-index)
         elapsed (- (System/currentTimeMillis) start-time)]
     (log/info "Session index built"
               {:claude-count (count claude-index)
                :copilot-count (count copilot-index)
+               :cursor-count (count cursor-index)
+               :opencode-count (count opencode-index)
                :total-count (count index)
                :elapsed-ms elapsed})
     index))
@@ -807,10 +886,52 @@
       (log/error e "Failed to parse .jsonl file" {:file file-path})
       [])))
 
+(defn- assemble-opencode-message-text
+  "Read all text parts for an OpenCode message and concatenate them.
+   Parts are stored under <opencode-storage>/part/<message-id>/."
+  [message-id]
+  (let [parts-dir (io/file (opencode-storage-base) "part" message-id)]
+    (if (.exists parts-dir)
+      (->> (.listFiles parts-dir)
+           (filter #(str/ends-with? (.getName %) ".json"))
+           (sort-by #(.getName %))
+           (keep (fn [f]
+                   (try
+                     (let [part (json/parse-string (slurp f) true)]
+                       (when (= "text" (:type part))
+                         (:text part)))
+                     (catch Exception _ nil))))
+           (apply str))
+      "")))
+
+(defn- parse-opencode-messages
+  "Parse messages from an OpenCode session.
+   file-path points to the session info JSON file (ses_<id>.json)."
+  [file-path]
+  (let [session-file (io/file file-path)
+        info (json/parse-string (slurp session-file) true)
+        session-id (:id info)
+        messages-dir (io/file (opencode-storage-base) "message" session-id)]
+    (if (.exists messages-dir)
+      (->> (.listFiles messages-dir)
+           (filter #(str/ends-with? (.getName %) ".json"))
+           (sort-by #(.getName %))
+           (keep (fn [msg-file]
+                   (try
+                     (let [msg (json/parse-string (slurp msg-file) true)
+                           text (assemble-opencode-message-text (:id msg))
+                           enriched (assoc msg :assembled-text text)]
+                       (providers/parse-message :opencode enriched))
+                     (catch Exception _ nil))))
+           vec)
+      [])))
+
 (defn parse-session-messages
   "Parse messages from a session file, using the appropriate provider parser.
    For Claude sessions: parses .jsonl and transforms to canonical format
    For Copilot sessions: parses events.jsonl and transforms to canonical format
+   For Cursor sessions: returns [] (SQLite binary — no history parsing)
+   For OpenCode sessions: parses message JSONs and assembles text parts
    Returns vector of canonical message maps."
   [provider file-path]
   (case provider
@@ -818,7 +939,7 @@
               ;; Transform each raw message to canonical format
               (->> raw-messages
                    (map #(providers/parse-message :claude %))
-                   (filter some?) ; Remove nil (internal messages like summary, system)
+                   (filter some?)
                    (vec)))
     :copilot (let [file (io/file file-path)]
                ;; Copilot file-path may point to events.jsonl or session directory
@@ -828,6 +949,8 @@
                      (parse-copilot-events-file events-file)))
                  ;; Assume it's events.jsonl directly
                  (parse-copilot-events-file file)))
+    :cursor [] ;; SQLite binary — no history parsing
+    :opencode (parse-opencode-messages file-path)
     ;; Default to Claude parser for unknown providers
     (do
       (log/warn "Unknown provider, using Claude parser" {:provider provider})
