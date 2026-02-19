@@ -1010,7 +1010,9 @@ another_key: another value
 (deftest test-build-cli-command-claude
   (testing "builds basic Claude CLI command with prompt"
     ;; Need to mock the CLI path check since it depends on filesystem
-    (with-redefs [io/file (fn [& args]
+    ;; Also mock claude-cli-env-path to prevent CLAUDE_CLI_PATH env var from interfering
+    (with-redefs [providers/claude-cli-env-path (constantly nil)
+                  io/file (fn [& args]
                             (let [path (apply str (interpose "/" args))]
                               (proxy [java.io.File] [path]
                                 (exists [] (clojure.string/includes? path ".claude/local/claude")))))]
@@ -1026,7 +1028,8 @@ another_key: another value
         (is (= "test prompt" (last result))))))
 
   (testing "includes --session-id for new sessions"
-    (with-redefs [io/file (fn [& args]
+    (with-redefs [providers/claude-cli-env-path (constantly nil)
+                  io/file (fn [& args]
                             (let [path (apply str (interpose "/" args))]
                               (proxy [java.io.File] [path]
                                 (exists [] (clojure.string/includes? path ".claude/local/claude")))))]
@@ -1036,7 +1039,8 @@ another_key: another value
         (is (some #{"abc-123"} result)))))
 
   (testing "includes --resume for resumed sessions"
-    (with-redefs [io/file (fn [& args]
+    (with-redefs [providers/claude-cli-env-path (constantly nil)
+                  io/file (fn [& args]
                             (let [path (apply str (interpose "/" args))]
                               (proxy [java.io.File] [path]
                                 (exists [] (clojure.string/includes? path ".claude/local/claude")))))]
@@ -1046,7 +1050,8 @@ another_key: another value
         (is (some #{"xyz-789"} result)))))
 
   (testing "includes --model when specified"
-    (with-redefs [io/file (fn [& args]
+    (with-redefs [providers/claude-cli-env-path (constantly nil)
+                  io/file (fn [& args]
                             (let [path (apply str (interpose "/" args))]
                               (proxy [java.io.File] [path]
                                 (exists [] (clojure.string/includes? path ".claude/local/claude")))))]
@@ -1056,7 +1061,8 @@ another_key: another value
         (is (some #{"haiku"} result)))))
 
   (testing "includes --append-system-prompt when specified"
-    (with-redefs [io/file (fn [& args]
+    (with-redefs [providers/claude-cli-env-path (constantly nil)
+                  io/file (fn [& args]
                             (let [path (apply str (interpose "/" args))]
                               (proxy [java.io.File] [path]
                                 (exists [] (clojure.string/includes? path ".claude/local/claude")))))]
@@ -1066,7 +1072,8 @@ another_key: another value
         (is (some #{"Be concise"} result)))))
 
   (testing "ignores blank system-prompt"
-    (with-redefs [io/file (fn [& args]
+    (with-redefs [providers/claude-cli-env-path (constantly nil)
+                  io/file (fn [& args]
                             (let [path (apply str (interpose "/" args))]
                               (proxy [java.io.File] [path]
                                 (exists [] (clojure.string/includes? path ".claude/local/claude")))))]
@@ -1075,7 +1082,8 @@ another_key: another value
         (is (not (some #{"--append-system-prompt"} result))))))
 
   (testing "throws when Claude CLI not found"
-    (with-redefs [io/file (fn [& args]
+    (with-redefs [providers/claude-cli-env-path (constantly nil)
+                  io/file (fn [& args]
                             (proxy [java.io.File] [(apply str (interpose "/" args))]
                               (exists [] false)))]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo

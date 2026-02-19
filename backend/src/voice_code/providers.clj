@@ -517,13 +517,18 @@
    Throws: ex-info if provider CLI invocation not supported"
   (fn [provider _opts] provider))
 
+(defn claude-cli-env-path
+  "Returns the CLAUDE_CLI_PATH environment variable value, if set."
+  []
+  (System/getenv "CLAUDE_CLI_PATH"))
+
 (defmethod build-cli-command :claude [_ opts]
   ;; Note: The actual Claude CLI invocation is handled by voice-code.claude/invoke-claude
   ;; This method exists to document the expected command format.
   ;; The claude.clj module handles all the complexity of process management,
   ;; output parsing, and error handling.
   (let [{:keys [prompt new-session-id resume-session-id system-prompt model]} opts
-        cli-path (or (System/getenv "CLAUDE_CLI_PATH")
+        cli-path (or (claude-cli-env-path)
                      (let [home (System/getProperty "user.home")
                            default-path (str home "/.claude/local/claude")]
                        (when (.exists (io/file default-path))
