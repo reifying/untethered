@@ -1211,9 +1211,7 @@ struct MessageDetailView: View {
     private var messageDetailContent: some View {
         VStack(spacing: 0) {
             ScrollView {
-                Text(message.text)
-                    .font(.body)
-                    .textSelection(.enabled)
+                SelectableText(text: message.text)
                     .padding()
             }
 

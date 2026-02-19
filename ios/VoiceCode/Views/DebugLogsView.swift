@@ -38,9 +38,7 @@ struct DebugLogsView: View {
 
             // Logs display
             ScrollView {
-                Text(logs)
-                    .font(.system(size: 10, design: .monospaced))
-                    .textSelection(.enabled)
+                SelectableText(text: logs, isMonospaced: true, fontSize: 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
             }
