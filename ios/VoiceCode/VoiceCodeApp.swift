@@ -60,6 +60,7 @@ struct VoiceCodeApp: App {
         }
         #if os(macOS)
         .commands {
+            // Edit menu additions
             CommandGroup(after: .textEditing) {
                 Button("Stop Speaking") {
                     voiceOutput.stop()
@@ -71,6 +72,66 @@ struct VoiceCodeApp: App {
                     voiceOutput.isMuted.toggle()
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Command Palette") {
+                    NotificationCenter.default.post(name: .showCommandPalette, object: nil)
+                }
+                .keyboardShortcut("k", modifiers: [.command])
+            }
+
+            // View menu additions
+            CommandGroup(after: .toolbar) {
+                Button("Toggle Sidebar") {
+                    NotificationCenter.default.post(name: .toggleSidebar, object: nil)
+                }
+                .keyboardShortcut("0", modifiers: [.command])
+
+                Button("Focus Sidebar") {
+                    NotificationCenter.default.post(name: .focusSidebar, object: nil)
+                }
+                .keyboardShortcut("1", modifiers: [.command])
+
+                Button("Focus Conversation") {
+                    NotificationCenter.default.post(name: .focusConversation, object: nil)
+                }
+                .keyboardShortcut("2", modifiers: [.command])
+            }
+
+            // Session menu
+            CommandMenu("Session") {
+                Button("New Session") {
+                    NotificationCenter.default.post(name: .createNewSession, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: [.command])
+
+                Button("Refresh Session") {
+                    NotificationCenter.default.post(name: .refreshSession, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: [.command])
+
+                Button("Compact Session") {
+                    NotificationCenter.default.post(name: .compactSession, object: nil)
+                }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+
+                Button("Session Info") {
+                    NotificationCenter.default.post(name: .showSessionInfo, object: nil)
+                }
+                .keyboardShortcut("i", modifiers: [.command])
+
+                Divider()
+
+                Button("Previous Session") {
+                    NotificationCenter.default.post(name: .selectPreviousSession, object: nil)
+                }
+                .keyboardShortcut("[", modifiers: [.command])
+
+                Button("Next Session") {
+                    NotificationCenter.default.post(name: .selectNextSession, object: nil)
+                }
+                .keyboardShortcut("]", modifiers: [.command])
             }
         }
         #endif
@@ -107,6 +168,8 @@ struct RootView: View {
     #if os(macOS)
     @State private var selectedSessionId: UUID?
     @State private var sidebarVisibility: NavigationSplitViewVisibility = .all
+    @State private var showCommandPalette = false
+    @State private var sessions: [CDBackendSession] = []
     #endif
 
     var body: some View {
@@ -200,6 +263,49 @@ struct RootView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .overlay {
+            if showCommandPalette {
+                CommandPaletteOverlay(
+                    client: client,
+                    voiceOutput: voiceOutput,
+                    isPresented: $showCommandPalette,
+                    onAction: { action in
+                        handleCommandPaletteAction(action)
+                    }
+                )
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showCommandPalette)) { _ in
+            showCommandPalette.toggle()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleSidebar)) { _ in
+            withAnimation {
+                sidebarVisibility = sidebarVisibility == .all ? .detailOnly : .all
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .focusSidebar)) { _ in
+            withAnimation {
+                sidebarVisibility = .all
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .focusConversation)) { _ in
+            // Keep sidebar visible but focus is conceptual; no-op beyond ensuring detail is visible
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .createNewSession)) { _ in
+            NotificationCenter.default.post(name: .sidebarCreateNewSession, object: nil)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .selectPreviousSession)) { _ in
+            selectAdjacentSession(direction: -1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .selectNextSession)) { _ in
+            selectAdjacentSession(direction: 1)
+        }
+        .task {
+            loadSessionsForNavigation()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .sessionListDidUpdate)) { _ in
+            loadSessionsForNavigation()
+        }
         #else
         NavigationStack(path: $navigationPath) {
             DirectoryListView(client: client, settings: settings, voiceOutput: voiceOutput, showingSettings: $showingSettings, recentSessions: $recentSessions, navigationPath: $navigationPath, resourcesManager: resourcesManager)
@@ -255,4 +361,74 @@ struct RootView: View {
             }
         )
     }
+
+    // MARK: - macOS Session Navigation
+
+    #if os(macOS)
+    private func loadSessionsForNavigation() {
+        do {
+            sessions = try CDBackendSession.fetchActiveSessions(context: viewContext)
+        } catch {
+            logger.error("Failed to load sessions for navigation: \(error)")
+        }
+    }
+
+    private func selectAdjacentSession(direction: Int) {
+        let sortedSessions = sessions.sorted { $0.lastModified > $1.lastModified }
+        guard !sortedSessions.isEmpty else { return }
+
+        if let currentId = selectedSessionId,
+           let currentIndex = sortedSessions.firstIndex(where: { $0.id == currentId }) {
+            let newIndex = currentIndex + direction
+            if newIndex >= 0 && newIndex < sortedSessions.count {
+                selectedSessionId = sortedSessions[newIndex].id
+            }
+        } else {
+            // No session selected, select first
+            selectedSessionId = sortedSessions.first?.id
+        }
+    }
+
+    private func handleCommandPaletteAction(_ action: CommandPaletteAction) {
+        switch action {
+        case .newSession:
+            NotificationCenter.default.post(name: .sidebarCreateNewSession, object: nil)
+        case .refreshSession:
+            NotificationCenter.default.post(name: .refreshSession, object: nil)
+        case .compactSession:
+            NotificationCenter.default.post(name: .compactSession, object: nil)
+        case .sessionInfo:
+            NotificationCenter.default.post(name: .showSessionInfo, object: nil)
+        case .stopSpeaking:
+            voiceOutput.stop()
+        case .toggleMute:
+            voiceOutput.isMuted.toggle()
+        case .toggleSidebar:
+            withAnimation {
+                sidebarVisibility = sidebarVisibility == .all ? .detailOnly : .all
+            }
+        case .runCommand(let commandId):
+            NotificationCenter.default.post(name: .executeCommand, object: commandId)
+        }
+    }
+    #endif
 }
+
+// MARK: - Command Notifications
+
+#if os(macOS)
+extension Notification.Name {
+    static let showCommandPalette = Notification.Name("showCommandPalette")
+    static let toggleSidebar = Notification.Name("toggleSidebar")
+    static let focusSidebar = Notification.Name("focusSidebar")
+    static let focusConversation = Notification.Name("focusConversation")
+    static let createNewSession = Notification.Name("createNewSession")
+    static let sidebarCreateNewSession = Notification.Name("sidebarCreateNewSession")
+    static let refreshSession = Notification.Name("refreshSession")
+    static let compactSession = Notification.Name("compactSessionCommand")
+    static let showSessionInfo = Notification.Name("showSessionInfo")
+    static let selectPreviousSession = Notification.Name("selectPreviousSession")
+    static let selectNextSession = Notification.Name("selectNextSession")
+    static let executeCommand = Notification.Name("executeCommand")
+}
+#endif

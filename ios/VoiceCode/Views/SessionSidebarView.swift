@@ -186,7 +186,6 @@ struct SessionSidebarView: View {
                 }) {
                     Image(systemName: "plus")
                 }
-                .keyboardShortcut("n", modifiers: [.command])
                 .help("New Session (⌘N)")
             }
 
@@ -203,6 +202,10 @@ struct SessionSidebarView: View {
         .onReceive(NotificationCenter.default.publisher(for: .sessionListDidUpdate)) { _ in
             logger.info("🔄 Session list updated, refreshing sidebar")
             loadSessions()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .sidebarCreateNewSession)) { _ in
+            newWorkingDirectory = defaultWorkingDirectory
+            showingNewSession = true
         }
         .sheet(isPresented: $showingNewSession) {
             NewSessionView(
