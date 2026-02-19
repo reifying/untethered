@@ -29,6 +29,7 @@ class VoiceCodeClient: ObservableObject {
     @Published var resourcesList: [Resource] = []  // List of uploaded resources
     @Published var availableRecipes: [Recipe] = []  // All recipes from backend
     @Published var activeRecipes: [String: ActiveRecipe] = [:]  // session-id -> active recipe
+    @Published var parsedRecentSessions: [RecentSession] = []  // Parsed recent sessions from backend
 
     private var webSocket: URLSessionWebSocketTask?
     private var reconnectionTimer: DispatchSourceTimer?
@@ -67,6 +68,9 @@ class VoiceCodeClient: ObservableObject {
 
     // Continuations for async command execution requests (commandId -> continuation)
     private var commandExecutionContinuations: [String: CheckedContinuation<String, Never>] = [:]
+
+    // Quick prompt completion handlers keyed by ios_session_id
+    private var quickPromptHandlers: [String: (String) -> Void] = [:]
 
     // Debouncing mechanism for @Published property updates
     private var pendingUpdates: [String: Any] = [:]
@@ -636,9 +640,17 @@ class VoiceCodeClient: ObservableObject {
 
                     // Successful response from Claude
                     if let text = json["text"] as? String {
-                        let message = Message(role: .assistant, text: text)
-                        print("📥 [VoiceCodeClient] Response for iOS session: \(iosSessionId)")
-                        self.onMessageReceived?(message, iosSessionId)
+                        // Check for quick prompt handler first
+                        if let handler = self.quickPromptHandlers.removeValue(forKey: iosSessionId) {
+                            print("📥 [VoiceCodeClient] Quick prompt response for: \(iosSessionId)")
+                            DispatchQueue.main.async {
+                                handler(text)
+                            }
+                        } else {
+                            let message = Message(role: .assistant, text: text)
+                            print("📥 [VoiceCodeClient] Response for iOS session: \(iosSessionId)")
+                            self.onMessageReceived?(message, iosSessionId)
+                        }
                     }
 
                     // Check both underscore and hyphen variants (Clojure uses hyphens)
@@ -653,6 +665,13 @@ class VoiceCodeClient: ObservableObject {
                 } else {
                     // Error response
                     let error = json["error"] as? String ?? "Unknown error"
+                    let iosSessionId = (json["ios_session_id"] as? String) ?? (json["ios-session-id"] as? String) ?? ""
+                    if let handler = self.quickPromptHandlers.removeValue(forKey: iosSessionId) {
+                        print("📥 [VoiceCodeClient] Quick prompt error for: \(iosSessionId)")
+                        DispatchQueue.main.async {
+                            handler("Error: \(error)")
+                        }
+                    }
                     scheduleUpdate(key: "currentError", value: error as String?)
                 }
 
@@ -660,6 +679,15 @@ class VoiceCodeClient: ObservableObject {
                 scheduleUpdate(key: "isProcessing", value: false)
                 let error = json["message"] as? String ?? "Unknown error"
                 scheduleUpdate(key: "currentError", value: error as String?)
+
+                // Route to quick prompt handler if applicable
+                let errorIosSessionId = (json["ios_session_id"] as? String) ?? (json["ios-session-id"] as? String) ?? ""
+                if let handler = self.quickPromptHandlers.removeValue(forKey: errorIosSessionId) {
+                    print("📥 [VoiceCodeClient] Quick prompt error for: \(errorIosSessionId)")
+                    DispatchQueue.main.async {
+                        handler("Error: \(error)")
+                    }
+                }
 
                 // Unlock session when error is received
                 if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
@@ -708,6 +736,10 @@ class VoiceCodeClient: ObservableObject {
                 // Recent sessions list for display in Recent section
                 if let sessions = json["sessions"] as? [[String: Any]] {
                     print("📋 [VoiceCodeClient] Received recent_sessions with \(sessions.count) sessions")
+                    let parsed = RecentSession.parseRecentSessions(sessions)
+                    DispatchQueue.main.async {
+                        self.parsedRecentSessions = parsed
+                    }
                     self.onRecentSessionsReceived?(sessions)
                 }
 
@@ -1092,6 +1124,41 @@ class VoiceCodeClient: ObservableObject {
 
         print("📤 [VoiceCodeClient] Sending from iOS session: \(iosSessionId)")
         print("📤 [VoiceCodeClient] Full message: \(message)")
+        sendMessage(message)
+    }
+
+    /// Send a quick prompt from the menu bar, creating a new session.
+    /// The completion handler receives the Claude response text, or an error string prefixed with "Error:".
+    func sendQuickPrompt(text: String, directory: String, completion: @escaping (String) -> Void) {
+        let quickPromptId = UUID().uuidString.lowercased()
+        let sessionId = UUID().uuidString.lowercased()
+
+        // Register one-shot handler keyed by the ios_session_id we'll send
+        quickPromptHandlers[quickPromptId] = completion
+
+        // Timeout after 120 seconds to prevent leaked handlers
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in
+            if let handler = self?.quickPromptHandlers.removeValue(forKey: quickPromptId) {
+                print("⏰ [VoiceCodeClient] Quick prompt timed out: \(quickPromptId)")
+                handler("Error: Request timed out")
+            }
+        }
+
+        var message: [String: Any] = [
+            "type": "prompt",
+            "text": text,
+            "new_session_id": sessionId,
+            "ios_session_id": quickPromptId,
+            "working_directory": directory,
+            "provider": appSettings?.defaultProvider ?? "claude"
+        ]
+
+        // Include system prompt if configured
+        if let systemPrompt = appSettings?.systemPrompt, !systemPrompt.isEmpty {
+            message["system_prompt"] = systemPrompt
+        }
+
+        print("📤 [VoiceCodeClient] Sending quick prompt, session: \(sessionId), tracking: \(quickPromptId), dir: \(directory)")
         sendMessage(message)
     }
 

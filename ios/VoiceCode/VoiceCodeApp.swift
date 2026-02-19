@@ -74,6 +74,14 @@ struct VoiceCodeApp: App {
             }
         }
         #endif
+
+        #if os(macOS)
+        VoiceCodeMenuBarExtra(
+            client: client,
+            settings: settings,
+            voiceOutput: voiceOutput
+        )
+        #endif
     }
 }
 
