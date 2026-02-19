@@ -15,6 +15,25 @@
   []
   (str "cmd-" (java.util.UUID/randomUUID)))
 
+(defn validate-command-id
+  "Validate a command-id string. Returns nil if valid, or an error message string if invalid."
+  [command-id]
+  (cond
+    (nil? command-id)
+    "command-id must not be nil"
+
+    (not (string? command-id))
+    (str "command-id must be a string, got: " (type command-id))
+
+    (str/blank? command-id)
+    "command-id must not be blank"
+
+    (= command-id "git.")
+    "invalid command-id: \"git.\" (missing subcommand)"
+
+    (= command-id "bd.")
+    "invalid command-id: \"bd.\" (missing subcommand)"))
+
 (defn resolve-command-id
   "Resolve a command_id to a shell command string.
 
