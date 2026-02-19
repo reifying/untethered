@@ -79,7 +79,7 @@ class AppSettings: ObservableObject {
         }
     }
 
-    /// Default AI provider for new sessions. Values: "claude", "copilot"
+    /// Default AI provider for new sessions. Values: "claude", "copilot", "cursor", "opencode"
     @Published var defaultProvider: String {
         didSet {
             UserDefaults.standard.set(defaultProvider, forKey: "defaultProvider")

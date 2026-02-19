@@ -2154,6 +2154,32 @@
     (reset! server/api-key nil)
     (reset! server/connected-clients {})))
 
+(deftest test-opencode-prompt-does-not-send-direct-response
+  (testing "OpenCode prompt callback does NOT send :response (relies on watcher)"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}
+                                                :authenticated true
+                                                :max-message-size-kb 200}})
+    (let [sent-messages (atom [])]
+      (with-redefs [voice-code.providers/invoke-provider-async
+                    (fn [provider prompt callback & opts]
+                      (callback {:success true
+                                 :result "OpenCode response text"
+                                 :session-id "opencode-session-789"
+                                 :provider :opencode}))
+                    org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
+                    repl/ensure-session-in-index! (fn [& _] nil)]
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"opencode-session-789\",\"provider\":\"opencode\"}")
+        ;; Should have: ack, turn_complete (NO response)
+        (let [parsed (mapv #(json/parse-string % true) @sent-messages)
+              types (mapv :type parsed)]
+          (is (some #(= "ack" %) types) "Should send ack")
+          (is (not (some #(= "response" %) types)) "Should NOT send direct response for OpenCode")
+          (is (some #(= "turn_complete" %) types) "Should send turn_complete"))))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {})))
+
 (deftest test-prompt-callback-calls-ensure-session-in-index
   (testing "Prompt callback calls ensure-session-in-index! with provider"
     (reset! server/api-key test-api-key)

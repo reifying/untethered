@@ -1590,12 +1590,7 @@
                                   ;; Non-Claude providers use generic kill
                                    (if (providers/kill-provider-session provider session-id)
                                      {:success true}
-                                    ;; Fall back to copilot-specific kill for backward compat
-                                     (if (= provider :copilot)
-                                       (if (providers/kill-copilot-session session-id)
-                                         {:success true}
-                                         {:success false :error "No active process found for session"})
-                                       {:success false :error "No active process found for session"})))]
+                                     {:success false :error "No active process found for session"}))]
                       (if (:success result)
                         (do
                           ;; Release the session lock

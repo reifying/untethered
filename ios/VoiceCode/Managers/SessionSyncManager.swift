@@ -576,7 +576,7 @@ class SessionSyncManager {
 
     /// Extract provider from canonical wire format
     /// - Parameter messageData: Canonical message from backend
-    /// - Returns: Provider string ("claude" or "copilot"), or nil if extraction fails
+    /// - Returns: Provider string ("claude", "copilot", "cursor", or "opencode"), or nil if extraction fails
     internal func extractProvider(from messageData: [String: Any]) -> String? {
         return messageData["provider"] as? String
     }

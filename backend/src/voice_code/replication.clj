@@ -1564,17 +1564,7 @@
              (valid-uuid? (.getName session-dir)))
     (try
       (let [session-id (.getName session-dir)
-            meta (read-cursor-session-meta session-dir)
-            metadata {:session-id session-id
-                      :file (.getAbsolutePath (io/file session-dir "store.db"))
-                      :name (or (:name meta) "Cursor Session")
-                      :working-directory (or (providers/extract-working-dir :cursor session-dir) "[unknown]")
-                      :created-at (or (:createdAt meta) (.lastModified session-dir))
-                      :last-modified (.lastModified session-dir)
-                      :message-count 1
-                      :preview nil :first-message nil :last-message nil
-                      :ios-notified false :first-notification nil
-                      :provider :cursor}]
+            metadata (build-cursor-session-metadata session-id session-dir)]
         (swap! session-index assoc session-id metadata)
         (save-index! @session-index)
         (when-let [callback (:on-session-created @watcher-state)]
@@ -1591,22 +1581,8 @@
              (str/ends-with? (.getName session-file) ".json"))
     (try
       (let [session-id (providers/session-id-from-file :opencode session-file)
-            info (json/parse-string (slurp session-file) true)
-            msgs-dir (io/file (opencode-storage-base) "message" (:id info))
-            msg-count (if (.exists msgs-dir)
-                        (max 1 (count (filter #(str/ends-with? (.getName %) ".json")
-                                              (.listFiles msgs-dir))))
-                        1)
-            metadata {:session-id session-id
-                      :file (.getAbsolutePath session-file)
-                      :name (or (:title info) (:slug info) "OpenCode Session")
-                      :working-directory (or (:directory info) "[unknown]")
-                      :created-at (get-in info [:time :created])
-                      :last-modified (get-in info [:time :updated])
-                      :message-count msg-count
-                      :preview nil :first-message nil :last-message nil
-                      :ios-notified false :first-notification nil
-                      :provider :opencode}]
+            ;; min-msg-count 1: watcher discovery implies at least one exchange happened
+            metadata (build-opencode-session-metadata session-id session-file 1)]
         (swap! session-index assoc session-id metadata)
         (save-index! @session-index)
         (when-let [callback (:on-session-created @watcher-state)]

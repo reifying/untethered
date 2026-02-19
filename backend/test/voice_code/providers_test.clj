@@ -2232,15 +2232,15 @@ another_key: another value
           (is (some #{"github-copilot/claude-opus-4.6"} @captured-cmd)))))))
 
 (deftest test-kill-copilot-session
-  (testing "kills tracked process and removes from registry"
+  (testing "kills tracked process and removes from registry (delegates to kill-provider-session)"
     (let [mock-process (proxy [Process] []
                          (destroyForcibly [] nil))
           session-id "kill-test-session"]
-      ;; Add a mock process to the registry
-      (swap! providers/active-copilot-processes assoc session-id mock-process)
+      ;; Add a mock process to the provider-processes registry (keyed by [provider session-id])
+      (swap! providers/active-provider-processes assoc [:copilot session-id] mock-process)
 
       (is (true? (providers/kill-copilot-session session-id)))
-      (is (nil? (get @providers/active-copilot-processes session-id)))))
+      (is (nil? (get @providers/active-provider-processes [:copilot session-id])))))
 
   (testing "returns nil when session not found"
     (is (nil? (providers/kill-copilot-session "nonexistent-session")))))

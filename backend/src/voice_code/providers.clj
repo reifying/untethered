@@ -757,18 +757,14 @@
       (swap! active-provider-processes dissoc key)
       true)))
 
-(defonce active-copilot-processes
-  ;; Atom tracking active Copilot CLI processes by session-id for kill support.
-  (atom {}))
+;; Legacy: active-copilot-processes and kill-copilot-session removed.
+;; All providers now use active-provider-processes + kill-provider-session.
 
 (defn kill-copilot-session
-  "Kill an active Copilot CLI process for a given session-id."
+  "Kill an active Copilot CLI process for a given session-id.
+   Delegates to kill-provider-session with :copilot provider."
   [session-id]
-  (when-let [process (get @active-copilot-processes session-id)]
-    (log/info "Killing Copilot process" {:session-id session-id})
-    (.destroyForcibly process)
-    (swap! active-copilot-processes dissoc session-id)
-    true))
+  (kill-provider-session :copilot session-id))
 
 (defn- find-newest-copilot-session
   "Find the most recently created Copilot session directory.
@@ -804,8 +800,7 @@
   "Run a CLI process with stdout/stderr capture.
    Returns {:exit int :out string :err string}.
 
-   Unlike run-copilot-process (which prepends 'copilot' to args),
-   this function takes the FULL command vector from build-cli-command.
+   Takes the FULL command vector from build-cli-command.
    Callers pass the complete args including the binary name.
 
    Parameters:
@@ -856,67 +851,7 @@
         (try (.delete stdout-file) (catch Exception _ nil))
         (try (.delete stderr-file) (catch Exception _ nil))))))
 
-(defn- run-copilot-process
-  "Run a Copilot CLI process with stdout/stderr capture.
-   Returns a map with :exit, :out, and :err.
-   
-   Parameters:
-   - args: Vector of command arguments (not including 'copilot')
-   - working-dir: Optional working directory
-   - timeout-ms: Timeout in milliseconds
-   - session-id: Optional session ID for process tracking"
-  [args working-dir timeout-ms session-id]
-  (let [stdout-path (java.nio.file.Files/createTempFile
-                     "copilot-stdout-" ".txt"
-                     (into-array java.nio.file.attribute.FileAttribute
-                                 [(java.nio.file.attribute.PosixFilePermissions/asFileAttribute
-                                   (java.nio.file.attribute.PosixFilePermissions/fromString "rw-------"))]))
-        stderr-path (java.nio.file.Files/createTempFile
-                     "copilot-stderr-" ".txt"
-                     (into-array java.nio.file.attribute.FileAttribute
-                                 [(java.nio.file.attribute.PosixFilePermissions/asFileAttribute
-                                   (java.nio.file.attribute.PosixFilePermissions/fromString "rw-------"))]))
-        stdout-file (.toFile stdout-path)
-        stderr-file (.toFile stderr-path)]
-    (try
-      (let [process-opts (cond-> {:out (ProcessBuilder$Redirect/to stdout-file)
-                                  :err (ProcessBuilder$Redirect/to stderr-file)
-                                  :in :pipe}
-                           working-dir (assoc :dir working-dir))
-            all-args (into ["copilot"] args)
-            _ (log/info "Starting Copilot CLI process"
-                        {:args (vec (take 4 all-args)) ;; Don't log full prompt
-                         :working-dir working-dir
-                         :session-id session-id})
-            process (apply proc/start process-opts all-args)
-            exit-ref (proc/exit-ref process)]
-
-        ;; Track process if session-id provided
-        (when session-id
-          (swap! active-copilot-processes assoc session-id process)
-          (log/debug "Tracking Copilot process" {:session-id session-id}))
-
-        (.close (.getOutputStream process))
-
-        (try
-          (let [exit-code (if timeout-ms
-                            (deref exit-ref timeout-ms :timeout)
-                            @exit-ref)]
-            (when (= exit-code :timeout)
-              (.destroyForcibly process)
-              (throw (ex-info "Copilot process timeout" {:timeout-ms timeout-ms})))
-            (let [stdout (slurp stdout-file)
-                  stderr (slurp stderr-file)]
-              {:exit exit-code
-               :out stdout
-               :err stderr}))
-          (finally
-            ;; Clean up process tracking
-            (when session-id
-              (swap! active-copilot-processes dissoc session-id)))))
-      (finally
-        (try (.delete stdout-file) (catch Exception e (log/warn e "Failed to delete stdout file")))
-        (try (.delete stderr-file) (catch Exception e (log/warn e "Failed to delete stderr file")))))))
+;; Legacy run-copilot-process removed — all providers use run-provider-process.
 
 (defn invoke-copilot
   "Invoke Copilot CLI synchronously.

@@ -479,10 +479,16 @@ class VoiceCodeClient: ObservableObject {
             case .success(let message):
                 switch message {
                 case .string(let text):
-                    self.handleMessage(text)
+                    // Dispatch to main queue to ensure thread safety for shared state
+                    // (quickPromptHandlers, @Published properties via scheduleUpdate)
+                    DispatchQueue.main.async {
+                        self.handleMessage(text)
+                    }
                 case .data(let data):
                     if let text = String(data: data, encoding: .utf8) {
-                        self.handleMessage(text)
+                        DispatchQueue.main.async {
+                            self.handleMessage(text)
+                        }
                     }
                 @unknown default:
                     break
