@@ -229,6 +229,8 @@ struct ConversationView: View {
                     Picker("Provider", selection: $selectedProvider) {
                         Text("Claude").tag("claude")
                         Text("Copilot").tag("copilot")
+                        Text("Cursor").tag("cursor")
+                        Text("OpenCode").tag("opencode")
                     }
                     .pickerStyle(.segmented)
                     .padding(.horizontal)

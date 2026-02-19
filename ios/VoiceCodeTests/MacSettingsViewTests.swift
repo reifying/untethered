@@ -190,6 +190,12 @@ final class MacSettingsViewTests: XCTestCase {
 
         settings.defaultProvider = "claude"
         XCTAssertEqual(settings.defaultProvider, "claude")
+
+        settings.defaultProvider = "cursor"
+        XCTAssertEqual(settings.defaultProvider, "cursor")
+
+        settings.defaultProvider = "opencode"
+        XCTAssertEqual(settings.defaultProvider, "opencode")
     }
 
     func testAdvancedTabBindsToMaxMessageSize() {

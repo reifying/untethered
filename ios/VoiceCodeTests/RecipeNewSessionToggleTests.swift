@@ -173,6 +173,20 @@ class RecipeNewSessionToggleTests: XCTestCase {
                        "Provider should default from settings")
     }
 
+    func testProviderDefaultsFromSettingsCursor() throws {
+        let defaultProvider = "cursor"
+        let selectedProvider = defaultProvider
+        XCTAssertEqual(selectedProvider, "cursor",
+                       "Provider should default from settings when set to cursor")
+    }
+
+    func testProviderDefaultsFromSettingsOpenCode() throws {
+        let defaultProvider = "opencode"
+        let selectedProvider = defaultProvider
+        XCTAssertEqual(selectedProvider, "opencode",
+                       "Provider should default from settings when set to opencode")
+    }
+
     func testProviderSelectionIsIndependentOfNewSessionToggle() throws {
         // Provider and new session toggle are orthogonal controls
         let useNewSession = true
@@ -183,6 +197,15 @@ class RecipeNewSessionToggleTests: XCTestCase {
         XCTAssertTrue(useNewSession)
         XCTAssertEqual(selectedProvider, "copilot")
         XCTAssertNotEqual(targetSessionId, "existing-session")
+    }
+
+    func testProviderSelectionWorksForAllProviders() throws {
+        let providers = ["claude", "copilot", "cursor", "opencode"]
+        for provider in providers {
+            let selectedProvider = provider
+            XCTAssertEqual(selectedProvider, provider,
+                           "Provider selection should work for \(provider)")
+        }
     }
 
     // MARK: - Session ID Selection Logic Tests

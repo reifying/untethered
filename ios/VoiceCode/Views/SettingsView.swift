@@ -159,6 +159,8 @@ struct SettingsView: View {
                 Picker("Default Provider", selection: $settings.defaultProvider) {
                     Text("Claude").tag("claude")
                     Text("Copilot").tag("copilot")
+                    Text("Cursor").tag("cursor")
+                    Text("OpenCode").tag("opencode")
                 }
 
                 Text("AI provider used for new sessions. Can be changed per-session when creating a new conversation.")
