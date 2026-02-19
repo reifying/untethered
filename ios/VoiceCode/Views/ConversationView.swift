@@ -654,6 +654,9 @@ struct ConversationView: View {
             }
         }
         .swipeToBack()
+        #if os(macOS)
+        .pushToTalk(voiceInput: voiceInput)
+        #endif
     }
     
     private func setupVoiceInput() {

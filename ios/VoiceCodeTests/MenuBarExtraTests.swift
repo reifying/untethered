@@ -94,7 +94,7 @@ final class MenuBarExtraTests: XCTestCase {
 
     // MARK: - VoiceCodeClient sendQuickPrompt Tests
 
-    func testSendQuickPromptFailsWhenDisconnected() {
+    @MainActor func testSendQuickPromptFailsWhenDisconnected() {
         let client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
         XCTAssertFalse(client.isConnected)
 
@@ -109,7 +109,7 @@ final class MenuBarExtraTests: XCTestCase {
         wait(for: [expectation], timeout: 1.0)
     }
 
-    func testSendQuickPromptRoutesResponseToHandler() {
+    @MainActor func testSendQuickPromptRoutesResponseToHandler() {
         let client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
         client.isConnected = true  // Simulate connected state
 
