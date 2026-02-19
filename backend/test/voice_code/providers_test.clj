@@ -1563,10 +1563,51 @@ another_key: another value
       (is (not (some #{"my-custom-id"} result))))))
 
 (deftest test-build-cli-command-cursor
-  (testing "throws not-implemented error for Cursor"
+  (testing "builds basic Cursor CLI command with prompt"
+    (let [cmd (providers/build-cli-command :cursor {:prompt "hello"})]
+      (is (vector? cmd))
+      (is (= "cursor-agent" (first cmd)))
+      (is (some #{"-p"} cmd))
+      (is (some #{"hello"} cmd))
+      (is (some #{"--output-format"} cmd))
+      (is (some #{"json"} cmd))
+      (is (some #{"--force"} cmd))
+      ;; No --resume or --model when not specified
+      (is (not (some #{"--resume"} cmd)))
+      (is (not (some #{"--model"} cmd)))))
+
+  (testing "includes --resume when resume-session-id provided"
+    (let [cmd (providers/build-cli-command :cursor
+                                           {:prompt "hello" :resume-session-id "abc-123"})]
+      (is (some #{"--resume"} cmd))
+      (is (some #{"abc-123"} cmd))))
+
+  (testing "includes --model when model provided"
+    (let [cmd (providers/build-cli-command :cursor
+                                           {:prompt "hello" :model "auto"})]
+      (is (some #{"--model"} cmd))
+      (is (some #{"auto"} cmd))))
+
+  (testing "works with resume and model together"
+    (let [cmd (providers/build-cli-command :cursor
+                                           {:prompt "fix bug" :resume-session-id "session-uuid" :model "claude-sonnet-4"})]
+      (is (= "cursor-agent" (first cmd)))
+      (is (some #{"-p"} cmd))
+      (is (some #{"fix bug"} cmd))
+      (is (some #{"--resume"} cmd))
+      (is (some #{"session-uuid"} cmd))
+      (is (some #{"--model"} cmd))
+      (is (some #{"claude-sonnet-4"} cmd))))
+
+  (testing "throws when prompt is missing"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                          #"Cursor CLI invocation not yet implemented"
-                          (providers/build-cli-command :cursor {:prompt "test"})))))
+                          #"Prompt is required"
+                          (providers/build-cli-command :cursor {}))))
+
+  (testing "throws when prompt is nil"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Prompt is required"
+                          (providers/build-cli-command :cursor {:prompt nil})))))
 
 (deftest test-build-cli-command-unknown
   (testing "throws error for unknown provider"
@@ -1622,15 +1663,46 @@ another_key: another value
           (is (:success result)))))))
 
 (deftest test-invoke-provider-async-cursor
-  (testing "returns not-implemented error for Cursor"
-    (let [result-promise (promise)
-          callback-fn (fn [result] (deliver result-promise result))]
-      (providers/invoke-provider-async :cursor "test prompt" callback-fn)
-      (let [result (deref result-promise 1000 :timeout)]
-        (is (not= :timeout result))
-        (is (false? (:success result)))
-        (is (clojure.string/includes? (:error result) "Cursor CLI invocation not yet implemented"))
-        (is (= :cursor (:provider result)))))))
+  (testing "delegates to invoke-cursor-async"
+    (let [invoke-called (atom false)
+          received-args (atom nil)]
+      (with-redefs [providers/invoke-cursor-async
+                    (fn [prompt callback-fn & {:keys [resume-session-id working-directory
+                                                      timeout-ms model]}]
+                      (reset! invoke-called true)
+                      (reset! received-args {:prompt prompt
+                                             :resume-session-id resume-session-id
+                                             :working-directory working-directory
+                                             :timeout-ms timeout-ms
+                                             :model model})
+                      (callback-fn {:success true :result "cursor response" :provider :cursor}))]
+        (let [result-promise (promise)
+              callback-fn (fn [result] (deliver result-promise result))]
+          (providers/invoke-provider-async :cursor "test prompt" callback-fn
+                                           :resume-session-id "session-123"
+                                           :working-directory "/test/dir"
+                                           :model "auto")
+          (let [result (deref result-promise 1000 :timeout)]
+            (is (not= :timeout result))
+            (is @invoke-called)
+            (is (:success result))
+            (is (= "test prompt" (:prompt @received-args)))
+            (is (= "session-123" (:resume-session-id @received-args)))
+            (is (= "/test/dir" (:working-directory @received-args)))
+            (is (= "auto" (:model @received-args))))))))
+
+  (testing "ignores Claude-specific options (new-session-id, system-prompt)"
+    (with-redefs [providers/invoke-cursor-async
+                  (fn [prompt callback-fn & opts]
+                    (callback-fn {:success true :result "ok" :provider :cursor}))]
+      (let [result-promise (promise)
+            callback-fn (fn [result] (deliver result-promise result))]
+        (providers/invoke-provider-async :cursor "test" callback-fn
+                                         :new-session-id "ignored"
+                                         :system-prompt "also ignored")
+        (let [result (deref result-promise 1000 :timeout)]
+          (is (not= :timeout result))
+          (is (:success result)))))))
 
 (deftest test-invoke-provider-async-unknown
   (testing "returns error for unknown provider"
@@ -1801,6 +1873,93 @@ another_key: another value
           (is (false? (:success result)))
           (is (clojure.string/includes? (:error result) "Unexpected error"))
           (is (= :copilot (:provider result))))))))
+
+(deftest test-invoke-cursor-async-success
+  (testing "calls callback with success response from mock process"
+    (let [cursor-json (json/generate-string {:type "result"
+                                             :subtype "success"
+                                             :is_error false
+                                             :result "Hello from Cursor"
+                                             :session_id "fcebf87f-1234-5678-abcd-ef0123456789"
+                                             :request_id "01f7fa84-0000-0000-0000-000000000000"})]
+      (with-redefs [providers/run-provider-process
+                    (fn [full-cmd _working-dir _timeout-ms _session-id _provider]
+                      {:exit 0 :out cursor-json :err ""})]
+        (let [result-promise (promise)
+              callback-fn (fn [result] (deliver result-promise result))]
+          (providers/invoke-cursor-async "test prompt" callback-fn)
+          (let [result (deref result-promise 5000 :timeout)]
+            (is (not= :timeout result))
+            (is (:success result))
+            (is (= "Hello from Cursor" (:result result)))
+            (is (= "fcebf87f-1234-5678-abcd-ef0123456789" (:session-id result)))
+            (is (= :cursor (:provider result)))))))))
+
+(deftest test-invoke-cursor-async-error-response
+  (testing "calls callback with error when Cursor returns is_error true"
+    (let [cursor-json (json/generate-string {:type "result"
+                                             :subtype "error"
+                                             :is_error true
+                                             :result "Model not available"
+                                             :session_id "fcebf87f-1234"})]
+      (with-redefs [providers/run-provider-process
+                    (fn [full-cmd _working-dir _timeout-ms _session-id _provider]
+                      {:exit 0 :out cursor-json :err ""})]
+        (let [result-promise (promise)
+              callback-fn (fn [result] (deliver result-promise result))]
+          (providers/invoke-cursor-async "test prompt" callback-fn)
+          (let [result (deref result-promise 5000 :timeout)]
+            (is (not= :timeout result))
+            (is (false? (:success result)))
+            (is (= "Model not available" (:error result)))
+            (is (= :cursor (:provider result)))))))))
+
+(deftest test-invoke-cursor-async-nonzero-exit
+  (testing "calls callback with error when process exits non-zero"
+    (with-redefs [providers/run-provider-process
+                  (fn [full-cmd _working-dir _timeout-ms _session-id _provider]
+                    {:exit 1 :out "" :err "cursor-agent: command not found"})]
+      (let [result-promise (promise)
+            callback-fn (fn [result] (deliver result-promise result))]
+        (providers/invoke-cursor-async "test prompt" callback-fn)
+        (let [result (deref result-promise 5000 :timeout)]
+          (is (not= :timeout result))
+          (is (false? (:success result)))
+          (is (= :cursor (:provider result))))))))
+
+(deftest test-invoke-cursor-async-exception
+  (testing "calls callback with error when exception occurs"
+    (with-redefs [providers/run-provider-process
+                  (fn [& _] (throw (Exception. "Process spawn failed")))]
+      (let [result-promise (promise)
+            callback-fn (fn [result] (deliver result-promise result))]
+        (providers/invoke-cursor-async "test prompt" callback-fn)
+        (let [result (deref result-promise 5000 :timeout)]
+          (is (not= :timeout result))
+          (is (false? (:success result)))
+          (is (str/includes? (:error result) "Process spawn failed"))
+          (is (= :cursor (:provider result))))))))
+
+(deftest test-invoke-cursor-async-passes-options
+  (testing "passes resume-session-id and model to build-cli-command"
+    (let [captured-cmd (atom nil)]
+      (with-redefs [providers/run-provider-process
+                    (fn [full-cmd _working-dir _timeout-ms _session-id _provider]
+                      (reset! captured-cmd full-cmd)
+                      {:exit 0
+                       :out (json/generate-string {:type "result" :is_error false
+                                                   :result "ok" :session_id "s1"})
+                       :err ""})]
+        (let [result-promise (promise)
+              callback-fn (fn [result] (deliver result-promise result))]
+          (providers/invoke-cursor-async "fix bug" callback-fn
+                                         :resume-session-id "abc-123"
+                                         :model "auto")
+          (deref result-promise 5000 :timeout)
+          (is (some #{"--resume"} @captured-cmd))
+          (is (some #{"abc-123"} @captured-cmd))
+          (is (some #{"--model"} @captured-cmd))
+          (is (some #{"auto"} @captured-cmd)))))))
 
 (deftest test-kill-copilot-session
   (testing "kills tracked process and removes from registry"

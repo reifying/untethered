@@ -697,10 +697,17 @@
       ;; Use specified model if provided
       model (into ["--model" model]))))
 
-(defmethod build-cli-command :cursor [_ _opts]
-  (throw (ex-info "Cursor CLI invocation not yet implemented."
-                  {:provider :cursor
-                   :reason "Future provider - CLI interface not yet researched"})))
+(defmethod build-cli-command :cursor [_ opts]
+  (let [{:keys [prompt resume-session-id model]} opts]
+    (when-not prompt
+      (throw (ex-info "Prompt is required for Cursor CLI invocation"
+                      {:provider :cursor})))
+    (cond-> ["cursor-agent"
+             "-p" prompt
+             "--output-format" "json"
+             "--force"]
+      resume-session-id (into ["--resume" resume-session-id])
+      model (into ["--model" model]))))
 
 (defmethod build-cli-command :default [provider _opts]
   (throw (ex-info (str "Unknown provider: " (name provider))
@@ -1010,6 +1017,53 @@
                         :provider :copilot})))))
   nil)
 
+(defn invoke-cursor-async
+  "Invoke Cursor CLI asynchronously with timeout handling.
+
+   Parameters:
+   - prompt: The prompt to send to Cursor
+   - callback-fn: Function to call with result (takes one arg: response map)
+   - :resume-session-id: Optional session ID for resuming
+   - :working-directory: Optional working directory for Cursor
+   - :model: Optional model to use
+   - :timeout-ms: Timeout in milliseconds (default: 24 hours)
+
+   Returns nil immediately. Calls callback-fn when done or on timeout.
+   Response map will have :success true/false and either :result or :error."
+  [prompt callback-fn & {:keys [resume-session-id working-directory model timeout-ms]
+                         :or {timeout-ms 86400000}}]
+  (async/go
+    (let [response-ch
+          (async/thread
+            (try
+              (let [full-cmd (build-cli-command :cursor
+                                                {:prompt prompt
+                                                 :resume-session-id resume-session-id
+                                                 :model model})
+                    result (run-provider-process full-cmd working-directory timeout-ms
+                                                 resume-session-id :cursor)
+                    parsed (when (zero? (:exit result))
+                             (try (json/parse-string (str/trim (:out result)) true)
+                                  (catch Exception _ nil)))]
+                (if (and parsed (not (:is_error parsed)))
+                  {:success true
+                   :result (:result parsed)
+                   :session-id (:session_id parsed)
+                   :provider :cursor}
+                  {:success false
+                   :error (or (:result parsed) (:err result) "Cursor CLI failed")
+                   :provider :cursor}))
+              (catch Exception e
+                {:success false
+                 :error (str "Exception: " (ex-message e))
+                 :provider :cursor})))
+          [response port] (async/alts! [response-ch (async/timeout timeout-ms)])]
+      (callback-fn
+       (if (= port response-ch)
+         response
+         {:success false :error "Request timed out" :timeout true :provider :cursor}))))
+  nil)
+
 (defn invoke-provider-async
   "Invoke a provider's CLI asynchronously.
    
@@ -1059,9 +1113,11 @@
                           :model model)
 
     :cursor
-    (callback-fn {:success false
-                  :error "Cursor CLI invocation not yet implemented."
-                  :provider :cursor})
+    (invoke-cursor-async prompt callback-fn
+                         :resume-session-id resume-session-id
+                         :working-directory working-directory
+                         :model model
+                         :timeout-ms timeout-ms)
 
     ;; Default: unknown provider
     (callback-fn {:success false
