@@ -76,6 +76,13 @@ struct VoiceCodeApp: App {
         #endif
 
         #if os(macOS)
+        Settings {
+            MacSettingsView()
+                .environmentObject(settings)
+                .environmentObject(client)
+                .environmentObject(voiceOutput)
+        }
+
         VoiceCodeMenuBarExtra(
             client: client,
             settings: settings,
@@ -177,8 +184,7 @@ struct RootView: View {
                 client: client,
                 settings: settings,
                 selectedSessionId: $selectedSessionId,
-                recentSessions: $recentSessions,
-                showingSettings: $showingSettings
+                recentSessions: $recentSessions
             )
             .navigationSplitViewColumnWidth(min: 200, ideal: 250, max: 350)
         } detail: {
@@ -194,9 +200,6 @@ struct RootView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .sheet(isPresented: $showingSettings) {
-            settingsView
-        }
         #else
         NavigationStack(path: $navigationPath) {
             DirectoryListView(client: client, settings: settings, voiceOutput: voiceOutput, showingSettings: $showingSettings, recentSessions: $recentSessions, navigationPath: $navigationPath, resourcesManager: resourcesManager)

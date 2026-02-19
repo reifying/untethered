@@ -235,8 +235,7 @@ class SessionSidebarTests: XCTestCase {
             client: client,
             settings: settings,
             selectedSessionId: .constant(nil),
-            recentSessions: .constant([]),
-            showingSettings: .constant(false)
+            recentSessions: .constant([])
         )
         XCTAssertNotNil(view)
     }

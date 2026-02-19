@@ -33,8 +33,8 @@ struct SessionSidebarView: View {
     @ObservedObject var settings: AppSettings
     @Binding var selectedSessionId: UUID?
     @Binding var recentSessions: [RecentSession]
-    @Binding var showingSettings: Bool
     @Environment(\.managedObjectContext) private var viewContext
+    @Environment(\.openSettings) private var openSettings
 
     @StateObject private var viewModel: SessionSidebarViewModel
 
@@ -57,14 +57,12 @@ struct SessionSidebarView: View {
         client: VoiceCodeClient,
         settings: AppSettings,
         selectedSessionId: Binding<UUID?>,
-        recentSessions: Binding<[RecentSession]>,
-        showingSettings: Binding<Bool>
+        recentSessions: Binding<[RecentSession]>
     ) {
         self.client = client
         self.settings = settings
         self._selectedSessionId = selectedSessionId
         self._recentSessions = recentSessions
-        self._showingSettings = showingSettings
         self._viewModel = StateObject(wrappedValue: SessionSidebarViewModel(client: client))
     }
 
@@ -193,10 +191,9 @@ struct SessionSidebarView: View {
             }
 
             ToolbarItem(placement: .automatic) {
-                Button(action: { showingSettings = true }) {
+                Button(action: { openSettings() }) {
                     Image(systemName: "gear")
                 }
-                .keyboardShortcut(",", modifiers: [.command])
                 .help("Settings (⌘,)")
             }
         }
