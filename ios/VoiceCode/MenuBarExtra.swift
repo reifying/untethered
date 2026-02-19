@@ -169,17 +169,14 @@ struct MenuBarContentView: View {
                     .padding(.horizontal)
             } else {
                 ForEach(Array(client.parsedRecentSessions.prefix(3)), id: \.sessionId) { session in
-                    Button(action: { openSession(session) }) {
-                        HStack {
-                            Text(session.name)
-                                .lineLimit(1)
-                            Spacer()
-                            Text(relativeTimestamp(session.lastModified))
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
+                    HStack {
+                        Text(session.name)
+                            .lineLimit(1)
+                        Spacer()
+                        Text(relativeTimestamp(session.lastModified))
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
                     }
-                    .buttonStyle(.plain)
                     .padding(.horizontal)
                     .padding(.vertical, 4)
                 }
@@ -257,11 +254,6 @@ struct MenuBarContentView: View {
             selectedDirectory = url.path
             settings.lastUsedDirectory = url.path
         }
-    }
-
-    private func openSession(_ session: RecentSession) {
-        // Activate the main app window - URL scheme (un-zqu.14) not yet implemented
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func openMainWindow() {

@@ -1129,7 +1129,15 @@ class VoiceCodeClient: ObservableObject {
 
     /// Send a quick prompt from the menu bar, creating a new session.
     /// The completion handler receives the Claude response text, or an error string prefixed with "Error:".
+    /// Must be called from the main thread (quickPromptHandlers is accessed from main queue in handleMessage).
+    @MainActor
     func sendQuickPrompt(text: String, directory: String, completion: @escaping (String) -> Void) {
+        guard isConnected else {
+            print("⚠️ [VoiceCodeClient] Quick prompt failed: not connected")
+            completion("Error: Not connected to server")
+            return
+        }
+
         let quickPromptId = UUID().uuidString.lowercased()
         let sessionId = UUID().uuidString.lowercased()
 
