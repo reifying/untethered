@@ -333,7 +333,8 @@ struct SessionSidebarRow: View {
                     .clipShape(Capsule())
             }
         }
-        .padding(.vertical, 2)
+        .desktopListRow()
+        .desktopDensity()
     }
 }
 
@@ -361,7 +362,8 @@ struct SidebarRecentSessionRow: View {
             RelativeTimeText(session.lastModified)
                 .font(.caption2)
         }
-        .padding(.vertical, 2)
+        .desktopListRow()
+        .desktopDensity()
     }
 }
 
