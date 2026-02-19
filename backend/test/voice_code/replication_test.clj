@@ -124,6 +124,21 @@
   (testing "Invalid - nil"
     (is (false? (repl/valid-uuid? nil)))))
 
+(deftest test-valid-session-id
+  (testing "accepts valid UUIDs"
+    (is (true? (repl/valid-session-id? "550e8400-e29b-41d4-a716-446655440000")))
+    (is (true? (repl/valid-session-id? "123e4567-e89b-12d3-a456-426614174000"))))
+
+  (testing "accepts valid OpenCode ses_* IDs"
+    (is (true? (repl/valid-session-id? "ses_abc123")))
+    (is (true? (repl/valid-session-id? "ses_01234567890abcdef"))))
+
+  (testing "rejects invalid IDs"
+    (is (false? (repl/valid-session-id? "")))
+    (is (false? (repl/valid-session-id? nil)))
+    (is (false? (repl/valid-session-id? "not-a-valid-id")))
+    (is (false? (repl/valid-session-id? "ses_")))))
+
 (deftest test-extract-session-id-from-path
   (testing "Extract valid UUID session ID from .jsonl filename"
     (let [file (io/file "/path/to/550e8400-e29b-41d4-a716-446655440000.jsonl")]
@@ -554,7 +569,7 @@
   (testing "Get non-existent session"
     (is (nil? (repl/get-session-metadata "non-existent"))))
 
-  (testing "Filter out non-UUID sessions"
+  (testing "Filter out invalid session IDs"
     (reset! repl/session-index {})
     (let [valid-uuid "550e8400-e29b-41d4-a716-446655440000"
           invalid-id "not-a-uuid"]
@@ -564,7 +579,19 @@
       (is (= 1 (count (repl/get-all-sessions))))
       (is (= "Valid Session" (:name (first (repl/get-all-sessions)))))
       ;; But get-session-metadata should still work for invalid IDs (direct index access)
-      (is (= "Invalid Session" (:name (repl/get-session-metadata invalid-id)))))))
+      (is (= "Invalid Session" (:name (repl/get-session-metadata invalid-id))))))
+
+  (testing "Includes OpenCode ses_* sessions"
+    (reset! repl/session-index {})
+    (let [uuid-id "550e8400-e29b-41d4-a716-446655440000"
+          opencode-id "ses_abc123def"]
+      (swap! repl/session-index assoc uuid-id {:session-id uuid-id :name "Claude Session"})
+      (swap! repl/session-index assoc opencode-id {:session-id opencode-id :name "OpenCode Session"})
+      ;; get-all-sessions should return both
+      (is (= 2 (count (repl/get-all-sessions))))
+      (let [session-names (set (map :name (repl/get-all-sessions)))]
+        (is (contains? session-names "Claude Session"))
+        (is (contains? session-names "OpenCode Session"))))))
 
 (deftest test-validate-index
   (testing "Empty index returns false"

@@ -86,6 +86,13 @@
   (and (string? s)
        (boolean (re-matches #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" s))))
 
+(defn valid-session-id?
+  "Check if a string is a valid session ID.
+   Accepts both UUIDs (Claude, Copilot, Cursor) and OpenCode ses_* IDs."
+  [s]
+  (or (valid-uuid? s)
+      (providers/valid-opencode-session-id? s)))
+
 (defn extract-session-id-from-path
   "Extract session ID from .jsonl file path and normalize to lowercase.
   Example: /path/to/projects/mono/ABC-123.jsonl -> abc-123
@@ -701,13 +708,14 @@
 
 (defn get-all-sessions
   "Get all session metadata as a vector.
-  Filters out sessions with invalid UUIDs and logs them."
+  Filters out sessions with invalid session IDs and logs them.
+  Accepts both UUIDs (Claude, Copilot, Cursor) and OpenCode ses_* IDs."
   []
   (let [all-sessions (vals @session-index)
-        valid-sessions (filter #(valid-uuid? (:session-id %)) all-sessions)
-        invalid-sessions (remove #(valid-uuid? (:session-id %)) all-sessions)]
+        valid-sessions (filter #(valid-session-id? (:session-id %)) all-sessions)
+        invalid-sessions (remove #(valid-session-id? (:session-id %)) all-sessions)]
     (when (seq invalid-sessions)
-      (log/warn "Filtering out sessions with invalid UUIDs"
+      (log/warn "Filtering out sessions with invalid session IDs"
                 {:count (count invalid-sessions)
                  :invalid-sessions (mapv #(select-keys % [:session-id :file :name])
                                          invalid-sessions)}))

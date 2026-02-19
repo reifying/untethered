@@ -2,6 +2,7 @@
   "Tests for the multi-provider abstraction."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
+            [clojure.java.shell :as shell]
             [voice-code.providers :as providers]
             [clojure.java.io :as io]
             [cheshire.core :as json]))
@@ -49,7 +50,8 @@
   (testing "known-providers contains expected providers"
     (is (contains? providers/known-providers :claude))
     (is (contains? providers/known-providers :copilot))
-    (is (contains? providers/known-providers :cursor))))
+    (is (contains? providers/known-providers :cursor))
+    (is (contains? providers/known-providers :opencode))))
 
 (deftest test-fallback-provider
   (testing "fallback provider is claude"
@@ -920,8 +922,53 @@ branch: main")
   (testing "unknown providers return false"
     (is (false? (providers/provider-installed? :unknown-provider))))
 
-  (testing "cursor returns false (not implemented yet)"
-    (is (false? (providers/provider-installed? :cursor)))))
+  (testing "cursor returns true when cursor-agent binary found"
+    (with-redefs [shell/sh (fn [& args]
+                             (if (= args ["which" "cursor-agent"])
+                               {:exit 0 :out "/usr/local/bin/cursor-agent" :err ""}
+                               {:exit 1 :out "" :err ""}))]
+      (is (true? (providers/provider-installed? :cursor)))))
+
+  (testing "cursor returns false when cursor-agent binary not found"
+    (with-redefs [shell/sh (fn [& _] {:exit 1 :out "" :err ""})]
+      (is (false? (providers/provider-installed? :cursor)))))
+
+  (testing "opencode returns true when opencode binary found"
+    (with-redefs [shell/sh (fn [& args]
+                             (if (= args ["which" "opencode"])
+                               {:exit 0 :out "/usr/local/bin/opencode" :err ""}
+                               {:exit 1 :out "" :err ""}))]
+      (is (true? (providers/provider-installed? :opencode)))))
+
+  (testing "opencode returns false when opencode binary not found"
+    (with-redefs [shell/sh (fn [& _] {:exit 1 :out "" :err ""})]
+      (is (false? (providers/provider-installed? :opencode))))))
+
+;; ============================================================================
+;; OpenCode Session ID Validation Tests
+;; ============================================================================
+
+(deftest test-valid-opencode-session-id
+  (testing "accepts valid ses_* IDs"
+    (is (true? (providers/valid-opencode-session-id? "ses_abc123")))
+    (is (true? (providers/valid-opencode-session-id? "ses_01234567890abcdef")))
+    (is (true? (providers/valid-opencode-session-id? "ses_x"))))
+
+  (testing "rejects UUIDs"
+    (is (false? (providers/valid-opencode-session-id? "550e8400-e29b-41d4-a716-446655440000"))))
+
+  (testing "rejects empty strings"
+    (is (false? (providers/valid-opencode-session-id? ""))))
+
+  (testing "rejects nil"
+    (is (false? (providers/valid-opencode-session-id? nil))))
+
+  (testing "rejects strings that don't start with ses_"
+    (is (false? (providers/valid-opencode-session-id? "session_abc")))
+    (is (false? (providers/valid-opencode-session-id? "abc_ses"))))
+
+  (testing "rejects ses_ with no suffix"
+    (is (false? (providers/valid-opencode-session-id? "ses_")))))
 
 ;; ============================================================================
 ;; CLI Validation Tests
@@ -933,7 +980,8 @@ branch: main")
     (with-redefs [providers/provider-installed? (constantly true)]
       (is (nil? (providers/validate-cli-available :claude)))
       (is (nil? (providers/validate-cli-available :copilot)))
-      (is (nil? (providers/validate-cli-available :cursor)))))
+      (is (nil? (providers/validate-cli-available :cursor)))
+      (is (nil? (providers/validate-cli-available :opencode)))))
 
   (testing "returns error map when CLI is not installed"
     (with-redefs [providers/provider-installed? (constantly false)]
@@ -948,10 +996,12 @@ branch: main")
     (with-redefs [providers/provider-installed? (constantly false)]
       (let [claude-result (providers/validate-cli-available :claude)
             copilot-result (providers/validate-cli-available :copilot)
-            cursor-result (providers/validate-cli-available :cursor)]
+            cursor-result (providers/validate-cli-available :cursor)
+            opencode-result (providers/validate-cli-available :opencode)]
         (is (clojure.string/includes? (:error claude-result) "claude"))
         (is (clojure.string/includes? (:error copilot-result) "copilot"))
-        (is (clojure.string/includes? (:error cursor-result) "cursor")))))
+        (is (clojure.string/includes? (:error cursor-result) "cursor"))
+        (is (clojure.string/includes? (:error opencode-result) "opencode")))))
 
   (testing "handles unknown provider gracefully"
     (with-redefs [providers/provider-installed? (constantly false)]

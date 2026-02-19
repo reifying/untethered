@@ -23,7 +23,7 @@
 
 (def known-providers
   "Set of all known provider identifiers."
-  #{:claude :copilot :cursor})
+  #{:claude :copilot :cursor :opencode})
 
 (def fallback-provider
   "Fallback provider when detection fails. Used only when no providers are installed."
@@ -138,6 +138,13 @@
        (= 36 (count s))
        (re-matches #"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
                    (str/lower-case s))))
+
+(defn valid-opencode-session-id?
+  "Check if a string is a valid OpenCode session ID (ses_* format)."
+  [s]
+  (and (string? s)
+       (str/starts-with? s "ses_")
+       (> (count s) 4)))
 
 (defmethod find-session-files :claude [_]
   (let [projects-dir (get-sessions-dir :claude)]
@@ -451,8 +458,14 @@
                (let [result (shell/sh "which" "copilot")]
                  (zero? (:exit result)))
                (catch Exception _ false))
-    ;; Future providers
-    :cursor false
+    :cursor (try
+              (let [result (shell/sh "which" "cursor-agent")]
+                (zero? (:exit result)))
+              (catch Exception _ false))
+    :opencode (try
+                (let [result (shell/sh "which" "opencode")]
+                  (zero? (:exit result)))
+                (catch Exception _ false))
     ;; Unknown provider
     false))
 
@@ -486,7 +499,8 @@
     (let [cli-name (case provider
                      :claude "claude"
                      :copilot "copilot"
-                     :cursor "cursor"
+                     :cursor "cursor-agent"
+                     :opencode "opencode"
                      (name provider))]
       {:error (str (name provider) " CLI not installed. "
                    "Please install the " cli-name " CLI to use " (name provider) " sessions.")
