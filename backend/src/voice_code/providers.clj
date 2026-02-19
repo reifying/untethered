@@ -470,6 +470,67 @@
   ;; Documented limitation: return nil.
   nil)
 
+;;; ---- OpenCode Provider ----
+
+(defmethod get-sessions-dir :opencode [_]
+  (let [home (System/getProperty "user.home")]
+    (io/file home ".local" "share" "opencode" "storage" "session")))
+
+(defmethod find-session-files :opencode [_]
+  (let [session-dir (get-sessions-dir :opencode)]
+    (if (.exists session-dir)
+      (->> (.listFiles session-dir)
+           (filter #(.isDirectory %))
+           (mapcat #(.listFiles %))
+           (filter #(.isFile %))
+           (filter #(str/ends-with? (.getName %) ".json"))
+           (filter #(str/starts-with? (.getName %) "ses_")))
+      [])))
+
+(defmethod session-id-from-file :opencode [_ file]
+  (let [file-name (.getName file)]
+    (when (and (str/ends-with? file-name ".json")
+               (str/starts-with? file-name "ses_"))
+      (subs file-name 0 (- (count file-name) 5)))))
+
+(defmethod is-valid-session-file? :opencode [_ file]
+  (and (.isFile file)
+       (str/ends-with? (.getName file) ".json")
+       (str/starts-with? (.getName file) "ses_")))
+
+(defmethod get-session-file :opencode [_ session-id]
+  (let [session-dir (get-sessions-dir :opencode)]
+    (when (.exists session-dir)
+      (->> (.listFiles session-dir)
+           (filter #(.isDirectory %))
+           (mapcat #(.listFiles %))
+           (filter #(= (.getName %) (str session-id ".json")))
+           first))))
+
+(defmethod extract-working-dir :opencode [_ file]
+  (try
+    (let [content (slurp file)
+          parsed (json/parse-string content true)]
+      (:directory parsed))
+    (catch Exception e
+      (log/warn "Failed to extract working directory from OpenCode session"
+                {:file (.getAbsolutePath file) :error (ex-message e)})
+      nil)))
+
+(defmethod parse-message :opencode [_ raw-msg]
+  ;; OpenCode message JSON has role, id, sessionID, time.
+  ;; Text content is pre-assembled in :assembled-text key (assembly happens in replication.clj).
+  ;; Returns canonical format: {:uuid :role :text :timestamp :provider}.
+  (let [role (:role raw-msg)]
+    (when (contains? #{"user" "assistant"} role)
+      {:uuid (:id raw-msg)
+       :role role
+       :text (or (:assembled-text raw-msg) "")
+       :timestamp (some-> (get-in raw-msg [:time :created])
+                          java.time.Instant/ofEpochMilli
+                          str)
+       :provider :opencode})))
+
 ;; ============================================================================
 ;; Provider Resolution
 ;; ============================================================================

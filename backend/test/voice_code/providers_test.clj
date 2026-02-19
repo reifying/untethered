@@ -409,6 +409,231 @@ branch: main")
     (is (nil? (providers/parse-message :cursor {:some "data"})))
     (is (nil? (providers/parse-message :cursor nil)))))
 
+;;; ---- OpenCode Provider Tests ----
+
+(deftest test-get-sessions-dir-opencode
+  (testing "get-sessions-dir returns correct path for :opencode"
+    (let [dir (providers/get-sessions-dir :opencode)
+          home (System/getProperty "user.home")]
+      (is (instance? java.io.File dir))
+      (is (= (str home "/.local/share/opencode/storage/session") (.getPath dir))))))
+
+(deftest test-session-id-from-file-opencode
+  (testing "strips .json suffix from ses_ filename"
+    (let [f (io/file *test-dir* "ses_3c44a6687ffeIUxzaoccbjukLU.json")]
+      (spit f "{}")
+      (is (= "ses_3c44a6687ffeIUxzaoccbjukLU"
+             (providers/session-id-from-file :opencode f)))))
+
+  (testing "returns nil for non-ses_ files"
+    (let [f (io/file *test-dir* "msg_abc123.json")]
+      (spit f "{}")
+      (is (nil? (providers/session-id-from-file :opencode f)))))
+
+  (testing "returns nil for non-.json files"
+    (let [f (io/file *test-dir* "ses_abc123.txt")]
+      (spit f "not json")
+      (is (nil? (providers/session-id-from-file :opencode f))))))
+
+(deftest test-is-valid-session-file-opencode
+  (testing "validates ses_*.json files"
+    (let [f (io/file *test-dir* "ses_abc123.json")]
+      (spit f "{}")
+      (is (true? (providers/is-valid-session-file? :opencode f)))))
+
+  (testing "rejects non-ses_ files"
+    (let [f (io/file *test-dir* "msg_abc123.json")]
+      (spit f "{}")
+      (is (false? (providers/is-valid-session-file? :opencode f)))))
+
+  (testing "rejects non-.json files"
+    (let [f (io/file *test-dir* "ses_abc123.txt")]
+      (spit f "text")
+      (is (false? (providers/is-valid-session-file? :opencode f)))))
+
+  (testing "rejects directories"
+    (let [d (io/file *test-dir* "ses_abc123.json-dir")]
+      (.mkdirs d)
+      (is (false? (providers/is-valid-session-file? :opencode d))))))
+
+(deftest test-find-session-files-opencode
+  (testing "discovers ses_*.json files in project-hash subdirs"
+    (let [session-dir (io/file *test-dir* "opencode" "storage" "session")
+          hash1 "abc123hash"
+          hash2 "def456hash"
+          ses1 (io/file session-dir hash1 "ses_aaa111.json")
+          ses2 (io/file session-dir hash2 "ses_bbb222.json")
+          ;; Invalid: non-ses_ prefix
+          invalid-file (io/file session-dir hash1 "msg_ccc333.json")
+          ;; Invalid: non-.json extension
+          non-json (io/file session-dir hash1 "ses_ddd444.txt")]
+
+      (.mkdirs (io/file session-dir hash1))
+      (.mkdirs (io/file session-dir hash2))
+      (spit ses1 "{}")
+      (spit ses2 "{}")
+      (spit invalid-file "{}")
+      (spit non-json "text")
+
+      (with-redefs [providers/get-sessions-dir (fn [p]
+                                                 (if (= p :opencode)
+                                                   session-dir
+                                                   (providers/get-sessions-dir p)))]
+        (let [found (providers/find-session-files :opencode)]
+          (is (= 2 (count found)))
+          (is (every? #(.isFile %) found))
+          (is (every? #(str/starts-with? (.getName %) "ses_") found))
+          (is (every? #(str/ends-with? (.getName %) ".json") found))))))
+
+  (testing "returns empty when directory doesn't exist"
+    (let [nonexistent (io/file *test-dir* "nonexistent")]
+      (with-redefs [providers/get-sessions-dir (fn [p]
+                                                 (if (= p :opencode)
+                                                   nonexistent
+                                                   (providers/get-sessions-dir p)))]
+        (is (empty? (providers/find-session-files :opencode)))))))
+
+(deftest test-get-session-file-opencode
+  (testing "finds session file across project-hash dirs"
+    (let [session-dir (io/file *test-dir* "opencode" "storage" "session")
+          hash1 "abc123hash"
+          session-id "ses_xyz789"
+          session-file (io/file session-dir hash1 (str session-id ".json"))]
+      (.mkdirs (io/file session-dir hash1))
+      (spit session-file "{\"id\": \"ses_xyz789\"}")
+
+      (with-redefs [providers/get-sessions-dir (fn [p]
+                                                 (if (= p :opencode)
+                                                   session-dir
+                                                   (providers/get-sessions-dir p)))]
+        (let [result (providers/get-session-file :opencode session-id)]
+          (is (some? result))
+          (is (= (str session-id ".json") (.getName result)))))))
+
+  (testing "returns nil for non-existent session"
+    (let [session-dir (io/file *test-dir* "opencode-empty" "storage" "session")]
+      (.mkdirs session-dir)
+      (with-redefs [providers/get-sessions-dir (fn [p]
+                                                 (if (= p :opencode)
+                                                   session-dir
+                                                   (providers/get-sessions-dir p)))]
+        (is (nil? (providers/get-session-file :opencode "ses_nonexistent")))))))
+
+(deftest test-extract-working-dir-opencode
+  (testing "extracts :directory from session JSON"
+    (let [session-file (io/file *test-dir* "ses_abc123.json")]
+      (spit session-file (json/generate-string
+                          {:id "ses_abc123"
+                           :directory "/Users/test/my-project"
+                           :title "Test Session"
+                           :time {:created 1770528283010 :updated 1770528290000}}))
+      (is (= "/Users/test/my-project"
+             (providers/extract-working-dir :opencode session-file)))))
+
+  (testing "returns nil when directory field is missing"
+    (let [session-file (io/file *test-dir* "ses_nodir.json")]
+      (spit session-file (json/generate-string {:id "ses_nodir" :title "No Dir"}))
+      (is (nil? (providers/extract-working-dir :opencode session-file)))))
+
+  (testing "returns nil for invalid JSON"
+    (let [session-file (io/file *test-dir* "ses_invalid.json")]
+      (spit session-file "not valid json")
+      (is (nil? (providers/extract-working-dir :opencode session-file))))))
+
+(deftest test-parse-message-opencode
+  (testing "parses user message with canonical format"
+    (let [raw-msg {:id "msg_abc123"
+                   :role "user"
+                   :assembled-text "Hello, help me with this code"
+                   :time {:created 1770528283010}}
+          result (providers/parse-message :opencode raw-msg)]
+      (is (some? result))
+      (is (= "msg_abc123" (:uuid result)))
+      (is (= "user" (:role result)))
+      (is (= "Hello, help me with this code" (:text result)))
+      (is (= :opencode (:provider result)))
+      (is (string? (:timestamp result)))))
+
+  (testing "parses assistant message with canonical format"
+    (let [raw-msg {:id "msg_def456"
+                   :role "assistant"
+                   :assembled-text "I can help you with that."
+                   :time {:created 1770528290000}}
+          result (providers/parse-message :opencode raw-msg)]
+      (is (some? result))
+      (is (= "msg_def456" (:uuid result)))
+      (is (= "assistant" (:role result)))
+      (is (= "I can help you with that." (:text result)))
+      (is (= :opencode (:provider result)))))
+
+  (testing "filters non-user/assistant roles"
+    (is (nil? (providers/parse-message :opencode {:id "msg_sys" :role "system" :assembled-text "sys"})))
+    (is (nil? (providers/parse-message :opencode {:id "msg_tool" :role "tool" :assembled-text "tool"})))
+    (is (nil? (providers/parse-message :opencode {:id "msg_nil" :role nil}))))
+
+  (testing "handles missing assembled-text gracefully"
+    (let [raw-msg {:id "msg_empty" :role "user" :time {:created 1770528283010}}
+          result (providers/parse-message :opencode raw-msg)]
+      (is (some? result))
+      (is (= "" (:text result)))))
+
+  (testing "handles missing timestamp gracefully"
+    (let [raw-msg {:id "msg_notime" :role "assistant" :assembled-text "Hi"}
+          result (providers/parse-message :opencode raw-msg)]
+      (is (some? result))
+      (is (nil? (:timestamp result)))))
+
+  (testing "timestamp converts epoch millis to ISO string"
+    (let [raw-msg {:id "msg_ts" :role "user" :assembled-text "test"
+                   :time {:created 1770528283010}}
+          result (providers/parse-message :opencode raw-msg)]
+      (is (string? (:timestamp result)))
+      ;; Should be an ISO-8601 instant string
+      (is (str/includes? (:timestamp result) "T")))))
+
+(deftest contract-test-canonical-message-format-opencode
+  (testing "OpenCode messages conform to canonical wire format contract"
+    (let [sample-raw {:id "msg_abc123"
+                      :role "user"
+                      :assembled-text "Hello, OpenCode"
+                      :time {:created 1770528283010}}
+          msg (providers/parse-message :opencode sample-raw)]
+
+      ;; Contract: All required fields must be present
+      (is (contains? msg :uuid) "Contract: :uuid field required")
+      (is (contains? msg :role) "Contract: :role field required")
+      (is (contains? msg :text) "Contract: :text field required")
+      (is (contains? msg :timestamp) "Contract: :timestamp field required")
+      (is (contains? msg :provider) "Contract: :provider field required")
+
+      ;; Contract: No extra fields
+      (is (= #{:uuid :role :text :timestamp :provider} (set (keys msg)))
+          "Contract: Message must have exactly 5 fields")
+
+      ;; Contract: Field types
+      (is (string? (:uuid msg)) "Contract: :uuid must be string")
+      (is (string? (:role msg)) "Contract: :role must be string")
+      (is (string? (:text msg)) "Contract: :text must be string")
+      (is (string? (:timestamp msg)) "Contract: :timestamp must be string")
+      (is (keyword? (:provider msg)) "Contract: :provider must be keyword")
+
+      ;; Contract: Role values
+      (is (= "user" (:role msg)) "Contract: user message produces role='user'")
+
+      ;; Contract: Provider value
+      (is (= :opencode (:provider msg)) "Contract: :provider must be :opencode for OpenCode messages")))
+
+  (testing "OpenCode assistant messages conform to contract"
+    (let [sample-raw {:id "msg_def456"
+                      :role "assistant"
+                      :assembled-text "I can help with that!"
+                      :time {:created 1770528290000}}
+          msg (providers/parse-message :opencode sample-raw)]
+
+      (is (= #{:uuid :role :text :timestamp :provider} (set (keys msg))))
+      (is (= "assistant" (:role msg)))
+      (is (= :opencode (:provider msg))))))
+
 ;; ============================================================================
 ;; Canonical Message Format Tests
 ;; ============================================================================
@@ -927,7 +1152,7 @@ branch: main")
       (is (= :copilot (:provider msg))))))
 
 (deftest contract-test-cross-provider-consistency
-  (testing "Both providers produce identical message structure"
+  (testing "All parseable providers produce identical message structure"
     (let [claude-msg (providers/parse-message :claude
                                               {:type "user"
                                                :uuid "aa0e8400-e29b-41d4-a716-446655440005"
@@ -937,24 +1162,33 @@ branch: main")
                                                {:type "user.message"
                                                 :timestamp "2026-01-30T12:00:00.000Z"
                                                 :data {:messageId "bb0e8400-e29b-41d4-a716-446655440006"
-                                                       :content "test"}})]
+                                                       :content "test"}})
+          opencode-msg (providers/parse-message :opencode
+                                                {:id "cc0e8400-e29b-41d4-a716-446655440007"
+                                                 :role "user"
+                                                 :assembled-text "test"
+                                                 :time {:created 1770528283010}})]
 
       ;; Contract: Same fields regardless of provider
       (is (= (set (keys claude-msg)) (set (keys copilot-msg)))
-          "Contract: All providers produce same field set")
+          "Contract: Claude and Copilot produce same field set")
+      (is (= (set (keys claude-msg)) (set (keys opencode-msg)))
+          "Contract: Claude and OpenCode produce same field set")
 
       ;; Contract: Same field types
-      (is (= (class (:uuid claude-msg)) (class (:uuid copilot-msg))))
-      (is (= (class (:role claude-msg)) (class (:role copilot-msg))))
-      (is (= (class (:text claude-msg)) (class (:text copilot-msg))))
-      (is (= (class (:timestamp claude-msg)) (class (:timestamp copilot-msg))))
-      (is (= (class (:provider claude-msg)) (class (:provider copilot-msg))))
+      (doseq [[label msg] [["Claude" claude-msg] ["Copilot" copilot-msg] ["OpenCode" opencode-msg]]]
+        (is (string? (:uuid msg)) (str label " :uuid must be string"))
+        (is (string? (:role msg)) (str label " :role must be string"))
+        (is (string? (:text msg)) (str label " :text must be string"))
+        (is (string? (:timestamp msg)) (str label " :timestamp must be string"))
+        (is (keyword? (:provider msg)) (str label " :provider must be keyword")))
 
       ;; Contract: Role values are consistent across providers
       (is (= "user" (:role claude-msg)))
-      (is (= "user" (:role copilot-msg)))))
+      (is (= "user" (:role copilot-msg)))
+      (is (= "user" (:role opencode-msg)))))
 
-  (testing "text field is never nil for either provider"
+  (testing "text field is never nil for any parseable provider"
     ;; iOS does: messageData["text"] as? String - nil would fail
     (let [claude-empty (providers/parse-message :claude
                                                 {:type "user"
@@ -964,12 +1198,18 @@ branch: main")
           copilot-empty (providers/parse-message :copilot
                                                  {:type "user.message"
                                                   :timestamp "2026-01-30T12:00:00.000Z"
-                                                  :data {:messageId "dd0e8400-e29b-41d4-a716-446655440008"}})]
+                                                  :data {:messageId "dd0e8400-e29b-41d4-a716-446655440008"}})
+          opencode-empty (providers/parse-message :opencode
+                                                  {:id "ee0e8400-e29b-41d4-a716-446655440009"
+                                                   :role "user"
+                                                   :time {:created 1770528283010}})]
 
       (is (string? (:text claude-empty))
           "Contract: Claude text must be string even when content is nil")
       (is (string? (:text copilot-empty))
-          "Contract: Copilot text must be string even when content is missing"))))
+          "Contract: Copilot text must be string even when content is missing")
+      (is (string? (:text opencode-empty))
+          "Contract: OpenCode text must be string even when assembled-text is missing"))))
 
 (deftest contract-test-json-serialization
   (testing "Canonical message serializes to expected JSON structure"
