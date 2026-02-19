@@ -423,6 +423,53 @@
          :timestamp (:timestamp raw-msg)
          :provider :copilot}))))
 
+;;; ---- Cursor Provider ----
+
+(defmethod get-sessions-dir :cursor [_]
+  (let [home (System/getProperty "user.home")]
+    (io/file home ".cursor" "chats")))
+
+(defmethod find-session-files :cursor [_]
+  (let [chats-dir (get-sessions-dir :cursor)]
+    (if (.exists chats-dir)
+      (->> (.listFiles chats-dir)
+           (filter #(.isDirectory %))
+           (mapcat #(.listFiles %))
+           (filter #(.isDirectory %))
+           (filter #(valid-uuid? (.getName %)))
+           (filter #(.exists (io/file % "store.db"))))
+      [])))
+
+(defmethod session-id-from-file :cursor [_ file]
+  (when (.isDirectory file)
+    (let [dir-name (.getName file)]
+      (when (valid-uuid? dir-name)
+        dir-name))))
+
+(defmethod is-valid-session-file? :cursor [_ file]
+  (and (.isDirectory file)
+       (valid-uuid? (.getName file))
+       (.exists (io/file file "store.db"))))
+
+(defmethod get-session-file :cursor [_ session-id]
+  (let [chats-dir (get-sessions-dir :cursor)]
+    (when (.exists chats-dir)
+      (->> (.listFiles chats-dir)
+           (filter #(.isDirectory %))
+           (mapcat #(.listFiles %))
+           (filter #(= (.getName %) session-id))
+           first))))
+
+(defmethod extract-working-dir :cursor [_ _file]
+  ;; Cursor stores working directory in project-level config, not in session storage.
+  ;; Documented limitation: return nil.
+  nil)
+
+(defmethod parse-message :cursor [_ _raw-msg]
+  ;; Cursor uses SQLite binary blobs (Merkle-tree) — not parseable for history.
+  ;; Documented limitation: return nil.
+  nil)
+
 ;; ============================================================================
 ;; Provider Resolution
 ;; ============================================================================

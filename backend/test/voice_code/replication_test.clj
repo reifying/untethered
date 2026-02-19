@@ -3,6 +3,7 @@
             [voice-code.replication :as repl]
             [voice-code.providers :as providers]
             [clojure.java.io :as io]
+            [clojure.java.shell :as shell]
             [clojure.string :as str]
             [cheshire.core :as json]
             [clojure.tools.logging :as log])
@@ -1764,3 +1765,57 @@
       ;; Name should be truncated
       (is (<= (count (:name metadata)) 63)) ;; 60 chars + "..."
       (is (str/ends-with? (:name metadata) "...")))))
+
+;;; ---- Cursor Session Tests ----
+
+(defn- str->hex
+  "Convert a string to hex-encoded bytes."
+  [s]
+  (apply str (map #(format "%02x" (int %)) (.getBytes s "UTF-8"))))
+
+(deftest test-read-cursor-session-meta
+  (testing "parses hex-encoded JSON from mock sqlite3 output"
+    (let [session-dir (io/file test-dir "cursor-session")
+          db-file (io/file session-dir "store.db")
+          meta-json (json/generate-string {:name "Test Session"
+                                           :createdAt 1771473695508
+                                           :mode "default"})
+          hex-output (str->hex meta-json)]
+      (.mkdirs session-dir)
+      (spit db-file "fake-sqlite")
+
+      (with-redefs [shell/sh (fn [& args]
+                               (if (and (= "sqlite3" (first args))
+                                        (str/includes? (second args) "store.db"))
+                                 {:exit 0 :out (str hex-output "\n") :err ""}
+                                 {:exit 1 :out "" :err "not found"}))]
+        (let [meta (repl/read-cursor-session-meta session-dir)]
+          (is (some? meta))
+          (is (= "Test Session" (:name meta)))
+          (is (= 1771473695508 (:createdAt meta)))
+          (is (= "default" (:mode meta)))))))
+
+  (testing "returns nil when store.db does not exist"
+    (let [session-dir (io/file test-dir "cursor-session-no-db")]
+      (.mkdirs session-dir)
+      (is (nil? (repl/read-cursor-session-meta session-dir)))))
+
+  (testing "returns nil when sqlite3 fails"
+    (let [session-dir (io/file test-dir "cursor-session-fail")
+          db-file (io/file session-dir "store.db")]
+      (.mkdirs session-dir)
+      (spit db-file "fake-sqlite")
+
+      (with-redefs [shell/sh (fn [& _args]
+                               {:exit 1 :out "" :err "Error: no such table: meta"})]
+        (is (nil? (repl/read-cursor-session-meta session-dir))))))
+
+  (testing "returns nil when sqlite3 returns empty output"
+    (let [session-dir (io/file test-dir "cursor-session-empty")
+          db-file (io/file session-dir "store.db")]
+      (.mkdirs session-dir)
+      (spit db-file "fake-sqlite")
+
+      (with-redefs [shell/sh (fn [& _args]
+                               {:exit 0 :out "" :err ""})]
+        (is (nil? (repl/read-cursor-session-meta session-dir)))))))

@@ -284,6 +284,131 @@ branch: main")
 
       (is (nil? (providers/extract-working-dir :copilot session-dir))))))
 
+;;; ---- Cursor Provider Tests ----
+
+(deftest test-get-sessions-dir-cursor
+  (testing "get-sessions-dir returns correct path for :cursor"
+    (let [dir (providers/get-sessions-dir :cursor)
+          home (System/getProperty "user.home")]
+      (is (instance? java.io.File dir))
+      (is (= (str home "/.cursor/chats") (.getPath dir))))))
+
+(deftest test-session-id-from-file-cursor
+  (testing "extracts UUID from directory name"
+    (let [dir (io/file *test-dir* "abc12345-1234-5678-9012-abcdef123456")]
+      (.mkdirs dir)
+      (is (= "abc12345-1234-5678-9012-abcdef123456"
+             (providers/session-id-from-file :cursor dir)))))
+
+  (testing "returns nil for non-UUID directory names"
+    (let [dir (io/file *test-dir* "not-a-uuid")]
+      (.mkdirs dir)
+      (is (nil? (providers/session-id-from-file :cursor dir)))))
+
+  (testing "returns nil for files (not directories)"
+    (let [f (io/file *test-dir* "abc12345-1234-5678-9012-abcdef654321")]
+      (spit f "not a directory")
+      (is (nil? (providers/session-id-from-file :cursor f))))))
+
+(deftest test-is-valid-session-file-cursor
+  (testing "validates directory with UUID name and store.db"
+    (let [session-id "abc12345-1234-5678-9012-abcdef123456"
+          session-dir (io/file *test-dir* session-id)]
+      (.mkdirs session-dir)
+      (spit (io/file session-dir "store.db") "fake-sqlite")
+      (is (true? (providers/is-valid-session-file? :cursor session-dir)))))
+
+  (testing "rejects directory without store.db"
+    (let [session-id "def12345-1234-5678-9012-abcdef123456"
+          session-dir (io/file *test-dir* session-id)]
+      (.mkdirs session-dir)
+      (is (false? (providers/is-valid-session-file? :cursor session-dir)))))
+
+  (testing "rejects directory with non-UUID name"
+    (let [session-dir (io/file *test-dir* "not-a-valid-uuid")]
+      (.mkdirs session-dir)
+      (spit (io/file session-dir "store.db") "fake-sqlite")
+      (is (false? (providers/is-valid-session-file? :cursor session-dir)))))
+
+  (testing "rejects files (not directories)"
+    (let [f (io/file *test-dir* "fff12345-1234-5678-9012-abcdef123456")]
+      (spit f "not a directory")
+      (is (false? (providers/is-valid-session-file? :cursor f))))))
+
+(deftest test-find-session-files-cursor
+  (testing "finds sessions in nested project-hash directories"
+    (let [chats-dir (io/file *test-dir* ".cursor" "chats")
+          hash1 "abc123hash"
+          hash2 "def456hash"
+          uuid1 "11111111-1111-1111-1111-111111111111"
+          uuid2 "22222222-2222-2222-2222-222222222222"
+          session1-dir (io/file chats-dir hash1 uuid1)
+          session2-dir (io/file chats-dir hash2 uuid2)
+          ;; Invalid: no store.db
+          uuid3 "33333333-3333-3333-3333-333333333333"
+          session3-dir (io/file chats-dir hash1 uuid3)
+          ;; Invalid: non-UUID name
+          invalid-dir (io/file chats-dir hash1 "not-a-uuid")]
+
+      ;; Create valid sessions
+      (.mkdirs session1-dir)
+      (spit (io/file session1-dir "store.db") "fake")
+      (.mkdirs session2-dir)
+      (spit (io/file session2-dir "store.db") "fake")
+
+      ;; Create invalid sessions
+      (.mkdirs session3-dir) ;; no store.db
+      (.mkdirs invalid-dir)
+      (spit (io/file invalid-dir "store.db") "fake")
+
+      (with-redefs [providers/get-sessions-dir (fn [p]
+                                                 (if (= p :cursor)
+                                                   chats-dir
+                                                   (providers/get-sessions-dir p)))]
+        (let [found (providers/find-session-files :cursor)]
+          (is (= 2 (count found)))
+          (is (every? #(.isDirectory %) found))
+          (is (every? #(.exists (io/file % "store.db")) found)))))))
+
+(deftest test-get-session-file-cursor
+  (testing "finds session directory across project-hash dirs"
+    (let [chats-dir (io/file *test-dir* ".cursor" "chats")
+          hash1 "abc123hash"
+          session-id "11111111-1111-1111-1111-111111111111"
+          session-dir (io/file chats-dir hash1 session-id)]
+      (.mkdirs session-dir)
+      (spit (io/file session-dir "store.db") "fake")
+
+      (with-redefs [providers/get-sessions-dir (fn [p]
+                                                 (if (= p :cursor)
+                                                   chats-dir
+                                                   (providers/get-sessions-dir p)))]
+        (let [result (providers/get-session-file :cursor session-id)]
+          (is (some? result))
+          (is (= session-id (.getName result)))
+          (is (.isDirectory result))))))
+
+  (testing "returns nil for non-existent session"
+    (let [chats-dir (io/file *test-dir* ".cursor" "chats2")]
+      (.mkdirs chats-dir)
+      (with-redefs [providers/get-sessions-dir (fn [p]
+                                                 (if (= p :cursor)
+                                                   chats-dir
+                                                   (providers/get-sessions-dir p)))]
+        (is (nil? (providers/get-session-file :cursor "nonexistent-1234-5678-9012-abcdef123456")))))))
+
+(deftest test-extract-working-dir-cursor
+  (testing "returns nil (documented limitation)"
+    (let [dir (io/file *test-dir* "some-session")]
+      (.mkdirs dir)
+      (is (nil? (providers/extract-working-dir :cursor dir))))))
+
+(deftest test-parse-message-cursor
+  (testing "returns nil (SQLite binary blobs not parseable)"
+    (is (nil? (providers/parse-message :cursor {})))
+    (is (nil? (providers/parse-message :cursor {:some "data"})))
+    (is (nil? (providers/parse-message :cursor nil)))))
+
 ;; ============================================================================
 ;; Canonical Message Format Tests
 ;; ============================================================================

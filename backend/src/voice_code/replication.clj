@@ -1,6 +1,7 @@
 (ns voice-code.replication
   "Session replication and filesystem watching for Claude Code sessions."
   (:require [clojure.java.io :as io]
+            [clojure.java.shell :as shell]
             [clojure.string :as str]
             [clojure.edn :as edn]
             [cheshire.core :as json]
@@ -532,6 +533,36 @@
                   acc)))
             {}
             copilot-sessions)))
+
+(defn- parse-hex-string
+  "Decode a hex-encoded string to UTF-8 text. Java 8 compatible."
+  [hex-str]
+  (let [len (count hex-str)
+        bytes (byte-array (/ len 2))]
+    (dotimes [i (/ len 2)]
+      (aset-byte bytes i
+                 (unchecked-byte
+                  (Integer/parseInt (subs hex-str (* i 2) (+ (* i 2) 2)) 16))))
+    (String. bytes "UTF-8")))
+
+(defn read-cursor-session-meta
+  "Read session metadata from Cursor's SQLite store.db.
+   The meta table stores hex-encoded JSON at key '0'.
+   Returns parsed metadata map or nil on failure."
+  [session-dir]
+  (let [db-file (io/file session-dir "store.db")]
+    (when (.exists db-file)
+      (try
+        (let [result (shell/sh "sqlite3" (.getAbsolutePath db-file)
+                               "SELECT value FROM meta WHERE key='0'")
+              hex-value (str/trim (:out result))]
+          (when (and (zero? (:exit result)) (not (str/blank? hex-value)))
+            (let [decoded (parse-hex-string hex-value)]
+              (json/parse-string decoded true))))
+        (catch Exception e
+          (log/warn "Failed to read Cursor session metadata"
+                    {:dir (.getAbsolutePath session-dir) :error (ex-message e)})
+          nil)))))
 
 (defn build-index!
   "Scan all session files from all providers and build the session index.
