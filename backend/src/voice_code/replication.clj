@@ -695,16 +695,23 @@
 
 (defn- migrate-index-if-needed!
   "Migrate session index from legacy ~/.claude location to ~/.voice-code if needed.
+   Migrates when: legacy exists AND (new doesn't exist OR new is empty while legacy has data).
    Returns true if migration occurred, false otherwise."
   []
   (let [new-path (get-index-file-path)
         new-file (io/file new-path)
         legacy-path (get-legacy-index-file-path)
-        legacy-file (io/file legacy-path)]
-    (when (and (.exists legacy-file)
-               (not (.exists new-file)))
+        legacy-file (io/file legacy-path)
+        new-empty? (and (.exists new-file) (<= (.length new-file) 14)) ;; {:sessions {}} = 14 bytes
+        should-migrate? (and (.exists legacy-file)
+                             (or (not (.exists new-file))
+                                 (and new-empty? (> (.length legacy-file) 14))))]
+    (when should-migrate?
       (log/info "Migrating session index to provider-agnostic location"
-                {:from legacy-path :to new-path})
+                {:from legacy-path :to new-path
+                 :legacy-size (.length legacy-file)
+                 :new-exists (.exists new-file)
+                 :new-size (when (.exists new-file) (.length new-file))})
       (try
         ;; Ensure target directory exists
         (io/make-parents new-file)
@@ -741,8 +748,8 @@
 (defn validate-index
   "Validate a loaded index against the filesystem.
   Returns true if index is valid, false if it should be rebuilt.
-  Checks both directions: index->filesystem and filesystem->index.
-  Validates ALL files for correctness."
+  Provider-aware: collects session files from all providers and validates
+  both directions (index->filesystem and filesystem->index)."
   [index]
   (try
     (if (empty? index)
@@ -750,21 +757,31 @@
         (log/warn "Loaded index is empty, will rebuild")
         false)
 
-      ;; Get actual files on disk
-      (let [actual-files (find-jsonl-files)
-            actual-count (count actual-files)
+      ;; Collect valid session files from ALL providers
+      (let [all-session-ids
+            (into #{}
+                  (comp (mapcat (fn [provider]
+                                  (try
+                                    (->> (providers/find-session-files provider)
+                                         (filter #(providers/is-valid-session-file? provider %))
+                                         (keep #(providers/session-id-from-file provider %)))
+                                    (catch Exception _ nil))))
+                        (filter some?))
+                  providers/known-providers)
+            filesystem-count (count all-session-ids)
             index-count (count index)]
 
-        (log/info "Validating session index" {:index-count index-count :filesystem-count actual-count})
+        (log/info "Validating session index" {:index-count index-count
+                                              :filesystem-count filesystem-count})
 
         ;; If counts differ significantly, rebuild
         (if (or (zero? index-count)
-                (> (Math/abs (- actual-count index-count))
-                   (* 0.1 actual-count))) ;; More than 10% difference
+                (> (Math/abs (- filesystem-count index-count))
+                   (* 0.1 (max filesystem-count 1))))
           (do
             (log/warn "Index count mismatch, will rebuild"
                       {:index-count index-count
-                       :filesystem-count actual-count})
+                       :filesystem-count filesystem-count})
             false)
 
           ;; Check 1: Verify ALL index entries reference existing files
@@ -777,26 +794,23 @@
                 (log/warn "Index entries reference missing files, will rebuild"
                           {:total-index-entries index-count
                            :missing-count missing-count
-                           :example-missing (first missing-from-disk)})
+                           :example-missing (select-keys (first missing-from-disk)
+                                                         [:session-id :provider :file])})
                 false)
 
-              ;; Check 2: Verify ALL filesystem files are in index
-              (let [missing-from-index (filter (fn [file]
-                                                 (let [session-id (extract-session-id-from-path file)]
-                                                   (and session-id
-                                                        (not (contains? index session-id)))))
-                                               actual-files)
+              ;; Check 2: Verify ALL filesystem session IDs are in index
+              (let [missing-from-index (remove #(contains? index %) all-session-ids)
                     missing-count (count missing-from-index)]
                 (if (> missing-count 0)
                   (do
-                    (log/warn "Files on disk missing from index, will rebuild"
-                              {:total-files actual-count
+                    (log/warn "Sessions on disk missing from index, will rebuild"
+                              {:total-sessions filesystem-count
                                :missing-from-index missing-count
-                               :example-file (.getPath (first missing-from-index))
-                               :example-session-id (extract-session-id-from-path (first missing-from-index))})
+                               :example-session-id (first missing-from-index)})
                     false)
                   (do
-                    (log/info "Session index validation passed" {:validated-files actual-count})
+                    (log/info "Session index validation passed"
+                              {:validated-sessions filesystem-count})
                     true))))))))
     (catch Exception e
       (log/error e "Failed to validate index, will rebuild")
@@ -1641,11 +1655,20 @@
                 (when (.exists events-file)
                   ;; events.jsonl was just created, build metadata
                   (let [metadata (build-copilot-session-metadata watched-dir)
-                        session-id (:session-id metadata)]
+                        session-id (:session-id metadata)
+                        message-count (:message-count metadata 0)]
                     (swap! session-index assoc session-id metadata)
                     (save-index! @session-index)
                     (swap! file-positions assoc (.getAbsolutePath events-file) (.length events-file))
-                    (log/info "Copilot events.jsonl created" {:session-id session-id})))
+                    (log/info "Copilot events.jsonl created" {:session-id session-id
+                                                              :message-count message-count})
+                    ;; Notify iOS if file already has messages
+                    (when (pos? message-count)
+                      (when-let [callback (:on-session-created @watcher-state)]
+                        (callback metadata))
+                      (swap! session-index assoc-in [session-id :ios-notified] true)
+                      (swap! session-index assoc-in [session-id :first-notification] (System/currentTimeMillis))
+                      (save-index! @session-index))))
 
                 (= kind StandardWatchEventKinds/ENTRY_MODIFY)
                 (handle-copilot-events-modified events-file watched-dir)

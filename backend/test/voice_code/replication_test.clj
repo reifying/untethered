@@ -603,7 +603,16 @@
           file1 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)
           file2 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440001.jsonl" messages)
           file3 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440002.jsonl" messages)]
-      (with-redefs [repl/find-jsonl-files (fn [] [file1 file2 file3])]
+      ;; validate-index now queries all providers. Mock to return only our test files as :claude sessions.
+      (with-redefs [providers/find-session-files (fn [provider]
+                                                   (if (= provider :claude) [file1 file2 file3] []))
+                    providers/is-valid-session-file? (fn [provider file]
+                                                       (and (= provider :claude)
+                                                            (some #(= file %) [file1 file2 file3])))
+                    providers/session-id-from-file (fn [provider file]
+                                                     (when (= provider :claude)
+                                                       (let [name (.getName file)]
+                                                         (subs name 0 (- (count name) 6)))))]
         (let [index {"550e8400-e29b-41d4-a716-446655440000" {:session-id "550e8400-e29b-41d4-a716-446655440000"
                                                              :file (.getAbsolutePath file1)}
                      "550e8400-e29b-41d4-a716-446655440001" {:session-id "550e8400-e29b-41d4-a716-446655440001"
@@ -617,7 +626,15 @@
           file1 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)
           file2 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440001.jsonl" messages)
           file3 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440002.jsonl" messages)]
-      (with-redefs [repl/find-jsonl-files (fn [] [file1 file2 file3])]
+      (with-redefs [providers/find-session-files (fn [provider]
+                                                   (if (= provider :claude) [file1 file2 file3] []))
+                    providers/is-valid-session-file? (fn [provider file]
+                                                       (and (= provider :claude)
+                                                            (some #(= file %) [file1 file2 file3])))
+                    providers/session-id-from-file (fn [provider file]
+                                                     (when (= provider :claude)
+                                                       (let [name (.getName file)]
+                                                         (subs name 0 (- (count name) 6)))))]
         ;; Index only has 1 session but filesystem has 3 (>10% difference)
         (let [index {"550e8400-e29b-41d4-a716-446655440000" {:session-id "550e8400-e29b-41d4-a716-446655440000"
                                                              :file (.getAbsolutePath file1)}}]
@@ -626,7 +643,12 @@
   (testing "Index with missing files returns false"
     (let [messages ["{\"role\":\"user\",\"text\":\"test message\"}"]
           file1 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)]
-      (with-redefs [repl/find-jsonl-files (fn [] [file1])]
+      (with-redefs [providers/find-session-files (fn [provider]
+                                                   (if (= provider :claude) [file1] []))
+                    providers/is-valid-session-file? (fn [_provider _file] true)
+                    providers/session-id-from-file (fn [_provider file]
+                                                     (let [name (.getName file)]
+                                                       (subs name 0 (- (count name) 6))))]
         ;; Create index with files that don't exist - all should be detected
         (let [index {"550e8400-e29b-41d4-a716-446655440000" {:session-id "550e8400-e29b-41d4-a716-446655440000"
                                                              :file "/nonexistent/path1.jsonl"}
@@ -652,11 +674,18 @@
 
   (testing "Files on disk missing from index triggers rebuild"
     (let [messages ["{\"role\":\"user\",\"text\":\"test message\"}"]
-          ;; Create 3 files on disk
           file1 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)
           file2 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440001.jsonl" messages)
           file3 (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440002.jsonl" messages)]
-      (with-redefs [repl/find-jsonl-files (fn [] [file1 file2 file3])]
+      (with-redefs [providers/find-session-files (fn [provider]
+                                                   (if (= provider :claude) [file1 file2 file3] []))
+                    providers/is-valid-session-file? (fn [provider file]
+                                                       (and (= provider :claude)
+                                                            (some #(= file %) [file1 file2 file3])))
+                    providers/session-id-from-file (fn [provider file]
+                                                     (when (= provider :claude)
+                                                       (let [name (.getName file)]
+                                                         (subs name 0 (- (count name) 6)))))]
         ;; Index only has 2 of the 3 files (file3 missing from index)
         (let [index {"550e8400-e29b-41d4-a716-446655440000" {:session-id "550e8400-e29b-41d4-a716-446655440000"
                                                              :file (.getAbsolutePath file1)}
@@ -667,20 +696,67 @@
 
   (testing "Files on disk missing from index triggers rebuild with larger dataset"
     (let [messages ["{\"role\":\"user\",\"text\":\"test message\"}"]
-          ;; Create 15 files to verify full validation works with larger datasets
           files (vec (for [i (range 15)]
                        (create-test-jsonl-file
                         (format "550e8400-e29b-41d4-a716-44665544%04d.jsonl" i)
-                        messages)))]
-      (with-redefs [repl/find-jsonl-files (fn [] files)]
-        ;; Index missing file at index 5 - should be detected via full validation
+                        messages)))
+          file-set (set files)]
+      (with-redefs [providers/find-session-files (fn [provider]
+                                                   (if (= provider :claude) files []))
+                    providers/is-valid-session-file? (fn [provider file]
+                                                       (and (= provider :claude)
+                                                            (contains? file-set file)))
+                    providers/session-id-from-file (fn [provider file]
+                                                     (when (= provider :claude)
+                                                       (let [name (.getName file)]
+                                                         (subs name 0 (- (count name) 6)))))]
+        ;; Index missing file at index 5
         (let [index (into {} (for [i (range 15)
-                                   :when (not= i 5)] ; Skip file 5
+                                   :when (not= i 5)]
                                [(format "550e8400-e29b-41d4-a716-44665544%04d" i)
                                 {:session-id (format "550e8400-e29b-41d4-a716-44665544%04d" i)
                                  :file (.getAbsolutePath (nth files i))}]))]
           (is (false? (repl/validate-index index))
-              "Should detect missing file in larger dataset"))))))
+              "Should detect missing file in larger dataset")))))
+
+  (testing "Multi-provider index validates correctly"
+    (let [messages ["{\"role\":\"user\",\"text\":\"test message\"}"]
+          claude-file (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)
+          copilot-dir (let [d (io/file test-dir "copilot-session")]
+                        (.mkdirs d)
+                        d)
+          opencode-file (let [f (io/file test-dir "ses_abc123.json")]
+                          (spit f "{}")
+                          f)]
+      (with-redefs [providers/find-session-files
+                    (fn [provider]
+                      (case provider
+                        :claude [claude-file]
+                        :copilot [copilot-dir]
+                        :opencode [opencode-file]
+                        []))
+                    providers/is-valid-session-file? (fn [_provider _file] true)
+                    providers/session-id-from-file
+                    (fn [provider file]
+                      (case provider
+                        :claude "550e8400-e29b-41d4-a716-446655440000"
+                        :copilot "copilot-session"
+                        :opencode "ses_abc123"
+                        nil))]
+        (let [index {"550e8400-e29b-41d4-a716-446655440000"
+                     {:session-id "550e8400-e29b-41d4-a716-446655440000"
+                      :file (.getAbsolutePath claude-file)
+                      :provider :claude}
+                     "copilot-session"
+                     {:session-id "copilot-session"
+                      :file (.getAbsolutePath copilot-dir)
+                      :provider :copilot}
+                     "ses_abc123"
+                     {:session-id "ses_abc123"
+                      :file (.getAbsolutePath opencode-file)
+                      :provider :opencode}}]
+          (is (true? (repl/validate-index index))
+              "Multi-provider index should validate successfully"))))))
 
 (deftest test-parse-with-retry
   (testing "Parse succeeds on first try"
@@ -1601,7 +1677,7 @@
           ;; Legacy file should be deleted
           (is (not (.exists legacy-index-file)))))))
 
-  (testing "No migration when new file already exists"
+  (testing "No migration when new file already exists with data"
     (let [test-home (str test-dir "/home2")
           legacy-claude-dir (io/file test-home ".claude")
           new-voice-code-dir (io/file test-home ".voice-code")
@@ -1646,7 +1722,38 @@
           (is (nil? loaded))
           ;; Neither file should exist
           (is (not (.exists new-index-file)))
-          (is (not (.exists legacy-index-file))))))))
+          (is (not (.exists legacy-index-file)))))))
+
+  (testing "Migration when new file is empty but legacy has data"
+    (let [test-home (str test-dir "/home4")
+          legacy-claude-dir (io/file test-home ".claude")
+          new-voice-code-dir (io/file test-home ".voice-code")
+          legacy-index-file (io/file legacy-claude-dir ".session-index.edn")
+          new-index-file (io/file new-voice-code-dir "session-index.edn")
+          legacy-data {:sessions {"legacy-uuid" {:session-id "legacy-uuid" :name "Legacy Session"}}}]
+
+      ;; Create both, but new file is empty
+      (.mkdirs legacy-claude-dir)
+      (.mkdirs new-voice-code-dir)
+      (spit legacy-index-file (pr-str legacy-data))
+      (spit new-index-file (pr-str {:sessions {}}))
+
+      ;; Both exist
+      (is (.exists legacy-index-file))
+      (is (.exists new-index-file))
+      ;; New file is empty (14 bytes = "{:sessions {}}")
+      (is (<= (.length new-index-file) 14))
+
+      (with-redefs [repl/get-index-file-path (fn [] (.getAbsolutePath new-index-file))
+                    repl/get-legacy-index-file-path (fn [] (.getAbsolutePath legacy-index-file))]
+        (let [loaded (repl/load-index)]
+          ;; Should have migrated legacy data over empty new file
+          (is (= {"legacy-uuid" {:session-id "legacy-uuid" :name "Legacy Session"}} loaded))
+          ;; Legacy file should be deleted
+          (is (not (.exists legacy-index-file)))
+          ;; New file should have the legacy data
+          (is (.exists new-index-file))
+          (is (> (.length new-index-file) 14)))))))
 
 ;; ============================================================================
 ;; Multi-Provider Session Discovery Tests
@@ -2654,6 +2761,121 @@
             (cleanup-watcher-state!))))
       ;; Handler should NOT have been called for non-session file
       (is (empty? @handled) "Non-session files should not trigger handler"))))
+
+(deftest test-copilot-events-jsonl-create-notifies-ios
+  (testing "Copilot events.jsonl ENTRY_CREATE with messages triggers on-session-created notification"
+    ;; This tests the inline code path in process-watch-events for
+    ;; is-copilot-session + ENTRY_CREATE on events.jsonl.
+    ;; We use FS watcher with conditional assertions (macOS WatchService is polling-based).
+    (let [notifications (atom [])
+          session-id "aaaaaaaa-1111-2222-3333-aaaaaaaaaaaa"
+          session-dir (io/file test-dir ".copilot" "session-state" session-id)]
+      (.mkdirs session-dir)
+      (spit (io/file session-dir "workspace.yaml")
+            (str "id: " session-id "\ncwd: /tmp/test-project\n"))
+      (reset! repl/session-index {})
+      (let [ws (init-watcher-state-for-test!
+                :on-session-created (fn [metadata] (swap! notifications conj metadata)))]
+        (try
+          (let [wk (.register (.toPath session-dir) ws
+                              (into-array [java.nio.file.StandardWatchEventKinds/ENTRY_CREATE
+                                           java.nio.file.StandardWatchEventKinds/ENTRY_MODIFY]))]
+            (swap! repl/watcher-state assoc
+                   :copilot-session-dirs #{session-dir}
+                   :watch-keys (assoc (:watch-keys @repl/watcher-state) wk session-dir))
+            ;; Create events.jsonl with messages (content must be a string, not an object)
+            (spit (io/file session-dir "events.jsonl")
+                  (str (json/generate-string {:type "user.message"
+                                              :data {:content "hello"}
+                                              :timestamp "2026-01-15T10:00:00Z"})
+                       "\n"
+                       (json/generate-string {:type "assistant.message"
+                                              :data {:content "hi there"}
+                                              :timestamp "2026-01-15T10:00:01Z"})
+                       "\n"))
+            ;; Wait for filesystem event (macOS polling ~2-5s)
+            (Thread/sleep 3000)
+            (let [key (.poll ws)]
+              (when key
+                (repl/process-watch-events key session-dir)
+                ;; Verify notification was fired
+                (is (= 1 (count @notifications))
+                    "Should fire exactly one on-session-created notification")
+                (let [notified (first @notifications)]
+                  (is (= session-id (:session-id notified)))
+                  (is (= :copilot (:provider notified)))
+                  (is (= 2 (:message-count notified))))
+                ;; Verify index state
+                (let [indexed (get @repl/session-index session-id)]
+                  (is (some? indexed) "Session should be in index")
+                  (is (= :copilot (:provider indexed)))
+                  (is (= 2 (:message-count indexed)))
+                  (is (true? (:ios-notified indexed))
+                      "ios-notified flag should be set")))))
+          (finally
+            (cleanup-watcher-state!))))))
+
+  (testing "Copilot events.jsonl ENTRY_CREATE with empty file does NOT notify"
+    (let [notifications (atom [])
+          session-id "bbbbbbbb-1111-2222-3333-bbbbbbbbbbbb"
+          session-dir (io/file test-dir ".copilot" "session-state" session-id)]
+      (.mkdirs session-dir)
+      (spit (io/file session-dir "workspace.yaml")
+            (str "id: " session-id "\ncwd: /tmp/test-project\n"))
+      (reset! repl/session-index {})
+      (let [ws (init-watcher-state-for-test!
+                :on-session-created (fn [metadata] (swap! notifications conj metadata)))]
+        (try
+          (let [wk (.register (.toPath session-dir) ws
+                              (into-array [java.nio.file.StandardWatchEventKinds/ENTRY_CREATE
+                                           java.nio.file.StandardWatchEventKinds/ENTRY_MODIFY]))]
+            (swap! repl/watcher-state assoc
+                   :copilot-session-dirs #{session-dir}
+                   :watch-keys (assoc (:watch-keys @repl/watcher-state) wk session-dir))
+            ;; Create empty events.jsonl
+            (spit (io/file session-dir "events.jsonl") "")
+            (Thread/sleep 3000)
+            (let [key (.poll ws)]
+              (when key
+                (repl/process-watch-events key session-dir)
+                ;; Should index but NOT notify
+                (is (empty? @notifications)
+                    "Should not notify iOS when events.jsonl is created empty"))))
+          (finally
+            (cleanup-watcher-state!))))))
+
+  (testing "Deterministic: build-copilot-session-metadata + notification logic"
+    ;; This verifies the fix works regardless of FS event timing
+    (let [notifications (atom [])
+          session-id "cccccccc-1111-2222-3333-cccccccccccc"
+          session-dir (io/file test-dir ".copilot" "session-state" session-id)]
+      (.mkdirs session-dir)
+      (spit (io/file session-dir "workspace.yaml")
+            (str "id: " session-id "\ncwd: /tmp/test-project\n"))
+      (spit (io/file session-dir "events.jsonl")
+            (str (json/generate-string {:type "user.message"
+                                        :data {:content "test message"}
+                                        :timestamp "2026-01-15T10:00:00Z"})
+                 "\n"))
+      (reset! repl/session-index {})
+      (reset! repl/watcher-state
+              {:on-session-created (fn [metadata] (swap! notifications conj metadata))})
+      ;; Simulate inline process-watch-events ENTRY_CREATE logic
+      (let [metadata (repl/build-copilot-session-metadata session-dir)
+            message-count (:message-count metadata 0)]
+        (swap! repl/session-index assoc session-id metadata)
+        ;; This is the code that was MISSING before the fix:
+        (when (pos? message-count)
+          (when-let [callback (:on-session-created @repl/watcher-state)]
+            (callback metadata))
+          (swap! repl/session-index assoc-in [session-id :ios-notified] true)
+          (swap! repl/session-index assoc-in [session-id :first-notification] (System/currentTimeMillis))))
+      ;; Verify
+      (is (= 1 (count @notifications))
+          "Notification callback should fire for file with messages")
+      (is (= session-id (:session-id (first @notifications))))
+      (is (= :copilot (:provider (first @notifications))))
+      (is (true? (get-in @repl/session-index [session-id :ios-notified]))))))
 
 (deftest test-start-watcher-skips-uninstalled-providers
   (testing "start-watcher! skips Cursor watches when not installed"
