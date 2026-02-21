@@ -36,6 +36,16 @@
 (defonce ^:private paused? (atom false))
 
 ;; ============================================================================
+;; Module Access
+;; ============================================================================
+
+(defn- get-tts-default
+  "Get the default export from the TTS module."
+  []
+  (when tts-module
+    (or (.-default tts-module) tts-module)))
+
+;; ============================================================================
 ;; Background Audio Keep-Alive
 ;; ============================================================================
 ;; Mirrors iOS VoiceOutputManager behavior: plays silent audio every 25 seconds
@@ -100,12 +110,6 @@
 ;; react-native-tts addEventListener returns a subscription object with .remove() method.
 ;; Storing these enables proper cleanup to prevent memory leaks on hot reload.
 (defonce ^:private event-subscriptions (atom []))
-
-(defn- get-tts-default
-  "Get the default export from the TTS module."
-  []
-  (when tts-module
-    (or (.-default tts-module) tts-module)))
 
 ;; ============================================================================
 ;; Configuration
