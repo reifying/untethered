@@ -812,9 +812,9 @@
 (rf/reg-event-db
  :recipes/handle-step-started
  (fn [db [_ {:keys [session-id step step-count]}]]
-   (-> db
-       (assoc-in [:recipes :active session-id :current-step] step)
-       (assoc-in [:recipes :active session-id :step-count] step-count))))
+   (cond-> db
+     step       (assoc-in [:recipes :active session-id :current-step] step)
+     step-count (assoc-in [:recipes :active session-id :step-count] step-count))))
 
 (rf/reg-event-db
  :recipes/handle-exited

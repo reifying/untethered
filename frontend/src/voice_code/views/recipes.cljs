@@ -270,9 +270,9 @@
    - Confirmation alert for new session starts
    - Loading state during recipe start and load
    Requests available recipes from backend on mount."
-  [^js props]
-  (let [route (.-route props)
-        navigation (.-navigation props)
+  [props]
+  (let [^js route (:route props)
+        ^js navigation (:navigation props)
         session-id (when route (some-> route .-params .-sessionId))
         working-directory (when route (some-> route .-params .-workingDirectory))
         ;; Local state
@@ -298,6 +298,7 @@
             ;; Check if our pending recipe has started
             pending-active (when @pending-session-id
                              (get active-recipes @pending-session-id))]
+
 
         ;; Request recipes on first render (guard against duplicates)
         (when (and (not @has-requested-recipes?) (empty? available-recipes))

@@ -444,15 +444,13 @@ class VoiceCodeClientRecipeTests: XCTestCase {
 
     func testRapidStartAndExitSameSession() throws {
         let expectation = XCTestExpectation(description: "Rapid start/exit same session handled")
-        var updateCount = 0
 
         let cancellable = client.$activeRecipes
             .dropFirst()
             .sink { recipes in
-                updateCount += 1
-                if updateCount == 2 {
-                    // After start and exit, should be empty
-                    XCTAssertEqual(recipes.count, 0, "Should have no active recipes after exit")
+                // Debouncing may coalesce both updates into one publish.
+                // The important invariant: after start+exit, no active recipes remain.
+                if recipes.isEmpty {
                     expectation.fulfill()
                 }
             }
@@ -471,8 +469,8 @@ class VoiceCodeClientRecipeTests: XCTestCase {
 
         client.handleMessage(startJson)
 
-        // Wait 100ms (debounce window), then exit
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+        // Send exit within the debounce window — updates may coalesce
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             let exitJson = """
             {
                 "type": "recipe_exited",

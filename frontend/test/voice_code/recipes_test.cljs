@@ -201,7 +201,23 @@
                          :step "Step 2"}])
 
      (let [active @(rf/subscribe [:recipes/active])]
-       (is (= "Step 2" (get-in active ["session-123" :current-step])))))))
+       (is (= "Step 2" (get-in active ["session-123" :current-step])))))
+
+   (testing "step started preserves step-count when not provided"
+     (let [active @(rf/subscribe [:recipes/active])]
+       (is (= 3 (get-in active ["session-123" :step-count]))
+           "step-count should be preserved from recipe-started")))
+
+   (testing "step started updates step-count when provided"
+     (rf/dispatch-sync [:recipes/handle-step-started
+                        {:session-id "session-123"
+                         :step "Step 3"
+                         :step-count 5}])
+
+     (let [active @(rf/subscribe [:recipes/active])]
+       (is (= "Step 3" (get-in active ["session-123" :current-step])))
+       (is (= 5 (get-in active ["session-123" :step-count]))
+           "step-count should be updated when provided")))))
 
 ;; ============================================================================
 ;; Recipe Loading State Tests
