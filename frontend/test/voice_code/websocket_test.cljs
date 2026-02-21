@@ -747,6 +747,57 @@
          (is (= 150 (:duration-ms completed)))
          (is (some? (:completed-at completed))))))))
 
+(deftest commands-handle-output-after-complete-discarded-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+   ;; Initialize and complete a command
+   (rf/dispatch-sync [:commands/handle-started
+                      {:command-session-id "cmd-abc123"
+                       :command-id "git.status"
+                       :shell-command "git status"}])
+   (rf/dispatch-sync [:commands/handle-output
+                      {:command-session-id "cmd-abc123"
+                       :stream "stdout"
+                       :text "On branch main"}])
+   (rf/dispatch-sync [:commands/handle-complete
+                      {:command-session-id "cmd-abc123"
+                       :exit-code 0
+                       :duration-ms 67}])
+
+   (testing "late command_output after complete does not create phantom running entry"
+     (rf/dispatch-sync [:commands/handle-output
+                        {:command-session-id "cmd-abc123"
+                         :stream "stdout"
+                         :text "late arriving line"}])
+
+     ;; Should NOT create a new entry in running
+     (is (nil? (get-in @re-frame.db/app-db [:commands :running "cmd-abc123"])))
+     ;; Running map should be empty
+     (is (empty? (get-in @re-frame.db/app-db [:commands :running]))))))
+
+(deftest commands-handle-started-merges-existing-output-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+   ;; Simulate output arriving before started (race condition)
+   ;; First, manually create a running entry with just output
+   (swap! re-frame.db/app-db assoc-in [:commands :running "cmd-race"]
+          {:output-lines [{:text "early line" :stream "stdout"}]})
+
+   (testing "command_started merges into existing entry preserving output"
+     (rf/dispatch-sync [:commands/handle-started
+                        {:command-session-id "cmd-race"
+                         :command-id "git.status"
+                         :shell-command "git status"}])
+
+     (let [cmd (get-in @re-frame.db/app-db [:commands :running "cmd-race"])]
+       ;; Should have the metadata from started
+       (is (= "git.status" (:command-id cmd)))
+       (is (= "git status" (:shell-command cmd)))
+       (is (some? (:started-at cmd)))
+       ;; Should preserve the early output
+       (is (= 1 (count (:output-lines cmd))))
+       (is (= "early line" (:text (first (:output-lines cmd)))))))))
+
 (deftest commands-handle-error-test
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])

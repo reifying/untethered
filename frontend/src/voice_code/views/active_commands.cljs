@@ -230,49 +230,47 @@
        (fn []
          (let [colors (theme/use-theme-colors)
                running @(rf/subscribe [:commands/running])
-            ;; Sort by start time (most recent first)
-            sorted-commands (->> running
-                                 (sort-by (fn [[_ cmd]]
-                                            (- (or (some-> (:started-at cmd) .getTime) 0))))
-                                 vec)]
-        [:> rn/SafeAreaView {:style {:flex 1
-                                     :background-color (:grouped-background colors)}}
-         (if (empty? sorted-commands)
-           [empty-state {:navigation navigation
-                         :working-directory working-directory
-                         :colors colors}]
-           [:> rn/View {:style {:flex 1}}
-            ;; History button at top
-            [history-button {:colors colors
-                             :on-press #(when navigation
-                                          (.navigate navigation "CommandHistory"
-                                                     #js {:workingDirectory working-directory}))}]
-            [:> rn/FlatList
-             {:data (clj->js sorted-commands)
-              :key-extractor (fn [item _idx]
-                               ;; item is [session-id command] tuple converted to JS array
-                               (aget item 0))
-              :render-item
-             (fn [^js obj]
-               (let [item (.-item obj)
-                     ;; Reconstruct tuple from JS array
-                     session-id (aget item 0)
-                     cmd-js (aget item 1)
-                     cmd {:shell-command (aget cmd-js "shell-command")
-                          :command-id (aget cmd-js "command-id")
-                          :started-at (aget cmd-js "started-at")
-                          :exit-code (aget cmd-js "exit-code")
-                          :duration-ms (aget cmd-js "duration-ms")
-                          :output-lines (js->clj (aget cmd-js "output-lines")
-                                                 :keywordize-keys true)}]
-                 (r/as-element
-                  [command-row
-                   {:session-id session-id
-                    :command cmd
-                    :colors colors
-                    :on-press (fn [sid]
-                                (when navigation
-                                  (.navigate navigation "CommandExecution"
-                                             #js {:workingDirectory working-directory
-                                                  :commandSessionId sid})))}])))
-              :content-container-style {:padding-vertical 8}}]])]))])))
+               sorted-commands (->> running
+                                    (sort-by (fn [[_ cmd]]
+                                               (- (or (some-> (:started-at cmd) .getTime) 0))))
+                                    vec)]
+           [:> rn/SafeAreaView {:style {:flex 1
+                                        :background-color (:grouped-background colors)}}
+            (if (empty? sorted-commands)
+              [empty-state {:navigation navigation
+                            :working-directory working-directory
+                            :colors colors}]
+              [:> rn/View {:style {:flex 1}}
+               [history-button {:colors colors
+                                :on-press #(when navigation
+                                             (.navigate navigation "CommandHistory"
+                                                        #js {:workingDirectory working-directory}))}]
+               [:> rn/FlatList
+                {:style {:flex 1}
+                 :data (clj->js sorted-commands)
+                 :key-extractor (fn [item _idx]
+                                  (aget item 0))
+                 :render-item
+                 (fn [^js obj]
+                   (let [item (.-item obj)
+                         session-id (aget item 0)
+                         cmd-js (aget item 1)
+                         cmd {:shell-command (aget cmd-js "shell-command")
+                              :command-id (aget cmd-js "command-id")
+                              :started-at (aget cmd-js "started-at")
+                              :exit-code (aget cmd-js "exit-code")
+                              :duration-ms (aget cmd-js "duration-ms")
+                              :output-lines (js->clj (aget cmd-js "output-lines")
+                                                     :keywordize-keys true)}]
+                     (r/as-element
+                      [command-row
+                       {:session-id session-id
+                        :command cmd
+                        :colors colors
+                        :on-press (fn [sid]
+                                    (when navigation
+                                      (.navigate navigation "CommandExecution"
+                                                 #js {:workingDirectory working-directory
+                                                      :commandSessionId sid})))}])))
+                 :content-container-style {:padding-vertical 8}}]])]))])))
+

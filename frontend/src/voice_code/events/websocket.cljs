@@ -696,20 +696,25 @@
 (rf/reg-event-db
  :commands/handle-started
  (fn [db [_ {:keys [command-session-id command-id shell-command]}]]
-   (assoc-in db [:commands :running command-session-id]
-             {:command-id command-id
-              :shell-command shell-command
-              :output-lines [] ; Vector of {:text :stream} maps for stream type indicators
-              :started-at (js/Date.)})))
+   ;; Merge into any existing entry to preserve output-lines that arrived before started
+   (update-in db [:commands :running command-session-id]
+              (fn [existing]
+                (merge {:output-lines [] :started-at (js/Date.)}
+                       existing
+                       {:command-id command-id
+                        :shell-command shell-command
+                        :started-at (js/Date.)})))))
 
 (rf/reg-event-db
  :commands/handle-output
  (fn [db [_ {:keys [command-session-id stream text]}]]
-   ;; Store each output line with its stream type (stdout/stderr)
-   (update-in db [:commands :running command-session-id :output-lines]
-              (fnil conj [])
-              {:text text
-               :stream (or stream "stdout")})))
+   ;; Only append output if command is still in :running (not yet completed).
+   ;; Late-arriving output after command_complete is discarded to prevent
+   ;; phantom entries in the running commands list.
+   (if (get-in db [:commands :running command-session-id])
+     (update-in db [:commands :running command-session-id :output-lines]
+                conj {:text text :stream (or stream "stdout")})
+     db)))
 
 (rf/reg-event-db
  :commands/handle-complete
