@@ -103,24 +103,24 @@
            (format-timestamp timestamp)])
         ;; Duration
         (when duration-ms
-          [:> rn/Text {:style {:font-size 12
-                               :color (:text-secondary colors)
+          [:> rn/View {:style {:flex-direction "row"
+                               :align-items "center"
                                :margin-left 12}}
-           [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-            [icons/icon {:name :clock :size 12 :color (:text-secondary colors) :style {:margin-right 4}}]
-            [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
-             (format-duration duration-ms)]]])
+           [icons/icon {:name :clock :size 12 :color (:text-secondary colors) :style {:margin-right 4}}]
+           [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors)}}
+            (format-duration duration-ms)]])
         ;; Exit code
         (when (some? exit-code)
-          [:> rn/Text {:style {:font-size 12
-                               :color (if (= exit-code 0) (:success colors) (:destructive colors))
-                               :margin-left 12
-                               :font-weight "500"}}
-           [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-            [icons/icon {:name (if (= exit-code 0) :checkmark :close)
-                         :size 12
-                         :color (if (= exit-code 0) (:success colors) (:destructive colors))
-                         :style {:margin-right 4}}]
+          [:> rn/View {:style {:flex-direction "row"
+                               :align-items "center"
+                               :margin-left 12}}
+           [icons/icon {:name (if (= exit-code 0) :checkmark :close)
+                        :size 12
+                        :color (if (= exit-code 0) (:success colors) (:destructive colors))
+                        :style {:margin-right 4}}]
+           [:> rn/Text {:style {:font-size 12
+                                :color (if (= exit-code 0) (:success colors) (:destructive colors))
+                                :font-weight "500"}}
             (if (= exit-code 0) "Success" (str "Exit " exit-code))]])]
 
        ;; Output preview
