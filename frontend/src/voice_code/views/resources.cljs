@@ -177,18 +177,18 @@
                               :margin-top 2}}
           "Delete"]]]
 
-       ;; Swipeable content - spread panHandlers onto the animated view
-       (let [handlers (.-panHandlers pan-responder)]
-         [:> (.-View Animated)
-          (js/Object.assign
-           #js {:style #js {:transform #js [#js {:translateX translate-x}]
-                            :backgroundColor (:row-background colors)}}
-           handlers)
-          [resource-item-content
-           {:filename (:filename resource)
-            :size (:size resource)
-            :timestamp (:timestamp resource)
-            :colors colors}]])])))
+       ;; Swipeable content - merge panHandlers as clj map for Reagent [:>] interop
+       [:> (.-View Animated)
+        (merge
+         {:style (let [base #js {:transform #js [#js {:translateX translate-x}]
+                                 :backgroundColor (:row-background colors)}]
+                   base)}
+         (js->clj (.-panHandlers pan-responder)))
+        [resource-item-content
+         {:filename (:filename resource)
+          :size (:size resource)
+          :timestamp (:timestamp resource)
+          :colors colors}]]])))
 
 (defn- resource-item
   "Single resource item in the list with swipe-to-delete.

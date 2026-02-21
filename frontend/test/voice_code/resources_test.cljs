@@ -1,7 +1,9 @@
 (ns voice-code.resources-test
-  "Tests for resources view utility functions.
-   Tests format-file-size and file-icon functions."
-  (:require [cljs.test :refer [deftest testing is]]))
+  "Tests for resources view utility functions and component structure.
+   Tests format-file-size, file-icon, and swipeable-resource-item rendering."
+  (:require [cljs.test :refer [deftest testing is]]
+            ["react-native" :as rn :refer [Animated]]
+            [voice-code.views.resources :as resources]))
 
 ;; Import the private functions by redefining them here
 ;; (In a real setup, we'd move these to a utils namespace)
@@ -98,3 +100,67 @@
     (let [delete-button-width 80
           swipe-threshold -80]
       (is (= delete-button-width (Math/abs swipe-threshold))))))
+
+;; ============================================================================
+;; Component Structure Tests
+;; Verify swipeable-resource-item produces valid Reagent hiccup.
+;; Regression: JS object props passed to [:>] are treated as children, causing
+;; "Objects are not valid as a React child" error. Fix uses merge + js->clj
+;; to convert PanResponder handlers to a Clojure map.
+;; ============================================================================
+
+(def ^:private test-colors
+  {:row-background "#FFFFFF"
+   :separator "#E0E0E0"
+   :destructive "#FF3B30"
+   :bubble-user-text "#FFFFFF"
+   :background-secondary "#F5F5F5"
+   :text-primary "#000000"
+   :text-secondary "#666666"
+   :shadow "#000000"
+   :accent "#007AFF"
+   :disabled "#CCCCCC"})
+
+(deftest swipeable-resource-item-returns-form-2-fn-test
+  (testing "swipeable-resource-item returns a render fn (Form-2 component)"
+    (let [result (#'resources/swipeable-resource-item
+                  {:resource {:filename "test.pdf" :size 1234}
+                   :on-delete (fn [_])
+                   :colors test-colors})]
+      (is (fn? result) "Form-2 component should return a render fn"))))
+
+(deftest swipeable-resource-item-render-fn-returns-hiccup-test
+  (testing "render fn returns valid Reagent hiccup (not a JS object error)"
+    (let [render-fn (#'resources/swipeable-resource-item
+                     {:resource {:filename "test.pdf" :size 1234}
+                      :on-delete (fn [_])
+                      :colors test-colors})
+          result (render-fn {:resource {:filename "test.pdf" :size 1234}
+                             :on-delete (fn [_])
+                             :colors test-colors})]
+      (is (vector? result) "Should return hiccup vector")
+      (is (= :> (first result)) "Root should be React interop [:>]"))))
+
+(deftest swipeable-resource-item-animated-view-uses-clj-map-props-test
+  (testing "Animated.View receives Clojure map props (not JS object)"
+    (let [render-fn (#'resources/swipeable-resource-item
+                     {:resource {:filename "test.pdf" :size 1234}
+                      :on-delete (fn [_])
+                      :colors test-colors})
+          hiccup (render-fn {:resource {:filename "test.pdf" :size 1234}
+                             :on-delete (fn [_])
+                             :colors test-colors})
+          ;; Find the Animated.View child - it's the last child of the root View
+          children (drop 2 hiccup)
+          animated-view (last children)]
+      ;; The animated view should be [:> Animated.View {clj-map-props} [child]]
+      (is (vector? animated-view) "Animated.View should be a hiccup vector")
+      (is (= :> (first animated-view)) "Should use [:>] interop")
+      (is (= (.-View Animated) (second animated-view)) "Should be Animated.View")
+      ;; The props (third element) must be a Clojure map, NOT a JS object
+      ;; This is the regression test: js/Object.assign returns a JS object
+      ;; which Reagent treats as a child, causing render errors
+      (let [props (nth animated-view 2)]
+        (is (map? props)
+            "Props must be a Clojure map (not JS object) for Reagent [:>] interop")
+        (is (contains? props :style) "Props should contain :style key")))))
