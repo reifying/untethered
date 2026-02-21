@@ -721,14 +721,16 @@
  (fn [db [_ {:keys [command-session-id exit-code duration-ms]}]]
    (let [cmd (get-in db [:commands :running command-session-id])]
      (if cmd
-       ;; Normal case: command found in running, move to history with completion data
-       (-> db
-           (update-in [:commands :running] dissoc command-session-id)
-           (update-in [:commands :history] conj
-                      (assoc cmd
-                             :exit-code exit-code
-                             :duration-ms duration-ms
-                             :completed-at (js/Date.))))
+       ;; Keep completed command in :running with exit-code set (iOS parity).
+       ;; The CommandExecution and ActiveCommands views already handle exit-code
+       ;; display. Also add to :history for the CommandHistory view.
+       (let [completed-cmd (assoc cmd
+                                  :exit-code exit-code
+                                  :duration-ms duration-ms
+                                  :completed-at (js/Date.))]
+         (-> db
+             (assoc-in [:commands :running command-session-id] completed-cmd)
+             (update-in [:commands :history] conj completed-cmd)))
        ;; Edge case: command not found in running (e.g., duplicate complete message)
        ;; Just log and return db unchanged to avoid corrupting history
        (do

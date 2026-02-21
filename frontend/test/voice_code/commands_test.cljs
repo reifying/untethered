@@ -154,16 +154,19 @@
                        :stream "stdout"
                        :text "Build complete"}])
 
-   (testing "command_complete moves command to history"
+   (testing "command_complete keeps command in running with exit-code and adds to history"
      (rf/dispatch-sync [:commands/handle-complete
                         {:command-session-id "cmd-complete"
                          :exit-code 0
                          :duration-ms 1234}])
 
-     ;; Should no longer be in running
-     (is (not (contains? @(rf/subscribe [:commands/running]) "cmd-complete")))
+     ;; Should still be in running with exit-code set (iOS parity)
+     (let [cmd (get @(rf/subscribe [:commands/running]) "cmd-complete")]
+       (is (some? cmd) "Completed command stays in running")
+       (is (= 0 (:exit-code cmd)))
+       (is (= 1234 (:duration-ms cmd))))
 
-     ;; Should be in history
+     ;; Should also be in history
      (let [history @(rf/subscribe [:commands/history])]
        (is (= 1 (count history)))
        (is (= 0 (:exit-code (first history))))
@@ -185,7 +188,7 @@
      (let [history @(rf/subscribe [:commands/history])]
        (is (empty? history) "History should not contain partial records")))
 
-   (testing "duplicate complete message does not corrupt history"
+   (testing "duplicate complete message updates running command again"
      ;; Start and complete a command
      (rf/dispatch-sync [:commands/handle-started
                         {:command-session-id "cmd-dup"
@@ -196,18 +199,20 @@
                          :exit-code 0
                          :duration-ms 100}])
 
-     ;; Send duplicate complete - should be ignored
+     ;; Send duplicate complete - command is still in running, so it processes again
      (rf/dispatch-sync [:commands/handle-complete
                         {:command-session-id "cmd-dup"
                          :exit-code 1
                          :duration-ms 999}])
 
-     ;; History should have exactly one entry (not duplicated)
+     ;; Running command should have the latest completion data
+     (let [cmd (get @(rf/subscribe [:commands/running]) "cmd-dup")]
+       (is (= 1 (:exit-code cmd)))
+       (is (= 999 (:duration-ms cmd))))
+
+     ;; History will have two entries (one per complete message)
      (let [history @(rf/subscribe [:commands/history])]
-       (is (= 1 (count history)))
-       ;; Should have the first completion's data
-       (is (= 0 (:exit-code (first history))))
-       (is (= 100 (:duration-ms (first history))))))))
+       (is (= 2 (count history)))))))
 
 (deftest handle-command-history-test
   (rf-test/run-test-sync

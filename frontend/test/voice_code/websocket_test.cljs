@@ -824,16 +824,20 @@
                        :stream "stdout"
                        :text "On branch main"}])
 
-   (testing "command_complete moves command from running to history"
+   (testing "command_complete keeps command in running with exit-code and adds to history"
      (rf/dispatch-sync [:commands/handle-complete
                         {:command-session-id "cmd-abc123"
                          :exit-code 0
                          :duration-ms 150}])
 
-     ;; Should no longer be in running
-     (is (nil? (get-in @re-frame.db/app-db [:commands :running "cmd-abc123"])))
+     ;; Should still be in running with exit-code set (iOS parity)
+     (let [cmd (get-in @re-frame.db/app-db [:commands :running "cmd-abc123"])]
+       (is (some? cmd) "Completed command stays in running")
+       (is (= 0 (:exit-code cmd)))
+       (is (= 150 (:duration-ms cmd)))
+       (is (some? (:completed-at cmd))))
 
-     ;; Should be in history
+     ;; Should also be in history
      (let [history (get-in @re-frame.db/app-db [:commands :history])]
        (is (= 1 (count history)))
        (let [completed (first history)]
@@ -859,16 +863,19 @@
                        :exit-code 0
                        :duration-ms 67}])
 
-   (testing "late command_output after complete does not create phantom running entry"
+   (testing "late command_output after complete appends to completed command still in running"
      (rf/dispatch-sync [:commands/handle-output
                         {:command-session-id "cmd-abc123"
                          :stream "stdout"
                          :text "late arriving line"}])
 
-     ;; Should NOT create a new entry in running
-     (is (nil? (get-in @re-frame.db/app-db [:commands :running "cmd-abc123"])))
-     ;; Running map should be empty
-     (is (empty? (get-in @re-frame.db/app-db [:commands :running]))))))
+     ;; Command stays in running (iOS parity), so late output is appended
+     (let [cmd (get-in @re-frame.db/app-db [:commands :running "cmd-abc123"])]
+       (is (some? cmd) "Completed command stays in running")
+       (is (= 0 (:exit-code cmd)) "Command still has exit-code from completion")
+       ;; Output includes original line + late line
+       (is (= 2 (count (:output-lines cmd))))
+       (is (= "late arriving line" (:text (last (:output-lines cmd)))))))))
 
 (deftest commands-handle-started-merges-existing-output-test
   (rf-test/run-test-sync

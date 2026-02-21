@@ -208,19 +208,28 @@
 
 (defn command-execution-view
   "Main command execution view showing real-time output.
-   Uses Form-2 component pattern for proper Reagent reactivity with React Navigation."
-  [^js _props]
-  ;; Create auto-scroll state at component level so it persists across renders
-  (let [auto-scroll? (r/atom true)
+   Uses Form-2 component pattern for proper Reagent reactivity with React Navigation.
+   Accepts optional commandSessionId route param to show a specific command."
+  [props]
+  (let [^js route (:route props)
+        ^js params (when route (.-params route))
+        target-session-id (when params (.-commandSessionId params))
+        ;; Create auto-scroll state at component level so it persists across renders
+        auto-scroll? (r/atom true)
         set-auto-scroll! (fn [v] (reset! auto-scroll? v))]
     ;; Form-2: Return a render function that reads subscriptions
-    (fn [^js _props]
+    (fn [_props]
       [:f>
        (fn []
          (let [colors (theme/use-theme-colors)
                running @(rf/subscribe [:commands/running])
-               ;; Get the most recent running command
-               [session-id cmd] (first running)]
+               ;; Show specific command if session-id provided, else most recent
+               [session-id cmd] (if (and target-session-id (get running target-session-id))
+                                  [target-session-id (get running target-session-id)]
+                                  ;; Sort by start time, prefer still-running commands
+                                  (first (sort-by (fn [[_ c]]
+                                                    (- (or (some-> (:started-at c) .getTime) 0)))
+                                                  running)))]
            [:> rn/SafeAreaView {:style {:flex 1 :background-color (:background colors)}}
             (if cmd
               [:> rn/View {:style {:flex 1}}

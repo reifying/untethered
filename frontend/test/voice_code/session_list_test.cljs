@@ -268,14 +268,16 @@
      (is (= 2 @(rf/subscribe [:commands/running-count])))
      (is @(rf/subscribe [:commands/running-any?]))
 
-     ;; Complete one command
+     ;; Complete one command - stays in running with exit-code (iOS parity)
      (rf/dispatch-sync [:commands/handle-complete
                         {:command-session-id "cmd-1"
                          :exit-code 0
                          :duration-ms 1000}])
 
-     (is (= 1 @(rf/subscribe [:commands/running-count])))
+     ;; Count stays at 2 because completed commands stay in running
+     (is (= 2 @(rf/subscribe [:commands/running-count])))
      (is @(rf/subscribe [:commands/running-any?]))
+     (is (= 0 (:exit-code @(rf/subscribe [:commands/running-for-session "cmd-1"]))))
 
      ;; Complete the other
      (rf/dispatch-sync [:commands/handle-complete
@@ -283,8 +285,10 @@
                          :exit-code 0
                          :duration-ms 2000}])
 
-     (is (= 0 @(rf/subscribe [:commands/running-count])))
-     (is (not @(rf/subscribe [:commands/running-any?]))))))
+     ;; Both completed commands still in running
+     (is (= 2 @(rf/subscribe [:commands/running-count])))
+     (is @(rf/subscribe [:commands/running-any?]))
+     (is (= 0 (:exit-code @(rf/subscribe [:commands/running-for-session "cmd-2"])))))))
 
 (deftest toolbar-commands-count-for-directory-test
   (rf-test/run-test-sync

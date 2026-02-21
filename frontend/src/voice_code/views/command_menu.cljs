@@ -119,9 +119,10 @@
                 (str minutes "m " seconds "s"))))))
 
 (defn- running-command-row
-  "Single row showing a running command with status."
+  "Single row showing a command with status (running or completed)."
   [{:keys [session-id command on-press colors]}]
-  (let [{:keys [command-id shell-command output-lines started-at]} command
+  (let [{:keys [command-id shell-command output-lines started-at exit-code duration-ms]} command
+        completed? (some? exit-code)
         line-count (count output-lines)
         last-line (last output-lines)]
     [touchable
@@ -133,7 +134,11 @@
      ;; Main row with status and command
      [:> rn/View {:style {:flex-direction "row"
                           :align-items "center"}}
-      [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
+      (if completed?
+        [icons/icon {:name (if (= 0 exit-code) :checkmark-circle :close-circle)
+                     :size 20
+                     :color (if (= 0 exit-code) (:success colors) (:destructive colors))}]
+        [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}])
       [:> rn/View {:style {:flex 1 :margin-left 10}}
        [:> rn/Text {:style {:font-size 15
                             :font-weight "600"
@@ -157,7 +162,14 @@
         [:> rn/Text {:style {:font-size 12
                              :color (:text-tertiary colors)
                              :margin-left 12}}
-         (format-duration started-at)])]
+         (if duration-ms
+           (str (cond
+                  (< duration-ms 1000) (str duration-ms "ms")
+                  (< duration-ms 60000) (str (.toFixed (/ duration-ms 1000) 1) "s")
+                  :else (let [m (int (/ duration-ms 60000))
+                              s (int (mod (/ duration-ms 1000) 60))]
+                          (str m "m " s "s"))))
+           (format-duration started-at))])]
      ;; Last output line preview
      (when last-line
        [:> rn/Text {:style {:font-size 12
@@ -170,8 +182,9 @@
         (:text last-line)])]))
 
 (defn- running-commands-list
-  "Expandable list of currently running commands.
-   Shows a summary when collapsed, full list when expanded."
+  "Expandable list of running and recently completed commands.
+   Shows a summary when collapsed, full list when expanded.
+   iOS parity: keeps completed commands visible like ActiveCommandsListView."
   [{:keys [navigation working-directory colors]}]
   (let [expanded? (r/atom false)]
     (fn [{:keys [navigation working-directory colors]}]
@@ -180,11 +193,18 @@
             sorted-commands (->> running
                                  (sort-by (fn [[_ cmd]]
                                             (- (or (some-> (:started-at cmd) .getTime) 0))))
-                                 vec)]
+                                 vec)
+            actually-running (count (filter (fn [[_ cmd]] (nil? (:exit-code cmd))) sorted-commands))
+            completed (- (count sorted-commands) actually-running)
+            any-running? (pos? actually-running)
+            ;; Use warning colors when actively running, success when all completed
+            banner-bg (if any-running? (:warning-background colors) (:success-background colors))
+            banner-border (if any-running? (:warning colors) (:success colors))
+            banner-text (if any-running? (:warning-text colors) (:success colors))]
         (when (seq sorted-commands)
-          [:> rn/View {:style {:background-color (:warning-background colors)
+          [:> rn/View {:style {:background-color banner-bg
                                :border-bottom-width 1
-                               :border-bottom-color (:warning colors)}}
+                               :border-bottom-color banner-border}}
            ;; Header - tap to expand/collapse
            [touchable
             {:style {:padding 12
@@ -194,17 +214,23 @@
              :on-press #(swap! expanded? not)}
             [:> rn/View {:style {:flex-direction "row"
                                  :align-items "center"}}
-             [:> rn/ActivityIndicator {:size "small" :color (:warning-text colors)}]
+             (if any-running?
+               [:> rn/ActivityIndicator {:size "small" :color banner-text}]
+               [icons/icon {:name :checkmark-circle :size 20 :color banner-text}])
              [:> rn/Text {:style {:margin-left 8
                                   :font-size 14
                                   :font-weight "600"
-                                  :color (:warning-text colors)}}
-              (str (count sorted-commands) " command"
-                   (when (> (count sorted-commands) 1) "s")
-                   " running")]]
+                                  :color banner-text}}
+              (cond
+                (and any-running? (pos? completed))
+                (str actually-running " running, " completed " completed")
+                any-running?
+                (str actually-running " command" (when (> actually-running 1) "s") " running")
+                :else
+                (str completed " command" (when (> completed 1) "s") " completed"))]]
             [icons/icon {:name (if @expanded? :expand :navigate-forward)
                          :size 16
-                         :color (:warning-text colors)}]]
+                         :color banner-text}]]
            ;; Expanded list
            (when @expanded?
              [:> rn/View {:style {:background-color (:row-background colors)}}

@@ -310,10 +310,13 @@
                        :exit-code 0
                        :duration-ms 500}])
 
-   (testing "command removed from running after completion"
-     (is (not @(rf/subscribe [:commands/running-any?])))
-     (is (= 0 @(rf/subscribe [:commands/running-count])))
-     (is (nil? @(rf/subscribe [:commands/running-for-session "cmd-done"]))))))
+   (testing "completed command stays in running with exit-code set (iOS parity)"
+     (let [cmd @(rf/subscribe [:commands/running-for-session "cmd-done"])]
+       (is (some? cmd) "Completed command stays in running")
+       (is (= 0 (:exit-code cmd)))
+       (is (= 500 (:duration-ms cmd))))
+     (is @(rf/subscribe [:commands/running-any?]))
+     (is (= 1 @(rf/subscribe [:commands/running-count]))))))
 
 (deftest running-commands-partial-completion-test
   (rf-test/run-test-sync
@@ -337,8 +340,12 @@
                        :exit-code 0
                        :duration-ms 200}])
 
-   (testing "one command remains running after the other completes"
+   (testing "both commands remain in running; completed one has exit-code"
      (is @(rf/subscribe [:commands/running-any?]))
-     (is (= 1 @(rf/subscribe [:commands/running-count])))
-     (is (nil? @(rf/subscribe [:commands/running-for-session "cmd-a"])))
-     (is (some? @(rf/subscribe [:commands/running-for-session "cmd-b"]))))))
+     (is (= 2 @(rf/subscribe [:commands/running-count])))
+     (let [cmd-a @(rf/subscribe [:commands/running-for-session "cmd-a"])]
+       (is (some? cmd-a) "Completed command stays in running")
+       (is (= 0 (:exit-code cmd-a))))
+     (let [cmd-b @(rf/subscribe [:commands/running-for-session "cmd-b"])]
+       (is (some? cmd-b) "Still-running command remains in running")
+       (is (nil? (:exit-code cmd-b)) "Still-running command has no exit-code")))))

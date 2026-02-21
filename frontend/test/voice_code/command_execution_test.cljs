@@ -117,8 +117,11 @@
                          :exit-code 0
                          :duration-ms 150}])
 
-     ;; Command should be removed from running
-     (is (nil? @(rf/subscribe [:commands/running-for-session "cmd-success"]))))))
+     ;; Command should stay in running with exit-code set (iOS parity)
+     (let [cmd @(rf/subscribe [:commands/running-for-session "cmd-success"])]
+       (is (some? cmd) "Completed command stays in running")
+       (is (= 0 (:exit-code cmd)))
+       (is (= 150 (:duration-ms cmd)))))))
 
 (deftest command-completion-failure-test
   (rf-test/run-test-sync
@@ -142,8 +145,11 @@
                          :exit-code 2
                          :duration-ms 250}])
 
-     ;; Command should be removed from running
-     (is (nil? @(rf/subscribe [:commands/running-for-session "cmd-fail"]))))))
+     ;; Command should stay in running with exit-code set (iOS parity)
+     (let [cmd @(rf/subscribe [:commands/running-for-session "cmd-fail"])]
+       (is (some? cmd) "Failed command stays in running")
+       (is (= 2 (:exit-code cmd)))
+       (is (= 250 (:duration-ms cmd)))))))
 
 (deftest no-running-commands-empty-state-test
   (rf-test/run-test-sync
@@ -236,7 +242,7 @@
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
 
-   (testing "Completed command has exit code and duration before removal"
+   (testing "Completed command has exit code and duration and stays in running"
      (rf/dispatch-sync [:commands/handle-started
                         {:command-session-id "cmd-complete"
                          :command-id "quick"
@@ -252,5 +258,9 @@
                          :exit-code 0
                          :duration-ms 500}])
 
-     ;; After completion, command is removed from running
-     (is (nil? @(rf/subscribe [:commands/running-for-session "cmd-complete"]))))))
+     ;; After completion, command stays in running with exit-code set (iOS parity)
+     (let [cmd @(rf/subscribe [:commands/running-for-session "cmd-complete"])]
+       (is (some? cmd) "Completed command stays in running")
+       (is (= 0 (:exit-code cmd)))
+       (is (= 500 (:duration-ms cmd)))
+       (is (some? (:started-at cmd)))))))

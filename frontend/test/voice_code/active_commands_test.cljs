@@ -105,7 +105,7 @@
   (rf-test/run-test-sync
    (rf/dispatch-sync [:initialize-db])
 
-   (testing "Completed commands move from running to history"
+   (testing "Completed commands stay in running with exit-code set and are added to history"
      (rf/dispatch-sync [:commands/handle-started
                         {:command-session-id "cmd-success"
                          :command-id "quick"
@@ -120,11 +120,13 @@
                          :exit-code 0
                          :duration-ms 100}])
 
-     ;; Command should be removed from running map
-     (is (nil? @(rf/subscribe [:commands/running-for-session "cmd-success"]))
-         "Command should be removed from running map after completion")
-     (is (not @(rf/subscribe [:commands/running-any?]))
-         "No commands should be running after completion"))))
+     ;; Command should stay in running map with exit-code set (iOS parity)
+     (let [cmd @(rf/subscribe [:commands/running-for-session "cmd-success"])]
+       (is (some? cmd) "Completed command should stay in running map")
+       (is (= 0 (:exit-code cmd)) "Completed command should have exit-code")
+       (is (= 100 (:duration-ms cmd)) "Completed command should have duration-ms"))
+     (is @(rf/subscribe [:commands/running-any?])
+         "Completed commands still count as entries in running"))))
 
 (deftest active-commands-error-exit-code-test
   (rf-test/run-test-sync
@@ -153,9 +155,11 @@
                          :exit-code 2
                          :duration-ms 500}])
 
-     ;; Command removed from running after completion
-     (is (nil? @(rf/subscribe [:commands/running-for-session "cmd-fail"]))
-         "Command should be removed from running after completion"))))
+     ;; Command stays in running with exit-code set (iOS parity)
+     (let [cmd @(rf/subscribe [:commands/running-for-session "cmd-fail"])]
+       (is (some? cmd) "Completed command should stay in running map")
+       (is (= 2 (:exit-code cmd)) "Failed command should have exit-code 2")
+       (is (= 500 (:duration-ms cmd)) "Failed command should have duration-ms")))))
 
 (deftest active-commands-sorting-by-start-time-test
   (rf-test/run-test-sync
