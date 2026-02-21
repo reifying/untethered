@@ -464,15 +464,8 @@
 ;; :sessions/resubscribe-all are defined in events/websocket.cljs to keep
 ;; WebSocket-related event handling consolidated in one namespace.
 
-;; ============================================================================
-;; Session Compaction
-;; ============================================================================
-
-(rf/reg-event-fx
- :sessions/compact
- (fn [{:keys [db]} [_ session-id]]
-   {:ws/send {:type "compact_session"
-              :session-id session-id}}))
+;; NOTE: Session compaction is handled by :session/compact in events/websocket.cljs
+;; which properly tracks compacting state and sets a timeout.
 
 ;; ============================================================================
 ;; Priority Queue Management

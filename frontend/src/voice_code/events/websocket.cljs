@@ -361,13 +361,13 @@
    (log/warn "[WS] Session list received:" (count sessions) "sessions")
    {:db (-> (reduce (fn [db session]
                       (let [session-id (json/normalize-session-id (:session-id session))]
-                        (assoc-in db [:sessions session-id]
-                                  {:id session-id
-                                   :backend-name (:name session)
-                                   :working-directory (:working-directory session)
-                                   :last-modified (js/Date. (:last-modified session))
-                                   :message-count (:message-count session)
-                                   :preview (:preview session)})))
+                        (update-in db [:sessions session-id] merge
+                                   {:id session-id
+                                    :backend-name (:name session)
+                                    :working-directory (:working-directory session)
+                                    :last-modified (js/Date. (:last-modified session))
+                                    :message-count (:message-count session)
+                                    :preview (:preview session)})))
                     db
                     sessions)
             (assoc-in [:connection :status] :connected)
@@ -384,11 +384,11 @@
    (log/warn "[WS] Recent sessions received:" (count sessions) "sessions")
    (-> (reduce (fn [db session]
                  (let [session-id (json/normalize-session-id (:session-id session))]
-                   (assoc-in db [:sessions session-id]
-                             {:id session-id
-                              :backend-name (:name session)
-                              :working-directory (:working-directory session)
-                              :last-modified (js/Date. (:last-modified session))})))
+                   (update-in db [:sessions session-id] merge
+                              {:id session-id
+                               :backend-name (:name session)
+                               :working-directory (:working-directory session)
+                               :last-modified (js/Date. (:last-modified session))})))
                db
                sessions)
        (assoc-in [:ui :refreshing?] false))))
@@ -412,12 +412,12 @@
  (fn [db [_ {:keys [session-id name working-directory]}]]
    ;; Note: Per STANDARDS.md, all session IDs must be lowercase
    (let [session-id (json/normalize-session-id session-id)]
-     (assoc-in db [:sessions session-id]
-               {:id session-id
-                :backend-name name
-                :working-directory working-directory
-                :last-modified (js/Date.)
-                :message-count 0}))))
+     (update-in db [:sessions session-id] merge
+                {:id session-id
+                 :backend-name name
+                 :working-directory working-directory
+                 :last-modified (js/Date.)
+                 :message-count 0}))))
 
 (rf/reg-event-fx
  :sessions/handle-history

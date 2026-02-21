@@ -324,7 +324,7 @@
                                 [{:text "Cancel" :style "cancel"}
                                  {:text "Compact"
                                   :onPress (fn []
-                                             (rf/dispatch [:sessions/compact session-id])
+                                             (rf/dispatch [:session/compact session-id])
                                              (show-toast! "Compaction started"))}]))
 
               handle-add-to-queue (fn []

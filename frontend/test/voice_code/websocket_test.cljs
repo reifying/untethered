@@ -494,6 +494,101 @@
 
      (is (false? (get-in @re-frame.db/app-db [:ui :refreshing?]))))))
 
+(deftest sessions-handle-list-preserves-local-fields-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "session list preserves local-only fields (priority queue, custom name)"
+     ;; Set up a session with local-only fields
+     (swap! re-frame.db/app-db assoc-in [:sessions "abc-123"]
+            {:id "abc-123"
+             :backend-name "Original Name"
+             :working-directory "/original/path"
+             :custom-name "My Custom Name"
+             :priority 1
+             :priority-order 1.0
+             :priority-queued-at (js/Date.)
+             :is-locally-created true})
+
+     ;; Receive session list from backend (simulates WebSocket message)
+     (rf/dispatch-sync [:sessions/handle-list
+                        {:sessions [{:session-id "abc-123"
+                                     :name "Updated Name"
+                                     :working-directory "/original/path"
+                                     :last-modified "2025-01-15T10:00:00.000Z"
+                                     :message-count 5
+                                     :preview "Latest preview"}]}])
+
+     (let [session (get-in @re-frame.db/app-db [:sessions "abc-123"])]
+       ;; Backend fields should be updated
+       (is (= "Updated Name" (:backend-name session)))
+       (is (= 5 (:message-count session)))
+       (is (= "Latest preview" (:preview session)))
+       ;; Local-only fields should be preserved
+       (is (= "My Custom Name" (:custom-name session)))
+       (is (= 1 (:priority session)))
+       (is (= 1.0 (:priority-order session)))
+       (is (some? (:priority-queued-at session)))
+       (is (true? (:is-locally-created session)))))))
+
+(deftest sessions-handle-recent-preserves-local-fields-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "recent sessions preserves local-only fields"
+     ;; Set up a session with local-only fields
+     (swap! re-frame.db/app-db assoc-in [:sessions "abc-123"]
+            {:id "abc-123"
+             :backend-name "Original Name"
+             :working-directory "/original/path"
+             :custom-name "My Custom Name"
+             :priority 5
+             :priority-queued-at (js/Date.)})
+
+     ;; Receive recent sessions from backend
+     (rf/dispatch-sync [:sessions/handle-recent
+                        {:sessions [{:session-id "abc-123"
+                                     :name "Updated Name"
+                                     :working-directory "/original/path"
+                                     :last-modified "2025-01-15T10:00:00.000Z"}]}])
+
+     (let [session (get-in @re-frame.db/app-db [:sessions "abc-123"])]
+       ;; Backend fields should be updated
+       (is (= "Updated Name" (:backend-name session)))
+       ;; Local-only fields should be preserved
+       (is (= "My Custom Name" (:custom-name session)))
+       (is (= 5 (:priority session)))
+       (is (some? (:priority-queued-at session)))))))
+
+(deftest sessions-handle-created-preserves-local-fields-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "session created preserves locally-created session fields"
+     ;; Set up a locally-created session (as if user created it via UI)
+     (swap! re-frame.db/app-db assoc-in [:sessions "abc-123"]
+            {:id "abc-123"
+             :backend-name "abc-123"
+             :custom-name "My New Session"
+             :working-directory "/my/project"
+             :priority 10
+             :priority-order 1.0
+             :priority-queued-at (js/Date.)
+             :is-locally-created true})
+
+     ;; Backend confirms session creation
+     (rf/dispatch-sync [:sessions/handle-created
+                        {:session-id "abc-123"
+                         :name "abc-123"
+                         :working-directory "/my/project"}])
+
+     (let [session (get-in @re-frame.db/app-db [:sessions "abc-123"])]
+       ;; Local-only fields should be preserved
+       (is (= "My New Session" (:custom-name session)))
+       (is (= 10 (:priority session)))
+       (is (some? (:priority-queued-at session)))
+       (is (true? (:is-locally-created session)))))))
+
 ;; ============================================================================
 ;; Session History Handling Tests
 ;; ============================================================================

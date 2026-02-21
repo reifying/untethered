@@ -2909,8 +2909,9 @@
        (is (not (contains? msg :session_id)) "Message must NOT use :session_id (snake_case)")
        (is (= "test-session" (:session-id msg)))))))
 
-(deftest sessions-compact-websocket-message-test
-  "Verifies sessions/compact sends correctly formatted WebSocket message.
+(deftest session-compact-websocket-message-test
+  "Verifies session/compact sends correctly formatted WebSocket message
+   and tracks compacting state. Uses :session/compact from events/websocket.cljs.
    The message must use :session-id (kebab-case), not :session_id (snake_case).
    See VCMOB-82aq for bug details."
   (rf-test/run-test-sync
@@ -2919,9 +2920,10 @@
    (let [sent-messages (atom [])]
      ;; Mock the ws/send effect to capture messages
      (rf/reg-fx :ws/send (fn [msg] (swap! sent-messages conj msg)))
+     (rf/reg-fx :timeout/schedule (fn [_]))
 
      ;; Compact a session
-     (rf/dispatch-sync [:sessions/compact "session-to-compact"])
+     (rf/dispatch-sync [:session/compact "session-to-compact"])
 
      ;; Verify WebSocket message format
      (is (= 1 (count @sent-messages)))
@@ -2930,4 +2932,8 @@
        ;; CRITICAL: Must be :session-id (kebab-case), NOT :session_id
        (is (contains? msg :session-id) "Message must use :session-id (kebab-case)")
        (is (not (contains? msg :session_id)) "Message must NOT use :session_id (snake_case)")
-       (is (= "session-to-compact" (:session-id msg)))))))
+       (is (= "session-to-compact" (:session-id msg))))
+
+     ;; Verify compacting state is tracked
+     (is (contains? (get-in @re-frame.db/app-db [:ui :compacting-sessions])
+                    "session-to-compact")))))
