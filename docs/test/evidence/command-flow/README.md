@@ -37,7 +37,7 @@
 ## Test Results
 
 ### 1. CommandMenu Screen
-**Screenshots:** `01-command-menu-project-commands.png`, `04-command-menu-completed-banner.png`
+**Screenshots:** `01-command-menu-project-commands.png`, `04-command-menu-completed-banner.png`, `06-command-menu-3-completed-banner.png`
 
 | # | Test Case | Result | Evidence |
 |---|-----------|--------|----------|
@@ -45,35 +45,35 @@
 | 2 | Shows 5 general commands (git, beads) | PASS | REPL verified |
 | 3 | "View Command History" button visible | PASS | 04-command-menu-completed-banner.png |
 | 4 | Completed commands banner shows green with checkmark | PASS | 04-command-menu-completed-banner.png |
-| 5 | Banner text correctly shows "N command(s) completed" | PASS | 04-command-menu-completed-banner.png |
+| 5 | Banner text correctly shows "N command(s) completed" | PASS | 06-command-menu-3-completed-banner.png |
 
 ### 2. CommandExecution Screen
-**Screenshots:** `03-command-execution-completed-output.png`, `05-command-execution-completed-with-output.png`, `08-command-execution-bd-list.png`
+**Screenshots:** `03-command-execution-completed-output.png`, `05-command-execution-completed-detail.png`
 
 | # | Test Case | Result | Evidence |
 |---|-----------|--------|----------|
-| 1 | Shows command header (name, exit code badge, times) | PASS | 05-command-execution-completed-with-output.png |
-| 2 | "Success" badge for exit code 0 | PASS | 05-command-execution-completed-with-output.png |
-| 3 | Full output with blue stream indicators | PASS | 08-command-execution-bd-list.png |
-| 4 | Auto-scroll toggle visible and functional | PASS | 05-command-execution-completed-with-output.png |
+| 1 | Shows command header (name, exit code badge, times) | PASS | 05-command-execution-completed-detail.png |
+| 2 | "Success" badge for exit code 0 | PASS | 05-command-execution-completed-detail.png |
+| 3 | Full output with monospace formatting | PASS | 05-command-execution-completed-detail.png |
+| 4 | Auto-scroll toggle visible and functional | PASS | 05-command-execution-completed-detail.png |
 
 ### 3. CommandHistory Screen
-**Screenshots:** `06-command-history.png`
+**Screenshots:** `07-command-history-list.png`
 
 | # | Test Case | Result | Evidence |
 |---|-----------|--------|----------|
-| 1 | Shows past commands with timestamps | PASS | 06-command-history.png |
-| 2 | Green success dots and "Success" badges | PASS | 06-command-history.png |
-| 3 | Output previews shown for each entry | PASS | 06-command-history.png |
+| 1 | Shows past commands with timestamps and durations | PASS | 07-command-history-list.png |
+| 2 | Green success dots and "Success" badges | PASS | 07-command-history-list.png |
+| 3 | Output previews shown for each entry | PASS | 07-command-history-list.png |
 
 ### 4. CommandOutputDetail Screen
-**Screenshots:** `07-command-output-detail.png`
+**Screenshots:** `08-command-output-detail.png`
 
 | # | Test Case | Result | Evidence |
 |---|-----------|--------|----------|
-| 1 | Shows command name, exit code, duration, timestamp | PASS | 07-command-output-detail.png |
-| 2 | Full output text displayed | PASS | 07-command-output-detail.png |
-| 3 | Share and Copy actions available | PASS | 07-command-output-detail.png |
+| 1 | Shows command name, exit code, duration, timestamp | PASS | 08-command-output-detail.png |
+| 2 | Full output text displayed | PASS | 08-command-output-detail.png |
+| 3 | Share and Copy actions available | PASS | 08-command-output-detail.png |
 
 ## Pre-fix Evidence
 
@@ -83,6 +83,7 @@
 
 ```
 ClojureScript: 772 tests, 3025 assertions, 0 failures, 0 errors.
+Swift:         1049 unit tests, 0 failures. 12 UI tests, 3 skipped, 0 failures.
 ```
 
 ## Test Method
