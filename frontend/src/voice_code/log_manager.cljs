@@ -1,7 +1,7 @@
 (ns voice-code.log-manager
   "Log manager for capturing and displaying debug logs.
    Provides a circular buffer that stores recent log entries up to a size limit.
-   Integrates with console.log/warn/error for automatic capture.
+   Integrates with console.log/warn/error/info for automatic capture.
    
    Uses a single atom for log state to ensure atomic updates and avoid
    race conditions between entry count and size tracking."
@@ -21,6 +21,7 @@
 (defonce ^:private original-console-log (atom nil))
 (defonce ^:private original-console-warn (atom nil))
 (defonce ^:private original-console-error (atom nil))
+(defonce ^:private original-console-info (atom nil))
 (defonce ^:private installed? (atom false))
 
 (defn- format-timestamp
@@ -85,7 +86,7 @@
       (apply original-fn args))))
 
 (defn install-console-capture!
-  "Install console.log/warn/error capture.
+  "Install console.log/warn/error/info capture.
    Should be called once at app startup."
   []
   (when-not @installed?
@@ -93,10 +94,12 @@
     (reset! original-console-log js/console.log)
     (reset! original-console-warn js/console.warn)
     (reset! original-console-error js/console.error)
+    (reset! original-console-info js/console.info)
     ;; Install wrappers
     (set! js/console.log (wrap-console-fn @original-console-log "log"))
     (set! js/console.warn (wrap-console-fn @original-console-warn "warn"))
     (set! js/console.error (wrap-console-fn @original-console-error "error"))
+    (set! js/console.info (wrap-console-fn @original-console-info "info"))
     (reset! installed? true)
     (add-log! "info" "Log capture installed")))
 
@@ -110,6 +113,8 @@
       (set! js/console.warn @original-console-warn))
     (when @original-console-error
       (set! js/console.error @original-console-error))
+    (when @original-console-info
+      (set! js/console.info @original-console-info))
     (reset! installed? false)))
 
 (defn get-logs

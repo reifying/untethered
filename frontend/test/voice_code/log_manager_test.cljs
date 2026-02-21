@@ -96,3 +96,23 @@
       (log-manager/add-log! "info" (str "message " i)))
     ;; Should be capped at max-entries
     (is (<= (log-manager/log-count) 500))))
+
+(deftest console-info-capture-test
+  (testing "install-console-capture! wraps console.info alongside log/warn/error"
+    ;; Uninstall any existing capture to start clean
+    (log-manager/uninstall-console-capture!)
+    (log-manager/clear-logs!)
+    ;; Install capture
+    (log-manager/install-console-capture!)
+    ;; The install itself adds an info entry
+    (let [pre-count (log-manager/log-count)]
+      ;; console.info should now be captured
+      (js/console.info "test info capture")
+      (let [logs (log-manager/get-logs)
+            info-entries (filter #(and (= "info" (:level %))
+                                      (= "test info capture" (:message %)))
+                                logs)]
+        (is (= 1 (count info-entries))
+            "console.info should be captured as 'info' level")))
+    ;; Clean up
+    (log-manager/uninstall-console-capture!)))
