@@ -1117,6 +1117,49 @@
      (rf/dispatch-sync [:session/subscribe "s2"])
      (is (contains? (:subscribed-sessions @re-frame.db/app-db) "s2")))))
 
+(deftest session-subscribe-skips-locally-created-test
+  (rf-test/run-test-sync
+   (rf/dispatch-sync [:initialize-db])
+
+   (testing "subscribe skips ws/send for locally-created sessions (iOS parity: VCMOB-ymt0)"
+     ;; Create a new session locally (no backend session exists yet)
+     (rf/dispatch-sync [:session/create-new
+                        {:session-id "new-local-session"
+                         :session-name "Test New Session"
+                         :working-directory "/test/path"}])
+     ;; Verify session is locally created
+     (is (true? (:is-locally-created (get-in @re-frame.db/app-db [:sessions "new-local-session"]))))
+
+     ;; Subscribe to the new session
+     (rf/dispatch-sync [:session/subscribe "new-local-session"])
+
+     ;; Should be marked as subscribed (prevents duplicate subscribe on re-navigate)
+     (is (contains? (:subscribed-sessions @re-frame.db/app-db) "new-local-session"))
+
+     ;; Should NOT be in loading-sessions (no ws/send was dispatched)
+     (is (not (contains? (:loading-sessions @re-frame.db/app-db) "new-local-session")))
+
+     ;; Should NOT have current-error set
+     (is (nil? (get-in @re-frame.db/app-db [:ui :current-error]))))
+
+   (testing "subscribe proceeds normally for backend-provided sessions"
+     ;; Add a session from the backend (not locally created)
+     (rf/dispatch-sync [:sessions/add {:id "backend-session"
+                                        :backend-name "backend-session"
+                                        :message-count 5
+                                        :working-directory "/test/path"}])
+     ;; Verify not locally created
+     (is (not (:is-locally-created (get-in @re-frame.db/app-db [:sessions "backend-session"]))))
+
+     ;; Subscribe - should set loading since no cached messages
+     (rf/dispatch-sync [:session/subscribe "backend-session"])
+
+     ;; Should be marked as subscribed
+     (is (contains? (:subscribed-sessions @re-frame.db/app-db) "backend-session"))
+
+     ;; Should be in loading-sessions (ws/send was dispatched)
+     (is (contains? (:loading-sessions @re-frame.db/app-db) "backend-session")))))
+
 ;; ============================================================================
 ;; Session Creation Events
 ;; ============================================================================

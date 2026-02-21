@@ -646,28 +646,35 @@
    (if (contains? (:subscribed-sessions db) session-id)
      ;; Already subscribed in this cycle - do nothing
      {}
-     ;; First subscribe for this session - proceed
-     (let [existing-messages (get-in db [:messages session-id] [])
-           last-message-id (-> existing-messages last :id)
-           is-delta-sync? (boolean last-message-id)
-           ;; Only show loading indicator when no cached messages (matches iOS behavior)
-           ;; iOS: isLoading = true only when messages.isEmpty (ConversationView.swift:662)
-           should-show-loading? (empty? existing-messages)]
-       (cond-> {:db (-> db
-                        (update :subscribed-sessions conj session-id)
-                        (cond-> is-delta-sync?
-                          (update :pending-delta-syncs conj session-id))
-                        (cond-> should-show-loading?
-                          (update :loading-sessions conj session-id)))
-                :ws/send (cond-> {:type "subscribe"
-                                  :session-id session-id}
-                           last-message-id
-                           (assoc :last-message-id last-message-id))}
-         ;; Schedule 5-second timeout to hide loading indicator (matches iOS fallback)
-         should-show-loading?
-         (assoc :timeout/schedule {:id (str "loading-timeout-" session-id)
-                                   :timeout-ms 5000
-                                   :on-timeout [:session/loading-timeout session-id]}))))))
+     ;; Skip subscribe for locally-created sessions to avoid "session not found" error
+     ;; (iOS parity: ConversationView.swift line 692)
+     ;; The backend session is created when the first prompt is sent
+     (let [session (get-in db [:sessions session-id])]
+       (if (:is-locally-created session)
+         ;; Locally-created session - mark as subscribed but don't send WebSocket message
+         {:db (update db :subscribed-sessions conj session-id)}
+         ;; Existing session with messages - proceed with subscribe
+         (let [existing-messages (get-in db [:messages session-id] [])
+               last-message-id (-> existing-messages last :id)
+               is-delta-sync? (boolean last-message-id)
+               ;; Only show loading indicator when no cached messages (matches iOS behavior)
+               ;; iOS: isLoading = true only when messages.isEmpty (ConversationView.swift:662)
+               should-show-loading? (empty? existing-messages)]
+           (cond-> {:db (-> db
+                            (update :subscribed-sessions conj session-id)
+                            (cond-> is-delta-sync?
+                              (update :pending-delta-syncs conj session-id))
+                            (cond-> should-show-loading?
+                              (update :loading-sessions conj session-id)))
+                    :ws/send (cond-> {:type "subscribe"
+                                      :session-id session-id}
+                               last-message-id
+                               (assoc :last-message-id last-message-id))}
+             ;; Schedule 5-second timeout to hide loading indicator (matches iOS fallback)
+             should-show-loading?
+             (assoc :timeout/schedule {:id (str "loading-timeout-" session-id)
+                                       :timeout-ms 5000
+                                       :on-timeout [:session/loading-timeout session-id]}))))))))
 
 (rf/reg-event-fx
  :session/unsubscribe
