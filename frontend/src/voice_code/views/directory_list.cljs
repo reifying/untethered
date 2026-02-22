@@ -101,7 +101,10 @@
 (defn- recent-session-item
   "Single recent session item.
    Long-press shows native context menu with copy options.
-   iOS parity: DirectoryListView.swift .contextMenu on recent sessions."
+   iOS parity: DirectoryListView.swift RecentSessionRowContent — 3-line layout:
+   Line 1: Session name (.headline = 17pt semibold)
+   Line 2: Directory name (caption2, secondary)
+   Line 3: Relative timestamp (caption2, secondary)"
   [{:keys [session on-press colors last?]}]
   (let [unread-count (get session :unread-count 0)
         session-id (str (:id session))
@@ -116,30 +119,34 @@
                  :on-press #(copy-to-clipboard! working-directory "Directory path copied")}]}
      [touchable
       {:style (cond-> {:padding-horizontal 16
-                       :padding-vertical 12}
+                       :padding-vertical 14}
                 (not last?) (merge {:border-bottom-width 1
                                     :border-bottom-color (:separator colors)}))
        :on-press on-press}
       [:> rn/View {:style {:flex-direction "row"
                            :align-items "center"}}
        [:> rn/View {:style {:flex 1 :margin-right 12}}
-        ;; Session name with optional unread badge
+        ;; Line 1: Session name (.headline equivalent) with optional unread badge
         [:> rn/View {:style {:flex-direction "row"
                              :align-items "center"
-                             :margin-bottom 2}}
-         [:> rn/Text {:style {:font-size 15
-                              :font-weight (if (pos? unread-count) "600" "500")
-                              :color (:text-primary colors)}}
+                             :margin-bottom 4}}
+         [:> rn/Text {:style {:font-size 17
+                              :font-weight (if (pos? unread-count) "700" "600")
+                              :color (:text-primary colors)}
+                      :number-of-lines 2}
           (session-name session)]
+         [:> rn/View {:style {:flex 1}}]
          [unread-badge unread-count colors]]
-        ;; Directory name (last component)
+        ;; Line 2: Directory name (caption2, secondary)
         [:> rn/Text {:style {:font-size 12
-                             :color (:text-secondary colors)}
+                             :color (:text-secondary colors)
+                             :margin-bottom 2}
                      :number-of-lines 1}
-         (directory-name (:working-directory session))]]
-       ;; Timestamp - auto-updating
-       [relative-time-text {:timestamp (:last-modified session)
-                            :style {:font-size 12 :color (:text-tertiary colors)}}]
+         (directory-name (:working-directory session))]
+        ;; Line 3: Relative timestamp (caption2, secondary) — matches Swift layout
+        [relative-time-text {:timestamp (:last-modified session)
+                             :style {:font-size 12
+                                     :color (:text-secondary colors)}}]]
        ;; iOS disclosure indicator (chevron)
        [disclosure-indicator {:colors colors}]]]]))
 
@@ -180,28 +187,32 @@
       [touchable
        {:style {:flex 1
                 :padding-horizontal 16
-                :padding-vertical 12}
+                :padding-vertical 14}
         :on-press on-press}
        [:> rn/View {:style {:flex-direction "row"
                             :align-items "center"}}
         [:> rn/View {:style {:flex 1 :margin-right 12}}
-         ;; Session name with optional unread badge
+         ;; Line 1: Session name (.headline equivalent) with optional unread badge
          [:> rn/View {:style {:flex-direction "row"
                               :align-items "center"
-                              :margin-bottom 2}}
-          [:> rn/Text {:style {:font-size 15
-                               :font-weight (if (pos? unread-count) "600" "500")
-                               :color (:text-primary colors)}}
+                              :margin-bottom 4}}
+          [:> rn/Text {:style {:font-size 17
+                               :font-weight (if (pos? unread-count) "700" "600")
+                               :color (:text-primary colors)}
+                       :number-of-lines 2}
            (session-name session)]
+          [:> rn/View {:style {:flex 1}}]
           [unread-badge unread-count colors]]
-         ;; Directory name (last component)
+         ;; Line 2: Directory name (caption2, secondary)
          [:> rn/Text {:style {:font-size 12
-                              :color (:text-secondary colors)}
+                              :color (:text-secondary colors)
+                              :margin-bottom 2}
                       :number-of-lines 1}
-          (directory-name (:working-directory session))]]
-        ;; Timestamp - auto-updating
-        [relative-time-text {:timestamp (:last-modified session)
-                             :style {:font-size 12 :color (:text-tertiary colors)}}]
+          (directory-name (:working-directory session))]
+         ;; Line 3: Relative timestamp (caption2, secondary)
+         [relative-time-text {:timestamp (:last-modified session)
+                              :style {:font-size 12
+                                      :color (:text-secondary colors)}}]]
         ;; iOS disclosure indicator (chevron)
         [disclosure-indicator {:colors colors}]]]]
      ;; Android: remove button (Material Design convention — no swipe gesture)
@@ -260,28 +271,32 @@
       [touchable
        {:style {:flex 1
                 :padding-horizontal 16
-                :padding-vertical 12}
+                :padding-vertical 14}
         :on-press on-press}
        [:> rn/View {:style {:flex-direction "row"
                             :align-items "center"}}
         [:> rn/View {:style {:flex 1 :margin-right 12}}
-         ;; Session name with optional unread badge
+         ;; Line 1: Session name (.headline equivalent) with optional unread badge
          [:> rn/View {:style {:flex-direction "row"
                               :align-items "center"
-                              :margin-bottom 2}}
-          [:> rn/Text {:style {:font-size 15
-                               :font-weight (if (pos? unread-count) "600" "500")
-                               :color (:text-primary colors)}}
+                              :margin-bottom 4}}
+          [:> rn/Text {:style {:font-size 17
+                               :font-weight (if (pos? unread-count) "700" "600")
+                               :color (:text-primary colors)}
+                       :number-of-lines 2}
            (session-name session)]
+          [:> rn/View {:style {:flex 1}}]
           [unread-badge unread-count colors]]
-         ;; Directory name (last component)
+         ;; Line 2: Directory name (caption2, secondary)
          [:> rn/Text {:style {:font-size 12
-                              :color (:text-secondary colors)}
+                              :color (:text-secondary colors)
+                              :margin-bottom 2}
                       :number-of-lines 1}
-          (directory-name (:working-directory session))]]
-        ;; Timestamp - auto-updating
-        [relative-time-text {:timestamp (:last-modified session)
-                             :style {:font-size 12 :color (:text-tertiary colors)}}]
+          (directory-name (:working-directory session))]
+         ;; Line 3: Relative timestamp (caption2, secondary)
+         [relative-time-text {:timestamp (:last-modified session)
+                              :style {:font-size 12
+                                      :color (:text-secondary colors)}}]]
         ;; iOS disclosure indicator (chevron)
         [disclosure-indicator {:colors colors}]]]]
      ;; Android: remove button (Material Design convention — no swipe gesture)
@@ -522,9 +537,23 @@
          :on-press #(when navigation (.navigate navigation "Settings"))}
         [icons/icon {:name :gear :size 22 :color (:text-secondary colors)}]]))])
 
+(defn- refresh-button
+  "Refresh button with loading state.
+   iOS parity: DirectoryListView.swift toolbar refresh (arrow.clockwise)."
+  [colors]
+  (let [refreshing? @(rf/subscribe [:ui/refreshing?])]
+    [touchable
+     {:style {:padding 8 :margin-right 4}
+      :on-press #(when-not refreshing? (rf/dispatch [:sessions/refresh]))
+      :disabled refreshing?}
+     (if refreshing?
+       [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
+       [icons/icon {:name :refresh :size 20 :color (:text-secondary colors)}])]))
+
 (defn- header-right-buttons
-  "Combined header buttons: New Session, Stop Speech, Resources and Settings.
+  "Combined header buttons: New Session, Stop Speech, Refresh, Resources and Settings.
    Stop Speech button shows only when TTS is actively speaking.
+   Refresh button matches Swift DirectoryListView.swift toolbar (arrow.clockwise).
 
    Note: Wraps content in [:f> ...] to enable React hooks for theme colors.
    This component is rendered via r/as-element from React Navigation's headerRight,
@@ -537,18 +566,21 @@
            speaking? @(rf/subscribe [:voice/speaking?])]
        [:> rn/View {:style {:flex-direction "row"
                             :align-items "center"}}
-        ;; New Session button
-        [touchable
-         {:style {:padding 8 :margin-right 4}
-          :on-press #(.navigate navigation "NewSession")}
-         [icons/icon {:name :add :size 22 :color (:accent colors)}]]
         ;; Stop Speech button - only shown when TTS is speaking
         (when speaking?
           [touchable
            {:style {:padding 8 :margin-right 4}
             :on-press #(rf/dispatch [:voice/stop-speaking])}
-           [icons/icon {:name :speaker-slash :size 20 :color (:text-secondary colors)}]])
+           [icons/icon {:name :speaker-slash :size 20 :color (:destructive colors)}]])
+        ;; Resources button with badge
         [resources-button navigation colors]
+        ;; Refresh button (matches Swift arrow.clockwise)
+        [refresh-button colors]
+        ;; New Session button
+        [touchable
+         {:style {:padding 8 :margin-right 4}
+          :on-press #(.navigate navigation "NewSession")}
+         [icons/icon {:name :add :size 22 :color (:accent colors)}]]
         [settings-button navigation]]))])
 
 (defn- directories-section

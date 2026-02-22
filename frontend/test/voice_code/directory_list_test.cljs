@@ -728,6 +728,21 @@
       (let [result (#'dir-list/swipeable-priority-queue-item props)]
         (is (vector? result) "swipeable-priority-queue-item returns hiccup vector (delegates to swipeable-row)")))))
 
+;; ============================================================================
+;; Refresh Button Tests
+;; Reference: ios/VoiceCode/Views/DirectoryListView.swift toolbar refresh button
+;; ============================================================================
+
+(deftest refresh-button-renders-with-colors-test
+  (testing "refresh-button returns valid hiccup"
+    (let [test-colors {:accent "#007AFF" :text-secondary "#666"}
+          result (#'dir-list/refresh-button test-colors)]
+      (is (vector? result) "refresh-button returns valid hiccup vector"))))
+
+;; ============================================================================
+;; Platform Delegation Tests
+;; ============================================================================
+
 (deftest queue-session-item-delegates-per-platform-test
   (testing "queue-session-item delegates to swipeable on iOS and row-content on Android"
     (let [test-colors {:text-primary "#000" :text-secondary "#666"
