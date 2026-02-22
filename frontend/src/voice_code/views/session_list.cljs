@@ -324,7 +324,7 @@
    - :size      - Icon size (default 22)"
   [{:keys [icon on-press color colors badge-count active-dot? size]}]
   [touchable
-   {:style {:padding 8 :margin-left 2}
+   {:style {:padding 8}
     :on-press on-press}
    [:> rn/View
     [icons/icon {:name icon :size (or size 22) :color color}]

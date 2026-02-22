@@ -505,10 +505,10 @@
   [navigation colors]
   (let [pending-count @(rf/subscribe [:resources/pending-uploads])]
     [touchable
-     {:style {:padding 8 :margin-right 8}
+     {:style {:padding 8}
       :on-press #(when navigation (.navigate navigation "Resources"))}
      [:> rn/View
-      [icons/icon {:name :paper-clip :size 20 :color (:text-secondary colors)}]
+      [icons/icon {:name :documents :size 22 :color (:text-secondary colors)}]
       ;; Red badge for pending uploads
       (when (and pending-count (pos? pending-count))
         [:> rn/View {:style {:position "absolute"
@@ -543,12 +543,12 @@
   [colors]
   (let [refreshing? @(rf/subscribe [:ui/refreshing?])]
     [touchable
-     {:style {:padding 8 :margin-right 8}
+     {:style {:padding 8}
       :on-press #(when-not refreshing? (rf/dispatch [:sessions/refresh]))
       :disabled refreshing?}
      (if refreshing?
        [:> rn/ActivityIndicator {:size "small" :color (:accent colors)}]
-       [icons/icon {:name :refresh :size 20 :color (:text-secondary colors)}])]))
+       [icons/icon {:name :refresh :size 22 :color (:text-secondary colors)}])]))
 
 (defn- header-right-buttons
   "Combined header buttons: New Session, Stop Speech, Refresh, Resources and Settings.
@@ -569,16 +569,16 @@
         ;; Stop Speech button - only shown when TTS is speaking
         (when speaking?
           [touchable
-           {:style {:padding 8 :margin-right 8}
+           {:style {:padding 8}
             :on-press #(rf/dispatch [:voice/stop-speaking])}
-           [icons/icon {:name :speaker-slash :size 20 :color (:destructive colors)}]])
+           [icons/icon {:name :speaker-slash :size 22 :color (:destructive colors)}]])
         ;; Resources button with badge
         [resources-button navigation colors]
         ;; Refresh button (matches Swift arrow.clockwise)
         [refresh-button colors]
         ;; New Session button
         [touchable
-         {:style {:padding 8 :margin-right 8}
+         {:style {:padding 8}
           :on-press #(.navigate navigation "NewSession")}
          [icons/icon {:name :add :size 22 :color (:accent colors)}]]
         [settings-button navigation]]))])

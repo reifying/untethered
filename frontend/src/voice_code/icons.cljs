@@ -55,6 +55,7 @@
    :arrow-down-circle-fill {:ios "arrow-down-circle" :android "arrow-circle-down"}
    :compress             {:ios "contract"          :android "compress"}
    :paper-clip           {:ios "attach"            :android "attach-file"}
+   :documents            {:ios "documents"         :android "file-copy"}
    :upload               {:ios "cloud-upload"      :android "cloud-upload"}
    :image                {:ios "image"             :android "image"}
    :code                 {:ios "code-slash"        :android "code"}
