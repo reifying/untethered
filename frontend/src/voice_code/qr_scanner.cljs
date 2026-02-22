@@ -150,13 +150,13 @@
       ;; Permission denied
       (not has-permission)
       [:> rn/View {:style {:flex 1 :justify-content "center" :align-items "center" :padding 24}}
-       [:> rn/Text {:style {:font-size 18 :text-align "center" :margin-bottom 16}}
+       [:> rn/Text {:style {:font-size 18 :text-align "center" :margin-bottom 16 :color "#FFFFFF"}}
         "Camera permission is required to scan QR codes"]
        ;; Show "Grant Permission" button first time, then "Open Settings" if already requested
        (if @permission-requested?
          ;; User already tried granting - permission was denied, need to go to Settings
          [:> rn/View {:style {:align-items "center"}}
-          [:> rn/Text {:style {:font-size 14 :text-align "center" :color "#666" :margin-bottom 16}}
+          [:> rn/Text {:style {:font-size 14 :text-align "center" :color "#AAAAAA" :margin-bottom 16}}
            "Camera access was denied. Please enable it in Settings."]
           [touchable
            {:style {:background-color "#007AFF"
@@ -289,6 +289,10 @@
    the cancel button will navigate back. Success is handled by the
    :qr/code-scanned event which calls :auth/connect."
   [^js props]
+  ;; Reset camera-ready? on mount to prevent stale state from a previous scanner session
+  ;; from showing the overlay for one frame before scanner-camera updates the atom.
+  ;; This fixes un-6l6: overlay must not render until camera permission is confirmed.
+  (reset! camera-ready? false)
   (let [navigation (when props (.-navigation props))
         go-back! (fn []
                    (when (and navigation (.canGoBack navigation))
