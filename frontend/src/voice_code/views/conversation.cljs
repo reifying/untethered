@@ -224,8 +224,8 @@
                  :padding-horizontal 16
                  :min-width 80}
          :on-press on-press}
-        [icons/icon {:name icon :size 28 :color (or color (:accent colors))}]
-        [:> rn/Text {:style {:font-size 13
+        [icons/icon {:name icon :size 22 :color (or color (:accent colors))}]
+        [:> rn/Text {:style {:font-size 12
                              :color (or color (:accent colors))
                              :font-weight "500"}}
          label]]))])
@@ -665,7 +665,7 @@
                                                  connecting? (:warning colors)
                                                  connected? (:success colors)
                                                  :else (:destructive colors))
-                             :margin-right 6}}]
+                             :margin-right 4}}]
         ;; Status text
         [:> rn/Text {:style {:font-size 12
                              :color (cond
@@ -834,13 +834,13 @@
        [:> rn/View {:style {:border-top-width 1
                             :border-top-color (:separator colors)
                             :background-color (:background colors)
-                            :padding-horizontal 12
-                            :padding-vertical 8}}
+                            :padding-horizontal 16
+                            :padding-vertical 12}}
         ;; Mode toggle row
         [:> rn/View {:style {:flex-direction "row"
                              :justify-content "space-between"
                              :align-items "center"
-                             :margin-bottom 8}}
+                             :margin-bottom 12}}
          [mode-toggle]
          ;; Tappable connection status indicator
          [tappable-connection-status]]
