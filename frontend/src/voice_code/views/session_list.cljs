@@ -482,6 +482,9 @@
                  {:data (clj->js sessions)
                   :key-extractor (fn [item idx]
                                    (or (.-id item) (str "session-" idx)))
+                  ;; iOS large titles: let the system adjust content insets
+                  ;; so content doesn't hide behind the navigation bar
+                  :content-inset-adjustment-behavior "automatic"
                   :refresh-control
                   (r/as-element
                    [:> RefreshControl

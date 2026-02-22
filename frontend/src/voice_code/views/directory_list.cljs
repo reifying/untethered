@@ -342,18 +342,18 @@
             :padding-vertical 4}
     :on-press on-toggle}
    [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-    [:> rn/Text {:style {:font-size 13
+    [:> rn/Text {:style {:font-size 14
                          :font-weight "600"
                          :color (:text-secondary colors)
                          :text-transform "uppercase"
                          :letter-spacing 0.5}}
      title]
     (when (and count (pos? count))
-      [:> rn/Text {:style {:font-size 12
-                           :color (:text-tertiary colors)
-                           :margin-left 8}}
+      [:> rn/Text {:style {:font-size 13
+                           :color (:text-secondary colors)
+                           :margin-left 6}}
        (str "(" count ")")])]
-   [icons/icon {:name (if expanded? :expand :navigate-forward) :size 14 :color (:text-tertiary colors)}]])
+   [icons/icon {:name (if expanded? :expand :navigate-forward) :size 15 :color (:text-secondary colors)}]])
 
 (defn- recent-sessions-section
   "Collapsible recent sessions section."
@@ -361,7 +361,7 @@
   (let [expanded? (r/atom true)]
     (fn [{:keys [sessions navigation colors]}]
       (let [n (count sessions)]
-        [:> rn/View {:style {:margin-top 12}}
+        [:> rn/View {:style {:margin-top 16}}
          [collapsible-section-header {:title "Recent"
                           :expanded? @expanded?
                           :on-toggle #(swap! expanded? not)
@@ -388,7 +388,7 @@
     (fn [{:keys [sessions navigation colors]}]
       (let [n (count sessions)]
         (when (seq sessions)
-          [:> rn/View {:style {:margin-top 12}}
+          [:> rn/View {:style {:margin-top 24}}
            [collapsible-section-header {:title "Queue"
                             :expanded? @expanded?
                             :on-toggle #(swap! expanded? not)
@@ -415,7 +415,7 @@
     (fn [{:keys [sessions navigation colors]}]
       (let [n (count sessions)]
         (when (seq sessions)
-          [:> rn/View {:style {:margin-top 12}}
+          [:> rn/View {:style {:margin-top 24}}
            [collapsible-section-header {:title "Priority Queue"
                             :expanded? @expanded?
                             :on-toggle #(swap! expanded? not)
@@ -589,7 +589,7 @@
   (let [expanded? (r/atom true)]
     (fn [{:keys [directories navigation colors]}]
       (let [n (count directories)]
-        [:> rn/View {:style {:margin-top 12}}
+        [:> rn/View {:style {:margin-top 24}}
          [collapsible-section-header {:title "Projects"
                           :expanded? @expanded?
                           :on-toggle #(swap! expanded? not)
@@ -745,6 +745,9 @@
              [:> rn/ScrollView
               {:style {:flex 1}
                :content-container-style {:padding-bottom 16}
+               ;; iOS large titles: let the system adjust content insets
+               ;; so content doesn't hide behind the navigation bar
+               :content-inset-adjustment-behavior "automatic"
                :refresh-control
                (r/as-element
                 [:> RefreshControl
