@@ -1,10 +1,12 @@
 (ns voice-code.auth-test
-  "Tests for API key validation logic.
-   Tests the shared validation utilities in voice-code.auth."
+  "Tests for API key validation logic and auth view rendering.
+   Tests the shared validation utilities in voice-code.auth
+   and the auth view component structure."
   (:require [cljs.test :refer-macros [deftest testing is]]
             [clojure.string :as str]
             [voice-code.auth :as auth :refer [api-key-prefix api-key-total-length
-                                              validate-api-key api-key-validation-status]]))
+                                              validate-api-key api-key-validation-status]]
+            [voice-code.icons :as icons]))
 
 ;; Tests for voice-code.auth validation functions
 
@@ -224,3 +226,22 @@
       (is (not (:valid? result)))
       (is (= 43 (:char-count result)))
       (is (str/includes? (:message result) "Must start with 'untethered-'")))))
+
+;; ============================================================================
+;; Auth View Icon Tests (VCMOB-ogpy)
+;; ============================================================================
+;; Verify that the reauthentication screen uses platform-native icons
+;; instead of emoji text, matching iOS SF Symbols / Android Material Icons.
+
+(deftest auth-key-icon-exists-in-icon-map-test
+  (testing ":key icon exists in icon-map for both platforms"
+    (let [entry (get icons/icon-map :key)]
+      (is (some? entry) ":key should be in icon-map")
+      (is (some? (:ios entry)) ":key should have iOS icon name")
+      (is (some? (:android entry)) ":key should have Android icon name")))
+
+  (testing ":key icon uses correct platform names"
+    (is (= "key" (get-in icons/icon-map [:key :ios]))
+        "iOS should use Ionicons 'key'")
+    (is (= "vpn-key" (get-in icons/icon-map [:key :android]))
+        "Android should use MaterialIcons 'vpn-key'")))

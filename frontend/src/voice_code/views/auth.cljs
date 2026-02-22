@@ -6,6 +6,7 @@
             [re-frame.core :as rf]
             ["react-native" :as rn]
             [voice-code.auth :refer [validate-api-key]]
+            [voice-code.icons :as icons]
             [voice-code.qr-scanner :refer [qr-scanner-view]]
             [voice-code.theme :as theme]
             [voice-code.views.touchable :refer [touchable]]))
@@ -169,7 +170,7 @@
   (let [error @(rf/subscribe [:connection/error])]
     [:> rn/View {:style {:align-items "center" :padding-horizontal 24}}
      ;; Warning icon (matching iOS key.slash symbol)
-     [:> rn/Text {:style {:font-size 60 :margin-bottom 16}} "🔑"]
+     [icons/icon {:name :key :size 56 :color (:text-tertiary colors) :style {:margin-bottom 16}}]
      ;; Title
      [:> rn/Text {:style {:font-size 24
                           :font-weight "600"

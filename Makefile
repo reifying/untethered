@@ -701,17 +701,17 @@ rn-e2e-nav:
 rn-lint-typography:
 	@echo "Checking typography compliance (font-size 16 should only be on TextInput)..."
 	@COUNT=$$(grep -rn ':font-size 16' $(RN_DIR)/src/voice_code/views/*.cljs \
-		| grep -v 'auth.cljs:66:' \
-		| grep -v 'conversation.cljs:855:' \
-		| grep -v 'conversation.cljs:880:' \
+		| grep -v 'auth.cljs:67:' \
+		| grep -v 'conversation.cljs:867:' \
+		| grep -v 'conversation.cljs:892:' \
 		| grep -v 'new_session.cljs:41:' \
 		| wc -l | tr -d ' '); \
 	if [ "$$COUNT" -gt 0 ]; then \
 		echo "FAIL: font-size 16 found outside TextInput allowlist (should be 17 for iOS .body):"; \
 		grep -rn ':font-size 16' $(RN_DIR)/src/voice_code/views/*.cljs \
-			| grep -v 'auth.cljs:66:' \
-			| grep -v 'conversation.cljs:855:' \
-			| grep -v 'conversation.cljs:880:' \
+			| grep -v 'auth.cljs:67:' \
+			| grep -v 'conversation.cljs:867:' \
+			| grep -v 'conversation.cljs:892:' \
 			| grep -v 'new_session.cljs:41:'; \
 		exit 1; \
 	else \
