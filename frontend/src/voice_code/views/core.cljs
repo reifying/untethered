@@ -89,7 +89,7 @@
             :screen-options #js {:headerShown true
                                  :headerBackTitleVisible false
                                  :headerTintColor (:accent colors)
-                                 :headerStyle #js {:backgroundColor (:card-background colors)}
+                                 :headerStyle #js {:backgroundColor (:grouped-background colors)}
                                  :headerTitleStyle #js {:fontWeight "600"
                                                         :color (:text-primary colors)}}}
 

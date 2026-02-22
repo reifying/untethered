@@ -99,7 +99,38 @@ All Settings-related subscriptions resolve without error:
 
 ## Issues Found
 
-None. All tests pass and Settings screen has full parity with iOS reference.
+None in initial test (2026-02-21).
+
+### Session 2: 2026-02-22 (un-kkr)
+
+**P2 Bug Found & Fixed: Navigation header background color mismatch**
+
+The navigation bar used `card-background` color while the Settings screen body used `grouped-background`. This created a visible seam between the navigation bar and content area:
+- Dark mode: #1C1C1E header vs #000000 body
+- Light mode: #FFFFFF header vs #F2F2F7 body
+
+**Root Cause:** Default `screen-options` in `core.cljs` used `:card-background` for `headerStyle.backgroundColor`. DirectoryList and SessionList explicitly overrode this to `:grouped-background`, but all other screens (Settings, Resources, CommandMenu, CommandHistory, Recipes, SessionInfo, DebugLogs, etc.) inherited the wrong default.
+
+**Fix:** Changed default `screen-options` headerStyle from `:card-background` to `:grouped-background` in `core.cljs:92`. Nearly all screens use `grouped-background` for their body, so this is the correct default.
+
+**Verification:** Screenshots in both dark and light mode show seamless header/body transition after fix.
+
+### Additional REPL Tests (2026-02-22)
+
+| # | Test Case | Result | Method |
+|---|-----------|--------|--------|
+| 12 | Connection test dispatches and returns success | PASS | REPL |
+| 13 | Debug Logs navigation (Settings → DebugLogs → back) | PASS | REPL + Screenshot |
+| 14 | Audio playback toggles (auto-speak, silent, locked) | PASS | REPL |
+| 15 | Speech rate stepper (0.5 → 0.75 → 0.5) | PASS | REPL |
+| 16 | Dark mode visual rendering | PASS | Screenshot |
+| 17 | Light mode visual rendering | PASS | Screenshot |
+| 18 | Header/body background consistency (after fix) | PASS | Screenshot |
+
+### Additional Screenshots (2026-02-22)
+
+- `01-settings-dark-mode.png` — Settings in dark mode (header blends with grouped background)
+- `02-settings-light-mode.png` — Settings in light mode (gray header matches gray body, white cards)
 
 ## Test Methodology
 
