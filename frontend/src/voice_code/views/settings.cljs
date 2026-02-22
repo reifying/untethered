@@ -81,11 +81,11 @@
                                       :border-bottom-color (:separator colors)}))
          :on-press (when-not disabled? on-press)
          :disabled (or disabled? (nil? on-press))}
-        [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
+        [:> rn/Text {:style {:font-size 17 :color (:text-primary colors)}}
          label]
         (or accessory
             (when value
-              [:> rn/Text {:style {:font-size 16 :color (:text-tertiary colors)}}
+              [:> rn/Text {:style {:font-size 17 :color (:text-tertiary colors)}}
                value]))]))])
 
 (defn- text-input-row
@@ -105,13 +105,13 @@
                                 :padding-vertical 10}
                         (not last?) (merge {:border-bottom-width 1
                                             :border-bottom-color (:separator colors)}))}
-   [:> rn/Text {:style {:font-size 16
+   [:> rn/Text {:style {:font-size 17
                         :color (:text-primary colors)
                         :flex (if multiline 0 1)
                         :margin-bottom (if multiline 8 0)}}
     label]
    [:> rn/TextInput
-    {:style {:font-size 16
+    {:style {:font-size 17
              :color (:text-primary colors)
              :text-align (if multiline "left" "right")
              :min-width (if multiline nil 120)
@@ -147,7 +147,7 @@
                              :justify-content "space-between"
                              :padding-horizontal 16
                              :padding-vertical 14}}
-         [:> rn/Text {:style {:font-size 16 :color (:text-primary colors) :flex 1}}
+         [:> rn/Text {:style {:font-size 17 :color (:text-primary colors) :flex 1}}
           label]
          [:> rn/Switch
           (merge {:value value
@@ -179,7 +179,7 @@
                              :justify-content "space-between"
                              :padding-horizontal 16
                              :padding-vertical 10}}
-         [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
+         [:> rn/Text {:style {:font-size 17 :color (:text-primary colors)}}
           label]
          [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
           [touchable
@@ -193,7 +193,7 @@
             :disabled (<= value (or min-value 0))
             :on-press #(on-change (- value (or step 1)))}
            [icons/icon {:name :remove :size 20 :color (:text-primary colors)}]]
-          [:> rn/Text {:style {:font-size 16
+          [:> rn/Text {:style {:font-size 17
                                :color (:text-primary colors)
                                :min-width 60
                                :text-align "center"}}
@@ -243,7 +243,7 @@
                              :padding-horizontal 16
                              :padding-vertical 10}}
          [:> rn/View {:style {:flex 1}}
-          [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
+          [:> rn/Text {:style {:font-size 17 :color (:text-primary colors)}}
            label]
           [:> rn/Text {:style {:font-size 12 :color (:text-secondary colors) :margin-top 2}}
            speed-label]]
@@ -261,7 +261,7 @@
                         (haptic/selection!)
                         (on-change (max min-val (- value step))))}
            [icons/icon {:name :remove :size 20 :color (:text-primary colors)}]]
-          [:> rn/Text {:style {:font-size 16
+          [:> rn/Text {:style {:font-size 17
                                :color (:accent colors)
                                :font-weight "500"
                                :min-width 50
@@ -342,7 +342,7 @@
                                  :border-bottom-width 1
                                  :border-bottom-color (:separator colors)}}
              [icons/icon {:name :checkmark :size 18 :color (:success colors) :style {:margin-right 8}}]
-             [:> rn/Text {:style {:font-size 16 :color (:text-primary colors) :flex 1}}
+             [:> rn/Text {:style {:font-size 17 :color (:text-primary colors) :flex 1}}
               "API Key Configured"]
              [:> rn/Text {:style {:font-size 14
                                   :font-family platform/monospace-font
@@ -377,7 +377,7 @@
                                  :border-bottom-width 1
                                  :border-bottom-color (:separator colors)}}
              [icons/icon {:name :warning :size 18 :color (:warning colors) :style {:margin-right 8}}]
-             [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
+             [:> rn/Text {:style {:font-size 17 :color (:text-primary colors)}}
               "API Key Required"]]
 
             ;; Scan QR button
@@ -423,7 +423,7 @@
                              (when valid?
                                (rf/dispatch [:auth/connect current-input])
                                (reset! api-key-input "")))}
-                [:> rn/Text {:style {:color (:button-text-on-accent colors) :font-size 16 :font-weight "600"}}
+                [:> rn/Text {:style {:color (:button-text-on-accent colors) :font-size 17 :font-weight "600"}}
                  "Save API Key"]])]])]))])))
 
 ;; Debounce timer for server settings reconnection (matches iOS 0.5s debounce)
@@ -761,7 +761,7 @@
                                     {:text "Disconnect"
                                      :style "destructive"
                                      :onPress #(rf/dispatch [:auth/disconnect])}]))
-                      :accessory [:> rn/Text {:style {:font-size 16 :color (:destructive colors)}}
+                      :accessory [:> rn/Text {:style {:font-size 17 :color (:destructive colors)}}
                                   "Disconnect"]}]]))])
 
 (defn- help-section
