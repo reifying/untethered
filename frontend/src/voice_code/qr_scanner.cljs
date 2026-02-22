@@ -113,12 +113,21 @@
   (let [Linking (.-Linking rn)]
     (.openSettings Linking)))
 
-;; Track permission request state globally since the scanner hook resets on unmount
-(defonce ^:private permission-requested? (r/atom false))
-
 ;; Track camera ready state for overlay visibility
 ;; Overlay should only show when camera is active (has permission + device available)
 (defonce ^:private camera-ready? (r/atom false))
+
+(defn get-permission-status
+  "Get the actual camera permission status from the native API.
+   Returns \"granted\", \"not-determined\", \"denied\", or \"restricted\".
+   Returns nil if Camera module is unavailable."
+  []
+  (when (and Camera (.-getCameraPermissionStatus ^js Camera))
+    (try
+      (.getCameraPermissionStatus ^js Camera)
+      (catch :default e
+        (js/console.warn "Failed to get camera permission status:" e)
+        nil))))
 
 (defn- scanner-camera
   "Camera component with QR code scanning.
@@ -128,6 +137,12 @@
         ^js permission (useCameraPermission)
         has-permission (.-hasPermission permission)
         request-permission (.-requestPermission permission)
+        ;; Check actual native permission status to distinguish "not-determined" from "denied".
+        ;; The useCameraPermission hook only gives hasPermission (boolean), which is false for
+        ;; both "not-determined" and "denied". We need the granular status to show the correct
+        ;; UI: "Grant Permission" for not-determined, "Open Settings" for denied.
+        permission-status (get-permission-status)
+        can-request? (or (nil? permission-status) (= "not-determined" permission-status))
         on-codes-scanned (fn [codes]
                            (when (and codes (> (.-length codes) 0))
                              (let [code (aget codes 0)
@@ -147,14 +162,33 @@
       [:> rn/View {:style {:flex 1 :justify-content "center" :align-items "center"}}
        [:> rn/ActivityIndicator {:size "large" :color "#007AFF"}]]
 
-      ;; Permission denied
+      ;; Permission not granted
       (not has-permission)
       [:> rn/View {:style {:flex 1 :justify-content "center" :align-items "center" :padding 24}}
        [:> rn/Text {:style {:font-size 18 :text-align "center" :margin-bottom 16 :color "#FFFFFF"}}
         "Camera permission is required to scan QR codes"]
-       ;; Show "Grant Permission" button first time, then "Open Settings" if already requested
-       (if @permission-requested?
-         ;; User already tried granting - permission was denied, need to go to Settings
+       (if can-request?
+         ;; Permission not yet requested — show "Grant Permission" to trigger iOS dialog
+         [touchable
+          {:style {:background-color "#007AFF"
+                   :padding-horizontal 24
+                   :padding-vertical 12
+                   :border-radius 8}
+           :on-press (fn []
+                       (-> (request-permission)
+                           (.then (fn [granted]
+                                    (when-not granted
+                                      ;; User denied — open Settings as fallback since iOS
+                                      ;; won't show the permission dialog a second time
+                                      (js/console.log "Camera permission denied, opening Settings")
+                                      (open-settings!))))
+                           (.catch (fn [err]
+                                     (js/console.error "Camera permission request failed:" err)
+                                     ;; Fall back to opening Settings on error
+                                     (open-settings!)))))}
+          [:> rn/Text {:style {:color "#FFFFFF" :font-size 16}}
+           "Grant Permission"]]
+         ;; Permission already denied/restricted — must go through Settings
          [:> rn/View {:style {:align-items "center"}}
           [:> rn/Text {:style {:font-size 14 :text-align "center" :color "#AAAAAA" :margin-bottom 16}}
            "Camera access was denied. Please enable it in Settings."]
@@ -165,18 +199,7 @@
                     :border-radius 8}
             :on-press open-settings!}
            [:> rn/Text {:style {:color "#FFFFFF" :font-size 16}}
-            "Open Settings"]]]
-         ;; First attempt - request permission
-         [touchable
-          {:style {:background-color "#007AFF"
-                   :padding-horizontal 24
-                   :padding-vertical 12
-                   :border-radius 8}
-           :on-press (fn []
-                       (reset! permission-requested? true)
-                       (request-permission))}
-          [:> rn/Text {:style {:color "#FFFFFF" :font-size 16}}
-           "Grant Permission"]])]
+            "Open Settings"]]])]
 
       ;; No camera device
       (nil? device)

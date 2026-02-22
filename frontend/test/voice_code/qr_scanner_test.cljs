@@ -265,40 +265,49 @@
       (is (not (str/includes? result-str "Scan QR Code"))))))
 
 ;; ============================================================================
+;; Permission Status Logic Tests (un-esn fix)
+;; ============================================================================
+;; Tests for the native permission status check that determines whether to show
+;; "Grant Permission" (not-determined) or "Open Settings" (denied/restricted).
+;; The old approach used a defonce atom that didn't survive app restarts, causing
+;; the "Grant Permission" button to appear even when permission was denied.
+
+(deftest get-permission-status-returns-nil-without-camera-test
+  (testing "get-permission-status returns nil when Camera module is unavailable"
+    ;; In test environment, Camera is nil (use-real-camera? is false)
+    (is (nil? (qr/get-permission-status)))))
+
+(deftest permission-can-request-when-not-determined-test
+  (testing "not-determined permission status allows requesting"
+    ;; can-request? = (or (nil? status) (= "not-determined" status))
+    ;; nil (Camera unavailable) should allow requesting (safe fallback)
+    (let [can-request? (fn [status] (or (nil? status) (= "not-determined" status)))]
+      (is (true? (can-request? nil)) "nil status should allow requesting")
+      (is (true? (can-request? "not-determined")) "not-determined should allow requesting"))))
+
+(deftest permission-cannot-request-when-denied-test
+  (testing "denied/restricted permission status requires Settings"
+    (let [can-request? (fn [status] (or (nil? status) (= "not-determined" status)))]
+      (is (false? (can-request? "denied")) "denied should require Settings")
+      (is (false? (can-request? "restricted")) "restricted should require Settings")
+      (is (false? (can-request? "granted")) "granted wouldn't reach this path"))))
+
+;; ============================================================================
 ;; Permission Flow State Machine Tests
 ;; ============================================================================
-;; Tests for the permission request → Open Settings fallback flow.
 
-(deftest permission-flow-first-attempt-test
-  (testing "first permission attempt: Grant Permission button shown"
-    ;; On first attempt, user sees "Grant Permission" button.
-    ;; After tapping, permission-requested? flips to true.
-    ;; The button handler calls requestPermission() from the hook.
-    ;; These are state transitions we verify via events.
-    (reset! app-db {:qr {:scanning? true}})
-    (is (true? (get-in @app-db [:qr :scanning?])))
-    ;; Cancel scan should reset
-    (rf/dispatch-sync [:qr/cancel-scan])
-    (is (false? (get-in @app-db [:qr :scanning?])))))
-
-(deftest permission-flow-code-scan-after-grant-test
+(deftest permission-flow-scan-after-grant-test
   (testing "after permission granted, QR code scan works correctly"
     (reset! app-db {:qr {:scanning? true}})
-    ;; Simulate successful scan
     (rf/dispatch-sync [:qr/code-scanned "untethered-a1b2c3d4e5f678901234567890abcdef"])
-    ;; Scanning should stop
     (is (false? (get-in @app-db [:qr :scanning?])))
-    ;; No error should be set
     (is (nil? (get-in @app-db [:qr :error])))))
 
 (deftest permission-flow-invalid-scan-preserves-scanning-state-test
   (testing "invalid QR code sets error but preserves scanning state for retry"
     (reset! app-db {:qr {:scanning? true}})
     (rf/dispatch-sync [:qr/code-scanned "not-a-valid-key"])
-    ;; Error should be set
     (is (string? (get-in @app-db [:qr :error])))
-    ;; Scanning state is NOT changed by code-scanned on invalid input
-    ;; (user can retry without re-opening scanner)
     (is (true? (get-in @app-db [:qr :scanning?])))))
 
 (deftest permission-flow-clear-error-and-retry-test
@@ -307,7 +316,12 @@
     (rf/dispatch-sync [:qr/clear-error])
     (is (nil? (get-in @app-db [:qr :error])))
     (is (true? (get-in @app-db [:qr :scanning?])))
-    ;; Now a valid scan works
     (rf/dispatch-sync [:qr/code-scanned "untethered-a1b2c3d4e5f678901234567890abcdef"])
     (is (false? (get-in @app-db [:qr :scanning?])))
     (is (nil? (get-in @app-db [:qr :error])))))
+
+(deftest permission-flow-cancel-resets-state-test
+  (testing "cancel scan resets scanning state"
+    (reset! app-db {:qr {:scanning? true}})
+    (rf/dispatch-sync [:qr/cancel-scan])
+    (is (false? (get-in @app-db [:qr :scanning?])))))
