@@ -8,7 +8,8 @@
             [voice-code.events.websocket]
             [voice-code.subs]
             [voice-code.utils :as utils]
-            [voice-code.icons :as icons]))
+            [voice-code.icons :as icons]
+            [voice-code.views.conversation :as conv]))
 
 (use-fixtures :each
   {:before (fn [] (rf/dispatch-sync [:initialize-db]))})
@@ -941,3 +942,30 @@
      (is (false? @(rf/subscribe [:ui/auto-scroll?])))
      (rf/dispatch-sync [:ui/set-auto-scroll true])
      (is (true? @(rf/subscribe [:ui/auto-scroll?]))))))
+
+;; ============================================================================
+;; Message Detail Modal Title Tests (un-c1z)
+;; ============================================================================
+;; Tests verify that the message detail modal shows the correct title for each
+;; message role type. Previously, tool-call and tool-result messages incorrectly
+;; showed "Claude's Response" instead of their proper role title.
+
+(deftest modal-title-test
+  "Tests the modal title for each message role type.
+   Fixes un-c1z: tool-call and tool-result messages showed 'Claude's Response'
+   instead of their proper role-specific titles."
+  (testing "user messages show 'Your Message'"
+    (is (= "Your Message" (conv/modal-title :user))))
+
+  (testing "assistant messages show 'Claude's Response'"
+    (is (= "Claude's Response" (conv/modal-title :assistant))))
+
+  (testing "tool-call messages show 'Tool Call'"
+    (is (= "Tool Call" (conv/modal-title :tool-call))))
+
+  (testing "tool-result messages show 'Tool Result'"
+    (is (= "Tool Result" (conv/modal-title :tool-result))))
+
+  (testing "unknown roles show generic 'Message'"
+    (is (= "Message" (conv/modal-title :unknown)))
+    (is (= "Message" (conv/modal-title nil)))))

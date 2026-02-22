@@ -265,6 +265,18 @@
   (cancel-copy-confirmation-timer!)
   (reset! show-copy-confirmation? false))
 
+(defn modal-title
+  "Get the display title for the message detail modal header.
+   User messages show 'Your Message', assistant messages show 'Claude's Response',
+   tool messages show their role type, and unknown roles show 'Message'."
+  [role]
+  (case role
+    :user "Your Message"
+    :assistant "Claude's Response"
+    :tool-call "Tool Call"
+    :tool-result "Tool Result"
+    "Message"))
+
 (defn message-detail-modal
   "Modal showing full message content with actions.
    Features: Copy (with animated feedback), Read Aloud, Infer Name (for assistant messages).
@@ -302,7 +314,7 @@
           [:> rn/Text {:style {:font-size 17
                                :font-weight "600"
                                :color (:text-primary colors)}}
-           (if (= role :user) "Your Message" "Claude's Response")]
+           (modal-title role)]
           [touchable
            {:on-press (fn []
                         (reset-copy-confirmation!)
