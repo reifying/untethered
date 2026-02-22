@@ -1435,6 +1435,10 @@
     (r/create-class
      {:component-did-mount
       (fn [_]
+        ;; Clear stale errors from previous screens/operations so they don't
+        ;; overlap with the conversation view's own state handling
+        ;; (empty-conversation, session-not-found, loading-conversation)
+        (rf/dispatch [:ui/clear-error])
         (when session-id
           (rf/dispatch [:sessions/set-active session-id])
           (rf/dispatch [:session/subscribe session-id])

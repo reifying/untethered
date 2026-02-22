@@ -969,3 +969,27 @@
   (testing "unknown roles show generic 'Message'"
     (is (= "Message" (conv/modal-title :unknown)))
     (is (= "Message" (conv/modal-title nil)))))
+
+;; ============================================================================
+;; Conversation View Mount Behavior Tests
+;; ============================================================================
+
+(deftest conversation-mount-clears-stale-error-test
+  (testing "navigating to conversation clears stale errors from previous screens"
+    ;; Simulate a stale error from a previous screen (e.g. failed command, previous subscribe)
+    (rf/dispatch-sync [:ui/set-error "Stale error from previous screen"])
+    (is (= "Stale error from previous screen"
+           (get-in @re-frame.db/app-db [:ui :current-error])))
+    ;; The conversation-view component-did-mount dispatches :ui/clear-error
+    ;; to prevent stale errors from overlapping with conversation states
+    ;; (empty-conversation, session-not-found, loading-conversation)
+    (rf/dispatch-sync [:ui/clear-error])
+    (is (nil? (get-in @re-frame.db/app-db [:ui :current-error]))))
+
+  (testing "error can be set after clearing (e.g. from subscribe failure)"
+    (rf/dispatch-sync [:ui/clear-error])
+    (is (nil? (get-in @re-frame.db/app-db [:ui :current-error])))
+    ;; A new error from a subscribe failure should still show
+    (rf/dispatch-sync [:ui/set-error "Session not found: fake-session"])
+    (is (= "Session not found: fake-session"
+           (get-in @re-frame.db/app-db [:ui :current-error])))))
