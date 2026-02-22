@@ -598,6 +598,48 @@
       (let [result (#'session-list/swipeable-session-item props)]
         (is (vector? result) "swipeable-session-item returns hiccup vector")))))
 
+(deftest session-item-3-line-layout-test
+  (testing "session-item renders 3-line layout matching Swift CDSessionRowContent"
+    ;; Swift CDSessionRowContent structure:
+    ;; Line 1: session name (.headline = 17pt) + unread badge
+    ;; Line 2: directory last component (.caption2 = 11pt, secondary color)
+    ;; Line 3: "N messages [• preview]" (.caption2 = 11pt, tertiary color)
+    (let [test-colors {:text-primary "#000" :text-secondary "#666"
+                       :text-tertiary "#999" :separator "#CCC"
+                       :accent "#007AFF" :destructive "#FF3B30"
+                       :card-background "#FFF" :button-text-on-accent "#FFF"
+                       :warning "#FF9500" :success "#30D158"
+                       :status-connected "#30D158"}
+          props {:session {:id "test-session"
+                           :backend-name "Test Session Name"
+                           :working-directory "/Users/test/my-project"
+                           :last-modified (js/Date.)
+                           :message-count 5
+                           :preview "Last message preview"
+                           :unread-count 0}
+                 :locked? false
+                 :on-press (fn [])
+                 :on-delete (fn [])
+                 :colors test-colors}
+          result (#'session-list/session-item props)]
+      ;; Verify it produces valid hiccup
+      (is (vector? result) "Returns valid hiccup vector")
+      ;; Walk the hiccup tree to find font-size 11 (caption2) usage
+      ;; This confirms the .caption2 font is used for metadata lines
+      (let [flat-str (pr-str result)]
+        ;; Line 2: directory name should be present
+        (is (clojure.string/includes? flat-str "my-project")
+            "Directory last path component is displayed")
+        ;; Line 3: message count should be present
+        (is (clojure.string/includes? flat-str "5 messages")
+            "Message count is displayed")
+        ;; Caption2 font size (11pt) used for metadata
+        (is (clojure.string/includes? flat-str ":font-size 11")
+            "Caption2 (11pt) font size used for metadata lines")
+        ;; Headline font size (17pt) used for session name
+        (is (clojure.string/includes? flat-str ":font-size 17")
+            "Headline (17pt) font size used for session name")))))
+
 ;; ============================================================================
 ;; Icon Mapping Tests (tray icon for empty state)
 ;; ============================================================================

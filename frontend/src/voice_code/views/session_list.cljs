@@ -48,12 +48,19 @@
    Uses react-native-context-menu-view for platform-native menus:
    - iOS: UIMenu with SF Symbol icons and haptic feedback
    - Android: Native ContextMenu
-   colors: theme colors map (required prop to avoid hook violation)"
+   colors: theme colors map (required prop to avoid hook violation)
+
+   Layout matches Swift CDSessionRowContent (3-line VStack spacing 4):
+   Line 1: Session name (headline) + unread badge (trailing)
+   Line 2: Directory last component (caption2, secondary)
+   Line 3: N messages [• preview] (caption2, secondary)"
   [{:keys [session locked? on-press on-delete colors]}]
   (let [unread-count (get session :unread-count 0)
         session-display-name (session-name session)
         session-id (str (:id session))
-        working-directory (:working-directory session)]
+        working-directory (:working-directory session)
+        dir-name (when working-directory
+                   (last (clojure.string/split working-directory #"/")))]
     ;; Native context menu wraps the entire row.
     ;; iOS parity: SessionsForDirectoryView.swift .contextMenu { Button("Copy Session ID") }
     [context-menu
@@ -85,48 +92,52 @@
                               :background-color (:warning colors)
                               :margin-right 8}}])
 
+       ;; Content area: 3-line VStack (Swift CDSessionRowContent)
        [:> rn/View {:style {:flex 1}}
-        ;; Session name row with unread badge
+        ;; Line 1: Session name + unread badge
+        ;; Swift: HStack { VStack { Text(name).font(.headline) ... } Spacer() badge }
         [:> rn/View {:style {:flex-direction "row"
-                             :align-items "center"
-                             :margin-bottom 4}}
+                             :align-items "center"}}
          [:> rn/Text {:style {:font-size 17
                               :font-weight (if (pos? unread-count) "700" "600")
                               :color (:text-primary colors)
                               :flex 1}}
           session-display-name]
-         [unread-badge unread-count colors]
-         ;; Timestamp - auto-updating
-         [relative-time-text {:timestamp (:last-modified session)
-                              :short? true
-                              :style {:font-size 12
-                                      :color (:text-tertiary colors)
-                                      :margin-left 8}}]]
+         [unread-badge unread-count colors]]
 
-        ;; Message count + preview on same row (iOS parity: CDSessionRowContent)
-        ;; Shows: "N messages • preview text" with bullet separator
+        ;; Line 2: Directory name (last path component)
+        ;; Swift: Text(URL(...).lastPathComponent).font(.caption2).foregroundColor(.secondary)
+        (when dir-name
+          [:> rn/Text {:style {:font-size 11
+                               :color (:text-secondary colors)
+                               :margin-top 4}
+                       :number-of-lines 1}
+           dir-name])
+
+        ;; Line 3: Message count + preview (caption2)
+        ;; Swift: "N messages" + optional "• preview"
         [:> rn/View {:style {:flex-direction "row"
                              :align-items "center"
                              :margin-top 4}}
-         [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors)}}
+         [:> rn/Text {:style {:font-size 11 :color (:text-tertiary colors)}}
           (str (:message-count session 0) " messages")]
          ;; Bullet separator before preview (iOS parity)
          (when-let [preview (:preview session)]
            [:<>
-            [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors) :margin-horizontal 6}}
-             "•"]
-            [:> rn/Text {:style {:font-size 12
-                                 :color (if (pos? unread-count) (:text-secondary colors) (:text-tertiary colors))
+            [:> rn/Text {:style {:font-size 11 :color (:text-tertiary colors) :margin-horizontal 6}}
+             "\u2022"]
+            [:> rn/Text {:style {:font-size 11
+                                 :color (:text-tertiary colors)
                                  :flex 1
                                  :flex-shrink 1}
                          :number-of-lines 1}
              preview]])
          ;; Processing indicator (after preview if any, or after count)
          (when locked?
-           [:> rn/Text {:style {:font-size 12
+           [:> rn/Text {:style {:font-size 11
                                 :color (:warning colors)
                                 :margin-left 6}}
-            "• Processing"])]]
+            "\u2022 Processing"])]]
        ;; iOS disclosure indicator (chevron)
        [disclosure-indicator {:colors colors}]]]]))
 
@@ -189,125 +200,125 @@
     (fn [{:keys [visible? on-close on-create directory colors]}]
       ;; Note: colors passed as prop from parent, not obtained from hook
       [:> Modal
-         {:visible visible?
-          :animation-type "slide"
-          :presentation-style "pageSheet"
-          :on-request-close on-close}
-         [:> rn/View {:style {:flex 1
-                              :background-color (:grouped-background colors)
-                              :padding-top 20}}
+       {:visible visible?
+        :animation-type "slide"
+        :presentation-style "pageSheet"
+        :on-request-close on-close}
+       [:> rn/View {:style {:flex 1
+                            :background-color (:grouped-background colors)
+                            :padding-top 20}}
           ;; Header
-          [:> rn/View {:style {:flex-direction "row"
-                               :justify-content "space-between"
-                               :align-items "center"
-                               :padding-horizontal 16
-                               :padding-bottom 16
-                               :border-bottom-width 1
-                               :border-bottom-color (:separator colors)
-                               :background-color (:card-background colors)}}
-           [touchable
-            {:on-press on-close}
-            [:> rn/Text {:style {:font-size 17 :color (:accent colors)}} "Cancel"]]
-           [:> rn/Text {:style {:font-size 17
-                                :font-weight "600"
-                                :color (:text-primary colors)}} "New Session"]
-           [touchable
-            {:on-press (fn []
-                         (on-create {:name @session-name-atom
-                                     :create-worktree? @create-worktree?})
-                         (reset! session-name-atom "")
-                         (reset! create-worktree? false))
-             :disabled (and @create-worktree? (empty? @session-name-atom))}
-            [:> rn/Text {:style {:font-size 17
-                                 :font-weight "600"
-                                 :color (if (and @create-worktree? (empty? @session-name-atom))
-                                          (:text-tertiary colors)
-                                          (:accent colors))}}
-             "Create"]]]
+        [:> rn/View {:style {:flex-direction "row"
+                             :justify-content "space-between"
+                             :align-items "center"
+                             :padding-horizontal 16
+                             :padding-bottom 16
+                             :border-bottom-width 1
+                             :border-bottom-color (:separator colors)
+                             :background-color (:card-background colors)}}
+         [touchable
+          {:on-press on-close}
+          [:> rn/Text {:style {:font-size 17 :color (:accent colors)}} "Cancel"]]
+         [:> rn/Text {:style {:font-size 17
+                              :font-weight "600"
+                              :color (:text-primary colors)}} "New Session"]
+         [touchable
+          {:on-press (fn []
+                       (on-create {:name @session-name-atom
+                                   :create-worktree? @create-worktree?})
+                       (reset! session-name-atom "")
+                       (reset! create-worktree? false))
+           :disabled (and @create-worktree? (empty? @session-name-atom))}
+          [:> rn/Text {:style {:font-size 17
+                               :font-weight "600"
+                               :color (if (and @create-worktree? (empty? @session-name-atom))
+                                        (:text-tertiary colors)
+                                        (:accent colors))}}
+           "Create"]]]
 
           ;; Form
-          [:> rn/ScrollView {:style {:flex 1}}
+        [:> rn/ScrollView {:style {:flex 1}}
            ;; Session Details Section
-           [:> rn/View {:style {:margin-top 24}}
-            [:> rn/Text {:style {:font-size 13
-                                 :font-weight "500"
-                                 :color (:text-secondary colors)
-                                 :margin-left 16
-                                 :margin-bottom 8
-                                 :text-transform "uppercase"}}
-             "Session Details"]
-            [:> rn/View {:style {:background-color (:card-background colors)
-                                 :border-top-width 1
-                                 :border-bottom-width 1
-                                 :border-color (:separator colors)}}
-             [:> rn/TextInput
-              {:style {:padding-horizontal 16
-                       :padding-vertical 14
-                       :font-size 17
-                       :color (:text-primary colors)}
-               :placeholder "Session Name (optional)"
-               :placeholder-text-color (:text-tertiary colors)
-               :value @session-name-atom
-               :on-change-text (fn [text] (reset! session-name-atom text) (r/flush))}]
-             [:> rn/View {:style {:height 1
-                                  :background-color (:separator colors)
-                                  :margin-left 16}}]
-             [:> rn/View {:style {:padding-horizontal 16
-                                  :padding-vertical 12
-                                  :flex-direction "row"
-                                  :align-items "center"}}
-              [:> rn/Text {:style {:flex 1
-                                   :font-size 15
-                                   :color (:text-secondary colors)}}
-               "Working Directory"]
-              [:> rn/Text {:style {:font-size 15
-                                   :color (:text-tertiary colors)}
-                           :number-of-lines 1}
-               (or (when directory
-                     (last (str/split directory #"/")))
-                   "Not set")]]]]
+         [:> rn/View {:style {:margin-top 24}}
+          [:> rn/Text {:style {:font-size 13
+                               :font-weight "500"
+                               :color (:text-secondary colors)
+                               :margin-left 16
+                               :margin-bottom 8
+                               :text-transform "uppercase"}}
+           "Session Details"]
+          [:> rn/View {:style {:background-color (:card-background colors)
+                               :border-top-width 1
+                               :border-bottom-width 1
+                               :border-color (:separator colors)}}
+           [:> rn/TextInput
+            {:style {:padding-horizontal 16
+                     :padding-vertical 14
+                     :font-size 17
+                     :color (:text-primary colors)}
+             :placeholder "Session Name (optional)"
+             :placeholder-text-color (:text-tertiary colors)
+             :value @session-name-atom
+             :on-change-text (fn [text] (reset! session-name-atom text) (r/flush))}]
+           [:> rn/View {:style {:height 1
+                                :background-color (:separator colors)
+                                :margin-left 16}}]
+           [:> rn/View {:style {:padding-horizontal 16
+                                :padding-vertical 12
+                                :flex-direction "row"
+                                :align-items "center"}}
+            [:> rn/Text {:style {:flex 1
+                                 :font-size 15
+                                 :color (:text-secondary colors)}}
+             "Working Directory"]
+            [:> rn/Text {:style {:font-size 15
+                                 :color (:text-tertiary colors)}
+                         :number-of-lines 1}
+             (or (when directory
+                   (last (str/split directory #"/")))
+                 "Not set")]]]]
 
            ;; Git Worktree Section
-           [:> rn/View {:style {:margin-top 24}}
-            [:> rn/Text {:style {:font-size 13
-                                 :font-weight "500"
-                                 :color (:text-secondary colors)
-                                 :margin-left 16
-                                 :margin-bottom 8
-                                 :text-transform "uppercase"}}
-             "Git Worktree"]
-            [:> rn/View {:style {:background-color (:card-background colors)
-                                 :border-top-width 1
-                                 :border-bottom-width 1
-                                 :border-color (:separator colors)
-                                 :padding-horizontal 16
-                                 :padding-vertical 12}}
-             [:> rn/View {:style {:flex-direction "row"
-                                  :align-items "center"
-                                  :justify-content "space-between"}}
-              [:> rn/Text {:style {:font-size 17
-                                   :color (:text-primary colors)}} "Create Git Worktree"]
-              [:> Switch
-               (merge {:value @create-worktree?
-                       :on-value-change #(reset! create-worktree? %)}
-                      (platform/switch-props colors @create-worktree?))]]]
-            [:> rn/Text {:style {:font-size 13
-                                 :color (:text-secondary colors)
-                                 :margin-horizontal 16
-                                 :margin-top 8
-                                 :line-height 18}}
-             "Creates a new git worktree with an isolated branch for this session. Requires the parent directory to be a git repository."]]
+         [:> rn/View {:style {:margin-top 24}}
+          [:> rn/Text {:style {:font-size 13
+                               :font-weight "500"
+                               :color (:text-secondary colors)
+                               :margin-left 16
+                               :margin-bottom 8
+                               :text-transform "uppercase"}}
+           "Git Worktree"]
+          [:> rn/View {:style {:background-color (:card-background colors)
+                               :border-top-width 1
+                               :border-bottom-width 1
+                               :border-color (:separator colors)
+                               :padding-horizontal 16
+                               :padding-vertical 12}}
+           [:> rn/View {:style {:flex-direction "row"
+                                :align-items "center"
+                                :justify-content "space-between"}}
+            [:> rn/Text {:style {:font-size 17
+                                 :color (:text-primary colors)}} "Create Git Worktree"]
+            [:> Switch
+             (merge {:value @create-worktree?
+                     :on-value-change #(reset! create-worktree? %)}
+                    (platform/switch-props colors @create-worktree?))]]]
+          [:> rn/Text {:style {:font-size 13
+                               :color (:text-secondary colors)
+                               :margin-horizontal 16
+                               :margin-top 8
+                               :line-height 18}}
+           "Creates a new git worktree with an isolated branch for this session. Requires the parent directory to be a git repository."]]
 
            ;; Session name required warning for worktree
-           (when (and @create-worktree? (empty? @session-name-atom))
-             [:> rn/View {:style {:margin-top 16
-                                  :margin-horizontal 16
-                                  :padding 12
-                                  :background-color (:warning-background colors)
-                                  :border-radius 8}}
-              [:> rn/Text {:style {:font-size 14
-                                   :color (:warning colors)}}
-               "Session name is required when creating a git worktree."]])]]])))
+         (when (and @create-worktree? (empty? @session-name-atom))
+           [:> rn/View {:style {:margin-top 16
+                                :margin-horizontal 16
+                                :padding 12
+                                :background-color (:warning-background colors)
+                                :border-radius 8}}
+            [:> rn/Text {:style {:font-size 14
+                                 :color (:warning colors)}}
+             "Session name is required when creating a git worktree."]])]]])))
 
 (defn- header-icon-button
   "Small icon button for the navigation header bar.
