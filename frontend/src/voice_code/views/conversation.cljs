@@ -446,8 +446,8 @@
              ;; iOS uses systemBlue/systemGreen at 0.1 opacity for row backgrounds
              bg-color (theme/opacity (role-color role colors) 0.1)]
          [touchable
-          {:style {:margin-vertical 4
-                   :margin-horizontal 12}
+          {:style {:margin-vertical 6
+                   :margin-horizontal 16}
            :on-press #(show-message-detail! {:role role :text full-text} session-id working-directory)
            :on-long-press #(copy-to-clipboard! full-text "Message copied")}
           ;; Row container: HStack with icon + content, matching iOS CDMessageView
@@ -537,8 +537,8 @@
   [:f>
    (fn []
      (let [colors (theme/use-theme-colors)]
-       [:> rn/View {:style {:margin-vertical 4
-                            :margin-horizontal 12}}
+       [:> rn/View {:style {:margin-vertical 6
+                            :margin-horizontal 16}}
         [:> rn/View {:style {:flex-direction "row"
                              :align-items "center"
                              :padding 12
@@ -566,7 +566,7 @@
                               :border-width 1
                               :border-color (:destructive colors)
                               :border-radius 8
-                              :margin-horizontal 12
+                              :margin-horizontal 16
                               :margin-vertical 8
                               :padding 12
                               :flex-direction "row"
