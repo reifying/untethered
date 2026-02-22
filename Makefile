@@ -19,7 +19,7 @@ WRAP := ./scripts/wrap-command
 .PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
 .PHONY: rn-ios rn-android rn-build-ios rn-deploy-device rn-deploy-device-release rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-list-apps rn-boot-sim rn-screenshot rn-restart rn-reload manual-ralph rn-android-screenshot rn-android-restart rn-android-grant-permissions rn-android-list-emulators rn-android-boot-emulator
-.PHONY: rn-metro-stop rn-test rn-e2e rn-e2e-smoke rn-e2e-auth rn-e2e-nav
+.PHONY: rn-metro-stop rn-test rn-e2e rn-e2e-smoke rn-e2e-auth rn-e2e-nav rn-reboot-sim
 
 # React Native Configuration
 RN_DIR := $(PROJECT_ROOT)frontend
@@ -561,6 +561,14 @@ rn-reset-permissions:
 	@echo "Resetting all permissions for the app..."
 	@xcrun simctl privacy booted reset all $(RN_BUNDLE_ID)
 	@echo "Permissions reset"
+
+# Reboot simulator (shutdown + boot, resets orientation to portrait)
+rn-reboot-sim:
+	@xcrun simctl shutdown "$(SIMULATOR_NAME)" 2>/dev/null || true
+	@sleep 2
+	@xcrun simctl boot "$(SIMULATOR_NAME)" 2>/dev/null || true
+	@sleep 3
+	@echo "Simulator rebooted"
 
 # Take screenshot of running simulator
 rn-screenshot:

@@ -70,23 +70,23 @@
         (directory-name directory)]
        [:> rn/View {:style {:flex 1}}]
        [unread-badge unread-count colors]]
-      ;; Line 2: Full path
-      [:> rn/Text {:style {:font-size 13
+      ;; Line 2: Full path (.caption = 12pt)
+      [:> rn/Text {:style {:font-size 12
                            :color (:text-secondary colors)
                            :margin-bottom 2}
                    :number-of-lines 1}
        directory]
-      ;; Line 3: Session count + bullet + timestamp (matches iOS layout)
+      ;; Line 3: Session count + bullet + timestamp (.caption2 = 11pt)
       [:> rn/View {:style {:flex-direction "row"
                            :align-items "center"}}
-       [:> rn/Text {:style {:font-size 12 :color (:text-tertiary colors)}}
+       [:> rn/Text {:style {:font-size 11 :color (:text-tertiary colors)}}
         (str session-count " session" (when (not= session-count 1) "s"))]
-       [:> rn/Text {:style {:font-size 12
+       [:> rn/Text {:style {:font-size 11
                             :color (:text-tertiary colors)
                             :margin-horizontal 6}}
         "\u2022"]
        [relative-time-text {:timestamp last-modified
-                            :style {:font-size 12
+                            :style {:font-size 11
                                     :color (:text-tertiary colors)}}]]]
      ;; iOS disclosure indicator (chevron)
      [disclosure-indicator {:colors colors}]]]])
@@ -137,15 +137,15 @@
           (session-name session)]
          [:> rn/View {:style {:flex 1}}]
          [unread-badge unread-count colors]]
-        ;; Line 2: Directory name (caption2, secondary)
-        [:> rn/Text {:style {:font-size 12
+        ;; Line 2: Directory name (.caption2 = 11pt, secondary)
+        [:> rn/Text {:style {:font-size 11
                              :color (:text-secondary colors)
                              :margin-bottom 2}
                      :number-of-lines 1}
          (directory-name (:working-directory session))]
-        ;; Line 3: Relative timestamp (caption2, secondary) — matches Swift layout
+        ;; Line 3: Relative timestamp (.caption2 = 11pt, secondary)
         [relative-time-text {:timestamp (:last-modified session)
-                             :style {:font-size 12
+                             :style {:font-size 11
                                      :color (:text-secondary colors)}}]]
        ;; iOS disclosure indicator (chevron)
        [disclosure-indicator {:colors colors}]]]]))
@@ -203,15 +203,15 @@
            (session-name session)]
           [:> rn/View {:style {:flex 1}}]
           [unread-badge unread-count colors]]
-         ;; Line 2: Directory name (caption2, secondary)
-         [:> rn/Text {:style {:font-size 12
+         ;; Line 2: Directory name (.caption2 = 11pt, secondary)
+         [:> rn/Text {:style {:font-size 11
                               :color (:text-secondary colors)
                               :margin-bottom 2}
                       :number-of-lines 1}
           (directory-name (:working-directory session))]
-         ;; Line 3: Relative timestamp (caption2, secondary)
+         ;; Line 3: Relative timestamp (.caption2 = 11pt, secondary)
          [relative-time-text {:timestamp (:last-modified session)
-                              :style {:font-size 12
+                              :style {:font-size 11
                                       :color (:text-secondary colors)}}]]
         ;; iOS disclosure indicator (chevron)
         [disclosure-indicator {:colors colors}]]]]
@@ -287,15 +287,15 @@
            (session-name session)]
           [:> rn/View {:style {:flex 1}}]
           [unread-badge unread-count colors]]
-         ;; Line 2: Directory name (caption2, secondary)
-         [:> rn/Text {:style {:font-size 12
+         ;; Line 2: Directory name (.caption2 = 11pt, secondary)
+         [:> rn/Text {:style {:font-size 11
                               :color (:text-secondary colors)
                               :margin-bottom 2}
                       :number-of-lines 1}
           (directory-name (:working-directory session))]
-         ;; Line 3: Relative timestamp (caption2, secondary)
+         ;; Line 3: Relative timestamp (.caption2 = 11pt, secondary)
          [relative-time-text {:timestamp (:last-modified session)
-                              :style {:font-size 12
+                              :style {:font-size 11
                                       :color (:text-secondary colors)}}]]
         ;; iOS disclosure indicator (chevron)
         [disclosure-indicator {:colors colors}]]]]
@@ -337,7 +337,7 @@
    {:style {:flex-direction "row"
             :align-items "center"
             :justify-content "space-between"
-            :margin-horizontal 20
+            :margin-horizontal 16
             :margin-bottom 6
             :padding-vertical 4}
     :on-press on-toggle}
@@ -505,7 +505,7 @@
   [navigation colors]
   (let [pending-count @(rf/subscribe [:resources/pending-uploads])]
     [touchable
-     {:style {:padding 8 :margin-right 4}
+     {:style {:padding 8 :margin-right 8}
       :on-press #(when navigation (.navigate navigation "Resources"))}
      [:> rn/View
       [icons/icon {:name :paper-clip :size 20 :color (:text-secondary colors)}]
@@ -543,7 +543,7 @@
   [colors]
   (let [refreshing? @(rf/subscribe [:ui/refreshing?])]
     [touchable
-     {:style {:padding 8 :margin-right 4}
+     {:style {:padding 8 :margin-right 8}
       :on-press #(when-not refreshing? (rf/dispatch [:sessions/refresh]))
       :disabled refreshing?}
      (if refreshing?
@@ -569,7 +569,7 @@
         ;; Stop Speech button - only shown when TTS is speaking
         (when speaking?
           [touchable
-           {:style {:padding 8 :margin-right 4}
+           {:style {:padding 8 :margin-right 8}
             :on-press #(rf/dispatch [:voice/stop-speaking])}
            [icons/icon {:name :speaker-slash :size 20 :color (:destructive colors)}]])
         ;; Resources button with badge
@@ -578,7 +578,7 @@
         [refresh-button colors]
         ;; New Session button
         [touchable
-         {:style {:padding 8 :margin-right 4}
+         {:style {:padding 8 :margin-right 8}
           :on-press #(.navigate navigation "NewSession")}
          [icons/icon {:name :add :size 22 :color (:accent colors)}]]
         [settings-button navigation]]))])
