@@ -70,7 +70,7 @@
        :on-press #(on-select id)}
       [:> rn/View {:style {:flex-direction "row"
                            :align-items "center"}}
-       [:> rn/Text {:style {:font-size 16
+       [:> rn/Text {:style {:font-size 17
                             :font-weight (if selected? "600" "400")
                             :color (:text-primary colors)}}
         display-name]
@@ -97,7 +97,7 @@
             :border-bottom-color (:separator colors)}
     :on-press #(on-select nil)}
    [:> rn/View {:style {:flex 1}}
-    [:> rn/Text {:style {:font-size 16
+    [:> rn/Text {:style {:font-size 17
                          :font-weight (if selected? "600" "400")
                          :color (:text-primary colors)}}
      "System Default"]
@@ -123,7 +123,7 @@
     :on-press #(on-select voice/all-premium-voices-identifier)}
    [:> rn/View {:style {:flex 1}}
     [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
-     [:> rn/Text {:style {:font-size 16
+     [:> rn/Text {:style {:font-size 17
                           :font-weight (if selected? "600" "400")
                           :color (:text-primary colors)}}
       "All Premium Voices"]
@@ -163,7 +163,7 @@
                        :justify-content "center"
                        :align-items "center"
                        :padding 40}}
-   [:> rn/Text {:style {:font-size 16
+   [:> rn/Text {:style {:font-size 17
                         :color (:text-secondary colors)
                         :text-align "center"}}
     "No English voices available.\n\nInstall voices in Settings → Accessibility → Spoken Content → Voices"]])

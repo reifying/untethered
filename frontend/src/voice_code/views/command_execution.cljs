@@ -52,7 +52,7 @@
                           :color (:text-secondary colors)
                           :margin-bottom 4}}
       "Command"]
-     [:> rn/Text {:style {:font-size 16
+     [:> rn/Text {:style {:font-size 17
                           :font-weight "600"
                           :font-family platform/monospace-font
                           :color (:text-primary colors)}}

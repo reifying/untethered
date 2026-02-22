@@ -39,7 +39,7 @@
                         :color (:text-secondary colors)
                         :margin-bottom 4}}
     label]
-   [:> rn/Text {:style {:font-size 16
+   [:> rn/Text {:style {:font-size 17
                         :color (:text-primary colors)}
                 :selectable true}
     value]])
@@ -61,7 +61,7 @@
                   :size 18
                   :color (if destructive? (:destructive colors) (:accent colors))
                   :style {:margin-right 12}}])
-   [:> rn/Text {:style {:font-size 16
+   [:> rn/Text {:style {:font-size 17
                         :color (if destructive? (:destructive colors) (:accent colors))}}
     label]])
 
@@ -74,7 +74,7 @@
                                 :padding-vertical 12}
                         (not last?) (merge {:border-bottom-width 1
                                             :border-bottom-color (:separator colors)}))}
-   [:> rn/Text {:style {:font-size 16 :color (:text-primary colors) :margin-right 16}}
+   [:> rn/Text {:style {:font-size 17 :color (:text-primary colors) :margin-right 16}}
     "Priority"]
    [:> rn/View {:style {:flex-direction "row" :flex 1 :justify-content "space-around"}}
     (for [[label priority-value] [["High (1)" 1] ["Medium (5)" 5] ["Low (10)" 10]]]

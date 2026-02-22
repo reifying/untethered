@@ -33,7 +33,7 @@
                                 :padding-vertical 10}
                         (not last?) (merge {:border-bottom-width 1
                                             :border-bottom-color (:separator colors)}))}
-   [:> rn/Text {:style {:font-size 16
+   [:> rn/Text {:style {:font-size 17
                          :color (:text-primary colors)
                          :margin-right 12}}
     label]
@@ -68,7 +68,7 @@
                              :justify-content "space-between"
                              :padding-horizontal 16
                              :padding-vertical 14}}
-         [:> rn/Text {:style {:font-size 16 :color (:text-primary colors) :flex 1}}
+         [:> rn/Text {:style {:font-size 17 :color (:text-primary colors) :flex 1}}
           label]
          [:> rn/Switch
           (merge {:value value

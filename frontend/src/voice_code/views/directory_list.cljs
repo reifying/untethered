@@ -452,7 +452,7 @@
                         :color (:text-secondary colors)
                         :margin-bottom 8}}
     "No sessions yet"]
-   [:> rn/Text {:style {:font-size 16
+   [:> rn/Text {:style {:font-size 17
                         :color (:text-secondary colors)
                         :text-align "center"
                         :padding-horizontal 32}}
@@ -490,7 +490,7 @@
                                      :elevation 4}))
      :on-press #(when navigation (.navigate navigation "Settings"))}
     [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                         :font-size 16
+                         :font-size 17
                          :font-weight "600"}}
      "Configure Server"]]
    [:> rn/Text {:style {:font-size 12
@@ -622,7 +622,7 @@
      :on-press #(when navigation (.navigate navigation "DebugLogs"))}
     [icons/icon {:name :bug :size 18 :color (:warning colors) :style {:margin-right 12}}]
     [:> rn/View {:style {:flex 1}}
-     [:> rn/Text {:style {:font-size 16 :color (:text-primary colors)}}
+     [:> rn/Text {:style {:font-size 17 :color (:text-primary colors)}}
       "Debug Logs"]]
     [disclosure-indicator {:colors colors}]]])
 

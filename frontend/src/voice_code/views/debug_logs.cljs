@@ -285,7 +285,7 @@
                     (show-toast! "Stats reset"))}
        [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
         [icons/icon {:name :trash :size 16 :color (:button-text-on-accent colors) :style {:margin-right 6}}]
-        [:> rn/Text {:style {:font-size 16
+        [:> rn/Text {:style {:font-size 17
                              :font-weight "600"
                              :color (:button-text-on-accent colors)}}
          "Reset Stats"]]]]
@@ -306,7 +306,7 @@
                        #(show-toast! "Logs copied to clipboard"))))}
        [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
         [icons/icon {:name :clipboard :size 16 :color (:button-text-on-accent colors) :style {:margin-right 6}}]
-        [:> rn/Text {:style {:font-size 16
+        [:> rn/Text {:style {:font-size 17
                              :font-weight "600"
                              :color (:button-text-on-accent colors)}}
          "Copy Logs"]]]
@@ -323,7 +323,7 @@
                     (show-toast! "Logs cleared"))}
        [:> rn/View {:style {:flex-direction "row" :align-items "center"}}
         [icons/icon {:name :trash :size 16 :color (:button-text-on-accent colors) :style {:margin-right 6}}]
-        [:> rn/Text {:style {:font-size 16
+        [:> rn/Text {:style {:font-size 17
                              :font-weight "600"
                              :color (:button-text-on-accent colors)}}
          "Clear"]]]])])

@@ -99,7 +99,7 @@
            :disabled (not can-connect?)
            :on-press #(rf/dispatch [:auth/connect @api-key])}
           [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                               :font-size 16
+                               :font-size 17
                                :font-weight "600"}}
            (if connecting? "Connecting..." "Connect")]]]))))
 
@@ -197,7 +197,7 @@
                         :color (:text-primary colors)
                         :margin-bottom 8}}
     "Untethered"]
-   [:> rn/Text {:style {:font-size 16
+   [:> rn/Text {:style {:font-size 17
                         :color (:text-secondary colors)
                         :margin-bottom 32}}
     "Connect to your backend"]])

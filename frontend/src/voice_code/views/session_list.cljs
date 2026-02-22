@@ -90,7 +90,7 @@
         [:> rn/View {:style {:flex-direction "row"
                              :align-items "center"
                              :margin-bottom 4}}
-         [:> rn/Text {:style {:font-size 16
+         [:> rn/Text {:style {:font-size 17
                               :font-weight (if (pos? unread-count) "700" "600")
                               :color (:text-primary colors)
                               :flex 1}}
@@ -174,7 +174,7 @@
     (if directory-name
       (str "No sessions in " directory-name)
       "No Sessions")]
-   [:> rn/Text {:style {:font-size 16
+   [:> rn/Text {:style {:font-size 17
                         :color (:text-secondary colors)
                         :text-align "center"
                         :padding-horizontal 32}}

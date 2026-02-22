@@ -76,7 +76,7 @@
 
    ;; File info
    [:> rn/View {:style {:flex 1}}
-    [:> rn/Text {:style {:font-size 16
+    [:> rn/Text {:style {:font-size 17
                          :font-weight "500"
                          :color (:text-primary colors)
                          :margin-bottom 2}

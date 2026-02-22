@@ -54,14 +54,14 @@
                    {:on-press #(rf/dispatch [:dev/clear-error])
                     :style {:padding 8}}
                    [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                                        :font-size 16}}
+                                        :font-size 17}}
                     "Dismiss"]]]
 
                  ;; Error message
                  [:> rn/ScrollView {:style {:flex 1
                                             :padding 16}}
                   [:> rn/Text {:style {:color (:destructive colors)
-                                       :font-size 16
+                                       :font-size 17
                                        :font-weight "600"
                                        :margin-bottom 8}}
                    "Message:"]
@@ -72,7 +72,7 @@
                    (:message error)]
 
                   [:> rn/Text {:style {:color (:destructive colors)
-                                       :font-size 16
+                                       :font-size 17
                                        :font-weight "600"
                                        :margin-bottom 8}}
                    "Stack Trace:"]
@@ -97,7 +97,7 @@
                             :padding 16
                             :align-items "center"}}
                    [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                                        :font-size 16
+                                        :font-size 17
                                         :font-weight "600"}}
                     (if @copied? "Copied!" "Copy to Clipboard")]]]]]))])))))
 

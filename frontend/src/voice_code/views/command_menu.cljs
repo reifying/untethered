@@ -32,7 +32,7 @@
                     :size 14
                     :color (:text-secondary colors)}]]
       [:> rn/View {:style {:flex 1}}
-       [:> rn/Text {:style {:font-size 16
+       [:> rn/Text {:style {:font-size 17
                             :font-weight "500"
                             :color (:text-primary colors)}}
         label]
@@ -70,7 +70,7 @@
                        :size 14
                        :color (:text-secondary colors)}]]
          [:> rn/View {:style {:flex 1}}
-          [:> rn/Text {:style {:font-size 16
+          [:> rn/Text {:style {:font-size 17
                                :font-weight "600"
                                :color (:text-primary colors)}}
            label]

@@ -53,7 +53,7 @@
 
       ;; Recipe info
       [:> rn/View {:style {:flex 1}}
-       [:> rn/Text {:style {:font-size 16
+       [:> rn/Text {:style {:font-size 17
                             :font-weight "600"
                             :color (:text-primary colors)
                             :margin-bottom 4}}
@@ -123,7 +123,7 @@
                               :align-items "center"
                               :margin-bottom 8}}
           [:> rn/ActivityIndicator {:size "small" :color (:success colors)}]
-          [:> rn/Text {:style {:font-size 16
+          [:> rn/Text {:style {:font-size 17
                                :font-weight "600"
                                :color (:success colors)
                                :margin-left 8}}
@@ -181,7 +181,7 @@
                        :align-items "center"
                        :padding 40}}
    [:> rn/ActivityIndicator {:size "large" :color (:accent colors)}]
-   [:> rn/Text {:style {:font-size 16
+   [:> rn/Text {:style {:font-size 17
                         :color (:text-secondary colors)
                         :margin-top 16}}
     "Loading recipes..."]])
@@ -248,7 +248,7 @@
                         :align-items "center"
                         :justify-content "space-between"}}
     [:> rn/View {:style {:flex 1 :margin-right 12}}
-     [:> rn/Text {:style {:font-size 16
+     [:> rn/Text {:style {:font-size 17
                           :color (:text-primary colors)}}
       "Start in new session"]
      [:> rn/Text {:style {:font-size 13
@@ -385,7 +385,7 @@
                                        (reset! load-error "Failed to load recipes. Please try again.")))
                                    10000)))}
              [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                                  :font-size 16
+                                  :font-size 17
                                   :font-weight "500"}}
               "Retry"]]])
 
@@ -418,7 +418,7 @@
                       :border-radius 8}
               :on-press #(reset! start-error nil)}
              [:> rn/Text {:style {:color (:button-text-on-accent colors)
-                                  :font-size 16
+                                  :font-size 17
                                   :font-weight "500"}}
               "Dismiss"]]])
 
@@ -431,7 +431,7 @@
                                 :align-items "center"
                                 :z-index 999}}
             [:> rn/ActivityIndicator {:size "large" :color (:accent colors)}]
-            [:> rn/Text {:style {:font-size 16
+            [:> rn/Text {:style {:font-size 17
                                  :color (:text-primary colors)
                                  :margin-top 16}}
              "Starting recipe..."]])

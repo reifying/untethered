@@ -19,7 +19,7 @@ WRAP := ./scripts/wrap-command
 .PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
 .PHONY: rn-ios rn-android rn-build-ios rn-deploy-device rn-deploy-device-release rn-shadow rn-metro rn-pod-install rn-clean rn-list-sims rn-list-apps rn-boot-sim rn-screenshot rn-restart rn-reload manual-ralph rn-android-screenshot rn-android-restart rn-android-grant-permissions rn-android-list-emulators rn-android-boot-emulator
-.PHONY: rn-metro-stop rn-test rn-e2e rn-e2e-smoke rn-e2e-auth rn-e2e-nav rn-reboot-sim
+.PHONY: rn-metro-stop rn-test rn-e2e rn-e2e-smoke rn-e2e-auth rn-e2e-nav rn-reboot-sim rn-lint-typography
 
 # React Native Configuration
 RN_DIR := $(PROJECT_ROOT)frontend
@@ -133,6 +133,7 @@ help:
 	@echo "  rn-e2e-smoke       - Run smoke E2E tests (no backend required)"
 	@echo "  rn-e2e-auth        - Run auth E2E tests"
 	@echo "  rn-e2e-nav         - Run navigation E2E tests"
+	@echo "  rn-lint-typography - Check font-size 16 compliance (iOS .body = 17pt)"
 	@echo ""
 	@echo "Claude automation:"
 	@echo "  manual-ralph       - Run Claude with PROMPT.md (non-interactive)"
@@ -693,6 +694,29 @@ rn-e2e-nav:
 	@echo "Running navigation E2E tests..."
 	maestro test $(PROJECT_ROOT).maestro/flows/navigation-basic.yaml
 	maestro test $(PROJECT_ROOT).maestro/flows/session-list.yaml
+
+# Typography lint: ensure font-size 16 only appears on TextInput elements (not body text).
+# iOS .body standard = 17pt. TextInput stays at 16 to prevent iOS auto-zoom.
+# Allowlist: file:line pairs where font-size 16 is intentional (TextInput fields).
+rn-lint-typography:
+	@echo "Checking typography compliance (font-size 16 should only be on TextInput)..."
+	@COUNT=$$(grep -rn ':font-size 16' $(RN_DIR)/src/voice_code/views/*.cljs \
+		| grep -v 'auth.cljs:66:' \
+		| grep -v 'conversation.cljs:855:' \
+		| grep -v 'conversation.cljs:880:' \
+		| grep -v 'new_session.cljs:41:' \
+		| wc -l | tr -d ' '); \
+	if [ "$$COUNT" -gt 0 ]; then \
+		echo "FAIL: font-size 16 found outside TextInput allowlist (should be 17 for iOS .body):"; \
+		grep -rn ':font-size 16' $(RN_DIR)/src/voice_code/views/*.cljs \
+			| grep -v 'auth.cljs:66:' \
+			| grep -v 'conversation.cljs:855:' \
+			| grep -v 'conversation.cljs:880:' \
+			| grep -v 'new_session.cljs:41:'; \
+		exit 1; \
+	else \
+		echo "PASS: All font-size 16 instances are allowlisted TextInput fields (4 total)"; \
+	fi
 
 # Run Claude in non-interactive mode with PROMPT.md
 manual-ralph:

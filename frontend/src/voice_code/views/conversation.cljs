@@ -313,7 +313,7 @@
          ;; Message content - scrollable
          [:> rn/ScrollView {:style {:flex 1}
                             :content-container-style {:padding 16}}
-          [:> rn/Text {:style {:font-size 16
+          [:> rn/Text {:style {:font-size 17
                                :line-height 24
                                :color (:text-primary colors)}
                        :selectable true}
@@ -477,8 +477,8 @@
             ;; performance, matching iOS CDMessageView which renders message.displayText.
             ;; Full text is available via the detail modal (tap) and clipboard (long-press).
             [:> rn/Text {:style {:color (:text-primary colors)
-                                 :font-size 16
-                                 :line-height 22}
+                                 :font-size 17
+                                 :line-height 24}
                          :selectable true
                          :number-of-lines 20}
              display-text]
@@ -1058,7 +1058,7 @@
                              :color (:text-secondary colors)
                              :margin-bottom 8}}
          "No messages yet"]
-        [:> rn/Text {:style {:font-size 16
+        [:> rn/Text {:style {:font-size 17
                              :color (:text-secondary colors)
                              :text-align "center"
                              :padding-horizontal 32}}
