@@ -1,14 +1,17 @@
 (ns voice-code.command-menu-test
-  "Tests for command menu view subscriptions and state.
+  "Tests for command menu view subscriptions, state, and icon styling.
    Tests the re-frame state that drives the command menu view:
-   available commands, grouped commands, running indicators, and execution."
+   available commands, grouped commands, running indicators, and execution.
+   Also verifies icon map entries and theme colors used by command menu."
   (:require [cljs.test :refer [deftest testing is use-fixtures]]
             [re-frame.core :as rf]
             [day8.re-frame.test :as rf-test]
             [voice-code.db :as db]
             [voice-code.events.core]
             [voice-code.events.websocket]
-            [voice-code.subs]))
+            [voice-code.subs]
+            [voice-code.icons :as icons]
+            [voice-code.theme :as theme]))
 
 (use-fixtures :each
   {:before (fn [] (rf/dispatch-sync [:initialize-db]))})
@@ -349,3 +352,43 @@
      (let [cmd-b @(rf/subscribe [:commands/running-for-session "cmd-b"])]
        (is (some? cmd-b) "Still-running command remains in running")
        (is (nil? (:exit-code cmd-b)) "Still-running command has no exit-code")))))
+
+;; ============================================================================
+;; Icon Map Requirements (command menu uses :play and :folder icons)
+;; ============================================================================
+
+(deftest command-menu-icons-exist-in-icon-map-test
+  (testing ":play icon exists for command items"
+    (let [entry (get icons/icon-map :play)]
+      (is (some? entry) ":play should be in icon-map")
+      (is (some? (:ios entry)) ":play should have iOS icon name")
+      (is (some? (:android entry)) ":play should have Android icon name")))
+
+  (testing ":folder icon exists for group items"
+    (let [entry (get icons/icon-map :folder)]
+      (is (some? entry) ":folder should be in icon-map")
+      (is (some? (:ios entry)) ":folder should have iOS icon name")
+      (is (some? (:android entry)) ":folder should have Android icon name"))))
+
+;; ============================================================================
+;; Theme Color Requirements (command menu uses accent color for icons)
+;; ============================================================================
+
+(deftest command-menu-accent-color-available-test
+  (testing "accent color is defined in dark mode theme"
+    (is (some? (:accent theme/dark-colors))
+        "Dark mode should have :accent color for command icons")
+    (is (string? (:accent theme/dark-colors))
+        "Accent color should be a string"))
+
+  (testing "accent color is defined in light mode theme"
+    (is (some? (:accent theme/light-colors))
+        "Light mode should have :accent color for command icons")
+    (is (string? (:accent theme/light-colors))
+        "Accent color should be a string"))
+
+  (testing "accent colors have sufficient contrast (not same as background)"
+    (is (not= (:accent theme/dark-colors) (:background theme/dark-colors))
+        "Dark accent should differ from dark background")
+    (is (not= (:accent theme/light-colors) (:background theme/light-colors))
+        "Light accent should differ from light background")))

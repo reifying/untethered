@@ -10,7 +10,9 @@
             [voice-code.views.touchable :refer [touchable]]))
 
 (defn- command-item
-  "Single command item in the menu."
+  "Single command item in the menu.
+   Matches Swift CommandRowView: icon + label + optional description.
+   Uses bare colored icons (no container boxes) for native feel."
   [{:keys [command on-press colors]}]
   (let [{:keys [id label description type]} command]
     [touchable
@@ -21,16 +23,10 @@
       :on-press #(on-press command)}
      [:> rn/View {:style {:flex-direction "row"
                           :align-items "center"}}
-      [:> rn/View {:style {:width 32
-                           :height 32
-                           :border-radius 6
-                           :background-color (:background-secondary colors)
-                           :align-items "center"
-                           :justify-content "center"
-                           :margin-right 12}}
-       [icons/icon {:name (if (= type "group") :folder :play)
-                    :size 14
-                    :color (:text-secondary colors)}]]
+      [icons/icon {:name (if (= type "group") :folder :play)
+                   :size 18
+                   :color (:accent colors)
+                   :style {:margin-right 10}}]
       [:> rn/View {:style {:flex 1}}
        [:> rn/Text {:style {:font-size 17
                             :font-weight "500"
@@ -43,7 +39,9 @@
           description])]]]))
 
 (defn- command-group
-  "Group of related commands with expandable children."
+  "Group of related commands with expandable children.
+   Matches Swift DisclosureGroup: folder icon + label + child count + chevron.
+   Uses bare colored icons for native feel."
   [{:keys [group on-command-press colors]}]
   (let [expanded? (r/atom false)
         {:keys [id label children]} group]
@@ -53,22 +51,15 @@
        [touchable
         {:style {:padding-vertical 12
                  :padding-horizontal 16
-                 :background-color (:grouped-background colors)
                  :border-bottom-width 1
                  :border-bottom-color (:separator colors)}
          :on-press #(swap! expanded? not)}
         [:> rn/View {:style {:flex-direction "row"
                              :align-items "center"}}
-         [:> rn/View {:style {:width 32
-                              :height 32
-                              :border-radius 6
-                              :background-color (:background-tertiary colors)
-                              :align-items "center"
-                              :justify-content "center"
-                              :margin-right 12}}
-          [icons/icon {:name :folder
-                       :size 14
-                       :color (:text-secondary colors)}]]
+         [icons/icon {:name :folder
+                      :size 18
+                      :color (:accent colors)
+                      :style {:margin-right 10}}]
          [:> rn/View {:style {:flex 1}}
           [:> rn/Text {:style {:font-size 17
                                :font-weight "600"
