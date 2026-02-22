@@ -103,8 +103,8 @@
    (rf/dispatch-sync [:initialize-db])
 
    (testing "auto-adds to priority queue when enabled"
-     ;; Enable priority queue auto-add
-     (rf/dispatch-sync [:settings/update :auto-add-to-priority-queue true])
+     ;; Enable priority queue (correct settings key: :priority-queue-enabled)
+     (rf/dispatch-sync [:settings/update :priority-queue-enabled true])
      (let [session-id "auto-queue-sess"]
        (rf/dispatch-sync [:session/create-new
                           {:session-id session-id
@@ -112,8 +112,30 @@
                            :working-directory "/path"}])
        (let [session @(rf/subscribe [:sessions/by-id session-id])]
          (is (some? session))
-         ;; The session should exist in the sessions map
-         (is (= session-id (:id session))))))))
+         (is (= session-id (:id session)))
+         ;; Verify priority queue fields are set
+         (is (= 10 (:priority session))
+             "should set default priority of 10")
+         (is (= 1.0 (:priority-order session))
+             "should set default priority-order of 1.0")
+         (is (some? (:priority-queued-at session))
+             "should set priority-queued-at timestamp"))))
+
+   (testing "does not add to priority queue when disabled"
+     (rf/dispatch-sync [:settings/update :priority-queue-enabled false])
+     (let [session-id "no-queue-sess"]
+       (rf/dispatch-sync [:session/create-new
+                          {:session-id session-id
+                           :session-name "No Queue Session"
+                           :working-directory "/path"}])
+       (let [session @(rf/subscribe [:sessions/by-id session-id])]
+         (is (some? session))
+         (is (nil? (:priority session))
+             "should not have priority when queue disabled")
+         (is (nil? (:priority-order session))
+             "should not have priority-order when queue disabled")
+         (is (nil? (:priority-queued-at session))
+             "should not have priority-queued-at when queue disabled"))))))
 
 ;; ============================================================================
 ;; Section Structure Tests (iOS parity verification)
