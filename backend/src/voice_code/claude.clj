@@ -107,11 +107,20 @@
          stdout-file (.toFile stdout-path)
          stderr-file (.toFile stderr-path)]
      (try
-       (let [process-opts (cond-> {:out (ProcessBuilder$Redirect/to stdout-file)
+       (let [;; Build clean environment for Claude CLI:
+             ;; Use env/clean-env to strip nesting-guard vars (CLAUDECODE,
+             ;; CLAUDE_CODE_ENTRYPOINT) that would trigger "cannot be launched
+             ;; inside another Claude Code session" errors.
+             base-env (env/clean-env)
+             merged-env (if (seq env-vars)
+                          (merge base-env env-vars)
+                          base-env)
+             process-opts (cond-> {:out (ProcessBuilder$Redirect/to stdout-file)
                                    :err (ProcessBuilder$Redirect/to stderr-file)
-                                   :in :pipe}
+                                   :in :pipe
+                                   :clear-env true}
                             working-dir (assoc :dir working-dir)
-                            (seq env-vars) (assoc :env env-vars))
+                            true (assoc :env merged-env))
              _ (log/info "Starting process with opts" {:process-opts (dissoc process-opts :out :err :in)})
              all-args (into [cli-path] args)
              process (apply proc/start process-opts all-args)

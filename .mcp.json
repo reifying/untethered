@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "clojure-mcp": {
-      "command": "clojure",
-      "args": ["-X:mcp", ":port", "7889"]
+      "command": "/bin/sh",
+      "args": ["-c", "cd backend && clojure -X:mcp :port $(cat .nrepl-port)"]
     }
   }
 }

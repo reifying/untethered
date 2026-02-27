@@ -13,6 +13,19 @@
   ;; Populated lazily by detect-worktree.
   (atom {}))
 
+(def claude-nesting-vars
+  "Environment variables that trigger Claude Code's nesting guard.
+   Must be stripped from subprocess environments to prevent
+   'cannot be launched inside another Claude Code session' errors."
+  ["CLAUDECODE" "CLAUDE_CODE_ENTRYPOINT"])
+
+(defn clean-env
+  "Return the current process environment as a map with Claude Code
+   nesting-guard variables removed. Use this as the base environment
+   for any subprocess that might invoke the Claude CLI."
+  []
+  (apply dissoc (into {} (System/getenv)) claude-nesting-vars))
+
 (defn detect-worktree
   "Detect if directory is a git worktree.
    Returns {:worktree? bool :name string-or-nil}.
@@ -47,14 +60,19 @@
       (do
         (.mkdirs beads-dir)
         ;; Note: shell/sh :env REPLACES the environment, so we must merge
-        ;; with System/getenv to preserve PATH, HOME, etc.
-        (let [env-with-beads-db (merge (into {} (System/getenv)) {"BEADS_DB" db-path})
+        ;; with clean-env to preserve PATH, HOME, etc. while stripping
+        ;; Claude nesting-guard vars.
+        ;; Run from temp dir (not the worktree) because bd refuses to run
+        ;; `bd init` from within a git worktree. BEADS_DB env var ensures
+        ;; the database is created at the correct worktree-local path.
+        (let [env-with-beads-db (merge (clean-env) {"BEADS_DB" db-path})
+              temp-dir (System/getProperty "java.io.tmpdir")
               result (shell/sh "bd" "init"
                                "--prefix" worktree-name
                                "--skip-hooks"
                                "--skip-merge-driver"
                                "--force"
-                               :dir worktree-path
+                               :dir temp-dir
                                :env env-with-beads-db)]
           (if (zero? (:exit result))
             (do

@@ -160,3 +160,37 @@
           (is (contains? @captured-env "BEADS_DB")))
         (finally
           (cleanup-temp-dir! temp-dir))))))
+
+;; Tests for clean-env
+
+(deftest test-clean-env-returns-map
+  (testing "clean-env returns a map with standard env vars"
+    (let [result (env/clean-env)]
+      (is (map? result))
+      (is (contains? result "PATH"))
+      (is (contains? result "HOME")))))
+
+(deftest test-clean-env-strips-nesting-vars
+  (testing "clean-env strips CLAUDECODE and CLAUDE_CODE_ENTRYPOINT"
+    (let [result (env/clean-env)]
+      (is (not (contains? result "CLAUDECODE")))
+      (is (not (contains? result "CLAUDE_CODE_ENTRYPOINT"))))))
+
+(deftest test-claude-nesting-vars-definition
+  (testing "claude-nesting-vars contains expected variable names"
+    (is (= ["CLAUDECODE" "CLAUDE_CODE_ENTRYPOINT"] env/claude-nesting-vars))))
+
+(deftest test-ensure-beads-local-strips-nesting-vars
+  (testing "ensure-beads-local! strips Claude nesting vars from env"
+    (let [temp-dir (create-temp-dir!)
+          captured-env (atom nil)]
+      (try
+        (with-redefs [shell/sh (fn [& args]
+                                 (let [opts (apply hash-map (drop-while string? args))]
+                                   (reset! captured-env (:env opts)))
+                                 {:exit 0 :out "" :err ""})]
+          (env/ensure-beads-local! temp-dir "test-wt")
+          (is (not (contains? @captured-env "CLAUDECODE")))
+          (is (not (contains? @captured-env "CLAUDE_CODE_ENTRYPOINT"))))
+        (finally
+          (cleanup-temp-dir! temp-dir))))))

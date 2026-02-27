@@ -61,10 +61,14 @@
           ;; Use bash -c to execute the full command string
           pb (ProcessBuilder. ["bash" "-c" shell-command])
           _ (.directory pb (java.io.File. working-directory))
-          ;; Add environment variables (ProcessBuilder.environment() inherits from parent,
-          ;; so .putAll adds to rather than replaces the environment)
-          _ (when (seq env-vars)
-              (.putAll (.environment pb) env-vars))
+;; Strip Claude Code nesting-guard vars and add directory-specific env vars.
+          ;; ProcessBuilder.environment() inherits from parent, so we must
+          ;; explicitly remove vars that would block nested claude invocations.
+          _ (let [pb-env (.environment pb)]
+              (doseq [v env/claude-nesting-vars]
+                (.remove pb-env v))
+              (when (seq env-vars)
+                (.putAll pb-env env-vars)))
           process (.start pb)]
 
       ;; Track in active sessions
