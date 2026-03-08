@@ -15,6 +15,7 @@ WRAP := ./scripts/wrap-command
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 .PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
+.PHONY: rn-deps rn-watch rn-test rn-test-watch rn-release rn-repl rn-clean
 
 # Default target
 help:
@@ -90,6 +91,15 @@ help:
 	@echo "Debugging:"
 	@echo "  show-destinations  - Show available build destinations"
 	@echo "  check-sdk          - Show iOS SDK version info"
+	@echo ""
+	@echo "React Native frontend:"
+	@echo "  rn-deps            - Install frontend npm dependencies"
+	@echo "  rn-watch           - Start shadow-cljs watch (dev build)"
+	@echo "  rn-test            - Compile and run ClojureScript tests"
+	@echo "  rn-test-watch      - Run ClojureScript tests in watch mode"
+	@echo "  rn-release         - Build production ClojureScript bundle"
+	@echo "  rn-repl            - Connect CLJS REPL to running app"
+	@echo "  rn-clean           - Remove frontend build artifacts"
 	@echo ""
 	@echo "API Key Management:"
 	@echo "  show-key           - Display the current API key"
@@ -408,3 +418,37 @@ release-mac-notarize:
 # Create distribution zip from notarized app
 release-mac-package:
 	./scripts/publish-mac.sh package
+
+# ==============================================================================
+# React Native Frontend
+# ==============================================================================
+
+FRONTEND_DIR := frontend
+
+# Install frontend npm dependencies
+rn-deps:
+	cd $(FRONTEND_DIR) && npm install
+
+# Start shadow-cljs watch (dev build)
+rn-watch: rn-deps
+	cd $(FRONTEND_DIR) && npx shadow-cljs watch app
+
+# Compile and run ClojureScript tests
+rn-test: rn-deps
+	$(WRAP) bash -c "cd $(FRONTEND_DIR) && npx shadow-cljs compile test && node out/test.js"
+
+# Run ClojureScript tests in watch mode
+rn-test-watch: rn-deps
+	cd $(FRONTEND_DIR) && npx shadow-cljs watch test
+
+# Build production ClojureScript bundle
+rn-release: rn-deps
+	$(WRAP) bash -c "cd $(FRONTEND_DIR) && npx shadow-cljs release app"
+
+# Connect CLJS REPL to running app
+rn-repl: rn-deps
+	cd $(FRONTEND_DIR) && npx shadow-cljs cljs-repl app
+
+# Remove frontend build artifacts
+rn-clean:
+	rm -rf $(FRONTEND_DIR)/app $(FRONTEND_DIR)/out $(FRONTEND_DIR)/.shadow-cljs

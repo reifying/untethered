@@ -122,10 +122,14 @@ verify-fix.md
 # IPA packaging logs
 build/ipa/Packaging.log
 
-# Node.js (not used - backend is Clojure)
+# Node.js
 backend/node_modules/
 backend/package-lock.json
 backend/package.json
+frontend/node_modules/
+frontend/.shadow-cljs/
+frontend/app/
+frontend/out/
 voice-code-dev2/
 
 # VC

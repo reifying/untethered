@@ -1,0 +1,61 @@
+;; shadow-cljs configuration for React Native
+;; See: https://shadow-cljs.github.io/docs/UsersGuide.html#target-react-native
+
+{:source-paths ["src" "test"]
+
+ :dependencies [[reagent "1.2.0"]
+                [re-frame "1.4.3"]
+                [day8.re-frame/async-flow-fx "0.3.0"]
+                [day8.re-frame/test "0.1.5"]]
+
+ :builds
+ {:app
+  {:target :react-native
+   :init-fn untethered.core/init
+   :output-dir "app"
+   :compiler-options {:infer-externs :auto
+                      :closure-defines {goog.DEBUG true}}
+   :devtools {:autoload true}}
+
+  :test
+  {:target :node-test
+   :output-to "out/test.js"
+   :ns-regexp "-test$"
+   :autorun true
+   :compiler-options {:infer-externs :auto}
+   :js-options {:resolve {"react-native" {:target :file
+                                           :file "test/stubs/react-native.js"}
+                          "react-native-haptic-feedback" {:target :file
+                                                          :file "test/stubs/react-native-haptic-feedback.js"}
+                          "react-native-keychain" {:target :file
+                                                   :file "test/stubs/react-native-keychain.js"}
+                          "react-native-sqlite-storage" {:target :file
+                                                         :file "test/stubs/react-native-sqlite-storage.js"}
+                          "react-native-tts" {:target :file
+                                              :file "test/stubs/react-native-tts.js"}
+                          "@react-native-voice/voice" {:target :file
+                                                       :file "test/stubs/react-native-voice.js"}
+                          "@notifee/react-native" {:target :file
+                                                   :file "test/stubs/notifee.js"}
+                          "react-native-vision-camera" {:target :file
+                                                        :file "test/stubs/react-native-vision-camera.js"}
+                          "@react-native-clipboard/clipboard" {:target :file
+                                                               :file "test/stubs/clipboard.js"}
+                          "react-native-document-picker" {:target :file
+                                                          :file "test/stubs/document-picker.js"}
+                          "react-native-fs" {:target :file
+                                             :file "test/stubs/react-native-fs.js"}
+                          "@react-navigation/native" {:target :file
+                                                      :file "test/stubs/react-navigation-native.js"}
+                          "@react-navigation/native-stack" {:target :file
+                                                            :file "test/stubs/react-navigation-native-stack.js"}
+                          "react-native-safe-area-context" {:target :file
+                                                            :file "test/stubs/safe-area-context.js"}
+                          "react-native-screens" {:target :file
+                                                  :file "test/stubs/react-native-screens.js"}
+                          "@react-native-vector-icons/ionicons" {:target :file
+                                                                 :file "test/stubs/ionicons.js"}
+                          "@react-native-vector-icons/material-icons" {:target :file
+                                                                       :file "test/stubs/material-icons.js"}
+                          "react-native-context-menu-view" {:target :file
+                                                            :file "test/stubs/context-menu-view.js"}}}}}}
