@@ -16,6 +16,7 @@
             [voice-code.resources :as resources]
             [voice-code.recipes :as recipes]
             [voice-code.orchestration :as orch]
+            [voice-code.supervisor :as supervisor]
             [voice-code.env :as env])
   (:gen-class))
 
@@ -1114,7 +1115,13 @@
                                                  {:id "bd.list"
                                                   :label "Beads List"
                                                   :description "List all beads tasks"
-                                                  :type :command}]})))
+                                                  :type :command}]}))
+            ;; Start supervisor for this client connection
+            (try
+              (supervisor/start-supervisor! channel)
+              (log/info "Supervisor started for client")
+              (catch Exception e
+                (log/warn e "Failed to start supervisor (non-fatal)"))))
 
         ;; All other message types require prior authentication
         :else
@@ -1487,63 +1494,87 @@
             (let [session-name (:session-name data)
                   parent-directory (:parent-directory data)]
 
-              ;; 1. Validate inputs
+              ;; 1. Validate inputs (also expands ~ in parent-directory)
               (let [validation (worktree/validate-worktree-creation session-name parent-directory)]
                 (if-not (:valid validation)
-                  (send-to-client! channel
-                                   {:type :worktree-session-error
-                                    :success false
-                                    :error (:error validation)
-                                    :error-type (:error-type validation)})
+                  (do
+                    (log/warn "Worktree creation validation failed"
+                              {:session-name session-name
+                               :parent-directory parent-directory
+                               :error (:error validation)
+                               :error-type (:error-type validation)})
+                    (send-to-client! channel
+                                     {:type :worktree-session-error
+                                      :success false
+                                      :error (:error validation)
+                                      :error-type (:error-type validation)}))
 
-                  ;; 2. Compute paths
-                  (let [paths (worktree/compute-worktree-paths session-name parent-directory)
+                  ;; Use expanded directory from validation for all subsequent steps
+                  (let [expanded-dir (:expanded-directory validation)
+
+                        ;; 2. Compute paths (using expanded directory)
+                        paths (worktree/compute-worktree-paths session-name expanded-dir)
                         {:keys [sanitized-name branch-name worktree-path]} paths
 
                         ;; 3. Validate paths
-                        path-validation (worktree/validate-worktree-paths paths parent-directory)]
+                        path-validation (worktree/validate-worktree-paths paths expanded-dir)]
 
                     (if-not (:valid path-validation)
-                      (send-to-client! channel
-                                       {:type :worktree-session-error
-                                        :success false
-                                        :error (:error path-validation)
-                                        :error-type (:error-type path-validation)
-                                        :details (:details path-validation)})
+                      (do
+                        (log/warn "Worktree path validation failed"
+                                  {:session-name session-name
+                                   :parent-directory expanded-dir
+                                   :error (:error path-validation)
+                                   :error-type (:error-type path-validation)
+                                   :details (:details path-validation)})
+                        (send-to-client! channel
+                                         {:type :worktree-session-error
+                                          :success false
+                                          :error (:error path-validation)
+                                          :error-type (:error-type path-validation)
+                                          :details (:details path-validation)}))
 
                       ;; 4. Execute worktree creation sequence
                       (let [session-id (str (java.util.UUID/randomUUID))]
                         (log/info "Creating worktree session"
                                   {:session-name session-name
-                                   :parent-directory parent-directory
+                                   :parent-directory expanded-dir
                                    :branch-name branch-name
                                    :worktree-path worktree-path
                                    :session-id session-id})
 
                         ;; Step 4a: Create git worktree
-                        (let [git-result (worktree/create-worktree! parent-directory branch-name worktree-path)]
+                        (let [git-result (worktree/create-worktree! expanded-dir branch-name worktree-path)]
                           (if-not (:success git-result)
-                            (send-to-client! channel
-                                             {:type :worktree-session-error
-                                              :success false
-                                              :error (:error git-result)
-                                              :error-type :git-failed
-                                              :details {:step "git_worktree_add"
-                                                        :stderr (:stderr git-result)}})
+                            (do
+                              (log/error "Git worktree creation failed"
+                                         {:error (:error git-result)
+                                          :stderr (:stderr git-result)})
+                              (send-to-client! channel
+                                               {:type :worktree-session-error
+                                                :success false
+                                                :error (:error git-result)
+                                                :error-type :git-failed
+                                                :details {:step "git_worktree_add"
+                                                          :stderr (:stderr git-result)}}))
 
                             ;; Step 4b: Initialize local Beads database for worktree isolation
                             (let [bd-result (env/ensure-beads-local! worktree-path sanitized-name)]
                               (if-not (:success bd-result)
-                                (send-to-client! channel
-                                                 {:type :worktree-session-error
-                                                  :success false
-                                                  :error (:error bd-result)
-                                                  :error-type :beads-failed
-                                                  :details {:step "bd_init_local"}})
+                                (do
+                                  (log/error "Beads initialization failed for worktree"
+                                             {:error (:error bd-result)
+                                              :worktree-path worktree-path})
+                                  (send-to-client! channel
+                                                   {:type :worktree-session-error
+                                                    :success false
+                                                    :error (:error bd-result)
+                                                    :error-type :beads-failed
+                                                    :details {:step "bd_init_local"}}))
 
                                 ;; Step 4c: Invoke Claude Code
                                 (let [prompt (worktree/format-worktree-prompt session-name worktree-path
-                                                                              parent-directory branch-name)]
+                                                                              expanded-dir branch-name)]
                                   (claude/invoke-claude-async
                                    prompt
                                    (fn [response]
@@ -1554,11 +1585,14 @@
                                                          :session-id (:session-id response)
                                                          :worktree-path worktree-path
                                                          :branch-name branch-name})
-                                       (send-to-client! channel
-                                                        {:type :worktree-session-error
-                                                         :success false
-                                                         :error (:error response)
-                                                         :error-type :claude-failed})))
+                                       (do
+                                         (log/error "Claude invocation failed for worktree session"
+                                                    {:error (:error response)})
+                                         (send-to-client! channel
+                                                          {:type :worktree-session-error
+                                                           :success false
+                                                           :error (:error response)
+                                                           :error-type :claude-failed}))))
                                    :new-session-id session-id
                                    :model "haiku"
                                    :working-directory worktree-path))))))))))))
@@ -1866,6 +1900,38 @@
                                {:type :available-recipes
                                 :recipes (get-available-recipes-list)}))
 
+            "supervisor_message"
+            (let [text (:text data)]
+              (if-not text
+                (send-to-client! channel
+                                 {:type :error
+                                  :message "text required in supervisor_message"})
+                (do
+                  (log/info "Supervisor message received" {:text (subs text 0 (min 80 (count text)))})
+                  ;; Run supervisor turn asynchronously to avoid blocking WebSocket handler
+                  (async/go
+                    (supervisor/handle-supervisor-message
+                     text
+                     (fn [msg] (send-to-client! channel msg)))))))
+
+            "canvas_action"
+            (let [callback-id (:callback-id data)
+                  action (:action data)]
+              (if-not (and callback-id action)
+                (send-to-client! channel
+                                 {:type :error
+                                  :message "callback_id and action required in canvas_action message"})
+                (do
+                  (log/info "Canvas action received" {:callback-id callback-id :action action})
+                  (let [result-text (supervisor/handle-canvas-action
+                                    {:callback-id callback-id :action action})]
+                    ;; If a pending action was found, inject context into next supervisor turn
+                    (when result-text
+                      (async/go
+                        (supervisor/handle-supervisor-message
+                         result-text
+                         (fn [msg] (send-to-client! channel msg)))))))))
+
             ;; Unknown message type
             (do
               (log/warn "Unknown message type" {:type msg-type})
@@ -2026,6 +2092,132 @@
                      :headers {"Content-Type" "text/plain"}
                      :body "This endpoint requires WebSocket connection"})))))
 
+(defn register-supervisor-tool-handlers!
+  "Register external tool handlers that bridge supervisor tools to server
+   infrastructure (claude.clj, commands.clj, etc.)."
+  []
+  (supervisor/register-tool-handler!
+   "dispatch_prompt"
+   (fn [input]
+     (let [text (:text input)
+           session-id (:session-id input)
+           working-dir (:working-directory input)]
+       (if-not text
+         (pr-str {:status "error" :message "text is required"})
+         (let [new-session-id (when-not session-id (str (java.util.UUID/randomUUID)))
+               claude-session-id (or session-id new-session-id)]
+           ;; Try to acquire lock
+           (if-not (repl/acquire-session-lock! claude-session-id)
+             (pr-str {:status "locked" :session-id claude-session-id
+                       :message "Session is currently processing a prompt"})
+             (do
+               (claude/invoke-claude-async
+                text
+                (fn [response]
+                  (try
+                    (let [client-channel (:client-channel @supervisor/supervisor-state)]
+                      (if (:success response)
+                        (do
+                          (when client-channel
+                            (send-to-client! client-channel
+                                             {:type :turn-complete
+                                              :session-id claude-session-id}))
+                          (supervisor/on-worker-complete
+                           claude-session-id 0
+                           (fn [msg]
+                             (when client-channel
+                               (send-to-client! client-channel msg)))))
+                        (do
+                          (when client-channel
+                            (send-to-client! client-channel
+                                             {:type :error
+                                              :message (:error response)
+                                              :session-id claude-session-id}))
+                          (supervisor/on-worker-complete
+                           claude-session-id 1
+                           (fn [msg]
+                             (when client-channel
+                               (send-to-client! client-channel msg)))))))
+                    (finally
+                      (repl/release-session-lock! claude-session-id))))
+                :new-session-id new-session-id
+                :resume-session-id session-id
+                :working-directory working-dir
+                :timeout-ms 86400000)
+               (pr-str {:status "dispatched"
+                        :session-id claude-session-id
+                        :message "Prompt dispatched to Claude Code session"}))))))))
+
+  (supervisor/register-tool-handler!
+   "execute_command"
+   (fn [input send-to-client-fn!]
+     (let [command-id (:command-id input)
+           shell-command (:shell-command input)
+           working-dir (:working-directory input)
+           resolved-cmd (or shell-command
+                            (when command-id (commands/resolve-command-id command-id)))]
+       (if-not resolved-cmd
+         (pr-str {:status "error" :message "command_id or shell_command required"})
+         (let [cmd-session-id (commands/generate-command-session-id)]
+           (cmd-history/create-session-entry! cmd-session-id
+                                              (or command-id "custom")
+                                              resolved-cmd
+                                              working-dir)
+           (let [result (commands/spawn-process
+                         resolved-cmd working-dir cmd-session-id
+                         (fn [{:keys [stream text]}]
+                           (send-to-client-fn!
+                            {:type :command-output
+                             :command-session-id cmd-session-id
+                             :stream stream
+                             :text text}))
+                         (fn [{:keys [exit-code duration-ms]}]
+                           (cmd-history/complete-session! cmd-session-id exit-code duration-ms)
+                           (send-to-client-fn!
+                            {:type :command-complete
+                             :command-session-id cmd-session-id
+                             :exit-code exit-code
+                             :duration-ms duration-ms})))]
+             (when (:success result)
+               (send-to-client-fn!
+                {:type :command-started
+                 :command-session-id cmd-session-id
+                 :command-id (or command-id "custom")
+                 :shell-command resolved-cmd}))
+             (pr-str {:status (if (:success result) "started" "error")
+                      :command-session-id cmd-session-id
+                      :shell-command resolved-cmd})))))))
+
+  (supervisor/register-tool-handler!
+   "compact_session"
+   (fn [input]
+     (let [session-id (:session-id input)]
+       (if-not session-id
+         (pr-str {:status "error" :message "session_id required"})
+         (if-not (repl/acquire-session-lock! session-id)
+           (pr-str {:status "locked" :message "Session is currently locked"})
+           (try
+             (let [result (claude/compact-session session-id)]
+               (if (:success result)
+                 (pr-str {:status "compacted" :session-id session-id})
+                 (pr-str {:status "error" :message (:error result)})))
+             (finally
+               (repl/release-session-lock! session-id))))))))
+
+  (supervisor/register-tool-handler!
+   "run_recipe"
+   (fn [input]
+     (let [recipe-id (keyword (:recipe-id input))
+           session-id (:session-id input)]
+       (if-not recipe-id
+         (pr-str {:status "error" :message "recipe_id required"})
+         (pr-str {:status "error"
+                  :message "run_recipe via supervisor not yet implemented"
+                  :recipe-id recipe-id
+                  :session-id session-id})))))
+
+  (log/info "Supervisor tool handlers registered"))
+
 (defn -main
   "Start the WebSocket server"
   [& args]
@@ -2040,6 +2232,9 @@
       (reset! api-key key)
       (log/info "API key loaded successfully")
       (println "✓ API key ready. Run 'make show-key' to display."))
+
+    ;; Register supervisor tool handlers
+    (register-supervisor-tool-handlers!)
 
     ;; Initialize replication system
     (log/info "Initializing session replication system")

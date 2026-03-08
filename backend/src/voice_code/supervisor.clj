@@ -167,10 +167,10 @@ Key behaviors:
 ;; ---------------------------------------------------------------------------
 
 (defonce supervisor-state
-  (atom {:conversation nil       ;; {:system-prompt, :model, :tools, :messages}
-         :pending-actions {}     ;; callback-id → {:registered-at Instant}
-         :pending-events []      ;; Worker completion events for next supervisor turn
-         :client-channel nil}))  ;; WebSocket channel to iOS client
+  (atom {:conversation nil ;; {:system-prompt, :model, :tools, :messages}
+         :pending-actions {} ;; callback-id → {:registered-at Instant}
+         :pending-events [] ;; Worker completion events for next supervisor turn
+         :client-channel nil})) ;; WebSocket channel to iOS client
 
 ;; ---------------------------------------------------------------------------
 ;; Tool dispatch
@@ -513,18 +513,28 @@ Key behaviors:
             ;; No more tool calls — turn is complete
             conv
 
-            ;; Execute tools and continue loop
-            (let [tool-results (mapv (fn [{:keys [id name input]}]
-                                      {:type "tool_result"
-                                       :tool_use_id id
-                                       :content (try
-                                                  (execute-tool name input send-to-client!)
-                                                  (catch Exception e
-                                                    (log/error e "Tool execution failed"
-                                                               {:tool name :input input})
-                                                    (pr-str {:status "error"
-                                                             :message (ex-message e)})))})
-                                    tool-uses)
+            ;; Execute tools: render_ui sequentially (avoid canvas flicker),
+            ;; all others in parallel via pmap
+            (let [{render-uis true others false}
+                  (group-by #(= "render_ui" (:name %)) tool-uses)
+
+                  execute-one (fn [{:keys [id name input]}]
+                                {:type "tool_result"
+                                 :tool_use_id id
+                                 :content (try
+                                            (execute-tool name input send-to-client!)
+                                            (catch Exception e
+                                              (log/error e "Tool execution failed"
+                                                         {:tool name :input input})
+                                              (pr-str {:status "error"
+                                                       :message (ex-message e)})))})
+
+                  ;; Execute non-render_ui tools in parallel
+                  parallel-results (vec (pmap execute-one others))
+                  ;; Execute render_ui tools sequentially
+                  sequential-results (mapv execute-one render-uis)
+
+                  tool-results (into parallel-results sequential-results)
                   conv (update conv :messages conj {:role "user" :content tool-results})]
               (recur conv (inc iteration)))))))))
 
