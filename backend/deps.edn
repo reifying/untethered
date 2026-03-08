@@ -15,6 +15,7 @@
         ;; QR code generation
         com.google.zxing/core {:mvn/version "3.5.3"}
         com.google.zxing/javase {:mvn/version "3.5.3"}}
+        ;; Note: Anthropic API uses java.net.http.HttpClient directly (Java 11+)
 
  :aliases {;; nREPL for clojure-mcp integration
            :nrepl {:extra-paths ["test"]
