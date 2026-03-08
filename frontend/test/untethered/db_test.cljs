@@ -28,6 +28,12 @@
     (is (set? (:locked-sessions db/default-db)))
     (is (empty? (:locked-sessions db/default-db))))
 
+  (testing "supervisor starts not thinking"
+    (is (false? (get-in db/default-db [:supervisor :thinking?]))))
+
+  (testing "canvas starts with empty components"
+    (is (= [] (get-in db/default-db [:canvas :components]))))
+
   (testing "settings have sensible defaults"
     (let [settings (:settings db/default-db)]
       (is (= "localhost" (:server-url settings)))

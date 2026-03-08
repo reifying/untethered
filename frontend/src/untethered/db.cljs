@@ -49,6 +49,12 @@
    ;; Tracks pending delta sync requests
    :pending-delta-syncs #{}
 
+   ;; Supervisor agent state
+   :supervisor {:thinking? false}
+
+   ;; Canvas components rendered by the supervisor
+   :canvas {:components []}
+
    ;; Command execution state
    :commands {:available {}
               :running {}

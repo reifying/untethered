@@ -62,6 +62,15 @@
     (rf/dispatch-sync [:settings/update :server-url "192.168.1.100"])
     (is (= "192.168.1.100" (get-in @rf-db/app-db [:settings :server-url])))))
 
+(deftest tts-events
+  (testing "tts/speak updates voice-speaking? for non-streaming"
+    (rf/dispatch-sync [:tts/speak {:text "Hello" :priority "notification"}])
+    (is (true? (get-in @rf-db/app-db [:ui :voice-speaking?]))))
+
+  (testing "tts/finished clears voice-speaking?"
+    (rf/dispatch-sync [:tts/finished])
+    (is (false? (get-in @rf-db/app-db [:ui :voice-speaking?])))))
+
 (deftest ui-events
   (testing "ui/set-draft sets draft text"
     (rf/dispatch-sync [:ui/set-draft "s1" "Hello world"])

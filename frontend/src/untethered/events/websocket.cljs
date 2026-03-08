@@ -98,6 +98,21 @@
        "session_locked"
        {:db (update db :locked-sessions conj (:session-id msg))}
 
+       "canvas_update"
+       {:db (assoc-in db [:canvas :components] (or (:components msg) []))}
+
+       "tts_speak"
+       (let [effects {:dispatch [:tts/speak {:text (:text msg)
+                                             :priority (:priority msg)
+                                             :streaming (:streaming msg)}]}]
+         ;; Update voice speaking state for non-streaming messages
+         (if (:streaming msg)
+           effects
+           (assoc effects :db (assoc-in db [:ui :voice-speaking?] true))))
+
+       "supervisor_thinking"
+       {:db (assoc-in db [:supervisor :thinking?] (boolean (:active msg)))}
+
        ;; Default: log unknown message types
        (do
          (log/warn "[WS] Unknown message type:" msg-type)
@@ -125,3 +140,20 @@
                 :text text
                 :session-id session-id
                 :working-directory working-directory}})))
+
+;; ============================================================================
+;; Supervisor Interaction
+;; ============================================================================
+
+(rf/reg-event-fx
+ :supervisor/send-message
+ (fn [_ [_ text]]
+   {:ws/send {:type "supervisor_message"
+              :text text}}))
+
+(rf/reg-event-fx
+ :supervisor/canvas-action
+ (fn [_ [_ {:keys [callback-id action]}]]
+   {:ws/send {:type "canvas_action"
+              :callback-id callback-id
+              :action action}}))

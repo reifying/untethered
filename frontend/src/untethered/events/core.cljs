@@ -81,6 +81,23 @@
    (assoc-in db [:settings key] value)))
 
 ;; ============================================================================
+;; TTS (Text-to-Speech)
+;; ============================================================================
+
+(rf/reg-event-fx
+ :tts/speak
+ (fn [{:keys [db]} [_ {:keys [text priority streaming]}]]
+   ;; Placeholder: TTS playback will be implemented in un-ibl (voice I/O task).
+   ;; For now, just log and update speaking state.
+   {:db (cond-> db
+          (not streaming) (assoc-in [:ui :voice-speaking?] true))}))
+
+(rf/reg-event-db
+ :tts/finished
+ (fn [db _]
+   (assoc-in db [:ui :voice-speaking?] false)))
+
+;; ============================================================================
 ;; UI State
 ;; ============================================================================
 

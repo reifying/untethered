@@ -54,6 +54,24 @@
   (testing "auth/has-api-key? returns false initially"
     (is (false? @(rf/subscribe [:auth/has-api-key?])))))
 
+(deftest supervisor-subs
+  (testing "supervisor/thinking? returns false initially"
+    (is (false? @(rf/subscribe [:supervisor/thinking?]))))
+
+  (testing "supervisor/thinking? reflects state change"
+    (swap! rf-db/app-db assoc-in [:supervisor :thinking?] true)
+    (is (true? @(rf/subscribe [:supervisor/thinking?])))))
+
+(deftest canvas-subs
+  (testing "canvas/components returns empty vector initially"
+    (is (= [] @(rf/subscribe [:canvas/components]))))
+
+  (testing "canvas/components reflects state change"
+    (swap! rf-db/app-db assoc-in [:canvas :components]
+           [{:type "text_block" :props {:text "Hello"}}])
+    (is (= [{:type "text_block" :props {:text "Hello"}}]
+           @(rf/subscribe [:canvas/components])))))
+
 (deftest ui-subs
   (testing "ui/loading? returns false initially"
     (is (false? @(rf/subscribe [:ui/loading?]))))
