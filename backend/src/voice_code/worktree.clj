@@ -5,6 +5,15 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
 
+(defn expand-tilde
+  "Expand ~ to user home directory in path.
+  Java doesn't expand tildes, so we must do it manually."
+  [path]
+  (when path
+    (if (str/starts-with? path "~")
+      (str/replace-first path "~" (System/getProperty "user.home"))
+      path)))
+
 (defn sanitize-name
   "Convert session name to valid branch/directory name.
   Lowercase, spaces→hyphens, strip special chars."
@@ -108,6 +117,7 @@
 
 (defn validate-worktree-creation
   "Validate inputs for worktree creation.
+  Expands ~ in parent-directory before validation.
 
   Parameters:
   - session-name: Name of the session
@@ -115,39 +125,43 @@
 
   Returns:
   {:valid true/false
+   :expanded-directory \"expanded path\" (if valid)
    :error \"error message\" (if invalid)
    :error-type :validation-failed}"
   [session-name parent-directory]
-  (cond
-    (str/blank? session-name)
-    {:valid false
-     :error "session_name required"
-     :error-type :validation-failed}
+  (let [expanded-dir (expand-tilde parent-directory)]
+    (cond
+      (str/blank? session-name)
+      {:valid false
+       :error "session_name required"
+       :error-type :validation-failed}
 
-    (str/blank? parent-directory)
-    {:valid false
-     :error "parent_directory required"
-     :error-type :validation-failed}
+      (str/blank? parent-directory)
+      {:valid false
+       :error "parent_directory required"
+       :error-type :validation-failed}
 
-    (not (.exists (io/file parent-directory)))
-    {:valid false
-     :error (format "Directory does not exist: %s" parent-directory)
-     :error-type :validation-failed}
+      (not (.exists (io/file expanded-dir)))
+      {:valid false
+       :error (format "Directory does not exist: %s" expanded-dir)
+       :error-type :validation-failed}
 
-    (not (is-git-repo? parent-directory))
-    {:valid false
-     :error (format "Not a git repository: %s" parent-directory)
-     :error-type :validation-failed}
+      (not (is-git-repo? expanded-dir))
+      {:valid false
+       :error (format "Not a git repository: %s" expanded-dir)
+       :error-type :validation-failed}
 
-    :else
-    {:valid true}))
+      :else
+      {:valid true
+       :expanded-directory expanded-dir})))
 
 (defn compute-worktree-paths
   "Compute paths and names for worktree creation.
+  Uses expanded (absolute) parent-directory path.
 
   Parameters:
   - session-name: User-provided session name
-  - parent-directory: Path to parent git repository
+  - parent-directory: Expanded absolute path to parent git repository
 
   Returns:
   {:sanitized-name \"fix-auth-bug\"
@@ -156,11 +170,12 @@
    :worktree-dir-name \"voice-code-fix-auth-bug\"
    :worktree-path \"/Users/.../code/voice-code-fix-auth-bug\"}"
   [session-name parent-directory]
-  (let [sanitized-name (sanitize-name session-name)
-        project-name (get-project-name parent-directory)
+  (let [expanded-dir (expand-tilde parent-directory)
+        sanitized-name (sanitize-name session-name)
+        project-name (get-project-name expanded-dir)
         branch-name sanitized-name
         worktree-dir-name (str project-name "-" sanitized-name)
-        worktree-path (str (parent-path parent-directory) "/" worktree-dir-name)]
+        worktree-path (str (parent-path expanded-dir) "/" worktree-dir-name)]
     {:sanitized-name sanitized-name
      :project-name project-name
      :branch-name branch-name

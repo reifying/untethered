@@ -23,6 +23,9 @@ if lsof -i :$PORT -sTCP:LISTEN >/dev/null 2>&1; then
     exit 1
 fi
 
+# Raise file descriptor limit (Claude CLI requires high limit)
+ulimit -n 2147483646
+
 # Start the server in background
 nohup clojure -M -m voice-code.server > server.out 2>&1 &
 SERVER_PID=$!
