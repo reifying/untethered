@@ -19,6 +19,56 @@
    {}))
 
 ;; ============================================================================
+;; Screen Navigation
+;; ============================================================================
+
+(rf/reg-event-db
+ :screen/navigate
+ (fn [db [_ screen]]
+   (assoc db :screen screen)))
+
+(rf/reg-event-db
+ :screen/navigate-to-auth
+ (fn [db _]
+   (assoc db :screen :auth)))
+
+(rf/reg-event-db
+ :screen/navigate-to-settings
+ (fn [db _]
+   (assoc db :screen :settings)))
+
+(rf/reg-event-db
+ :screen/navigate-to-main
+ (fn [db _]
+   (assoc db :screen :main)))
+
+;; ============================================================================
+;; Authentication
+;; ============================================================================
+
+(rf/reg-event-db
+ :auth/set-api-key
+ (fn [db [_ api-key]]
+   (-> db
+       (assoc :api-key api-key)
+       (assoc-in [:connection :requires-reauthentication?] false))))
+
+(rf/reg-event-db
+ :auth/clear-api-key
+ (fn [db _]
+   (-> db
+       (assoc :api-key nil)
+       (assoc-in [:connection :authenticated?] false))))
+
+(rf/reg-event-fx
+ :auth/authenticate
+ (fn [{:keys [db]} [_ api-key]]
+   {:db (-> db
+            (assoc :api-key api-key)
+            (assoc :screen :main)
+            (assoc-in [:connection :requires-reauthentication?] false))}))
+
+;; ============================================================================
 ;; Session Management
 ;; ============================================================================
 

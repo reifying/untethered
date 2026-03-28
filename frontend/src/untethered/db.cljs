@@ -84,6 +84,12 @@
               :priority-queue-enabled false
               :resource-storage-location "~/Downloads"}
 
+   ;; Current screen: :main | :auth | :settings
+   :screen :main
+
+   ;; API key for backend authentication
+   :api-key nil
+
    ;; UI state
    :ui {:loading? false
         :current-error nil

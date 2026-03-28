@@ -220,6 +220,25 @@
    (some? (:api-key db))))
 
 ;; ============================================================================
+;; Screen Navigation
+;; ============================================================================
+
+(rf/reg-sub
+ :screen/current
+ (fn [db _]
+   (:screen db)))
+
+(rf/reg-sub
+ :screen/auth?
+ (fn [db _]
+   (= :auth (:screen db))))
+
+(rf/reg-sub
+ :screen/settings?
+ (fn [db _]
+   (= :settings (:screen db))))
+
+;; ============================================================================
 ;; UI State
 ;; ============================================================================
 
@@ -252,3 +271,13 @@
  :ui/voice-mode?
  (fn [db _]
    (= :voice (get-in db [:ui :input-mode] :voice))))
+
+(rf/reg-sub
+ :ui/testing-connection?
+ (fn [db _]
+   (get-in db [:ui :testing-connection?] false)))
+
+(rf/reg-sub
+ :ui/connection-test-result
+ (fn [db _]
+   (get-in db [:ui :connection-test-result])))
