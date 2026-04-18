@@ -14,8 +14,22 @@ struct CDSessionRowContent: View {
         let _ = RenderTracker.count(Self.self)
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.displayName(context: viewContext))
-                    .font(.headline)
+                HStack(spacing: 6) {
+                    Text(session.displayName(context: viewContext))
+                        .font(.headline)
+
+                    // Show provider badge for non-Claude sessions
+                    if session.provider != "claude" {
+                        Text(session.provider.uppercased())
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.15))
+                            .cornerRadius(4)
+                    }
+                }
 
                 HStack(spacing: 8) {
                     Text(URL(fileURLWithPath: session.workingDirectory).lastPathComponent)

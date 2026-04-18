@@ -35,7 +35,14 @@ public class CDMessage: NSManagedObject {
     // MARK: - Display Properties
 
     /// Truncation length for visual display (first N + last N chars)
-    private static let truncationHalfLength = 250
+    /// macOS uses higher threshold (1000) for denser information display
+    private static let truncationHalfLength: Int = {
+        #if os(macOS)
+        return 1000  // 2000 total chars on macOS
+        #else
+        return 250   // 500 total chars on iOS
+        #endif
+    }()
 
     /// Cached display text with truncation applied
     /// Computed once and cached to avoid recalculation on every layout pass
@@ -43,7 +50,7 @@ public class CDMessage: NSManagedObject {
     private var _displayTextCacheKey: Int?
 
     /// Display text with truncation for UI rendering
-    /// Returns first 250 + last 250 chars if text exceeds 500 chars
+    /// Truncates at platform-specific threshold (macOS: 2000 chars, iOS: 500 chars)
     /// Cached based on text.count to avoid recomputation during layout
     var displayText: String {
         // Check cache validity (keyed by text length)

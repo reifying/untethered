@@ -79,6 +79,45 @@ class AppSettings: ObservableObject {
         }
     }
 
+    /// Default AI provider for new sessions. Values: "claude", "copilot", "cursor", "opencode"
+    @Published var defaultProvider: String {
+        didSet {
+            UserDefaults.standard.set(defaultProvider, forKey: "defaultProvider")
+        }
+    }
+
+    #if os(macOS)
+    /// Last used working directory for menu bar quick prompt
+    @Published var lastUsedDirectory: String? {
+        didSet {
+            if let dir = lastUsedDirectory {
+                UserDefaults.standard.set(dir, forKey: "lastUsedDirectory")
+                addToRecentDirectories(dir)
+            } else {
+                UserDefaults.standard.removeObject(forKey: "lastUsedDirectory")
+            }
+        }
+    }
+
+    /// Recent working directories for menu bar directory picker
+    @Published var recentDirectories: [String] {
+        didSet {
+            UserDefaults.standard.set(recentDirectories, forKey: "recentDirectories")
+        }
+    }
+
+    /// Add a directory to the recent list (max 10, most recent first)
+    func addToRecentDirectories(_ directory: String) {
+        var dirs = recentDirectories
+        dirs.removeAll { $0 == directory }
+        dirs.insert(directory, at: 0)
+        if dirs.count > 10 {
+            dirs = Array(dirs.prefix(10))
+        }
+        recentDirectories = dirs
+    }
+    #endif
+
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
         let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
@@ -262,6 +301,12 @@ class AppSettings: ObservableObject {
         self.respectSilentMode = UserDefaults.standard.object(forKey: "respectSilentMode") as? Bool ?? true
         self.systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? ""
         self.maxMessageSizeKB = UserDefaults.standard.object(forKey: "maxMessageSizeKB") as? Int ?? 200
+        self.defaultProvider = UserDefaults.standard.string(forKey: "defaultProvider") ?? "claude"
+
+        #if os(macOS)
+        self.lastUsedDirectory = UserDefaults.standard.string(forKey: "lastUsedDirectory")
+        self.recentDirectories = UserDefaults.standard.stringArray(forKey: "recentDirectories") ?? []
+        #endif
 
         // Set up debounced publishers for text fields (serverURL and serverPort)
         // dropFirst() skips the initial value to avoid writing on init

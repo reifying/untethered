@@ -61,7 +61,9 @@ Report any issues found. Do not make changes yet."
 
 After fixing:
 - Run tests to ensure they still pass
-- Verify the fix doesn't introduce new issues"
+- Verify the fix doesn't introduce new issues
+             
+**Do not commit yet.**"
     :outcomes #{:complete :other}
     :on-outcome
     {:complete {:next-step :code-review}
@@ -79,7 +81,6 @@ If working on a beads task, update its status first:
 - Write a clear commit message describing what was implemented
 - If working on a beads task, include the task ID in the commit message
 - Push to the remote repository after committing"
-    :model "haiku"
     :outcomes #{:committed :nothing-to-commit :other}
     :on-outcome
     {:committed {:action :exit :reason "changes-committed"}
@@ -230,7 +231,6 @@ Report any gaps or issues found. Do not make changes yet."
 
     :commit
     {:prompt "Commit and push the design document. Use a descriptive commit message that summarizes what is being designed."
-     :model "haiku"
      :outcomes #{:committed :nothing-to-commit :other}
      :on-outcome
      {:committed {:action :exit :reason "design-committed"}
@@ -281,7 +281,7 @@ Report your analysis including:
     {:prompt "Create the parent epic for this implementation work.
 
 ## Epic Creation
-Run `bd add` to create an epic with:
+Run `bd create` to create an epic with:
 - **Title**: Clear, concise name for the feature/change
 - **Description**: Reference the design document using @path/to/design.md
 - **Type**: epic
@@ -307,7 +307,7 @@ The epic description should include:
 
 ## Task Creation Guidelines
 
-For each task, run `bd add` with:
+For each task, run `bd create` with:
 - **Parent**: The epic you just created
 - **Title**: Action-oriented (e.g., 'Add validation to user input handler')
 - **Type**: task
@@ -448,7 +448,7 @@ Report any issues found."
     {:prompt "Address the issues found in the task review.
 
 Use `bd edit <task-id>` to update task descriptions.
-Use `bd add` to create missing tasks.
+Use `bd create` to create missing tasks.
 Use `bd delete <task-id>` to remove duplicate or unnecessary tasks.
 Use `bd dep add <blocked> <blocking>` to add missing dependency links.
 Use `bd dep rm <blocked> <blocking>` to remove incorrect dependencies."
@@ -466,7 +466,6 @@ Use `bd dep rm <blocked> <blocking>` to remove incorrect dependencies."
 - Write a clear commit message
 
 Example: 'Add implementation tasks for user authentication (epic-abc123)'"
-     :model "haiku"
      :outcomes #{:committed :nothing-to-commit :other}
      :on-outcome
      {:committed {:action :exit :reason "tasks-committed"}
@@ -483,7 +482,7 @@ Example: 'Add implementation tasks for user authentication (epic-abc123)'"
   {:prompt "Implement the current task from beads.
 
 ## Prerequisites
-1. Run `bd ready --limit 1` to see the task details
+1. Run `bd ready --limit 1` and `bd show <task-id>` to see the task details
 2. Read the design document referenced in the task
 3. Review relevant code standards (@STANDARDS.md, @CLAUDE.md)
 4. Familiarize yourself with the codebase context
@@ -505,6 +504,7 @@ Before marking complete:
 - [ ] Code follows project conventions
 - [ ] No unrelated changes included
 
+**Only one task.** Only implement the one task. Do not start on a second beads task.
 **Do not commit yet.** Code review happens next."
    :outcomes #{:complete :no-tasks :blocked :other}
    :on-outcome
@@ -526,7 +526,6 @@ If working on a beads task, update its status first:
 - Write a clear commit message describing what was implemented
 - If working on a beads task, include the task ID in the commit message
 - Push to the remote repository after committing"
-   :model "haiku"
    :outcomes #{:committed :nothing-to-commit :other}
    :on-outcome
    {:committed {:action :restart-new-session :recipe-id :implement-and-review-all}
@@ -650,7 +649,6 @@ Provide a brief summary of:
 - Key changes from main that were incorporated
 
 The branch is now rebased on main and ready for further work or pushing."
-     :model "haiku"
      :outcomes #{:done :other}
      :on-outcome
      {:done {:action :exit :reason "rebase-complete"}
@@ -727,7 +725,6 @@ The branch is now rebased on main and ready for further work or pushing."
 3. Note the current structure and content
 
 Report what you found and confirm you're ready to begin the refinement process."
-     :model "haiku"
      :outcomes #{:found :not-found :other}
      :on-outcome
      {:found {:next-step :review-completeness}
@@ -1060,7 +1057,6 @@ Fix the remaining issues, then the design will have one more final review."
 
 Use a commit message that summarizes the refinements made.
 Example: 'Refine user authentication design: add error handling, simplify token flow'"
-     :model "haiku"
      :outcomes #{:committed :nothing-to-commit :other}
      :on-outcome
      {:committed {:action :exit :reason "design-refined-and-committed"}

@@ -16,6 +16,10 @@ public class CDBackendSession: NSManagedObject {
     @NSManaged public var isLocallyCreated: Bool
     @NSManaged public var messages: NSSet?
 
+    /// Provider identifier (e.g., "claude", "copilot")
+    /// Defaults to "claude" for backward compatibility
+    @NSManaged public var provider: String
+
     // Queue management properties
     @NSManaged public var isInQueue: Bool
     @NSManaged public var queuePosition: Int32
@@ -87,6 +91,14 @@ extension CDBackendSession {
     static func fetchBackendSession(id: UUID) -> NSFetchRequest<CDBackendSession> {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "id == %@", id as CVarArg)
+        request.fetchLimit = 1
+        return request
+    }
+
+    /// Fetch a specific session by backend name (Claude session ID)
+    static func fetchBackendSession(backendName: String) -> NSFetchRequest<CDBackendSession> {
+        let request = fetchRequest()
+        request.predicate = NSPredicate(format: "backendName == %@", backendName)
         request.fetchLimit = 1
         return request
     }

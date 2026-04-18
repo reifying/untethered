@@ -70,7 +70,10 @@ struct ConversationView: View {
     // Compaction feedback state
     @State private var wasRecentlyCompacted: Bool = false
     @State private var compactionTimestamps: [UUID: Date] = [:]
-    
+
+    // Provider selection for new sessions
+    @State private var selectedProvider: String = "claude"
+
     // Auto-scroll state
     @State private var hasPerformedInitialScroll = false
     @State private var autoScrollEnabled = true  // Auto-scroll on by default
@@ -220,6 +223,19 @@ struct ConversationView: View {
             
             // Input area
             VStack(spacing: 12) {
+                // Provider picker for new sessions (shown only before first prompt)
+                // Use messageCount == 0 to detect new sessions (backendName is always set on creation)
+                if session.messageCount == 0 {
+                    Picker("Provider", selection: $selectedProvider) {
+                        Text("Claude").tag("claude")
+                        Text("Copilot").tag("copilot")
+                        Text("Cursor").tag("cursor")
+                        Text("OpenCode").tag("opencode")
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+                }
+
                 // Mode toggle and connection status
                 HStack {
                     Button(action: { isVoiceMode.toggle() }) {
@@ -580,7 +596,7 @@ struct ConversationView: View {
                 .environment(\.managedObjectContext, viewContext)
         }
         .sheet(isPresented: $showingRecipeMenu) {
-            RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased(), workingDirectory: session.workingDirectory)
+            RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased(), workingDirectory: session.workingDirectory, settings: settings)
         }
         .onAppear {
             // Reset scroll flags when view appears (handles navigation back to session)
@@ -607,6 +623,9 @@ struct ConversationView: View {
             } else {
                 wasRecentlyCompacted = false
             }
+
+            // Initialize provider selection from settings default
+            selectedProvider = settings.defaultProvider
         }
         .onChange(of: promptText) { oldValue, newValue in
             // Only save draft if value actually changed (prevents duplicate saves on restoration)
@@ -627,7 +646,19 @@ struct ConversationView: View {
             // This ensures messages are refreshed when navigating back to session
             hasSubscribedThisAppear = false
         }
+        .onReceive(NotificationCenter.default.publisher(for: .sessionHistoryDidUpdate)) { notification in
+            // Refresh view when session_history adds new messages (e.g., after backend reconnection)
+            // This ensures UI updates even when @FetchRequest doesn't auto-refresh
+            if let notificationSessionId = notification.userInfo?["sessionId"] as? String,
+               notificationSessionId == session.id.uuidString.lowercased() {
+                logger.info("📚 [ConversationView] Received sessionHistoryDidUpdate for current session, refreshing context")
+                viewContext.refresh(session, mergeChanges: true)
+            }
+        }
         .swipeToBack()
+        #if os(macOS)
+        .pushToTalk(voiceInput: voiceInput)
+        #endif
     }
     
     private func setupVoiceInput() {
@@ -787,7 +818,8 @@ struct ConversationView: View {
 
         if isNewSession {
             message["new_session_id"] = sessionId
-            print("📤 [ConversationView] Sending prompt with new_session_id: \(sessionId)")
+            message["provider"] = selectedProvider
+            print("📤 [ConversationView] Sending prompt with new_session_id: \(sessionId), provider: \(selectedProvider)")
             // Note: Subscribe will happen when we receive turn_complete (after backend creates session)
         } else {
             message["resume_session_id"] = sessionId
@@ -1181,9 +1213,7 @@ struct MessageDetailView: View {
     private var messageDetailContent: some View {
         VStack(spacing: 0) {
             ScrollView {
-                Text(message.text)
-                    .font(.body)
-                    .textSelection(.enabled)
+                SelectableText(text: message.text)
                     .padding()
             }
 

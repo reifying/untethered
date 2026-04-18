@@ -17,7 +17,8 @@
             [voice-code.recipes :as recipes]
             [voice-code.orchestration :as orch]
             [voice-code.supervisor :as supervisor]
-            [voice-code.env :as env])
+            [voice-code.env :as env]
+            [voice-code.providers :as providers])
   (:gen-class))
 
 ;; JSON key conversion utilities
@@ -95,7 +96,11 @@
 ;; Persistent session data comes from the replication system (filesystem-based)
 
 (defonce connected-clients
-  ;; Track all connected WebSocket clients: channel -> {:deleted-sessions #{} :recent-sessions-limit 5 :max-message-size-kb 200}
+  ;; Track all connected WebSocket clients: 
+  ;; channel -> {:deleted-sessions #{} 
+  ;;             :subscribed-sessions #{}  ; Sessions this client is subscribed to
+  ;;             :recent-sessions-limit 5 
+  ;;             :max-message-size-kb 200}
   (atom {}))
 
 ;; Default max message size in KB (conservative default well below iOS 256KB limit)
@@ -434,9 +439,30 @@
       (subs auth-header 7))))
 
 (defn unregister-channel!
-  "Remove WebSocket channel from connected clients"
+  "Remove WebSocket channel from connected clients and clean up subscriptions.
+   Any sessions that are no longer subscribed by any client are unsubscribed globally."
   [channel]
-  (swap! connected-clients dissoc channel))
+  (let [client-info (get @connected-clients channel)
+        client-subscriptions (or (:subscribed-sessions client-info) #{})]
+    ;; Remove the channel first
+    (swap! connected-clients dissoc channel)
+    ;; For each session this client was subscribed to, check if any other client still needs it
+    (when (seq client-subscriptions)
+      (let [remaining-clients @connected-clients
+            ;; Compute all sessions still needed by remaining clients
+            all-remaining-subscriptions (reduce
+                                         (fn [acc [_ info]]
+                                           (into acc (or (:subscribed-sessions info) #{})))
+                                         #{}
+                                         remaining-clients)
+            ;; Sessions to unsubscribe globally
+            orphaned-sessions (clojure.set/difference client-subscriptions all-remaining-subscriptions)]
+        (when (seq orphaned-sessions)
+          (log/info "Cleaning up orphaned subscriptions on disconnect"
+                    {:orphaned-count (count orphaned-sessions)
+                     :session-ids orphaned-sessions})
+          (doseq [session-id orphaned-sessions]
+            (repl/unsubscribe-from-session! session-id)))))))
 
 (defn generate-message-id
   "Generate a UUID v4 for message tracking"
@@ -475,18 +501,20 @@
   "Send the recent sessions list to a connected client.
   Uses the new recent_sessions message type (distinct from session-list).
   Converts :last-modified from milliseconds to ISO-8601 string for JSON.
-  Sends session-id, name, working-directory, last-modified."
+  Sends session-id, name, working-directory, last-modified, provider."
   [channel limit]
   (let [sessions (repl/get-recent-sessions limit)
         ;; Convert to format with ISO-8601 timestamp
         ;; Include name field (generated from Claude summary or fallback to dir-timestamp)
+        ;; Include provider field for multi-provider support
         sessions-minimal (mapv
                           (fn [session]
                             {:session-id (:session-id session)
                              :name (:name session)
                              :working-directory (:working-directory session)
                              :last-modified (.format (java.time.format.DateTimeFormatter/ISO_INSTANT)
-                                                     (java.time.Instant/ofEpochMilli (:last-modified session)))})
+                                                     (java.time.Instant/ofEpochMilli (:last-modified session)))
+                             :provider (or (:provider session) :claude)})
                           sessions)]
     (log/info "Sending recent sessions" {:count (count sessions-minimal) :limit limit})
     (send-to-client! channel
@@ -530,14 +558,17 @@
 
 (defn start-recipe-for-session
   "Initialize orchestration state for a session.
-   is-new-session? indicates whether this is a brand new session with no Claude history."
-  [session-id recipe-id is-new-session?]
+   is-new-session? indicates whether this is a brand new session with no Claude history.
+   Provider defaults to :claude for backward compatibility."
+  [session-id recipe-id is-new-session? & {:keys [provider]}]
   (if-let [state (orch/create-orchestration-state recipe-id)]
-    (let [state-with-session-flag (assoc state :session-created? (not is-new-session?))]
+    (let [state-with-session-flag (assoc state
+                                         :session-created? (not is-new-session?)
+                                         :provider (or provider :claude))]
       (swap! session-orchestration-state assoc session-id state-with-session-flag)
       (orch/log-orchestration-event "recipe-started" session-id recipe-id
                                     (:current-step state)
-                                    {:is-new-session is-new-session?})
+                                    {:is-new-session is-new-session? :provider (or provider :claude)})
       state-with-session-flag)
     (do
       (log/error "Recipe not found" {:recipe-id recipe-id :session-id session-id})
@@ -679,7 +710,7 @@
 (defn execute-recipe-step
   "Execute a single step of a recipe and handle the response.
    This function handles the full orchestration loop:
-   1. Send the step prompt to Claude
+   1. Send the step prompt to the provider (Claude, Copilot, etc.)
    2. Parse the outcome from the response
    3. If next step: update state and recursively continue
    4. If retry: send reminder prompt and try again (once per step)
@@ -689,11 +720,13 @@
    The lock is only released when the recipe exits (success, error, or guardrail).
    Recursive calls (:next-step, :retry) keep the lock held.
    
+   Provider is read from orchestration state (:provider field), enabling multi-provider support.
+   
    Parameters:
    - channel: WebSocket channel to send messages to
    - session-id: Claude session ID
-   - working-dir: Working directory for Claude
-   - orch-state: Current orchestration state
+   - working-dir: Working directory for the provider
+   - orch-state: Current orchestration state (includes :provider field)
    - recipe: Recipe definition
    - prompt-override: Optional prompt to use instead of step prompt (for retries)"
   ([channel session-id working-dir orch-state recipe]
@@ -708,6 +741,7 @@
                    {:session-id session-id
                     :recipe-id (:recipe-id orch-state)
                     :step current-step
+                    :provider (:provider orch-state)
                     :model (get-step-model recipe current-step)
                     :step-count (:step-count orch-state)
                     :session-created? session-created?
@@ -721,189 +755,215 @@
                              :step current-step
                              :step-count (:step-count orch-state)}))
 
-         (claude/invoke-claude-async
-          step-prompt
-          (fn [response]
-            (try
-              (if (:success response)
-                (let [response-text (:result response)
+         (apply providers/invoke-provider-async
+                (:provider orch-state)
+                step-prompt
+                (fn [response]
+                  (try
+                    (if (:success response)
+                      (let [response-text (:result response)
                       ;; Get fresh state in case retry count was updated or user exited
-                      current-orch-state (get-session-recipe-state session-id)]
-                  ;; Mark session as created after first successful invocation
-                  (when (and current-orch-state (not session-created?))
-                    (log/info "Marking session as created after first successful invocation"
-                              {:session-id session-id})
-                    (swap! session-orchestration-state
-                           update session-id
-                           assoc :session-created? true))
-                  ;; Check if recipe was exited by user while we were waiting for Claude
-                  (if (nil? current-orch-state)
-                    (do
-                      (log/info "Recipe was exited while waiting for Claude response"
-                                {:session-id session-id})
-                      ;; Recipe already exited, just release lock and send turn_complete
-                      (repl/release-session-lock! session-id)
-                      (send-to-client! channel
-                                       {:type :turn-complete
-                                        :session-id session-id}))
-                    ;; Process the orchestration response normally
-                    (let [result (process-orchestration-response
-                                  session-id current-orch-state recipe response-text channel)]
-                      (log/info "Recipe step response processed"
-                                {:session-id session-id
-                                 :step current-step
-                                 :action (:action result)
-                                 :next-step (:step-name result)
-                                 :reason (:reason result)})
+                            current-orch-state (get-session-recipe-state session-id)]
+                  ;; Capture Copilot session ID from first successful invocation
+                        (when (and current-orch-state
+                                   (= (:provider orch-state) :copilot)
+                                   (not (:copilot-session-id orch-state))
+                                   (:session-id response))
+                          (log/info "Captured Copilot session ID from first response"
+                                    {:copilot-session-id (:session-id response)
+                                     :orchestration-session-id session-id})
+                          (swap! session-orchestration-state
+                                 update session-id
+                                 assoc :copilot-session-id (:session-id response)))
 
-                      (case (:action result)
-                        :next-step
+                  ;; Mark session as created after first successful invocation
+                        (when (and current-orch-state (not session-created?))
+                          (log/info "Marking session as created after first successful invocation"
+                                    {:session-id session-id})
+                          (swap! session-orchestration-state
+                                 update session-id
+                                 assoc :session-created? true))
+                  ;; Check if recipe was exited by user while we were waiting for Claude
+                        (if (nil? current-orch-state)
+                          (do
+                            (log/info "Recipe was exited while waiting for Claude response"
+                                      {:session-id session-id})
+                      ;; Recipe already exited, just release lock and send turn_complete
+                            (repl/release-session-lock! session-id)
+                            (send-to-client! channel
+                                             {:type :turn-complete
+                                              :session-id session-id}))
+                    ;; Process the orchestration response normally
+                          (let [result (process-orchestration-response
+                                        session-id current-orch-state recipe response-text channel)]
+                            (log/info "Recipe step response processed"
+                                      {:session-id session-id
+                                       :step current-step
+                                       :action (:action result)
+                                       :next-step (:step-name result)
+                                       :reason (:reason result)})
+
+                            (case (:action result)
+                              :next-step
                         ;; Continue to next step - get updated state and continue loop
                         ;; Lock remains held for the recursive call
-                        (let [updated-orch-state (get-session-recipe-state session-id)
-                              updated-recipe (recipes/get-recipe (:recipe-id updated-orch-state))]
-                          (if updated-orch-state
+                              (let [updated-orch-state (get-session-recipe-state session-id)
+                                    updated-recipe (recipes/get-recipe (:recipe-id updated-orch-state))]
+                                (if updated-orch-state
                             ;; Recursively execute the next step (lock stays held)
-                            (execute-recipe-step channel session-id working-dir
-                                                 updated-orch-state updated-recipe)
+                                  (execute-recipe-step channel session-id working-dir
+                                                       updated-orch-state updated-recipe)
                             ;; State was cleared (user exited), release lock and exit
-                            (do
-                              (log/warn "Orchestration state missing after step transition"
-                                        {:session-id session-id})
-                              (repl/release-session-lock! session-id)
-                              (send-to-client! channel
-                                               {:type :turn-complete
-                                                :session-id session-id}))))
+                                  (do
+                                    (log/warn "Orchestration state missing after step transition"
+                                              {:session-id session-id})
+                                    (repl/release-session-lock! session-id)
+                                    (send-to-client! channel
+                                                     {:type :turn-complete
+                                                      :session-id session-id}))))
 
-                        :retry
+                              :retry
                         ;; Retry with reminder prompt - lock remains held for the recursive call
-                        (let [updated-orch-state (get-session-recipe-state session-id)]
-                          (if updated-orch-state
-                            (do
-                              (log/info "Retrying step with reminder prompt"
-                                        {:session-id session-id
-                                         :step current-step})
+                              (let [updated-orch-state (get-session-recipe-state session-id)]
+                                (if updated-orch-state
+                                  (do
+                                    (log/info "Retrying step with reminder prompt"
+                                              {:session-id session-id
+                                               :step current-step})
                               ;; Recursively call with the retry prompt (lock stays held)
-                              (execute-recipe-step channel session-id working-dir
-                                                   updated-orch-state recipe (:prompt result)))
+                                    (execute-recipe-step channel session-id working-dir
+                                                         updated-orch-state recipe (:prompt result)))
                             ;; State was cleared (user exited), release lock and exit
-                            (do
-                              (log/warn "Orchestration state missing before retry"
-                                        {:session-id session-id})
-                              (repl/release-session-lock! session-id)
-                              (send-to-client! channel
-                                               {:type :turn-complete
-                                                :session-id session-id}))))
+                                  (do
+                                    (log/warn "Orchestration state missing before retry"
+                                              {:session-id session-id})
+                                    (repl/release-session-lock! session-id)
+                                    (send-to-client! channel
+                                                     {:type :turn-complete
+                                                      :session-id session-id}))))
 
-                        :exit
+                              :exit
                         ;; Recipe finished - release lock and send turn_complete
-                        (do
-                          (log/info "Recipe exited"
-                                    {:session-id session-id
-                                     :reason (:reason result)})
-                          (repl/release-session-lock! session-id)
-                          (send-to-client! channel
-                                           {:type :turn-complete
-                                            :session-id session-id}))
+                              (do
+                                (log/info "Recipe exited"
+                                          {:session-id session-id
+                                           :reason (:reason result)})
+                                (repl/release-session-lock! session-id)
+                                (send-to-client! channel
+                                                 {:type :turn-complete
+                                                  :session-id session-id}))
 
-                        :restart-new-session
+                              :restart-new-session
                         ;; Recipe finished, start new recipe in fresh session
                         ;; Used by implement-and-review to loop after commit
-                        (let [new-session-id (str (java.util.UUID/randomUUID))
-                              new-recipe-id (:recipe-id result)]
-                          (log/info "Recipe restarting with new session"
-                                    {:old-session-id session-id
-                                     :new-session-id new-session-id
-                                     :recipe-id new-recipe-id
-                                     :working-directory working-dir})
+                              (let [new-session-id (str (java.util.UUID/randomUUID))
+                                    new-recipe-id (:recipe-id result)
+                                    old-provider (:provider orch-state)
+                                    old-copilot-session-id (:copilot-session-id orch-state)]
+                                (log/info "Recipe restarting with new session"
+                                          {:old-session-id session-id
+                                           :new-session-id new-session-id
+                                           :recipe-id new-recipe-id
+                                           :old-provider old-provider
+                                           :old-copilot-session-id old-copilot-session-id
+                                           :working-directory working-dir})
                           ;; Exit current recipe and release lock
-                          (exit-recipe-for-session session-id "restart-new-session")
-                          (repl/release-session-lock! session-id)
-                          (send-to-client! channel
-                                           {:type :recipe-exited
-                                            :session-id session-id
-                                            :reason "restart-new-session"})
-                          (send-to-client! channel
-                                           {:type :turn-complete
-                                            :session-id session-id})
+                                (exit-recipe-for-session session-id "restart-new-session")
+                                (repl/release-session-lock! session-id)
+                                (send-to-client! channel
+                                                 {:type :recipe-exited
+                                                  :session-id session-id
+                                                  :reason "restart-new-session"})
+                                (send-to-client! channel
+                                                 {:type :turn-complete
+                                                  :session-id session-id})
                           ;; Start new recipe with fresh session
-                          (if-let [new-orch-state (start-recipe-for-session new-session-id new-recipe-id true)]
-                            (let [new-recipe (recipes/get-recipe new-recipe-id)]
-                              (send-to-client! channel
-                                               {:type :recipe-started
-                                                :recipe-id new-recipe-id
-                                                :recipe-label (:label new-recipe)
-                                                :session-id new-session-id
-                                                :current-step (:current-step new-orch-state)
-                                                :step-count (:step-count new-orch-state)})
+                                (if-let [new-orch-state (start-recipe-for-session new-session-id new-recipe-id true :provider old-provider)]
+                                  (let [new-recipe (recipes/get-recipe new-recipe-id)]
+                                    (send-to-client! channel
+                                                     {:type :recipe-started
+                                                      :recipe-id new-recipe-id
+                                                      :recipe-label (:label new-recipe)
+                                                      :session-id new-session-id
+                                                      :current-step (:current-step new-orch-state)
+                                                      :step-count (:step-count new-orch-state)})
                               ;; Acquire lock and start new recipe
-                              (if (repl/acquire-session-lock! new-session-id)
-                                (do
-                                  (send-to-client! channel
-                                                   {:type :ack
-                                                    :message "Starting recipe in new session..."})
-                                  (execute-recipe-step channel new-session-id working-dir
-                                                       new-orch-state new-recipe))
-                                (do
-                                  (log/error "Failed to acquire lock for new session"
-                                             {:session-id new-session-id})
-                                  (exit-recipe-for-session new-session-id "lock-failed")
-                                  (send-to-client! channel
-                                                   {:type :error
-                                                    :message "Failed to start new session"}))))
-                            (do
-                              (log/error "Failed to create orchestration state for restart"
-                                         {:recipe-id new-recipe-id})
-                              (send-to-client! channel
-                                               {:type :error
-                                                :message (str "Recipe not found: " (name new-recipe-id))}))))
+                                    (if (repl/acquire-session-lock! new-session-id)
+                                      (do
+                                        (send-to-client! channel
+                                                         {:type :ack
+                                                          :message "Starting recipe in new session..."})
+                                        (execute-recipe-step channel new-session-id working-dir
+                                                             new-orch-state new-recipe))
+                                      (do
+                                        (log/error "Failed to acquire lock for new session"
+                                                   {:session-id new-session-id})
+                                        (exit-recipe-for-session new-session-id "lock-failed")
+                                        (send-to-client! channel
+                                                         {:type :error
+                                                          :message "Failed to start new session"}))))
+                                  (do
+                                    (log/error "Failed to create orchestration state for restart"
+                                               {:recipe-id new-recipe-id})
+                                    (send-to-client! channel
+                                                     {:type :error
+                                                      :message (str "Recipe not found: " (name new-recipe-id))}))))
 
                         ;; Default - unexpected action, release lock and exit
-                        (do
-                          (log/error "Unexpected orchestration action"
-                                     {:action (:action result)})
-                          (repl/release-session-lock! session-id)
-                          (send-to-client! channel
-                                           {:type :turn-complete
-                                            :session-id session-id}))))))
+                              (do
+                                (log/error "Unexpected orchestration action"
+                                           {:action (:action result)})
+                                (repl/release-session-lock! session-id)
+                                (send-to-client! channel
+                                                 {:type :turn-complete
+                                                  :session-id session-id}))))))
 
                 ;; Claude invocation failed - release lock and exit
-                (do
-                  (log/error "Recipe step failed"
-                             {:error (:error response) :session-id session-id})
-                  (exit-recipe-for-session session-id "error")
-                  (repl/release-session-lock! session-id)
-                  (send-to-client! channel
-                                   {:type :recipe-exited
-                                    :session-id session-id
-                                    :reason "error"
-                                    :error (:error response)})
-                  (send-to-client! channel
-                                   {:type :error
-                                    :message (:error response)
-                                    :session-id session-id})))
-              (catch Exception e
+                      (do
+                        (log/error "Recipe step failed"
+                                   {:error (:error response) :session-id session-id})
+                        (exit-recipe-for-session session-id "error")
+                        (repl/release-session-lock! session-id)
+                        (send-to-client! channel
+                                         {:type :recipe-exited
+                                          :session-id session-id
+                                          :reason "error"
+                                          :error (:error response)})
+                        (send-to-client! channel
+                                         {:type :error
+                                          :message (:error response)
+                                          :session-id session-id})))
+                    (catch Exception e
                 ;; Catch any exception to ensure lock is always released
-                (log/error e "Unexpected error in recipe step callback"
-                           {:session-id session-id :step current-step})
-                (exit-recipe-for-session session-id "internal-error")
-                (repl/release-session-lock! session-id)
-                (send-to-client! channel
-                                 {:type :recipe-exited
-                                  :session-id session-id
-                                  :reason "internal-error"
-                                  :error (str "Internal error: " (ex-message e))})
-                (send-to-client! channel
-                                 {:type :error
-                                  :message (str "Internal error: " (ex-message e))
-                                  :session-id session-id}))))
+                      (log/error e "Unexpected error in recipe step callback"
+                                 {:session-id session-id :step current-step})
+                      (exit-recipe-for-session session-id "internal-error")
+                      (repl/release-session-lock! session-id)
+                      (send-to-client! channel
+                                       {:type :recipe-exited
+                                        :session-id session-id
+                                        :reason "internal-error"
+                                        :error (str "Internal error: " (ex-message e))})
+                      (send-to-client! channel
+                                       {:type :error
+                                        :message (str "Internal error: " (ex-message e))
+                                        :session-id session-id}))))
           ;; Conditionally use new-session-id or resume-session-id based on session-created?
           ;; For new sessions (session-created? = false), use :new-session-id (--session-id flag)
           ;; For existing sessions (session-created? = true), use :resume-session-id (--resume flag)
-          (if session-created? :resume-session-id :new-session-id) session-id
-          :working-directory working-dir
-          :model (get-step-model recipe current-step)
-          :timeout-ms 86400000))
+          ;; For Copilot: if we've captured the copilot-session-id, use that for resume instead of client UUID
+                (let [copilot-session-id (:copilot-session-id orch-state)
+                      provider (:provider orch-state)
+                ;; For Copilot, prefer the captured copilot-session-id if available
+                      actual-session-id (if (and (= provider :copilot) copilot-session-id)
+                                          copilot-session-id
+                                          session-id)]
+                  (concat (if session-created?
+                            [:resume-session-id actual-session-id]
+                            [:new-session-id session-id]) ;; New sessions always use client UUID initially
+                          [:working-directory working-dir
+                           :model (get-step-model recipe current-step)
+                           :timeout-ms 86400000]))))
        ;; No step prompt available - this shouldn't happen in normal operation
        ;; but we must release the lock if it does
        (do
@@ -942,7 +1002,8 @@
                :message-count (:message-count session-metadata)
                :total-clients client-count
                :eligible-clients eligible-count
-               :has-preview (boolean (seq (:preview session-metadata)))})
+               :has-preview (boolean (seq (:preview session-metadata)))
+               :provider (:provider session-metadata)})
 
     ;; Check if this is a pending new session and send session_ready first
     (when-let [pending-channel (get @pending-new-sessions session-id)]
@@ -968,7 +1029,8 @@
                         :working-directory (:working-directory session-metadata)
                         :last-modified (:last-modified session-metadata)
                         :message-count (:message-count session-metadata)
-                        :preview (:preview session-metadata)})
+                        :preview (:preview session-metadata)
+                        :provider (or (:provider session-metadata) :claude)})
 
       ;; Send updated recent sessions list to each client
       (let [limit (get client-info :recent-sessions-limit 5)]
@@ -1061,6 +1123,7 @@
           (let [limit (or (:recent-sessions-limit data) 5)]
             (swap! connected-clients update channel merge
                    {:deleted-sessions #{}
+                    :subscribed-sessions #{}
                     :recent-sessions-limit limit}))
 
           ;; Send session list (limit to 50 most recent, lightweight fields only)
@@ -1073,7 +1136,7 @@
                                      (take 50)
                                      ;; Remove heavy fields to reduce payload size
                                      (mapv #(select-keys % [:session-id :name :working-directory
-                                                            :last-modified :message-count])))
+                                                            :last-modified :message-count :provider])))
                 total-non-empty (count (filter #(pos? (or (:message-count %) 0)) all-sessions))
                 ;; Log any sessions with placeholder working directories
                 placeholder-sessions (filter #(str/starts-with? (or (:working-directory %) "") "[from project:") recent-sessions)]
@@ -1148,16 +1211,20 @@
                              :last-message-id last-message-id
                              :has-delta-sync (some? last-message-id)})
 
-                  ;; Subscribe in replication system
+                  ;; Subscribe in replication system (global) and track per-client
                   (repl/subscribe-to-session! session-id)
+                  (swap! connected-clients update-in [channel :subscribed-sessions]
+                         (fnil conj #{}) session-id)
 
                   ;; Get session metadata
                   (if-let [metadata (repl/get-session-metadata session-id)]
                     (let [file-path (:file metadata)
+                          provider (:provider metadata :claude)
                           ;; Get current file size to update position BEFORE reading
                           file (io/file file-path)
                           current-size (.length file)
-                          all-messages (repl/parse-jsonl-file file-path)
+                          ;; Use provider-aware parser for correct message format
+                          all-messages (repl/parse-session-messages provider file-path)
                           ;; Filter internal messages (sidechain, summary, system)
                           filtered (vec (repl/filter-internal-messages all-messages))
                           ;; Get client's max message size setting
@@ -1200,7 +1267,17 @@
             (let [session-id (:session-id data)]
               (when session-id
                 (log/info "Client unsubscribing from session" {:session-id session-id})
-                (repl/unsubscribe-from-session! session-id)))
+                ;; Remove from this client's subscribed-sessions
+                (swap! connected-clients update-in [channel :subscribed-sessions]
+                       (fnil disj #{}) session-id)
+                ;; Only unsubscribe globally if no other client needs this session
+                (let [other-clients-need-it?
+                      (some (fn [[ch info]]
+                              (and (not= ch channel)
+                                   (contains? (or (:subscribed-sessions info) #{}) session-id)))
+                            @connected-clients)]
+                  (when-not other-clients-need-it?
+                    (repl/unsubscribe-from-session! session-id)))))
 
             "session_deleted"
             ;; Client marks session as deleted locally
@@ -1208,7 +1285,17 @@
               (when session-id
                 (log/info "Client deleted session locally" {:session-id session-id})
                 (mark-session-deleted-for-client! channel session-id)
-                (repl/unsubscribe-from-session! session-id)))
+                ;; Remove from this client's subscribed-sessions
+                (swap! connected-clients update-in [channel :subscribed-sessions]
+                       (fnil disj #{}) session-id)
+                ;; Only unsubscribe globally if no other client needs this session
+                (let [other-clients-need-it?
+                      (some (fn [[ch info]]
+                              (and (not= ch channel)
+                                   (contains? (or (:subscribed-sessions info) #{}) session-id)))
+                            @connected-clients)]
+                  (when-not other-clients-need-it?
+                    (repl/unsubscribe-from-session! session-id)))))
 
             "prompt"
             ;; Updated to use new_session_id vs resume_session_id
@@ -1218,7 +1305,13 @@
                   prompt-text (:text data)
                   ios-working-dir (:working-directory data)
                   system-prompt (:system-prompt data)
-                  _ (log/info "🔍 System prompt received from iOS" {:value system-prompt :has-value? (some? system-prompt)})
+                  ;; Extract explicit provider from message (only for new sessions)
+                  explicit-provider-str (:provider data)
+                  _ (log/info "Prompt message received"
+                              {:system-prompt system-prompt
+                               :explicit-provider explicit-provider-str
+                               :new-session new-session-id
+                               :resume-session resume-session-id})
                   ;; Determine actual working directory to use:
                   ;; - For resumed sessions: Use stored working dir from session metadata (extracted from .jsonl cwd)
                   ;; - For new sessions: Use iOS-provided dir, with fallback if placeholder
@@ -1264,74 +1357,131 @@
                              {:type :error
                               :message "Cannot specify both new_session_id and resume_session_id"}))
 
+                ;; Validate explicit provider if specified for new session
+                (and new-session-id
+                     explicit-provider-str
+                     (not (contains? providers/known-providers (keyword explicit-provider-str))))
+                (do
+                  (log/warn "Invalid provider specified"
+                            {:provider explicit-provider-str
+                             :valid-providers (mapv name providers/known-providers)})
+                  (http/send! channel
+                              (generate-json
+                               {:type :error
+                                :message (str "Invalid provider: '" explicit-provider-str
+                                              "'. Valid providers: "
+                                              (str/join ", " (mapv name providers/known-providers)))})))
+
                 :else
                 (let [claude-session-id (or resume-session-id new-session-id)
+                      ;; Extract explicit provider only for new sessions
+                      ;; For resumed sessions, provider field is silently ignored
+                      explicit-provider (when (and new-session-id explicit-provider-str)
+                                          (keyword explicit-provider-str))
+                      ;; Get session metadata for resumed sessions
+                      session-metadata (when resume-session-id
+                                         (repl/get-session-metadata resume-session-id))
+                      ;; Resolve provider: explicit > session metadata > smart default
+                      provider (providers/resolve-provider explicit-provider session-metadata)
+                      ;; Validate CLI is available before attempting to acquire lock
+                      cli-validation-error (providers/validate-cli-available provider)
                       orch-state (get-session-recipe-state claude-session-id)
                       final-prompt-text (if orch-state
                                           (if-let [recipe (recipes/get-recipe (:recipe-id orch-state))]
                                             (or (get-next-step-prompt claude-session-id orch-state recipe) prompt-text)
                                             prompt-text)
                                           prompt-text)]
-                  ;; Try to acquire lock for this session
-                  (if (repl/acquire-session-lock! claude-session-id)
+                  ;; Check CLI availability before acquiring lock
+                  (if cli-validation-error
                     (do
-                      (log/info "Received prompt"
-                                {:text (subs prompt-text 0 (min 50 (count prompt-text)))
-                                 :new-session-id new-session-id
-                                 :resume-session-id resume-session-id
-                                 :working-directory working-dir
-                                 :in-recipe (some? orch-state)
-                                 :session-locked false})
-
-                      ;; Send immediate acknowledgment
+                      (log/warn "CLI not available for provider"
+                                {:provider provider
+                                 :session-id claude-session-id
+                                 :error (:error cli-validation-error)})
                       (http/send! channel
                                   (generate-json
-                                   {:type :ack
-                                    :message "Processing prompt..."}))
+                                   {:type :error
+                                    :message (:error cli-validation-error)
+                                    :session-id claude-session-id})))
+                    ;; Try to acquire lock for this session
+                    (if (repl/acquire-session-lock! claude-session-id)
+                      (do
+                        (log/info "Received prompt"
+                                  {:text (subs prompt-text 0 (min 50 (count prompt-text)))
+                                   :new-session-id new-session-id
+                                   :resume-session-id resume-session-id
+                                   :working-directory working-dir
+                                   :provider provider
+                                   :explicit-provider explicit-provider
+                                   :in-recipe (some? orch-state)
+                                   :session-locked false})
+
+                      ;; Send immediate acknowledgment
+                        (http/send! channel
+                                    (generate-json
+                                     {:type :ack
+                                      :message "Processing prompt..."}))
 
                       ;; For new sessions: register channel so we can send session_ready when file is created
                       ;; Filesystem watcher will send session_ready once Claude CLI creates the file
-                      (when new-session-id
-                        (log/info "New session detected, registering for session_ready" {:session-id new-session-id})
-                        (swap! pending-new-sessions assoc new-session-id channel))
+                        (when new-session-id
+                          (log/info "New session detected, registering for session_ready" {:session-id new-session-id})
+                          (swap! pending-new-sessions assoc new-session-id channel))
 
-                      ;; Invoke Claude asynchronously
-                      ;; NEW ARCHITECTURE: Don't send response directly
+                      ;; Invoke provider CLI asynchronously
+                      ;; Routes to correct CLI based on provider (Claude, Copilot, etc.)
                       ;; Filesystem watcher will detect changes and send session_updated
-                      (claude/invoke-claude-async
-                       final-prompt-text
-                       (fn [response]
+                        (providers/invoke-provider-async
+                         provider
+                         final-prompt-text
+                         (fn [response]
                          ;; Always release lock when done (success or failure)
-                         (try
+                           (try
                            ;; Just log completion - let filesystem watcher handle updates
-                           (if (:success response)
-                             (do
-                               (log/info "Prompt completed successfully"
-                                         {:session-id (:session-id response)})
-                               ;; Send turn_complete message so iOS can unlock
-                               (send-to-client! channel
-                                                {:type :turn-complete
-                                                 :session-id claude-session-id}))
-                             (do
-                               (log/error "Prompt failed" {:error (:error response) :session-id claude-session-id})
-                               ;; Still send error responses directly - include session-id so iOS can unlock
-                               (send-to-client! channel
-                                                {:type :error
-                                                 :message (:error response)
-                                                 :session-id claude-session-id})))
-                           (finally
-                             (repl/release-session-lock! claude-session-id))))
-                       :new-session-id new-session-id
-                       :resume-session-id resume-session-id
-                       :working-directory working-dir
-                       :timeout-ms 86400000
-                       :system-prompt system-prompt))
-                    (do
+                             (if (:success response)
+                               (do
+                                 (log/info "Prompt completed successfully"
+                                           {:session-id (:session-id response)
+                                            :provider provider})
+                                 ;; Ensure session is in index before sending response
+                                 (repl/ensure-session-in-index! (:session-id response) provider)
+                                 ;; For providers without parseable session files (e.g. Cursor),
+                                 ;; send the response text directly — the watcher+subscribe mechanism
+                                 ;; can't deliver it because parse-message returns nil.
+                                 (when-not (providers/supports-session-history? provider)
+                                   (send-to-client! channel
+                                                    {:type :response
+                                                     :message-id (str (java.util.UUID/randomUUID))
+                                                     :success true
+                                                     :text (:result response)
+                                                     :session-id (:session-id response)
+                                                     :provider (name provider)}))
+                                 ;; Send turn_complete message so iOS can unlock
+                                 (send-to-client! channel
+                                                  {:type :turn-complete
+                                                   :session-id claude-session-id}))
+                               (do
+                                 (log/error "Prompt failed" {:error (:error response)
+                                                             :session-id claude-session-id
+                                                             :provider provider})
+                                 ;; Still send error responses directly - include session-id so iOS can unlock
+                                 (send-to-client! channel
+                                                  {:type :error
+                                                   :message (:error response)
+                                                   :session-id claude-session-id})))
+                             (finally
+                               (repl/release-session-lock! claude-session-id))))
+                         :new-session-id new-session-id
+                         :resume-session-id resume-session-id
+                         :working-directory working-dir
+                         :timeout-ms 86400000
+                         :system-prompt system-prompt))
+                      (do
                       ;; Session is locked, send session_locked message
-                      (log/info "Session locked, rejecting prompt"
-                                {:session-id claude-session-id
-                                 :text (subs prompt-text 0 (min 50 (count prompt-text)))})
-                      (send-session-locked! channel claude-session-id))))))
+                        (log/info "Session locked, rejecting prompt"
+                                  {:session-id claude-session-id
+                                   :text (subs prompt-text 0 (min 50 (count prompt-text)))})
+                        (send-session-locked! channel claude-session-id)))))))
 
             "set_directory"
             (let [path (:path data)]
@@ -1438,24 +1588,33 @@
                              {:type :error
                               :message "session_id required in kill_session message"}))
                 (do
-                  (log/info "Kill session requested" {:session-id session-id})
-                  ;; Attempt to kill the Claude process
-                  (let [result (claude/kill-claude-session session-id)]
-                    (if (:success result)
-                      (do
-                        ;; Release the session lock
-                        (repl/release-session-lock! session-id)
-                        (log/info "Session killed successfully" {:session-id session-id})
-                        (send-to-client! channel
-                                         {:type :session-killed
-                                          :session-id session-id
-                                          :message "Session process terminated"}))
-                      (do
-                        (log/error "Failed to kill session" {:session-id session-id :error (:error result)})
-                        (send-to-client! channel
-                                         {:type :error
-                                          :message (str "Failed to kill session: " (:error result))
-                                          :session-id session-id})))))))
+                  (let [session-metadata (repl/get-session-metadata session-id)
+                        provider (or (:provider session-metadata) :claude)]
+                    (log/info "Kill session requested" {:session-id session-id :provider provider})
+                    ;; Route kill to correct handler based on provider
+                    (let [result (case provider
+                                   :claude (claude/kill-claude-session session-id)
+                                  ;; Non-Claude providers use generic kill
+                                   (if (providers/kill-provider-session provider session-id)
+                                     {:success true}
+                                     {:success false :error "No active process found for session"}))]
+                      (if (:success result)
+                        (do
+                          ;; Release the session lock
+                          (repl/release-session-lock! session-id)
+                          (log/info "Session killed successfully" {:session-id session-id :provider provider})
+                          (send-to-client! channel
+                                           {:type :session-killed
+                                            :session-id session-id
+                                            :message "Session process terminated"}))
+                        (do
+                          (log/error "Failed to kill session" {:session-id session-id
+                                                               :provider provider
+                                                               :error (:error result)})
+                          (send-to-client! channel
+                                           {:type :error
+                                            :message (str "Failed to kill session: " (:error result))
+                                            :session-id session-id}))))))))
 
             "infer_session_name"
             (let [session-id (:session-id data)
@@ -1767,7 +1926,13 @@
             (let [recipe-id (keyword (:recipe-id data))
                   session-id (:session-id data)
                   working-directory (:working-directory data)
-                  is-new-session? (not (session-exists? session-id))]
+                  is-new-session? (not (session-exists? session-id))
+                   ;; Extract optional provider field (defaults to session's provider or Claude)
+                  message-provider (when-let [p (:provider data)] (keyword p))
+                  provider (or message-provider
+                               (when-not is-new-session?
+                                 (:provider (repl/get-session-metadata session-id)))
+                               :claude)]
               (cond
                 (not session-id)
                 (send-to-client! channel
@@ -1790,7 +1955,7 @@
                                     :session-id session-id}))
 
                 :else
-                (if-let [orch-state (start-recipe-for-session session-id recipe-id is-new-session?)]
+                (if-let [orch-state (start-recipe-for-session session-id recipe-id is-new-session? :provider provider)]
                   (let [recipe (recipes/get-recipe recipe-id)]
                     (log/info "Recipe started" {:recipe-id recipe-id :session-id session-id})
                     (send-to-client! channel
@@ -1855,7 +2020,7 @@
                                          (sort-by :last-modified >)
                                          (take 50)
                                          (mapv #(select-keys % [:session-id :name :working-directory
-                                                                :last-modified :message-count])))
+                                                                :last-modified :message-count :provider])))
                     total-non-empty (count (filter #(pos? (or (:message-count %) 0)) all-sessions))]
                 (log/info "Sending refreshed session list" {:count (count recent-sessions) :total total-non-empty})
                 (send-to-client! channel

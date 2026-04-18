@@ -444,15 +444,14 @@ class VoiceCodeClientRecipeTests: XCTestCase {
 
     func testRapidStartAndExitSameSession() throws {
         let expectation = XCTestExpectation(description: "Rapid start/exit same session handled")
-        var updateCount = 0
 
+        // Subscribe to updates and wait for the final state: empty recipes after exit.
+        // Due to debouncing (100ms), start and exit may batch into a single Combine update,
+        // so we cannot rely on an exact update count.
         let cancellable = client.$activeRecipes
             .dropFirst()
             .sink { recipes in
-                updateCount += 1
-                if updateCount == 2 {
-                    // After start and exit, should be empty
-                    XCTAssertEqual(recipes.count, 0, "Should have no active recipes after exit")
+                if recipes.isEmpty {
                     expectation.fulfill()
                 }
             }
@@ -471,8 +470,8 @@ class VoiceCodeClientRecipeTests: XCTestCase {
 
         client.handleMessage(startJson)
 
-        // Wait 100ms (debounce window), then exit
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+        // Wait for debounce to flush, then exit
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             let exitJson = """
             {
                 "type": "recipe_exited",
@@ -496,7 +495,29 @@ class VoiceCodeClientRecipeTests: XCTestCase {
 
     func testStartRecipeMethod() throws {
         // This test verifies the method doesn't crash
-        XCTAssertNoThrow(client.startRecipe(sessionId: "test-123", recipeId: "implement-and-review", workingDirectory: "/Users/test/project"))
+        XCTAssertNoThrow(client.startRecipe(sessionId: "test-123", recipeId: "implement-and-review", workingDirectory: "/Users/test/project", provider: "claude"))
+    }
+
+    func testStartRecipeMethodWithProvider() throws {
+        XCTAssertNoThrow(
+            client.startRecipe(
+                sessionId: "test-123",
+                recipeId: "implement-and-review",
+                workingDirectory: "/Users/test/project",
+                provider: "copilot"
+            )
+        )
+    }
+
+    func testStartRecipeMethodWithClaudeProvider() throws {
+        XCTAssertNoThrow(
+            client.startRecipe(
+                sessionId: "test-456",
+                recipeId: "implement-and-review",
+                workingDirectory: "/Users/test/project",
+                provider: "claude"
+            )
+        )
     }
 
     func testExitRecipeMethod() throws {

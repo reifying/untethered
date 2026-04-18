@@ -1224,8 +1224,8 @@ final class VoiceCodeClientTests: XCTestCase {
             "type": "session_history",
             "session_id": "test-session-456",
             "messages": [
-                ["uuid": "msg-1", "type": "user", "text": "Hello"],
-                ["uuid": "msg-2", "type": "assistant", "text": "Hi there"]
+                ["uuid": "msg-1", "role": "user", "text": "Hello", "timestamp": "2025-01-01T12:00:00.000Z", "provider": "claude"],
+                ["uuid": "msg-2", "role": "assistant", "text": "Hi there", "timestamp": "2025-01-01T12:00:01.000Z", "provider": "claude"]
             ],
             "total_count": 100,
             "is_complete": false,
@@ -1290,7 +1290,7 @@ final class VoiceCodeClientTests: XCTestCase {
 
     func testSessionHistoryHandleMessageIntegration() {
         // Test that handleMessage correctly processes session_history with delta sync fields
-        // Note: This tests the actual handleMessage path
+        // Note: This tests the actual handleMessage path using canonical wire format
 
         // Create a mock SessionSyncManager expectation
         // Since handleMessage is internal, we can call it directly
@@ -1298,7 +1298,7 @@ final class VoiceCodeClientTests: XCTestCase {
             "type": "session_history",
             "session_id": "integration-test-session",
             "messages": [
-                ["uuid": "msg-uuid-1", "type": "user", "message": ["content": [["type": "text", "text": "Test"]]]],
+                ["uuid": "msg-uuid-1", "role": "user", "text": "Test", "timestamp": "2025-01-01T12:00:00.000Z", "provider": "claude"],
             ],
             "total_count": 1,
             "is_complete": true,
@@ -1345,10 +1345,10 @@ final class VoiceCodeClientTests: XCTestCase {
             // 1. Subscribe with last_message_id (client -> backend)
             ["type": "subscribe", "session_id": "delta-session", "last_message_id": "prev-msg-uuid"],
 
-            // 2. Backend responds with delta (only new messages)
+            // 2. Backend responds with delta (only new messages) using canonical wire format
             ["type": "session_history",
              "session_id": "delta-session",
-             "messages": [["uuid": "new-msg-uuid", "type": "assistant", "text": "New response"]],
+             "messages": [["uuid": "new-msg-uuid", "role": "assistant", "text": "New response", "timestamp": "2025-01-01T12:00:00.000Z", "provider": "claude"]],
              "total_count": 100,  // Total messages in session
              "is_complete": true, // All requested messages included
              "oldest_message_id": "new-msg-uuid",

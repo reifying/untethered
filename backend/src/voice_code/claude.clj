@@ -59,13 +59,23 @@
       {:success true})))
 
 (defn get-claude-cli-path
+  "Returns the path to the Claude CLI executable.
+   Checks in order:
+   1. CLAUDE_CLI_PATH environment variable
+   2. ~/.claude/local/claude (legacy default)
+   3. 'which claude' (PATH lookup)"
   []
   (or (System/getenv "CLAUDE_CLI_PATH")
       (let [home (System/getProperty "user.home")
             default-path (str home "/.claude/local/claude")]
-        (if (.exists (io/file default-path))
-          default-path
-          nil))))
+        (when (.exists (io/file default-path))
+          default-path))
+      ;; Fallback: check if claude is in PATH
+      (try
+        (let [result (clojure.java.shell/sh "which" "claude")]
+          (when (zero? (:exit result))
+            (clojure.string/trim (:out result))))
+        (catch Exception _ nil))))
 
 (defn expand-tilde
   "Expand ~ to user home directory in path.
