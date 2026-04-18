@@ -4,6 +4,7 @@
             [clojure.string :as str]
             [clojure.java.shell :as shell]
             [voice-code.providers :as providers]
+            [voice-code.replication]
             [clojure.java.io :as io]
             [cheshire.core :as json]))
 
@@ -2408,3 +2409,89 @@ another_key: another value
         (let [result (get-sessions-before-fn)]
           (is (set? result))
           (is (empty? result)))))))
+
+;; ============================================================================
+;; cli-path tests
+;; ============================================================================
+
+(deftest test-cli-path-env-var-takes-priority
+  (testing "returns env var path for each provider, ignoring default and which"
+    (doseq [provider [:claude :copilot :cursor :opencode]]
+      (let [fake-path (str "/env/path/" (name provider))]
+        (with-redefs [providers/*read-env-var*  (fn [_] fake-path)
+                      providers/cli-default-paths {}
+                      providers/cli-bin-names    {provider (name provider)}
+                      clojure.java.shell/sh      (fn [& _] {:exit 1 :out "" :err ""})]
+          (is (= fake-path (providers/cli-path provider))
+              (str "env var not used for " provider))))))
+
+  (testing "empty env var falls through to next source"
+    (let [fake-bin (io/file *test-dir* "fake-claude-cli")]
+      (spit fake-bin "#!/bin/sh")
+      (with-redefs [providers/*read-env-var*  (fn [_] "")
+                    providers/cli-default-paths {:claude (.getAbsolutePath fake-bin)}
+                    providers/cli-bin-names    {:claude "claude"}
+                    clojure.java.shell/sh      (fn [& _] {:exit 1 :out "" :err ""})]
+        (is (= (.getAbsolutePath fake-bin) (providers/cli-path :claude)))))))
+
+(deftest test-cli-path-which-fallback
+  (testing "returns path from which when env var unset and no default"
+    (let [fake-path "/usr/local/bin/copilot"]
+      (with-redefs [providers/*read-env-var*   (fn [_] nil)
+                    providers/cli-default-paths {}
+                    providers/cli-bin-names    {:copilot "copilot"}
+                    clojure.java.shell/sh      (fn [cmd & _]
+                                                 (if (= cmd "which")
+                                                   {:exit 0 :out (str fake-path "\n") :err ""}
+                                                   {:exit 1 :out "" :err ""}))]
+        (is (= fake-path (providers/cli-path :copilot))))))
+
+  (testing "returns default path when file exists and env var unset"
+    (let [fake-bin (io/file *test-dir* "fake-claude-cli")]
+      (spit fake-bin "#!/bin/sh")
+      (with-redefs [providers/*read-env-var*   (fn [_] nil)
+                    providers/cli-default-paths {:claude (.getAbsolutePath fake-bin)}
+                    providers/cli-bin-names    {:claude "claude"}
+                    clojure.java.shell/sh      (fn [& _] {:exit 1 :out "" :err ""})]
+        (is (= (.getAbsolutePath fake-bin) (providers/cli-path :claude)))))))
+
+(deftest test-cli-path-throws-when-not-found
+  (testing "throws ex-info with provider info when all sources fail"
+    (doseq [provider [:claude :copilot :cursor :opencode]]
+      (with-redefs [providers/*read-env-var*   (fn [_] nil)
+                    providers/cli-default-paths {}
+                    providers/cli-bin-names    {provider (name provider)}
+                    clojure.java.shell/sh      (fn [& _] {:exit 1 :out "" :err ""})]
+        (let [ex (try (providers/cli-path provider) nil
+                      (catch clojure.lang.ExceptionInfo e e))]
+          (is (some? ex) (str "Expected exception for provider " provider))
+          (is (= provider (:provider (ex-data ex))))
+          (is (str/includes? (ex-message ex) (name provider))))))))
+
+;; ============================================================================
+;; session-metadata tests
+;; ============================================================================
+
+(deftest test-session-metadata-nil-input
+  (testing "returns nil for nil session-uuid"
+    (is (nil? (providers/session-metadata nil)))))
+
+(deftest test-session-metadata-adds-last-modified-ms
+  (testing "returns metadata with :last-modified-ms as Long equal to :last-modified"
+    (let [mtime 1761127200000
+          fake-meta {:session-id "abc" :last-modified mtime :name "Test"}]
+      (with-redefs [voice-code.replication/get-session-metadata (fn [_] fake-meta)]
+        (let [result (providers/session-metadata "abc")]
+          (is (= mtime (:last-modified result)))
+          (is (= mtime (:last-modified-ms result)))
+          (is (instance? Long (:last-modified-ms result)))))))
+
+  (testing "returns :last-modified-ms 0 when :last-modified is nil"
+    (let [fake-meta {:session-id "abc" :last-modified nil :name "Test"}]
+      (with-redefs [voice-code.replication/get-session-metadata (fn [_] fake-meta)]
+        (let [result (providers/session-metadata "abc")]
+          (is (= 0 (:last-modified-ms result)))))))
+
+  (testing "returns nil when session not in index"
+    (with-redefs [voice-code.replication/get-session-metadata (fn [_] nil)]
+      (is (nil? (providers/session-metadata "no-such-uuid"))))))

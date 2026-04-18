@@ -380,6 +380,7 @@
                   :working-directory working-dir
                   :created-at created-at
                   :last-modified last-modified
+                  :last-modified-ms (or (some-> last-modified long) 0)
                   :message-count (:message-count file-metadata)
                   :preview (:preview file-metadata)
                   :first-message (:first-message file-metadata)
@@ -475,6 +476,7 @@
                   :working-directory (or working-dir "[unknown]")
                   :created-at created-at
                   :last-modified last-modified
+                  :last-modified-ms (or (some-> last-modified long) 0)
                   :message-count message-count
                   :preview preview
                   :first-message (:text first-msg)
@@ -567,13 +569,15 @@
 (defn build-cursor-session-metadata
   "Build metadata map for a single Cursor session directory."
   [session-id session-dir]
-  (let [meta (read-cursor-session-meta session-dir)]
+  (let [meta     (read-cursor-session-meta session-dir)
+        last-mod (.lastModified session-dir)]
     {:session-id session-id
      :file (.getAbsolutePath (io/file session-dir "store.db"))
      :name (or (:name meta) "Cursor Session")
      :working-directory (or (providers/extract-working-dir :cursor session-dir) "[unknown]")
-     :created-at (or (:createdAt meta) (.lastModified session-dir))
-     :last-modified (.lastModified session-dir)
+     :created-at (or (:createdAt meta) last-mod)
+     :last-modified last-mod
+     :last-modified-ms (long last-mod)
      ;; Set to 1 (not 0) so sessions appear in get-recent-sessions.
      ;; Cannot get actual count from SQLite binary blobs.
      :message-count 1
@@ -625,6 +629,7 @@
      :working-directory (or (:directory info) "[unknown]")
      :created-at (get-in info [:time :created])
      :last-modified (get-in info [:time :updated])
+     :last-modified-ms (or (some-> (get-in info [:time :updated]) long) 0)
      :message-count msg-count
      :preview nil
      :first-message nil
@@ -1292,6 +1297,7 @@
                   ;; ALWAYS update index with correct timestamp
                   (let [new-metadata (assoc old-metadata
                                             :last-modified last-modified
+                                            :last-modified-ms (or (some-> last-modified long) 0)
                                             :message-count new-count)]
                     (swap! session-index assoc session-id new-metadata)
                     (save-index! @session-index)
@@ -1492,6 +1498,7 @@
                     last-modified (or last-message-timestamp (.lastModified events-file))
                     new-metadata (assoc old-metadata
                                         :last-modified last-modified
+                                        :last-modified-ms (or (some-> last-modified long) 0)
                                         :message-count new-count)]
                 (swap! session-index assoc session-id new-metadata)
                 (save-index! @session-index)

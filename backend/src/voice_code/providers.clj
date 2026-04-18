@@ -630,6 +630,70 @@
     :else nil))
 
 ;; ============================================================================
+;; CLI Path Resolution
+;; ============================================================================
+
+(def ^:private cli-env-vars
+  {:claude   "CLAUDE_CLI_PATH"
+   :copilot  "COPILOT_CLI_PATH"
+   :cursor   "CURSOR_CLI_PATH"
+   :opencode "OPENCODE_CLI_PATH"})
+
+(def ^:private cli-default-paths
+  {:claude (str (System/getProperty "user.home") "/.claude/local/claude")})
+
+(def ^:private cli-bin-names
+  {:claude   "claude"
+   :copilot  "copilot"
+   :cursor   "cursor-agent"
+   :opencode "opencode"})
+
+(def ^:dynamic *read-env-var*
+  "Reads an environment variable by name. Extracted so tests can rebind it
+   without calling System/getenv directly (static Java, not with-redefsable)."
+  (fn [name] (System/getenv name)))
+
+(defn cli-path
+  "Returns an absolute path to the CLI executable for the given provider.
+   Resolution order: provider-specific env var → known default path → `which <bin>`.
+   Throws ex-info with diagnostic message when none resolve."
+  [provider]
+  (let [env-var      (cli-env-vars provider)
+        default-path (cli-default-paths provider)
+        bin-name     (cli-bin-names provider)
+        from-env     (when env-var (not-empty (*read-env-var* env-var)))
+        from-default (when (and default-path (.exists (io/file default-path))) default-path)
+        path         (or from-env
+                         from-default
+                         (try
+                           (let [result (shell/sh "which" bin-name)]
+                             (when (zero? (:exit result))
+                               (str/trim (:out result))))
+                           (catch Exception _ nil)))]
+    (when-not path
+      (throw (ex-info (str "CLI not found for provider " (name provider)
+                           ". Tried: env var " env-var
+                           (when default-path (str ", default path " default-path))
+                           ", which " bin-name)
+                      {:provider     provider
+                       :env-var      env-var
+                       :default-path default-path
+                       :bin-name     bin-name})))
+    path))
+
+;; ============================================================================
+;; Session Metadata Access
+;; ============================================================================
+
+(defn session-metadata
+  "Get session metadata for a UUID, including :last-modified-ms (Long, ms since epoch).
+   Uses requiring-resolve to avoid a compile-time circular dependency with replication."
+  [session-uuid]
+  (when session-uuid
+    (when-let [meta ((requiring-resolve 'voice-code.replication/get-session-metadata) session-uuid)]
+      (assoc meta :last-modified-ms (or (some-> (:last-modified meta) long) 0)))))
+
+;; ============================================================================
 ;; CLI Command Building and Invocation
 ;; ============================================================================
 

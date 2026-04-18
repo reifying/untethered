@@ -284,6 +284,23 @@
       ;; Should use file modification time as fallback
       (is (= file-mod-time (:last-modified metadata))))))
 
+(deftest test-build-session-metadata-last-modified-ms
+  (testing "includes :last-modified-ms as Long equal to :last-modified"
+    (let [messages ["{\"role\":\"user\",\"text\":\"test\",\"timestamp\":\"2025-10-22T10:00:00Z\"}"]
+          file (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440000.jsonl" messages)
+          metadata (repl/build-session-metadata file)]
+      (is (= 1761127200000 (:last-modified metadata)))
+      (is (= 1761127200000 (:last-modified-ms metadata)))
+      (is (instance? Long (:last-modified-ms metadata)))))
+
+  (testing ":last-modified-ms matches file mtime when no message timestamp"
+    (let [messages ["{\"role\":\"user\",\"text\":\"no timestamp\"}"]
+          file (create-test-jsonl-file "550e8400-e29b-41d4-a716-446655440001.jsonl" messages)
+          metadata (repl/build-session-metadata file)
+          file-mod-time (.lastModified file)]
+      (is (= file-mod-time (:last-modified-ms metadata)))
+      (is (instance? Long (:last-modified-ms metadata))))))
+
 (deftest test-build-index-filters-non-uuid-files
   (testing "build-index! filters out non-UUID session files but includes uppercase UUIDs (normalized to lowercase)"
     (let [messages ["{\"role\":\"user\",\"text\":\"test message\"}"]
@@ -1498,6 +1515,30 @@
         (is (= 2 (:message-count metadata)))
         (is (true? (:ios-notified metadata)))))))
 
+(deftest test-handle-file-modified-updates-last-modified-ms
+  (testing "handle-file-modified keeps :last-modified-ms in sync with :last-modified"
+    (let [session-id "550e8400-e29b-41d4-a716-446655440035"
+          initial-messages ["{\"role\":\"user\",\"text\":\"first\",\"timestamp\":\"2025-10-22T10:00:00Z\"}"]
+          file (create-test-jsonl-file (str session-id ".jsonl") initial-messages)
+          file-path (.getAbsolutePath file)]
+      (reset! repl/session-index {})
+      (repl/reset-file-position! file-path)
+      (reset! repl/watcher-state
+              {:on-session-created nil
+               :on-session-updated nil
+               :subscribed-sessions #{}
+               :event-queue (atom {})
+               :max-retries 3
+               :debounce-ms 200})
+      (repl/handle-file-created file)
+      (spit file "\n{\"role\":\"assistant\",\"text\":\"reply\",\"timestamp\":\"2025-10-22T11:00:00Z\"}" :append true)
+      (repl/handle-file-modified file)
+      (let [indexed (get @repl/session-index session-id)]
+        (is (some? indexed))
+        (is (instance? Long (:last-modified-ms indexed)))
+        (is (= (:last-modified indexed) (:last-modified-ms indexed)))
+        (is (= 1761130800000 (:last-modified-ms indexed)))))))
+
 (deftest test-get-recent-sessions-sorting
   (testing "get-recent-sessions returns sessions sorted by last-modified descending"
     (with-redefs [repl/get-claude-projects-dir (fn [] (io/file test-dir))
@@ -1789,7 +1830,9 @@
       (is (= 2 (:message-count metadata)))
       (is (= :copilot (:provider metadata)))
       (is (str/includes? (:name metadata) "Hello, help me"))
-      (is (str/includes? (:file metadata) "events.jsonl"))))
+      (is (str/includes? (:file metadata) "events.jsonl"))
+      (is (instance? Long (:last-modified-ms metadata)))
+      (is (= (:last-modified metadata) (:last-modified-ms metadata))))
 
   (testing "Handles session with no messages"
     (let [session-id "22222222-2222-2222-2222-222222222222"
@@ -1800,7 +1843,7 @@
           metadata (repl/build-copilot-session-metadata session-dir)]
       (is (= session-id (:session-id metadata)))
       (is (= 0 (:message-count metadata)))
-      (is (= :copilot (:provider metadata))))))
+      (is (= :copilot (:provider metadata)))))))
 
 (deftest test-build-index-with-copilot-sessions
   (testing "build-index! discovers both Claude and Copilot sessions"
@@ -1961,7 +2004,9 @@
             (is (= "My Session" (:name meta1)))
             (is (= :cursor (:provider meta1)))
             (is (= 1 (:message-count meta1)))
-            (is (= "[unknown]" (:working-directory meta1))))))))
+            (is (= "[unknown]" (:working-directory meta1)))
+            (is (instance? Long (:last-modified-ms meta1)))
+            (is (= (:last-modified meta1) (:last-modified-ms meta1))))))))
 
   (testing "handles empty session list"
     (with-redefs [providers/find-session-files (fn [p] [])]
@@ -2035,7 +2080,9 @@
             (is (= :opencode (:provider meta)))
             (is (= 2 (:message-count meta)))
             (is (= 1770528283010 (:created-at meta)))
-            (is (= 1770528290000 (:last-modified meta))))))))
+            (is (= 1770528290000 (:last-modified meta)))
+            (is (= 1770528290000 (:last-modified-ms meta)))
+            (is (instance? Long (:last-modified-ms meta))))))))
 
   (testing "handles sessions with no messages"
     (let [base-dir (io/file test-dir "opencode-empty")
@@ -2876,6 +2923,49 @@
       (is (= session-id (:session-id (first @notifications))))
       (is (= :copilot (:provider (first @notifications))))
       (is (true? (get-in @repl/session-index [session-id :ios-notified]))))))
+
+(deftest test-handle-copilot-events-modified-updates-last-modified-ms
+  (testing "handle-copilot-events-modified keeps :last-modified-ms in sync with :last-modified"
+    (let [session-id "dddddddd-1111-2222-3333-dddddddddddd"
+          session-dir (io/file test-dir ".copilot" "session-state" session-id)
+          events-file (io/file session-dir "events.jsonl")]
+      (.mkdirs session-dir)
+      (spit (io/file session-dir "workspace.yaml")
+            (str "id: " session-id "\ncwd: /tmp/test-project\n"))
+      (spit events-file
+            (str (json/generate-string {:type "user.message"
+                                        :timestamp "2026-01-28T10:00:00Z"
+                                        :data {:content "initial" :messageId "msg-1"}})
+                 "\n"))
+      (reset! repl/session-index {})
+      (reset! repl/watcher-state
+              {:watch-service nil
+               :watch-thread nil
+               :running true
+               :watch-keys {}
+               :subscribed-sessions #{}
+               :event-queue (atom {})
+               :debounce-ms 200
+               :retry-delay-ms 100
+               :max-retries 3
+               :on-session-created nil
+               :on-session-updated nil
+               :on-session-deleted nil})
+      ;; Create session: adds to index and initializes file-positions
+      (repl/handle-copilot-session-created session-dir)
+      (is (some? (get @repl/session-index session-id)) "Session should be in index after creation")
+      ;; Append a new message so the incremental parser has new content to return
+      (spit events-file
+            (str (json/generate-string {:type "assistant.message"
+                                        :timestamp "2026-01-28T10:00:05Z"
+                                        :data {:content "response" :messageId "msg-2"}})
+                 "\n")
+            :append true)
+      (repl/handle-copilot-events-modified events-file session-dir)
+      (let [indexed (get @repl/session-index session-id)]
+        (is (some? indexed))
+        (is (instance? Long (:last-modified-ms indexed)))
+        (is (= (:last-modified indexed) (:last-modified-ms indexed)))))))
 
 (deftest test-start-watcher-skips-uninstalled-providers
   (testing "start-watcher! skips Cursor watches when not installed"
