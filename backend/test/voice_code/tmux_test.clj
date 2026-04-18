@@ -269,3 +269,66 @@
       (is (= "abc123" (get result "VC_SESSION_UUID_session_abc123")))
       (is (= "/home/user/project" (get result "VC_WORKDIR_session_abc123")))
       (is (= "claude" (get result "VC_PROVIDER_session_abc123"))))))
+
+;; ============================================================================
+;; nudge!
+;; ============================================================================
+
+(deftest nudge-test
+  (testing "succeeds on first try: send-keys(-l), send-keys(Escape), send-keys(Enter) all exit 0"
+    (let [calls (atom [])
+          invoker (fn [& args]
+                    (swap! calls conj (vec args))
+                    {:exit 0 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :ok (tmux/nudge! "my-session" "my-window" "hello"))))
+      (let [recorded @calls]
+        ;; literal send-keys with -l flag
+        (is (some #(and (= "tmux" (first %))
+                        (= "send-keys" (second %))
+                        (some #{"hello"} %)) recorded))
+        ;; Escape keystroke
+        (is (some #(and (= "tmux" (first %))
+                        (= "send-keys" (second %))
+                        (some #{"Escape"} %)) recorded))
+        ;; Enter keystroke
+        (is (some #(and (= "tmux" (first %))
+                        (= "send-keys" (second %))
+                        (some #{"Enter"} %)) recorded)))))
+
+  (testing "retries Enter up to 3 times on failure, then returns :failed"
+    (let [calls (atom [])
+          ;; Every send-keys call fails
+          invoker (fn [& args]
+                    (swap! calls conj (vec args))
+                    {:exit 1 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :failed (tmux/nudge! "my-session" "my-window" "hello"))))
+      ;; Exactly 3 Enter attempts were made (all failed)
+      (let [enter-calls (filter #(some #{"Enter"} %) @calls)]
+        (is (= 3 (count enter-calls))))))
+
+  (testing "succeeds on second Enter attempt after first fails"
+    (let [enter-count (atom 0)
+          invoker (fn [& args]
+                    (if (some #{"Enter"} args)
+                      (do (swap! enter-count inc)
+                          (if (= 1 @enter-count)
+                            {:exit 1 :out "" :err ""}
+                            {:exit 0 :out "" :err ""}))
+                      {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :ok (tmux/nudge! "my-session" "my-window" "hello"))))
+      (is (= 2 @enter-count))))
+
+  (testing "target pane address uses correct format"
+    (let [targets (atom [])
+          invoker (fn [& args]
+                    (let [t-idx (.indexOf (vec args) "-t")]
+                      (when (>= t-idx 0)
+                        (swap! targets conj (nth args (inc t-idx)))))
+                    {:exit 0 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (tmux/nudge! "proj-session" "work-window" "test"))
+      (is (seq @targets) "expected at least one -t argument to be recorded")
+      (is (every? #(= "=proj-session:=work-window.0" %) @targets)))))

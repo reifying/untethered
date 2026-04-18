@@ -6,6 +6,7 @@
    via provider session files, not tmux output."
   (:require [clojure.java.shell :as shell]
             [clojure.string :as str]
+            [clojure.tools.logging :as log]
             [voice-code.providers :as providers]))
 
 ;; Declared up front so start-window! can reference evict-if-needed! and
@@ -147,3 +148,91 @@
                       (when idx
                         [(subs line 0 idx) (subs line (inc idx))]))))
                 (str/split-lines output)))))
+
+;; ============================================================================
+;; Shell-out layer (tmux subprocess control)
+;; ============================================================================
+
+(defn ensure-session!
+  "Create the per-directory tmux session if it doesn't exist.
+   Kept alive by a placeholder _holder window that sleeps indefinitely."
+  [tmux-session workdir]
+  (let [{:keys [exit]} (sh "tmux" "has-session" "-t" (str "=" tmux-session))]
+    (when-not (zero? exit)
+      (sh "tmux" "new-session" "-d" "-s" tmux-session
+          "-n" "_holder" "-c" workdir
+          "sh" "-c" "while true; do sleep 3600; done"))))
+
+(defn set-window-env!
+  "Persist per-window metadata in the session's tmux environment.
+   `vars` is a map of full key names including the VC_ prefix (e.g. \"VC_SESSION_UUID\")
+   to string values. Each key is written as <key>_<env-suffix> where env-suffix is
+   derived from the window name, producing e.g. VC_SESSION_UUID_<suffix>."
+  [tmux-session window vars]
+  (let [suffix (env-suffix window)]
+    (doseq [[k v] vars]
+      (sh "tmux" "set-environment" "-t" (str "=" tmux-session) (str k "_" suffix) v))))
+
+(defn wait-for-ready
+  "Poll capture-pane until the provider-specific readiness string appears.
+   Returns :ready on success, :timeout on deadline."
+  [tmux-session window provider & {:keys [timeout-ms poll-ms]
+                                   :or {timeout-ms 3000 poll-ms 100}}]
+  (let [ready? (readiness-predicate provider)
+        target (format "=%s:=%s.0" tmux-session window)
+        deadline (+ (System/currentTimeMillis) timeout-ms)]
+    (loop []
+      (let [{:keys [out exit]} (sh "tmux" "capture-pane" "-t" target "-p")]
+        (cond
+          (and (zero? exit) (ready? out)) :ready
+          (>= (System/currentTimeMillis) deadline)
+          (do (log/warn "wait-for-ready timed out; pane contents follow"
+                        {:tmux-session tmux-session :window window :provider provider
+                         :pane-contents (or out "")})
+              :timeout)
+          :else (do (Thread/sleep poll-ms) (recur)))))))
+
+(defn nudge!
+  "Deliver a message to a running tmux window using the tmux-agent pattern:
+   literal send-keys, 500 ms debounce, Escape (exits vim INSERT), Enter with
+   3 retries. Returns :ok on success, :failed on exhaustion (logged at WARN)."
+  [tmux-session window message]
+  (let [target (format "=%s:=%s.0" tmux-session window)]
+    (sh "tmux" "send-keys" "-t" target "-l" message)
+    (Thread/sleep 500)
+    (sh "tmux" "send-keys" "-t" target "Escape")
+    (Thread/sleep 100)
+    (loop [attempts 3]
+      (if (zero? attempts)
+        (do (log/warn "Nudge Enter delivery failed after 3 attempts"
+                      {:tmux-session tmux-session :window window})
+            :failed)
+        (let [{:keys [exit]} (sh "tmux" "send-keys" "-t" target "Enter")]
+          (if (zero? exit)
+            :ok
+            (do (Thread/sleep 200)
+                (recur (dec attempts)))))))))
+
+(defn kill-window!
+  "Kill a tmux window by session and window name."
+  [tmux-session window]
+  (sh "tmux" "kill-window" "-t" (format "=%s:=%s" tmux-session window)))
+
+(defn list-agent-windows
+  "Return [{:window :session-uuid :last-activity-ms}] for a tmux session.
+   Skips reserved names (_holder, tile) and windows without VC_SESSION_UUID_* env vars."
+  [tmux-session]
+  (let [env-out (:out (sh "tmux" "show-environment" "-t" (str "=" tmux-session)))
+        env (parse-show-environment env-out)
+        windows-out (:out (sh "tmux" "list-windows" "-t" (str "=" tmux-session)
+                              "-F" "#{window_name}"))
+        window-names (->> (str/split-lines (or windows-out ""))
+                          (remove #{"_holder" "tile" ""}))]
+    (keep (fn [w]
+            (let [suffix (env-suffix w)
+                  uuid (get env (str "VC_SESSION_UUID_" suffix))]
+              (when uuid
+                {:window w
+                 :session-uuid uuid
+                 :last-activity-ms (or (:last-modified-ms (providers/session-metadata uuid)) 0)})))
+          window-names)))
