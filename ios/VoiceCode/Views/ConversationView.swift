@@ -1253,7 +1253,7 @@ struct MessageDetailView: View {
                     if voiceOutput.isSpeaking {
                         voiceOutput.stop()
                     } else {
-                        let processedText = TextProcessor.removeCodeBlocks(from: message.text)
+                        let processedText = TextProcessor.prepareForSpeech(from: message.text)
                         voiceOutput.speak(processedText, workingDirectory: message.session?.workingDirectory)
                     }
                 }) {

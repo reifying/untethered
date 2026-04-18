@@ -260,6 +260,67 @@ final class TextProcessorTests: XCTestCase {
         XCTAssertEqual(result, input.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     
+    // MARK: - CamelCase Splitting Tests
+
+    func testSplitsSimplePascalCase() {
+        XCTAssertEqual(TextProcessor.splitCamelCase(in: "FooBar"), "Foo Bar")
+    }
+
+    func testSplitsCamelCase() {
+        XCTAssertEqual(TextProcessor.splitCamelCase(in: "fooBar"), "foo Bar")
+    }
+
+    func testSplitsAcronymFollowedByWord() {
+        XCTAssertEqual(TextProcessor.splitCamelCase(in: "XMLHttpRequest"), "XML Http Request")
+    }
+
+    func testSplitsJavaStyleClassName() {
+        XCTAssertEqual(TextProcessor.splitCamelCase(in: "NullPointerException"),
+                       "Null Pointer Exception")
+    }
+
+    func testSplitsShortAcronymPrefix() {
+        XCTAssertEqual(TextProcessor.splitCamelCase(in: "NSObject"), "NS Object")
+        XCTAssertEqual(TextProcessor.splitCamelCase(in: "IOException"), "IO Exception")
+    }
+
+    func testLeavesNonCamelWordsAlone() {
+        XCTAssertEqual(TextProcessor.splitCamelCase(in: "hello world"), "hello world")
+        XCTAssertEqual(TextProcessor.splitCamelCase(in: "ALLCAPS"), "ALLCAPS")
+        XCTAssertEqual(TextProcessor.splitCamelCase(in: "lowercase"), "lowercase")
+    }
+
+    func testSplitsCamelCaseInsideSentence() {
+        XCTAssertEqual(
+            TextProcessor.splitCamelCase(in: "Call FooBar.doWork() before HTTPClient."),
+            "Call Foo Bar.do Work() before HTTP Client."
+        )
+    }
+
+    // MARK: - prepareForSpeech
+
+    func testPrepareForSpeechRemovesCodeAndSplitsCamelCase() {
+        let input = "The `HTTPClient` calls `FooBar.doWork()` now."
+        let expected = "The HTTP Client calls Foo Bar.do Work() now."
+        XCTAssertEqual(TextProcessor.prepareForSpeech(from: input), expected)
+    }
+
+    func testPrepareForSpeechHandlesFencedBlocksAndCamelCase() {
+        let input = """
+        Use MyClass like this:
+        ```swift
+        let x = MyClass()
+        ```
+        Done.
+        """
+        let expected = """
+        Use My Class like this:
+        [code block]
+        Done.
+        """
+        XCTAssertEqual(TextProcessor.prepareForSpeech(from: input), expected)
+    }
+
     func testNestedBackticksInFencedBlock() {
         let input = """
         Example:

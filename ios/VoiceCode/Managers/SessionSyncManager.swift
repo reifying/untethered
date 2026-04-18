@@ -520,7 +520,7 @@ class SessionSyncManager {
                     DispatchQueue.main.async {
                         if let voiceManager = voiceManager {
                             for text in assistantMessagesToSpeak {
-                                let processedText = TextProcessor.removeCodeBlocks(from: text)
+                                let processedText = TextProcessor.prepareForSpeech(from: text)
                                 logger.info("🔊 Calling speak() with text length: \(processedText.count)")
                                 voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory)
                             }
