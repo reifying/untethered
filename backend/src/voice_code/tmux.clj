@@ -236,3 +236,99 @@
                  :session-uuid uuid
                  :last-activity-ms (or (:last-modified-ms (providers/session-metadata uuid)) 0)})))
           window-names)))
+
+;; ============================================================================
+;; Window Lifecycle (eviction, start, deliver)
+;; ============================================================================
+
+(defn- window-last-activity-ms
+  "Latest message timestamp in the session's JSONL file (ms since epoch).
+   Returns 0 if metadata is unavailable."
+  [session-uuid]
+  (or (:last-modified-ms (providers/session-metadata session-uuid)) 0))
+
+(defn- processing?
+  "A window is 'processing' if the provider session saw a message within
+   processing-window-minutes. Active windows are never evicted."
+  [session-uuid]
+  (let [cutoff (- (System/currentTimeMillis) (* processing-window-minutes 60000))]
+    (> (window-last-activity-ms session-uuid) cutoff)))
+
+(defn- evict-if-needed!
+  "Enforce the per-session window cap. Kill the least-recently-active idle
+   window if there are >= window-cap windows. Never kills processing windows.
+   Serialized via eviction-lock to prevent concurrent eviction races."
+  [tmux-session]
+  (locking eviction-lock
+    (let [windows (->> (list-agent-windows tmux-session)
+                       (map (fn [w] (assoc w :idle? (not (processing? (:session-uuid w)))))))]
+      (when-let [victim (choose-victim windows window-cap)]
+        (log/info "Evicting idle window"
+                  {:tmux-session tmux-session :window (:window victim)
+                   :session-uuid (:session-uuid victim)
+                   :idle-for-ms (- (System/currentTimeMillis) (:last-activity-ms victim))})
+        (kill-window! tmux-session (:window victim))
+        (swap! live-windows dissoc (:session-uuid victim))))))
+
+(defn start-window!
+  "Create a tmux window running the provider CLI, wait for TUI readiness,
+   and deliver the initial prompt as a nudge. Returns the window descriptor.
+   When :resume? is true, the provider is launched with its --resume flag;
+   otherwise it starts a fresh session keyed to session-uuid."
+  [{:keys [session-uuid session-name provider workdir initial-prompt resume?]}]
+  (let [tmux-session (sanitize-session-name workdir)
+        window (window-name session-name session-uuid)
+        cmd (build-provider-command provider
+                                    {:session-uuid session-uuid
+                                     :resume? (boolean resume?)})]
+    (ensure-session! tmux-session workdir)
+    ;; eviction-lock covers both eviction and creation as one critical section
+    ;; so two concurrent start-window! calls cannot both create past the cap.
+    ;; evict-if-needed! also acquires this lock; Java synchronized is reentrant
+    ;; so the inner acquisition is a no-op for the same thread.
+    (locking eviction-lock
+      (evict-if-needed! tmux-session)
+      (sh "tmux" "new-window" "-d" "-t" (str "=" tmux-session ":")
+          "-n" window "-c" workdir cmd))
+    (set-window-env! tmux-session window
+                     {"VC_SESSION_UUID" session-uuid
+                      "VC_WORKDIR" workdir
+                      "VC_PROVIDER" (name provider)
+                      "VC_STARTED_AT" (.toString (java.time.Instant/now))})
+    (let [descriptor {:tmux-session tmux-session
+                      :tmux-window window
+                      :provider provider
+                      :workdir workdir
+                      :started-at (System/currentTimeMillis)}]
+      (swap! live-windows assoc session-uuid descriptor)
+      (when (= :ready (wait-for-ready tmux-session window provider))
+        (when initial-prompt
+          (nudge! tmux-session window initial-prompt)))
+      descriptor)))
+
+(defn- respawn-and-deliver!
+  "Respawn an evicted session with --resume and deliver the prompt.
+   Looks up session metadata to recover provider, workdir, and name."
+  [session-uuid prompt-text]
+  (let [meta (providers/session-metadata session-uuid)
+        _ (when-not meta
+            (log/warn "No session metadata found for respawn; defaulting to claude in home dir"
+                      {:session-uuid session-uuid}))
+        provider (or (:provider meta) :claude)
+        workdir (or (:working-directory meta) (System/getProperty "user.home"))
+        session-name (:name meta)]
+    (log/info "Respawning evicted session" {:session-uuid session-uuid :provider provider})
+    (start-window! {:session-uuid session-uuid
+                    :session-name session-name
+                    :provider provider
+                    :workdir workdir
+                    :initial-prompt prompt-text
+                    :resume? true})))
+
+(defn deliver!
+  "Public entry point for both initial and follow-up prompts.
+   Nudges the existing window if live, otherwise respawns with --resume."
+  [session-uuid prompt-text]
+  (if-let [{:keys [tmux-session tmux-window]} (get @live-windows session-uuid)]
+    (nudge! tmux-session tmux-window prompt-text)
+    (respawn-and-deliver! session-uuid prompt-text)))

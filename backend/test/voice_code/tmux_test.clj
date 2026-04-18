@@ -332,3 +332,268 @@
         (tmux/nudge! "proj-session" "work-window" "test"))
       (is (seq @targets) "expected at least one -t argument to be recorded")
       (is (every? #(= "=proj-session:=work-window.0" %) @targets)))))
+
+;; ============================================================================
+;; processing? (via window-last-activity-ms)
+;; ============================================================================
+
+(deftest processing?-test
+  (testing "returns true when session has recent activity (within 15 min)"
+    (let [recent-ms (- (System/currentTimeMillis) (* 5 60 1000))]
+      (with-redefs [voice-code.providers/session-metadata
+                    (constantly {:last-modified-ms recent-ms})]
+        (is (true? (#'tmux/processing? "some-uuid"))))))
+
+  (testing "returns false when session has no recent activity (older than 15 min)"
+    (let [old-ms (- (System/currentTimeMillis) (* 20 60 1000))]
+      (with-redefs [voice-code.providers/session-metadata
+                    (constantly {:last-modified-ms old-ms})]
+        (is (false? (#'tmux/processing? "some-uuid"))))))
+
+  (testing "returns false when session-metadata returns nil (missing session)"
+    (with-redefs [voice-code.providers/session-metadata (constantly nil)]
+      (is (false? (#'tmux/processing? "missing-uuid"))))))
+
+;; ============================================================================
+;; start-window!
+;; ============================================================================
+
+(deftest start-window!-test
+  (testing "returns descriptor and updates live-windows"
+    (let [uuid "abc123de-0000-0000-0000-000000000000"
+          invoker (fn [& args]
+                    (cond
+                      ;; has-session: session already exists
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      ;; list-windows: no agent windows yet (for evict-if-needed!)
+                      (some #{"list-windows"} args) {:exit 0 :out "_holder\n" :err ""}
+                      ;; show-environment: empty
+                      (some #{"show-environment"} args) {:exit 0 :out "" :err ""}
+                      ;; capture-pane: return readiness string for claude
+                      (some #{"capture-pane"} args) {:exit 0 :out "bypass permissions" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/claude")
+                      voice-code.providers/session-metadata (constantly nil)]
+          (let [result (tmux/start-window! {:session-uuid uuid
+                                            :session-name "Test Session"
+                                            :provider :claude
+                                            :workdir "/tmp/test-workdir"
+                                            :initial-prompt nil})]
+            (is (map? result))
+            (is (= :claude (:provider result)))
+            (is (= "/tmp/test-workdir" (:workdir result)))
+            (is (= "test-workdir" (:tmux-session result)))
+            (is (contains? @tmux/live-windows uuid))
+            (let [stored (get @tmux/live-windows uuid)]
+              (is (= :claude (:provider stored)))
+              (is (= "/tmp/test-workdir" (:workdir stored)))))))))
+
+  (testing "calls new-window with provider command"
+    (let [uuid "def45600-0000-0000-0000-000000000000"
+          new-window-calls (atom [])
+          invoker (fn [& args]
+                    (when (some #{"new-window"} args)
+                      (swap! new-window-calls conj (vec args)))
+                    (cond
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      (some #{"list-windows"} args) {:exit 0 :out "_holder\n" :err ""}
+                      (some #{"show-environment"} args) {:exit 0 :out "" :err ""}
+                      (some #{"capture-pane"} args) {:exit 0 :out "bypass permissions" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (with-redefs [voice-code.providers/cli-path (constantly "/usr/bin/claude")
+                      voice-code.providers/session-metadata (constantly nil)]
+          (tmux/start-window! {:session-uuid uuid
+                               :session-name nil
+                               :provider :claude
+                               :workdir "/tmp/proj"}))
+        (is (seq @new-window-calls))
+        (let [args (first @new-window-calls)]
+          (is (some #{"new-window"} args))
+          ;; command should contain session uuid
+          (is (some #(clojure.string/includes? (str %) uuid) args))))))
+
+  (testing "nudges initial-prompt when window becomes ready"
+    (let [uuid "aabbccdd-0000-0000-0000-000000000000"
+          send-keys-calls (atom [])
+          invoker (fn [& args]
+                    (when (some #{"send-keys"} args)
+                      (swap! send-keys-calls conj (vec args)))
+                    (cond
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      (some #{"list-windows"} args) {:exit 0 :out "_holder\n" :err ""}
+                      (some #{"show-environment"} args) {:exit 0 :out "" :err ""}
+                      (some #{"capture-pane"} args) {:exit 0 :out "bypass permissions" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (with-redefs [voice-code.providers/cli-path (constantly "/usr/bin/claude")
+                      voice-code.providers/session-metadata (constantly nil)]
+          (tmux/start-window! {:session-uuid uuid
+                               :session-name "My Session"
+                               :provider :claude
+                               :workdir "/tmp/proj"
+                               :initial-prompt "Do the thing"}))
+        ;; Should have literal send-keys with the prompt text
+        (is (some #(some #{"Do the thing"} %) @send-keys-calls)
+            "expected initial-prompt to be sent via send-keys"))))
+
+  (testing "does not nudge when no initial-prompt"
+    (let [uuid "11223344-0000-0000-0000-000000000000"
+          send-keys-calls (atom [])
+          invoker (fn [& args]
+                    (when (and (some #{"send-keys"} args) (some #{"-l"} args))
+                      (swap! send-keys-calls conj (vec args)))
+                    (cond
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      (some #{"list-windows"} args) {:exit 0 :out "_holder\n" :err ""}
+                      (some #{"show-environment"} args) {:exit 0 :out "" :err ""}
+                      (some #{"capture-pane"} args) {:exit 0 :out "bypass permissions" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (with-redefs [voice-code.providers/cli-path (constantly "/usr/bin/claude")
+                      voice-code.providers/session-metadata (constantly nil)]
+          (tmux/start-window! {:session-uuid uuid
+                               :session-name nil
+                               :provider :claude
+                               :workdir "/tmp/proj"
+                               :initial-prompt nil}))
+        ;; No literal send-keys with -l (no prompt nudge)
+        (is (empty? @send-keys-calls)
+            "expected no nudge when initial-prompt is nil"))))
+
+  (testing "start-window! with resume? true passes --resume to provider command"
+    (let [uuid "55667788-0000-0000-0000-000000000000"
+          new-window-args (atom nil)
+          invoker (fn [& args]
+                    (when (some #{"new-window"} args)
+                      (reset! new-window-args (vec args)))
+                    (cond
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      (some #{"list-windows"} args) {:exit 0 :out "_holder\n" :err ""}
+                      (some #{"show-environment"} args) {:exit 0 :out "" :err ""}
+                      (some #{"capture-pane"} args) {:exit 0 :out "bypass permissions" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (with-redefs [voice-code.providers/cli-path (constantly "/usr/bin/claude")
+                      voice-code.providers/session-metadata (constantly nil)]
+          (tmux/start-window! {:session-uuid uuid
+                               :session-name nil
+                               :provider :claude
+                               :workdir "/tmp/proj"
+                               :resume? true}))
+        (is (some? @new-window-args))
+        (is (some #(clojure.string/includes? (str %) "--resume") @new-window-args)
+            "expected --resume in new-window command when resume? is true"))))
+
+  (testing "evicts one idle window when at cap before creating new window"
+    (let [uuid "99aabbcc-0000-0000-0000-000000000000"
+          victim-uuid "victim-uuid-0000-0000-0000-000000000000"
+          kill-window-calls (atom [])
+          old-ms (- (System/currentTimeMillis) (* 30 60 1000)) ; 30 min ago = idle
+          invoker (fn [& args]
+                    (when (some #{"kill-window"} args)
+                      (swap! kill-window-calls conj (vec args)))
+                    (cond
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      (some #{"list-windows"} args)
+                      {:exit 0
+                       :out (str "win-a\nwin-b\nwin-c\nwin-d\n")
+                       :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0
+                       :out (str "VC_SESSION_UUID_win_a=" victim-uuid "\n"
+                                 "VC_SESSION_UUID_win_b=uuid-b\n"
+                                 "VC_SESSION_UUID_win_c=uuid-c\n"
+                                 "VC_SESSION_UUID_win_d=uuid-d\n")
+                       :err ""}
+                      (some #{"capture-pane"} args) {:exit 0 :out "bypass permissions" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (with-redefs [voice-code.providers/cli-path (constantly "/usr/bin/claude")
+                      voice-code.providers/session-metadata
+                      (fn [sid]
+                        {:last-modified-ms (if (= sid victim-uuid) old-ms
+                                               (- (System/currentTimeMillis) (* 2 60 1000)))})]
+          (tmux/start-window! {:session-uuid uuid
+                               :session-name nil
+                               :provider :claude
+                               :workdir "/tmp/proj"}))
+        (is (seq @kill-window-calls) "expected kill-window to be called for evicted window")))))
+
+;; ============================================================================
+;; deliver!
+;; ============================================================================
+
+(deftest deliver!-test
+  (testing "nudges existing window when UUID is in live-windows"
+    (let [uuid "live-uuid-0000-0000-0000-000000000000"
+          send-keys-calls (atom [])
+          invoker (fn [& args]
+                    (swap! send-keys-calls conj (vec args))
+                    {:exit 0 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows
+                {uuid {:tmux-session "my-session"
+                       :tmux-window "my-window"
+                       :provider :claude
+                       :workdir "/tmp"}})
+        (tmux/deliver! uuid "follow-up prompt"))
+      ;; literal send-keys with the prompt text
+      (is (some #(some #{"follow-up prompt"} %) @send-keys-calls)
+          "expected nudge to be called on existing window")))
+
+  (testing "respawns via start-window! with --resume when UUID not in live-windows"
+    (let [uuid "evicted-uuid-0000-0000-0000-000000000000"
+          new-window-args (atom nil)
+          invoker (fn [& args]
+                    (when (some #{"new-window"} args)
+                      (reset! new-window-args (vec args)))
+                    (cond
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      (some #{"list-windows"} args) {:exit 0 :out "_holder\n" :err ""}
+                      (some #{"show-environment"} args) {:exit 0 :out "" :err ""}
+                      (some #{"capture-pane"} args) {:exit 0 :out "bypass permissions" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (with-redefs [voice-code.providers/cli-path (constantly "/usr/bin/claude")
+                      voice-code.providers/session-metadata
+                      (constantly {:provider :claude
+                                   :working-directory "/tmp/proj"
+                                   :name "My Evicted Session"})]
+          (tmux/deliver! uuid "my follow-up")))
+      (is (some? @new-window-args) "expected new-window to be called (respawn)")
+      (is (some #(clojure.string/includes? (str %) "--resume") @new-window-args)
+          "expected --resume flag in respawned window command")))
+
+  (testing "respawn uses workdir from session metadata"
+    (let [uuid "evicted-uuid-1111-0000-0000-000000000000"
+          new-window-args (atom nil)
+          invoker (fn [& args]
+                    (when (some #{"new-window"} args)
+                      (reset! new-window-args (vec args)))
+                    (cond
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      (some #{"list-windows"} args) {:exit 0 :out "_holder\n" :err ""}
+                      (some #{"show-environment"} args) {:exit 0 :out "" :err ""}
+                      (some #{"capture-pane"} args) {:exit 0 :out "bypass permissions" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (with-redefs [voice-code.providers/cli-path (constantly "/usr/bin/claude")
+                      voice-code.providers/session-metadata
+                      (constantly {:provider :claude
+                                   :working-directory "/tmp/special-dir"
+                                   :name "Session"})]
+          (tmux/deliver! uuid "prompt text")))
+      (is (some? @new-window-args))
+      ;; working directory should appear in the new-window -c argument
+      (is (some #(= "/tmp/special-dir" %) @new-window-args)
+          "expected working directory from metadata to be used in new-window"))))
