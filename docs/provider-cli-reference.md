@@ -500,3 +500,117 @@ Non-UUID format: `ses_<base62-like-id>` (e.g. `ses_3c44a6687ffeIUxzaoccbjukLU`)
 | Copilot | Easy | JSONL events + YAML metadata |
 | Cursor | Hard | SQLite with binary Merkle-tree blobs — not designed for external reading |
 | OpenCode | Easy | Individual JSON files per session/message/part, well-structured |
+
+---
+
+## 5. Interactive Mode & Turn-Complete Detection
+
+*Verified 2026-04-18. Relevant to tmux-based invocation (see `docs/plans/2026-04-18-tmux-untethered-invocation-design.md` §3.5).*
+
+The tmux invocation design runs provider CLIs in interactive (TUI) mode, not `--print` mode. Turn-complete detection must therefore come from session storage files rather than process exit codes or stdout.
+
+Test fixtures for each provider: `backend/test-resources/provider-fixtures/`
+
+### 5.1 Claude — Interactive Mode
+
+**`--session-id` flag:** Confirmed working. The flag accepts any valid UUID and causes Claude to write to `~/.claude/projects/<project-hash>/<uuid>.jsonl`. The filename is the lowercase UUID exactly as supplied. Verified in print mode:
+```
+claude --dangerously-skip-permissions --session-id <uuid> -p "say hello"
+# Produces ~/.claude/projects/.../<uuid>.jsonl
+```
+Interactive TUI mode (`entrypoint: "cli"`) was not separately tested with `--session-id`, but real TUI sessions use the same JSONL path and format — the session file layout is identical regardless of invocation mode.
+
+**Turn-complete marker:** An `assistant` record where `message.stop_reason` ∈ `{"end_turn", "stop_sequence"}`. The outer `type` field is `"assistant"`.
+
+```json
+{
+  "type": "assistant",
+  "message": {
+    "role": "assistant",
+    "content": [{"type": "text", "text": "..."}],
+    "stop_reason": "end_turn"
+  },
+  "uuid": "...",
+  "timestamp": "..."
+}
+```
+
+Turn is **still in progress** when `stop_reason` is `"tool_use"` or `null`. Any `type: "assistant"` record with `message.stop_reason` ∈ `{"end_turn", "stop_sequence"}` and `isSidechain: false` signals completion.
+
+**File:** `backend/test-resources/provider-fixtures/claude-session.jsonl`
+
+### 5.2 Copilot — Interactive Mode
+
+**Interactive invocation:** `copilot --no-color --allow-all-tools --no-ask-user` (no `--prompt` / `-p` flag). Session stored at `~/.copilot/session-state/<uuid>/events.jsonl`.
+
+**Turn-complete marker:** `type: "assistant.turn_end"` event.
+
+Important: Copilot emits `assistant.turn_end` after every internal tool-use micro-turn, not just at user-visible turn boundaries. The pattern for a tool-using response is:
+
+```
+assistant.turn_start → assistant.message (toolRequests non-empty) → tool.execution_* → assistant.turn_end
+assistant.turn_start → assistant.message (toolRequests non-empty) → tool.execution_* → assistant.turn_end
+...
+assistant.turn_start → assistant.message (toolRequests: [], content: "final text") → assistant.turn_end
+```
+
+**Detection rule for replication.clj:** Emit `turn_complete` when `assistant.turn_end` is observed AND the most recent `assistant.message` event in the same session has `toolRequests: []` (empty array). This distinguishes the final user-visible turn from intermediate tool-use turns. Do not gate on non-empty `content` — a turn where Copilot makes edits without a textual reply will have `toolRequests: []` and `content: ""` at the final turn, which must still trigger completion.
+
+```json
+{"type": "assistant.turn_end", "data": {"turnId": "7"}, "id": "...", "timestamp": "...", "parentId": "..."}
+```
+
+**File:** `backend/test-resources/provider-fixtures/copilot-events.jsonl`
+
+### 5.3 Cursor — Interactive Mode
+
+**Interactive invocation:** `cursor-agent --force` (the `cursor` binary requires Cursor IDE; use `cursor-agent` directly). `--force` means "Force allow commands unless explicitly denied" — the Cursor equivalent of `--dangerously-skip-permissions`. It is valid in both TUI and `--print` modes.
+
+**IMPORTANT — Design doc correction:** The design doc (§3.5) states "Cursor: last line of the session JSONL carries a terminal event type." This is **incorrect**.
+
+**Actual findings:**
+
+1. **Primary storage:** SQLite at `~/.cursor/chats/<project-hash>/<session-uuid>/store.db`. Two tables: `meta` (hex-encoded JSON) and `blobs` (binary Merkle-tree content). Not practically parseable for external turn detection.
+
+2. **Agent transcripts JSONL:** `~/.cursor/projects/<project-hash>/agent-transcripts/<session-uuid>.jsonl`. This file contains `{role: "user"|"assistant", message: {content: [...]}}` records. **There is no explicit turn-complete marker.** The last line is the final `role: "assistant"` message with no terminal event.
+
+3. **The `type: "result"` event** from `--output-format stream-json` does NOT appear in the agent-transcripts JSONL.
+
+4. **TUI-mode writes to agent-transcripts — unverified:** All observed agent-transcript files were from `--print`-mode invocations. Whether `cursor-agent` writes to `agent-transcripts` during interactive TUI mode (without `--print`) was not confirmed. This is an open question for task #8.
+
+**Recommended detection approach for task #8:** If agent-transcripts JSONL is written in TUI mode, use file modification time: emit `turn_complete` when the JSONL file's mtime has been stable for >2 seconds after the last write. This is less reliable than an explicit marker.
+
+Preferred alternative: run Cursor in `--print --output-format stream-json` mode and detect the `type: "result"` event from stdout. This gives a reliable, explicit signal at the cost of losing mid-turn steering capability for Cursor specifically.
+
+**File:** `backend/test-resources/provider-fixtures/cursor-transcript.jsonl`
+
+### 5.4 OpenCode — Interactive Mode
+
+**Interactive invocation:** `opencode` (no subcommand; `opencode run` is for non-interactive use).
+
+**Turn-complete marker — storage:** A part file at `~/.local/share/opencode/storage/part/<msg-id>/<part-id>.json` with:
+```json
+{"type": "step-finish", "reason": "stop", ...}
+```
+
+The parts directory for a message contains files written sequentially: `step-start`, then `text`/`tool` parts, then `step-finish` with `reason: "stop"` (success) or `reason: "error"`.
+
+**Turn-complete marker — streaming output** (`opencode run --format json`):
+```json
+{"type": "step_finish", "sessionID": "ses_...", "part": {"type": "step-finish", "reason": "stop", ...}}
+```
+
+**Detection rule for replication.clj:** Watch `~/.local/share/opencode/storage/part/` for new subdirectories (one per message). Within each new directory, watch for a file with `type: "step-finish"` and `reason: "stop"`. The message belongs to a session via the `sessionID` field in the part file.
+
+**Note on session IDs:** OpenCode uses non-UUID session IDs (`ses_<base62>`). The session index must handle these separately — existing `valid-uuid?` check is insufficient; use `providers/valid-opencode-session-id?`.
+
+**File:** `backend/test-resources/provider-fixtures/opencode-step-finish.json`
+
+### 5.5 Summary Table
+
+| Provider | Turn-Complete Signal | Source | Reliable? |
+|----------|---------------------|--------|-----------|
+| Claude | `type: "assistant"` with `message.stop_reason: "end_turn"` | `~/.claude/projects/.../<uuid>.jsonl` | Yes |
+| Copilot | `type: "assistant.turn_end"` when last `assistant.message` has `toolRequests: []` | `~/.copilot/session-state/<uuid>/events.jsonl` | Yes |
+| Cursor | No explicit marker (last `role: "assistant"` line) | `~/.cursor/projects/.../agent-transcripts/<uuid>.jsonl` | No — use mtime debounce |
+| OpenCode | Part file `type: "step-finish"` with `reason: "stop"` | `~/.local/share/opencode/storage/part/<msg-id>/*.json` | Yes |

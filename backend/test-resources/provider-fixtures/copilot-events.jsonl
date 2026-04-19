@@ -1,0 +1,9 @@
+{"type":"user.message","data":{"messageId":"msg-001","content":"echo hello world"},"id":"ev-001","timestamp":"2026-04-18T00:00:00.000Z","parentId":null}
+{"type":"assistant.turn_start","data":{"turnId":"1"},"id":"ev-002","timestamp":"2026-04-18T00:00:00.100Z","parentId":"ev-001"}
+{"type":"assistant.message","data":{"messageId":"msg-002","content":"","toolRequests":[{"toolCallId":"call_abc","name":"bash","arguments":{"command":"echo hello world","description":"Run echo"},"type":"function"}],"reasoningOpaque":""},"id":"ev-003","timestamp":"2026-04-18T00:00:00.500Z","parentId":"ev-002"}
+{"type":"tool.execution_start","data":{"toolCallId":"call_abc","toolName":"bash","arguments":{"command":"echo hello world","description":"Run echo"}},"id":"ev-004","timestamp":"2026-04-18T00:00:00.600Z","parentId":"ev-003"}
+{"type":"tool.execution_complete","data":{"toolCallId":"call_abc","success":true,"result":{"content":"hello world\n","detailedContent":"hello world\n"},"toolTelemetry":{}},"id":"ev-005","timestamp":"2026-04-18T00:00:01.000Z","parentId":"ev-004"}
+{"type":"assistant.turn_end","data":{"turnId":"1"},"id":"ev-006","timestamp":"2026-04-18T00:00:01.001Z","parentId":"ev-005"}
+{"type":"assistant.turn_start","data":{"turnId":"2"},"id":"ev-007","timestamp":"2026-04-18T00:00:01.001Z","parentId":"ev-006"}
+{"type":"assistant.message","data":{"messageId":"msg-003","content":"The command ran successfully: hello world","toolRequests":[]},"id":"ev-008","timestamp":"2026-04-18T00:00:02.000Z","parentId":"ev-007"}
+{"type":"assistant.turn_end","data":{"turnId":"2"},"id":"ev-009","timestamp":"2026-04-18T00:00:02.001Z","parentId":"ev-008"}
