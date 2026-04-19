@@ -917,6 +917,20 @@
                  (not= (:type msg) "system")))
           messages))
 
+(defn claude-human-prompt?
+  "True when a raw Claude .jsonl message is a human-typed user prompt with no
+  tool_result blocks. Such messages are echoes of what iOS already inserted
+  optimistically when the user hit send, so the watcher must not re-emit them
+  (would render a duplicate user bubble). Tool-result user messages, in contrast,
+  must flow through so iOS can show them in real-time."
+  [raw-msg]
+  (and (= "user" (:type raw-msg))
+       (let [content (get-in raw-msg [:message :content])]
+         (cond
+           (string? content) true
+           (sequential? content) (not-any? #(= "tool_result" (:type %)) content)
+           :else true))))
+
 (defn parse-jsonl-file
   "Parse all messages from a .jsonl file.
   Returns vector of message maps."
@@ -1436,12 +1450,11 @@
                     ;; Send updates to subscribed clients (regardless of ios-notified flag).
                     ;; Transform raw Claude .jsonl messages to canonical wire format
                     ;; (with :role/:text/:uuid/:timestamp/:provider) so iOS can extract them.
-                    ;; Without this, iOS's extractText (which reads messageData["text"]) sees
-                    ;; nothing and silently drops the update — the user has to manually
-                    ;; refresh / re-enter the session to trigger subscribe (which uses
-                    ;; parse-session-messages → canonical format).
+                    ;; Drop human-typed user prompts (already shown optimistically on iOS) but
+                    ;; keep tool_result user messages so iOS can render tool output live.
                     (when (is-subscribed? session-id)
                       (let [canonical-messages (->> filtered-messages
+                                                    (remove claude-human-prompt?)
                                                     (map #(providers/parse-message :claude %))
                                                     (filter some?)
                                                     (vec))]

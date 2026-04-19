@@ -36,6 +36,24 @@
     :isSidechain sidechain?
     :message {:role type :content text}}))
 
+(defn claude-tool-result-jsonl
+  "Build a Claude .jsonl line for a tool_result, which on disk is a user-typed
+   message whose content array carries a tool_result block. Used to verify the
+   watcher does not suppress these (they're not user-typed prompts)."
+  [{:keys [tool-use-id text uuid timestamp]
+    :or {timestamp "2026-04-19T00:00:00Z"
+         uuid (str (java.util.UUID/randomUUID))
+         tool-use-id (str "toolu_" (java.util.UUID/randomUUID))}}]
+  (json/generate-string
+   {:type "user"
+    :uuid uuid
+    :timestamp timestamp
+    :isSidechain false
+    :message {:role "user"
+              :content [{:type "tool_result"
+                         :tool_use_id tool-use-id
+                         :content text}]}}))
+
 (defn cleanup-test-dir
   []
   (when (.exists (io/file test-dir))
@@ -961,13 +979,13 @@
       ;; Call handle-file-modified
       (repl/handle-file-modified file)
 
-      ;; Callback SHOULD be called with non-sidechain messages, in canonical form
+      ;; Callback SHOULD be called with the assistant message in canonical form.
+      ;; User messages are intentionally suppressed (iOS already has them via the
+      ;; optimistic insert when the prompt was sent).
       (is (true? @callback-called))
-      (is (= 2 (count @callback-messages)))
-      (is (= "real message 1" (:text (first @callback-messages))))
-      (is (= "real message 2" (:text (second @callback-messages))))
-      (is (= "user" (:role (first @callback-messages))) "messages must be canonical (role, not type)")
-      (is (= "assistant" (:role (second @callback-messages))))
+      (is (= 1 (count @callback-messages)))
+      (is (= "real message 2" (:text (first @callback-messages))))
+      (is (= "assistant" (:role (first @callback-messages))) "messages must be canonical (role, not type)")
       (is (= :claude (:provider (first @callback-messages))))
 
       ;; Metadata should be updated with count of 2
@@ -1021,12 +1039,12 @@
       ;; Call handle-file-modified
       (repl/handle-file-modified file)
 
-      ;; Callback SHOULD be called with only non-sidechain messages, in canonical form
+      ;; Callback SHOULD be called with only the non-sidechain assistant message
+      ;; in canonical form. User messages are intentionally suppressed.
       (is (true? @callback-called))
-      (is (= 2 (count @callback-messages)))
-      (is (= "real message 1" (:text (first @callback-messages))))
-      (is (= "real message 2" (:text (second @callback-messages))))
-      (is (= ["user" "assistant"] (mapv :role @callback-messages)))
+      (is (= 1 (count @callback-messages)))
+      (is (= "real message 2" (:text (first @callback-messages))))
+      (is (= ["assistant"] (mapv :role @callback-messages)))
 
       ;; Canonical messages should not carry the raw :isSidechain key
       (is (every? #(nil? (:isSidechain %)) @callback-messages))
@@ -1084,6 +1102,124 @@
         (is (= :claude (:provider m)))
         (is (nil? (:message m)) "raw :message wrapper must not leak through")
         (is (nil? (:type m)) "raw :type field must not leak through"))
+
+      (repl/unsubscribe-from-session! session-id)
+      (repl/reset-file-position! file-path))))
+
+(deftest test-handle-file-modified-suppresses-user-messages
+  (testing "User messages are not forwarded via on-session-updated (regression: iOS shows
+           the user message twice — once from the optimistic insert when the prompt was sent,
+           and again when the watcher echoes the .jsonl write back as canonical wire format)"
+    (let [callback-messages (atom nil)
+          session-id "550e8400-e29b-41d4-a716-4466554400ab"
+          messages [(claude-jsonl {:type "user" :text "what is 2+2"})
+                    (claude-jsonl {:type "assistant" :text "4"})]
+          file (create-test-jsonl-file (str session-id ".jsonl") messages)
+          file-path (.getAbsolutePath file)]
+
+      (repl/subscribe-to-session! session-id)
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :message-count 0
+              :last-modified (.lastModified file)
+              :ios-notified true})
+
+      (reset! repl/watcher-state
+              {:running false
+               :watch-service nil
+               :watcher-thread nil
+               :subscribed-sessions #{session-id}
+               :event-queue (atom {})
+               :on-session-updated (fn [_ msgs] (reset! callback-messages msgs))
+               :max-retries 3
+               :debounce-ms 200})
+
+      (repl/handle-file-modified file)
+
+      (is (= 1 (count @callback-messages))
+          "watcher must not echo the user message back to iOS")
+      (is (= "assistant" (:role (first @callback-messages))))
+      (is (= "4" (:text (first @callback-messages))))
+
+      ;; Index still tracks both messages even though only the assistant was forwarded.
+      (let [metadata (repl/get-session-metadata session-id)]
+        (is (= 2 (:message-count metadata))))
+
+      (repl/unsubscribe-from-session! session-id)
+      (repl/reset-file-position! file-path)))
+
+  (testing "Callback is not invoked at all when only a user message arrives"
+    (let [callback-called (atom false)
+          session-id "550e8400-e29b-41d4-a716-4466554400ac"
+          messages [(claude-jsonl {:type "user" :text "hello"})]
+          file (create-test-jsonl-file (str session-id ".jsonl") messages)
+          file-path (.getAbsolutePath file)]
+
+      (repl/subscribe-to-session! session-id)
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :message-count 0
+              :last-modified (.lastModified file)
+              :ios-notified true})
+
+      (reset! repl/watcher-state
+              {:running false
+               :watch-service nil
+               :watcher-thread nil
+               :subscribed-sessions #{session-id}
+               :event-queue (atom {})
+               :on-session-updated (fn [_ _] (reset! callback-called true))
+               :max-retries 3
+               :debounce-ms 200})
+
+      (repl/handle-file-modified file)
+
+      (is (false? @callback-called)
+          "no on-session-updated callback when only user messages are present")
+
+      (repl/unsubscribe-from-session! session-id)
+      (repl/reset-file-position! file-path)))
+
+  (testing "Tool results (encoded as user-typed messages with tool_result content) ARE forwarded"
+    (let [callback-messages (atom nil)
+          session-id "550e8400-e29b-41d4-a716-4466554400ad"
+          ;; Realistic flow: user prompt, assistant tool_use, tool_result echoed as user msg.
+          messages [(claude-jsonl {:type "user" :text "what time is it"})
+                    (claude-jsonl {:type "assistant" :text "let me check"})
+                    (claude-tool-result-jsonl {:text "2026-04-19T18:14:40Z"})
+                    (claude-jsonl {:type "assistant" :text "It's 18:14 UTC"})]
+          file (create-test-jsonl-file (str session-id ".jsonl") messages)
+          file-path (.getAbsolutePath file)]
+
+      (repl/subscribe-to-session! session-id)
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :message-count 0
+              :last-modified (.lastModified file)
+              :ios-notified true})
+
+      (reset! repl/watcher-state
+              {:running false
+               :watch-service nil
+               :watcher-thread nil
+               :subscribed-sessions #{session-id}
+               :event-queue (atom {})
+               :on-session-updated (fn [_ msgs] (reset! callback-messages msgs))
+               :max-retries 3
+               :debounce-ms 200})
+
+      (repl/handle-file-modified file)
+
+      ;; Three messages should flow: two assistant + tool_result, in original order
+      ;; (assistant "let me check", tool_result, assistant "It's 18:14"). The human
+      ;; prompt is dropped.
+      (is (= 3 (count @callback-messages)))
+      (is (= ["assistant" "user" "assistant"] (mapv :role @callback-messages))
+          "tool_result message keeps :role \"user\" but is forwarded")
+      (is (= "let me check" (:text (first @callback-messages))))
+      (is (re-find #"Tool Result" (:text (second @callback-messages)))
+          "tool_result content surfaces in the canonical :text")
+      (is (= "It's 18:14 UTC" (:text (last @callback-messages))))
 
       (repl/unsubscribe-from-session! session-id)
       (repl/reset-file-position! file-path))))
