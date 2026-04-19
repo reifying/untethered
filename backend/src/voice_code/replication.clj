@@ -54,6 +54,22 @@
   [session-id]
   (contains? @session-locks session-id))
 
+;; ============================================================================
+;; Turn-Complete Detection
+;; ============================================================================
+
+;; Map of dedup-key -> epoch-ms when first seen, for already-dispatched
+;; turn-complete observations. Entries are evicted after turn-complete-dedup-ttl-ms
+;; to prevent unbounded growth in long-running servers.
+(defonce turn-complete-seen (atom {}))
+
+(def ^:private turn-complete-dedup-ttl-ms (* 5 60 1000))
+
+;; Map of copilot-session-id -> last toolRequests vector seen in assistant.message.
+;; Used to detect when a turn_end follows a final (non-tool-use) assistant message.
+(defonce copilot-last-tool-requests (atom {}))
+;; Turn-complete detection functions are defined after watcher-state (below).
+
 (defn get-claude-projects-dir
   "Get the Claude projects directory path"
   []
@@ -1141,7 +1157,91 @@
          :max-retries 3
          :on-session-created nil ;; Callback: (fn [session-metadata])
          :on-session-updated nil ;; Callback: (fn [session-id new-messages])
-         :on-session-deleted nil})) ;; Callback: (fn [session-id])
+         :on-session-deleted nil ;; Callback: (fn [session-id])
+         :on-turn-complete nil ;; Callback: (fn [session-id])
+         :opencode-part-msg-dirs #{}})) ;; Set of watched opencode part message dirs
+
+;; ============================================================================
+;; Turn-Complete Detection (defined here because emit-turn-complete! needs watcher-state)
+;; ============================================================================
+
+(defn- emit-turn-complete!
+  "Dispatch a turn-complete observation for session-id, deduped by dedup-key.
+   Calls :on-turn-complete in watcher-state if the key has not been seen before.
+   Evicts entries older than turn-complete-dedup-ttl-ms on each call."
+  [session-id dedup-key]
+  (let [now (System/currentTimeMillis)
+        cutoff (- now turn-complete-dedup-ttl-ms)
+        inserted? (atom false)]
+    (swap! turn-complete-seen
+           (fn [seen]
+             (let [evicted (into {} (filter (fn [[_ ts]] (> ts cutoff)) seen))]
+               (if (contains? evicted dedup-key)
+                 evicted
+                 (do (reset! inserted? true)
+                     (assoc evicted dedup-key now))))))
+    (when @inserted?
+      (log/info "Turn complete detected" {:session-id session-id :dedup-key dedup-key})
+      (when-let [callback (:on-turn-complete @watcher-state)]
+        (callback session-id)))))
+
+(defn check-claude-turn-complete!
+  "Check raw Claude JSONL messages for a turn-complete signal and emit if found.
+   A turn is complete when an assistant record has stop_reason ∈
+   #{\"end_turn\" \"stop_sequence\"} and isSidechain is false."
+  [session-id raw-messages]
+  (doseq [msg raw-messages]
+    (when (and (= "assistant" (:type msg))
+               (not (:isSidechain msg))
+               (contains? #{"end_turn" "stop_sequence"}
+                          (get-in msg [:message :stop_reason])))
+      (if-let [uuid (:uuid msg)]
+        (emit-turn-complete! session-id uuid)
+        (log/warn "Claude assistant message missing :uuid, skipping turn-complete"
+                  {:session-id session-id
+                   :stop-reason (get-in msg [:message :stop_reason])})))))
+
+(defn check-copilot-turn-complete!
+  "Check raw Copilot events for a turn-complete signal and emit if found.
+   A turn is complete when assistant.turn_end is observed AND the most recent
+   assistant.message event for this session had toolRequests: [].
+   Updates copilot-last-tool-requests state as a side effect."
+  [session-id raw-events]
+  (doseq [event raw-events]
+    (let [event-type (:type event)]
+      (cond
+        (= event-type "assistant.message")
+        (swap! copilot-last-tool-requests assoc session-id
+               (get-in event [:data :toolRequests]))
+
+        (= event-type "assistant.turn_end")
+        (let [last-requests (get @copilot-last-tool-requests session-id ::no-message-seen)]
+          ;; Always clear per-session state after turn_end so the next turn starts fresh.
+          (swap! copilot-last-tool-requests dissoc session-id)
+          (when (and (not= last-requests ::no-message-seen)
+                     (empty? last-requests))
+            (let [turn-id (get-in event [:data :turnId])
+                  dedup-key (str session-id ":turn:" turn-id)]
+              (emit-turn-complete! session-id dedup-key))))))))
+
+(defn handle-opencode-part-file-created
+  "Handle creation of a new OpenCode part file.
+   Reads the file and emits turn-complete if it contains a step-finish with reason=stop."
+  [part-file]
+  (when (and (.isFile part-file)
+             (str/ends-with? (.getName part-file) ".json"))
+    (try
+      (let [content (json/parse-string (slurp part-file) true)]
+        (when (and (= "step-finish" (:type content))
+                   (= "stop" (:reason content)))
+          (let [session-id (:sessionID content)
+                part-id (:id content)]
+            (when (and session-id part-id)
+              (log/info "OpenCode step-finish detected" {:session-id session-id :part-id part-id})
+              (emit-turn-complete! session-id part-id)))))
+      (catch Exception e
+        (log/debug "Failed to read OpenCode part file"
+                   {:file (.getPath part-file) :error (ex-message e)})))))
 
 (defn subscribe-to-session!
   "Subscribe to a session for watching. Returns true if successful."
@@ -1279,6 +1379,9 @@
                   ;; Filter internal messages (sidechain, summary, system)
                   filtered-messages (filter-internal-messages new-messages)]
 
+              ;; Check for Claude turn-complete from raw messages (before filtering)
+              (check-claude-turn-complete! session-id new-messages)
+
               (when (seq filtered-messages)
                 (let [old-count (:message-count old-metadata 0)
                       new-count (+ old-count (count filtered-messages))
@@ -1330,13 +1433,25 @@
                       (swap! session-index assoc-in [session-id :first-notification] (System/currentTimeMillis))
                       (save-index! @session-index))
 
-                    ;; Send updates to subscribed clients (regardless of ios-notified flag)
+                    ;; Send updates to subscribed clients (regardless of ios-notified flag).
+                    ;; Transform raw Claude .jsonl messages to canonical wire format
+                    ;; (with :role/:text/:uuid/:timestamp/:provider) so iOS can extract them.
+                    ;; Without this, iOS's extractText (which reads messageData["text"]) sees
+                    ;; nothing and silently drops the update — the user has to manually
+                    ;; refresh / re-enter the session to trigger subscribe (which uses
+                    ;; parse-session-messages → canonical format).
                     (when (is-subscribed? session-id)
-                      (log/info "Sending update to subscribed iOS client"
-                                {:session-id session-id
-                                 :new-messages (count filtered-messages)})
-                      (when-let [callback (:on-session-updated @watcher-state)]
-                        (callback session-id filtered-messages)))))))
+                      (let [canonical-messages (->> filtered-messages
+                                                    (map #(providers/parse-message :claude %))
+                                                    (filter some?)
+                                                    (vec))]
+                        (log/info "Sending update to subscribed iOS client"
+                                  {:session-id session-id
+                                   :new-messages (count canonical-messages)
+                                   :raw-messages (count filtered-messages)})
+                        (when (and (seq canonical-messages)
+                                   (:on-session-updated @watcher-state))
+                          ((:on-session-updated @watcher-state) session-id canonical-messages))))))))
             (catch Exception e
               (log/error e "Failed to handle file modification"
                          {:file (.getPath file)
@@ -1447,14 +1562,15 @@
         (log/error e "Failed to handle Copilot session creation" {:dir (.getPath session-dir)})))))
 
 (defn- parse-copilot-events-incremental
-  "Parse only new lines from a Copilot events.jsonl file since last read position."
+  "Parse only new lines from a Copilot events.jsonl file since last read position.
+   Returns {:messages [...canonical...] :raw-events [...raw-json...]}."
   [file-path]
   (try
     (let [file (io/file file-path)
           last-pos (get @file-positions file-path 0)
           current-size (.length file)]
       (if (<= current-size last-pos)
-        [] ;; No new data
+        {:messages [] :raw-events []}
         (with-open [raf (java.io.RandomAccessFile. file "r")]
           (.seek raf last-pos)
           (let [remaining-bytes (- current-size last-pos)
@@ -1462,18 +1578,20 @@
                 _ (.readFully raf buffer)
                 new-content (String. buffer "UTF-8")
                 lines (str/split-lines new-content)
-                messages (->> lines
-                              (map parse-jsonl-line)
-                              (filter some?)
+                raw-events (->> lines
+                                (map parse-jsonl-line)
+                                (filter some?)
+                                (vec))
+                messages (->> raw-events
                               (map #(providers/parse-message :copilot %))
                               (filter some?)
                               (vec))]
             ;; Update position
             (swap! file-positions assoc file-path current-size)
-            messages))))
+            {:messages messages :raw-events raw-events}))))
     (catch Exception e
       (log/error e "Failed to parse Copilot events file incrementally" {:file file-path})
-      [])))
+      {:messages [] :raw-events []})))
 
 (defn handle-copilot-events-modified
   "Handle modification to a Copilot events.jsonl file."
@@ -1485,7 +1603,11 @@
       ;; Debounce
       (when (debounce-event session-id)
         (try
-          (let [new-messages (parse-copilot-events-incremental (.getAbsolutePath events-file))]
+          (let [{:keys [messages raw-events]}
+                (parse-copilot-events-incremental (.getAbsolutePath events-file))
+                new-messages messages]
+            ;; Check for Copilot turn-complete from raw events (always, even without canonical messages)
+            (check-copilot-turn-complete! session-id raw-events)
             (when (seq new-messages)
               (let [old-count (:message-count old-metadata 0)
                     new-count (+ old-count (count new-messages))
@@ -1578,6 +1700,19 @@
       (and message-dir
            (= (.getPath watched-dir) (.getPath message-dir))))))
 
+(defn- is-opencode-part-parent?
+  "Check if watched-dir is the OpenCode part/ parent directory."
+  [watched-dir]
+  (when-let [dirs (:opencode-dirs @watcher-state)]
+    (let [part-dir (:part-dir dirs)]
+      (and part-dir
+           (= (.getPath watched-dir) (.getPath part-dir))))))
+
+(defn- is-opencode-part-msg-dir?
+  "Check if watched-dir is a watched OpenCode part message subdirectory."
+  [watched-dir]
+  (contains? (:opencode-part-msg-dirs @watcher-state) watched-dir))
+
 (defn handle-cursor-session-created
   "Handle creation of a new Cursor session directory."
   [session-dir]
@@ -1624,7 +1759,9 @@
         is-copilot-session (is-copilot-session-watch-dir? watched-dir)
         is-cursor-project (is-cursor-project-dir? watched-dir)
         is-opencode-session (is-opencode-session-dir? watched-dir)
-        is-opencode-message (is-opencode-message-dir? watched-dir)]
+        is-opencode-message (is-opencode-message-dir? watched-dir)
+        is-opencode-part (is-opencode-part-parent? watched-dir)
+        is-opencode-part-msg (is-opencode-part-msg-dir? watched-dir)]
     (doseq [event (.pollEvents watch-key)]
       (let [kind (.kind event)
             context (.context event)
@@ -1703,6 +1840,28 @@
           is-opencode-message
           (when (= kind StandardWatchEventKinds/ENTRY_CREATE)
             (log/debug "OpenCode message directory created" {:name file-name}))
+
+          ;; OpenCode part parent directory - watch for new part message subdirs
+          is-opencode-part
+          (when (= kind StandardWatchEventKinds/ENTRY_CREATE)
+            (let [dir (io/file watched-dir file-name)]
+              (when (.isDirectory dir)
+                (when-let [ws (:watch-service @watcher-state)]
+                  (try
+                    (let [wk (.register (.toPath dir) ws
+                                        (into-array [StandardWatchEventKinds/ENTRY_CREATE]))]
+                      (swap! watcher-state update :watch-keys assoc wk dir)
+                      (swap! watcher-state update :opencode-part-msg-dirs (fnil conj #{}) dir)
+                      (log/debug "Watching OpenCode part message dir" {:dir (.getPath dir)}))
+                    (catch Exception e
+                      (log/warn e "Failed to watch OpenCode part message dir"
+                                {:dir (.getPath dir)})))))))
+
+          ;; OpenCode part message dir - new part JSON files (check for step-finish)
+          is-opencode-part-msg
+          (when (= kind StandardWatchEventKinds/ENTRY_CREATE)
+            (let [file (io/file watched-dir file-name)]
+              (handle-opencode-part-file-created file)))
 
           ;; Claude project directory event - watch for .jsonl file changes
           :else
@@ -1828,8 +1987,31 @@
           (catch Exception e
             (log/warn e "Failed to watch OpenCode message dir" {:dir (.getPath message-dir)}))))
 
-      (swap! watcher-state assoc :opencode-dirs
-             {:session-dir session-dir :message-dir message-dir})
+      ;; Watch part/ parent for new message-level subdirectories (turn-complete detection)
+      (let [part-dir (io/file (opencode-storage-base) "part")]
+        (when (and part-dir (.exists part-dir))
+          (log/info "Setting up OpenCode part directory watching" {:dir (.getPath part-dir)})
+          (try
+            (let [wk (.register (.toPath part-dir) watch-service
+                                (into-array [StandardWatchEventKinds/ENTRY_CREATE]))]
+              (swap! watch-keys assoc wk part-dir))
+            (catch Exception e
+              (log/warn e "Failed to watch OpenCode part dir" {:dir (.getPath part-dir)})))
+          ;; Watch existing part message subdirectories for new part files
+          (doseq [msg-dir (->> (.listFiles part-dir) (filter #(.isDirectory %)))]
+            (try
+              (let [wk (.register (.toPath msg-dir) watch-service
+                                  (into-array [StandardWatchEventKinds/ENTRY_CREATE]))]
+                (swap! watch-keys assoc wk msg-dir)
+                (swap! watcher-state update :opencode-part-msg-dirs (fnil conj #{}) msg-dir))
+              (catch Exception e
+                (log/warn e "Failed to watch existing OpenCode part msg dir"
+                           {:dir (.getPath msg-dir)}))))
+          (swap! watcher-state assoc :opencode-dirs
+                 {:session-dir session-dir :message-dir message-dir :part-dir part-dir}))
+        (when-not (and part-dir (.exists part-dir))
+          (swap! watcher-state assoc :opencode-dirs
+                 {:session-dir session-dir :message-dir message-dir :part-dir nil})))
       @watch-keys)))
 
 (defn start-watcher!
@@ -1842,8 +2024,9 @@
   Callbacks:
   - :on-session-created (fn [session-metadata])
   - :on-session-updated (fn [session-id new-messages])
-  - :on-session-deleted (fn [session-id])"
-  [& {:keys [on-session-created on-session-updated on-session-deleted]}]
+  - :on-session-deleted (fn [session-id])
+  - :on-turn-complete (fn [session-id])"
+  [& {:keys [on-session-created on-session-updated on-session-deleted on-turn-complete]}]
   (when (:running @watcher-state)
     (log/warn "Watcher already running")
     (throw (ex-info "Watcher already running" {})))
@@ -1910,7 +2093,8 @@
                :running true
                :on-session-created on-session-created
                :on-session-updated on-session-updated
-               :on-session-deleted on-session-deleted)
+               :on-session-deleted on-session-deleted
+               :on-turn-complete on-turn-complete)
 
         ;; Start watcher thread
         (let [watcher-thread (Thread.
@@ -1963,8 +2147,10 @@
            :copilot-session-dirs #{} ;; Clear Copilot session tracking
            :cursor-project-dirs #{} ;; Clear Cursor project tracking
            :opencode-dirs nil ;; Clear OpenCode dir tracking
+           :opencode-part-msg-dirs #{}
            :on-session-created nil
            :on-session-updated nil
-           :on-session-deleted nil)
+           :on-session-deleted nil
+           :on-turn-complete nil)
     (log/info "Filesystem watcher stopped"))
   true)

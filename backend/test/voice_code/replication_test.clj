@@ -22,6 +22,20 @@
     (spit file (str/join "\n" messages))
     file))
 
+(defn claude-jsonl
+  "Build a Claude .jsonl line in the real on-disk shape (type/message/uuid/timestamp/isSidechain).
+   Required so providers/parse-message :claude can transform it to canonical wire format."
+  [{:keys [type text uuid timestamp sidechain?]
+    :or {timestamp "2026-04-19T00:00:00Z"
+         uuid (str (java.util.UUID/randomUUID))
+         sidechain? false}}]
+  (json/generate-string
+   {:type type
+    :uuid uuid
+    :timestamp timestamp
+    :isSidechain sidechain?
+    :message {:role type :content text}}))
+
 (defn cleanup-test-dir
   []
   (when (.exists (io/file test-dir))
@@ -51,7 +65,13 @@
                  :max-retries 3
                  :on-session-created nil
                  :on-session-updated nil
-                 :on-session-deleted nil})
+                 :on-session-deleted nil
+                 :on-turn-complete nil
+                 :opencode-part-msg-dirs #{}})
+        ;; Reset turn-complete detection state
+        (reset! repl/turn-complete-seen {})
+        (reset! repl/copilot-last-tool-requests {})
+        (reset! repl/file-positions {})
         (f)
         (cleanup-test-dir)
         (finally
@@ -853,8 +873,8 @@
           ;; Use valid UUID for session ID
           session-id "550e8400-e29b-41d4-a716-446655440010"
           ;; Create file with only sidechain messages
-          messages ["{\"role\":\"user\",\"text\":\"warmup1\",\"isSidechain\":true}"
-                    "{\"role\":\"assistant\",\"text\":\"warmup2\",\"isSidechain\":true}"]
+          messages [(claude-jsonl {:type "user" :text "warmup1" :sidechain? true})
+                    (claude-jsonl {:type "assistant" :text "warmup2" :sidechain? true})]
           file (create-test-jsonl-file (str session-id ".jsonl") messages)
           file-path (.getAbsolutePath file)]
 
@@ -905,9 +925,9 @@
           callback-messages (atom nil)
           ;; Use valid UUID for session ID
           session-id "550e8400-e29b-41d4-a716-446655440011"
-          ;; Create file with non-sidechain messages
-          messages ["{\"role\":\"user\",\"text\":\"real message 1\"}"
-                    "{\"role\":\"assistant\",\"text\":\"real message 2\"}"]
+          ;; Create file with non-sidechain messages (real Claude .jsonl shape)
+          messages [(claude-jsonl {:type "user" :text "real message 1"})
+                    (claude-jsonl {:type "assistant" :text "real message 2"})]
           file (create-test-jsonl-file (str session-id ".jsonl") messages)
           file-path (.getAbsolutePath file)]
 
@@ -941,11 +961,14 @@
       ;; Call handle-file-modified
       (repl/handle-file-modified file)
 
-      ;; Callback SHOULD be called with non-sidechain messages
+      ;; Callback SHOULD be called with non-sidechain messages, in canonical form
       (is (true? @callback-called))
       (is (= 2 (count @callback-messages)))
       (is (= "real message 1" (:text (first @callback-messages))))
       (is (= "real message 2" (:text (second @callback-messages))))
+      (is (= "user" (:role (first @callback-messages))) "messages must be canonical (role, not type)")
+      (is (= "assistant" (:role (second @callback-messages))))
+      (is (= :claude (:provider (first @callback-messages))))
 
       ;; Metadata should be updated with count of 2
       (let [metadata (repl/get-session-metadata session-id)]
@@ -961,10 +984,10 @@
           ;; Use valid UUID for session ID
           session-id "550e8400-e29b-41d4-a716-446655440012"
           ;; Create file with mix of sidechain and non-sidechain messages
-          messages ["{\"role\":\"user\",\"text\":\"warmup\",\"isSidechain\":true}"
-                    "{\"role\":\"user\",\"text\":\"real message 1\"}"
-                    "{\"role\":\"assistant\",\"text\":\"warmup response\",\"isSidechain\":true}"
-                    "{\"role\":\"assistant\",\"text\":\"real message 2\"}"]
+          messages [(claude-jsonl {:type "user" :text "warmup" :sidechain? true})
+                    (claude-jsonl {:type "user" :text "real message 1"})
+                    (claude-jsonl {:type "assistant" :text "warmup response" :sidechain? true})
+                    (claude-jsonl {:type "assistant" :text "real message 2"})]
           file (create-test-jsonl-file (str session-id ".jsonl") messages)
           file-path (.getAbsolutePath file)]
 
@@ -998,20 +1021,70 @@
       ;; Call handle-file-modified
       (repl/handle-file-modified file)
 
-      ;; Callback SHOULD be called with only non-sidechain messages
+      ;; Callback SHOULD be called with only non-sidechain messages, in canonical form
       (is (true? @callback-called))
       (is (= 2 (count @callback-messages)))
       (is (= "real message 1" (:text (first @callback-messages))))
       (is (= "real message 2" (:text (second @callback-messages))))
+      (is (= ["user" "assistant"] (mapv :role @callback-messages)))
 
-      ;; Verify no sidechain messages were included
-      (is (every? #(not (:isSidechain %)) @callback-messages))
+      ;; Canonical messages should not carry the raw :isSidechain key
+      (is (every? #(nil? (:isSidechain %)) @callback-messages))
 
       ;; Metadata should be updated with count of 2 (not 4)
       (let [metadata (repl/get-session-metadata session-id)]
         (is (= 2 (:message-count metadata))))
 
       ;; Cleanup
+      (repl/unsubscribe-from-session! session-id)
+      (repl/reset-file-position! file-path))))
+
+(deftest test-handle-file-modified-emits-canonical-format
+  (testing "Live updates from a real Claude .jsonl shape are converted to canonical wire format
+           (regression: iOS extractText reads messageData[\"text\"] only — sending raw
+           {:type ... :message {:content ...}} caused incremental updates to be silently dropped,
+           forcing the user to refresh / re-enter the session)"
+    (let [callback-messages (atom nil)
+          session-id "550e8400-e29b-41d4-a716-446655440099"
+          ;; Realistic Claude .jsonl shape: assistant message with content blocks
+          raw-line (json/generate-string
+                    {:type "assistant"
+                     :uuid "11111111-1111-1111-1111-111111111111"
+                     :timestamp "2026-04-19T12:00:00Z"
+                     :isSidechain false
+                     :message {:role "assistant"
+                               :content [{:type "text" :text "Hello from Claude"}]}})
+          file (create-test-jsonl-file (str session-id ".jsonl") [raw-line])
+          file-path (.getAbsolutePath file)]
+
+      (repl/subscribe-to-session! session-id)
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :message-count 0
+              :last-modified (.lastModified file)
+              :ios-notified true})
+
+      (reset! repl/watcher-state
+              {:running false
+               :watch-service nil
+               :watcher-thread nil
+               :subscribed-sessions #{session-id}
+               :event-queue (atom {})
+               :on-session-updated (fn [_ msgs] (reset! callback-messages msgs))
+               :max-retries 3
+               :debounce-ms 200})
+
+      (repl/handle-file-modified file)
+
+      (is (= 1 (count @callback-messages)))
+      (let [m (first @callback-messages)]
+        (is (= "assistant" (:role m)) "must use canonical :role, not raw :type")
+        (is (= "Hello from Claude" (:text m)) "must extract :text from content blocks")
+        (is (= "11111111-1111-1111-1111-111111111111" (:uuid m)))
+        (is (= :claude (:provider m)))
+        (is (nil? (:message m)) "raw :message wrapper must not leak through")
+        (is (nil? (:type m)) "raw :type field must not leak through"))
+
       (repl/unsubscribe-from-session! session-id)
       (repl/reset-file-position! file-path))))
 
@@ -1376,7 +1449,7 @@
           session-updated-notifications (atom [])
           session-id "550e8400-e29b-41d4-a716-446655440032"
           ;; Start with only sidechain
-          initial-messages ["{\"role\":\"user\",\"text\":\"warmup\",\"isSidechain\":true}"]
+          initial-messages [(claude-jsonl {:type "user" :text "warmup" :sidechain? true})]
           file (create-test-jsonl-file (str session-id ".jsonl") initial-messages)
           file-path (.getAbsolutePath file)]
 
@@ -1403,7 +1476,7 @@
         (is (false? (:ios-notified metadata))))
 
       ;; Add real message
-      (spit file "\n{\"role\":\"user\",\"text\":\"hello world\"}" :append true)
+      (spit file (str "\n" (claude-jsonl {:type "user" :text "hello world"})) :append true)
 
       ;; Trigger modification handler
       (repl/handle-file-modified file)
@@ -1428,7 +1501,7 @@
           session-updated-notifications (atom [])
           session-id "550e8400-e29b-41d4-a716-446655440033"
           ;; Start with real message
-          initial-messages ["{\"role\":\"user\",\"text\":\"hello\"}"]
+          initial-messages [(claude-jsonl {:type "user" :text "hello"})]
           file (create-test-jsonl-file (str session-id ".jsonl") initial-messages)
           file-path (.getAbsolutePath file)]
 
@@ -1459,7 +1532,7 @@
         (is (true? (:ios-notified metadata))))
 
       ;; Add another message
-      (spit file "\n{\"role\":\"assistant\",\"text\":\"hi there\"}" :append true)
+      (spit file (str "\n" (claude-jsonl {:type "assistant" :text "hi there"})) :append true)
 
       ;; Trigger modification handler
       (repl/handle-file-modified file)
@@ -1468,10 +1541,15 @@
       (is (= 1 (count @session-created-notifications))
           "Should not send duplicate session_created")
 
-      ;; Should send session_updated (subscribed)
+      ;; Should send session_updated (subscribed) with canonical-format messages
       (is (= 1 (count @session-updated-notifications))
           "Should send session_updated for subscribed already-notified session")
       (is (= session-id (:session-id (first @session-updated-notifications))))
+      (let [delivered (:messages (first @session-updated-notifications))]
+        (is (= 1 (count delivered)))
+        (is (= "hi there" (:text (first delivered))) "must be canonical text, not raw")
+        (is (= "assistant" (:role (first delivered))))
+        (is (= :claude (:provider (first delivered)))))
 
       (let [metadata (get @repl/session-index session-id)]
         (is (= 2 (:message-count metadata)))
@@ -3007,4 +3085,236 @@
           (is (not (:running @repl/watcher-state))))
         (finally
           (when (:running @repl/watcher-state)
+            (repl/stop-watcher!))))))
+
+  (testing "start-watcher! stores on-turn-complete callback"
+    (let [projects-dir (io/file test-dir "claude-projects-tc")]
+      (.mkdirs projects-dir)
+      (try
+        (with-redefs [repl/get-claude-projects-dir (fn [] projects-dir)
+                      repl/find-project-directories (fn [] [])
+                      providers/provider-installed? (fn [_] false)
+                      repl/save-index! (fn [_] nil)]
+          (let [cb (fn [_] nil)]
+            (repl/start-watcher!
+             :on-session-created (fn [_])
+             :on-turn-complete cb)
+            (is (= cb (:on-turn-complete @repl/watcher-state)))))
+        (finally
+          (when (:running @repl/watcher-state)
+            (repl/stop-watcher!))))))
+
+  (testing "stop-watcher! clears on-turn-complete"
+    (let [projects-dir (io/file test-dir "claude-projects-tc2")]
+      (.mkdirs projects-dir)
+      (try
+        (with-redefs [repl/get-claude-projects-dir (fn [] projects-dir)
+                      repl/find-project-directories (fn [] [])
+                      providers/provider-installed? (fn [_] false)
+                      repl/save-index! (fn [_] nil)]
+          (repl/start-watcher!
+           :on-session-created (fn [_])
+           :on-turn-complete (fn [_] nil))
+          (repl/stop-watcher!)
+          (is (nil? (:on-turn-complete @repl/watcher-state))))
+        (finally
+          (when (:running @repl/watcher-state)
             (repl/stop-watcher!)))))))
+
+;; ============================================================================
+;; Turn-Complete Detection Unit Tests
+;; ============================================================================
+
+(deftest test-check-claude-turn-complete
+  (let [fixture-path (str (System/getProperty "user.dir")
+                          "/test-resources/provider-fixtures/claude-session.jsonl")
+        raw-messages (repl/parse-jsonl-file fixture-path)
+        session-id "aaaabbbb-1111-2222-3333-000000000001"]
+
+    (testing "end_turn stop_reason emits turn-complete exactly once"
+      (reset! repl/turn-complete-seen {})
+      (let [calls (atom [])]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/check-claude-turn-complete! session-id raw-messages)
+        (is (= 1 (count @calls)) "should emit exactly once for end_turn")
+        (is (= session-id (first @calls)))))
+
+    (testing "duplicate call with same messages does not re-emit (dedup by UUID)"
+      (reset! repl/turn-complete-seen {})
+      (let [calls (atom [])]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/check-claude-turn-complete! session-id raw-messages)
+        (repl/check-claude-turn-complete! session-id raw-messages)
+        (is (= 1 (count @calls)) "second call with same UUIDs must be deduped")))
+
+    (testing "tool_use-only messages do not emit turn-complete"
+      (reset! repl/turn-complete-seen {})
+      (let [calls (atom [])
+            ;; Only the first 3 lines: user, tool_use assistant, tool_result
+            tool-use-only (filter (fn [m]
+                                    (or (= "user" (:type m))
+                                        (and (= "assistant" (:type m))
+                                             (= "tool_use" (get-in m [:message :stop_reason])))))
+                                  raw-messages)]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/check-claude-turn-complete! session-id tool-use-only)
+        (is (= 0 (count @calls)) "tool_use stop_reason must not trigger turn-complete")))
+
+    (testing "sidechain messages do not emit turn-complete"
+      (reset! repl/turn-complete-seen {})
+      (let [calls (atom [])
+            sidechain-msg {:type "assistant"
+                           :isSidechain true
+                           :uuid "sidechain-uuid-001"
+                           :message {:stop_reason "end_turn"}}]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/check-claude-turn-complete! session-id [sidechain-msg])
+        (is (= 0 (count @calls)) "isSidechain=true must not trigger turn-complete")))))
+
+(deftest test-check-copilot-turn-complete
+  (let [fixture-path (str (System/getProperty "user.dir")
+                          "/test-resources/provider-fixtures/copilot-events.jsonl")
+        raw-events (repl/parse-jsonl-file fixture-path)
+        session-id "copilot-test-session-uuid"]
+
+    (testing "final turn_end with empty toolRequests emits turn-complete exactly once"
+      (reset! repl/turn-complete-seen {})
+      (reset! repl/copilot-last-tool-requests {})
+      (let [calls (atom [])]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/check-copilot-turn-complete! session-id raw-events)
+        (is (= 1 (count @calls))
+            "should emit once for the final turn_end (turn 2 with empty toolRequests)")
+        (is (= session-id (first @calls)))))
+
+    (testing "intermediate turn_end with non-empty toolRequests does not emit"
+      (reset! repl/turn-complete-seen {})
+      (reset! repl/copilot-last-tool-requests {})
+      (let [calls (atom [])
+            ;; Only events belonging to turn 1 (turnId "1" or no turnId field)
+            tool-use-events (filter #(let [tid (get-in % [:data :turnId])]
+                                       (or (nil? tid) (= "1" tid)))
+                                    raw-events)]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/check-copilot-turn-complete! session-id tool-use-events)
+        (is (= 0 (count @calls))
+            "turn_end after tool-use assistant.message must not trigger completion")))
+
+    (testing "turn_end without preceding assistant.message does not emit"
+      (reset! repl/turn-complete-seen {})
+      (reset! repl/copilot-last-tool-requests {})
+      (let [calls (atom [])
+            turn-end-only [{:type "assistant.turn_end"
+                            :data {:turnId "99"}
+                            :id "ev-99"
+                            :timestamp "2026-04-18T00:00:10.000Z"}]]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/check-copilot-turn-complete! session-id turn-end-only)
+        (is (= 0 (count @calls))
+            "turn_end without prior assistant.message must not emit")))
+
+    (testing "duplicate call does not re-emit (dedup by turn-id)"
+      (reset! repl/turn-complete-seen {})
+      (reset! repl/copilot-last-tool-requests {})
+      (let [calls (atom [])]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/check-copilot-turn-complete! session-id raw-events)
+        (repl/check-copilot-turn-complete! session-id raw-events)
+        (is (= 1 (count @calls)) "second call with same turn-id must be deduped")))))
+
+(deftest test-handle-opencode-part-file-created
+  (let [fixture-path (str (System/getProperty "user.dir")
+                          "/test-resources/provider-fixtures/opencode-step-finish.json")
+        fixture-file (io/file fixture-path)
+        session-id "ses_exampleIUxzaoccbjukLU"
+        part-id "prt_example0001AcX0QFglZ7aTy8"]
+
+    (testing "step-finish with reason=stop emits turn-complete"
+      (reset! repl/turn-complete-seen {})
+      (let [calls (atom [])]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/handle-opencode-part-file-created fixture-file)
+        (is (= 1 (count @calls)))
+        (is (= session-id (first @calls)))))
+
+    (testing "duplicate call deduped by part-id"
+      (reset! repl/turn-complete-seen {})
+      (let [calls (atom [])]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/handle-opencode-part-file-created fixture-file)
+        (repl/handle-opencode-part-file-created fixture-file)
+        (is (= 1 (count @calls)) "second identical part file must be deduped")
+        (is (contains? @repl/turn-complete-seen part-id) "part-id should be the dedup key in turn-complete-seen")))
+
+    (testing "non-step-finish part files do not emit turn-complete"
+      (reset! repl/turn-complete-seen {})
+      (let [calls (atom [])
+            text-part-file (io/file test-dir "text-part.json")]
+        (spit text-part-file (json/generate-string
+                              {:id "prt_text001"
+                               :sessionID session-id
+                               :messageID "msg_001"
+                               :type "text"
+                               :text "hello"}))
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/handle-opencode-part-file-created text-part-file)
+        (is (= 0 (count @calls)) "text part must not trigger turn-complete")))
+
+    (testing "step-finish with reason=error does not emit turn-complete"
+      (reset! repl/turn-complete-seen {})
+      (let [calls (atom [])
+            error-part-file (io/file test-dir "error-part.json")]
+        (spit error-part-file (json/generate-string
+                               {:id "prt_error001"
+                                :sessionID session-id
+                                :messageID "msg_002"
+                                :type "step-finish"
+                                :reason "error"}))
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/handle-opencode-part-file-created error-part-file)
+        (is (= 0 (count @calls)) "step-finish with reason=error must not trigger turn-complete")))))
+
+(deftest test-claude-turn-complete-via-watcher
+  (testing "handle-file-modified triggers on-turn-complete callback via watcher"
+    (let [session-id "aaaabbbb-1111-2222-3333-000000000001"
+          fixture-path (str (System/getProperty "user.dir")
+                            "/test-resources/provider-fixtures/claude-session.jsonl")
+          ;; Create a session file in test-dir
+          session-file (io/file test-dir (str session-id ".jsonl"))]
+      ;; Seed the session index
+      (reset! repl/session-index
+              {session-id {:session-id session-id
+                           :file (.getAbsolutePath session-file)
+                           :name "Test Session"
+                           :working-directory test-dir
+                           :last-modified 0
+                           :last-modified-ms 0
+                           :message-count 0
+                           :ios-notified false}})
+      ;; Reset turn-complete state
+      (reset! repl/turn-complete-seen {})
+      (reset! repl/file-positions {})
+      (let [calls (atom [])]
+        ;; Install turn-complete callback
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        ;; Copy fixture content into session file
+        (io/copy (io/file fixture-path) session-file)
+        ;; Call handle-file-modified as the watcher would
+        (repl/handle-file-modified session-file)
+        ;; Verify turn-complete was dispatched
+        (is (= 1 (count @calls))
+            "handle-file-modified should dispatch turn-complete for end_turn message")
+        (is (= session-id (first @calls)))))))

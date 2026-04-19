@@ -35,6 +35,27 @@ struct SelectableText: View {
 }
 
 #if os(iOS)
+/// UITextView subclass that reports its full word-wrapped height as intrinsic
+/// content size, so SwiftUI ScrollView gives it the room it needs.
+///
+/// The default UITextView returns an intrinsicContentSize that's computed without
+/// knowing the eventual width, so SwiftUI clips the view after only a few lines.
+/// Recomputing in layoutSubviews (when bounds.width is known) and forcing a
+/// re-invalidation reports the correct full height.
+private final class WrappingTextView: UITextView {
+    override var intrinsicContentSize: CGSize {
+        let width = bounds.width > 0 ? bounds.width : UIScreen.main.bounds.width
+        let size = sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: ceil(size.height))
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Re-publish intrinsic size now that bounds.width is known.
+        invalidateIntrinsicContentSize()
+    }
+}
+
 struct SelectableTextView_iOS: UIViewRepresentable {
     let text: String
     let isMonospaced: Bool
@@ -42,22 +63,31 @@ struct SelectableTextView_iOS: UIViewRepresentable {
     let textColor: Color?
 
     func makeUIView(context: Context) -> UITextView {
-        let textView = UITextView()
+        let textView = WrappingTextView()
         textView.isEditable = false
         textView.isSelectable = true
         textView.isScrollEnabled = false
         textView.backgroundColor = .clear
         textView.textContainerInset = .zero
         textView.textContainer.lineFragmentPadding = 0
+        textView.textContainer.widthTracksTextView = true
+        textView.textContainer.lineBreakMode = .byWordWrapping
+        // Allow horizontal narrowing so the view conforms to the SwiftUI ScrollView width.
+        // Resist vertical compression and don't hug vertically so the view grows to its
+        // full intrinsic height.
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        textView.setContentCompressionResistancePriority(.required, for: .vertical)
+        textView.setContentHuggingPriority(.defaultLow, for: .vertical)
         return textView
     }
 
     func updateUIView(_ textView: UITextView, context: Context) {
-        textView.text = text
+        if textView.text != text {
+            textView.text = text
+        }
         textView.font = uiFont
         textView.textColor = uiColor
+        textView.invalidateIntrinsicContentSize()
     }
 
     private var uiFont: UIFont {
@@ -85,32 +115,35 @@ struct SelectableTextView_macOS: NSViewRepresentable {
     let fontSize: CGFloat?
     let textColor: Color?
 
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
-        guard let textView = scrollView.documentView as? NSTextView else {
-            return scrollView
-        }
-
+    func makeNSView(context: Context) -> NSTextView {
+        // Bare NSTextView (no NSScrollView wrapper) — the enclosing SwiftUI ScrollView
+        // handles scrolling. Wrapping in NSScrollView causes nested-scrolling issues
+        // and a fixed intrinsicContentSize that doesn't grow with the message.
+        let textView = NSTextView()
         textView.isEditable = false
         textView.isSelectable = true
         textView.backgroundColor = .clear
         textView.drawsBackground = false
         textView.textContainerInset = .zero
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
         textView.textContainer?.lineFragmentPadding = 0
-
-        scrollView.hasVerticalScroller = false
-        scrollView.hasHorizontalScroller = false
-        scrollView.borderType = .noBorder
-        scrollView.drawsBackground = false
-
-        return scrollView
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(
+            width: 0,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        return textView
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = scrollView.documentView as? NSTextView else { return }
-        textView.string = text
+    func updateNSView(_ textView: NSTextView, context: Context) {
+        if textView.string != text {
+            textView.string = text
+        }
         textView.font = nsFont
         textView.textColor = nsColor
+        textView.invalidateIntrinsicContentSize()
     }
 
     private var nsFont: NSFont {
