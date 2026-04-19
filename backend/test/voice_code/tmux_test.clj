@@ -528,6 +528,202 @@
         (is (seq @kill-window-calls) "expected kill-window to be called for evicted window")))))
 
 ;; ============================================================================
+;; sweep!
+;; ============================================================================
+
+(deftest sweep!-test
+  (testing "kills windows older than sweeper-max-age-days and removes from live-windows"
+    (let [old-uuid "oldstale-0000-0000-0000-000000000000"
+          recent-uuid "recent00-0000-0000-0000-000000000000"
+          old-ms (- (System/currentTimeMillis) (* 3 24 60 60 1000))
+          recent-ms (- (System/currentTimeMillis) (* 1 60 60 1000))
+          kill-calls (atom [])
+          invoker (fn [& args]
+                    (when (some #{"kill-window"} args)
+                      (swap! kill-calls conj (vec args)))
+                    {:exit 0 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows
+                {old-uuid    {:tmux-session "proj" :tmux-window "old-win"    :provider :claude :workdir "/tmp"}
+                 recent-uuid {:tmux-session "proj" :tmux-window "recent-win" :provider :claude :workdir "/tmp"}})
+        (with-redefs [voice-code.providers/session-metadata
+                      (fn [uuid]
+                        (cond
+                          (= uuid old-uuid)    {:last-modified-ms old-ms}
+                          (= uuid recent-uuid) {:last-modified-ms recent-ms}))]
+          (tmux/sweep!)))
+      (is (seq @kill-calls) "expected kill-window for stale window")
+      (is (some (fn [call] (some (fn [arg] (and (string? arg) (clojure.string/includes? arg "old-win"))) call))
+               @kill-calls)
+          "expected old-win to be killed")
+      (is (not (contains? @tmux/live-windows old-uuid)) "expected old-uuid removed")
+      (is (contains? @tmux/live-windows recent-uuid) "expected recent-uuid still present")))
+
+  (testing "does not kill windows within sweeper-max-age-days"
+    (let [uuid "active00-0000-0000-0000-000000000000"
+          recent-ms (- (System/currentTimeMillis) (* 1 60 60 1000))
+          kill-calls (atom [])
+          invoker (fn [& args]
+                    (when (some #{"kill-window"} args)
+                      (swap! kill-calls conj (vec args)))
+                    {:exit 0 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows
+                {uuid {:tmux-session "proj" :tmux-window "active-win" :provider :claude :workdir "/tmp"}})
+        (with-redefs [voice-code.providers/session-metadata
+                      (constantly {:last-modified-ms recent-ms})]
+          (tmux/sweep!)))
+      (is (empty? @kill-calls) "expected no kill-window for active window")
+      (is (contains? @tmux/live-windows uuid) "expected active-uuid still present")))
+
+  (testing "handles empty live-windows without errors"
+    (let [kill-calls (atom [])
+          invoker (fn [& args]
+                    (when (some #{"kill-window"} args)
+                      (swap! kill-calls conj (vec args)))
+                    {:exit 0 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (tmux/sweep!))
+      (is (empty? @kill-calls)))))
+
+;; ============================================================================
+;; scan-existing-windows!
+;; ============================================================================
+
+(deftest scan-existing-windows!-test
+  (testing "populates live-windows from tmux env vars"
+    ;; window name "session-aabbcc" → env-suffix "session_aabbcc"
+    (let [uuid "aabbcc00-0000-0000-0000-000000000000"
+          invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "my-project\n" :err ""}
+                      (some #{"list-windows"} args)
+                      {:exit 0 :out "session-aabbcc\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0
+                       :out (str "VC_SESSION_UUID_session_aabbcc=" uuid "\n"
+                                 "VC_WORKDIR_session_aabbcc=/home/user/proj\n"
+                                 "VC_PROVIDER_session_aabbcc=claude\n"
+                                 "VC_STARTED_AT_session_aabbcc=2026-01-01T00:00:00Z\n")
+                       :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (tmux/scan-existing-windows!))
+      (is (contains? @tmux/live-windows uuid))
+      (let [entry (get @tmux/live-windows uuid)]
+        (is (= "my-project" (:tmux-session entry)))
+        (is (= "session-aabbcc" (:tmux-window entry)))
+        (is (= :claude (:provider entry)))
+        (is (= "/home/user/proj" (:workdir entry)))
+        (is (= "2026-01-01T00:00:00Z" (:started-at entry))))))
+
+  (testing "skips _holder and tile windows"
+    (let [invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "my-project\n" :err ""}
+                      (some #{"list-windows"} args)
+                      {:exit 0 :out "_holder\ntile\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0 :out "" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (tmux/scan-existing-windows!))
+      (is (empty? @tmux/live-windows) "expected no entries for _holder/tile")))
+
+  (testing "skips windows without VC_SESSION_UUID env var"
+    (let [invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "my-project\n" :err ""}
+                      (some #{"list-windows"} args)
+                      {:exit 0 :out "some-window-abc123\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0 :out "OTHER_KEY=value\n" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (tmux/scan-existing-windows!))
+      (is (empty? @tmux/live-windows) "expected no entries when VC_SESSION_UUID missing")))
+
+  (testing "handles empty list-sessions"
+    (let [invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (tmux/scan-existing-windows!))
+      (is (empty? @tmux/live-windows))))
+
+  (testing "populates multiple sessions"
+    (let [uuid1 "aabbcc00-1111-0000-0000-000000000000"
+          uuid2 "ddeeff00-2222-0000-0000-000000000000"
+          ;; window1: "session-aabbcc", env-suffix "session_aabbcc"
+          ;; window2: "session-ddeeff", env-suffix "session_ddeeff"
+          invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "proj-a\nproj-b\n" :err ""}
+                      (and (some #{"list-windows"} args)
+                           (some #{"=proj-a"} args))
+                      {:exit 0 :out "session-aabbcc\n" :err ""}
+                      (and (some #{"list-windows"} args)
+                           (some #{"=proj-b"} args))
+                      {:exit 0 :out "session-ddeeff\n" :err ""}
+                      (and (some #{"show-environment"} args)
+                           (some #{"=proj-a"} args))
+                      {:exit 0
+                       :out (str "VC_SESSION_UUID_session_aabbcc=" uuid1 "\n"
+                                 "VC_WORKDIR_session_aabbcc=/home/a\n"
+                                 "VC_PROVIDER_session_aabbcc=claude\n")
+                       :err ""}
+                      (and (some #{"show-environment"} args)
+                           (some #{"=proj-b"} args))
+                      {:exit 0
+                       :out (str "VC_SESSION_UUID_session_ddeeff=" uuid2 "\n"
+                                 "VC_WORKDIR_session_ddeeff=/home/b\n"
+                                 "VC_PROVIDER_session_ddeeff=copilot\n")
+                       :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (tmux/scan-existing-windows!))
+      (is (contains? @tmux/live-windows uuid1))
+      (is (contains? @tmux/live-windows uuid2))
+      (is (= :claude (:provider (get @tmux/live-windows uuid1))))
+      (is (= :copilot (:provider (get @tmux/live-windows uuid2))))
+      (is (= "proj-a" (:tmux-session (get @tmux/live-windows uuid1))))
+      (is (= "proj-b" (:tmux-session (get @tmux/live-windows uuid2))))))
+
+  (testing "is idempotent — re-running overwrites with same data"
+    (let [uuid "aabbcc00-0000-0000-0000-111111111111"
+          invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "my-project\n" :err ""}
+                      (some #{"list-windows"} args)
+                      {:exit 0 :out "session-aabbcc\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0
+                       :out (str "VC_SESSION_UUID_session_aabbcc=" uuid "\n"
+                                 "VC_WORKDIR_session_aabbcc=/home/user/proj\n"
+                                 "VC_PROVIDER_session_aabbcc=claude\n")
+                       :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (tmux/scan-existing-windows!)
+        (tmux/scan-existing-windows!))
+      (is (= 1 (count @tmux/live-windows)) "expected exactly one entry after two scans")
+      (is (contains? @tmux/live-windows uuid)))))
+
+;; ============================================================================
 ;; deliver!
 ;; ============================================================================
 

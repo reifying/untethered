@@ -325,6 +325,39 @@
                     :initial-prompt prompt-text
                     :resume? true})))
 
+(defn sweep!
+  "Kill windows whose session has been idle for > sweeper-max-age-days.
+   Scheduled on startup; runs every sweeper-interval-minutes."
+  []
+  (let [cutoff (- (System/currentTimeMillis)
+                  (* sweeper-max-age-days 24 60 60 1000))]
+    (doseq [[uuid {:keys [tmux-session tmux-window]}] @live-windows]
+      (when (< (window-last-activity-ms uuid) cutoff)
+        (log/info "Sweeper killing stale window"
+                  {:session-uuid uuid :tmux-session tmux-session :window tmux-window})
+        (kill-window! tmux-session tmux-window)
+        (swap! live-windows dissoc uuid)))))
+
+(defn scan-existing-windows!
+  "On backend startup, walk every tmux session and populate live-windows
+   from per-window VC_* env vars. Idempotent; safe to call after restart."
+  []
+  (let [sessions (->> (sh "tmux" "list-sessions" "-F" "#{session_name}")
+                      :out str/split-lines (remove str/blank?))]
+    (doseq [s sessions]
+      (let [env (parse-show-environment (:out (sh "tmux" "show-environment" "-t" (str "=" s))))
+            windows (->> (sh "tmux" "list-windows" "-t" (str "=" s) "-F" "#{window_name}")
+                         :out str/split-lines (remove #{"_holder" "tile" ""}))]
+        (doseq [w windows]
+          (let [suffix (env-suffix w)]
+            (when-let [uuid (get env (str "VC_SESSION_UUID_" suffix))]
+              (swap! live-windows assoc uuid
+                     {:tmux-session s
+                      :tmux-window w
+                      :provider (keyword (get env (str "VC_PROVIDER_" suffix)))
+                      :workdir (get env (str "VC_WORKDIR_" suffix))
+                      :started-at (get env (str "VC_STARTED_AT_" suffix))}))))))))
+
 (defn deliver!
   "Public entry point for both initial and follow-up prompts.
    Nudges the existing window if live, otherwise respawns with --resume."
