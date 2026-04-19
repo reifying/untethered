@@ -17,7 +17,7 @@
 (def ^:private window-cap 4)
 (def ^:private processing-window-minutes 15)
 (def ^:private sweeper-max-age-days 2)
-(def ^:private sweeper-interval-minutes 60)
+(def sweeper-interval-minutes 60)
 
 ;; Tmux commands are short, synchronous, and produce small output; shell/sh
 ;; is adequate and clearer than wiring ProcessBuilder for each one. The
@@ -47,8 +47,17 @@
 ;; Pure Helpers (no tmux dependency — unit-testable without a tmux server)
 ;; ============================================================================
 
-(defn sanitize-session-name
-  "Convert a working directory path into a tmux-safe session name."
+(defn- path-hash
+  "First 6 hex chars of SHA-256 of the path string. Used to disambiguate
+   session names when two distinct absolute paths share the same basename."
+  [path]
+  (let [md (java.security.MessageDigest/getInstance "SHA-256")
+        bytes (.digest md (.getBytes (str path) "UTF-8"))]
+    ;; 3 bytes × 2 hex chars each = 6 hex chars total
+    (apply str (take 3 (map #(format "%02x" (bit-and % 0xFF)) (seq bytes))))))
+
+(defn- base-slug
+  "Compute the slug from a working directory path without collision handling."
   [workdir]
   (let [base (-> (or workdir "") (str/replace #"/$" "") (str/split #"/") last str/lower-case)
         slug (-> base
@@ -56,9 +65,27 @@
                  (str/replace #"[^a-z0-9-]" "")
                  (str/replace #"-+" "-")
                  (str/replace #"^-|-$" ""))]
-    ;; TODO(tmux-untethered-9hi.14): append 6-char hash of full path to handle
-    ;; basename collisions (different absolute paths sharing the same basename).
     (if (str/blank? slug) "session" slug)))
+
+(defn sanitize-session-name
+  "Convert a working directory path into a tmux-safe session name.
+   When `existing-workdirs` contains a path whose slug matches this path's
+   slug but refers to a different absolute path, appends -<6-char SHA-256>
+   of the full path to ensure uniqueness. The hash suffix is deterministic
+   for a given path: the same path always produces the same hash. Whether
+   the suffix is appended depends on which other workdirs are live at the
+   time of creation — a path first created alone gets no hash; if a
+   same-basename sibling is later created, only the newcomer gets the hash."
+  ([workdir]
+   (sanitize-session-name workdir nil))
+  ([workdir existing-workdirs]
+   (let [slug (base-slug workdir)]
+     (if (some (fn [existing-path]
+                 (and (not= existing-path workdir)
+                      (= slug (base-slug existing-path))))
+               existing-workdirs)
+       (str slug "-" (path-hash workdir))
+       slug))))
 
 (defn window-name
   "Build a readable window name from the iOS session name and uuid.
@@ -276,31 +303,36 @@
    When :resume? is true, the provider is launched with its --resume flag;
    otherwise it starts a fresh session keyed to session-uuid."
   [{:keys [session-uuid session-name provider workdir initial-prompt resume?]}]
-  (let [tmux-session (sanitize-session-name workdir)
-        window (window-name session-name session-uuid)
+  (let [window (window-name session-name session-uuid)
         cmd (build-provider-command provider
                                     {:session-uuid session-uuid
                                      :resume? (boolean resume?)})]
-    (ensure-session! tmux-session workdir)
-    ;; eviction-lock covers both eviction and creation as one critical section
-    ;; so two concurrent start-window! calls cannot both create past the cap.
-    ;; evict-if-needed! also acquires this lock; Java synchronized is reentrant
-    ;; so the inner acquisition is a no-op for the same thread.
-    (locking eviction-lock
-      (evict-if-needed! tmux-session)
-      (sh "tmux" "new-window" "-d" "-t" (str "=" tmux-session ":")
-          "-n" window "-c" workdir cmd))
-    (set-window-env! tmux-session window
-                     {"VC_SESSION_UUID" session-uuid
-                      "VC_WORKDIR" workdir
-                      "VC_PROVIDER" (name provider)
-                      "VC_STARTED_AT" (.toString (java.time.Instant/now))})
-    (let [descriptor {:tmux-session tmux-session
-                      :tmux-window window
-                      :provider provider
-                      :workdir workdir
-                      :started-at (System/currentTimeMillis)}]
-      (swap! live-windows assoc session-uuid descriptor)
+    ;; All state reads and mutations run under eviction-lock so collision
+    ;; detection, eviction, window creation, env writes, and live-windows
+    ;; update are one atomic critical section. evict-if-needed! also acquires
+    ;; this lock; Java synchronized is reentrant, so the inner acquisition is
+    ;; a no-op for the same thread. wait-for-ready and nudge! are left outside
+    ;; the lock because they can block for multiple seconds.
+    (let [[tmux-session descriptor]
+          (locking eviction-lock
+            (let [existing-workdirs (map :workdir (vals @live-windows))
+                  tmux-session (sanitize-session-name workdir existing-workdirs)]
+              (ensure-session! tmux-session workdir)
+              (evict-if-needed! tmux-session)
+              (sh "tmux" "new-window" "-d" "-t" (str "=" tmux-session ":")
+                  "-n" window "-c" workdir cmd)
+              (set-window-env! tmux-session window
+                               {"VC_SESSION_UUID" session-uuid
+                                "VC_WORKDIR" workdir
+                                "VC_PROVIDER" (name provider)
+                                "VC_STARTED_AT" (.toString (java.time.Instant/now))})
+              (let [descriptor {:tmux-session tmux-session
+                                :tmux-window window
+                                :provider provider
+                                :workdir workdir
+                                :started-at (System/currentTimeMillis)}]
+                (swap! live-windows assoc session-uuid descriptor)
+                [tmux-session descriptor])))]
       (when (= :ready (wait-for-ready tmux-session window provider))
         (when initial-prompt
           (nudge! tmux-session window initial-prompt)))

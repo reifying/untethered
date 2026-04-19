@@ -6,6 +6,7 @@
             [clojure.tools.logging :as log]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.java.shell :as shell]
             [clojure.string :as str]
             [voice-code.auth :as auth]
             [voice-code.claude :as claude]
@@ -18,7 +19,9 @@
             [voice-code.orchestration :as orch]
             [voice-code.supervisor :as supervisor]
             [voice-code.env :as env]
-            [voice-code.providers :as providers])
+            [voice-code.providers :as providers]
+            [voice-code.tmux :as tmux])
+  (:import [java.util.concurrent Executors TimeUnit])
   (:gen-class))
 
 ;; JSON key conversion utilities
@@ -2383,13 +2386,38 @@
 
   (log/info "Supervisor tool handlers registered"))
 
+(defn check-tmux-available!
+  "Verify tmux is installed and executable. Returns the version string on success.
+   On failure, logs a diagnostic, prints a message, and calls (exit-fn 1).
+   In production the default exit-fn is System/exit, which does not return;
+   callers should not assume the function returns after a failure."
+  ([]
+   (check-tmux-available! #(System/exit %)))
+  ([exit-fn]
+   (let [{:keys [exit out err]} (shell/sh "tmux" "-V")]
+     (if (zero? exit)
+       (str/trim out)
+       (do
+         (log/error "tmux is not available; voice-code requires tmux to run provider CLIs"
+                    {:exit exit :out out :err err})
+         (println "ERROR: tmux not found or not executable. Install tmux and ensure it is on PATH.")
+         (exit-fn 1))))))
+
 (defn -main
   "Start the WebSocket server"
   [& args]
   (let [config (load-config)
         port (get-in config [:server :port] 8080)
         host (get-in config [:server :host] "0.0.0.0")
-        default-dir (get-in config [:claude :default-working-directory])]
+        default-dir (get-in config [:claude :default-working-directory])
+        ;; Daemon thread so the sweeper never prevents JVM exit.
+        ;; Captured here (not inside a nested let) so the shutdown hook can
+        ;; call .shutdown() for a clean drain.
+        sweeper-exec (Executors/newSingleThreadScheduledExecutor
+                      (reify java.util.concurrent.ThreadFactory
+                        (newThread [_ r]
+                          (doto (Thread. r "vc-sweeper")
+                            (.setDaemon true)))))]
 
     ;; Initialize API key authentication
     (log/info "Initializing API key authentication")
@@ -2401,9 +2429,28 @@
     ;; Register supervisor tool handlers
     (register-supervisor-tool-handlers!)
 
+    ;; Verify tmux is available — exit-on-missing (no fallback path)
+    (check-tmux-available!)
+
     ;; Initialize replication system
     (log/info "Initializing session replication system")
     (repl/initialize-index!)
+
+    ;; Rebuild live-windows from any tmux sessions that survived a prior restart
+    (log/info "Scanning for existing tmux windows")
+    (tmux/scan-existing-windows!)
+
+    ;; Schedule the sweeper to kill windows idle > sweeper-max-age-days
+    (let [interval-ms (* tmux/sweeper-interval-minutes 60 1000)]
+      (.scheduleAtFixedRate
+       sweeper-exec
+       (fn []
+         (try (tmux/sweep!)
+              (catch Exception e
+                (log/error e "Sweeper error"))))
+       interval-ms
+       interval-ms
+       TimeUnit/MILLISECONDS))
 
     ;; Start filesystem watcher
     (try
@@ -2428,6 +2475,8 @@
        (Runtime/getRuntime)
        (Thread. (fn []
                   (log/info "Shutting down voice-code server gracefully")
+                  ;; Stop sweeper so no new sweep starts after shutdown
+                  (.shutdown sweeper-exec)
                   ;; Stop filesystem watcher
                   (repl/stop-watcher!)
                   ;; Save session index

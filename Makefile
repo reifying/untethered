@@ -11,7 +11,7 @@ BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
 .PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
-.PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop recipe-sync
+.PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop recipe-sync tmux-clean
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 .PHONY: build-mac test-mac test-mac-class test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
@@ -81,6 +81,7 @@ help:
 	@echo ""
 	@echo "Utility:"
 	@echo "  backend-clean     - Remove backend test artifacts"
+	@echo "  tmux-clean        - Kill all voice-code tmux windows (VC_* env vars); developer reset"
 	@echo "  help              - Show this help message"
 	@echo ""
 	@echo "TestFlight publishing:"
@@ -257,6 +258,30 @@ backend-test-manual-all:
 backend-clean:
 	cd $(BACKEND_DIR) && rm -f server.log
 	cd $(BACKEND_DIR) && rm -f **/test-*.jsonl
+
+# Kill all voice-code tmux windows (developer reset).
+# Enumerates every tmux session, finds windows whose VC_SESSION_UUID_* env var
+# is set, kills those windows, then kills any session whose only surviving
+# window is the _holder placeholder.
+tmux-clean:
+	@echo "Cleaning up voice-code tmux windows..."
+	@tmux list-sessions -F "#{session_name}" 2>/dev/null | while read session; do \
+		tmux show-environment -t "=$$session" 2>/dev/null | grep -q "^VC_SESSION_UUID_" || continue; \
+		tmux list-windows -t "=$$session" -F "#{window_name}" 2>/dev/null | grep -v "^_holder$$" | grep -v "^tile$$" | while read window; do \
+			suffix=$$(echo "$$window" | tr '-' '_'); \
+			if tmux show-environment -t "=$$session" 2>/dev/null | grep -q "^VC_SESSION_UUID_$$suffix="; then \
+				echo "  Killing window: $$session:$$window"; \
+				tmux kill-window -t "=$$session:=$$window" 2>/dev/null || true; \
+			fi; \
+		done; \
+		remaining=$$(tmux list-windows -t "=$$session" -F "#{window_name}" 2>/dev/null | grep -c '.'); \
+		holder_only=$$(tmux list-windows -t "=$$session" -F "#{window_name}" 2>/dev/null | grep -v "^_holder$$" | grep -c '.'); \
+		if [ "$$holder_only" -eq 0 ] && [ "$$remaining" -ge 1 ]; then \
+			echo "  Killing session (only _holder remains): $$session"; \
+			tmux kill-session -t "=$$session" 2>/dev/null || true; \
+		fi; \
+	done
+	@echo "tmux-clean complete"
 
 # Backend server management
 # Note: Uses PID file to track Makefile-started instance (typically port 8080)

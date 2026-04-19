@@ -49,7 +49,33 @@
            (tmux/sanitize-session-name "/tmp/MyProject"))))
 
   (testing "nil input returns 'session' fallback"
-    (is (= "session" (tmux/sanitize-session-name nil)))))
+    (is (= "session" (tmux/sanitize-session-name nil))))
+
+  (testing "no collision when existing-workdirs is nil"
+    (is (= "proj" (tmux/sanitize-session-name "/a/proj" nil))))
+
+  (testing "no collision when existing-workdirs is empty"
+    (is (= "proj" (tmux/sanitize-session-name "/a/proj" []))))
+
+  (testing "no collision when other paths have different slugs"
+    (is (= "proj" (tmux/sanitize-session-name "/b/proj" ["/a/other-project"]))))
+
+  (testing "collision: two paths with the same basename get different session names"
+    (let [name-a (tmux/sanitize-session-name "/a/proj" nil)
+          name-b (tmux/sanitize-session-name "/b/proj" ["/a/proj"])]
+      (is (= "proj" name-a))
+      (is (clojure.string/starts-with? name-b "proj-"))
+      (is (not= name-a name-b))
+      ;; suffix is exactly 6 hex chars
+      (is (re-matches #"proj-[0-9a-f]{6}" name-b))))
+
+  (testing "collision hash is deterministic: same path always produces same suffix"
+    (let [name1 (tmux/sanitize-session-name "/b/proj" ["/a/proj"])
+          name2 (tmux/sanitize-session-name "/b/proj" ["/a/proj"])]
+      (is (= name1 name2))))
+
+  (testing "no self-collision: path not appended when only matching path is itself"
+    (is (= "proj" (tmux/sanitize-session-name "/a/proj" ["/a/proj"])))))
 
 ;; ============================================================================
 ;; window-name

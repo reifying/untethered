@@ -2205,3 +2205,28 @@
         (is (= :opencode (:provider (first @ensure-calls))))))
     (reset! server/api-key nil)
     (reset! server/connected-clients {})))
+
+;; ============================================================================
+;; check-tmux-available!
+;; ============================================================================
+
+(deftest check-tmux-available!-test
+  (testing "returns version string when tmux is available"
+    (with-redefs [clojure.java.shell/sh
+                  (fn [& _] {:exit 0 :out "tmux 3.3a\n" :err ""})]
+      (let [result (server/check-tmux-available! (fn [_] nil))]
+        (is (= "tmux 3.3a" result)))))
+
+  (testing "calls exit-fn with 1 when tmux is not available"
+    (with-redefs [clojure.java.shell/sh
+                  (fn [& _] {:exit 127 :out "" :err "tmux: command not found"})]
+      (let [exit-codes (atom [])]
+        (server/check-tmux-available! #(swap! exit-codes conj %))
+        (is (= [1] @exit-codes)))))
+
+  (testing "does not call exit-fn when tmux is available"
+    (with-redefs [clojure.java.shell/sh
+                  (fn [& _] {:exit 0 :out "tmux 3.3a\n" :err ""})]
+      (let [exit-calls (atom 0)]
+        (server/check-tmux-available! #(swap! exit-calls inc))
+        (is (zero? @exit-calls))))))
