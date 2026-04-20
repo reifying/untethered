@@ -774,6 +774,13 @@
    was evicted. On the deliver! path the provider is inferred from live-windows
    state, so the :provider argument is only consulted when starting a window.
 
+   The tmux call is serialized against compact_session via
+   repl/compaction-dispatch-lock (see tmux-untethered-22g / tmux-untethered-3eh).
+   If a compaction is in progress for this session when the lock is acquired,
+   the callback fires with {:success false :error ...} and tmux is not invoked;
+   the orchestrator's callback exits the recipe with an error whose text tells
+   the user to retry once compaction completes.
+
    The callback is stored keyed on session-id and fired by on-turn-complete
    with {:success true :result <assistant-text> :session-id <id>}. On
    synchronous dispatch failure the callback fires immediately with
@@ -782,14 +789,22 @@
    callback-fn]
   (swap! recipe-turn-callbacks assoc session-id callback-fn)
   (try
-    (if session-created?
-      (tmux/deliver! session-id prompt-text)
-      (tmux/start-window! {:session-uuid session-id
-                           :session-name (:name (repl/get-session-metadata session-id))
-                           :provider provider
-                           :workdir working-dir
-                           :initial-prompt prompt-text
-                           :resume? false}))
+    (locking repl/compaction-dispatch-lock
+      (if (repl/is-compaction-locked? session-id)
+        (do
+          (log/info "Recipe step dispatch aborted: compaction in progress"
+                    {:session-id session-id :provider provider})
+          (swap! recipe-turn-callbacks dissoc session-id)
+          (callback-fn {:success false
+                        :error "Compaction in progress for this session; retry once it completes"}))
+        (if session-created?
+          (tmux/deliver! session-id prompt-text)
+          (tmux/start-window! {:session-uuid session-id
+                               :session-name (:name (repl/get-session-metadata session-id))
+                               :provider provider
+                               :workdir working-dir
+                               :initial-prompt prompt-text
+                               :resume? false}))))
     nil
     (catch Throwable e
       (log/error e "Failed to dispatch recipe step via tmux"

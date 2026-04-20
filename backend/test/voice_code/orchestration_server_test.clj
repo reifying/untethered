@@ -463,3 +463,126 @@
       (is (nil? (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id))
           "Callback should be removed on recipe exit"))))
 
+(deftest dispatch-recipe-step-respects-compaction-lock-test
+  ;; Regression test for tmux-untethered-3eh. The recipe-orchestrator's
+  ;; tmux/deliver! + tmux/start-window! call site must be guarded against
+  ;; claude --compact racing with the same session's JSONL, just like the
+  ;; WS prompt handler (see tmux-untethered-shs + tmux-untethered-22g).
+  (testing "tmux/deliver! not invoked when compaction holds lock on same session (resumed step)"
+    (let [session-id "recipe-compact-deliver"
+          deliver-calls (atom 0)
+          start-calls (atom 0)
+          callback-response (atom nil)]
+      (reset! replication/compaction-locks #{session-id})
+      (try
+        (with-redefs [tmux/deliver! (fn [_ _] (swap! deliver-calls inc))
+                      tmux/start-window! (fn [_] (swap! start-calls inc))]
+          (server/dispatch-recipe-step-via-tmux!
+           {:provider :claude
+            :session-id session-id
+            :session-created? true
+            :prompt-text "step prompt"
+            :working-dir "/wd"}
+           (fn [resp] (reset! callback-response resp)))
+          (is (zero? @deliver-calls)
+              "tmux/deliver! must not fire while compaction-locks holds this session")
+          (is (zero? @start-calls) "tmux/start-window! must not fire either")
+          (is (false? (:success @callback-response))
+              "Callback should fire with :success false")
+          (is (str/includes? (:error @callback-response) "retry")
+              "Error text should tell the user to retry once compaction completes")
+          (is (nil? (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id))
+              "Callback should be unregistered when dispatch aborts under compaction"))
+        (finally
+          (reset! replication/compaction-locks #{})))))
+
+  (testing "tmux/start-window! not invoked when compaction holds lock on same session (first step)"
+    (let [session-id "recipe-compact-start"
+          deliver-calls (atom 0)
+          start-calls (atom 0)
+          callback-response (atom nil)]
+      (reset! replication/compaction-locks #{session-id})
+      (try
+        (with-redefs [tmux/deliver! (fn [_ _] (swap! deliver-calls inc))
+                      tmux/start-window! (fn [_] (swap! start-calls inc))
+                      replication/get-session-metadata (constantly {:name "n"})]
+          (server/dispatch-recipe-step-via-tmux!
+           {:provider :claude
+            :session-id session-id
+            :session-created? false
+            :prompt-text "first step"
+            :working-dir "/wd"}
+           (fn [resp] (reset! callback-response resp)))
+          (is (zero? @start-calls)
+              "tmux/start-window! must not fire while compaction-locks holds this session")
+          (is (zero? @deliver-calls))
+          (is (false? (:success @callback-response)))
+          (is (str/includes? (:error @callback-response) "retry")))
+        (finally
+          (reset! replication/compaction-locks #{})))))
+
+  (testing "compaction lock on a different session does not block this session"
+    (let [session-id "recipe-compact-unrelated"
+          deliver-args (atom nil)]
+      (reset! replication/compaction-locks #{"some-other-session"})
+      (try
+        (with-redefs [tmux/deliver! (fn [sid text]
+                                      (reset! deliver-args {:session-id sid :text text}))
+                      tmux/start-window! (fn [_] nil)]
+          (server/dispatch-recipe-step-via-tmux!
+           {:provider :claude
+            :session-id session-id
+            :session-created? true
+            :prompt-text "go"
+            :working-dir "/wd"}
+           (fn [_] nil))
+          (is (= {:session-id session-id :text "go"} @deliver-args)
+              "Cross-session compaction locks must not block dispatch for other sessions"))
+        (finally
+          (reset! replication/compaction-locks #{})))))
+
+  (testing "TOCTOU: compaction acquired while recipe dispatch is pending the lock is detected"
+    (let [session-id "recipe-compact-toctou"
+          deliver-calls (atom 0)
+          start-calls (atom 0)
+          callback-response (atom nil)
+          compaction-acquired (java.util.concurrent.CountDownLatch. 1)
+          compaction-release (java.util.concurrent.CountDownLatch. 1)]
+      (reset! replication/compaction-locks #{})
+      (try
+        (with-redefs [tmux/deliver! (fn [_ _]
+                                      (when (contains? @replication/compaction-locks session-id)
+                                        (swap! deliver-calls inc)))
+                      tmux/start-window! (fn [_]
+                                           (when (contains? @replication/compaction-locks session-id)
+                                             (swap! start-calls inc)))]
+          (let [compact-worker
+                (future
+                  (locking replication/compaction-dispatch-lock
+                    (swap! replication/compaction-locks conj session-id)
+                    (.countDown compaction-acquired)
+                    (.await compaction-release 2 java.util.concurrent.TimeUnit/SECONDS)))]
+            (.await compaction-acquired 2 java.util.concurrent.TimeUnit/SECONDS)
+            (let [recipe-worker
+                  (future
+                    (server/dispatch-recipe-step-via-tmux!
+                     {:provider :claude
+                      :session-id session-id
+                      :session-created? true
+                      :prompt-text "racing prompt"
+                      :working-dir "/wd"}
+                     (fn [resp] (reset! callback-response resp))))]
+              (Thread/sleep 100)
+              (is (zero? @deliver-calls)
+                  "tmux/deliver! must not fire while compaction holds the dispatch-lock")
+              (is (zero? @start-calls))
+              (.countDown compaction-release)
+              @compact-worker
+              @recipe-worker
+              (is (zero? @deliver-calls)
+                  "Violation: tmux/deliver! ran while session was compaction-locked")
+              (is (false? (:success @callback-response))
+                  "Callback must fire with :success false when compaction wins the race"))))
+        (finally
+          (reset! replication/compaction-locks #{}))))))
+
