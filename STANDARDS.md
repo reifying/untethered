@@ -63,6 +63,11 @@ message["session_id"] = session.id.uuidString.lowercased()
 
 The voice-code WebSocket protocol enables persistent sessions across reconnections by mapping iOS session UUIDs to Claude conversation sessions. All messages are JSON-encoded with `snake_case` keys.
 
+### Protocol Version History
+
+- `0.3.0` — Tmux-untethered provider invocation. Breaking changes: removed `set_directory` (client → backend), removed `session_locked` (backend → client), removed `usage` and `cost` from `response`. Added optional `aborted` field on `turn_complete`. `available_commands` is now pushed on connect and on every session creation/resume rather than in response to `set_directory`.
+- `0.2.0` — Previous protocol (per-session locking, one-shot CLI invocation).
+
 ### Connection Flow
 
 #### 1. Initial Connection / Reconnection
@@ -77,7 +82,7 @@ iOS → Backend: WebSocket connection established
 Backend → iOS: {
   "type": "hello",
   "message": "Welcome to voice-code backend",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "auth_version": 1,
   "instructions": "Send connect message with api_key"
 }
@@ -172,14 +177,6 @@ iOS → Backend: {
 - `provider` (optional): Provider to use for new session. Values: `"claude"`, `"copilot"`. Only valid with `new_session_id`. Silently ignored for resumed sessions. Defaults to `"claude"` if not specified.
 - `system_prompt` (optional): Custom system prompt to append via `--append-system-prompt`. Empty or whitespace-only values are ignored. Only applies to Claude provider.
 
-**Set Working Directory**
-```json
-{
-  "type": "set_directory",
-  "path": "<absolute-path>"
-}
-```
-
 **Ping**
 ```json
 {
@@ -254,7 +251,7 @@ Requests an updated session list without re-authentication. Use this instead of 
 - If not authenticated, backend sends `auth_error` and closes connection
 
 **Response:**
-Backend responds with `session_list` and `recent_sessions` messages (same as after `connect`). If the client has a working directory set, backend also sends `available_commands`.
+Backend responds with `session_list` and `recent_sessions` messages (same as after `connect`). `available_commands` is not re-sent on refresh; it ships on connect and on each session creation/resume.
 
 #### Backend → Client
 
@@ -273,16 +270,7 @@ Backend responds with `session_list` and `recent_sessions` messages (same as aft
   "message_id": "<unique-message-id>",  // For delivery tracking
   "success": true,
   "text": "<claude-response-text>",
-  "session_id": "<claude-session-id>",
-  "usage": {
-    "input_tokens": 123,
-    "output_tokens": 456
-  },
-  "cost": {
-    "input_cost": 0.001,
-    "output_cost": 0.002,
-    "total_cost": 0.003
-  }
+  "session_id": "<claude-session-id>"
 }
 ```
 
@@ -323,26 +311,20 @@ The backend closes the WebSocket connection immediately after sending this messa
 3. iOS should display an authentication error UI prompting user to re-scan QR code or re-enter API key in Settings
 4. iOS should NOT automatically retry connection until user provides new credentials
 
-**Session Locked**
-```json
-{
-  "type": "session_locked",
-  "message": "Session is currently processing a prompt. Please wait.",
-  "session_id": "<claude-session-id>"
-}
-```
-
-Sent when a client attempts to send a prompt to a session that is already processing a prompt. The backend maintains per-session locks to prevent concurrent Claude CLI executions that could fork the session. The client should disable input controls for the locked session until it receives a turn_complete or error message.
-
 **Turn Complete**
 ```json
 {
   "type": "turn_complete",
-  "session_id": "<claude-session-id>"
+  "session_id": "<claude-session-id>",
+  "aborted": true
 }
 ```
 
-Sent when Claude CLI finishes processing a prompt successfully (turn is complete). This is the concrete signal for iOS to unlock the session and re-enable input controls. On failure, only `error` (with `session_id`) is sent, which also triggers unlock.
+Sent when a provider CLI finishes processing a prompt successfully (turn is complete), derived from writes to the provider session JSONL file. This is the concrete signal for iOS to unlock the session and re-enable input controls. On failure, only `error` (with `session_id`) is sent, which also triggers unlock.
+
+**Fields:**
+- `session_id` (required): Provider session ID
+- `aborted` (optional, default `false`, omitted when false): Set to `true` on the synthesized `turn_complete` emitted when the provider window was killed mid-turn (by `kill_session` or compaction). iOS should treat `aborted:true` identically to a normal `turn_complete` for UI-unlock purposes; it is informational so the client may render a distinct badge.
 
 **Pong**
 ```json
@@ -416,7 +398,10 @@ Sent when session compaction succeeds.
 Sent when session compaction fails. Common errors:
 - "Session not found: <session-id>"
 - "session_id required in compact_session message"
+- "Compaction already in progress" — a prior `compact_session` for this UUID has not yet completed; wait for `compaction_complete` or a terminating `compaction_error` before retrying.
 - Claude CLI errors
+
+If a tmux window for the session was live when compaction began, the backend kills it before spawning `claude --compact` and synthesizes a `turn_complete {aborted: true}` to every subscriber so processing indicators unlock. The next prompt to the session respawns the provider via `--resume`.
 
 **Recent Sessions**
 ```json
@@ -492,36 +477,9 @@ Session compaction summarizes conversation history to reduce context window usag
 - WebSocket disconnect → iOS reconnects with same session UUID and re-authenticates with stored API key
 - Backend restart → Sessions restored from disk; iOS must re-authenticate on reconnection
 
-### Session Locking
+### Concurrent Prompts
 
-**Overview:**
-Session locking prevents concurrent prompts from forking the same Claude session. When a session is actively processing a prompt, the backend locks it and rejects additional prompts until the Claude CLI execution completes.
-
-**Behavior:**
-- Backend maintains a set of locked Claude session IDs
-- Lock acquired before invoking Claude CLI
-- Lock released when CLI completes (success or error)
-- Locked sessions reject new prompts with `session_locked` message
-- Per-session locking: users can work with multiple sessions simultaneously
-
-**Frontend Implementation:**
-- iOS tracks `lockedSessions` as a `Set<String>` of Claude session IDs
-- Optimistic locking: session locked when sending prompt (before backend confirms)
-- Input controls disabled for locked sessions (voice and text)
-- Lock status checked per-session (not global)
-- Lock released when `turn_complete` or `error` received
-- Manual unlock available (UI shows "Tap to Unlock" for stuck locks)
-
-**Multi-Session Workflow:**
-Users can switch between sessions while keeping multiple agents busy. Each session has independent lock state, so locking session A doesn't prevent sending prompts to session B.
-
-**Lock Lifecycle:**
-1. User sends prompt → iOS optimistically locks session
-2. Backend attempts lock acquisition
-3. If locked: sends `session_locked` message
-4. If unlocked: acquires lock, invokes Claude CLI
-5. When CLI completes: releases lock, sends `turn_complete`
-6. iOS receives `turn_complete` → unlocks session
+Provider CLIs run inside tmux windows that persist across prompts (and across backend restarts). Concurrent prompts to the same session are delivered as sequential `send-keys` nudges into the live pane; the provider's own input queue orders them. There is no per-session lock and no `session_locked` message. A separate `compaction-locks` atom guards the `compact_session` handler, since `claude --compact` still runs as a one-shot subprocess that would race the live TUI's JSONL writes.
 
 ### Message ID Format
 
@@ -548,7 +506,9 @@ The command execution protocol allows iOS clients to discover, execute, and moni
 
 ##### Available Commands (Backend → Client)
 
-Sent automatically after `connected` and `set-directory` messages. Provides project-specific and general commands for the current working directory.
+Sent automatically at two points:
+1. After `connected` — general commands only (no project commands, since the working directory is unknown).
+2. On session creation or resume (via `prompt` with `new_session_id` or `resume_session_id`) — project commands are populated from the session's working directory.
 
 **Message:**
 ```json

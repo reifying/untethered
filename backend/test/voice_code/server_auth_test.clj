@@ -141,7 +141,7 @@
         (let [hello-json (server/generate-json
                           {:type :hello
                            :message "Welcome to voice-code backend"
-                           :version "0.2.0"
+                           :version "0.3.0"
                            :auth-version 1
                            :instructions "Send connect message with api_key"})
               parsed (server/parse-json hello-json)]
