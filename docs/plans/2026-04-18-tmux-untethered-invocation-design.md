@@ -128,6 +128,20 @@ The backend changes above are breaking-adjacent for iOS. The following iOS call 
 
 This replaces the current "client sends `set_directory`, backend replies with commands" round trip.
 
+#### Compaction under tmux
+`compact_session` remains a one-shot `claude -p --resume <uuid> /compact` subprocess (`claude.clj/compact-session`). A second Claude process with the same `--resume <uuid>` as the live TUI would fork the session and race the TUI's JSONL writes. Two paths were considered:
+
+1. **Separate compaction lock (adopted).** Introduce a new atom `compaction-locks` in `replication.clj` (scope: compaction handler only — not acquired by the prompt path). When a `compact_session` request arrives:
+   - Acquire `compaction-locks` for `session-id`. If already held, respond with a `compaction_error` message whose `error` is `"Compaction already in progress"` (NOT `session_locked`, which is deleted per the removed-message-types list). `compaction_error` is the existing failure-case message type (server.clj already emits it for CLI errors); we add one new error string, not a new type.
+   - If a live tmux window exists for this UUID, call `tmux/kill-window!` on it and `(swap! tmux/live-windows dissoc session-id)` before spawning the one-shot. This guarantees only one Claude process holds the JSONL.
+   - If the killed window had an in-flight turn, the JSONL watcher will not produce a natural `turn_complete` (the TUI died mid-turn). The compaction handler must synthesize a `turn_complete {aborted: true}` to every subscriber of this session — same pattern used by `kill_session` in server.clj:1622–1629 — so iOS's processing-indicator unlocks. Emit this synthesized `turn_complete` before the compaction subprocess starts; do not wait for `compaction_complete`.
+   - Run `claude -p --output-format json --resume <uuid> /compact` exactly as today.
+   - On success, release the lock and emit `compaction_complete`. The next prompt for this session UUID naturally hits the evicted-session path (`live-windows` has no entry), and `deliver!` respawns a fresh TUI via `--resume` that loads the compacted JSONL.
+   - On failure, release the lock and emit `compaction_error { error: <cli-error> }`.
+2. **Compaction-as-nudge (rejected for this milestone).** Send `/compact` as a tmux nudge into the live pane. No second subprocess, no lock. Requires live verification that Claude's TUI (a) executes `/compact` as an interactive slash command and (b) produces a JSONL marker we can detect as "compaction complete" (candidate: a `type: "summary"` record, already listed in provider-cli-reference.md §1 "Message Types in JSONL"). The verification spike was not done as part of this design; adopting Option 2 would block the 2xl cleanup on unrelated provider-CLI fieldwork. Revisit post-migration.
+
+Consequence for tmux-untethered-2xl: delete `session-locks` + `acquire-session-lock!` / `release-session-lock!` entirely from the prompt path, then add `compaction-locks` + `acquire-compaction-lock!` / `release-compaction-lock!` (separate atom) used only by the `compact_session` handler. `send-session-locked!` is deleted. The compaction handler also gains a new side-effect (synthesize `turn_complete {aborted: true}` when killing a live window mid-turn) that tmux-untethered-m3k should surface in STANDARDS.md alongside the `compact_session` protocol description.
+
 ### 3.3 Code examples
 
 New module `backend/src/voice_code/tmux.clj` encapsulates all tmux interactions. Public surface:
