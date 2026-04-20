@@ -4,6 +4,7 @@
             [voice-code.server :as server]
             [voice-code.replication :as repl]
             [voice-code.recipes :as recipes]
+            [voice-code.tmux :as tmux]
             [cheshire.core :as json]
             [clojure.java.io :as io]))
 
@@ -350,80 +351,87 @@
             (is (vector? (:sessions msg2)))))))
     (reset! server/api-key nil)))
 
-(deftest test-prompt-session-id-distinction
-  (testing "Prompt with new_session_id uses --session-id flag"
+;; Helper: wait for a promise or fail the test after timeout. Returns the
+;; promise value on success; `:timeout` when the deadline expires. Used to
+;; await the `(future ...)` that the prompt handler spawns for tmux dispatch.
+(defn- await-dispatch [p]
+  (deref p 2000 :timeout))
+
+(deftest test-prompt-new-session-dispatches-to-start-window!
+  (testing "Prompt with new_session_id calls tmux/start-window! with resume? false"
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
-    (let [claude-args (atom nil)]
-      (with-redefs [voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & {:keys [new-session-id resume-session-id]}]
-                      (reset! claude-args {:new-session-id new-session-id
-                                           :resume-session-id resume-session-id})
-                      ;; Call callback immediately for test
-                      (callback {:success true :session-id "test-123"}))
+    (let [dispatched (promise)]
+      (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
+                    tmux/deliver!      (fn [& _]
+                                         (deliver dispatched :unexpected-deliver-call))
                     org.httpkit.server/send! (fn [_ _] nil)]
-        (server/handle-message :test-ch "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-123\"}")
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-123\",\"working_directory\":\"/tmp\"}")
+        (let [args (await-dispatch dispatched)]
+          (is (map? args) "expected start-window! to be called with an options map")
+          (is (= "new-123" (:session-uuid args)))
+          (is (= "hello"   (:initial-prompt args)))
+          (is (= :claude   (:provider args)))
+          (is (= "/tmp"    (:workdir args)))
+          (is (false?      (:resume? args))))))
+    (reset! server/api-key nil)))
 
-        (is (= "new-123" (:new-session-id @claude-args)))
-        (is (nil? (:resume-session-id @claude-args)))))
-    (reset! server/api-key nil))
-
-  (testing "Prompt with resume_session_id uses --resume flag"
+(deftest test-prompt-resume-session-dispatches-to-deliver!
+  (testing "Prompt with resume_session_id calls tmux/deliver! with prompt text"
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
-    (let [claude-args (atom nil)]
-      (with-redefs [voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & {:keys [new-session-id resume-session-id]}]
-                      (reset! claude-args {:new-session-id new-session-id
-                                           :resume-session-id resume-session-id})
-                      ;; Call callback immediately for test
-                      (callback {:success true :session-id "test-456"}))
+    (let [dispatched (promise)]
+      (with-redefs [tmux/deliver!     (fn [uuid text]
+                                        (deliver dispatched {:uuid uuid :text text}))
+                    tmux/start-window! (fn [& _]
+                                         (deliver dispatched :unexpected-start-window-call))
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp"})
                     org.httpkit.server/send! (fn [_ _] nil)]
-        (server/handle-message :test-ch "{\"type\":\"prompt\",\"text\":\"continue\",\"resume_session_id\":\"resume-456\"}")
-
-        (is (nil? (:new-session-id @claude-args)))
-        (is (= "resume-456" (:resume-session-id @claude-args)))))
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"continue\",\"resume_session_id\":\"resume-456\"}")
+        (let [args (await-dispatch dispatched)]
+          (is (map? args) "expected deliver! to be called with uuid and text")
+          (is (= "resume-456" (:uuid args)))
+          (is (= "continue"   (:text args))))))
     (reset! server/api-key nil)))
 
 (deftest test-prompt-provider-extraction-for-new-session
   (testing "Prompt with explicit provider for new session uses that provider"
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
-    (let [provider-used (atom nil)]
-      (with-redefs [voice-code.providers/invoke-provider-async
-                    (fn [provider prompt callback & opts]
-                      (reset! provider-used provider)
-                      (callback {:success true :session-id "test-123"}))
+    (let [dispatched (promise)]
+      (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
                     org.httpkit.server/send! (fn [_ _] nil)]
         (server/handle-message :test-ch
-                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-123\",\"provider\":\"copilot\"}")
-        (is (= :copilot @provider-used) "Should use explicit provider for new session")))
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-123\",\"provider\":\"copilot\",\"working_directory\":\"/tmp\"}")
+        (is (= :copilot (:provider (await-dispatch dispatched)))
+            "Should pass explicit provider to start-window!")))
     (reset! server/api-key nil))
 
   (testing "Prompt without explicit provider defaults via resolve-provider"
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
-    (let [provider-used (atom nil)]
-      (with-redefs [voice-code.providers/invoke-provider-async
-                    (fn [provider prompt callback & opts]
-                      (reset! provider-used provider)
-                      (callback {:success true :session-id "test-123"}))
+    (let [dispatched (promise)]
+      (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
                     org.httpkit.server/send! (fn [_ _] nil)]
         (server/handle-message :test-ch
-                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-456\"}")
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-456\",\"working_directory\":\"/tmp\"}")
         ;; Default provider is :claude when no explicit and no metadata
-        (is (= :claude @provider-used) "Should default to claude when no provider specified")))
+        (is (= :claude (:provider (await-dispatch dispatched)))
+            "Should default to claude when no provider specified")))
     (reset! server/api-key nil)))
 
 (deftest test-prompt-provider-ignored-for-resume
   (testing "Prompt with provider field is silently ignored for resumed sessions"
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
-    (let [provider-used (atom nil)]
-      (with-redefs [voice-code.providers/invoke-provider-async
-                    (fn [provider prompt callback & opts]
-                      (reset! provider-used provider)
-                      (callback {:success true :session-id "resume-123"}))
+    (let [dispatched (promise)]
+      (with-redefs [;; deliver! handles the live-window case; respawn is an implementation detail
+                    tmux/deliver! (fn [uuid text]
+                                    (deliver dispatched {:uuid uuid :text text}))
+                    tmux/start-window! (fn [opts] (deliver dispatched opts))
                     ;; Mock session metadata to return :copilot as stored provider
                     voice-code.replication/get-session-metadata
                     (fn [session-id]
@@ -431,11 +439,14 @@
                        :provider :copilot
                        :working-directory "/test/dir"})
                     org.httpkit.server/send! (fn [_ _] nil)]
-        ;; Send provider="claude" but resuming a copilot session
+        ;; Send provider="claude" but resuming a copilot session. Provider is
+        ;; silently dropped; deliver! receives only the UUID and text because
+        ;; provider metadata lives with the session, not the delivery call.
         (server/handle-message :test-ch
                                "{\"type\":\"prompt\",\"text\":\"continue\",\"resume_session_id\":\"resume-123\",\"provider\":\"claude\"}")
-        ;; Should use stored provider :copilot, not explicit :claude
-        (is (= :copilot @provider-used) "Should use session metadata provider, not explicit")))
+        (let [args (await-dispatch dispatched)]
+          (is (= "resume-123" (:uuid args)))
+          (is (= "continue"   (:text args))))))
     (reset! server/api-key nil)))
 
 (deftest test-prompt-invalid-provider-returns-error
@@ -443,17 +454,16 @@
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [sent-messages (atom [])
-          provider-invoked (atom false)]
-      (with-redefs [voice-code.providers/invoke-provider-async
-                    (fn [& _]
-                      (reset! provider-invoked true))
+          tmux-invoked (atom false)]
+      (with-redefs [tmux/start-window! (fn [& _] (reset! tmux-invoked true))
+                    tmux/deliver!      (fn [& _] (reset! tmux-invoked true))
                     org.httpkit.server/send!
-                    (fn [ch msg]
+                    (fn [_ch msg]
                       (swap! sent-messages conj (json/parse-string msg true)))]
         (server/handle-message :test-ch
                                "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-789\",\"provider\":\"unknown-provider\"}")
 
-        (is (not @provider-invoked) "Should not invoke provider for invalid provider")
+        (is (not @tmux-invoked) "Should not dispatch to tmux for invalid provider")
         (is (= 1 (count @sent-messages)))
         (let [response (first @sent-messages)]
           (is (= "error" (:type response)))
@@ -466,21 +476,51 @@
   (testing "Invalid provider on resume is silently ignored (uses metadata)"
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
-    (let [provider-used (atom nil)]
-      (with-redefs [voice-code.providers/invoke-provider-async
-                    (fn [provider prompt callback & opts]
-                      (reset! provider-used provider)
-                      (callback {:success true :session-id "resume-456"}))
+    (let [dispatched (promise)]
+      (with-redefs [tmux/deliver! (fn [uuid text]
+                                    (deliver dispatched {:uuid uuid :text text}))
+                    tmux/start-window! (fn [& _]
+                                         (deliver dispatched :unexpected-start-window-call))
                     voice-code.replication/get-session-metadata
                     (fn [session-id]
                       {:session-id session-id
                        :provider :claude
                        :working-directory "/test/dir"})
                     org.httpkit.server/send! (fn [_ _] nil)]
-        ;; Even invalid provider is ignored for resume - uses metadata
+        ;; Even invalid provider is ignored for resume - deliver! is provider-agnostic
         (server/handle-message :test-ch
                                "{\"type\":\"prompt\",\"text\":\"continue\",\"resume_session_id\":\"resume-456\",\"provider\":\"invalid\"}")
-        (is (= :claude @provider-used) "Should use session metadata provider for resume")))
+        (is (= "resume-456" (:uuid (await-dispatch dispatched))))))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-never-sends-session-locked
+  ;; AC #1 from tmux-untethered design §4: concurrent prompts to the same
+  ;; session UUID must never produce a session_locked response. We simulate
+  ;; two back-to-back prompts without releasing any lock between them and
+  ;; assert no session_locked message is emitted.
+  (testing "Two concurrent prompts to the same session never return session_locked"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [sent-messages (atom [])
+          ;; CountDownLatch is deterministic: the assertion waits until both
+          ;; futures complete (or the timeout fires) instead of racing a sleep.
+          latch (java.util.concurrent.CountDownLatch. 2)]
+      (with-redefs [tmux/deliver! (fn [& _] (.countDown latch))
+                    tmux/start-window! (fn [& _] (.countDown latch))
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp"})
+                    org.httpkit.server/send!
+                    (fn [_ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))]
+        ;; Two prompts to the same session UUID
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"first\",\"resume_session_id\":\"same-uuid\"}")
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"second\",\"resume_session_id\":\"same-uuid\"}")
+        (is (.await latch 2 java.util.concurrent.TimeUnit/SECONDS)
+            "Both dispatches should complete within 2s")
+        (is (not-any? #(= "session_locked" (:type %)) @sent-messages)
+            "No message should be of type session_locked")))
     (reset! server/api-key nil)))
 
 ;; Compaction Tests
@@ -577,42 +617,12 @@
           (is (re-find #"Test exception" (:error response))))))
     (reset! server/api-key nil)))
 
-(deftest test-prompt-uses-stored-working-dir-for-resume
-  (testing "Prompt with resume_session_id uses stored working directory from session metadata"
-    (reset! server/api-key test-api-key)
-    (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
-    (let [working-dir-used (atom nil)]
-      (with-redefs [voice-code.replication/get-session-metadata
-                    (fn [session-id]
-                      (when (= session-id "resume-456")
-                        {:session-id "resume-456"
-                         :working-directory "/Users/test/real/path"
-                         :message-count 10}))
-                    voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & {:keys [working-directory]}]
-                      (reset! working-dir-used working-directory)
-                      (callback {:success true :session-id "resume-456"}))
-                    org.httpkit.server/send! (fn [_ _] nil)]
-        (server/handle-message :test-ch
-                               (json/generate-string
-                                {:type "prompt"
-                                 :text "continue work"
-                                 :resume_session_id "resume-456"
-                                 :working_directory "[from project: -Users-test-placeholder]"}))
-
-        (is (= "/Users/test/real/path" @working-dir-used)
-            "Should use stored working directory from session metadata, not iOS placeholder")))
-    (reset! server/api-key nil)))
-
 (deftest test-prompt-uses-ios-working-dir-for-new-session
   (testing "Prompt with new_session_id uses iOS-provided working directory"
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
-    (let [working-dir-used (atom nil)]
-      (with-redefs [voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & {:keys [working-directory]}]
-                      (reset! working-dir-used working-directory)
-                      (callback {:success true :session-id "new-789"}))
+    (let [dispatched (promise)]
+      (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
                     org.httpkit.server/send! (fn [_ _] nil)]
         (server/handle-message :test-ch
                                (json/generate-string
@@ -621,7 +631,7 @@
                                  :new_session_id "new-789"
                                  :working_directory "/Users/test/new/project"}))
 
-        (is (= "/Users/test/new/project" @working-dir-used)
+        (is (= "/Users/test/new/project" (:workdir (await-dispatch dispatched)))
             "Should use iOS-provided working directory for new sessions")))
     (reset! server/api-key nil)))
 
@@ -629,16 +639,13 @@
   (testing "Prompt with new_session_id converts placeholder working directory"
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
-    (let [working-dir-used (atom nil)]
+    (let [dispatched (promise)]
       (with-redefs [voice-code.replication/project-name->working-dir
                     (fn [project-name]
                       (if (= project-name "-Users-test-real-path")
                         "/Users/test/real/path"
                         (str "[from project: " project-name "]")))
-                    voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & {:keys [working-directory]}]
-                      (reset! working-dir-used working-directory)
-                      (callback {:success true :session-id "new-789"}))
+                    tmux/start-window! (fn [opts] (deliver dispatched opts))
                     org.httpkit.server/send! (fn [_ _] nil)]
         (server/handle-message :test-ch
                                (json/generate-string
@@ -647,31 +654,8 @@
                                  :new_session_id "new-789"
                                  :working_directory "[from project: -Users-test-real-path]"}))
 
-        (is (= "/Users/test/real/path" @working-dir-used)
+        (is (= "/Users/test/real/path" (:workdir (await-dispatch dispatched)))
             "Should convert placeholder to real path for new sessions")))
-    (reset! server/api-key nil)))
-
-(deftest test-prompt-handles-missing-session-metadata
-  (testing "Prompt with resume_session_id falls back to iOS dir if session metadata not found"
-    (reset! server/api-key test-api-key)
-    (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
-    (let [working-dir-used (atom nil)]
-      (with-redefs [voice-code.replication/get-session-metadata
-                    (fn [session-id] nil) ; Session not found
-                    voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & {:keys [working-directory]}]
-                      (reset! working-dir-used working-directory)
-                      (callback {:success true :session-id "resume-999"}))
-                    org.httpkit.server/send! (fn [_ _] nil)]
-        (server/handle-message :test-ch
-                               (json/generate-string
-                                {:type "prompt"
-                                 :text "continue"
-                                 :resume_session_id "resume-999"
-                                 :working_directory "/Users/test/fallback"}))
-
-        (is (= "/Users/test/fallback" @working-dir-used)
-            "Should fall back to iOS working directory if session metadata not found")))
     (reset! server/api-key nil)))
 
 (deftest test-recent-sessions-message-format
@@ -2091,120 +2075,11 @@
 
     (reset! server/session-orchestration-state {})))
 
-;; ============================================================================
-;; Direct Response Delivery Tests
-;; ============================================================================
-
-(deftest test-cursor-prompt-sends-direct-response
-  (testing "Cursor prompt callback sends :response message with text"
-    (reset! server/api-key test-api-key)
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}
-                                                :authenticated true
-                                                :max-message-size-kb 200}})
-    (let [sent-messages (atom [])]
-      (with-redefs [voice-code.providers/invoke-provider-async
-                    (fn [provider prompt callback & opts]
-                      (callback {:success true
-                                 :result "Cursor response text"
-                                 :session-id "cursor-session-123"
-                                 :provider :cursor}))
-                    org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
-                    repl/ensure-session-in-index! (fn [& _] nil)]
-        (server/handle-message :test-ch
-                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"cursor-session-123\",\"provider\":\"cursor\"}")
-        ;; Should have: ack, response (direct), turn_complete
-        (let [parsed (mapv #(json/parse-string % true) @sent-messages)
-              types (mapv :type parsed)
-              response-msg (first (filter #(= "response" (:type %)) parsed))]
-          (is (some #(= "ack" %) types) "Should send ack")
-          (is (some #(= "response" %) types) "Should send direct response for Cursor")
-          (is (some #(= "turn_complete" %) types) "Should send turn_complete")
-          ;; Verify response content
-          (is (= true (:success response-msg)))
-          (is (= "Cursor response text" (:text response-msg)))
-          (is (= "cursor-session-123" (:session_id response-msg)))
-          (is (= "cursor" (:provider response-msg)))
-          (is (some? (:message_id response-msg)) "Should include message_id"))))
-    (reset! server/api-key nil)
-    (reset! server/connected-clients {})))
-
-(deftest test-claude-prompt-does-not-send-direct-response
-  (testing "Claude prompt callback does NOT send :response (relies on watcher)"
-    (reset! server/api-key test-api-key)
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}
-                                                :authenticated true
-                                                :max-message-size-kb 200}})
-    (let [sent-messages (atom [])]
-      (with-redefs [voice-code.providers/invoke-provider-async
-                    (fn [provider prompt callback & opts]
-                      (callback {:success true
-                                 :result "Claude response text"
-                                 :session-id "claude-session-456"
-                                 :provider :claude}))
-                    org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
-                    repl/ensure-session-in-index! (fn [& _] nil)]
-        (server/handle-message :test-ch
-                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"claude-session-456\"}")
-        ;; Should have: ack, turn_complete (NO response)
-        (let [parsed (mapv #(json/parse-string % true) @sent-messages)
-              types (mapv :type parsed)]
-          (is (some #(= "ack" %) types) "Should send ack")
-          (is (not (some #(= "response" %) types)) "Should NOT send direct response for Claude")
-          (is (some #(= "turn_complete" %) types) "Should send turn_complete"))))
-    (reset! server/api-key nil)
-    (reset! server/connected-clients {})))
-
-(deftest test-opencode-prompt-does-not-send-direct-response
-  (testing "OpenCode prompt callback does NOT send :response (relies on watcher)"
-    (reset! server/api-key test-api-key)
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}
-                                                :authenticated true
-                                                :max-message-size-kb 200}})
-    (let [sent-messages (atom [])]
-      (with-redefs [voice-code.providers/invoke-provider-async
-                    (fn [provider prompt callback & opts]
-                      (callback {:success true
-                                 :result "OpenCode response text"
-                                 :session-id "opencode-session-789"
-                                 :provider :opencode}))
-                    org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
-                    repl/ensure-session-in-index! (fn [& _] nil)]
-        (server/handle-message :test-ch
-                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"opencode-session-789\",\"provider\":\"opencode\"}")
-        ;; Should have: ack, turn_complete (NO response)
-        (let [parsed (mapv #(json/parse-string % true) @sent-messages)
-              types (mapv :type parsed)]
-          (is (some #(= "ack" %) types) "Should send ack")
-          (is (not (some #(= "response" %) types)) "Should NOT send direct response for OpenCode")
-          (is (some #(= "turn_complete" %) types) "Should send turn_complete"))))
-    (reset! server/api-key nil)
-    (reset! server/connected-clients {})))
-
-(deftest test-prompt-callback-calls-ensure-session-in-index
-  (testing "Prompt callback calls ensure-session-in-index! with provider"
-    (reset! server/api-key test-api-key)
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}
-                                                :authenticated true
-                                                :max-message-size-kb 200}})
-    (let [ensure-calls (atom [])]
-      (with-redefs [voice-code.providers/invoke-provider-async
-                    (fn [provider prompt callback & opts]
-                      (callback {:success true
-                                 :result "test"
-                                 :session-id "ses_opencode123"
-                                 :provider :opencode}))
-                    org.httpkit.server/send! (fn [_ _] nil)
-                    repl/ensure-session-in-index!
-                    (fn [session-id provider]
-                      (swap! ensure-calls conj {:session-id session-id :provider provider})
-                      nil)]
-        (server/handle-message :test-ch
-                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"ses_opencode123\",\"provider\":\"opencode\"}")
-        (is (= 1 (count @ensure-calls)))
-        (is (= "ses_opencode123" (:session-id (first @ensure-calls))))
-        (is (= :opencode (:provider (first @ensure-calls))))))
-    (reset! server/api-key nil)
-    (reset! server/connected-clients {})))
+;; Note: Direct-response delivery and ensure-session-in-index! tests were
+;; deleted as part of tmux-untethered-ao0. The prompt handler no longer has
+;; a provider-callback path — responses arrive via the filesystem watcher.
+;; Watcher-based direct-response and session-index coverage belongs to
+;; tmux-untethered-44v (JSONL-watcher-based turn-completion detection).
 
 ;; ============================================================================
 ;; check-tmux-available!

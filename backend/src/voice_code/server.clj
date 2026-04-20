@@ -1315,23 +1315,10 @@
                                :explicit-provider explicit-provider-str
                                :new-session new-session-id
                                :resume-session resume-session-id})
-                  ;; Determine actual working directory to use:
-                  ;; - For resumed sessions: Use stored working dir from session metadata (extracted from .jsonl cwd)
-                  ;; - For new sessions: Use iOS-provided dir, with fallback if placeholder
-                  working-dir (if resume-session-id
-                                (let [session-metadata (repl/get-session-metadata resume-session-id)]
-                                  (if session-metadata
-                                    (do
-                                      (log/info "Using stored working directory for resumed session"
-                                                {:session-id resume-session-id
-                                                 :stored-dir (:working-directory session-metadata)
-                                                 :ios-sent-dir ios-working-dir})
-                                      (:working-directory session-metadata))
-                                    (do
-                                      (log/warn "Session not found in metadata, using iOS working dir"
-                                                {:session-id resume-session-id})
-                                      ios-working-dir)))
-                                ;; New session: use iOS dir, apply fallback if placeholder
+                  ;; Resolve working directory for new sessions only. Resumed
+                  ;; sessions route through tmux/deliver!, which uses metadata
+                  ;; from the session file rather than a caller-supplied path.
+                  working-dir (when-not resume-session-id
                                 (if (and ios-working-dir (str/starts-with? ios-working-dir "[from project:"))
                                   (let [project-name (second (re-find #"\[from project: ([^\]]+)\]" ios-working-dir))]
                                     (log/info "Converting placeholder to real path for new session"
@@ -1386,7 +1373,7 @@
                                          (repl/get-session-metadata resume-session-id))
                       ;; Resolve provider: explicit > session metadata > smart default
                       provider (providers/resolve-provider explicit-provider session-metadata)
-                      ;; Validate CLI is available before attempting to acquire lock
+                      ;; Validate CLI is available before dispatching to tmux
                       cli-validation-error (providers/validate-cli-available provider)
                       orch-state (get-session-recipe-state claude-session-id)
                       final-prompt-text (if orch-state
@@ -1394,7 +1381,6 @@
                                             (or (get-next-step-prompt claude-session-id orch-state recipe) prompt-text)
                                             prompt-text)
                                           prompt-text)]
-                  ;; Check CLI availability before acquiring lock
                   (if cli-validation-error
                     (do
                       (log/warn "CLI not available for provider"
@@ -1406,85 +1392,51 @@
                                    {:type :error
                                     :message (:error cli-validation-error)
                                     :session-id claude-session-id})))
-                    ;; Try to acquire lock for this session
-                    (if (repl/acquire-session-lock! claude-session-id)
-                      (do
-                        (log/info "Received prompt"
-                                  {:text (subs prompt-text 0 (min 50 (count prompt-text)))
-                                   :new-session-id new-session-id
-                                   :resume-session-id resume-session-id
-                                   :working-directory working-dir
-                                   :provider provider
-                                   :explicit-provider explicit-provider
-                                   :in-recipe (some? orch-state)
-                                   :session-locked false})
+                    (do
+                      (log/info "Received prompt"
+                                {:text (subs prompt-text 0 (min 50 (count prompt-text)))
+                                 :new-session-id new-session-id
+                                 :resume-session-id resume-session-id
+                                 :working-directory working-dir
+                                 :provider provider
+                                 :explicit-provider explicit-provider
+                                 :in-recipe (some? orch-state)})
 
                       ;; Send immediate acknowledgment
-                        (http/send! channel
-                                    (generate-json
-                                     {:type :ack
-                                      :message "Processing prompt..."}))
+                      (http/send! channel
+                                  (generate-json
+                                   {:type :ack
+                                    :message "Processing prompt..."}))
 
                       ;; For new sessions: register channel so we can send session_ready when file is created
-                      ;; Filesystem watcher will send session_ready once Claude CLI creates the file
-                        (when new-session-id
-                          (log/info "New session detected, registering for session_ready" {:session-id new-session-id})
-                          (swap! pending-new-sessions assoc new-session-id channel))
+                      ;; Filesystem watcher will send session_ready once the provider creates the file
+                      (when new-session-id
+                        (log/info "New session detected, registering for session_ready" {:session-id new-session-id})
+                        (swap! pending-new-sessions assoc new-session-id channel))
 
-                      ;; Invoke provider CLI asynchronously
-                      ;; Routes to correct CLI based on provider (Claude, Copilot, etc.)
-                      ;; Filesystem watcher will detect changes and send session_updated
-                        (providers/invoke-provider-async
-                         provider
-                         final-prompt-text
-                         (fn [response]
-                         ;; Always release lock when done (success or failure)
-                           (try
-                           ;; Just log completion - let filesystem watcher handle updates
-                             (if (:success response)
-                               (do
-                                 (log/info "Prompt completed successfully"
-                                           {:session-id (:session-id response)
-                                            :provider provider})
-                                 ;; Ensure session is in index before sending response
-                                 (repl/ensure-session-in-index! (:session-id response) provider)
-                                 ;; For providers without parseable session files (e.g. Cursor),
-                                 ;; send the response text directly — the watcher+subscribe mechanism
-                                 ;; can't deliver it because parse-message returns nil.
-                                 (when-not (providers/supports-session-history? provider)
-                                   (send-to-client! channel
-                                                    {:type :response
-                                                     :message-id (str (java.util.UUID/randomUUID))
-                                                     :success true
-                                                     :text (:result response)
-                                                     :session-id (:session-id response)
-                                                     :provider (name provider)}))
-                                 ;; Send turn_complete message so iOS can unlock
-                                 (send-to-client! channel
-                                                  {:type :turn-complete
-                                                   :session-id claude-session-id}))
-                               (do
-                                 (log/error "Prompt failed" {:error (:error response)
-                                                             :session-id claude-session-id
-                                                             :provider provider})
-                                 ;; Still send error responses directly - include session-id so iOS can unlock
-                                 (send-to-client! channel
-                                                  {:type :error
-                                                   :message (:error response)
-                                                   :session-id claude-session-id})))
-                             (finally
-                               (repl/release-session-lock! claude-session-id))))
-                         :new-session-id new-session-id
-                         :resume-session-id resume-session-id
-                         :working-directory working-dir
-                         :timeout-ms 86400000
-                         :system-prompt system-prompt))
-                      (do
-                      ;; Session is locked, send session_locked message
-                        (log/info "Session locked, rejecting prompt"
-                                  {:session-id claude-session-id
-                                   :text (subs prompt-text 0 (min 50 (count prompt-text)))})
-                        (send-session-locked! channel claude-session-id)))))))
+                      ;; Dispatch to tmux. start-window! can block up to ~3s for
+                      ;; TUI readiness, so run off-thread to keep the ack fast and
+                      ;; avoid blocking other messages on this channel.
+                      (future
+                        (try
+                          (if new-session-id
+                            (tmux/start-window!
+                             {:session-uuid new-session-id
+                              :session-name (:name session-metadata)
+                              :provider provider
+                              :workdir working-dir
+                              :initial-prompt final-prompt-text
+                              :resume? false})
+                            (tmux/deliver! resume-session-id final-prompt-text))
+                          (catch Exception e
+                            (log/error e "Failed to dispatch prompt via tmux"
+                                       {:session-id claude-session-id
+                                        :provider provider
+                                        :new-session? (some? new-session-id)})
+                            (send-to-client! channel
+                                             {:type :error
+                                              :message (str "Failed to dispatch prompt: " (.getMessage e))
+                                              :session-id claude-session-id})))))))))
 
             "set_directory"
             (let [path (:path data)]
