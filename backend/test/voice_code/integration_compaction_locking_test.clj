@@ -47,11 +47,13 @@
           "Independent session can be compacted concurrently")
       (is (= 2 (count @repl/compaction-locks))))))
 
-(deftest test-compaction-lock-does-not-affect-prompts
-  (testing "Prompt path no longer consults compaction-locks"
-    ;; This is a contract test: replication no longer exposes session-locks
-    ;; and the prompt handler does not touch compaction-locks. The tmux
-    ;; deliver! path serializes nudges via the TUI stdin instead.
+(deftest test-old-session-locks-removed
+  (testing "Per-prompt session-lock API is fully gone"
+    ;; The prompt path is serialized by tmux/deliver! nudging the live pane,
+    ;; not by a per-session lock. compaction-locks is the *only* session-id
+    ;; lock that remains, and it is consulted by the prompt handler purely to
+    ;; reject (not serialize) prompts during a concurrent compaction —
+    ;; covered by tests in server_test.clj.
     (is (nil? (resolve 'voice-code.replication/session-locks))
         "session-locks atom is fully removed")
     (is (nil? (resolve 'voice-code.replication/acquire-session-lock!))

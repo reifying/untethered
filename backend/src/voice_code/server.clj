@@ -1375,6 +1375,21 @@
                              {:type :error
                               :message "Cannot specify both new_session_id and resume_session_id"}))
 
+                ;; Reject prompts for sessions whose JSONL is being rewritten by
+                ;; `claude --compact`. The compaction handler kills the live
+                ;; tmux window before compacting, so without this guard a fresh
+                ;; respawn would write to the JSONL concurrently with compact.
+                (and resume-session-id
+                     (repl/is-compaction-locked? resume-session-id))
+                (do
+                  (log/info "Prompt rejected: compaction in progress"
+                            {:session-id resume-session-id})
+                  (http/send! channel
+                              (generate-json
+                               {:type :error
+                                :session-id resume-session-id
+                                :message "Compaction in progress for this session; retry once it completes"})))
+
                 ;; Validate explicit provider if specified for new session
                 (and new-session-id
                      explicit-provider-str

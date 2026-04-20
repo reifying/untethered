@@ -520,6 +520,78 @@
         (is (= "resume-456" (:uuid (await-dispatch dispatched))))))
     (reset! server/api-key nil)))
 
+(deftest test-prompt-rejected-during-compaction
+  ;; tmux-untethered-shs: a resume prompt that arrives while
+  ;; `claude --compact` is rewriting the session JSONL must NOT respawn the
+  ;; provider (which would write to the same file concurrently). The handler
+  ;; rejects with a clear iOS-visible error and never invokes tmux.
+  (testing "Resume prompt is rejected when compaction is in progress for that session"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (reset! repl/compaction-locks #{"resume-during-compact"})
+    (let [sent-messages (atom [])
+          tmux-invoked (atom false)]
+      (with-redefs [tmux/deliver! (fn [& _] (reset! tmux-invoked true))
+                    tmux/start-window! (fn [& _] (reset! tmux-invoked true))
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp"})
+                    org.httpkit.server/send!
+                    (fn [_ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))]
+        (server/handle-message
+         :test-ch
+         "{\"type\":\"prompt\",\"text\":\"hi\",\"resume_session_id\":\"resume-during-compact\"}")
+        (is (false? @tmux-invoked)
+            "tmux must not be invoked while compaction holds the JSONL")
+        (is (= 1 (count @sent-messages))
+            "exactly one error response is emitted")
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (= "resume-during-compact" (:session_id response))
+              "error carries session_id so iOS can route it to the right session")
+          (is (str/includes? (:message response) "Compaction in progress")
+              "error message names the cause"))))
+    (reset! repl/compaction-locks #{})
+    (reset! server/api-key nil))
+
+  (testing "New session prompt is unaffected by an unrelated session's compaction lock"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (reset! repl/compaction-locks #{"some-other-session"})
+    (let [dispatched (promise)]
+      (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
+                    tmux/deliver! (fn [& _]
+                                    (deliver dispatched :unexpected-deliver-call))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message
+         :test-ch
+         "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"fresh-uuid\",\"working_directory\":\"/tmp\"}")
+        (let [args (await-dispatch dispatched)]
+          (is (map? args) "fresh session UUID cannot collide with a compaction lock")
+          (is (= "fresh-uuid" (:session-uuid args))))))
+    (reset! repl/compaction-locks #{})
+    (reset! server/api-key nil))
+
+  (testing "Resume prompt proceeds normally once compaction releases the lock"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (reset! repl/compaction-locks #{})
+    (let [dispatched (promise)]
+      (with-redefs [tmux/deliver! (fn [uuid text]
+                                    (deliver dispatched {:uuid uuid :text text}))
+                    tmux/start-window! (fn [& _]
+                                         (deliver dispatched :unexpected-start-window-call))
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp"})
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message
+         :test-ch
+         "{\"type\":\"prompt\",\"text\":\"go\",\"resume_session_id\":\"post-compact\"}")
+        (let [args (await-dispatch dispatched)]
+          (is (= "post-compact" (:uuid args)))
+          (is (= "go" (:text args))))))
+    (reset! server/api-key nil)))
+
 (deftest test-prompt-never-sends-session-locked
   ;; AC #1 from tmux-untethered design §4: concurrent prompts to the same
   ;; session UUID must never produce a session_locked response. We simulate
