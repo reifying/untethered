@@ -525,15 +525,6 @@
                       :sessions sessions-minimal
                       :limit limit})))
 
-(defn send-session-locked!
-  "Send session_locked message to client indicating session is processing a prompt."
-  [channel session-id]
-  (log/info "Sending session_locked message" {:session-id session-id})
-  (send-to-client! channel
-                   {:type :session-locked
-                    :message "Session is currently processing a prompt. Please wait."
-                    :session-id session-id}))
-
 (def ^:private general-commands
   [{:id "git.status"
     :label "Git Status"
@@ -816,14 +807,10 @@
    2. Parse the outcome from the response
    3. If next step: update state and recursively continue
    4. If retry: send reminder prompt and try again (once per step)
-   5. If exit: send recipe_exited message and release lock
-   
-   Lock management: The session lock is acquired BEFORE the first call to this function.
-   The lock is only released when the recipe exits (success, error, or guardrail).
-   Recursive calls (:next-step, :retry) keep the lock held.
-   
+   5. If exit: send recipe_exited message
+
    Provider is read from orchestration state (:provider field), enabling multi-provider support.
-   
+
    Parameters:
    - channel: WebSocket channel to send messages to
    - session-id: Claude session ID
@@ -849,10 +836,6 @@
                     :step-count (:step-count orch-state)
                     :session-created? session-created?
                     :is-retry (some? prompt-override)})
-         ;; Per-step model overrides are not yet supported under the tmux-untethered
-         ;; invocation path: the model is chosen at provider-CLI launch and the TUI
-         ;; does not expose a mid-session switch. Warn so this is visible in logs
-         ;; instead of silently using the provider default.
          (when step-model
            (log/warn "Recipe step requests model override, which is not honored under tmux invocation"
                      {:session-id session-id
@@ -860,7 +843,6 @@
                       :step current-step
                       :requested-model step-model}))
 
-         ;; Send step transition notification (only for non-retry)
          (when-not prompt-override
            (send-to-client! channel
                             {:type :recipe-step-started
@@ -878,21 +860,17 @@
             (try
               (if (:success response)
                 (let [response-text (:result response)
-                      ;; Get fresh state in case retry count was updated or user exited
                       current-orch-state (get-session-recipe-state session-id)]
-                  ;; Mark session as created after first successful invocation
                   (when (and current-orch-state (not session-created?))
                     (log/info "Marking session as created after first successful invocation"
                               {:session-id session-id})
                     (swap! session-orchestration-state
                            update session-id
                            assoc :session-created? true))
-                  ;; Check if recipe was exited by user while we were waiting for the response
                   (if (nil? current-orch-state)
                     (do
                       (log/info "Recipe was exited while waiting for provider response"
                                 {:session-id session-id})
-                      (repl/release-session-lock! session-id)
                       (send-to-client! channel
                                        {:type :turn-complete
                                         :session-id session-id}))
@@ -914,7 +892,6 @@
                             (do
                               (log/warn "Orchestration state missing after step transition"
                                         {:session-id session-id})
-                              (repl/release-session-lock! session-id)
                               (send-to-client! channel
                                                {:type :turn-complete
                                                 :session-id session-id}))))
@@ -931,7 +908,6 @@
                             (do
                               (log/warn "Orchestration state missing before retry"
                                         {:session-id session-id})
-                              (repl/release-session-lock! session-id)
                               (send-to-client! channel
                                                {:type :turn-complete
                                                 :session-id session-id}))))
@@ -941,7 +917,6 @@
                           (log/info "Recipe exited"
                                     {:session-id session-id
                                      :reason (:reason result)})
-                          (repl/release-session-lock! session-id)
                           (send-to-client! channel
                                            {:type :turn-complete
                                             :session-id session-id}))
@@ -957,7 +932,6 @@
                                      :old-provider old-provider
                                      :working-directory working-dir})
                           (exit-recipe-for-session session-id "restart-new-session")
-                          (repl/release-session-lock! session-id)
                           (send-to-client! channel
                                            {:type :recipe-exited
                                             :session-id session-id
@@ -974,20 +948,11 @@
                                                 :session-id new-session-id
                                                 :current-step (:current-step new-orch-state)
                                                 :step-count (:step-count new-orch-state)})
-                              (if (repl/acquire-session-lock! new-session-id)
-                                (do
-                                  (send-to-client! channel
-                                                   {:type :ack
-                                                    :message "Starting recipe in new session..."})
-                                  (execute-recipe-step channel new-session-id working-dir
-                                                       new-orch-state new-recipe))
-                                (do
-                                  (log/error "Failed to acquire lock for new session"
-                                             {:session-id new-session-id})
-                                  (exit-recipe-for-session new-session-id "lock-failed")
-                                  (send-to-client! channel
-                                                   {:type :error
-                                                    :message "Failed to start new session"}))))
+                              (send-to-client! channel
+                                               {:type :ack
+                                                :message "Starting recipe in new session..."})
+                              (execute-recipe-step channel new-session-id working-dir
+                                                   new-orch-state new-recipe))
                             (do
                               (log/error "Failed to create orchestration state for restart"
                                          {:recipe-id new-recipe-id})
@@ -998,7 +963,6 @@
                         (do
                           (log/error "Unexpected orchestration action"
                                      {:action (:action result)})
-                          (repl/release-session-lock! session-id)
                           (send-to-client! channel
                                            {:type :turn-complete
                                             :session-id session-id}))))))
@@ -1007,7 +971,6 @@
                   (log/error "Recipe step failed"
                              {:error (:error response) :session-id session-id})
                   (exit-recipe-for-session session-id "error")
-                  (repl/release-session-lock! session-id)
                   (send-to-client! channel
                                    {:type :recipe-exited
                                     :session-id session-id
@@ -1021,7 +984,6 @@
                 (log/error e "Unexpected error in recipe step callback"
                            {:session-id session-id :step current-step})
                 (exit-recipe-for-session session-id "internal-error")
-                (repl/release-session-lock! session-id)
                 (send-to-client! channel
                                  {:type :recipe-exited
                                   :session-id session-id
@@ -1031,15 +993,12 @@
                                  {:type :error
                                   :message (str "Internal error: " (ex-message e))
                                   :session-id session-id}))))))
-       ;; No step prompt available - this shouldn't happen in normal operation
-       ;; but we must release the lock if it does
        (do
          (log/error "No step prompt available for recipe step"
                     {:session-id session-id
                      :recipe-id (:recipe-id orch-state)
                      :step current-step})
          (exit-recipe-for-session session-id "no-prompt")
-         (repl/release-session-lock! session-id)
          (send-to-client! channel
                           {:type :recipe-exited
                            :session-id session-id
@@ -1160,45 +1119,25 @@
   ;; This is informational - we don't broadcast deletes since it's just local cleanup
 
 (defn on-turn-complete
-  "Called by the filesystem watcher when a provider-specific turn-complete
-   marker is observed in JSONL/part files. Broadcasts
-   `{:type :turn-complete :session-id X}` to every connected client that is
-   subscribed to the session and has not locally deleted it.
+  "Handler for turn-complete events.
 
-   Releases the backend session lock so subsequent prompts can be accepted,
-   unless a recipe orchestration callback is registered for this session —
-   in that case the lock stays held across the step transition and the
-   callback's own branches (`:exit`, `:restart-new-session`, error, etc.)
-   are responsible for releasing it. This preserves the original invariant
-   that the lock is held continuously for the duration of a recipe run.
-
-   If a recipe step is waiting on this turn, fires its callback with the
-   last assistant message text."
+   Always broadcasts `{:type :turn-complete :session-id X}` to every connected
+   client subscribed to the session. Additionally, if a recipe step is waiting
+   on this turn, fires its callback with the last assistant message text."
   [session-id]
   (log/info "Turn-complete callback invoked" {:session-id session-id})
-  (let [cb (get @recipe-turn-callbacks session-id)]
-    ;; When a recipe callback is pending, defer lock management to the
-    ;; callback so the lock stays held across step transitions.
-    (when (and (nil? cb) (repl/is-session-locked? session-id))
-      (repl/release-session-lock! session-id))
-    (when cb
-      (swap! recipe-turn-callbacks dissoc session-id)
-      (try
-        (let [text (read-last-assistant-text session-id)]
-          (if (nil? text)
-            ;; Surface empty/missing assistant text as an error so the
-            ;; callback's error branch exits the recipe cleanly instead of
-            ;; feeding nil into downstream JSON parsing.
-            (cb {:success false
-                 :error "No assistant text available for session"
-                 :session-id session-id})
-            (cb {:success true :result text :session-id session-id})))
-        (catch Throwable e
-          (log/error e "Recipe turn-complete callback failed"
-                     {:session-id session-id})
-          ;; Callback threw; release the lock to avoid a stuck session.
-          (when (repl/is-session-locked? session-id)
-            (repl/release-session-lock! session-id))))))
+  (when-let [cb (get @recipe-turn-callbacks session-id)]
+    (swap! recipe-turn-callbacks dissoc session-id)
+    (try
+      (let [text (read-last-assistant-text session-id)]
+        (if (nil? text)
+          (cb {:success false
+               :error "No assistant text available for session"
+               :session-id session-id})
+          (cb {:success true :result text :session-id session-id})))
+      (catch Throwable e
+        (log/error e "Recipe turn-complete callback failed"
+                   {:session-id session-id}))))
   (doseq [[channel client-info] @connected-clients]
     (let [subscribed (or (:subscribed-sessions client-info) #{})]
       (when (and (contains? subscribed session-id)
@@ -1271,12 +1210,12 @@
               (send-recent-sessions! channel limit))
             ;; Send available commands (no working directory yet, so no project commands)
             (send-available-commands! channel nil))
-            ;; Start supervisor for this client connection
-            (try
-              (supervisor/start-supervisor! channel)
-              (log/info "Supervisor started for client")
-              (catch Exception e
-                (log/warn e "Failed to start supervisor (non-fatal)"))))
+          ;; Start supervisor for this client connection
+          (try
+            (supervisor/start-supervisor! channel)
+            (log/info "Supervisor started for client")
+            (catch Exception e
+              (log/warn e "Failed to start supervisor (non-fatal)"))))
 
         ;; All other message types require prior authentication
         :else
@@ -1559,12 +1498,37 @@
                             (generate-json
                              {:type :error
                               :message "session_id required in compact_session message"}))
-                ;; New replication-based architecture: session-id IS the claude-session-id
-                ;; Try to acquire lock for this session (from bd2e367)
-                (if (repl/acquire-session-lock! session-id)
+                (if-not (repl/acquire-compaction-lock! session-id)
                   (do
+                    (log/info "Compaction already in progress" {:session-id session-id})
+                    (send-to-client! channel
+                                     {:type :compaction-error
+                                      :session-id session-id
+                                      :error "Compaction already in progress"}))
+                  (do
+                    ;; `claude --compact` is a one-shot CLI writing to the JSONL,
+                    ;; so any live tmux window for this session must be killed
+                    ;; first to prevent interleaved writes. Synthesize an aborted
+                    ;; turn_complete for subscribers so their processing indicator
+                    ;; unlocks (the JSONL watcher won't emit a natural marker).
+                    (when-let [live-window (get @tmux/live-windows session-id)]
+                      (log/info "Killing live tmux window before compaction"
+                                {:session-id session-id})
+                      (try
+                        (tmux/kill-window! (:tmux-session live-window) (:tmux-window live-window))
+                        (catch Exception e
+                          (log/warn e "tmux kill-window failed before compaction; proceeding"
+                                    {:session-id session-id})))
+                      (swap! tmux/live-windows dissoc session-id)
+                      (doseq [[subscriber-channel client-info] @connected-clients]
+                        (let [subscribed (or (:subscribed-sessions client-info) #{})]
+                          (when (and (contains? subscribed session-id)
+                                     (not (is-session-deleted-for-client? subscriber-channel session-id)))
+                            (send-to-client! subscriber-channel
+                                             {:type :turn-complete
+                                              :session-id session-id
+                                              :aborted true})))))
                     (log/info "Compacting session" {:session-id session-id})
-                    ;; Compact asynchronously
                     (async/go
                       (try
                         (let [result (claude/compact-session session-id)]
@@ -1587,12 +1551,7 @@
                                             :session-id session-id
                                             :error (str "Compaction failed: " (ex-message e))}))
                         (finally
-                          (repl/release-session-lock! session-id)))))
-                  (do
-                    ;; Session is locked, send session_locked message
-                    (log/info "Session locked, rejecting compaction"
-                              {:session-id session-id})
-                    (send-session-locked! channel session-id)))))
+                          (repl/release-compaction-lock! session-id))))))))
 
             "kill_session"
             (let [session-id (:session-id data)]
@@ -1627,10 +1586,6 @@
                                            {:type :turn-complete
                                             :session-id session-id
                                             :aborted true})))))
-                  ;; Release any leftover session lock (compaction path still uses
-                  ;; the lock; kill should not leave it held).
-                  (when (repl/is-session-locked? session-id)
-                    (repl/release-session-lock! session-id))
                   (send-to-client! channel
                                    {:type :session-killed
                                     :session-id session-id
@@ -1997,22 +1952,11 @@
                                  :recipe-id recipe-id
                                  :step (:current-step orch-state)
                                  :working-directory working-dir})
-                      ;; Try to acquire lock and start orchestration loop
-                      (if (repl/acquire-session-lock! session-id)
-                        (do
-                          (send-to-client! channel
-                                           {:type :ack
-                                            :message "Starting recipe..."})
-                          ;; Execute the first step - this will recursively continue
-                          ;; through all steps until recipe exits
-                          (execute-recipe-step channel session-id working-dir
-                                               orch-state recipe))
-                        (do
-                          ;; Session is locked, clean up the recipe state we just created
-                          (log/warn "Session locked, cannot start recipe"
-                                    {:session-id session-id})
-                          (exit-recipe-for-session session-id "session-locked")
-                          (send-session-locked! channel session-id)))))
+                      (send-to-client! channel
+                                       {:type :ack
+                                        :message "Starting recipe..."})
+                      (execute-recipe-step channel session-id working-dir
+                                           orch-state recipe)))
                   (send-to-client! channel
                                    {:type :error
                                     :message (str "Recipe not found: " recipe-id)}))))
@@ -2083,7 +2027,7 @@
                 (do
                   (log/info "Canvas action received" {:callback-id callback-id :action action})
                   (let [result-text (supervisor/handle-canvas-action
-                                    {:callback-id callback-id :action action})]
+                                     {:callback-id callback-id :action action})]
                     ;; If a pending action was found, inject context into next supervisor turn
                     (when result-text
                       (async/go
@@ -2265,47 +2209,39 @@
          (pr-str {:status "error" :message "text is required"})
          (let [new-session-id (when-not session-id (str (java.util.UUID/randomUUID)))
                claude-session-id (or session-id new-session-id)]
-           ;; Try to acquire lock
-           (if-not (repl/acquire-session-lock! claude-session-id)
-             (pr-str {:status "locked" :session-id claude-session-id
-                       :message "Session is currently processing a prompt"})
-             (do
-               (claude/invoke-claude-async
-                text
-                (fn [response]
-                  (try
-                    (let [client-channel (:client-channel @supervisor/supervisor-state)]
-                      (if (:success response)
-                        (do
-                          (when client-channel
-                            (send-to-client! client-channel
-                                             {:type :turn-complete
-                                              :session-id claude-session-id}))
-                          (supervisor/on-worker-complete
-                           claude-session-id 0
-                           (fn [msg]
-                             (when client-channel
-                               (send-to-client! client-channel msg)))))
-                        (do
-                          (when client-channel
-                            (send-to-client! client-channel
-                                             {:type :error
-                                              :message (:error response)
-                                              :session-id claude-session-id}))
-                          (supervisor/on-worker-complete
-                           claude-session-id 1
-                           (fn [msg]
-                             (when client-channel
-                               (send-to-client! client-channel msg)))))))
-                    (finally
-                      (repl/release-session-lock! claude-session-id))))
-                :new-session-id new-session-id
-                :resume-session-id session-id
-                :working-directory working-dir
-                :timeout-ms 86400000)
-               (pr-str {:status "dispatched"
-                        :session-id claude-session-id
-                        :message "Prompt dispatched to Claude Code session"}))))))))
+           (claude/invoke-claude-async
+            text
+            (fn [response]
+              (let [client-channel (:client-channel @supervisor/supervisor-state)]
+                (if (:success response)
+                  (do
+                    (when client-channel
+                      (send-to-client! client-channel
+                                       {:type :turn-complete
+                                        :session-id claude-session-id}))
+                    (supervisor/on-worker-complete
+                     claude-session-id 0
+                     (fn [msg]
+                       (when client-channel
+                         (send-to-client! client-channel msg)))))
+                  (do
+                    (when client-channel
+                      (send-to-client! client-channel
+                                       {:type :error
+                                        :message (:error response)
+                                        :session-id claude-session-id}))
+                    (supervisor/on-worker-complete
+                     claude-session-id 1
+                     (fn [msg]
+                       (when client-channel
+                         (send-to-client! client-channel msg))))))))
+            :new-session-id new-session-id
+            :resume-session-id session-id
+            :working-directory working-dir
+            :timeout-ms 86400000)
+           (pr-str {:status "dispatched"
+                    :session-id claude-session-id
+                    :message "Prompt dispatched to Claude Code session"}))))))
 
   (supervisor/register-tool-handler!
    "execute_command"
@@ -2353,15 +2289,15 @@
      (let [session-id (:session-id input)]
        (if-not session-id
          (pr-str {:status "error" :message "session_id required"})
-         (if-not (repl/acquire-session-lock! session-id)
-           (pr-str {:status "locked" :message "Session is currently locked"})
+         (if-not (repl/acquire-compaction-lock! session-id)
+           (pr-str {:status "error" :message "Compaction already in progress"})
            (try
              (let [result (claude/compact-session session-id)]
                (if (:success result)
                  (pr-str {:status "compacted" :session-id session-id})
                  (pr-str {:status "error" :message (:error result)})))
              (finally
-               (repl/release-session-lock! session-id))))))))
+               (repl/release-compaction-lock! session-id))))))))
 
   (supervisor/register-tool-handler!
    "run_recipe"

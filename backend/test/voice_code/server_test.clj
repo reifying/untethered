@@ -910,18 +910,6 @@
       (is (= "Claude CLI failed" (:message parsed)))
       (is (= "test-session-456" (:session_id parsed))))))
 
-(deftest test-session-locked-message-format
-  (testing "Session locked message uses correct snake_case format"
-    (let [test-data {:type :session-locked
-                     :message "Session is currently processing a prompt. Please wait."
-                     :session-id "locked-session-789"}
-          json-str (server/generate-json test-data)
-          parsed (json/parse-string json-str true)]
-      ;; Verify JSON uses snake_case
-      (is (= "session_locked" (:type parsed)))
-      (is (= "Session is currently processing a prompt. Please wait." (:message parsed)))
-      (is (= "locked-session-789" (:session_id parsed))))))
-
 (deftest test-connect-updates-recent-sessions-limit
   (testing "Connect message with recent_sessions_limit parameter stores and uses the limit"
     (let [captured-limit (atom nil)]
@@ -1240,139 +1228,6 @@
             (is (true? (:session-created? updated-state))
                 "session-created? flag should be preserved during step transition")))))))
 
-(deftest test-lock-held-during-recipe-execution
-  (testing "Session lock is held throughout recipe execution and released on exit"
-    (let [session-id "test-session-lock"
-          sent-messages (atom [])
-          mock-channel :test-ch]
-      ;; Setup
-      (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
-      (server/start-recipe-for-session session-id :implement-and-review false)
-
-      ;; Acquire lock (simulating what start_recipe does)
-      (voice-code.replication/acquire-session-lock! session-id)
-
-      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
-        (let [orch-state (server/get-session-recipe-state session-id)
-              recipe (recipes/get-recipe :implement-and-review)]
-
-          ;; Verify lock is held before processing
-          (is (voice-code.replication/is-session-locked? session-id)
-              "Lock should be held before processing")
-
-          ;; Process first response with complete -> transitions to code-review
-          (let [response1 "{\"outcome\": \"complete\"}"
-                result1 (server/process-orchestration-response
-                         session-id orch-state recipe response1 mock-channel)]
-            (is (= :next-step (:action result1)))
-            (is (= :code-review (:step-name result1)))
-            ;; Lock should STILL be held after step transition
-            (is (voice-code.replication/is-session-locked? session-id)
-                "Lock should remain held during step transition"))
-
-          ;; Process second response - triggers retry (no JSON)
-          (let [updated-state (server/get-session-recipe-state session-id)
-                response2 "I reviewed the code but forgot JSON"
-                result2 (server/process-orchestration-response
-                         session-id updated-state recipe response2 mock-channel)]
-            (is (= :retry (:action result2)))
-            ;; Lock should STILL be held during retry
-            (is (voice-code.replication/is-session-locked? session-id)
-                "Lock should remain held during retry"))
-
-          ;; Process no-issues response (code-review step has no-issues -> commit step)
-          (let [updated-state2 (server/get-session-recipe-state session-id)
-                response3 "{\"outcome\": \"no-issues\"}"
-                result3 (server/process-orchestration-response
-                         session-id updated-state2 recipe response3 mock-channel)]
-            (is (= :next-step (:action result3)))
-            (is (= :commit (:step-name result3)))
-            ;; Lock should STILL be held after transition to commit
-            (is (voice-code.replication/is-session-locked? session-id)
-                "Lock should remain held during transition to commit"))
-
-          ;; Process committed response (commit step has committed -> exit)
-          (let [updated-state3 (server/get-session-recipe-state session-id)
-                response4 "{\"outcome\": \"committed\"}"
-                result4 (server/process-orchestration-response
-                         session-id updated-state3 recipe response4 mock-channel)]
-            (is (= :exit (:action result4)))
-            (is (= "changes-committed" (:reason result4)))
-            ;; Note: process-orchestration-response doesn't release lock,
-            ;; execute-recipe-step does. But we verify the action is correct.
-            ))))))
-
-(deftest test-lock-released-on-recipe-exit-action
-  (testing "Lock should be released only when :exit action is returned"
-    (let [session-id "test-session-lock-exit"]
-      ;; This test documents the expected behavior:
-      ;; - :next-step action -> lock should NOT be released (recursive call)
-      ;; - :retry action -> lock should NOT be released (recursive call)  
-      ;; - :exit action -> lock SHOULD be released
-      ;; The actual lock release happens in execute-recipe-step, not process-orchestration-response
-
-      ;; The key invariant: between recipe start and exit, the session is locked
-      ;; This prevents concurrent prompts from forking the session
-
-      (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
-
-      ;; Simulate the recipe lifecycle
-      (server/start-recipe-for-session session-id :implement-and-review false)
-      (voice-code.replication/acquire-session-lock! session-id)
-
-      ;; Lock should be held
-      (is (voice-code.replication/is-session-locked? session-id))
-
-      ;; Simulate what execute-recipe-step does on :exit
-      (voice-code.replication/release-session-lock! session-id)
-
-      ;; Lock should be released
-      (is (not (voice-code.replication/is-session-locked? session-id))))))
-
-(deftest test-lock-released-on-nil-step-prompt
-  (testing "Lock is released when step-prompt is nil (prevents lock leak)"
-    (let [session-id "test-nil-prompt"
-          sent-messages (atom [])
-          mock-channel :test-ch]
-      ;; Setup
-      (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
-
-      ;; Create orchestration state pointing to a non-existent step
-      ;; This simulates a scenario where get-next-step-prompt returns nil
-      (swap! server/session-orchestration-state assoc session-id
-             {:recipe-id :implement-and-review
-              :current-step :nonexistent-step ;; This step doesn't exist
-              :step-count 1
-              :step-visit-counts {:nonexistent-step 1}
-              :step-retry-counts {}})
-
-      ;; Acquire lock (simulating what start_recipe does before calling execute-recipe-step)
-      (voice-code.replication/acquire-session-lock! session-id)
-      (is (voice-code.replication/is-session-locked? session-id)
-          "Lock should be held initially")
-
-      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
-                    voice-code.claude/invoke-claude-async (fn [& _] (throw (Exception. "Should not be called")))]
-        (let [orch-state (server/get-session-recipe-state session-id)
-              recipe (recipes/get-recipe :implement-and-review)]
-          ;; Call execute-recipe-step with an orch-state that will result in nil step-prompt
-          (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
-
-          ;; Lock should be released even though step-prompt was nil
-          (is (not (voice-code.replication/is-session-locked? session-id))
-              "Lock should be released when step-prompt is nil")
-
-          ;; Should have sent recipe-exited and turn-complete messages
-          (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
-                message-types (set (map :type parsed-messages))]
-            (is (contains? message-types "recipe_exited")
-                "Should send recipe_exited message")
-            (is (contains? message-types "turn_complete")
-                "Should send turn_complete message")))))))
-
 (deftest test-get-step-model
   (testing "returns step-level model when present"
     (let [recipe {:steps {:commit {:model "haiku"
@@ -1412,44 +1267,6 @@
       (is (nil? (server/get-step-model recipe :code-review)))
       ;; :fix step has no model
       (is (nil? (server/get-step-model recipe :fix))))))
-
-(deftest test-recipe-state-cleaned-on-lock-failure
-  (testing "Recipe state is cleaned up when lock acquisition fails in start_recipe"
-    (let [session-id "test-lock-fail-cleanup"
-          sent-messages (atom [])
-          mock-channel :test-ch]
-      ;; Setup
-      (reset! server/api-key test-api-key)
-      (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
-      (reset! server/connected-clients {mock-channel {:deleted-sessions #{} :authenticated true}})
-
-      ;; Pre-lock the session to simulate another operation holding the lock
-      (voice-code.replication/acquire-session-lock! session-id)
-      (is (voice-code.replication/is-session-locked? session-id)
-          "Session should be locked by another operation")
-
-      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
-                    voice-code.replication/get-session-metadata (fn [_] {:working-directory "/tmp"})]
-        ;; Handle start_recipe message when session is already locked
-        (server/handle-message mock-channel
-                               (json/generate-string {:type "start_recipe"
-                                                      :recipe_id "implement-and-review"
-                                                      :session_id session-id}))
-
-        ;; Recipe state should NOT exist (cleaned up because lock failed)
-        (is (nil? (server/get-session-recipe-state session-id))
-            "Recipe state should be cleaned up when lock acquisition fails")
-
-        ;; Should have sent session_locked message
-        (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
-              message-types (set (map :type parsed-messages))]
-          (is (contains? message-types "session_locked")
-              "Should send session_locked message")))
-
-      ;; Cleanup
-      (voice-code.replication/release-session-lock! session-id)
-      (reset! server/api-key nil))))
 
 (deftest test-session-exists?
   (testing "returns false when get-session-metadata returns nil"
@@ -1499,7 +1316,6 @@
       ;; Setup
       (reset! server/api-key test-api-key)
       (reset! server/session-orchestration-state {})
-      (reset! repl/session-locks #{})
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{} :authenticated true}})
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
@@ -1538,7 +1354,6 @@
       ;; Setup
       (reset! server/api-key test-api-key)
       (reset! server/session-orchestration-state {})
-      (reset! repl/session-locks #{})
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{} :authenticated true}})
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))

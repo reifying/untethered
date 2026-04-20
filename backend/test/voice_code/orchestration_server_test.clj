@@ -195,9 +195,7 @@
           new-session-id-atom (atom nil)
           new-provider-atom (atom nil)
           channel :test-ch]
-      (with-redefs [replication/acquire-session-lock! (constantly true)
-                    replication/release-session-lock! (fn [_] nil)
-                    recipes/get-recipe (fn [recipe-id]
+      (with-redefs [recipes/get-recipe (fn [recipe-id]
                                          (when (= recipe-id :implement-and-review)
                                            {:label "Test" :steps []}))
                     server/start-recipe-for-session
@@ -247,7 +245,6 @@
                       (callback {:success true :result "Test response" :session-id session-id}))
                     server/process-orchestration-response (constantly {:action :exit})
                     server/get-session-recipe-state (constantly nil)
-                    replication/release-session-lock! (fn [_] nil)
                     org.httpkit.server/send! (fn [_ _] nil)
                     server/exit-recipe-for-session (fn [_ _] nil)]
         (server/execute-recipe-step channel session-id "/test" orch-state recipe)
@@ -276,7 +273,6 @@
                       (callback {:success true :result "Test copilot response" :session-id session-id}))
                     server/process-orchestration-response (constantly {:action :exit})
                     server/get-session-recipe-state (constantly nil)
-                    replication/release-session-lock! (fn [_] nil)
                     org.httpkit.server/send! (fn [_ _] nil)
                     server/exit-recipe-for-session (fn [_ _] nil)]
         (server/execute-recipe-step channel session-id "/test" orch-state recipe)
@@ -418,8 +414,7 @@
       (swap! @(resolve 'voice-code.server/recipe-turn-callbacks)
              assoc session-id
              (fn [resp] (reset! callback-response resp)))
-      (with-redefs [replication/is-session-locked? (constantly false)
-                    replication/get-session-metadata
+      (with-redefs [replication/get-session-metadata
                     (constantly {:provider :claude :file "/tmp/fake.jsonl"})
                     replication/parse-session-messages
                     (constantly [{:role "user" :text "prompt"}
@@ -435,8 +430,7 @@
   (testing "on-turn-complete without registered callback is a no-op for recipes"
     (let [session-id "turn-complete-noop-test"]
       ;; No callback registered; suppress broadcast
-      (with-redefs [replication/is-session-locked? (constantly false)
-                    org.httpkit.server/send! (fn [_ _] nil)]
+      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)]
         ;; Should not throw
         (is (nil? (server/on-turn-complete session-id))))))
 
@@ -449,8 +443,7 @@
       (swap! @(resolve 'voice-code.server/recipe-turn-callbacks)
              assoc session-id
              (fn [resp] (reset! callback-response resp)))
-      (with-redefs [replication/is-session-locked? (constantly false)
-                    replication/get-session-metadata (constantly nil)
+      (with-redefs [replication/get-session-metadata (constantly nil)
                     org.httpkit.server/send! (fn [_ _] nil)]
         (server/on-turn-complete session-id)
         (is (false? (:success @callback-response)))
@@ -458,56 +451,6 @@
         (is (= session-id (:session-id @callback-response)))
         (is (nil? (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id))
             "Callback should be drained even when text is unavailable")))))
-
-(deftest on-turn-complete-lock-retention-test
-  (testing "lock is released when no recipe callback is registered"
-    (let [session-id "lock-release-no-callback"
-          release-calls (atom [])]
-      (with-redefs [replication/is-session-locked? (constantly true)
-                    replication/release-session-lock!
-                    (fn [sid] (swap! release-calls conj sid))
-                    org.httpkit.server/send! (fn [_ _] nil)]
-        (server/on-turn-complete session-id)
-        (is (= [session-id] @release-calls)
-            "Lock should be released for non-recipe turn-completes"))))
-
-  (testing "lock is NOT released when a recipe callback is registered"
-    (let [session-id "lock-retention-with-callback"
-          release-calls (atom [])]
-      ;; Register a recipe callback so the lock must stay held across the
-      ;; step transition.
-      (swap! @(resolve 'voice-code.server/recipe-turn-callbacks)
-             assoc session-id
-             (fn [_] nil))
-      (with-redefs [replication/is-session-locked? (constantly true)
-                    replication/release-session-lock!
-                    (fn [sid] (swap! release-calls conj sid))
-                    replication/get-session-metadata
-                    (constantly {:provider :claude :file "/tmp/fake.jsonl"})
-                    replication/parse-session-messages
-                    (constantly [{:role "assistant" :text "hi"}])
-                    org.httpkit.server/send! (fn [_ _] nil)]
-        (server/on-turn-complete session-id)
-        (is (empty? @release-calls)
-            "Lock must stay held; the recipe callback owns release"))))
-
-  (testing "lock is released if the recipe callback throws"
-    (let [session-id "lock-release-on-callback-throw"
-          release-calls (atom [])]
-      (swap! @(resolve 'voice-code.server/recipe-turn-callbacks)
-             assoc session-id
-             (fn [_] (throw (RuntimeException. "cb boom"))))
-      (with-redefs [replication/is-session-locked? (constantly true)
-                    replication/release-session-lock!
-                    (fn [sid] (swap! release-calls conj sid))
-                    replication/get-session-metadata
-                    (constantly {:provider :claude :file "/tmp/fake.jsonl"})
-                    replication/parse-session-messages
-                    (constantly [{:role "assistant" :text "hi"}])
-                    org.httpkit.server/send! (fn [_ _] nil)]
-        (server/on-turn-complete session-id)
-        (is (= [session-id] @release-calls)
-            "Lock must be released when the callback itself throws to avoid a stuck session")))))
 
 (deftest exit-recipe-clears-pending-turn-callback-test
   (testing "exit-recipe-for-session removes orphaned entries from recipe-turn-callbacks"

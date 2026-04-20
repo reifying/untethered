@@ -20,40 +20,44 @@
   (atom {}))
 
 ;; ============================================================================
-;; Session Locking
+;; Compaction Locking
 ;; ============================================================================
 
-(defonce session-locks
-  ;; Set of Claude session IDs currently executing Claude CLI commands.
-  ;; Used to prevent concurrent prompts from forking the same session.
+(defonce compaction-locks
+  ;; Set of session IDs currently executing `claude --compact` (a one-shot CLI
+  ;; invocation that writes to the session's JSONL file). Prevents a second
+  ;; concurrent compaction from corrupting the file and also gates the kill-
+  ;; tmux-window-before-compact handshake in the compact_session handler.
+  ;; Scope: compaction only — NOT used on the prompt path, which is serialized
+  ;; by tmux/deliver! nudging a live pane instead.
   (atom #{}))
 
-(defn acquire-session-lock!
-  "Attempt to acquire a lock for the given session ID.
-   Returns true if lock was acquired, false if session is already locked."
+(defn acquire-compaction-lock!
+  "Attempt to acquire a compaction lock for the given session ID.
+   Returns true if lock was acquired, false if compaction is already running."
   [session-id]
   (let [acquired? (atom false)]
-    (swap! session-locks
+    (swap! compaction-locks
            (fn [locks]
              (if (contains? locks session-id)
-               locks ; Already locked, don't modify
+               locks
                (do
                  (reset! acquired? true)
                  (conj locks session-id)))))
     (when @acquired?
-      (log/info "Acquired session lock" {:session-id session-id}))
+      (log/info "Acquired compaction lock" {:session-id session-id}))
     @acquired?))
 
-(defn release-session-lock!
-  "Release the lock for the given session ID."
+(defn release-compaction-lock!
+  "Release the compaction lock for the given session ID."
   [session-id]
-  (swap! session-locks disj session-id)
-  (log/info "Released session lock" {:session-id session-id}))
+  (swap! compaction-locks disj session-id)
+  (log/info "Released compaction lock" {:session-id session-id}))
 
-(defn is-session-locked?
-  "Check if a session is currently locked."
+(defn is-compaction-locked?
+  "Check if a session currently has a compaction in progress."
   [session-id]
-  (contains? @session-locks session-id))
+  (contains? @compaction-locks session-id))
 
 ;; ============================================================================
 ;; Turn-Complete Detection
