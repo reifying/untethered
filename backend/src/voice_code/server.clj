@@ -1468,18 +1468,36 @@
                       ;; Dispatch to tmux. start-window! can block up to ~3s for
                       ;; TUI readiness, so run off-thread to keep the ack fast and
                       ;; avoid blocking other messages on this channel.
+                      ;;
+                      ;; The dispatch is serialized against compact_session via
+                      ;; repl/compaction-dispatch-lock so a compaction arriving
+                      ;; between this handler's is-compaction-locked? check and
+                      ;; the tmux call cannot cause the provider to be respawned
+                      ;; while `claude --compact` is rewriting the JSONL (see
+                      ;; tmux-untethered-22g). The re-check inside the lock is
+                      ;; the one that actually matters: by holding the lock we
+                      ;; know @compaction-locks cannot flip under us.
                       (future
                         (try
-                          (if new-session-id
-                            (tmux/start-window!
-                             {:session-uuid new-session-id
-                              :session-name (:name session-metadata)
-                              :provider provider
-                              :workdir working-dir
-                              :initial-prompt final-prompt-text
-                              :resume? false
-                              :system-prompt system-prompt})
-                            (tmux/deliver! resume-session-id final-prompt-text))
+                          (locking repl/compaction-dispatch-lock
+                            (if (repl/is-compaction-locked? claude-session-id)
+                              (do
+                                (log/info "Prompt dispatch aborted: compaction started after ack"
+                                          {:session-id claude-session-id})
+                                (send-to-client! channel
+                                                 {:type :error
+                                                  :session-id claude-session-id
+                                                  :message "Compaction in progress for this session; retry once it completes"}))
+                              (if new-session-id
+                                (tmux/start-window!
+                                 {:session-uuid new-session-id
+                                  :session-name (:name session-metadata)
+                                  :provider provider
+                                  :workdir working-dir
+                                  :initial-prompt final-prompt-text
+                                  :resume? false
+                                  :system-prompt system-prompt})
+                                (tmux/deliver! resume-session-id final-prompt-text))))
                           (catch Exception e
                             (log/error e "Failed to dispatch prompt via tmux"
                                        {:session-id claude-session-id
@@ -1513,60 +1531,74 @@
                             (generate-json
                              {:type :error
                               :message "session_id required in compact_session message"}))
-                (if-not (repl/acquire-compaction-lock! session-id)
-                  (do
-                    (log/info "Compaction already in progress" {:session-id session-id})
-                    (send-to-client! channel
-                                     {:type :compaction-error
-                                      :session-id session-id
-                                      :error "Compaction already in progress"}))
-                  (do
-                    ;; `claude --compact` is a one-shot CLI writing to the JSONL,
-                    ;; so any live tmux window for this session must be killed
-                    ;; first to prevent interleaved writes. Synthesize an aborted
-                    ;; turn_complete for subscribers so their processing indicator
-                    ;; unlocks (the JSONL watcher won't emit a natural marker).
-                    (when-let [live-window (get @tmux/live-windows session-id)]
-                      (log/info "Killing live tmux window before compaction"
-                                {:session-id session-id})
-                      (try
-                        (tmux/kill-window! (:tmux-session live-window) (:tmux-window live-window))
-                        (catch Exception e
-                          (log/warn e "tmux kill-window failed before compaction; proceeding"
-                                    {:session-id session-id})))
-                      (swap! tmux/live-windows dissoc session-id)
-                      (doseq [[subscriber-channel client-info] @connected-clients]
-                        (let [subscribed (or (:subscribed-sessions client-info) #{})]
-                          (when (and (contains? subscribed session-id)
-                                     (not (is-session-deleted-for-client? subscriber-channel session-id)))
-                            (send-to-client! subscriber-channel
-                                             {:type :turn-complete
-                                              :session-id session-id
-                                              :aborted true})))))
-                    (log/info "Compacting session" {:session-id session-id})
-                    (async/go
-                      (try
-                        (let [result (claude/compact-session session-id)]
-                          (if (:success result)
-                            (do
-                              (log/info "Session compaction successful" {:session-id session-id})
-                              (send-to-client! channel
-                                               {:type :compaction-complete
-                                                :session-id session-id}))
-                            (do
-                              (log/error "Session compaction failed" {:session-id session-id :error (:error result)})
-                              (send-to-client! channel
-                                               {:type :compaction-error
+                ;; Acquiring the compaction lock, killing the live tmux window,
+                ;; and clearing it from live-windows must be atomic w.r.t. the
+                ;; prompt-dispatch path — otherwise a prompt's future running
+                ;; between the acquire and the kill could respawn the provider
+                ;; concurrently with `claude --compact` (tmux-untethered-22g).
+                ;; Broadcasting the aborted turn_complete and spawning the
+                ;; async compact call happen after the lock is released.
+                (let [{:keys [acquired? killed-live-window?]}
+                      (locking repl/compaction-dispatch-lock
+                        (if-not (repl/acquire-compaction-lock! session-id)
+                          {:acquired? false}
+                          (let [live-window (get @tmux/live-windows session-id)]
+                            (when live-window
+                              (log/info "Killing live tmux window before compaction"
+                                        {:session-id session-id})
+                              (try
+                                (tmux/kill-window! (:tmux-session live-window) (:tmux-window live-window))
+                                (catch Exception e
+                                  (log/warn e "tmux kill-window failed before compaction; proceeding"
+                                            {:session-id session-id})))
+                              (swap! tmux/live-windows dissoc session-id))
+                            {:acquired? true :killed-live-window? (some? live-window)})))]
+                  (if-not acquired?
+                    (do
+                      (log/info "Compaction already in progress" {:session-id session-id})
+                      (send-to-client! channel
+                                       {:type :compaction-error
+                                        :session-id session-id
+                                        :error "Compaction already in progress"}))
+                    (do
+                      ;; `claude --compact` is a one-shot CLI writing to the JSONL,
+                      ;; so any live tmux window for this session must be killed
+                      ;; first to prevent interleaved writes. Synthesize an aborted
+                      ;; turn_complete for subscribers so their processing indicator
+                      ;; unlocks (the JSONL watcher won't emit a natural marker).
+                      (when killed-live-window?
+                        (doseq [[subscriber-channel client-info] @connected-clients]
+                          (let [subscribed (or (:subscribed-sessions client-info) #{})]
+                            (when (and (contains? subscribed session-id)
+                                       (not (is-session-deleted-for-client? subscriber-channel session-id)))
+                              (send-to-client! subscriber-channel
+                                               {:type :turn-complete
                                                 :session-id session-id
-                                                :error (:error result)}))))
-                        (catch Exception e
-                          (log/error e "Unexpected error during compaction" {:session-id session-id})
-                          (send-to-client! channel
-                                           {:type :compaction-error
-                                            :session-id session-id
-                                            :error (str "Compaction failed: " (ex-message e))}))
-                        (finally
-                          (repl/release-compaction-lock! session-id))))))))
+                                                :aborted true})))))
+                      (log/info "Compacting session" {:session-id session-id})
+                      (async/go
+                        (try
+                          (let [result (claude/compact-session session-id)]
+                            (if (:success result)
+                              (do
+                                (log/info "Session compaction successful" {:session-id session-id})
+                                (send-to-client! channel
+                                                 {:type :compaction-complete
+                                                  :session-id session-id}))
+                              (do
+                                (log/error "Session compaction failed" {:session-id session-id :error (:error result)})
+                                (send-to-client! channel
+                                                 {:type :compaction-error
+                                                  :session-id session-id
+                                                  :error (:error result)}))))
+                          (catch Exception e
+                            (log/error e "Unexpected error during compaction" {:session-id session-id})
+                            (send-to-client! channel
+                                             {:type :compaction-error
+                                              :session-id session-id
+                                              :error (str "Compaction failed: " (ex-message e))}))
+                          (finally
+                            (repl/release-compaction-lock! session-id)))))))))
 
             "kill_session"
             (let [session-id (:session-id data)]

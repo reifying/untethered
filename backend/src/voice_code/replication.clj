@@ -32,6 +32,19 @@
   ;; by tmux/deliver! nudging a live pane instead.
   (atom #{}))
 
+(defonce compaction-dispatch-lock
+  ;; Mutex serializing the compact_session critical section (atom acquire +
+  ;; tmux window teardown) against the prompt-dispatch path (the atom re-check
+  ;; + tmux/deliver! or tmux/start-window! call inside the prompt handler's
+  ;; future). Without it, a compact_session message arriving between the
+  ;; prompt handler's initial is-compaction-locked? check and the future
+  ;; actually firing tmux/deliver! can cause the prompt to respawn the
+  ;; provider while `claude --compact` is writing to the same JSONL (see
+  ;; tmux-untethered-22g). The dispatch-lock is a global JVM monitor, not
+  ;; per-session: cross-session interleaving is rare and respawns are fast
+  ;; (≤3 s), so the coarseness is acceptable.
+  (Object.))
+
 (defn acquire-compaction-lock!
   "Attempt to acquire a compaction lock for the given session ID.
    Returns true if lock was acquired, false if compaction is already running."

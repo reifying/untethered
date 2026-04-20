@@ -592,6 +592,156 @@
           (is (= "go" (:text args))))))
     (reset! server/api-key nil)))
 
+(deftest test-prompt-and-compact-never-race-on-same-jsonl
+  ;; tmux-untethered-22g: the compaction-lock check in the prompt handler
+  ;; happens synchronously, but the tmux/deliver! call runs inside a (future
+  ;; ...). A compact_session arriving between those two points must not cause
+  ;; the prompt to respawn the provider while `claude --compact` is rewriting
+  ;; the same JSONL.
+  ;;
+  ;; Scenario 1 (deterministic): force the TOCTOU interleaving by stalling
+  ;; the prompt's future until a compaction has definitely acquired the lock.
+  ;; We drive this with a CountDownLatch inside the tmux mocks and a
+  ;; cooperative hand-off with the compact_session critical section. Without
+  ;; the re-check under repl/compaction-dispatch-lock, the future would
+  ;; invoke tmux/deliver! / start-window! while @compaction-locks holds the
+  ;; session-id. With the fix the future aborts cleanly.
+  (testing "Prompt future scheduled before compaction acquire never dispatches tmux after compaction wins"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (reset! repl/compaction-locks #{})
+    (reset! tmux/live-windows {})
+    (let [session-id "race-session-deterministic"
+          ;; Future body starts running, wants to acquire dispatch-lock, but
+          ;; we first make sure a compaction has grabbed the lock so the
+          ;; future sees it locked.
+          compaction-acquired (java.util.concurrent.CountDownLatch. 1)
+          compaction-holding (java.util.concurrent.CountDownLatch. 1)
+          violations (atom [])
+          tmux-invocations (atom 0)]
+      (with-redefs [tmux/deliver! (fn [_ _]
+                                    (when (contains? @repl/compaction-locks session-id)
+                                      (swap! violations conj :deliver-during-compaction))
+                                    (swap! tmux-invocations inc))
+                    tmux/start-window! (fn [_]
+                                         (when (contains? @repl/compaction-locks session-id)
+                                           (swap! violations conj :start-window-during-compaction))
+                                         (swap! tmux-invocations inc))
+                    tmux/kill-window! (fn [& _] nil)
+                    voice-code.claude/compact-session
+                    (fn [_]
+                      (.countDown compaction-acquired)
+                      ;; Hold the compaction long enough that any prompt
+                      ;; future scheduled below will either block on the
+                      ;; dispatch-lock (fix) or race through it (bug).
+                      (.await compaction-holding 2 java.util.concurrent.TimeUnit/SECONDS)
+                      {:success true})
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp" :name "race"})
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (swap! tmux/live-windows assoc session-id
+               {:tmux-session "s" :tmux-window "w"})
+        ;; Schedule the compaction in a worker: it will acquire the lock,
+        ;; kill the (mocked) window, and then block inside compact-session
+        ;; until we release it.
+        (let [compact-worker
+              (future
+                (server/handle-message
+                 :test-ch
+                 (format "{\"type\":\"compact_session\",\"session_id\":\"%s\"}" session-id)))]
+          (.await compaction-acquired 2 java.util.concurrent.TimeUnit/SECONDS)
+          ;; Compaction is now holding the atom lock. live-windows no longer
+          ;; has the session. If a prompt's future now runs without the
+          ;; re-check, it will dispatch tmux (respawn) while compaction is
+          ;; writing the JSONL.
+          (let [prompt-workers
+                (doall
+                 (for [i (range 30)]
+                   (future
+                     (server/handle-message
+                      :test-ch
+                      (format "{\"type\":\"prompt\",\"text\":\"p%d\",\"resume_session_id\":\"%s\"}"
+                              i session-id)))))]
+            (doseq [w prompt-workers] @w)
+            ;; Give the futures scheduled inside the handler time to run.
+            (Thread/sleep 200)
+            (is (empty? @violations)
+                (format "No tmux dispatch should fire while compaction holds the lock. Violations: %s"
+                        (pr-str @violations)))
+            (is (zero? @tmux-invocations)
+                "All prompt futures should abort while the compaction lock is held"))
+          ;; Release compaction so the worker can finish and release the lock.
+          (.countDown compaction-holding)
+          @compact-worker))
+      ;; After compaction releases, a follow-up prompt should dispatch cleanly.
+      (Thread/sleep 100)
+      (swap! tmux/live-windows assoc session-id
+             {:tmux-session "s" :tmux-window "w"})
+      (let [follow-up-dispatched (promise)]
+        (with-redefs [tmux/deliver! (fn [s _] (deliver follow-up-dispatched s))
+                      tmux/start-window! (fn [opts] (deliver follow-up-dispatched (:session-uuid opts)))
+                      voice-code.replication/get-session-metadata
+                      (fn [_] {:provider :claude :working-directory "/tmp" :name "race"})
+                      org.httpkit.server/send! (fn [_ _] nil)]
+          (server/handle-message
+           :test-ch
+           (format "{\"type\":\"prompt\",\"text\":\"post-release\",\"resume_session_id\":\"%s\"}" session-id))
+          (is (= session-id (deref follow-up-dispatched 2000 :timeout))
+              "After compaction releases the lock, subsequent prompts dispatch normally"))))
+    (reset! repl/compaction-locks #{})
+    (reset! tmux/live-windows {})
+    (reset! server/api-key nil))
+
+  ;; Scenario 2 (stress): flood the handler with interleaved prompt and
+  ;; compact_session messages on the same session-id. With or without the
+  ;; fix, the outcome is non-deterministic — but the invariant
+  ;; "tmux dispatch never observes @compaction-locks holding this session"
+  ;; must hold in all cases.
+  (testing "Flood of interleaved prompt + compact_session never violates the invariant"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (reset! repl/compaction-locks #{})
+    (reset! tmux/live-windows {})
+    (let [session-id "race-session-stress"
+          iterations 200
+          violations (atom [])]
+      (with-redefs [tmux/deliver! (fn [_ _]
+                                    (when (contains? @repl/compaction-locks session-id)
+                                      (swap! violations conj :deliver-during-compaction)))
+                    tmux/start-window! (fn [opts]
+                                         (when (contains? @repl/compaction-locks session-id)
+                                           (swap! violations conj :start-window-during-compaction))
+                                         (swap! tmux/live-windows assoc
+                                                (:session-uuid opts)
+                                                {:tmux-session "s" :tmux-window "w"}))
+                    tmux/kill-window! (fn [& _] nil)
+                    voice-code.claude/compact-session
+                    (fn [_] (Thread/sleep 2) {:success true})
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp" :name "race"})
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (swap! tmux/live-windows assoc session-id
+               {:tmux-session "s" :tmux-window "w"})
+        (let [workers
+              (doall
+               (for [i (range iterations)]
+                 (future
+                   (if (even? i)
+                     (server/handle-message :test-ch
+                                            (format "{\"type\":\"prompt\",\"text\":\"p%d\",\"resume_session_id\":\"%s\"}"
+                                                    i session-id))
+                     (server/handle-message :test-ch
+                                            (format "{\"type\":\"compact_session\",\"session_id\":\"%s\"}"
+                                                    session-id))))))]
+          (doseq [w workers] @w))
+        (Thread/sleep 500))
+      (is (empty? @violations)
+          (format "tmux dispatch must never run while compaction-locks holds this session. Violations: %s"
+                  (pr-str @violations))))
+    (reset! repl/compaction-locks #{})
+    (reset! tmux/live-windows {})
+    (reset! server/api-key nil)))
+
 (deftest test-prompt-never-sends-session-locked
   ;; AC #1 from tmux-untethered design §4: concurrent prompts to the same
   ;; session UUID must never produce a session_locked response. We simulate
