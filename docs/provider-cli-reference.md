@@ -652,3 +652,28 @@ The parts directory for a message contains files written sequentially: `step-sta
 | Copilot | `type: "assistant.turn_end"` when last `assistant.message` has `toolRequests: []` | `~/.copilot/session-state/<uuid>/events.jsonl` | Yes |
 | Cursor | mtime stable ≥3s AND last record has `role: "assistant"` | `~/.cursor/projects/.../agent-transcripts/<uuid>.jsonl` | Mostly (mtime debounce; TUI write path source-verified in cursor-agent 2026.02.13; live-runtime check pending `tmux-untethered-58q`) |
 | OpenCode | Part file `type: "step-finish"` with `reason: "stop"` | `~/.local/share/opencode/storage/part/<msg-id>/*.json` | Yes |
+
+### 5.6 Backend Wiring
+
+The per-record predicate is the `providers/turn-complete?` multimethod
+(`backend/src/voice_code/providers.clj`). It answers the *stateless*
+question "is this single record a turn-terminating marker?" — the stateful
+and file-state concerns live in the watcher:
+
+- **Claude, OpenCode**: predicate alone is sufficient. The watcher calls
+  `check-claude-turn-complete!` / `handle-opencode-part-file-created` which
+  delegate to the multimethod per message and emit with per-UUID / per-part-id
+  dedup.
+- **Copilot**: predicate identifies `assistant.turn_end`, but the watcher
+  (`check-copilot-turn-complete!`) additionally requires that the most recent
+  `assistant.message` had empty `toolRequests`. State lives in
+  `copilot-last-tool-requests`; dedup key is `session-id + turnId`.
+- **Cursor**: predicate identifies `role:"assistant"` records, but emission is
+  gated on mtime stability. The watcher debounces writes via
+  `cursor-transcript-scheduler` (3s delay), verifies the mtime hasn't
+  advanced, parses the last line of the transcript, applies the multimethod,
+  and emits with per-(session-id, mtime) dedup.
+
+Emission path: `emit-turn-complete!` → `:on-turn-complete` callback in
+`watcher-state` → `on-turn-complete` in `server.clj` → broadcast
+`{:type :turn-complete :session-id X}` to subscribed clients.

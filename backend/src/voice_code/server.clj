@@ -1095,6 +1095,25 @@
   (log/info "Session deleted from filesystem" {:session-id session-id}))
   ;; This is informational - we don't broadcast deletes since it's just local cleanup
 
+(defn on-turn-complete
+  "Called by the filesystem watcher when a provider-specific turn-complete
+   marker is observed in JSONL/part files. Broadcasts
+   `{:type :turn-complete :session-id X}` to every connected client that is
+   subscribed to the session and has not locally deleted it. Also releases the
+   backend session lock so subsequent prompts can be accepted."
+  [session-id]
+  (log/info "Turn-complete callback invoked" {:session-id session-id})
+  ;; Release the session lock so the next prompt can acquire it.
+  (when (repl/is-session-locked? session-id)
+    (repl/release-session-lock! session-id))
+  (doseq [[channel client-info] @connected-clients]
+    (let [subscribed (or (:subscribed-sessions client-info) #{})]
+      (when (and (contains? subscribed session-id)
+                 (not (is-session-deleted-for-client? channel session-id)))
+        (send-to-client! channel
+                         {:type :turn-complete
+                          :session-id session-id})))))
+
 ;; Message handling
 (defn handle-message
   "Handle incoming WebSocket message with session-based authentication.
@@ -2409,7 +2428,8 @@
       (repl/start-watcher!
        :on-session-created on-session-created
        :on-session-updated on-session-updated
-       :on-session-deleted on-session-deleted)
+       :on-session-deleted on-session-deleted
+       :on-turn-complete on-turn-complete)
       (log/info "Filesystem watcher started successfully")
       (catch Exception e
         (log/error e "Failed to start filesystem watcher")))

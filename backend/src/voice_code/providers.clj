@@ -118,10 +118,25 @@
 
 (defmulti is-valid-session-file?
   "Checks if a file represents a valid session for this provider.
-   
+
    For Claude: .jsonl file with UUID name (not in .inference/ directory)
    For Copilot: Directory with events.jsonl inside"
   (fn [provider _file] provider))
+
+(defmulti turn-complete?
+  "Returns true when raw-msg is a provider-specific terminal turn marker.
+
+   Per-message predicate only — stateful lookback (Copilot toolRequests) and
+   file-state debouncing (Cursor mtime stability) are handled by the watcher
+   layer in replication.clj. This multimethod answers only \"is this single
+   record a turn-terminating marker?\".
+
+   Args:
+   - provider: Provider keyword (:claude, :copilot, :cursor, :opencode)
+   - raw-msg:  Parsed JSON record from the provider's JSONL / part file
+
+   Returns: boolean"
+  (fn [provider _raw-msg] provider))
 
 ;; ============================================================================
 ;; Claude Provider Implementation (:claude)
@@ -270,6 +285,12 @@
        :text (extract-text-from-content content)
        :timestamp (:timestamp raw-msg)
        :provider :claude})))
+
+(defmethod turn-complete? :claude [_ raw-msg]
+  (and (= "assistant" (:type raw-msg))
+       (not (:isSidechain raw-msg))
+       (contains? #{"end_turn" "stop_sequence"}
+                  (get-in raw-msg [:message :stop_reason]))))
 
 ;; ============================================================================
 ;; Copilot Provider Implementation (:copilot)
@@ -423,6 +444,12 @@
          :timestamp (:timestamp raw-msg)
          :provider :copilot}))))
 
+(defmethod turn-complete? :copilot [_ raw-msg]
+  ;; Only the turn_end event is a terminal marker. The watcher layer applies
+  ;; stateful lookback to confirm the preceding assistant.message had empty
+  ;; toolRequests — that concern lives in replication.clj.
+  (= "assistant.turn_end" (:type raw-msg)))
+
 ;;; ---- Cursor Provider ----
 
 (defmethod get-sessions-dir :cursor [_]
@@ -469,6 +496,13 @@
   ;; Cursor uses SQLite binary blobs (Merkle-tree) — not parseable for history.
   ;; Documented limitation: return nil.
   nil)
+
+(defmethod turn-complete? :cursor [_ raw-msg]
+  ;; An agent-transcripts record is a turn-terminating marker iff it's the
+  ;; last line of the file AND has role:"assistant". The "last line" and
+  ;; mtime-stability checks live in the watcher (replication.clj); this
+  ;; predicate answers the per-record question in isolation.
+  (= "assistant" (:role raw-msg)))
 
 ;;; ---- OpenCode Provider ----
 
@@ -530,6 +564,14 @@
                           java.time.Instant/ofEpochMilli
                           str)
        :provider :opencode})))
+
+(defmethod turn-complete? :opencode [_ raw-msg]
+  ;; Two equivalent shapes: part-file {:type "step-finish" :reason "stop"} and
+  ;; streaming NDJSON {:type "step_finish" :part {:reason "stop"}}.
+  (let [msg-type (:type raw-msg)
+        reason (or (:reason raw-msg) (get-in raw-msg [:part :reason]))]
+    (and (contains? #{"step-finish" "step_finish"} msg-type)
+         (= "stop" reason))))
 
 ;; ============================================================================
 ;; Provider Resolution

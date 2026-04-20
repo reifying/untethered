@@ -8,7 +8,8 @@
             [clojure.tools.logging :as log]
             [voice-code.providers :as providers])
   (:import [java.nio.file FileSystems Path Paths WatchService WatchKey StandardWatchEventKinds]
-           [java.io RandomAccessFile]))
+           [java.io RandomAccessFile]
+           [java.util.concurrent Executors ScheduledExecutorService ScheduledFuture TimeUnit]))
 
 ;; ============================================================================
 ;; Session Metadata Index
@@ -1201,14 +1202,10 @@
 
 (defn check-claude-turn-complete!
   "Check raw Claude JSONL messages for a turn-complete signal and emit if found.
-   A turn is complete when an assistant record has stop_reason ∈
-   #{\"end_turn\" \"stop_sequence\"} and isSidechain is false."
+   Delegates the per-message predicate to `providers/turn-complete? :claude`."
   [session-id raw-messages]
   (doseq [msg raw-messages]
-    (when (and (= "assistant" (:type msg))
-               (not (:isSidechain msg))
-               (contains? #{"end_turn" "stop_sequence"}
-                          (get-in msg [:message :stop_reason])))
+    (when (providers/turn-complete? :claude msg)
       (if-let [uuid (:uuid msg)]
         (emit-turn-complete! session-id uuid)
         (log/warn "Claude assistant message missing :uuid, skipping turn-complete"
@@ -1217,9 +1214,10 @@
 
 (defn check-copilot-turn-complete!
   "Check raw Copilot events for a turn-complete signal and emit if found.
-   A turn is complete when assistant.turn_end is observed AND the most recent
-   assistant.message event for this session had toolRequests: [].
-   Updates copilot-last-tool-requests state as a side effect."
+   Combines `providers/turn-complete? :copilot` (stateless turn_end check) with
+   stateful lookback: a turn_end only fires turn-complete when the most recent
+   assistant.message for this session had toolRequests: []. Updates
+   copilot-last-tool-requests as a side effect."
   [session-id raw-events]
   (doseq [event raw-events]
     (let [event-type (:type event)]
@@ -1228,7 +1226,7 @@
         (swap! copilot-last-tool-requests assoc session-id
                (get-in event [:data :toolRequests]))
 
-        (= event-type "assistant.turn_end")
+        (providers/turn-complete? :copilot event)
         (let [last-requests (get @copilot-last-tool-requests session-id ::no-message-seen)]
           ;; Always clear per-session state after turn_end so the next turn starts fresh.
           (swap! copilot-last-tool-requests dissoc session-id)
@@ -1240,14 +1238,14 @@
 
 (defn handle-opencode-part-file-created
   "Handle creation of a new OpenCode part file.
-   Reads the file and emits turn-complete if it contains a step-finish with reason=stop."
+   Reads the file and emits turn-complete when `providers/turn-complete? :opencode`
+   returns true for the parsed content."
   [part-file]
   (when (and (.isFile part-file)
              (str/ends-with? (.getName part-file) ".json"))
     (try
       (let [content (json/parse-string (slurp part-file) true)]
-        (when (and (= "step-finish" (:type content))
-                   (= "stop" (:reason content)))
+        (when (providers/turn-complete? :opencode content)
           (let [session-id (:sessionID content)
                 part-id (:id content)]
             (when (and session-id part-id)
@@ -1256,6 +1254,109 @@
       (catch Exception e
         (log/debug "Failed to read OpenCode part file"
                    {:file (.getPath part-file) :error (ex-message e)})))))
+
+;; ---- Cursor: file-based turn-complete via mtime stability ----
+;;
+;; Cursor rewrites `~/.cursor/projects/<project-hash>/agent-transcripts/<session-uuid>.jsonl`
+;; on every `handleCheckpoint` during a turn. The checkpoints fire in bursts
+;; during tool activity and then go quiet once the final assistant message is
+;; written. We treat the turn as complete when (a) the file's mtime has been
+;; stable for ≥ `cursor-stability-ms` since the last observed write, and (b)
+;; the last JSON record in the file has `role: "assistant"`.
+;;
+;; See docs/provider-cli-reference.md §5.3 for the full rationale and edge
+;; cases (file-missing, partial-write race, long-running tool call mid-turn).
+
+(def ^:private cursor-stability-ms 3000)
+
+(defonce ^:private cursor-transcript-scheduler
+  ;; Single-threaded scheduled executor for deferred stability checks.
+  ;; Daemon threads so tests / shutdown don't hang.
+  (Executors/newSingleThreadScheduledExecutor
+   (reify java.util.concurrent.ThreadFactory
+     (newThread [_ r]
+       (doto (Thread. r "voice-code-cursor-transcript-scheduler")
+         (.setDaemon true))))))
+
+;; transcript-path -> {:mtime <long> :future <ScheduledFuture>}
+(defonce ^:private cursor-transcript-state (atom {}))
+
+(defn- parse-cursor-transcript-last-record
+  "Read the last non-blank line of a Cursor agent-transcripts JSONL file and
+   return the parsed JSON map, or nil on parse error / empty file."
+  [file]
+  (try
+    (let [content (slurp file)
+          lines (->> (str/split-lines content)
+                     (remove str/blank?))]
+      (when-let [last-line (last lines)]
+        (json/parse-string last-line true)))
+    (catch Exception _
+      nil)))
+
+(defn check-cursor-turn-complete!
+  "Stability check for a Cursor agent-transcripts file. Intended to be invoked
+   from `cursor-transcript-scheduler` `cursor-stability-ms` after the most
+   recent modify event. Only emits turn-complete if:
+   - The file still exists (missing => session deleted/moved, skip).
+   - The file's mtime matches `expected-mtime` (unchanged since scheduling).
+   - The last JSON record in the file parses AND has `role: \"assistant\"`.
+   The session-id is derived from the file name (<uuid>.jsonl)."
+  [transcript-file expected-mtime]
+  (try
+    (when (.exists transcript-file)
+      (let [current-mtime (.lastModified transcript-file)]
+        (when (= expected-mtime current-mtime)
+          (let [file-name (.getName transcript-file)
+                session-id (when (str/ends-with? file-name ".jsonl")
+                             (subs file-name 0 (- (count file-name) 6)))
+                last-record (parse-cursor-transcript-last-record transcript-file)]
+            (when (and session-id
+                       last-record
+                       (providers/turn-complete? :cursor last-record))
+              (let [dedup-key (str session-id ":mtime:" current-mtime)]
+                (log/info "Cursor transcript stable with assistant final record"
+                          {:session-id session-id :mtime current-mtime})
+                (emit-turn-complete! session-id dedup-key)))))))
+    (catch Exception e
+      (log/debug "Cursor turn-complete check failed"
+                 {:file (.getPath transcript-file) :error (ex-message e)}))
+    (finally
+      ;; Only clear the entry if it still matches our scheduled check. A newer
+      ;; modify event may have replaced the entry between us firing and
+      ;; reaching `finally`; wiping it would leave the newer future invisible
+      ;; to subsequent modify events (they'd schedule duplicates instead of
+      ;; cancelling).
+      (swap! cursor-transcript-state
+             (fn [state]
+               (let [abs-path (.getAbsolutePath transcript-file)]
+                 (if (= expected-mtime (get-in state [abs-path :mtime]))
+                   (dissoc state abs-path)
+                   state)))))))
+
+(defn handle-cursor-transcript-modified
+  "Record the transcript file's current mtime and (re)schedule a stability
+   check `cursor-stability-ms` in the future. If an earlier scheduled check is
+   still pending, cancel it — the latest write wins."
+  [transcript-file]
+  (when (and (.isFile transcript-file)
+             (str/ends-with? (.getName transcript-file) ".jsonl"))
+    (let [abs-path (.getAbsolutePath transcript-file)
+          mtime (.lastModified transcript-file)
+          ^ScheduledExecutorService scheduler cursor-transcript-scheduler
+          ^ScheduledFuture fut (.schedule scheduler
+                                          ^Runnable (fn []
+                                                      (check-cursor-turn-complete!
+                                                       transcript-file mtime))
+                                          (long cursor-stability-ms)
+                                          TimeUnit/MILLISECONDS)
+          ;; Use swap-vals! so the prior future can be cancelled outside the
+          ;; swap function — swap! bodies can be retried on contention and
+          ;; must be pure.
+          [old _new] (swap-vals! cursor-transcript-state
+                                 assoc abs-path {:mtime mtime :future fut})]
+      (when-let [^ScheduledFuture prev (get-in old [abs-path :future])]
+        (.cancel prev false)))))
 
 (defn subscribe-to-session!
   "Subscribe to a session for watching. Returns true if successful."
@@ -1695,6 +1796,11 @@
   [watched-dir]
   (contains? (:cursor-project-dirs @watcher-state) watched-dir))
 
+(defn- is-cursor-transcript-dir?
+  "Check if watched-dir is a Cursor agent-transcripts directory we're watching."
+  [watched-dir]
+  (contains? (:cursor-transcript-dirs @watcher-state) watched-dir))
+
 (defn- is-opencode-session-dir?
   "Check if watched-dir is an OpenCode session project-hash directory."
   [watched-dir]
@@ -1771,6 +1877,7 @@
         is-copilot-parent (is-copilot-parent-dir? watched-dir)
         is-copilot-session (is-copilot-session-watch-dir? watched-dir)
         is-cursor-project (is-cursor-project-dir? watched-dir)
+        is-cursor-transcript (is-cursor-transcript-dir? watched-dir)
         is-opencode-session (is-opencode-session-dir? watched-dir)
         is-opencode-message (is-opencode-message-dir? watched-dir)
         is-opencode-part (is-opencode-part-parent? watched-dir)
@@ -1840,6 +1947,15 @@
             (let [dir (io/file watched-dir file-name)]
               (when (.isDirectory dir)
                 (handle-cursor-session-created dir))))
+
+          ;; Cursor agent-transcripts dir event - watch transcript file writes
+          is-cursor-transcript
+          (when (str/ends-with? file-name ".jsonl")
+            (let [file (io/file watched-dir file-name)]
+              (when (contains? #{StandardWatchEventKinds/ENTRY_CREATE
+                                 StandardWatchEventKinds/ENTRY_MODIFY}
+                               kind)
+                (handle-cursor-transcript-modified file))))
 
           ;; OpenCode session directory event - watch for new ses_*.json files
           is-opencode-session
@@ -1942,32 +2058,77 @@
                   {:expected-dir (when copilot-dir (.getPath copilot-dir))})
         {}))))
 
+(defn get-cursor-transcripts-root
+  "Returns the `~/.cursor/projects` directory (agent-transcripts live under
+   `<root>/<project-hash>/agent-transcripts/`). Cursor-agent creates this tree
+   only after its first real turn, so callers must handle non-existence."
+  []
+  (let [home (System/getProperty "user.home")]
+    (io/file home ".cursor" "projects")))
+
+(defn cursor-agent-transcript-dirs
+  "Find all existing `~/.cursor/projects/<hash>/agent-transcripts/` dirs."
+  []
+  (let [root (get-cursor-transcripts-root)]
+    (if (and root (.exists root))
+      (->> (.listFiles root)
+           (filter #(.isDirectory %))
+           (map #(io/file % "agent-transcripts"))
+           (filter #(.exists %))
+           (filter #(.isDirectory %)))
+      [])))
+
 (defn- register-cursor-watches!
-  "Register watches for Cursor chats directory.
-   Watches for new session directories (session creation/deletion only).
+  "Register watches for Cursor chats directory (store.db session discovery)
+   and `~/.cursor/projects/<hash>/agent-transcripts/` directories (transcript
+   writes for turn-complete detection).
    Returns a map of watch-key -> directory."
   [watch-service]
-  (let [chats-dir (providers/get-sessions-dir :cursor)]
-    (if (and chats-dir (.exists chats-dir))
-      (do
-        (log/info "Setting up Cursor directory watching" {:dir (.getPath chats-dir)})
-        (let [project-dirs (->> (.listFiles chats-dir)
-                                (filter #(.isDirectory %)))
-              watch-keys (reduce (fn [acc dir]
-                                   (try
-                                     (let [wk (.register (.toPath dir) watch-service
-                                                         (into-array [StandardWatchEventKinds/ENTRY_CREATE
-                                                                      StandardWatchEventKinds/ENTRY_DELETE]))]
-                                       (assoc acc wk dir))
-                                     (catch Exception e
-                                       (log/warn e "Failed to watch Cursor project dir" {:dir (.getPath dir)})
-                                       acc)))
-                                 {} project-dirs)]
-          (swap! watcher-state assoc :cursor-project-dirs (set (map val watch-keys)))
-          watch-keys))
-      (do
-        (log/info "Cursor chats directory does not exist, skipping" {:expected-dir (when chats-dir (.getPath chats-dir))})
-        {}))))
+  (let [chats-dir (providers/get-sessions-dir :cursor)
+        transcripts-root (get-cursor-transcripts-root)
+        chat-watch-keys (if (and chats-dir (.exists chats-dir))
+                          (do
+                            (log/info "Setting up Cursor chats watching" {:dir (.getPath chats-dir)})
+                            (let [project-dirs (->> (.listFiles chats-dir)
+                                                    (filter #(.isDirectory %)))]
+                              (reduce (fn [acc dir]
+                                        (try
+                                          (let [wk (.register (.toPath dir) watch-service
+                                                              (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                                                           StandardWatchEventKinds/ENTRY_DELETE]))]
+                                            (assoc acc wk dir))
+                                          (catch Exception e
+                                            (log/warn e "Failed to watch Cursor project dir" {:dir (.getPath dir)})
+                                            acc)))
+                                      {} project-dirs)))
+                          (do
+                            (log/info "Cursor chats directory does not exist, skipping"
+                                      {:expected-dir (when chats-dir (.getPath chats-dir))})
+                            {}))
+        transcript-dirs (cursor-agent-transcript-dirs)
+        transcript-watch-keys (if (seq transcript-dirs)
+                                (do
+                                  (log/info "Setting up Cursor agent-transcripts watching"
+                                            {:count (count transcript-dirs)})
+                                  (reduce (fn [acc dir]
+                                            (try
+                                              (let [wk (.register (.toPath dir) watch-service
+                                                                  (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                                                               StandardWatchEventKinds/ENTRY_MODIFY]))]
+                                                (assoc acc wk dir))
+                                              (catch Exception e
+                                                (log/warn e "Failed to watch Cursor transcripts dir"
+                                                          {:dir (.getPath dir)})
+                                                acc)))
+                                          {} transcript-dirs))
+                                (do
+                                  (log/info "No Cursor agent-transcripts directories found, skipping"
+                                            {:expected-root (when transcripts-root (.getPath transcripts-root))})
+                                  {}))
+        all-watch-keys (merge chat-watch-keys transcript-watch-keys)]
+    (swap! watcher-state assoc :cursor-project-dirs (set (vals chat-watch-keys)))
+    (swap! watcher-state assoc :cursor-transcript-dirs (set (vals transcript-watch-keys)))
+    all-watch-keys))
 
 (defn- register-opencode-watches!
   "Register watches for OpenCode storage directories.
@@ -2159,11 +2320,16 @@
            :subscribed-sessions #{}
            :copilot-session-dirs #{} ;; Clear Copilot session tracking
            :cursor-project-dirs #{} ;; Clear Cursor project tracking
+           :cursor-transcript-dirs #{} ;; Clear Cursor transcript tracking
            :opencode-dirs nil ;; Clear OpenCode dir tracking
            :opencode-part-msg-dirs #{}
            :on-session-created nil
            :on-session-updated nil
            :on-session-deleted nil
            :on-turn-complete nil)
+    ;; Cancel any pending Cursor stability checks
+    (doseq [[_ {:keys [^ScheduledFuture future]}] @cursor-transcript-state]
+      (when future (.cancel future false)))
+    (reset! cursor-transcript-state {})
     (log/info "Filesystem watcher stopped"))
   true)

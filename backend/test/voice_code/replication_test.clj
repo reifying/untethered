@@ -2802,7 +2802,10 @@
       (let [ws (init-watcher-state-for-test!)]
         (try
           (with-redefs [providers/get-sessions-dir (fn [provider]
-                                                     (when (= provider :cursor) chats-dir))]
+                                                     (when (= provider :cursor) chats-dir))
+                        ;; Isolate test from dev machine's ~/.cursor/projects
+                        repl/cursor-agent-transcript-dirs (fn [] [])
+                        repl/get-cursor-transcripts-root (fn [] (io/file test-dir "nonexistent-cursor-projects"))]
             (let [watch-keys (#'repl/register-cursor-watches! ws)]
               (is (= 2 (count watch-keys)))
               ;; Verify cursor-project-dirs were stored in watcher-state
@@ -2815,11 +2818,33 @@
   (testing "returns empty map when chats dir does not exist"
     (let [ws (init-watcher-state-for-test!)]
       (try
-        (with-redefs [providers/get-sessions-dir (fn [_] (io/file test-dir "nonexistent"))]
+        (with-redefs [providers/get-sessions-dir (fn [_] (io/file test-dir "nonexistent"))
+                      repl/cursor-agent-transcript-dirs (fn [] [])
+                      repl/get-cursor-transcripts-root (fn [] (io/file test-dir "nonexistent-cursor-projects"))]
           (let [watch-keys (#'repl/register-cursor-watches! ws)]
             (is (empty? watch-keys))))
         (finally
-          (cleanup-watcher-state!))))))
+          (cleanup-watcher-state!)))))
+
+  (testing "registers watches on agent-transcripts directories in addition to chats"
+    (let [chats-dir (io/file test-dir "register-cursor" "chats")
+          transcripts-root (io/file test-dir "register-cursor" "projects")
+          chat-proj (io/file chats-dir "chat-proj-hash")
+          transcript-proj (io/file transcripts-root "trans-proj-hash" "agent-transcripts")]
+      (.mkdirs chat-proj)
+      (.mkdirs transcript-proj)
+      (let [ws (init-watcher-state-for-test!)]
+        (try
+          (with-redefs [providers/get-sessions-dir (fn [provider]
+                                                     (when (= provider :cursor) chats-dir))
+                        repl/get-cursor-transcripts-root (fn [] transcripts-root)]
+            (let [watch-keys (#'repl/register-cursor-watches! ws)]
+              (is (= 2 (count watch-keys))
+                  "one chats project + one agent-transcripts dir")
+              (is (contains? (:cursor-project-dirs @repl/watcher-state) chat-proj))
+              (is (contains? (:cursor-transcript-dirs @repl/watcher-state) transcript-proj))))
+          (finally
+            (cleanup-watcher-state!)))))))
 
 (deftest test-register-opencode-watches
   (testing "registers watches on OpenCode session and message directories"
@@ -3453,4 +3478,197 @@
         ;; Verify turn-complete was dispatched
         (is (= 1 (count @calls))
             "handle-file-modified should dispatch turn-complete for end_turn message")
+        (is (= session-id (first @calls)))))))
+
+;; ============================================================================
+;; Provider turn-complete? multimethod (pure per-message predicate)
+;; ============================================================================
+
+(deftest test-providers-turn-complete-multimethod
+  (testing "Claude: end_turn assistant (non-sidechain) is terminal"
+    (is (true? (providers/turn-complete? :claude
+                                         {:type "assistant"
+                                          :isSidechain false
+                                          :message {:stop_reason "end_turn"}}))))
+  (testing "Claude: stop_sequence assistant is terminal"
+    (is (true? (providers/turn-complete? :claude
+                                         {:type "assistant"
+                                          :isSidechain false
+                                          :message {:stop_reason "stop_sequence"}}))))
+  (testing "Claude: tool_use stop_reason is not terminal"
+    (is (false? (providers/turn-complete? :claude
+                                          {:type "assistant"
+                                           :isSidechain false
+                                           :message {:stop_reason "tool_use"}}))))
+  (testing "Claude: sidechain end_turn is not terminal"
+    (is (false? (providers/turn-complete? :claude
+                                          {:type "assistant"
+                                           :isSidechain true
+                                           :message {:stop_reason "end_turn"}}))))
+  (testing "Copilot: assistant.turn_end is terminal (stateful check in replication)"
+    (is (true? (providers/turn-complete? :copilot {:type "assistant.turn_end"}))))
+  (testing "Copilot: assistant.message is not itself terminal"
+    (is (false? (providers/turn-complete? :copilot {:type "assistant.message"}))))
+  (testing "OpenCode: step-finish with reason=stop (part-file form) is terminal"
+    (is (true? (providers/turn-complete? :opencode
+                                         {:type "step-finish" :reason "stop"}))))
+  (testing "OpenCode: step_finish with part.reason=stop (streaming form) is terminal"
+    (is (true? (providers/turn-complete? :opencode
+                                         {:type "step_finish" :part {:reason "stop"}}))))
+  (testing "OpenCode: reason=error is not terminal"
+    (is (false? (providers/turn-complete? :opencode
+                                          {:type "step-finish" :reason "error"}))))
+  (testing "OpenCode: text part is not terminal"
+    (is (false? (providers/turn-complete? :opencode
+                                          {:type "text" :text "hi"}))))
+  (testing "Cursor: assistant record is terminal"
+    (is (true? (providers/turn-complete? :cursor {:role "assistant"}))))
+  (testing "Cursor: user record is not terminal"
+    (is (false? (providers/turn-complete? :cursor {:role "user"})))))
+
+;; ============================================================================
+;; Cursor turn-complete detection (file-based, mtime stability)
+;; ============================================================================
+
+(deftest test-check-cursor-turn-complete
+  (let [session-id "bbbbcccc-1111-2222-3333-000000000001"
+        fixture-path (str (System/getProperty "user.dir")
+                          "/test-resources/provider-fixtures/cursor-transcript.jsonl")
+        transcript-file (io/file test-dir (str session-id ".jsonl"))]
+    (io/copy (io/file fixture-path) transcript-file)
+
+    (testing "file stable with trailing assistant record emits turn-complete"
+      (reset! repl/turn-complete-seen {})
+      (let [calls (atom [])
+            mtime (.lastModified transcript-file)]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/check-cursor-turn-complete! transcript-file mtime)
+        (is (= 1 (count @calls)))
+        (is (= session-id (first @calls)))))
+
+    (testing "mtime mismatch (another write landed) does NOT emit"
+      (reset! repl/turn-complete-seen {})
+      (let [calls (atom [])]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/check-cursor-turn-complete! transcript-file 0)
+        (is (= 0 (count @calls))
+            "stale expected-mtime indicates a newer write; must skip")))
+
+    (testing "file missing does NOT emit or throw"
+      (reset! repl/turn-complete-seen {})
+      (let [missing (io/file test-dir "nonexistent.jsonl")
+            calls (atom [])]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/check-cursor-turn-complete! missing 12345)
+        (is (= 0 (count @calls)))))
+
+    (testing "last record is role=user does NOT emit (turn in progress)"
+      (reset! repl/turn-complete-seen {})
+      (let [user-last-file (io/file test-dir "user-last.jsonl")
+            _ (spit user-last-file
+                    (str/join "\n"
+                              [(json/generate-string
+                                {:role "assistant"
+                                 :message {:content [{:type "text" :text "ok"}]}})
+                               (json/generate-string
+                                {:role "user"
+                                 :message {:content [{:type "text" :text "<user_query>next</user_query>"}]}})]))
+            calls (atom [])
+            mtime (.lastModified user-last-file)]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/check-cursor-turn-complete! user-last-file mtime)
+        (is (= 0 (count @calls))
+            "user as last record means next turn already started, not complete")))
+
+    (testing "partial-write (last line not valid JSON) does NOT emit"
+      (reset! repl/turn-complete-seen {})
+      (let [partial-file (io/file test-dir "partial.jsonl")
+            _ (spit partial-file
+                    (str (json/generate-string
+                          {:role "assistant"
+                           :message {:content [{:type "text" :text "first"}]}})
+                         "\n"
+                         "{\"role\":\"assis"))
+            calls (atom [])
+            mtime (.lastModified partial-file)]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/check-cursor-turn-complete! partial-file mtime)
+        (is (= 0 (count @calls))
+            "unparseable final line indicates in-progress write; must not emit")))
+
+    (testing "duplicate check with same mtime deduped by (session-id, mtime)"
+      (reset! repl/turn-complete-seen {})
+      (let [calls (atom [])
+            mtime (.lastModified transcript-file)]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid] (swap! calls conj sid)))
+        (repl/check-cursor-turn-complete! transcript-file mtime)
+        (repl/check-cursor-turn-complete! transcript-file mtime)
+        (is (= 1 (count @calls))
+            "second call with identical mtime must be deduped")))))
+
+(deftest test-handle-cursor-transcript-modified-schedules-check
+  (testing "handle-cursor-transcript-modified records scheduled state; re-modify cancels prior future"
+    (let [session-id "bbbbcccc-1111-2222-3333-000000000099"
+          fixture-path (str (System/getProperty "user.dir")
+                            "/test-resources/provider-fixtures/cursor-transcript.jsonl")
+          transcript-file (io/file test-dir (str session-id ".jsonl"))
+          state-atom @#'repl/cursor-transcript-state]
+      (io/copy (io/file fixture-path) transcript-file)
+      (reset! state-atom {})
+
+      (repl/handle-cursor-transcript-modified transcript-file)
+      (is (contains? @state-atom (.getAbsolutePath transcript-file))
+          "scheduling must record mtime/future state by absolute path")
+      (let [first-future (get-in @state-atom
+                                 [(.getAbsolutePath transcript-file) :future])]
+        (is (some? first-future))
+        ;; Touch mtime forward and re-schedule — prior future must be cancelled.
+        (.setLastModified transcript-file (+ (.lastModified transcript-file) 1000))
+        (repl/handle-cursor-transcript-modified transcript-file)
+        (is (.isCancelled ^java.util.concurrent.ScheduledFuture first-future)
+            "earlier scheduled check must be cancelled when a newer write arrives"))
+      ;; Cleanup: cancel whatever is still scheduled.
+      (when-let [fut (get-in @state-atom
+                             [(.getAbsolutePath transcript-file) :future])]
+        (.cancel ^java.util.concurrent.ScheduledFuture fut false))
+      (reset! state-atom {}))))
+
+(deftest test-cursor-watcher-emits-within-500ms
+  (testing "after a write+stability window, turn-complete fires within 500ms of window end"
+    (let [session-id "bbbbcccc-1111-2222-3333-000000000500"
+          fixture-path (str (System/getProperty "user.dir")
+                            "/test-resources/provider-fixtures/cursor-transcript.jsonl")
+          transcript-file (io/file test-dir (str session-id ".jsonl"))]
+      (io/copy (io/file fixture-path) transcript-file)
+      (reset! repl/turn-complete-seen {})
+      (let [calls (atom [])
+            latch (java.util.concurrent.CountDownLatch. 1)
+            scheduler (java.util.concurrent.Executors/newSingleThreadScheduledExecutor)]
+        (swap! repl/watcher-state assoc :on-turn-complete
+               (fn [sid]
+                 (swap! calls conj sid)
+                 (.countDown latch)))
+        ;; Directly schedule the stability check with a short (100ms) delay —
+        ;; this isolates the latency between scheduling and emission, which is
+        ;; what the 500ms acceptance criterion measures.
+        (let [mtime (.lastModified transcript-file)
+              start (System/currentTimeMillis)]
+          (.schedule scheduler
+                     ^Runnable (fn []
+                                 (repl/check-cursor-turn-complete!
+                                  transcript-file mtime))
+                     100
+                     java.util.concurrent.TimeUnit/MILLISECONDS)
+          (is (.await latch 2 java.util.concurrent.TimeUnit/SECONDS)
+              "callback must fire")
+          (let [elapsed (- (System/currentTimeMillis) start)]
+            (is (< elapsed 500)
+                (str "emission latency " elapsed "ms exceeds 500ms budget"))))
+        (.shutdownNow scheduler)
         (is (= session-id (first @calls)))))))
