@@ -5,7 +5,7 @@
             [voice-code.recipes :as recipes]
             [voice-code.orchestration :as orch]
             [voice-code.replication :as replication]
-            [voice-code.providers :as providers]
+            [voice-code.tmux :as tmux]
             [org.httpkit.server]))
 
 (deftest start-recipe-for-session-test
@@ -229,8 +229,7 @@
 
 (deftest recipe-execution-with-mocked-providers-test
   (testing "executes recipe step with claude provider (baseline)"
-    (let [invoked-provider (atom nil)
-          invoked-prompt (atom nil)
+    (let [dispatched-args (atom nil)
           session-id "claude-test-session"
           channel :test-ch
           orch-state {:recipe-id :implement-and-review
@@ -242,24 +241,24 @@
           recipe {:label "Test" :steps []}]
       (with-redefs [server/get-next-step-prompt (constantly "Test prompt")
                     server/get-step-model (constantly "claude-3-5-sonnet")
-                    providers/invoke-provider-async
-                    (fn [provider prompt callback & opts]
-                      (reset! invoked-provider provider)
-                      (reset! invoked-prompt prompt)
-                      ;; Simulate async callback
-                      (callback {:success true :result "Test response"}))
+                    server/dispatch-recipe-step-via-tmux!
+                    (fn [args callback]
+                      (reset! dispatched-args args)
+                      (callback {:success true :result "Test response" :session-id session-id}))
                     server/process-orchestration-response (constantly {:action :exit})
                     server/get-session-recipe-state (constantly nil)
                     replication/release-session-lock! (fn [_] nil)
                     org.httpkit.server/send! (fn [_ _] nil)
                     server/exit-recipe-for-session (fn [_ _] nil)]
         (server/execute-recipe-step channel session-id "/test" orch-state recipe)
-        (is (= :claude @invoked-provider) "Should invoke Claude provider")
-        (is (= "Test prompt" @invoked-prompt) "Should pass correct prompt"))))
+        (is (= :claude (:provider @dispatched-args)) "Should dispatch with Claude provider")
+        (is (= "Test prompt" (:prompt-text @dispatched-args)) "Should pass the step prompt")
+        (is (= session-id (:session-id @dispatched-args)) "Should pass session-id")
+        (is (false? (:session-created? @dispatched-args)) "First step has session-created? false")
+        (is (= "/test" (:working-dir @dispatched-args)) "Should pass working-dir"))))
 
   (testing "executes recipe step with mocked copilot provider"
-    (let [invoked-provider (atom nil)
-          invoked-prompt (atom nil)
+    (let [dispatched-args (atom nil)
           session-id "copilot-test-session"
           channel :test-ch
           orch-state {:recipe-id :implement-and-review
@@ -271,22 +270,18 @@
           recipe {:label "Test" :steps []}]
       (with-redefs [server/get-next-step-prompt (constantly "Test prompt")
                     server/get-step-model (constantly "gpt-4o")
-                    providers/invoke-provider-async
-                    (fn [provider prompt callback & opts]
-                      (reset! invoked-provider provider)
-                      (reset! invoked-prompt prompt)
-                      ;; Mock response - DO NOT call actual copilot CLI
-                      (callback {:success true :result "Test copilot response"}))
+                    server/dispatch-recipe-step-via-tmux!
+                    (fn [args callback]
+                      (reset! dispatched-args args)
+                      (callback {:success true :result "Test copilot response" :session-id session-id}))
                     server/process-orchestration-response (constantly {:action :exit})
                     server/get-session-recipe-state (constantly nil)
                     replication/release-session-lock! (fn [_] nil)
                     org.httpkit.server/send! (fn [_ _] nil)
                     server/exit-recipe-for-session (fn [_ _] nil)]
         (server/execute-recipe-step channel session-id "/test" orch-state recipe)
-        (is (= :copilot @invoked-provider) "Should invoke Copilot provider (MOCKED)")
-        (is (= "Test prompt" @invoked-prompt) "Should pass correct prompt")
-        ;; Verify that no actual CLI invocation occurred - just the mock
-        (is (string? @invoked-prompt) "Mock should have been called, not CLI")))))
+        (is (= :copilot (:provider @dispatched-args)) "Should dispatch with Copilot provider")
+        (is (= "Test prompt" (:prompt-text @dispatched-args)) "Should pass the step prompt")))))
 
 (deftest recipe-provider-invalid-provider-test
   (testing "handles unknown provider gracefully"
@@ -323,135 +318,206 @@
         (let [second-retrieval (server/get-session-recipe-state session-id)]
           (is (= :copilot (:provider second-retrieval)) "Provider should persist across multiple retrievals"))))))
 
-(deftest copilot-session-id-capture-and-usage-test
-  (testing "captures copilot-session-id from first successful response"
-    (let [session-id "copilot-capture-test"
-          recipe-id :implement-and-review
-          copilot-response-id "copilot-uuid-abc123def456"
-          captured-args (atom nil)
-          captured-invocation-provider (atom nil)]
+(deftest dispatch-recipe-step-via-tmux-test
+  (testing "session-created? true routes to tmux/deliver!"
+    (let [session-id "dispatch-deliver-test"
+          deliver-args (atom nil)
+          start-args (atom nil)]
+      (with-redefs [tmux/deliver! (fn [sid text]
+                                    (reset! deliver-args {:session-id sid :text text}))
+                    tmux/start-window! (fn [args]
+                                         (reset! start-args args))]
+        (server/dispatch-recipe-step-via-tmux!
+         {:provider :claude
+          :session-id session-id
+          :session-created? true
+          :prompt-text "Continue work"
+          :working-dir "/wd"}
+         (fn [_] nil))
+        (is (= {:session-id session-id :text "Continue work"} @deliver-args)
+            "deliver! should be called with session-id and prompt text")
+        (is (nil? @start-args) "start-window! should not be called for resumed sessions"))))
 
-      ;; Start recipe with Copilot provider
-      (server/start-recipe-for-session session-id recipe-id true :provider :copilot)
-      (let [initial-state (server/get-session-recipe-state session-id)]
-        (is (nil? (:copilot-session-id initial-state)) "Initially no copilot-session-id")
-        (is (= :copilot (:provider initial-state)) "Provider is copilot")
+  (testing "session-created? false routes to tmux/start-window!"
+    (let [session-id "dispatch-start-test"
+          deliver-args (atom nil)
+          start-args (atom nil)]
+      (with-redefs [tmux/deliver! (fn [sid text]
+                                    (reset! deliver-args {:session-id sid :text text}))
+                    tmux/start-window! (fn [args]
+                                         (reset! start-args args))
+                    replication/get-session-metadata
+                    (constantly {:name "existing-session-name"})]
+        (server/dispatch-recipe-step-via-tmux!
+         {:provider :copilot
+          :session-id session-id
+          :session-created? false
+          :prompt-text "First prompt"
+          :working-dir "/wd"}
+         (fn [_] nil))
+        (is (nil? @deliver-args) "deliver! should not be called for new sessions")
+        (is (= session-id (:session-uuid @start-args)))
+        (is (= :copilot (:provider @start-args)))
+        (is (= "/wd" (:workdir @start-args)))
+        (is (= "First prompt" (:initial-prompt @start-args)))
+        (is (= "existing-session-name" (:session-name @start-args))
+            "Should pull session-name from replication metadata")
+        (is (false? (:resume? @start-args))))))
 
-        ;; Mock invoke-provider-async to capture args and simulate response
-        (with-redefs [providers/invoke-provider-async
-                      (fn [provider prompt callback & opts]
-                        (reset! captured-invocation-provider provider)
-                        (reset! captured-args opts)
-                        ;; Simulate successful Copilot response with session-id
-                        (callback {:success true
-                                   :result "Response text"
-                                   :session-id copilot-response-id}))]
+  (testing "session-name is nil when no metadata exists (brand-new session)"
+    (let [session-id "dispatch-new-no-metadata"
+          start-args (atom nil)]
+      (with-redefs [tmux/start-window! (fn [args] (reset! start-args args))
+                    replication/get-session-metadata (constantly nil)]
+        (server/dispatch-recipe-step-via-tmux!
+         {:provider :claude
+          :session-id session-id
+          :session-created? false
+          :prompt-text "p"
+          :working-dir "/wd"}
+         (fn [_] nil))
+        (is (nil? (:session-name @start-args))
+            "session-name is nil when no metadata; start-window! falls back to session-<uuid6>"))))
 
-          ;; Simulate first recipe step execution
-          ;; We're testing just the capture logic without full execution
-          (let [recipe (recipes/get-recipe recipe-id)]
-            (with-redefs [server/get-next-step-prompt (constantly "Test prompt")
-                          server/get-step-model (constantly nil)
-                          server/process-orchestration-response (constantly {:action :exit})
-                          server/exit-recipe-for-session (fn [_ _] nil)
-                          replication/release-session-lock! (fn [_] nil)
-                          org.httpkit.server/send! (fn [_ _] nil)]
+  (testing "registers callback in recipe-turn-callbacks atom"
+    (let [session-id "dispatch-callback-test"
+          cb (fn [_] nil)]
+      (with-redefs [tmux/deliver! (fn [_ _] nil)
+                    tmux/start-window! (fn [_] nil)]
+        (server/dispatch-recipe-step-via-tmux!
+         {:provider :claude
+          :session-id session-id
+          :session-created? true
+          :prompt-text "x"
+          :working-dir "/wd"}
+         cb)
+        (is (= cb (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id))
+            "Callback should be registered under session-id"))))
 
-              ;; Manually trigger the capture logic by calling the callback
-              (let [orch-state (server/get-session-recipe-state session-id)
-                    response {:success true
-                              :result "Response"
-                              :session-id copilot-response-id}]
-                ;; Replicate the capture logic from execute-recipe-step callback
-                (when (and orch-state
-                           (= (:provider orch-state) :copilot)
-                           (not (:copilot-session-id orch-state))
-                           (:session-id response))
-                  (swap! server/session-orchestration-state
-                         update session-id
-                         assoc :copilot-session-id copilot-response-id))
+  (testing "tmux failure invokes callback with error and unregisters"
+    (let [session-id "dispatch-failure-test"
+          callback-response (atom nil)]
+      (with-redefs [tmux/deliver! (fn [_ _] (throw (RuntimeException. "boom")))]
+        (server/dispatch-recipe-step-via-tmux!
+         {:provider :claude
+          :session-id session-id
+          :session-created? true
+          :prompt-text "x"
+          :working-dir "/wd"}
+         (fn [resp] (reset! callback-response resp)))
+        (is (false? (:success @callback-response)))
+        (is (str/includes? (:error @callback-response) "boom"))
+        (is (nil? (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id))
+            "Callback should be unregistered on failure")))))
 
-                ;; Verify capture
-                (let [updated-state (server/get-session-recipe-state session-id)]
-                    (is (= copilot-response-id (:copilot-session-id updated-state))
-                      "Should capture copilot-session-id from response")))))))))
+(deftest on-turn-complete-fires-recipe-callback-test
+  (testing "on-turn-complete invokes registered recipe callback with last assistant text"
+    (let [session-id "turn-complete-test"
+          callback-response (atom nil)]
+      ;; Register a callback directly into the atom (simulating prior dispatch)
+      (swap! @(resolve 'voice-code.server/recipe-turn-callbacks)
+             assoc session-id
+             (fn [resp] (reset! callback-response resp)))
+      (with-redefs [replication/is-session-locked? (constantly false)
+                    replication/get-session-metadata
+                    (constantly {:provider :claude :file "/tmp/fake.jsonl"})
+                    replication/parse-session-messages
+                    (constantly [{:role "user" :text "prompt"}
+                                 {:role "assistant" :text "final response"}])
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/on-turn-complete session-id)
+        (is (= true (:success @callback-response)))
+        (is (= "final response" (:result @callback-response)))
+        (is (= session-id (:session-id @callback-response)))
+        (is (nil? (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id))
+            "Callback should be drained after firing"))))
 
-  (testing "uses copilot-session-id for resume when available"
-    (let [session-id "copilot-resume-test"
-          copilot-uuid "copilot-uuid-xyz789"
-          captured-opts (atom nil)]
+  (testing "on-turn-complete without registered callback is a no-op for recipes"
+    (let [session-id "turn-complete-noop-test"]
+      ;; No callback registered; suppress broadcast
+      (with-redefs [replication/is-session-locked? (constantly false)
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        ;; Should not throw
+        (is (nil? (server/on-turn-complete session-id))))))
 
-      ;; Start recipe with Copilot and pre-set copilot-session-id (simulating after first successful call)
-      (let [initial-state (server/start-recipe-for-session session-id :implement-and-review true :provider :copilot)]
-        ;; Manually set copilot-session-id as if it was captured
-        (swap! server/session-orchestration-state
-               update session-id
-               assoc :copilot-session-id copilot-uuid :session-created? true)
+  (testing "on-turn-complete fires callback with :success false when no assistant text is available"
+    ;; If read-last-assistant-text returns nil (missing metadata or no assistant
+    ;; messages yet), surface it as an error so the callback's error branch
+    ;; exits the recipe cleanly instead of feeding nil into JSON parsing.
+    (let [session-id "turn-complete-no-text-test"
+          callback-response (atom nil)]
+      (swap! @(resolve 'voice-code.server/recipe-turn-callbacks)
+             assoc session-id
+             (fn [resp] (reset! callback-response resp)))
+      (with-redefs [replication/is-session-locked? (constantly false)
+                    replication/get-session-metadata (constantly nil)
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/on-turn-complete session-id)
+        (is (false? (:success @callback-response)))
+        (is (string? (:error @callback-response)))
+        (is (= session-id (:session-id @callback-response)))
+        (is (nil? (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id))
+            "Callback should be drained even when text is unavailable")))))
 
-        ;; Mock invoke-provider-async to capture the options passed
-        (with-redefs [providers/invoke-provider-async
-                      (fn [provider prompt callback & opts]
-                        (reset! captured-opts (vec opts))
-                        ;; Don't actually invoke, just capture args
-                        nil)]
+(deftest on-turn-complete-lock-retention-test
+  (testing "lock is released when no recipe callback is registered"
+    (let [session-id "lock-release-no-callback"
+          release-calls (atom [])]
+      (with-redefs [replication/is-session-locked? (constantly true)
+                    replication/release-session-lock!
+                    (fn [sid] (swap! release-calls conj sid))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/on-turn-complete session-id)
+        (is (= [session-id] @release-calls)
+            "Lock should be released for non-recipe turn-completes"))))
 
-          ;; Extract the options that would be passed to invoke-provider-async
-          (let [orch-state (server/get-session-recipe-state session-id)
-                session-created? (:session-created? orch-state)
-                copilot-session-id (:copilot-session-id orch-state)
-                provider (:provider orch-state)
-                actual-session-id (if (and (= provider :copilot) copilot-session-id)
-                                    copilot-session-id
-                                    session-id)
-                opts (concat (if session-created?
-                               [:resume-session-id actual-session-id]
-                               [:new-session-id session-id])
-                             [:working-directory "/test"
-                              :model nil
-                              :timeout-ms 86400000])]
+  (testing "lock is NOT released when a recipe callback is registered"
+    (let [session-id "lock-retention-with-callback"
+          release-calls (atom [])]
+      ;; Register a recipe callback so the lock must stay held across the
+      ;; step transition.
+      (swap! @(resolve 'voice-code.server/recipe-turn-callbacks)
+             assoc session-id
+             (fn [_] nil))
+      (with-redefs [replication/is-session-locked? (constantly true)
+                    replication/release-session-lock!
+                    (fn [sid] (swap! release-calls conj sid))
+                    replication/get-session-metadata
+                    (constantly {:provider :claude :file "/tmp/fake.jsonl"})
+                    replication/parse-session-messages
+                    (constantly [{:role "assistant" :text "hi"}])
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/on-turn-complete session-id)
+        (is (empty? @release-calls)
+            "Lock must stay held; the recipe callback owns release"))))
 
-            ;; Verify that copilot-session-id is used in :resume-session-id
-            (is (contains? (set opts) :resume-session-id)
-                "Should have :resume-session-id keyword")
-            (is (= copilot-uuid (nth opts (inc (.indexOf (vec opts) :resume-session-id))))
-                "Should use copilot-session-id for resume")
-            (is (not (some #{:new-session-id} opts))
-                "Should not use :new-session-id when session-created? is true")))))))
+  (testing "lock is released if the recipe callback throws"
+    (let [session-id "lock-release-on-callback-throw"
+          release-calls (atom [])]
+      (swap! @(resolve 'voice-code.server/recipe-turn-callbacks)
+             assoc session-id
+             (fn [_] (throw (RuntimeException. "cb boom"))))
+      (with-redefs [replication/is-session-locked? (constantly true)
+                    replication/release-session-lock!
+                    (fn [sid] (swap! release-calls conj sid))
+                    replication/get-session-metadata
+                    (constantly {:provider :claude :file "/tmp/fake.jsonl"})
+                    replication/parse-session-messages
+                    (constantly [{:role "assistant" :text "hi"}])
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/on-turn-complete session-id)
+        (is (= [session-id] @release-calls)
+            "Lock must be released when the callback itself throws to avoid a stuck session")))))
 
-(deftest copilot-session-id-not-used-for-new-sessions-test
-  (testing "does not use copilot-session-id for new-session-id even if captured"
-    (let [session-id "copilot-new-test"
-          copilot-uuid "copilot-uuid-new"
-          opts-captured (atom nil)]
-
-      ;; Start a new recipe
-      (server/start-recipe-for-session session-id :implement-and-review true :provider :copilot)
-
-      ;; Set copilot-session-id (would happen after first call)
-      (swap! server/session-orchestration-state
-             update session-id
-             assoc :copilot-session-id copilot-uuid :session-created? false)
-
-      ;; For NEW sessions, we should always use :new-session-id with the client UUID, never copilot-session-id
-      (let [orch-state (server/get-session-recipe-state session-id)
-            session-created? (:session-created? orch-state)
-            copilot-session-id (:copilot-session-id orch-state)
-            provider (:provider orch-state)
-            actual-session-id (if (and (= provider :copilot) copilot-session-id)
-                                copilot-session-id
-                                session-id)
-            opts (concat (if session-created?
-                           [:resume-session-id actual-session-id]
-                           [:new-session-id session-id])
-                         [:working-directory "/test"
-                          :model nil
-                          :timeout-ms 86400000])]
-
-        ;; For new sessions, should use :new-session-id, not resume
-        (is (contains? (set opts) :new-session-id)
-            "Should use :new-session-id for new sessions")
-        (is (= session-id (nth opts (inc (.indexOf (vec opts) :new-session-id))))
-            "Should use client UUID for new sessions")
-        (is (not (some #{:resume-session-id} opts))
-            "Should not use :resume-session-id for new sessions")))))
+(deftest exit-recipe-clears-pending-turn-callback-test
+  (testing "exit-recipe-for-session removes orphaned entries from recipe-turn-callbacks"
+    (let [session-id "exit-clears-callback-test"]
+      ;; Simulate a mid-flight dispatch that never received turn-complete.
+      (swap! @(resolve 'voice-code.server/recipe-turn-callbacks)
+             assoc session-id (fn [_] nil))
+      (is (some? (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id))
+          "Precondition: callback is registered")
+      (server/exit-recipe-for-session session-id "test-cleanup")
+      (is (nil? (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id))
+          "Callback should be removed on recipe exit"))))
 

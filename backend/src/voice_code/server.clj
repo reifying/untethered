@@ -613,12 +613,18 @@
       (log/error "Recipe not found" {:recipe-id recipe-id :session-id session-id})
       nil)))
 
+(declare recipe-turn-callbacks)
+
 (defn exit-recipe-for-session
   "Exit orchestration for a session"
   [session-id reason]
   (when-let [state (get-session-recipe-state session-id)]
     (orch/log-orchestration-event "recipe-exited" session-id (:recipe-id state) (:current-step state) {:reason reason})
-    (swap! session-orchestration-state dissoc session-id)))
+    (swap! session-orchestration-state dissoc session-id))
+  ;; Drop any orphaned turn-complete callback so the atom doesn't leak entries
+  ;; when a recipe exits mid-flight (e.g., tmux window killed externally,
+  ;; restart-new-session handoff).
+  (swap! recipe-turn-callbacks dissoc session-id))
 
 (defn get-next-step-prompt
   "Get the prompt for the next step in an active recipe"
@@ -744,6 +750,63 @@
                               :error (str "Agent failed to produce valid JSON outcome after retry. " error-msg)})
             {:action :exit :reason "orchestration-error"}))))))
 
+(defonce ^:private recipe-turn-callbacks
+  ;; session-id -> callback fn (one-arg, receives response map).
+  ;; Registered by dispatch-recipe-step-via-tmux! before nudging the tmux pane;
+  ;; drained by on-turn-complete when the filesystem watcher observes the
+  ;; provider's terminal marker.
+  (atom {}))
+
+(defn- read-last-assistant-text
+  "Read the session's JSONL via the provider's canonical parser and return the
+   text of the last assistant message. Returns nil if the session has no
+   assistant messages or metadata cannot be located."
+  [session-id]
+  (try
+    (when-let [metadata (repl/get-session-metadata session-id)]
+      (let [provider (:provider metadata)
+            file-path (:file metadata)]
+        (when (and provider file-path)
+          (let [messages (repl/parse-session-messages provider file-path)
+                assistant (filter #(= "assistant" (:role %)) messages)]
+            (:text (last assistant))))))
+    (catch Exception e
+      (log/warn e "Failed to read last assistant message"
+                {:session-id session-id})
+      nil)))
+
+(defn dispatch-recipe-step-via-tmux!
+  "Dispatch a recipe step prompt through tmux and register a turn-complete
+   callback. For the first step of a session (session-created? false), starts
+   a new tmux window. For subsequent steps, nudges the live window via
+   tmux/deliver!, which transparently respawns with --resume if the window
+   was evicted. On the deliver! path the provider is inferred from live-windows
+   state, so the :provider argument is only consulted when starting a window.
+
+   The callback is stored keyed on session-id and fired by on-turn-complete
+   with {:success true :result <assistant-text> :session-id <id>}. On
+   synchronous dispatch failure the callback fires immediately with
+   {:success false :error ...} and the registration is cleared."
+  [{:keys [provider session-id session-created? prompt-text working-dir]}
+   callback-fn]
+  (swap! recipe-turn-callbacks assoc session-id callback-fn)
+  (try
+    (if session-created?
+      (tmux/deliver! session-id prompt-text)
+      (tmux/start-window! {:session-uuid session-id
+                           :session-name (:name (repl/get-session-metadata session-id))
+                           :provider provider
+                           :workdir working-dir
+                           :initial-prompt prompt-text
+                           :resume? false}))
+    nil
+    (catch Throwable e
+      (log/error e "Failed to dispatch recipe step via tmux"
+                 {:session-id session-id :provider provider})
+      (swap! recipe-turn-callbacks dissoc session-id)
+      (callback-fn {:success false
+                    :error (str "tmux dispatch failed: " (.getMessage e))}))))
+
 (declare execute-recipe-step)
 
 (defn execute-recipe-step
@@ -773,7 +836,8 @@
   ([channel session-id working-dir orch-state recipe prompt-override]
    (let [step-prompt (or prompt-override (get-next-step-prompt session-id orch-state recipe))
          current-step (:current-step orch-state)
-         session-created? (:session-created? orch-state)]
+         session-created? (:session-created? orch-state)
+         step-model (get-step-model recipe current-step)]
      (if step-prompt
        (do
          (log/info "Executing recipe step"
@@ -781,10 +845,20 @@
                     :recipe-id (:recipe-id orch-state)
                     :step current-step
                     :provider (:provider orch-state)
-                    :model (get-step-model recipe current-step)
+                    :model step-model
                     :step-count (:step-count orch-state)
                     :session-created? session-created?
                     :is-retry (some? prompt-override)})
+         ;; Per-step model overrides are not yet supported under the tmux-untethered
+         ;; invocation path: the model is chosen at provider-CLI launch and the TUI
+         ;; does not expose a mid-session switch. Warn so this is visible in logs
+         ;; instead of silently using the provider default.
+         (when step-model
+           (log/warn "Recipe step requests model override, which is not honored under tmux invocation"
+                     {:session-id session-id
+                      :recipe-id (:recipe-id orch-state)
+                      :step current-step
+                      :requested-model step-model}))
 
          ;; Send step transition notification (only for non-retry)
          (when-not prompt-override
@@ -794,215 +868,169 @@
                              :step current-step
                              :step-count (:step-count orch-state)}))
 
-         (apply providers/invoke-provider-async
-                (:provider orch-state)
-                step-prompt
-                (fn [response]
-                  (try
-                    (if (:success response)
-                      (let [response-text (:result response)
+         (dispatch-recipe-step-via-tmux!
+          {:provider (:provider orch-state)
+           :session-id session-id
+           :session-created? session-created?
+           :prompt-text step-prompt
+           :working-dir working-dir}
+          (fn [response]
+            (try
+              (if (:success response)
+                (let [response-text (:result response)
                       ;; Get fresh state in case retry count was updated or user exited
-                            current-orch-state (get-session-recipe-state session-id)]
-                  ;; Capture Copilot session ID from first successful invocation
-                        (when (and current-orch-state
-                                   (= (:provider orch-state) :copilot)
-                                   (not (:copilot-session-id orch-state))
-                                   (:session-id response))
-                          (log/info "Captured Copilot session ID from first response"
-                                    {:copilot-session-id (:session-id response)
-                                     :orchestration-session-id session-id})
-                          (swap! session-orchestration-state
-                                 update session-id
-                                 assoc :copilot-session-id (:session-id response)))
-
+                      current-orch-state (get-session-recipe-state session-id)]
                   ;; Mark session as created after first successful invocation
-                        (when (and current-orch-state (not session-created?))
-                          (log/info "Marking session as created after first successful invocation"
-                                    {:session-id session-id})
-                          (swap! session-orchestration-state
-                                 update session-id
-                                 assoc :session-created? true))
-                  ;; Check if recipe was exited by user while we were waiting for Claude
-                        (if (nil? current-orch-state)
-                          (do
-                            (log/info "Recipe was exited while waiting for Claude response"
-                                      {:session-id session-id})
-                      ;; Recipe already exited, just release lock and send turn_complete
-                            (repl/release-session-lock! session-id)
-                            (send-to-client! channel
-                                             {:type :turn-complete
-                                              :session-id session-id}))
-                    ;; Process the orchestration response normally
-                          (let [result (process-orchestration-response
-                                        session-id current-orch-state recipe response-text channel)]
-                            (log/info "Recipe step response processed"
-                                      {:session-id session-id
-                                       :step current-step
-                                       :action (:action result)
-                                       :next-step (:step-name result)
-                                       :reason (:reason result)})
-
-                            (case (:action result)
-                              :next-step
-                        ;; Continue to next step - get updated state and continue loop
-                        ;; Lock remains held for the recursive call
-                              (let [updated-orch-state (get-session-recipe-state session-id)
-                                    updated-recipe (recipes/get-recipe (:recipe-id updated-orch-state))]
-                                (if updated-orch-state
-                            ;; Recursively execute the next step (lock stays held)
-                                  (execute-recipe-step channel session-id working-dir
-                                                       updated-orch-state updated-recipe)
-                            ;; State was cleared (user exited), release lock and exit
-                                  (do
-                                    (log/warn "Orchestration state missing after step transition"
-                                              {:session-id session-id})
-                                    (repl/release-session-lock! session-id)
-                                    (send-to-client! channel
-                                                     {:type :turn-complete
-                                                      :session-id session-id}))))
-
-                              :retry
-                        ;; Retry with reminder prompt - lock remains held for the recursive call
-                              (let [updated-orch-state (get-session-recipe-state session-id)]
-                                (if updated-orch-state
-                                  (do
-                                    (log/info "Retrying step with reminder prompt"
-                                              {:session-id session-id
-                                               :step current-step})
-                              ;; Recursively call with the retry prompt (lock stays held)
-                                    (execute-recipe-step channel session-id working-dir
-                                                         updated-orch-state recipe (:prompt result)))
-                            ;; State was cleared (user exited), release lock and exit
-                                  (do
-                                    (log/warn "Orchestration state missing before retry"
-                                              {:session-id session-id})
-                                    (repl/release-session-lock! session-id)
-                                    (send-to-client! channel
-                                                     {:type :turn-complete
-                                                      :session-id session-id}))))
-
-                              :exit
-                        ;; Recipe finished - release lock and send turn_complete
-                              (do
-                                (log/info "Recipe exited"
-                                          {:session-id session-id
-                                           :reason (:reason result)})
-                                (repl/release-session-lock! session-id)
-                                (send-to-client! channel
-                                                 {:type :turn-complete
-                                                  :session-id session-id}))
-
-                              :restart-new-session
-                        ;; Recipe finished, start new recipe in fresh session
-                        ;; Used by implement-and-review to loop after commit
-                              (let [new-session-id (str (java.util.UUID/randomUUID))
-                                    new-recipe-id (:recipe-id result)
-                                    old-provider (:provider orch-state)
-                                    old-copilot-session-id (:copilot-session-id orch-state)]
-                                (log/info "Recipe restarting with new session"
-                                          {:old-session-id session-id
-                                           :new-session-id new-session-id
-                                           :recipe-id new-recipe-id
-                                           :old-provider old-provider
-                                           :old-copilot-session-id old-copilot-session-id
-                                           :working-directory working-dir})
-                          ;; Exit current recipe and release lock
-                                (exit-recipe-for-session session-id "restart-new-session")
-                                (repl/release-session-lock! session-id)
-                                (send-to-client! channel
-                                                 {:type :recipe-exited
-                                                  :session-id session-id
-                                                  :reason "restart-new-session"})
-                                (send-to-client! channel
-                                                 {:type :turn-complete
-                                                  :session-id session-id})
-                          ;; Start new recipe with fresh session
-                                (if-let [new-orch-state (start-recipe-for-session new-session-id new-recipe-id true :provider old-provider)]
-                                  (let [new-recipe (recipes/get-recipe new-recipe-id)]
-                                    (send-to-client! channel
-                                                     {:type :recipe-started
-                                                      :recipe-id new-recipe-id
-                                                      :recipe-label (:label new-recipe)
-                                                      :session-id new-session-id
-                                                      :current-step (:current-step new-orch-state)
-                                                      :step-count (:step-count new-orch-state)})
-                              ;; Acquire lock and start new recipe
-                                    (if (repl/acquire-session-lock! new-session-id)
-                                      (do
-                                        (send-to-client! channel
-                                                         {:type :ack
-                                                          :message "Starting recipe in new session..."})
-                                        (execute-recipe-step channel new-session-id working-dir
-                                                             new-orch-state new-recipe))
-                                      (do
-                                        (log/error "Failed to acquire lock for new session"
-                                                   {:session-id new-session-id})
-                                        (exit-recipe-for-session new-session-id "lock-failed")
-                                        (send-to-client! channel
-                                                         {:type :error
-                                                          :message "Failed to start new session"}))))
-                                  (do
-                                    (log/error "Failed to create orchestration state for restart"
-                                               {:recipe-id new-recipe-id})
-                                    (send-to-client! channel
-                                                     {:type :error
-                                                      :message (str "Recipe not found: " (name new-recipe-id))}))))
-
-                        ;; Default - unexpected action, release lock and exit
-                              (do
-                                (log/error "Unexpected orchestration action"
-                                           {:action (:action result)})
-                                (repl/release-session-lock! session-id)
-                                (send-to-client! channel
-                                                 {:type :turn-complete
-                                                  :session-id session-id}))))))
-
-                ;; Claude invocation failed - release lock and exit
-                      (do
-                        (log/error "Recipe step failed"
-                                   {:error (:error response) :session-id session-id})
-                        (exit-recipe-for-session session-id "error")
-                        (repl/release-session-lock! session-id)
-                        (send-to-client! channel
-                                         {:type :recipe-exited
-                                          :session-id session-id
-                                          :reason "error"
-                                          :error (:error response)})
-                        (send-to-client! channel
-                                         {:type :error
-                                          :message (:error response)
-                                          :session-id session-id})))
-                    (catch Exception e
-                ;; Catch any exception to ensure lock is always released
-                      (log/error e "Unexpected error in recipe step callback"
-                                 {:session-id session-id :step current-step})
-                      (exit-recipe-for-session session-id "internal-error")
+                  (when (and current-orch-state (not session-created?))
+                    (log/info "Marking session as created after first successful invocation"
+                              {:session-id session-id})
+                    (swap! session-orchestration-state
+                           update session-id
+                           assoc :session-created? true))
+                  ;; Check if recipe was exited by user while we were waiting for the response
+                  (if (nil? current-orch-state)
+                    (do
+                      (log/info "Recipe was exited while waiting for provider response"
+                                {:session-id session-id})
                       (repl/release-session-lock! session-id)
                       (send-to-client! channel
-                                       {:type :recipe-exited
-                                        :session-id session-id
-                                        :reason "internal-error"
-                                        :error (str "Internal error: " (ex-message e))})
-                      (send-to-client! channel
-                                       {:type :error
-                                        :message (str "Internal error: " (ex-message e))
-                                        :session-id session-id}))))
-          ;; Conditionally use new-session-id or resume-session-id based on session-created?
-          ;; For new sessions (session-created? = false), use :new-session-id (--session-id flag)
-          ;; For existing sessions (session-created? = true), use :resume-session-id (--resume flag)
-          ;; For Copilot: if we've captured the copilot-session-id, use that for resume instead of client UUID
-                (let [copilot-session-id (:copilot-session-id orch-state)
-                      provider (:provider orch-state)
-                ;; For Copilot, prefer the captured copilot-session-id if available
-                      actual-session-id (if (and (= provider :copilot) copilot-session-id)
-                                          copilot-session-id
-                                          session-id)]
-                  (concat (if session-created?
-                            [:resume-session-id actual-session-id]
-                            [:new-session-id session-id]) ;; New sessions always use client UUID initially
-                          [:working-directory working-dir
-                           :model (get-step-model recipe current-step)
-                           :timeout-ms 86400000]))))
+                                       {:type :turn-complete
+                                        :session-id session-id}))
+                    (let [result (process-orchestration-response
+                                  session-id current-orch-state recipe response-text channel)]
+                      (log/info "Recipe step response processed"
+                                {:session-id session-id
+                                 :step current-step
+                                 :action (:action result)
+                                 :next-step (:step-name result)
+                                 :reason (:reason result)})
+                      (case (:action result)
+                        :next-step
+                        (let [updated-orch-state (get-session-recipe-state session-id)
+                              updated-recipe (recipes/get-recipe (:recipe-id updated-orch-state))]
+                          (if updated-orch-state
+                            (execute-recipe-step channel session-id working-dir
+                                                 updated-orch-state updated-recipe)
+                            (do
+                              (log/warn "Orchestration state missing after step transition"
+                                        {:session-id session-id})
+                              (repl/release-session-lock! session-id)
+                              (send-to-client! channel
+                                               {:type :turn-complete
+                                                :session-id session-id}))))
+
+                        :retry
+                        (let [updated-orch-state (get-session-recipe-state session-id)]
+                          (if updated-orch-state
+                            (do
+                              (log/info "Retrying step with reminder prompt"
+                                        {:session-id session-id
+                                         :step current-step})
+                              (execute-recipe-step channel session-id working-dir
+                                                   updated-orch-state recipe (:prompt result)))
+                            (do
+                              (log/warn "Orchestration state missing before retry"
+                                        {:session-id session-id})
+                              (repl/release-session-lock! session-id)
+                              (send-to-client! channel
+                                               {:type :turn-complete
+                                                :session-id session-id}))))
+
+                        :exit
+                        (do
+                          (log/info "Recipe exited"
+                                    {:session-id session-id
+                                     :reason (:reason result)})
+                          (repl/release-session-lock! session-id)
+                          (send-to-client! channel
+                                           {:type :turn-complete
+                                            :session-id session-id}))
+
+                        :restart-new-session
+                        (let [new-session-id (str (java.util.UUID/randomUUID))
+                              new-recipe-id (:recipe-id result)
+                              old-provider (:provider orch-state)]
+                          (log/info "Recipe restarting with new session"
+                                    {:old-session-id session-id
+                                     :new-session-id new-session-id
+                                     :recipe-id new-recipe-id
+                                     :old-provider old-provider
+                                     :working-directory working-dir})
+                          (exit-recipe-for-session session-id "restart-new-session")
+                          (repl/release-session-lock! session-id)
+                          (send-to-client! channel
+                                           {:type :recipe-exited
+                                            :session-id session-id
+                                            :reason "restart-new-session"})
+                          (send-to-client! channel
+                                           {:type :turn-complete
+                                            :session-id session-id})
+                          (if-let [new-orch-state (start-recipe-for-session new-session-id new-recipe-id true :provider old-provider)]
+                            (let [new-recipe (recipes/get-recipe new-recipe-id)]
+                              (send-to-client! channel
+                                               {:type :recipe-started
+                                                :recipe-id new-recipe-id
+                                                :recipe-label (:label new-recipe)
+                                                :session-id new-session-id
+                                                :current-step (:current-step new-orch-state)
+                                                :step-count (:step-count new-orch-state)})
+                              (if (repl/acquire-session-lock! new-session-id)
+                                (do
+                                  (send-to-client! channel
+                                                   {:type :ack
+                                                    :message "Starting recipe in new session..."})
+                                  (execute-recipe-step channel new-session-id working-dir
+                                                       new-orch-state new-recipe))
+                                (do
+                                  (log/error "Failed to acquire lock for new session"
+                                             {:session-id new-session-id})
+                                  (exit-recipe-for-session new-session-id "lock-failed")
+                                  (send-to-client! channel
+                                                   {:type :error
+                                                    :message "Failed to start new session"}))))
+                            (do
+                              (log/error "Failed to create orchestration state for restart"
+                                         {:recipe-id new-recipe-id})
+                              (send-to-client! channel
+                                               {:type :error
+                                                :message (str "Recipe not found: " (name new-recipe-id))}))))
+
+                        (do
+                          (log/error "Unexpected orchestration action"
+                                     {:action (:action result)})
+                          (repl/release-session-lock! session-id)
+                          (send-to-client! channel
+                                           {:type :turn-complete
+                                            :session-id session-id}))))))
+
+                (do
+                  (log/error "Recipe step failed"
+                             {:error (:error response) :session-id session-id})
+                  (exit-recipe-for-session session-id "error")
+                  (repl/release-session-lock! session-id)
+                  (send-to-client! channel
+                                   {:type :recipe-exited
+                                    :session-id session-id
+                                    :reason "error"
+                                    :error (:error response)})
+                  (send-to-client! channel
+                                   {:type :error
+                                    :message (:error response)
+                                    :session-id session-id})))
+              (catch Exception e
+                (log/error e "Unexpected error in recipe step callback"
+                           {:session-id session-id :step current-step})
+                (exit-recipe-for-session session-id "internal-error")
+                (repl/release-session-lock! session-id)
+                (send-to-client! channel
+                                 {:type :recipe-exited
+                                  :session-id session-id
+                                  :reason "internal-error"
+                                  :error (str "Internal error: " (ex-message e))})
+                (send-to-client! channel
+                                 {:type :error
+                                  :message (str "Internal error: " (ex-message e))
+                                  :session-id session-id}))))))
        ;; No step prompt available - this shouldn't happen in normal operation
        ;; but we must release the lock if it does
        (do
@@ -1135,13 +1163,42 @@
   "Called by the filesystem watcher when a provider-specific turn-complete
    marker is observed in JSONL/part files. Broadcasts
    `{:type :turn-complete :session-id X}` to every connected client that is
-   subscribed to the session and has not locally deleted it. Also releases the
-   backend session lock so subsequent prompts can be accepted."
+   subscribed to the session and has not locally deleted it.
+
+   Releases the backend session lock so subsequent prompts can be accepted,
+   unless a recipe orchestration callback is registered for this session —
+   in that case the lock stays held across the step transition and the
+   callback's own branches (`:exit`, `:restart-new-session`, error, etc.)
+   are responsible for releasing it. This preserves the original invariant
+   that the lock is held continuously for the duration of a recipe run.
+
+   If a recipe step is waiting on this turn, fires its callback with the
+   last assistant message text."
   [session-id]
   (log/info "Turn-complete callback invoked" {:session-id session-id})
-  ;; Release the session lock so the next prompt can acquire it.
-  (when (repl/is-session-locked? session-id)
-    (repl/release-session-lock! session-id))
+  (let [cb (get @recipe-turn-callbacks session-id)]
+    ;; When a recipe callback is pending, defer lock management to the
+    ;; callback so the lock stays held across step transitions.
+    (when (and (nil? cb) (repl/is-session-locked? session-id))
+      (repl/release-session-lock! session-id))
+    (when cb
+      (swap! recipe-turn-callbacks dissoc session-id)
+      (try
+        (let [text (read-last-assistant-text session-id)]
+          (if (nil? text)
+            ;; Surface empty/missing assistant text as an error so the
+            ;; callback's error branch exits the recipe cleanly instead of
+            ;; feeding nil into downstream JSON parsing.
+            (cb {:success false
+                 :error "No assistant text available for session"
+                 :session-id session-id})
+            (cb {:success true :result text :session-id session-id})))
+        (catch Throwable e
+          (log/error e "Recipe turn-complete callback failed"
+                     {:session-id session-id})
+          ;; Callback threw; release the lock to avoid a stuck session.
+          (when (repl/is-session-locked? session-id)
+            (repl/release-session-lock! session-id))))))
   (doseq [[channel client-info] @connected-clients]
     (let [subscribed (or (:subscribed-sessions client-info) #{})]
       (when (and (contains? subscribed session-id)
