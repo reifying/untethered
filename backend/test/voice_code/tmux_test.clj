@@ -461,7 +461,11 @@
             (is (contains? @tmux/live-windows uuid))
             (let [stored (get @tmux/live-windows uuid)]
               (is (= :claude (:provider stored)))
-              (is (= "/tmp/test-workdir" (:workdir stored)))))))))
+              (is (= "/tmp/test-workdir" (:workdir stored)))
+              (is (string? (:started-at stored))
+                  "started-at must be an ISO-8601 string to match scan-existing-windows!"))
+            (is (string? (:started-at result))
+                "returned descriptor's started-at must be an ISO-8601 string"))))))
 
   (testing "calls new-window with provider command"
     (let [uuid "def45600-0000-0000-0000-000000000000"

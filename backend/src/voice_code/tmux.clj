@@ -343,18 +343,19 @@
               (evict-if-needed! tmux-session)
               (sh "tmux" "new-window" "-d" "-t" (str "=" tmux-session ":")
                   "-n" window "-c" workdir cmd)
-              (set-window-env! tmux-session window
-                               {"VC_SESSION_UUID" session-uuid
-                                "VC_WORKDIR" workdir
-                                "VC_PROVIDER" (name provider)
-                                "VC_STARTED_AT" (.toString (java.time.Instant/now))})
-              (let [descriptor {:tmux-session tmux-session
-                                :tmux-window window
-                                :provider provider
-                                :workdir workdir
-                                :started-at (System/currentTimeMillis)}]
-                (swap! live-windows assoc session-uuid descriptor)
-                [tmux-session descriptor])))]
+              (let [started-at (.toString (java.time.Instant/now))]
+                (set-window-env! tmux-session window
+                                 {"VC_SESSION_UUID" session-uuid
+                                  "VC_WORKDIR" workdir
+                                  "VC_PROVIDER" (name provider)
+                                  "VC_STARTED_AT" started-at})
+                (let [descriptor {:tmux-session tmux-session
+                                  :tmux-window window
+                                  :provider provider
+                                  :workdir workdir
+                                  :started-at started-at}]
+                  (swap! live-windows assoc session-uuid descriptor)
+                  [tmux-session descriptor]))))]
       (when (= :ready (wait-for-ready tmux-session window provider))
         (when initial-prompt
           (nudge! tmux-session window initial-prompt)))
