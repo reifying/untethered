@@ -8,24 +8,6 @@ import OSLog
 
 private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "SessionSidebar")
 
-// MARK: - Sidebar ViewModel
-
-/// Isolates VoiceCodeClient observation to only lockedSessions for the sidebar.
-/// Prevents re-renders when unrelated client state changes.
-class SessionSidebarViewModel: ObservableObject {
-    @Published var lockedSessions: Set<String> = []
-
-    init(client: VoiceCodeClient) {
-        client.$lockedSessions
-            .receive(on: DispatchQueue.main)
-            .assign(to: &$lockedSessions)
-    }
-
-    func isSessionLocked(_ sessionId: String) -> Bool {
-        lockedSessions.contains(sessionId)
-    }
-}
-
 // MARK: - SessionSidebarView
 
 struct SessionSidebarView: View {
@@ -35,8 +17,6 @@ struct SessionSidebarView: View {
     @Binding var recentSessions: [RecentSession]
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.openSettings) private var openSettings
-
-    @StateObject private var viewModel: SessionSidebarViewModel
 
     @State private var sessions: [CDBackendSession] = []
     @State private var recentExpanded = true
@@ -63,7 +43,6 @@ struct SessionSidebarView: View {
         self.settings = settings
         self._selectedSessionId = selectedSessionId
         self._recentSessions = recentSessions
-        self._viewModel = StateObject(wrappedValue: SessionSidebarViewModel(client: client))
     }
 
     /// Top 10 most recently modified sessions
@@ -115,11 +94,8 @@ struct SessionSidebarView: View {
                         }
                     } else {
                         ForEach(cachedRecentSessions) { session in
-                            SessionSidebarRow(
-                                session: session,
-                                isLocked: viewModel.isSessionLocked(session.id.uuidString.lowercased())
-                            )
-                            .tag(session.id)
+                            SessionSidebarRow(session: session)
+                                .tag(session.id)
                         }
                     }
                 } header: {
@@ -132,11 +108,8 @@ struct SessionSidebarView: View {
                 ForEach(cachedSessionsByDirectory, id: \.directory) { group in
                     DisclosureGroup {
                         ForEach(group.sessions) { session in
-                            SessionSidebarRow(
-                                session: session,
-                                isLocked: viewModel.isSessionLocked(session.id.uuidString.lowercased())
-                            )
-                            .tag(session.id)
+                            SessionSidebarRow(session: session)
+                                .tag(session.id)
                         }
                     } label: {
                         HStack {
@@ -286,7 +259,6 @@ struct SessionSidebarView: View {
 
 struct SessionSidebarRow: View {
     @ObservedObject var session: CDBackendSession
-    let isLocked: Bool
     @Environment(\.managedObjectContext) private var viewContext
 
     var body: some View {
@@ -316,12 +288,6 @@ struct SessionSidebarRow: View {
             }
 
             Spacer()
-
-            if isLocked {
-                Image(systemName: "lock.fill")
-                    .font(.caption)
-                    .foregroundColor(.orange)
-            }
 
             if session.unreadCount > 0 {
                 Text("\(session.unreadCount)")

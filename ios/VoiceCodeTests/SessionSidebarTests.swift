@@ -193,27 +193,14 @@ class SessionSidebarTests: XCTestCase {
         XCTAssertEqual(grouped.count, 3, "5 sessions across 3 directories should produce 3 groups")
     }
 
-    // MARK: - SessionSidebarViewModel Tests
-
-    func testViewModelTracksLockedSessions() {
-        let client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
-        let viewModel = SessionSidebarViewModel(client: client)
-
-        XCTAssertTrue(viewModel.lockedSessions.isEmpty)
-        XCTAssertFalse(viewModel.isSessionLocked("test-id"))
-    }
-
     // MARK: - View Compilation Tests
 
     func testSessionSidebarRowCompiles() {
         // Verify SessionSidebarRow can be instantiated
         let session = createSession(backendName: "Test", workingDirectory: "/test")
 
-        let row = SessionSidebarRow(session: session, isLocked: false)
+        let row = SessionSidebarRow(session: session)
         XCTAssertNotNil(row)
-
-        let lockedRow = SessionSidebarRow(session: session, isLocked: true)
-        XCTAssertNotNil(lockedRow)
     }
 
     func testEmptyDetailViewCompiles() {

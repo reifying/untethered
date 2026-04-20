@@ -440,25 +440,6 @@ final class PriorityQueueManagementTests: XCTestCase {
         XCTAssertTrue(sorted.isEmpty, "Empty queue should return empty array")
     }
 
-    // Test 20: testLockedSessionsFiltered
-    func testLockedSessionsFiltered() throws {
-        // Note: This test verifies the concept, but actual lock filtering
-        // happens in DirectoryListView with viewModel.lockedSessions
-        // For unit tests, we just verify sessions can be added while locked
-
-        // Given: A session in priority queue
-        let session = createTestSession(name: "Test Session")
-        addToPriorityQueue(session)
-
-        // When: Session is conceptually "locked" (in real app, viewModel tracks this)
-        // For this test, we just verify the session is still in queue
-        let sorted = fetchSortedPriorityQueueSessions()
-
-        // Then: Session should still be fetchable
-        XCTAssertEqual(sorted.count, 1)
-        XCTAssertTrue(sorted[0].isInPriorityQueue)
-    }
-
     // Test 21: testNonPriorityQueueSessionsFiltered
     func testNonPriorityQueueSessionsFiltered() throws {
         // Given: Mix of sessions in and out of priority queue

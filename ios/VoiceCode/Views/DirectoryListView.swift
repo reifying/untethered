@@ -18,9 +18,6 @@ struct DirectoryListView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @EnvironmentObject var draftManager: DraftManager
 
-    // ViewModel isolates observation to only lockedSessions (not all 9 @Published properties)
-    @StateObject private var viewModel: DirectoryListViewModel
-
     // Fetch active (non-deleted) sessions from CoreData
     @State private var sessions: [CDBackendSession] = []
 
@@ -48,12 +45,12 @@ struct DirectoryListView: View {
     @State private var queueUpdateWorkItem: DispatchWorkItem?
     @State private var priorityQueueUpdateWorkItem: DispatchWorkItem?
 
-    // Queue sessions filtered by lock state and sorted by position (FIFO)
+    // Queue sessions sorted by position (FIFO)
     private var queuedSessions: [CDBackendSession] {
         cachedQueuedSessions
     }
 
-    // Priority queue sessions filtered by lock state and sorted by three-level sort
+    // Priority queue sessions sorted by three-level sort
     // Sort: priority (ascending) → priorityOrder (ascending) → session ID (deterministic)
     private var priorityQueueSessions: [CDBackendSession] {
         cachedPriorityQueueSessions
@@ -75,14 +72,6 @@ struct DirectoryListView: View {
         self._recentSessions = recentSessions
         self._navigationPath = navigationPath
         self.resourcesManager = resourcesManager
-
-        // Initialize ViewModel to isolate observation scope
-        self._viewModel = StateObject(wrappedValue: DirectoryListViewModel(client: client))
-    }
-
-    private func isSessionLocked(_ session: CDBackendSession) -> Bool {
-        let claudeSessionId = session.id.uuidString.lowercased()
-        return viewModel.isSessionLocked(claudeSessionId)
     }
 
     // Directory metadata computed from sessions
@@ -438,10 +427,6 @@ struct DirectoryListView: View {
             updateCachedQueuedSessions()
             updateCachedPriorityQueueSessions()
         }
-        .onChange(of: viewModel.lockedSessions) { _ in
-            updateCachedQueuedSessions()
-            updateCachedPriorityQueueSessions()
-        }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             // Track app state to suspend layout updates in background
             isAppActive = (newPhase == .active)
@@ -519,18 +504,9 @@ struct DirectoryListView: View {
         // Debounce updates to prevent rapid-fire recalculations
         queueUpdateWorkItem?.cancel()
 
-        let workItem = DispatchWorkItem { [viewModel, sessions] in
-            // CRITICAL: Take snapshot to avoid triggering SwiftUI dependency tracking
-            // Reading viewModel.lockedSessions inside filter() causes infinite layout loop
-            // that triggers iOS watchdog termination (0x8BADF00D) when app is in background
-            let lockedSessionIds = viewModel.lockedSessions
-
+        let workItem = DispatchWorkItem { [sessions] in
             let updatedSessions = sessions
                 .filter { $0.isInQueue }
-                .filter { session in
-                    let sessionId = session.id.uuidString.lowercased()
-                    return !lockedSessionIds.contains(sessionId)
-                }
                 .sorted { $0.queuePosition < $1.queuePosition }
 
             // Update on main thread
@@ -556,16 +532,9 @@ struct DirectoryListView: View {
         // Cancel any pending updates
         priorityQueueUpdateWorkItem?.cancel()
 
-        let workItem = DispatchWorkItem { [viewModel, sessions] in
-            // CRITICAL: Take snapshot to avoid triggering SwiftUI dependency tracking
-            let lockedSessionIds = viewModel.lockedSessions
-
+        let workItem = DispatchWorkItem { [sessions] in
             let updatedSessions = sessions
                 .filter { $0.isInPriorityQueue }
-                .filter { session in
-                    let sessionId = session.id.uuidString.lowercased()
-                    return !lockedSessionIds.contains(sessionId)
-                }
                 .sorted { session1, session2 in
                     // Three-level sort:
                     // 1. Priority (ascending - lower number = higher priority)

@@ -17,7 +17,6 @@ class VoiceCodeClient: ObservableObject {
     @Published var isConnected = false
     @Published var currentError: String?
     @Published var isProcessing = false
-    @Published var lockedSessions = Set<String>()  // Claude session IDs currently locked
     @Published var isAuthenticated = false
     @Published var authenticationError: String?
     @Published var requiresReauthentication = false  // Shows "re-scan required" UI
@@ -190,10 +189,6 @@ class VoiceCodeClient: ObservableObject {
         // Apply all updates atomically on main queue
         for (key, value) in updates {
             switch key {
-            case "lockedSessions":
-                if let sessions = value as? Set<String> {
-                    self.lockedSessions = sessions
-                }
             case "runningCommands":
                 if let commands = value as? [String: CommandExecution] {
                     self.runningCommands = commands
@@ -343,10 +338,6 @@ class VoiceCodeClient: ObservableObject {
             guard let self = self else { return }
             logger.debug("🔄 VoiceCodeClient updating: isConnected=false")
             self.isConnected = false
-            // Clear all locked sessions on disconnect to prevent stuck locks
-            self.scheduleUpdate(key: "lockedSessions", value: Set<String>())
-            self.flushPendingUpdates()  // Immediate flush for critical operation
-            print("🔓 [VoiceCodeClient] Cleared all locked sessions on disconnect")
         }
     }
 
@@ -516,9 +507,7 @@ class VoiceCodeClient: ObservableObject {
                     logger.debug("🔄 VoiceCodeClient updating: isConnected=false (failure)")
                     self.isConnected = false
                     self.scheduleUpdate(key: "currentError", value: error.localizedDescription as String?)
-                    self.scheduleUpdate(key: "lockedSessions", value: Set<String>())
                     self.flushPendingUpdates()
-                    print("🔓 [VoiceCodeClient] Cleared WebSocket and locked sessions on connection failure")
                 }
             }
         }
@@ -632,14 +621,6 @@ class VoiceCodeClient: ObservableObject {
             case "response":
                 scheduleUpdate(key: "isProcessing", value: false)
 
-                // Unlock session when response is received
-                if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
-                    var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-                    updatedSessions.remove(sessionId)
-                    scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                    print("🔓 [VoiceCodeClient] Session unlocked: \(sessionId)")
-                }
-
                 if let success = json["success"] as? Bool, success {
                     // Extract iOS session UUID for routing
                     let iosSessionId = (json["ios_session_id"] as? String) ?? (json["ios-session-id"] as? String) ?? ""
@@ -693,14 +674,6 @@ class VoiceCodeClient: ObservableObject {
                     DispatchQueue.main.async {
                         handler("Error: \(error)")
                     }
-                }
-
-                // Unlock session when error is received
-                if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
-                    var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-                    updatedSessions.remove(sessionId)
-                    scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                    print("🔓 [VoiceCodeClient] Session unlocked after error: \(sessionId)")
                 }
 
             case "auth_error":
@@ -802,9 +775,12 @@ class VoiceCodeClient: ObservableObject {
                 }
 
             case "turn_complete":
-                // Backend signals that Claude CLI has finished (turn is complete)
+                // Backend signals that the provider finished its turn.
+                // Optional `aborted:true` indicates the turn was cut short by kill_session
+                // or compaction; treat identically to a normal turn_complete for now.
                 if let sessionId = json["session_id"] as? String {
-                    print("✅ [VoiceCodeClient] Received turn_complete for \(sessionId)")
+                    let aborted = json["aborted"] as? Bool ?? false
+                    print("✅ [VoiceCodeClient] Received turn_complete for \(sessionId) (aborted: \(aborted))")
 
                     // Note: Subscription now happens earlier via session_ready message
                     // This is kept as fallback for compatibility
@@ -812,30 +788,12 @@ class VoiceCodeClient: ObservableObject {
                         print("📥 [VoiceCodeClient] Auto-subscribing to new session after turn_complete (fallback): \(sessionId)")
                         self.subscribe(sessionId: sessionId)
                     }
-
-                    let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-                    if currentSessions.contains(sessionId) {
-                        var updatedSessions = currentSessions
-                        updatedSessions.remove(sessionId)
-                        scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (turn complete, remaining locks: \(updatedSessions.count))")
-                        if !updatedSessions.isEmpty {
-                            print("   Still locked: \(Array(updatedSessions))")
-                        }
-                    }
                 }
 
             case "compaction_complete":
                 // Session compaction completed successfully
                 if let sessionId = json["session_id"] as? String {
                     print("⚡️ [VoiceCodeClient] Received compaction_complete for \(sessionId)")
-                    let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-                    if currentSessions.contains(sessionId) {
-                        var updatedSessions = currentSessions
-                        updatedSessions.remove(sessionId)
-                        scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (compaction complete, remaining locks: \(updatedSessions.count))")
-                    }
                 }
                 self.onCompactionResponse?(json)
 
@@ -843,13 +801,6 @@ class VoiceCodeClient: ObservableObject {
                 // Session compaction failed
                 if let sessionId = json["session_id"] as? String {
                     print("❌ [VoiceCodeClient] Received compaction_error for \(sessionId)")
-                    let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-                    if currentSessions.contains(sessionId) {
-                        var updatedSessions = currentSessions
-                        updatedSessions.remove(sessionId)
-                        scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (compaction error, remaining locks: \(updatedSessions.count))")
-                    }
                 }
                 self.onCompactionResponse?(json)
 
@@ -883,26 +834,10 @@ class VoiceCodeClient: ObservableObject {
                     scheduleUpdate(key: "currentError", value: error as String?)
                 }
 
-            case "session_locked":
-                // Session is currently locked (processing a prompt)
-                if let sessionId = json["session_id"] as? String {
-                    print("🔒 [VoiceCodeClient] Session locked: \(sessionId)")
-                    var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-                    updatedSessions.insert(sessionId)
-                    scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                }
-
             case "session_killed":
                 // Session process was terminated
                 if let sessionId = json["session_id"] as? String {
                     print("🛑 [VoiceCodeClient] Session killed: \(sessionId)")
-                    let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-                    if currentSessions.contains(sessionId) {
-                        var updatedSessions = currentSessions
-                        updatedSessions.remove(sessionId)
-                        scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (killed, remaining locks: \(updatedSessions.count))")
-                    }
                 }
 
             case "available_commands":
@@ -1096,16 +1031,6 @@ class VoiceCodeClient: ObservableObject {
     // MARK: - Send Messages
 
     func sendPrompt(_ text: String, iosSessionId: String, sessionId: String? = nil, workingDirectory: String? = nil, systemPrompt: String? = nil) {
-        // Optimistically lock the session before sending
-        // Unlock will happen when we receive ANY assistant message for this session
-        if let sessionId = sessionId {
-            var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-            updatedSessions.insert(sessionId)
-            scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-            flushPendingUpdates()  // Immediate flush for optimistic locking
-            print("🔒 [VoiceCodeClient] Optimistically locked: \(sessionId) (total locks: \(updatedSessions.count))")
-        }
-
         var message: [String: Any] = [
             "type": "prompt",
             "text": text,
@@ -1173,14 +1098,6 @@ class VoiceCodeClient: ObservableObject {
         }
 
         print("📤 [VoiceCodeClient] Sending quick prompt, session: \(sessionId), tracking: \(quickPromptId), dir: \(directory)")
-        sendMessage(message)
-    }
-
-    func setWorkingDirectory(_ path: String) {
-        let message: [String: Any] = [
-            "type": "set_directory",
-            "path": path
-        ]
         sendMessage(message)
     }
 
@@ -1386,15 +1303,6 @@ class VoiceCodeClient: ObservableObject {
             throw NSError(domain: "VoiceCodeClient",
                           code: -3,
                           userInfo: [NSLocalizedDescriptionKey: "Compaction already in progress"])
-        }
-
-        // Optimistically lock the session before sending (must be on main thread)
-        await MainActor.run {
-            var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-            updatedSessions.insert(sessionId)
-            scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-            flushPendingUpdates()  // Immediate flush for optimistic locking
-            print("🔒 [VoiceCodeClient] Optimistically locked for compaction: \(sessionId) (total locks: \(updatedSessions.count))")
         }
 
         return try await withCheckedThrowingContinuation { continuation in

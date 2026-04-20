@@ -135,7 +135,7 @@ struct CommandMenuView: View {
             // Request commands if not already available
             if client.availableCommands == nil {
                 isLoading = true
-                // Commands will be sent automatically by backend after connect/set_directory
+                // Commands will be sent automatically by backend on connect and on session create/resume
                 // For now, just wait for them to arrive
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                     isLoading = false

@@ -98,22 +98,9 @@ struct ConversationView: View {
         )
     }
 
-    // Check if current session is locked
-    private var isSessionLocked: Bool {
-        let claudeSessionId = session.id.uuidString.lowercased()
-        return client.lockedSessions.contains(claudeSessionId)
-    }
-
     // Active recipe for this session
     private var activeRecipe: ActiveRecipe? {
         client.activeRecipes[session.id.uuidString.lowercased()]
-    }
-
-    // Manual unlock function
-    private func manualUnlock() {
-        let claudeSessionId = session.id.uuidString.lowercased()
-        client.lockedSessions.remove(claudeSessionId)
-        print("🔓 [Manual] User manually unlocked session: \(claudeSessionId)")
     }
 
     // Stable function reference for infer name - prevents closure recreation on each render
@@ -278,22 +265,18 @@ struct ConversationView: View {
                 if isVoiceMode {
                     ConversationVoiceInputView(
                         voiceInput: voiceInput,
-                        isDisabled: isSessionLocked,
                         onTranscriptionComplete: { text in
                             sendPromptText(text)
-                        },
-                        onManualUnlock: manualUnlock
+                        }
                     )
                 } else {
                     // Text mode
                     ConversationTextInputView(
                         text: $promptText,
-                        isDisabled: isSessionLocked,
                         onSend: {
                             sendPromptText(promptText)
                             promptText = ""
-                        },
-                        onManualUnlock: manualUnlock
+                        }
                     )
                 }
                 
@@ -321,14 +304,11 @@ struct ConversationView: View {
             #if os(iOS)
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
-                    // Kill session button (only visible when session is locked)
-                    if isSessionLocked {
-                        Button(action: {
-                            showingKillConfirmation = true
-                        }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.red)
-                        }
+                    Button(action: {
+                        showingKillConfirmation = true
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.red)
                     }
 
                     // Recipe button - shows active recipe or opens menu
@@ -386,7 +366,7 @@ struct ConversationView: View {
                                 .foregroundColor(wasRecentlyCompacted ? .green : .primary)
                         }
                     }
-                    .disabled(isCompacting || client.lockedSessions.contains(session.id.uuidString.lowercased()))
+                    .disabled(isCompacting)
 
                     Button(action: {
                         isRefreshingMessages = true
@@ -428,17 +408,15 @@ struct ConversationView: View {
                         .keyboardShortcut(".", modifiers: [.command])
                     }
 
-                    // Kill session button (only visible when session is locked)
-                    if isSessionLocked {
-                        Button(action: {
-                            showingKillConfirmation = true
-                        }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.red)
-                        }
-                        .help("Cancel prompt (Cmd+K)")
-                        .keyboardShortcut("k", modifiers: [.command])
+                    // Kill session button
+                    Button(action: {
+                        showingKillConfirmation = true
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.red)
                     }
+                    .help("Cancel prompt (Cmd+K)")
+                    .keyboardShortcut("k", modifiers: [.command])
 
                     // Recipe button - shows active recipe or opens menu
                     if let active = activeRecipe {
@@ -501,7 +479,7 @@ struct ConversationView: View {
                                 .foregroundColor(wasRecentlyCompacted ? .green : .primary)
                         }
                     }
-                    .disabled(isCompacting || client.lockedSessions.contains(session.id.uuidString.lowercased()))
+                    .disabled(isCompacting)
                     .help("Compact session history")
 
                     Button(action: {
@@ -777,9 +755,10 @@ struct ConversationView: View {
         // Reset compaction feedback state when user sends a message
         wasRecentlyCompacted = false
 
+        let sessionId = session.id.uuidString.lowercased()
+
         // Clear draft after successful send
-        let sessionID = session.id.uuidString.lowercased()
-        draftManager.clearDraft(sessionID: sessionID)
+        draftManager.clearDraft(sessionID: sessionId)
 
         // Add to queue if enabled
         if settings.queueEnabled {
@@ -788,16 +767,6 @@ struct ConversationView: View {
 
         // Note: Priority queue auto-add now happens in VoiceCodeClient.turn_complete handler
         // This ensures sessions are only added after successful response (no ghost sessions)
-
-        // Optimistically lock the session before sending
-        // Use session.id (iOS UUID) for locking since that's what backend echoes in turn_complete
-        let sessionId = session.id.uuidString.lowercased()
-
-        // Defer lock to avoid SwiftUI update conflicts
-        DispatchQueue.main.async {
-            self.client.lockedSessions.insert(sessionId)
-            print("🔒 [ConversationView] Optimistically locked session: \(sessionId)")
-        }
 
         // Create optimistic message
         client.sessionSyncManager.createOptimisticMessage(sessionId: session.id, text: trimmedText) { messageId in
@@ -1347,9 +1316,7 @@ struct RenameSessionView: View {
 
 struct ConversationVoiceInputView: View {
     @ObservedObject var voiceInput: VoiceInputManager
-    let isDisabled: Bool
     let onTranscriptionComplete: (String) -> Void
-    let onManualUnlock: () -> Void
 
     var body: some View {
         VStack {
@@ -1380,22 +1347,18 @@ struct ConversationVoiceInputView: View {
                 }
             } else {
                 Button(action: {
-                    if isDisabled {
-                        onManualUnlock()
-                    } else {
-                        voiceInput.startRecording()
-                    }
+                    voiceInput.startRecording()
                 }) {
                     VStack {
                         Image(systemName: "mic")
                             .font(.system(size: 40))
-                            .foregroundColor(isDisabled ? .gray : .blue)
-                        Text(isDisabled ? "Tap to Unlock" : "Tap to Speak")
+                            .foregroundColor(.blue)
+                        Text("Tap to Speak")
                             .font(.caption)
-                            .foregroundColor(isDisabled ? .gray : .primary)
+                            .foregroundColor(.primary)
                     }
                     .frame(width: 100, height: 100)
-                    .background((isDisabled ? Color.gray : Color.blue).opacity(0.1))
+                    .background(Color.blue.opacity(0.1))
                     .cornerRadius(50)
                 }
             }
@@ -1414,23 +1377,14 @@ struct ConversationVoiceInputView: View {
 
 struct ConversationTextInputView: View {
     @Binding var text: String
-    let isDisabled: Bool
     let onSend: () -> Void
-    let onManualUnlock: () -> Void
 
     var body: some View {
         let _ = RenderLoopDetector.shared.recordRender()
         HStack {
-            TextField(isDisabled ? "Session locked - tap to unlock" : "Type your message...", text: $text, axis: .vertical)
+            TextField("Type your message...", text: $text, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...5)
-                .disabled(isDisabled)
-                .opacity(isDisabled ? 0.5 : 1.0)
-                .onTapGesture {
-                    if isDisabled {
-                        onManualUnlock()
-                    }
-                }
                 #if os(macOS)
                 .onKeyPress(.return, phases: .down) { press in
                     // Shift+Return inserts newline (let default behavior handle it)
@@ -1438,7 +1392,7 @@ struct ConversationTextInputView: View {
                         return .ignored
                     }
                     // Return sends the prompt
-                    if !text.isEmpty && !isDisabled {
+                    if !text.isEmpty {
                         onSend()
                         return .handled
                     }
@@ -1447,17 +1401,13 @@ struct ConversationTextInputView: View {
                 #endif
 
             Button(action: {
-                if isDisabled {
-                    onManualUnlock()
-                } else {
-                    onSend()
-                }
+                onSend()
             }) {
-                Image(systemName: isDisabled ? "lock.fill" : "arrow.up.circle.fill")
+                Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 32))
-                    .foregroundColor(isDisabled ? .orange : (text.isEmpty ? .gray : .blue))
+                    .foregroundColor(text.isEmpty ? .gray : .blue)
             }
-            .disabled(text.isEmpty && !isDisabled)
+            .disabled(text.isEmpty)
         }
         .padding(.horizontal)
     }
