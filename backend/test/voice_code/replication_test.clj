@@ -2664,6 +2664,8 @@
              :debounce-ms 200
              :retry-delay-ms 100
              :max-retries 3
+             :cursor-project-root-dirs #{}
+             :cursor-transcripts-root nil
              :on-session-created on-session-created
              :on-session-updated on-session-updated
              :on-session-deleted on-session-deleted})
@@ -2682,6 +2684,8 @@
            :debounce-ms 200
            :retry-delay-ms 100
            :max-retries 3
+           :cursor-project-root-dirs #{}
+           :cursor-transcripts-root nil
            :on-session-created nil
            :on-session-updated nil
            :on-session-deleted nil}))
@@ -2804,7 +2808,6 @@
           (with-redefs [providers/get-sessions-dir (fn [provider]
                                                      (when (= provider :cursor) chats-dir))
                         ;; Isolate test from dev machine's ~/.cursor/projects
-                        repl/cursor-agent-transcript-dirs (fn [] [])
                         repl/get-cursor-transcripts-root (fn [] (io/file test-dir "nonexistent-cursor-projects"))]
             (let [watch-keys (#'repl/register-cursor-watches! ws)]
               (is (= 2 (count watch-keys)))
@@ -2819,7 +2822,6 @@
     (let [ws (init-watcher-state-for-test!)]
       (try
         (with-redefs [providers/get-sessions-dir (fn [_] (io/file test-dir "nonexistent"))
-                      repl/cursor-agent-transcript-dirs (fn [] [])
                       repl/get-cursor-transcripts-root (fn [] (io/file test-dir "nonexistent-cursor-projects"))]
           (let [watch-keys (#'repl/register-cursor-watches! ws)]
             (is (empty? watch-keys))))
@@ -2839,10 +2841,197 @@
                                                      (when (= provider :cursor) chats-dir))
                         repl/get-cursor-transcripts-root (fn [] transcripts-root)]
             (let [watch-keys (#'repl/register-cursor-watches! ws)]
-              (is (= 2 (count watch-keys))
-                  "one chats project + one agent-transcripts dir")
+              (is (= 3 (count watch-keys))
+                  "one chats project + one transcripts-root + one agent-transcripts dir")
               (is (contains? (:cursor-project-dirs @repl/watcher-state) chat-proj))
-              (is (contains? (:cursor-transcript-dirs @repl/watcher-state) transcript-proj))))
+              (is (contains? (:cursor-transcript-dirs @repl/watcher-state) transcript-proj))
+              (is (= transcripts-root (:cursor-transcripts-root @repl/watcher-state)))))
+          (finally
+            (cleanup-watcher-state!))))))
+
+  (testing "watches existing project-hash dirs that lack agent-transcripts/ yet"
+    (let [chats-dir (io/file test-dir "register-cursor-pending" "chats")
+          transcripts-root (io/file test-dir "register-cursor-pending" "projects")
+          pending-proj (io/file transcripts-root "pending-proj-hash")]
+      (.mkdirs chats-dir)
+      (.mkdirs pending-proj)
+      (let [ws (init-watcher-state-for-test!)]
+        (try
+          (with-redefs [providers/get-sessions-dir (fn [provider]
+                                                     (when (= provider :cursor) chats-dir))
+                        repl/get-cursor-transcripts-root (fn [] transcripts-root)]
+            (#'repl/register-cursor-watches! ws)
+            (is (contains? (:cursor-project-root-dirs @repl/watcher-state) pending-proj)
+                "project-hash dir without agent-transcripts/ should be watched for later creation")
+            (is (= transcripts-root (:cursor-transcripts-root @repl/watcher-state))))
+          (finally
+            (cleanup-watcher-state!))))))
+
+  (testing "watches transcripts-root even when empty"
+    (let [chats-dir (io/file test-dir "register-cursor-empty" "chats")
+          transcripts-root (io/file test-dir "register-cursor-empty" "projects")]
+      (.mkdirs chats-dir)
+      (.mkdirs transcripts-root)
+      (let [ws (init-watcher-state-for-test!)]
+        (try
+          (with-redefs [providers/get-sessions-dir (fn [provider]
+                                                     (when (= provider :cursor) chats-dir))
+                        repl/get-cursor-transcripts-root (fn [] transcripts-root)]
+            (let [watch-keys (#'repl/register-cursor-watches! ws)]
+              (is (= 1 (count watch-keys))
+                  "only the transcripts-root watch")
+              (is (= transcripts-root (:cursor-transcripts-root @repl/watcher-state)))
+              (is (empty? (:cursor-transcript-dirs @repl/watcher-state)))
+              (is (empty? (:cursor-project-root-dirs @repl/watcher-state)))))
+          (finally
+            (cleanup-watcher-state!)))))))
+
+(deftest test-cursor-transcripts-root-predicates
+  (testing "is-cursor-transcripts-root? matches the configured root only"
+    (let [transcripts-root (io/file test-dir "is-trans-root" "projects")
+          other-dir (io/file test-dir "is-trans-root" "other")]
+      (.mkdirs transcripts-root)
+      (.mkdirs other-dir)
+      (try
+        (swap! repl/watcher-state assoc :cursor-transcripts-root transcripts-root)
+        (is (true? (#'repl/is-cursor-transcripts-root? transcripts-root)))
+        (is (not (#'repl/is-cursor-transcripts-root? other-dir)))
+        (finally
+          (swap! repl/watcher-state assoc :cursor-transcripts-root nil)))))
+
+  (testing "is-cursor-transcripts-root? returns nil when root is not configured"
+    (swap! repl/watcher-state assoc :cursor-transcripts-root nil)
+    (is (not (#'repl/is-cursor-transcripts-root? (io/file test-dir))))))
+
+(deftest test-cursor-project-root-dir-predicate
+  (testing "is-cursor-project-root-dir? matches dirs in the watched set"
+    (let [tracked (io/file test-dir "tracked-proj")
+          untracked (io/file test-dir "untracked-proj")]
+      (.mkdirs tracked)
+      (.mkdirs untracked)
+      (try
+        (swap! repl/watcher-state assoc :cursor-project-root-dirs #{tracked})
+        (is (true? (#'repl/is-cursor-project-root-dir? tracked)))
+        (is (not (#'repl/is-cursor-project-root-dir? untracked)))
+        (finally
+          (swap! repl/watcher-state assoc :cursor-project-root-dirs #{}))))))
+
+(deftest test-watch-cursor-transcript-dir!
+  (testing "registers watch and updates :cursor-transcript-dirs and :watch-keys"
+    (let [transcripts-sub (io/file test-dir "wcd-trans" "agent-transcripts")]
+      (.mkdirs transcripts-sub)
+      (let [ws (init-watcher-state-for-test!)]
+        (try
+          (let [wk (#'repl/watch-cursor-transcript-dir! transcripts-sub)]
+            (is (some? wk) "watch-key should be returned")
+            (is (contains? (:cursor-transcript-dirs @repl/watcher-state) transcripts-sub))
+            (is (= transcripts-sub (get (:watch-keys @repl/watcher-state) wk))))
+          (finally
+            (cleanup-watcher-state!))))))
+
+  (testing "no-ops when watch-service is unavailable"
+    (let [transcripts-sub (io/file test-dir "wcd-trans-nows" "agent-transcripts")]
+      (.mkdirs transcripts-sub)
+      (swap! repl/watcher-state assoc :watch-service nil :cursor-transcript-dirs #{})
+      (is (nil? (#'repl/watch-cursor-transcript-dir! transcripts-sub)))
+      (is (empty? (:cursor-transcript-dirs @repl/watcher-state))))))
+
+(deftest test-process-watch-events-cursor-transcripts-root
+  (testing "ENTRY_CREATE for project-hash dir without agent-transcripts/ registers a project-root watch"
+    (let [transcripts-root (io/file test-dir "pr-pwe-root-1" "projects")]
+      (.mkdirs transcripts-root)
+      (let [ws (init-watcher-state-for-test!)]
+        (try
+          (let [wk (.register (.toPath transcripts-root) ws
+                              (into-array [java.nio.file.StandardWatchEventKinds/ENTRY_CREATE]))]
+            (swap! repl/watcher-state assoc
+                   :cursor-transcripts-root transcripts-root
+                   :watch-keys {wk transcripts-root})
+            (let [new-proj (io/file transcripts-root "new-proj-hash-no-trans")]
+              (.mkdirs new-proj)
+              (Thread/sleep 300)
+              (let [key (.poll ws)]
+                (when key
+                  (repl/process-watch-events key transcripts-root)
+                  (is (contains? (:cursor-project-root-dirs @repl/watcher-state) new-proj)
+                      "new project-hash dir without agent-transcripts/ should be tracked as project-root")
+                  (is (not (contains? (:cursor-transcript-dirs @repl/watcher-state)
+                                      (io/file new-proj "agent-transcripts")))
+                      "agent-transcripts watch should not be registered yet")))))
+          (finally
+            (cleanup-watcher-state!))))))
+
+  (testing "ENTRY_CREATE for project-hash dir that already has agent-transcripts/ registers transcript watch directly"
+    (let [transcripts-root (io/file test-dir "pr-pwe-root-2" "projects")]
+      (.mkdirs transcripts-root)
+      (let [ws (init-watcher-state-for-test!)]
+        (try
+          (let [wk (.register (.toPath transcripts-root) ws
+                              (into-array [java.nio.file.StandardWatchEventKinds/ENTRY_CREATE]))]
+            (swap! repl/watcher-state assoc
+                   :cursor-transcripts-root transcripts-root
+                   :watch-keys {wk transcripts-root})
+            (let [new-proj (io/file transcripts-root "new-proj-hash-with-trans")
+                  trans-sub (io/file new-proj "agent-transcripts")]
+              (.mkdirs trans-sub)
+              (Thread/sleep 300)
+              (let [key (.poll ws)]
+                (when key
+                  (repl/process-watch-events key transcripts-root)
+                  (is (contains? (:cursor-transcript-dirs @repl/watcher-state) trans-sub)
+                      "agent-transcripts subdir should be watched directly")
+                  (is (not (contains? (:cursor-project-root-dirs @repl/watcher-state) new-proj))
+                      "project-root tracking should not be added when agent-transcripts already exists")))))
+          (finally
+            (cleanup-watcher-state!)))))))
+
+(deftest test-process-watch-events-cursor-project-root
+  (testing "ENTRY_CREATE for agent-transcripts in a tracked project-root dir promotes the watch"
+    (let [project-dir (io/file test-dir "pwe-pr-1" "projects" "proj-hash-promote")]
+      (.mkdirs project-dir)
+      (let [ws (init-watcher-state-for-test!)]
+        (try
+          (let [wk (.register (.toPath project-dir) ws
+                              (into-array [java.nio.file.StandardWatchEventKinds/ENTRY_CREATE]))]
+            (swap! repl/watcher-state assoc
+                   :cursor-project-root-dirs #{project-dir}
+                   :watch-keys {wk project-dir})
+            (let [trans-sub (io/file project-dir "agent-transcripts")]
+              (.mkdirs trans-sub)
+              (Thread/sleep 300)
+              (let [key (.poll ws)]
+                (when key
+                  (repl/process-watch-events key project-dir)
+                  (is (contains? (:cursor-transcript-dirs @repl/watcher-state) trans-sub)
+                      "agent-transcripts should now be watched")
+                  (is (not (contains? (:cursor-project-root-dirs @repl/watcher-state) project-dir))
+                      "project-root entry should be removed once agent-transcripts is being watched")
+                  (is (not (contains? (:watch-keys @repl/watcher-state) wk))
+                      "promoted project-root WatchKey should be removed from :watch-keys")
+                  (is (not (.isValid wk))
+                      "promoted project-root WatchKey should be cancelled")))))
+          (finally
+            (cleanup-watcher-state!))))))
+
+  (testing "ENTRY_CREATE for non-agent-transcripts files in tracked project-root dir is ignored"
+    (let [project-dir (io/file test-dir "pwe-pr-2" "projects" "proj-hash-ignore")]
+      (.mkdirs project-dir)
+      (let [ws (init-watcher-state-for-test!)]
+        (try
+          (let [wk (.register (.toPath project-dir) ws
+                              (into-array [java.nio.file.StandardWatchEventKinds/ENTRY_CREATE]))]
+            (swap! repl/watcher-state assoc
+                   :cursor-project-root-dirs #{project-dir}
+                   :watch-keys {wk project-dir})
+            (spit (io/file project-dir "irrelevant.txt") "noise")
+            (Thread/sleep 300)
+            (let [key (.poll ws)]
+              (when key
+                (repl/process-watch-events key project-dir)
+                (is (contains? (:cursor-project-root-dirs @repl/watcher-state) project-dir)
+                    "project-root entry should remain when an unrelated file is created")
+                (is (empty? (:cursor-transcript-dirs @repl/watcher-state))
+                    "no transcript watch should be added for unrelated files"))))
           (finally
             (cleanup-watcher-state!)))))))
 

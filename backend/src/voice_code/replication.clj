@@ -1801,6 +1801,19 @@
   [watched-dir]
   (contains? (:cursor-transcript-dirs @watcher-state) watched-dir))
 
+(defn- is-cursor-transcripts-root?
+  "Check if watched-dir is the `~/.cursor/projects/` root we're watching for new
+   project-hash directories."
+  [watched-dir]
+  (when-let [root (:cursor-transcripts-root @watcher-state)]
+    (= (.getPath watched-dir) (.getPath root))))
+
+(defn- is-cursor-project-root-dir?
+  "Check if watched-dir is a `~/.cursor/projects/<hash>/` directory being watched
+   for the later creation of its `agent-transcripts/` subdirectory."
+  [watched-dir]
+  (contains? (:cursor-project-root-dirs @watcher-state) watched-dir))
+
 (defn- is-opencode-session-dir?
   "Check if watched-dir is an OpenCode session project-hash directory."
   [watched-dir]
@@ -1866,6 +1879,8 @@
       (catch Exception e
         (log/error e "Failed to handle OpenCode session creation" {:file (.getPath session-file)})))))
 
+(declare watch-cursor-transcript-dir! watch-cursor-project-root-dir!)
+
 (defn process-watch-events
   "Process watch events from the WatchService.
   Handles events for Claude, Copilot, Cursor, and OpenCode directories.
@@ -1878,6 +1893,8 @@
         is-copilot-session (is-copilot-session-watch-dir? watched-dir)
         is-cursor-project (is-cursor-project-dir? watched-dir)
         is-cursor-transcript (is-cursor-transcript-dir? watched-dir)
+        is-cursor-transcripts-root (is-cursor-transcripts-root? watched-dir)
+        is-cursor-project-root (is-cursor-project-root-dir? watched-dir)
         is-opencode-session (is-opencode-session-dir? watched-dir)
         is-opencode-message (is-opencode-message-dir? watched-dir)
         is-opencode-part (is-opencode-part-parent? watched-dir)
@@ -1956,6 +1973,35 @@
                                  StandardWatchEventKinds/ENTRY_MODIFY}
                                kind)
                 (handle-cursor-transcript-modified file))))
+
+          ;; Cursor transcripts-root event - new project-hash dir created;
+          ;; register a watch for its later agent-transcripts/ creation (or the
+          ;; subdir directly if it already exists).
+          is-cursor-transcripts-root
+          (when (= kind StandardWatchEventKinds/ENTRY_CREATE)
+            (let [project-dir (io/file watched-dir file-name)]
+              (when (.isDirectory project-dir)
+                (let [transcripts-sub (io/file project-dir "agent-transcripts")]
+                  (if (and (.exists transcripts-sub) (.isDirectory transcripts-sub))
+                    (watch-cursor-transcript-dir! transcripts-sub)
+                    (watch-cursor-project-root-dir! project-dir))))))
+
+          ;; Cursor project-hash dir event - waiting for agent-transcripts/
+          ;; subdir to be created by cursor-agent's first turn.
+          is-cursor-project-root
+          (when (and (= kind StandardWatchEventKinds/ENTRY_CREATE)
+                     (= file-name "agent-transcripts"))
+            (let [transcripts-sub (io/file watched-dir file-name)]
+              (when (and (.exists transcripts-sub) (.isDirectory transcripts-sub))
+                (watch-cursor-transcript-dir! transcripts-sub)
+                ;; Stop tracking the project-root dir and cancel its WatchKey;
+                ;; we care about the subdir now.
+                (try (.cancel watch-key)
+                     (catch Exception e
+                       (log/warn e "Failed to cancel project-root watch-key"
+                                 {:dir (.getPath watched-dir)})))
+                (swap! watcher-state update :cursor-project-root-dirs disj watched-dir)
+                (swap! watcher-state update :watch-keys dissoc watch-key))))
 
           ;; OpenCode session directory event - watch for new ses_*.json files
           is-opencode-session
@@ -2066,21 +2112,47 @@
   (let [home (System/getProperty "user.home")]
     (io/file home ".cursor" "projects")))
 
-(defn cursor-agent-transcript-dirs
-  "Find all existing `~/.cursor/projects/<hash>/agent-transcripts/` dirs."
-  []
-  (let [root (get-cursor-transcripts-root)]
-    (if (and root (.exists root))
-      (->> (.listFiles root)
-           (filter #(.isDirectory %))
-           (map #(io/file % "agent-transcripts"))
-           (filter #(.exists %))
-           (filter #(.isDirectory %)))
-      [])))
+(defn- watch-cursor-transcript-dir!
+  "Register a watch on a Cursor `agent-transcripts/` directory, update watcher-state,
+   and track the watch-key in :watch-keys. Safe to call after watcher startup.
+   Returns the watch-key or nil on failure."
+  [^java.io.File dir]
+  (when-let [ws (:watch-service @watcher-state)]
+    (try
+      (let [wk (.register (.toPath dir) ws
+                          (into-array [StandardWatchEventKinds/ENTRY_CREATE
+                                       StandardWatchEventKinds/ENTRY_MODIFY]))]
+        (swap! watcher-state update :watch-keys assoc wk dir)
+        (swap! watcher-state update :cursor-transcript-dirs (fnil conj #{}) dir)
+        (log/info "Watching Cursor agent-transcripts dir" {:dir (.getPath dir)})
+        wk)
+      (catch Exception e
+        (log/warn e "Failed to watch Cursor transcripts dir" {:dir (.getPath dir)})
+        nil))))
+
+(defn- watch-cursor-project-root-dir!
+  "Register a watch on a `~/.cursor/projects/<hash>/` directory so we can detect
+   when `agent-transcripts/` is later created inside it. Safe to call after
+   watcher startup. Returns the watch-key or nil on failure."
+  [^java.io.File dir]
+  (when-let [ws (:watch-service @watcher-state)]
+    (try
+      (let [wk (.register (.toPath dir) ws
+                          (into-array [StandardWatchEventKinds/ENTRY_CREATE]))]
+        (swap! watcher-state update :watch-keys assoc wk dir)
+        (swap! watcher-state update :cursor-project-root-dirs (fnil conj #{}) dir)
+        (log/info "Watching Cursor project-hash dir for agent-transcripts creation"
+                  {:dir (.getPath dir)})
+        wk)
+      (catch Exception e
+        (log/warn e "Failed to watch Cursor project-hash dir" {:dir (.getPath dir)})
+        nil))))
 
 (defn- register-cursor-watches!
-  "Register watches for Cursor chats directory (store.db session discovery)
-   and `~/.cursor/projects/<hash>/agent-transcripts/` directories (transcript
+  "Register watches for Cursor chats directory (store.db session discovery),
+   the `~/.cursor/projects/` root (new project-hash dirs), existing
+   project-hash dirs that lack `agent-transcripts/` yet, and existing
+   `~/.cursor/projects/<hash>/agent-transcripts/` directories (transcript
    writes for turn-complete detection).
    Returns a map of watch-key -> directory."
   [watch-service]
@@ -2105,7 +2177,29 @@
                             (log/info "Cursor chats directory does not exist, skipping"
                                       {:expected-dir (when chats-dir (.getPath chats-dir))})
                             {}))
-        transcript-dirs (cursor-agent-transcript-dirs)
+        transcripts-root-exists? (and transcripts-root (.exists transcripts-root))
+        transcripts-root-watch-key (when transcripts-root-exists?
+                                     (try
+                                       (log/info "Watching Cursor transcripts root for new project-hash dirs"
+                                                 {:dir (.getPath transcripts-root)})
+                                       (.register (.toPath transcripts-root) watch-service
+                                                  (into-array [StandardWatchEventKinds/ENTRY_CREATE]))
+                                       (catch Exception e
+                                         (log/warn e "Failed to watch Cursor transcripts root"
+                                                   {:dir (.getPath transcripts-root)})
+                                         nil)))
+        ;; Project-hash dirs directly under ~/.cursor/projects/
+        project-root-dirs (if transcripts-root-exists?
+                            (->> (.listFiles transcripts-root)
+                                 (filter #(.isDirectory %)))
+                            [])
+        ;; Split: dirs with agent-transcripts/ already vs those without
+        {transcripts-ready true project-roots-pending false}
+        (group-by (fn [project-root]
+                    (let [sub (io/file project-root "agent-transcripts")]
+                      (and (.exists sub) (.isDirectory sub))))
+                  project-root-dirs)
+        transcript-dirs (map #(io/file % "agent-transcripts") transcripts-ready)
         transcript-watch-keys (if (seq transcript-dirs)
                                 (do
                                   (log/info "Setting up Cursor agent-transcripts watching"
@@ -2125,9 +2219,27 @@
                                   (log/info "No Cursor agent-transcripts directories found, skipping"
                                             {:expected-root (when transcripts-root (.getPath transcripts-root))})
                                   {}))
-        all-watch-keys (merge chat-watch-keys transcript-watch-keys)]
+        ;; Watch project-hash dirs that lack agent-transcripts/ yet, so we can
+        ;; pick it up when cursor-agent creates it.
+        project-root-watch-keys (reduce (fn [acc dir]
+                                          (try
+                                            (let [wk (.register (.toPath dir) watch-service
+                                                                (into-array [StandardWatchEventKinds/ENTRY_CREATE]))]
+                                              (assoc acc wk dir))
+                                            (catch Exception e
+                                              (log/warn e "Failed to watch Cursor project-hash dir"
+                                                        {:dir (.getPath dir)})
+                                              acc)))
+                                        {} project-roots-pending)
+        root-watch-keys (if transcripts-root-watch-key
+                          {transcripts-root-watch-key transcripts-root}
+                          {})
+        all-watch-keys (merge chat-watch-keys root-watch-keys
+                              project-root-watch-keys transcript-watch-keys)]
     (swap! watcher-state assoc :cursor-project-dirs (set (vals chat-watch-keys)))
     (swap! watcher-state assoc :cursor-transcript-dirs (set (vals transcript-watch-keys)))
+    (swap! watcher-state assoc :cursor-project-root-dirs (set (vals project-root-watch-keys)))
+    (swap! watcher-state assoc :cursor-transcripts-root (when transcripts-root-watch-key transcripts-root))
     all-watch-keys))
 
 (defn- register-opencode-watches!
@@ -2321,6 +2433,8 @@
            :copilot-session-dirs #{} ;; Clear Copilot session tracking
            :cursor-project-dirs #{} ;; Clear Cursor project tracking
            :cursor-transcript-dirs #{} ;; Clear Cursor transcript tracking
+           :cursor-project-root-dirs #{} ;; Clear Cursor project-root tracking (awaiting agent-transcripts)
+           :cursor-transcripts-root nil ;; Clear Cursor transcripts-root tracking
            :opencode-dirs nil ;; Clear OpenCode dir tracking
            :opencode-part-msg-dirs #{}
            :on-session-created nil
