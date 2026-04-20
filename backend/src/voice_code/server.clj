@@ -1445,7 +1445,8 @@
                               :provider provider
                               :workdir working-dir
                               :initial-prompt final-prompt-text
-                              :resume? false})
+                              :resume? false
+                              :system-prompt system-prompt})
                             (tmux/deliver! resume-session-id final-prompt-text))
                           (catch Exception e
                             (log/error e "Failed to dispatch prompt via tmux"

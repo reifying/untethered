@@ -449,6 +449,33 @@
           (is (= "continue"   (:text args))))))
     (reset! server/api-key nil)))
 
+(deftest test-prompt-system-prompt-forwarded-to-start-window!
+  (testing "Prompt with system_prompt forwards it to tmux/start-window! for new sessions"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [dispatched (promise)]
+      (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-sp-1\",\"working_directory\":\"/tmp\",\"system_prompt\":\"Be terse\"}")
+        (let [args (await-dispatch dispatched)]
+          (is (map? args))
+          (is (= "Be terse" (:system-prompt args))
+              "system_prompt from JSON payload should be passed as :system-prompt to start-window!"))))
+    (reset! server/api-key nil))
+
+  (testing "Prompt without system_prompt passes nil to tmux/start-window!"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [dispatched (promise)]
+      (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-sp-2\",\"working_directory\":\"/tmp\"}")
+        (let [args (await-dispatch dispatched)]
+          (is (nil? (:system-prompt args))))))
+    (reset! server/api-key nil)))
+
 (deftest test-prompt-invalid-provider-returns-error
   (testing "Prompt with invalid provider returns error for new session"
     (reset! server/api-key test-api-key)

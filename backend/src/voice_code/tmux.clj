@@ -118,6 +118,12 @@
                  :opencode "Ask anything")]
     (fn [content] (str/includes? content needle))))
 
+(defn- shell-single-quote
+  "Wrap s in single quotes, escaping embedded single quotes. Safe for arbitrary
+   user text interpolated into a POSIX shell command string."
+  [s]
+  (str "'" (str/replace s "'" "'\\''") "'"))
+
 (defn build-provider-command
   "Return the shell string that launches the provider CLI in interactive mode.
    The CLI path is resolved in the backend's JVM env and passed as an absolute
@@ -125,29 +131,41 @@
    CLAUDECODE/CLAUDE_CODE_ENTRYPOINT are unset inline because the tmux server
    inherits its env from whoever started the server, not from the caller.
    Working directory is set via `tmux new-window -c` by the caller; it is not
-   part of the shell command string."
-  [provider {:keys [session-uuid resume?]}]
-  (case provider
-    :claude
-    (str "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT && "
-         (providers/cli-path :claude) " "
-         "--dangerously-skip-permissions "
-         (if resume?
-           (str "--resume " session-uuid)
-           (str "--session-id " session-uuid)))
+   part of the shell command string.
 
-    :copilot
-    (str (providers/cli-path :copilot) " "
-         "--no-color --allow-all-tools --no-ask-user"
-         (when resume? (str " --resume " session-uuid)))
+   `:system-prompt` is appended via `--append-system-prompt` for :claude only,
+   and only for new (non-resume) sessions — it is a startup-only flag and the
+   CLI has already launched by the time a resumed session needs it. Blank or
+   whitespace-only values are dropped silently."
+  [provider {:keys [session-uuid resume? system-prompt]}]
+  (let [trimmed-system-prompt (when system-prompt (str/trim system-prompt))
+        include-system-prompt? (and (= provider :claude)
+                                    (not resume?)
+                                    trimmed-system-prompt
+                                    (not (str/blank? trimmed-system-prompt)))]
+    (case provider
+      :claude
+      (str "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT && "
+           (providers/cli-path :claude) " "
+           "--dangerously-skip-permissions "
+           (if resume?
+             (str "--resume " session-uuid)
+             (str "--session-id " session-uuid))
+           (when include-system-prompt?
+             (str " --append-system-prompt " (shell-single-quote trimmed-system-prompt))))
 
-    :cursor
-    (str (providers/cli-path :cursor) " --force"
-         (when resume? (str " --resume " session-uuid)))
+      :copilot
+      (str (providers/cli-path :copilot) " "
+           "--no-color --allow-all-tools --no-ask-user"
+           (when resume? (str " --resume " session-uuid)))
 
-    :opencode
-    (str (providers/cli-path :opencode)
-         (when resume? (str " --session " session-uuid)))))
+      :cursor
+      (str (providers/cli-path :cursor) " --force"
+           (when resume? (str " --resume " session-uuid)))
+
+      :opencode
+      (str (providers/cli-path :opencode)
+           (when resume? (str " --session " session-uuid))))))
 
 (defn choose-victim
   "Pure helper: given a window snapshot and the cap, return the window to
@@ -301,12 +319,16 @@
   "Create a tmux window running the provider CLI, wait for TUI readiness,
    and deliver the initial prompt as a nudge. Returns the window descriptor.
    When :resume? is true, the provider is launched with its --resume flag;
-   otherwise it starts a fresh session keyed to session-uuid."
-  [{:keys [session-uuid session-name provider workdir initial-prompt resume?]}]
+   otherwise it starts a fresh session keyed to session-uuid.
+
+   `:system-prompt` is only honored for new :claude sessions; see
+   build-provider-command for the trimming/provider rules."
+  [{:keys [session-uuid session-name provider workdir initial-prompt resume? system-prompt]}]
   (let [window (window-name session-name session-uuid)
         cmd (build-provider-command provider
                                     {:session-uuid session-uuid
-                                     :resume? (boolean resume?)})]
+                                     :resume? (boolean resume?)
+                                     :system-prompt system-prompt})]
     ;; All state reads and mutations run under eviction-lock so collision
     ;; detection, eviction, window creation, env writes, and live-windows
     ;; update are one atomic critical section. evict-if-needed! also acquires

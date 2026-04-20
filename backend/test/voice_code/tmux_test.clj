@@ -206,7 +206,54 @@
   (testing "opencode resume includes --session"
     (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/opencode")]
       (let [cmd (tmux/build-provider-command :opencode {:session-uuid "abc123" :resume? true})]
-        (is (clojure.string/includes? cmd "--session abc123"))))))
+        (is (clojure.string/includes? cmd "--session abc123")))))
+
+  (testing "claude new session appends --append-system-prompt when system-prompt set"
+    (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/claude")]
+      (let [cmd (tmux/build-provider-command :claude {:session-uuid "abc123"
+                                                      :resume? false
+                                                      :system-prompt "Be concise"})]
+        (is (clojure.string/includes? cmd "--append-system-prompt 'Be concise'")))))
+
+  (testing "claude resume session does NOT append --append-system-prompt (startup-only flag)"
+    (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/claude")]
+      (let [cmd (tmux/build-provider-command :claude {:session-uuid "abc123"
+                                                      :resume? true
+                                                      :system-prompt "Be concise"})]
+        (is (not (clojure.string/includes? cmd "--append-system-prompt"))))))
+
+  (testing "claude trims whitespace from system-prompt"
+    (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/claude")]
+      (let [cmd (tmux/build-provider-command :claude {:session-uuid "abc123"
+                                                      :resume? false
+                                                      :system-prompt "  Be concise  \n"})]
+        (is (clojure.string/includes? cmd "--append-system-prompt 'Be concise'")))))
+
+  (testing "claude ignores blank or whitespace-only system-prompt"
+    (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/claude")]
+      (doseq [blank ["" "   " "\t\n  "]]
+        (let [cmd (tmux/build-provider-command :claude {:session-uuid "abc123"
+                                                        :resume? false
+                                                        :system-prompt blank})]
+          (is (not (clojure.string/includes? cmd "--append-system-prompt"))
+              (str "blank system-prompt " (pr-str blank) " should be dropped"))))))
+
+  (testing "claude shell-escapes single quotes in system-prompt"
+    (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/claude")]
+      (let [cmd (tmux/build-provider-command :claude {:session-uuid "abc123"
+                                                      :resume? false
+                                                      :system-prompt "don't do it"})]
+        ;; Embedded single quote closed with ', escaped as \', then reopened with '
+        (is (clojure.string/includes? cmd "--append-system-prompt 'don'\\''t do it'")))))
+
+  (testing "non-claude providers silently drop system-prompt (CLI does not support it)"
+    (doseq [provider [:copilot :cursor :opencode]]
+      (with-redefs [voice-code.providers/cli-path (constantly (str "/usr/local/bin/" (name provider)))]
+        (let [cmd (tmux/build-provider-command provider {:session-uuid "abc123"
+                                                         :resume? false
+                                                         :system-prompt "Be concise"})]
+          (is (not (clojure.string/includes? cmd "--append-system-prompt"))
+              (str provider " should not include --append-system-prompt")))))))
 
 ;; ============================================================================
 ;; choose-victim
