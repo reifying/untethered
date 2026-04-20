@@ -1,21 +1,14 @@
 (ns voice-code.providers
   "Multi-provider abstraction using multimethods.
 
-   Abstracts the differences between CLI providers (Claude Code, GitHub Copilot, etc.)
-   while keeping the common WebSocket protocol and session management unchanged.
-
-   Phase 1: :claude implemented
-   Phase 2: :copilot implemented
-   Phase 6: :copilot CLI invocation
-   Phase 7: Smart default provider selection"
+   Abstracts the differences between CLI providers (Claude Code, GitHub Copilot,
+   Cursor, OpenCode) for session discovery, file parsing, and turn detection.
+   CLI invocation itself lives in the tmux session layer, not this namespace."
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as shell]
-            [clojure.java.process :as proc]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
-            [clojure.core.async :as async]
-            [cheshire.core :as json])
-  (:import [java.lang ProcessBuilder$Redirect]))
+            [cheshire.core :as json]))
 
 ;; ============================================================================
 ;; Provider Registry
@@ -676,18 +669,18 @@
 ;; ============================================================================
 
 (def ^:private cli-env-vars
-  {:claude   "CLAUDE_CLI_PATH"
-   :copilot  "COPILOT_CLI_PATH"
-   :cursor   "CURSOR_CLI_PATH"
+  {:claude "CLAUDE_CLI_PATH"
+   :copilot "COPILOT_CLI_PATH"
+   :cursor "CURSOR_CLI_PATH"
    :opencode "OPENCODE_CLI_PATH"})
 
 (def ^:private cli-default-paths
   {:claude (str (System/getProperty "user.home") "/.claude/local/claude")})
 
 (def ^:private cli-bin-names
-  {:claude   "claude"
-   :copilot  "copilot"
-   :cursor   "cursor-agent"
+  {:claude "claude"
+   :copilot "copilot"
+   :cursor "cursor-agent"
    :opencode "opencode"})
 
 (def ^:dynamic *read-env-var*
@@ -700,27 +693,27 @@
    Resolution order: provider-specific env var → known default path → `which <bin>`.
    Throws ex-info with diagnostic message when none resolve."
   [provider]
-  (let [env-var      (cli-env-vars provider)
+  (let [env-var (cli-env-vars provider)
         default-path (cli-default-paths provider)
-        bin-name     (cli-bin-names provider)
-        from-env     (when env-var (not-empty (*read-env-var* env-var)))
+        bin-name (cli-bin-names provider)
+        from-env (when env-var (not-empty (*read-env-var* env-var)))
         from-default (when (and default-path (.exists (io/file default-path))) default-path)
-        path         (or from-env
-                         from-default
-                         (try
-                           (let [result (shell/sh "which" bin-name)]
-                             (when (zero? (:exit result))
-                               (str/trim (:out result))))
-                           (catch Exception _ nil)))]
+        path (or from-env
+                 from-default
+                 (try
+                   (let [result (shell/sh "which" bin-name)]
+                     (when (zero? (:exit result))
+                       (str/trim (:out result))))
+                   (catch Exception _ nil)))]
     (when-not path
       (throw (ex-info (str "CLI not found for provider " (name provider)
                            ". Tried: env var " env-var
                            (when default-path (str ", default path " default-path))
                            ", which " bin-name)
-                      {:provider     provider
-                       :env-var      env-var
+                      {:provider provider
+                       :env-var env-var
                        :default-path default-path
-                       :bin-name     bin-name})))
+                       :bin-name bin-name})))
     path))
 
 ;; ============================================================================
@@ -735,528 +728,7 @@
     (when-let [meta ((requiring-resolve 'voice-code.replication/get-session-metadata) session-uuid)]
       (assoc meta :last-modified-ms (or (some-> (:last-modified meta) long) 0)))))
 
-;; ============================================================================
-;; CLI Command Building and Invocation
-;; ============================================================================
 
-(defmulti build-cli-command
-  "Builds the CLI command args for invoking this provider.
-   
-   Args:
-   - provider: Provider keyword (:claude, :copilot, etc.)
-   - opts: Map with keys:
-     - :prompt - The prompt text to send
-     - :new-session-id - Optional session ID for new sessions
-     - :resume-session-id - Optional session ID to resume
-     - :working-directory - Optional working directory
-     - :system-prompt - Optional system prompt to append
-     - :model - Optional model to use
-   
-   Returns: A vector of command args (e.g., [\"claude\" \"--resume\" \"abc\" \"prompt\"])
-   
-   Throws: ex-info if provider CLI invocation not supported"
-  (fn [provider _opts] provider))
 
-(defn claude-cli-env-path
-  "Returns the CLAUDE_CLI_PATH environment variable value, if set."
-  []
-  (System/getenv "CLAUDE_CLI_PATH"))
 
-(defmethod build-cli-command :claude [_ opts]
-  ;; Note: The actual Claude CLI invocation is handled by voice-code.claude/invoke-claude
-  ;; This method exists to document the expected command format.
-  ;; The claude.clj module handles all the complexity of process management,
-  ;; output parsing, and error handling.
-  (let [{:keys [prompt new-session-id resume-session-id system-prompt model]} opts
-        cli-path (or (claude-cli-env-path)
-                     (let [home (System/getProperty "user.home")
-                           default-path (str home "/.claude/local/claude")]
-                       (when (.exists (io/file default-path))
-                         default-path)))
-        trimmed-system-prompt (when system-prompt (str/trim system-prompt))
-        has-system-prompt? (and trimmed-system-prompt (not (str/blank? trimmed-system-prompt)))]
-    (when-not cli-path
-      (throw (ex-info "Claude CLI not found" {:provider :claude})))
-    (cond-> [cli-path
-             "--dangerously-skip-permissions"
-             "--print"
-             "--output-format" "json"]
-      model (into ["--model" model])
-      new-session-id (into ["--session-id" new-session-id])
-      resume-session-id (into ["--resume" resume-session-id])
-      has-system-prompt? (into ["--append-system-prompt" trimmed-system-prompt])
-      true (conj prompt))))
 
-(defmethod build-cli-command :copilot [_ opts]
-  ;; Copilot CLI invocation using non-interactive mode.
-  ;; Research (Jan 2026) confirmed these flags:
-  ;; - `-p, --prompt <text>` - Execute prompt in non-interactive mode
-  ;; - `--allow-all-tools` - Required for non-interactive mode
-  ;; - `--no-ask-user` - Disable user prompts for non-interactive mode
-  ;; - `--resume [sessionId]` - Resume session with optional ID
-  ;; - `--model <model>` - Set AI model
-  ;; - `--no-color` - Disable color output for cleaner parsing
-  ;;
-  ;; Note: Unlike Claude CLI, Copilot does not have a JSON output mode.
-  ;; Output is plain text. Session ID for new sessions comes from
-  ;; filesystem watching (the new session directory is created in
-  ;; ~/.copilot/session-state/<uuid>/).
-  (let [{:keys [prompt resume-session-id model]} opts]
-    (when-not prompt
-      (throw (ex-info "Prompt is required for Copilot CLI invocation"
-                      {:provider :copilot})))
-    (cond-> ["copilot"
-             "--no-color"
-             "--allow-all-tools"
-             "--no-ask-user"
-             "-p" prompt]
-      ;; Resume existing session if specified
-      resume-session-id (into ["--resume" resume-session-id])
-      ;; Use specified model if provided
-      model (into ["--model" model]))))
-
-(defmethod build-cli-command :cursor [_ opts]
-  (let [{:keys [prompt resume-session-id model]} opts]
-    (when-not prompt
-      (throw (ex-info "Prompt is required for Cursor CLI invocation"
-                      {:provider :cursor})))
-    (cond-> ["cursor-agent"
-             "-p" prompt
-             "--output-format" "json"
-             "--force"]
-      resume-session-id (into ["--resume" resume-session-id])
-      model (into ["--model" model]))))
-
-(defmethod build-cli-command :opencode [_ opts]
-  (let [{:keys [prompt resume-session-id model]} opts]
-    (when-not prompt
-      (throw (ex-info "Prompt is required for OpenCode CLI invocation"
-                      {:provider :opencode})))
-    (cond-> ["opencode" "run"
-             "--format" "json"
-             prompt]
-      resume-session-id (into ["--session" resume-session-id])
-      model (into ["--model" model]))))
-
-(defmethod build-cli-command :default [provider _opts]
-  (throw (ex-info (str "Unknown provider: " (name provider))
-                  {:provider provider
-                   :known-providers known-providers})))
-
-;; ============================================================================
-;; Copilot CLI Invocation
-;; ============================================================================
-
-(defonce active-provider-processes
-  ;; Atom tracking active CLI processes by [provider session-id] for kill support.
-  ;; Keyed by [provider session-id] vector to support multiple concurrent providers.
-  (atom {}))
-
-(defn kill-provider-session
-  "Kill an active CLI process for a given provider and session-id.
-   Returns true if a process was found and killed, nil otherwise."
-  [provider session-id]
-  (let [key [provider session-id]]
-    (when-let [process (get @active-provider-processes key)]
-      (log/info "Killing provider process" {:provider provider :session-id session-id})
-      (.destroyForcibly process)
-      (swap! active-provider-processes dissoc key)
-      true)))
-
-;; Legacy: active-copilot-processes and kill-copilot-session removed.
-;; All providers now use active-provider-processes + kill-provider-session.
-
-(defn kill-copilot-session
-  "Kill an active Copilot CLI process for a given session-id.
-   Delegates to kill-provider-session with :copilot provider."
-  [session-id]
-  (kill-provider-session :copilot session-id))
-
-(defn- find-newest-copilot-session
-  "Find the most recently created Copilot session directory.
-   Used to discover session ID for new sessions since Copilot CLI
-   doesn't return session ID in output."
-  [sessions-before]
-  (let [sessions-dir (get-sessions-dir :copilot)]
-    (when (.exists sessions-dir)
-      (let [current-sessions (->> (.listFiles sessions-dir)
-                                  (filter #(.isDirectory %))
-                                  (filter #(valid-uuid? (.getName %)))
-                                  set)
-            new-sessions (clojure.set/difference current-sessions sessions-before)]
-        (when (seq new-sessions)
-          ;; Return the newest one by modification time
-          (->> new-sessions
-               (sort-by #(.lastModified %) >)
-               first
-               .getName))))))
-
-(defn- get-copilot-sessions-before
-  "Get set of existing Copilot session directories before CLI invocation."
-  []
-  (let [sessions-dir (get-sessions-dir :copilot)]
-    (if (.exists sessions-dir)
-      (->> (.listFiles sessions-dir)
-           (filter #(.isDirectory %))
-           (filter #(valid-uuid? (.getName %)))
-           set)
-      #{})))
-
-(defn- run-provider-process
-  "Run a CLI process with stdout/stderr capture.
-   Returns {:exit int :out string :err string}.
-
-   Takes the FULL command vector from build-cli-command.
-   Callers pass the complete args including the binary name.
-
-   Parameters:
-   - full-cmd: Complete command vector (e.g. [\"copilot\" \"-p\" \"hello\"])
-   - working-dir: Optional working directory
-   - timeout-ms: Timeout in milliseconds
-   - session-id: Optional session ID for process tracking
-   - provider: Provider keyword for process tracking and temp file naming"
-  [full-cmd working-dir timeout-ms session-id provider]
-  (let [perms (java.nio.file.attribute.PosixFilePermissions/asFileAttribute
-               (java.nio.file.attribute.PosixFilePermissions/fromString "rw-------"))
-        stdout-path (java.nio.file.Files/createTempFile
-                     (str (name provider) "-stdout-") ".txt"
-                     (into-array java.nio.file.attribute.FileAttribute [perms]))
-        stderr-path (java.nio.file.Files/createTempFile
-                     (str (name provider) "-stderr-") ".txt"
-                     (into-array java.nio.file.attribute.FileAttribute [perms]))
-        stdout-file (.toFile stdout-path)
-        stderr-file (.toFile stderr-path)]
-    (try
-      (let [process-opts (cond-> {:out (ProcessBuilder$Redirect/to stdout-file)
-                                  :err (ProcessBuilder$Redirect/to stderr-file)
-                                  :in :pipe}
-                           working-dir (assoc :dir working-dir))
-            _ (log/info "Starting provider CLI process"
-                        {:provider provider
-                         :args (vec (take 4 full-cmd))
-                         :working-dir working-dir
-                         :session-id session-id})
-            process (apply proc/start process-opts full-cmd)
-            exit-ref (proc/exit-ref process)]
-        (when session-id
-          (swap! active-provider-processes assoc [provider session-id] process)
-          (log/debug "Tracking provider process" {:provider provider :session-id session-id}))
-        (.close (.getOutputStream process))
-        (try
-          (let [exit-code (if timeout-ms
-                            (deref exit-ref timeout-ms :timeout)
-                            @exit-ref)]
-            (when (= exit-code :timeout)
-              (.destroyForcibly process)
-              (throw (ex-info "Process timeout" {:timeout-ms timeout-ms :provider provider})))
-            {:exit exit-code :out (slurp stdout-file) :err (slurp stderr-file)})
-          (finally
-            (when session-id
-              (swap! active-provider-processes dissoc [provider session-id])))))
-      (finally
-        (try (.delete stdout-file) (catch Exception _ nil))
-        (try (.delete stderr-file) (catch Exception _ nil))))))
-
-;; Legacy run-copilot-process removed — all providers use run-provider-process.
-
-(defn invoke-copilot
-  "Invoke Copilot CLI synchronously.
-   
-   Unlike Claude CLI, Copilot outputs plain text (no JSON mode).
-   Session ID for new sessions is discovered via filesystem inspection.
-   
-   Parameters:
-   - prompt: The prompt text to send
-   - :resume-session-id: Optional session ID to resume
-   - :model: Optional model to use (e.g., \"gpt-5\", \"claude-sonnet-4\")
-   - :working-directory: Optional working directory for CLI
-   - :timeout: Timeout in milliseconds (default: 1 hour)
-   
-   Returns:
-   - On success: {:success true :result \"<output>\" :session-id \"<id>\"}
-   - On error: {:success false :error \"<message>\"}"
-  [prompt & {:keys [resume-session-id model working-directory timeout]
-             :or {timeout 3600000}}]
-  ;; Validate CLI is available
-  (when-let [validation-error (validate-cli-available :copilot)]
-    (throw (ex-info (:error validation-error) validation-error)))
-
-  ;; Capture existing sessions before invocation (for new session discovery)
-  (let [sessions-before (when-not resume-session-id
-                          (get-copilot-sessions-before))
-        ;; Build full command vector using build-cli-command
-        full-cmd (build-cli-command :copilot {:prompt prompt
-                                              :resume-session-id resume-session-id
-                                              :model model})
-        ;; Use resume-session-id for tracking, or nil for new sessions
-        tracking-id resume-session-id
-
-        _ (log/info "Invoking Copilot CLI"
-                    {:resume-session-id resume-session-id
-                     :working-directory working-directory
-                     :model model
-                     :has-sessions-before (some? sessions-before)
-                     :sessions-before-count (count sessions-before)})
-
-        ;; Use run-provider-process with full command vector
-        result (run-provider-process full-cmd working-directory timeout tracking-id :copilot)]
-
-    (log/debug "Copilot CLI completed"
-               {:exit (:exit result)
-                :stdout-length (count (:out result))
-                :stderr-length (count (:err result))})
-
-    (if (zero? (:exit result))
-      ;; Success - extract output and discover session ID
-      (let [output (str/trim (:out result))
-            ;; For resume, use provided session-id; for new, discover from filesystem
-            session-id (or resume-session-id
-                           (do
-                             ;; Small delay to let filesystem settle
-                             (Thread/sleep 100)
-                             (find-newest-copilot-session sessions-before)))]
-        (if (or resume-session-id session-id)
-          {:success true
-           :result output
-           :session-id session-id
-           :provider :copilot}
-          {:success true
-           :result output
-           :session-id nil
-           :provider :copilot
-           :warning "Could not discover new session ID"}))
-
-      ;; Error
-      (do
-        (log/error "Copilot CLI failed" {:exit (:exit result) :stderr (:err result)})
-        {:success false
-         :error (str "Copilot CLI exited with code " (:exit result))
-         :stderr (:err result)
-         :exit-code (:exit result)
-         :provider :copilot}))))
-
-(defn invoke-copilot-async
-  "Invoke Copilot CLI asynchronously with timeout handling.
-   
-   Parameters:
-   - prompt: The prompt to send to Copilot
-   - callback-fn: Function to call with result (takes one arg: response map)
-   - :resume-session-id: Optional session ID for resuming
-   - :working-directory: Optional working directory for Copilot
-   - :model: Optional model to use
-   - :timeout-ms: Timeout in milliseconds (default: 24 hours)
-   
-   Returns immediately. Calls callback-fn when done or on timeout.
-   Response map will have :success true/false and either :result or :error."
-  [prompt callback-fn & {:keys [resume-session-id working-directory model timeout-ms]
-                         :or {timeout-ms 86400000}}]
-  (async/go
-    (let [response-ch (async/thread
-                        (try
-                          (invoke-copilot prompt
-                                          :resume-session-id resume-session-id
-                                          :model model
-                                          :working-directory working-directory
-                                          :timeout timeout-ms)
-                          (catch Exception e
-                            (log/error e "Exception in Copilot invocation")
-                            {:success false
-                             :error (str "Exception: " (ex-message e))
-                             :provider :copilot})))
-
-          [response port] (async/alts! [response-ch (async/timeout timeout-ms)])]
-
-      (if (= port response-ch)
-        ;; Got response before timeout
-        (do
-          (log/debug "Copilot invocation completed" {:success (:success response)})
-          (callback-fn response))
-
-        ;; Timeout occurred
-        (do
-          (log/warn "Copilot invocation timed out" {:timeout-ms timeout-ms})
-          (callback-fn {:success false
-                        :error (str "Request timed out after " (/ timeout-ms 1000) " seconds")
-                        :timeout true
-                        :provider :copilot})))))
-  nil)
-
-(defn invoke-cursor-async
-  "Invoke Cursor CLI asynchronously with timeout handling.
-
-   Parameters:
-   - prompt: The prompt to send to Cursor
-   - callback-fn: Function to call with result (takes one arg: response map)
-   - :resume-session-id: Optional session ID for resuming
-   - :working-directory: Optional working directory for Cursor
-   - :model: Optional model to use
-   - :timeout-ms: Timeout in milliseconds (default: 24 hours)
-
-   Returns nil immediately. Calls callback-fn when done or on timeout.
-   Response map will have :success true/false and either :result or :error."
-  [prompt callback-fn & {:keys [resume-session-id working-directory model timeout-ms]
-                         :or {timeout-ms 86400000}}]
-  (async/go
-    (let [response-ch
-          (async/thread
-            (try
-              (let [full-cmd (build-cli-command :cursor
-                                                {:prompt prompt
-                                                 :resume-session-id resume-session-id
-                                                 :model model})
-                    result (run-provider-process full-cmd working-directory timeout-ms
-                                                 resume-session-id :cursor)
-                    parsed (when (zero? (:exit result))
-                             (try (json/parse-string (str/trim (:out result)) true)
-                                  (catch Exception _ nil)))]
-                (if (and parsed (not (:is_error parsed)))
-                  {:success true
-                   :result (:result parsed)
-                   :session-id (:session_id parsed)
-                   :provider :cursor}
-                  {:success false
-                   :error (or (:result parsed) (:err result) "Cursor CLI failed")
-                   :provider :cursor}))
-              (catch Exception e
-                {:success false
-                 :error (str "Exception: " (ex-message e))
-                 :provider :cursor})))
-          [response port] (async/alts! [response-ch (async/timeout timeout-ms)])]
-      (callback-fn
-       (if (= port response-ch)
-         response
-         {:success false :error "Request timed out" :timeout true :provider :cursor}))))
-  nil)
-
-(defn- parse-opencode-ndjson
-  "Parse OpenCode NDJSON output into a result map.
-   Collects text parts and extracts session ID."
-  [output]
-  (let [lines (str/split-lines (str/trim output))
-        events (keep #(try (json/parse-string % true) (catch Exception _ nil)) lines)
-        session-id (some :sessionID events)
-        text-parts (->> events
-                        (filter #(= "text" (:type %)))
-                        (map #(get-in % [:part :text]))
-                        (filter some?))
-        error-event (first (filter #(= "error" (:type %)) events))
-        ;; Concatenate without separators — text events are streamed chunks
-        result-text (apply str text-parts)]
-    (if error-event
-      {:success false
-       :error (get-in error-event [:error :data :message] "OpenCode error")
-       :session-id session-id
-       :provider :opencode}
-      {:success true
-       :result result-text
-       :session-id session-id
-       :provider :opencode})))
-
-(defn invoke-opencode-async
-  "Invoke OpenCode CLI asynchronously with timeout handling.
-
-   Parameters:
-   - prompt: The prompt to send to OpenCode
-   - callback-fn: Function to call with result (takes one arg: response map)
-   - :resume-session-id: Optional session ID for resuming
-   - :working-directory: Optional working directory for OpenCode
-   - :model: Optional model to use (e.g. github-copilot/claude-opus-4.6)
-   - :timeout-ms: Timeout in milliseconds (default: 24 hours)
-
-   Returns nil immediately. Calls callback-fn when done or on timeout.
-   Response map will have :success true/false and either :result or :error."
-  [prompt callback-fn & {:keys [resume-session-id working-directory model timeout-ms]
-                         :or {timeout-ms 86400000}}]
-  (async/go
-    (let [response-ch
-          (async/thread
-            (try
-              (let [full-cmd (build-cli-command :opencode
-                                                {:prompt prompt
-                                                 :resume-session-id resume-session-id
-                                                 :model model})
-                    result (run-provider-process full-cmd working-directory timeout-ms
-                                                 resume-session-id :opencode)]
-                (if (zero? (:exit result))
-                  (parse-opencode-ndjson (:out result))
-                  {:success false
-                   :error (or (not-empty (str/trim (:err result)))
-                              (str "OpenCode CLI exited with code " (:exit result)))
-                   :provider :opencode}))
-              (catch Exception e
-                {:success false
-                 :error (str "Exception: " (ex-message e))
-                 :provider :opencode})))
-          [response port] (async/alts! [response-ch (async/timeout timeout-ms)])]
-      (callback-fn
-       (if (= port response-ch)
-         response
-         {:success false :error "Request timed out" :timeout true :provider :opencode}))))
-  nil)
-
-(defn invoke-provider-async
-  "Invoke a provider's CLI asynchronously.
-   
-   This function routes to the appropriate provider implementation.
-   For Claude, delegates to voice-code.claude/invoke-claude-async.
-   For Copilot, uses invoke-copilot-async.
-   
-   Args:
-   - provider: Provider keyword (:claude, :copilot, etc.)
-   - prompt: The prompt text to send
-   - callback-fn: Function called with result map when complete
-   - opts: Map with optional keys:
-     - :new-session-id - Session ID for new sessions (Claude only)
-     - :resume-session-id - Session ID to resume
-     - :working-directory - Working directory for CLI
-     - :timeout-ms - Timeout in milliseconds
-     - :system-prompt - System prompt to append (Claude only)
-     - :model - Model to use
-   
-   Returns nil immediately. Callback receives:
-   - On success: {:success true :result \"...\" :session-id \"...\" ...}
-   - On error: {:success false :error \"...\"}
-   - On not-implemented: {:success false :error \"...provider not implemented...\"}"
-  [provider prompt callback-fn & {:keys [new-session-id resume-session-id working-directory timeout-ms system-prompt model]
-                                  :or {timeout-ms 86400000}}]
-  (case provider
-    :claude
-    ;; Delegate to existing Claude implementation
-    ;; Use requiring-resolve to avoid circular dependency
-    (let [invoke-fn (requiring-resolve 'voice-code.claude/invoke-claude-async)
-          ;; Build keyword args list, filtering out nil values to avoid passing unused session params
-          opts (concat (if new-session-id [:new-session-id new-session-id] [])
-                       (if resume-session-id [:resume-session-id resume-session-id] [])
-                       (if working-directory [:working-directory working-directory] [])
-                       [:timeout-ms timeout-ms]
-                       (if system-prompt [:system-prompt system-prompt] [])
-                       (if model [:model model] []))]
-      (apply invoke-fn prompt callback-fn opts))
-
-    :copilot
-    ;; Delegate to Copilot implementation
-    ;; Note: Copilot doesn't support new-session-id or system-prompt
-    (invoke-copilot-async prompt callback-fn
-                          :resume-session-id resume-session-id
-                          :working-directory working-directory
-                          :timeout-ms timeout-ms
-                          :model model)
-
-    :cursor
-    (invoke-cursor-async prompt callback-fn
-                         :resume-session-id resume-session-id
-                         :working-directory working-directory
-                         :model model
-                         :timeout-ms timeout-ms)
-
-    :opencode
-    (invoke-opencode-async prompt callback-fn
-                           :resume-session-id resume-session-id
-                           :working-directory working-directory
-                           :model model
-                           :timeout-ms timeout-ms)
-
-    ;; Default: unknown provider
-    (callback-fn {:success false
-                  :error (str "Unknown provider: " (name provider))
-                  :provider provider})))

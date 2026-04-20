@@ -293,7 +293,6 @@
                     org.httpkit.server/send! (fn [_ _] nil)]
         (server/handle-message channel
                                "{\"type\":\"start_recipe\",\"session_id\":\"test-invalid\",\"recipe_id\":\"implement-and-review\",\"working_directory\":\"/test\",\"provider\":\"unknown-provider\"}")
-        ;; Provider value is passed through as-is; validation happens in invoke-provider-async
         (is (= (keyword "unknown-provider") @provider-used) "Should accept unknown provider keyword")))))
 
 (deftest recipe-provider-state-persistence-test
