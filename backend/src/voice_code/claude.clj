@@ -217,9 +217,7 @@
               (if success
                 {:success true
                  :result result-text
-                 :session-id session-id
-                 :usage (:usage result-obj)
-                 :cost (:total_cost_usd result-obj)}
+                 :session-id session-id}
                 {:success false
                  :error (str "Claude CLI returned error: " result-text)
                  :cli-response result-obj})))

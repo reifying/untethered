@@ -59,14 +59,10 @@
               (is (= session-id (:session-id response)) "Response session ID should match")
               (is (:text response) "Response should have text")
               (is (:message-id response) "Response should have message-id")
-              (is (:usage response) "Response should have usage stats")
-              (is (:cost response) "Response should have cost information")
 
               (log/info "Response received:"
                         {:session-id (:session-id response)
-                         :text-length (count (:text response))
-                         :usage (:usage response)
-                         :cost (:cost response)})))
+                         :text-length (count (:text response))})))
 
           ;; Should receive session-created broadcast (after response due to watcher delay)
           (let [created (fixtures/receive-ws-type client :session-created 5000)]

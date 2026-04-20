@@ -29,11 +29,14 @@
                   voice-code.claude/run-process-with-file-redirection
                   (fn [cli-path args working-dir timeout-ms session-id & _]
                     {:exit 0
-                     :out "[{\"type\":\"result\",\"result\":\"Hello from Claude\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
+                     :out "[{\"type\":\"result\",\"result\":\"Hello from Claude\",\"session_id\":\"test-123\",\"is_error\":false,\"usage\":{\"input_tokens\":10,\"output_tokens\":5},\"total_cost_usd\":0.01}]"})]
       (let [result (claude/invoke-claude "test prompt")]
         (is (:success result))
         (is (= "Hello from Claude" (:result result)))
-        (is (= "test-123" (:session-id result)))))))
+        (is (= "test-123" (:session-id result)))
+        (testing "usage and cost fields are stripped from response"
+          (is (not (contains? result :usage)))
+          (is (not (contains? result :cost))))))))
 
 (deftest test-invoke-claude-cli-flags
   (testing "Claude CLI is invoked with correct flags"
