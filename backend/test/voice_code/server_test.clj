@@ -644,6 +644,143 @@
           (is (re-find #"Test exception" (:error response))))))
     (reset! server/api-key nil)))
 
+;; Kill Session Tests
+
+(deftest test-kill-session-missing-session-id
+  (testing "kill_session without session_id returns error"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ msg] (swap! sent-messages conj (json/parse-string msg true)))]
+        (server/handle-message :test-ch "{\"type\":\"kill_session\"}")
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (= "session_id required in kill_session message" (:message response))))))
+    (reset! server/api-key nil)))
+
+(deftest test-kill-session-live-window-kills-and-broadcasts-aborted
+  ;; AC for tmux-untethered-ahs: a live window is killed via tmux/kill-window!,
+  ;; removed from live-windows, and a turn_complete{aborted:true} is broadcast
+  ;; to every subscriber of the session.
+  (testing "kill_session for a live window kills it and emits aborted turn_complete"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients
+            {:killer-ch {:deleted-sessions #{} :subscribed-sessions #{} :authenticated true}
+             :subscriber-ch {:deleted-sessions #{}
+                             :subscribed-sessions #{"sess-abc"}
+                             :authenticated true}})
+    (reset! tmux/live-windows {"sess-abc" {:tmux-session "proj"
+                                           :tmux-window "win-abc"
+                                           :provider :claude
+                                           :workdir "/tmp/proj"
+                                           :started-at "2026-04-20T00:00:00Z"}})
+    (let [sent (atom [])
+          kill-args (atom nil)]
+      (with-redefs [tmux/kill-window! (fn [s w] (reset! kill-args [s w]))
+                    org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent conj {:ch ch :msg (json/parse-string msg true)}))]
+        (server/handle-message :killer-ch
+                               "{\"type\":\"kill_session\",\"session_id\":\"sess-abc\"}")
+        (is (= ["proj" "win-abc"] @kill-args)
+            "tmux/kill-window! should be called with the descriptor's session and window")
+        (is (nil? (get @tmux/live-windows "sess-abc"))
+            "live-windows entry for the UUID should be removed")
+        (let [types-by-ch (group-by :ch @sent)]
+          (let [subscriber-msgs (map :msg (get types-by-ch :subscriber-ch))]
+            (is (some #(and (= "turn_complete" (:type %))
+                            (= "sess-abc" (:session_id %))
+                            (true? (:aborted %)))
+                      subscriber-msgs)
+                "Subscriber should receive turn_complete with aborted:true"))
+          (let [killer-msgs (map :msg (get types-by-ch :killer-ch))]
+            (is (some #(= "session_killed" (:type %)) killer-msgs)
+                "Killer channel should receive session_killed")
+            (is (not-any? #(and (= "turn_complete" (:type %)) (true? (:aborted %)))
+                          killer-msgs)
+                "Killer channel should not receive the aborted turn_complete unless it is also subscribed")))))
+    (reset! tmux/live-windows {})
+    (reset! server/api-key nil)))
+
+(deftest test-kill-session-no-live-window-sends-session-killed-only
+  (testing "kill_session for a session with no live window sends session_killed but no turn_complete"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients
+            {:killer-ch {:deleted-sessions #{} :subscribed-sessions #{} :authenticated true}
+             :subscriber-ch {:deleted-sessions #{}
+                             :subscribed-sessions #{"sess-gone"}
+                             :authenticated true}})
+    (reset! tmux/live-windows {})
+    (let [sent (atom [])
+          kill-called (atom false)]
+      (with-redefs [tmux/kill-window! (fn [& _] (reset! kill-called true))
+                    org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent conj {:ch ch :msg (json/parse-string msg true)}))]
+        (server/handle-message :killer-ch
+                               "{\"type\":\"kill_session\",\"session_id\":\"sess-gone\"}")
+        (is (false? @kill-called)
+            "tmux/kill-window! should not be called when no live window exists")
+        (let [all-msgs (map :msg @sent)]
+          (is (some #(= "session_killed" (:type %)) all-msgs)
+              "session_killed should still be sent even when nothing was live")
+          (is (not-any? #(= "turn_complete" (:type %)) all-msgs)
+              "No synthetic turn_complete should be broadcast when nothing was processing"))))
+    (reset! server/api-key nil)))
+
+(deftest test-kill-session-skips-deleted-subscribers
+  (testing "kill_session does not broadcast aborted turn_complete to subscribers who locally deleted the session"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients
+            {:killer-ch {:deleted-sessions #{} :subscribed-sessions #{} :authenticated true}
+             :deleter-ch {:deleted-sessions #{"sess-xyz"}
+                          :subscribed-sessions #{"sess-xyz"}
+                          :authenticated true}})
+    (reset! tmux/live-windows {"sess-xyz" {:tmux-session "proj"
+                                           :tmux-window "win-xyz"
+                                           :provider :claude
+                                           :workdir "/tmp/proj"
+                                           :started-at "2026-04-20T00:00:00Z"}})
+    (let [sent (atom [])]
+      (with-redefs [tmux/kill-window! (fn [& _] nil)
+                    org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent conj {:ch ch :msg (json/parse-string msg true)}))]
+        (server/handle-message :killer-ch
+                               "{\"type\":\"kill_session\",\"session_id\":\"sess-xyz\"}")
+        (let [deleter-msgs (map :msg (filter #(= :deleter-ch (:ch %)) @sent))]
+          (is (not-any? #(= "turn_complete" (:type %)) deleter-msgs)
+              "Subscriber who locally deleted the session should not receive turn_complete"))))
+    (reset! tmux/live-windows {})
+    (reset! server/api-key nil)))
+
+(deftest test-kill-session-tolerates-tmux-kill-failure
+  (testing "kill_session cleans up state and still emits aborted turn_complete when tmux/kill-window! throws"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients
+            {:killer-ch {:deleted-sessions #{} :subscribed-sessions #{"sess-err"} :authenticated true}})
+    (reset! tmux/live-windows {"sess-err" {:tmux-session "proj"
+                                           :tmux-window "win-err"
+                                           :provider :claude
+                                           :workdir "/tmp/proj"
+                                           :started-at "2026-04-20T00:00:00Z"}})
+    (let [sent (atom [])]
+      (with-redefs [tmux/kill-window! (fn [& _] (throw (Exception. "tmux exploded")))
+                    org.httpkit.server/send!
+                    (fn [_ msg] (swap! sent conj (json/parse-string msg true)))]
+        (server/handle-message :killer-ch
+                               "{\"type\":\"kill_session\",\"session_id\":\"sess-err\"}")
+        (is (nil? (get @tmux/live-windows "sess-err"))
+            "live-windows entry should be removed even when tmux kill fails")
+        (is (some #(and (= "turn_complete" (:type %)) (true? (:aborted %))) @sent)
+            "Aborted turn_complete should still be emitted")
+        (is (some #(= "session_killed" (:type %)) @sent)
+            "session_killed should still be sent")))
+    (reset! tmux/live-windows {})
+    (reset! server/api-key nil)))
+
 (deftest test-prompt-uses-ios-working-dir-for-new-session
   (testing "Prompt with new_session_id uses iOS-provided working directory"
     (reset! server/api-key test-api-key)

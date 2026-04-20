@@ -1544,34 +1544,42 @@
                             (generate-json
                              {:type :error
                               :message "session_id required in kill_session message"}))
-                (do
-                  (let [session-metadata (repl/get-session-metadata session-id)
-                        provider (or (:provider session-metadata) :claude)]
-                    (log/info "Kill session requested" {:session-id session-id :provider provider})
-                    ;; Route kill to correct handler based on provider
-                    (let [result (case provider
-                                   :claude (claude/kill-claude-session session-id)
-                                  ;; Non-Claude providers use generic kill
-                                   (if (providers/kill-provider-session provider session-id)
-                                     {:success true}
-                                     {:success false :error "No active process found for session"}))]
-                      (if (:success result)
-                        (do
-                          ;; Release the session lock
-                          (repl/release-session-lock! session-id)
-                          (log/info "Session killed successfully" {:session-id session-id :provider provider})
-                          (send-to-client! channel
-                                           {:type :session-killed
+                ;; Under tmux, provider CLI lifecycle is owned by tmux — we kill the
+                ;; window rather than a tracked Process. The JSONL watcher won't see
+                ;; a turn-complete marker (the process died mid-turn), so we synthesize
+                ;; a turn_complete with aborted:true to unblock the iOS UI.
+                (let [live-window (get @tmux/live-windows session-id)]
+                  (log/info "Kill session requested"
+                            {:session-id session-id
+                             :live-window? (boolean live-window)})
+                  (when live-window
+                    (try
+                      (tmux/kill-window! (:tmux-session live-window) (:tmux-window live-window))
+                      (catch Exception e
+                        (log/warn e "tmux kill-window failed; proceeding with cleanup"
+                                  {:session-id session-id})))
+                    (swap! tmux/live-windows dissoc session-id)
+                    ;; Broadcast aborted turn_complete to every subscriber so their
+                    ;; processing-indicator unlocks even though the JSONL watcher
+                    ;; will never emit a natural terminal marker for this turn.
+                    (doseq [[subscriber-channel client-info] @connected-clients]
+                      (let [subscribed (or (:subscribed-sessions client-info) #{})]
+                        (when (and (contains? subscribed session-id)
+                                   (not (is-session-deleted-for-client? subscriber-channel session-id)))
+                          (send-to-client! subscriber-channel
+                                           {:type :turn-complete
                                             :session-id session-id
-                                            :message "Session process terminated"}))
-                        (do
-                          (log/error "Failed to kill session" {:session-id session-id
-                                                               :provider provider
-                                                               :error (:error result)})
-                          (send-to-client! channel
-                                           {:type :error
-                                            :message (str "Failed to kill session: " (:error result))
-                                            :session-id session-id}))))))))
+                                            :aborted true})))))
+                  ;; Release any leftover session lock (compaction path still uses
+                  ;; the lock; kill should not leave it held).
+                  (when (repl/is-session-locked? session-id)
+                    (repl/release-session-lock! session-id))
+                  (send-to-client! channel
+                                   {:type :session-killed
+                                    :session-id session-id
+                                    :message (if live-window
+                                               "Session window killed"
+                                               "No live window for session")}))))
 
             "infer_session_name"
             (let [session-id (:session-id data)
