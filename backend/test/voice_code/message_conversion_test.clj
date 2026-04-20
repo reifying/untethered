@@ -80,7 +80,7 @@
 (deftest test-all-message-types-incoming
   (testing "All client message types parse correctly"
     (let [message-types ["ping" "connect" "subscribe" "unsubscribe"
-                         "session_deleted" "prompt" "set_directory" "message_ack"]]
+                         "session_deleted" "prompt" "set_max_message_size" "message_ack"]]
       (doseq [msg-type message-types]
         (let [json-str (json/generate-string {:type msg-type})
               parsed (parse-json json-str)

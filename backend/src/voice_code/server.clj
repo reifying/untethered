@@ -534,6 +534,42 @@
                     :message "Session is currently processing a prompt. Please wait."
                     :session-id session-id}))
 
+(def ^:private general-commands
+  [{:id "git.status"
+    :label "Git Status"
+    :description "Show git working tree status"
+    :type :command}
+   {:id "git.push"
+    :label "Git Push"
+    :description "Push commits to remote repository"
+    :type :command}
+   {:id "git.worktree.list"
+    :label "Git Worktree List"
+    :description "List all git worktrees"
+    :type :command}
+   {:id "bd.ready"
+    :label "Beads Ready"
+    :description "Show tasks ready to work on"
+    :type :command}
+   {:id "bd.list"
+    :label "Beads List"
+    :description "List all beads tasks"
+    :type :command}])
+
+(defn send-available-commands!
+  "Send available_commands to a client. Project commands are parsed from the
+   given working directory's Makefile when provided; otherwise the payload
+   carries only the always-available general commands."
+  [channel working-dir]
+  (let [project-commands (if (str/blank? working-dir)
+                           []
+                           (commands/parse-makefile working-dir))]
+    (send-to-client! channel
+                     {:type :available-commands
+                      :working-directory working-dir
+                      :project-commands project-commands
+                      :general-commands general-commands})))
+
 (defn is-session-deleted-for-client?
   "Check if a client has deleted a session locally"
   [channel session-id]
@@ -1177,30 +1213,7 @@
             (let [limit (or (:recent-sessions-limit data) 5)]
               (send-recent-sessions! channel limit))
             ;; Send available commands (no working directory yet, so no project commands)
-            (send-to-client! channel
-                             {:type :available-commands
-                              :working-directory nil
-                              :project-commands []
-                              :general-commands [{:id "git.status"
-                                                  :label "Git Status"
-                                                  :description "Show git working tree status"
-                                                  :type :command}
-                                                 {:id "git.push"
-                                                  :label "Git Push"
-                                                  :description "Push commits to remote repository"
-                                                  :type :command}
-                                                 {:id "git.worktree.list"
-                                                  :label "Git Worktree List"
-                                                  :description "List all git worktrees"
-                                                  :type :command}
-                                                 {:id "bd.ready"
-                                                  :label "Beads Ready"
-                                                  :description "Show tasks ready to work on"
-                                                  :type :command}
-                                                 {:id "bd.list"
-                                                  :label "Beads List"
-                                                  :description "List all beads tasks"
-                                                  :type :command}]}))
+            (send-available-commands! channel nil))
             ;; Start supervisor for this client connection
             (try
               (supervisor/start-supervisor! channel)
@@ -1433,6 +1446,14 @@
                         (log/info "New session detected, registering for session_ready" {:session-id new-session-id})
                         (swap! pending-new-sessions assoc new-session-id channel))
 
+                      ;; Send available commands for this session's working directory.
+                      ;; New sessions use the caller-supplied working-dir; resumed
+                      ;; sessions pull it from the session index.
+                      (let [session-workdir (if new-session-id
+                                              working-dir
+                                              (:working-directory session-metadata))]
+                        (send-available-commands! channel session-workdir))
+
                       ;; Dispatch to tmux. start-window! can block up to ~3s for
                       ;; TUI readiness, so run off-thread to keep the ack fast and
                       ;; avoid blocking other messages on this channel.
@@ -1457,45 +1478,6 @@
                                              {:type :error
                                               :message (str "Failed to dispatch prompt: " (.getMessage e))
                                               :session-id claude-session-id})))))))))
-
-            "set_directory"
-            (let [path (:path data)]
-              (if-not path
-                (http/send! channel
-                            (generate-json
-                             {:type :error
-                              :message "path required in set_directory message"}))
-                (do
-                  (log/info "Working directory set" {:path path})
-                  ;; Send acknowledgment
-                  (send-to-client! channel {:type :ack :message "Directory set"})
-                  ;; Parse Makefile and send available commands
-                  (let [project-commands (commands/parse-makefile path)
-                        general-commands [{:id "git.status"
-                                           :label "Git Status"
-                                           :description "Show git working tree status"
-                                           :type :command}
-                                          {:id "git.push"
-                                           :label "Git Push"
-                                           :description "Push commits to remote repository"
-                                           :type :command}
-                                          {:id "git.worktree.list"
-                                           :label "Git Worktree List"
-                                           :description "List all git worktrees"
-                                           :type :command}
-                                          {:id "bd.ready"
-                                           :label "Beads Ready"
-                                           :description "Show tasks ready to work on"
-                                           :type :command}
-                                          {:id "bd.list"
-                                           :label "Beads List"
-                                           :description "List all beads tasks"
-                                           :type :command}]]
-                    (send-to-client! channel
-                                     {:type :available-commands
-                                      :working-directory path
-                                      :project-commands project-commands
-                                      :general-commands general-commands})))))
 
             "set_max_message_size"
             (let [size-kb (:size-kb data)]
@@ -2003,35 +1985,7 @@
                                   :sessions recent-sessions
                                   :total-count total-non-empty}))
               ;; Send recent sessions
-              (send-recent-sessions! channel limit)
-              ;; Send available commands for current working directory (if set)
-              (when-let [working-dir (get-in @connected-clients [channel :working-directory])]
-                (let [project-commands (commands/parse-makefile working-dir)
-                      general-commands [{:id "git.status"
-                                         :label "Git Status"
-                                         :description "Show git working tree status"
-                                         :type :command}
-                                        {:id "git.push"
-                                         :label "Git Push"
-                                         :description "Push commits to remote repository"
-                                         :type :command}
-                                        {:id "git.worktree.list"
-                                         :label "Git Worktree List"
-                                         :description "List all git worktrees"
-                                         :type :command}
-                                        {:id "bd.ready"
-                                         :label "Beads Ready"
-                                         :description "Show tasks ready to work on"
-                                         :type :command}
-                                        {:id "bd.list"
-                                         :label "Beads List"
-                                         :description "List all beads tasks"
-                                         :type :command}]]
-                  (send-to-client! channel
-                                   {:type :available-commands
-                                    :working-directory working-dir
-                                    :project-commands project-commands
-                                    :general-commands general-commands}))))
+              (send-recent-sessions! channel limit))
 
             "get_available_recipes"
             (do
