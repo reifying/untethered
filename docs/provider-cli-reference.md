@@ -566,21 +566,59 @@ assistant.turn_start → assistant.message (toolRequests: [], content: "final te
 
 **Interactive invocation:** `cursor-agent --force` (the `cursor` binary requires Cursor IDE; use `cursor-agent` directly). `--force` means "Force allow commands unless explicitly denied" — the Cursor equivalent of `--dangerously-skip-permissions`. It is valid in both TUI and `--print` modes.
 
-**IMPORTANT — Design doc correction:** The design doc (§3.5) states "Cursor: last line of the session JSONL carries a terminal event type." This is **incorrect**.
-
-**Actual findings:**
+**Storage paths:**
 
 1. **Primary storage:** SQLite at `~/.cursor/chats/<project-hash>/<session-uuid>/store.db`. Two tables: `meta` (hex-encoded JSON) and `blobs` (binary Merkle-tree content). Not practically parseable for external turn detection.
 
-2. **Agent transcripts JSONL:** `~/.cursor/projects/<project-hash>/agent-transcripts/<session-uuid>.jsonl`. This file contains `{role: "user"|"assistant", message: {content: [...]}}` records. **There is no explicit turn-complete marker.** The last line is the final `role: "assistant"` message with no terminal event.
+2. **Agent transcripts JSONL:** `~/.cursor/projects/<project-hash>/agent-transcripts/<session-uuid>.jsonl`. Contains `{role: "user"|"assistant", message: {content: [{type: "text", text: "..."}]}}` records, one per line, separated by `\n` (no trailing newline). This is the source of truth for turn-complete detection.
 
-3. **The `type: "result"` event** from `--output-format stream-json` does NOT appear in the agent-transcripts JSONL.
+**TUI-mode writes agent-transcripts — source-verified 2026-04-19.** Static analysis of `cursor-agent@2026.02.13-41ac335` (`~/.local/share/cursor-agent/versions/2026.02.13-41ac335/`) confirms (live-runtime sanity-check pending — see "Open verification" below):
 
-4. **TUI-mode writes to agent-transcripts — unverified:** All observed agent-transcript files were from `--print`-mode invocations. Whether `cursor-agent` writes to `agent-transcripts` during interactive TUI mode (without `--print`) was not confirmed. This is an open question for task #8.
+- `434.index.js` (the TUI chat component) instantiates the transcript writer in a React `useEffect` hook:
+  ```js
+  (0,S.useEffect)((()=>{$t.current=new ke.Ko(Be,z.getId(),z.getBlobStore())}),[Be,z]);
+  ```
+  Here `ke` is the `./src/transcript/index.ts` module and `Ko` is the `CliTranscriptWriter` class.
 
-**Recommended detection approach for task #8:** If agent-transcripts JSONL is written in TUI mode, use file modification time: emit `turn_complete` when the JSONL file's mtime has been stable for >2 seconds after the last write. This is less reliable than an explicit marker.
+- The writer is invoked from `handleCheckpoint` on every conversation state transition:
+  ```js
+  handleCheckpoint:(e,t)=>{ ... $t.current?.writeFromState(e,t); ... }
+  ```
 
-Preferred alternative: run Cursor in `--print --output-format stream-json` mode and detect the `type: "result"` event from stdout. This gives a reliable, explicit signal at the cost of losing mid-turn steering capability for Cursor specifically.
+- `225.index.js` defines the writer (`./src/transcript/cli-transcript-writer.ts`) and configures the underlying store with `{writeText:!1, writeJsonl:!0}`, so output is a `.jsonl` file at the agent-transcripts path shown above.
+
+- Each `writeFromState` call re-serializes the full conversation state (user and assistant messages joined by `\n`) and rewrites the file, bumping mtime.
+
+**Turn-complete detection rule:** Emit `turn_complete` when BOTH:
+1. The JSONL file's mtime has been stable for ≥3 seconds since the last observed write.
+2. The last JSON record in the file has `role: "assistant"`.
+
+**Rationale for 3-second threshold:** The transcript captures only top-level user/assistant messages — intra-turn tool events do NOT produce new records. Checkpoints nevertheless fire on every durable state change and write the file out, so mtime updates occur in bursts during a turn (typically sub-second apart) and then go quiet once the final assistant message is written. 3 seconds is conservative enough to avoid false positives on slow checkpoints while remaining well below any human-perceptible response gap for voice-primary workflows. If empirical data shows the gap is tighter, the threshold can be lowered to 2s.
+
+**Why not `--print --output-format stream-json`?** That mode emits a `type: "result"` event on stdout that is a fully reliable turn signal — but it is one-shot per invocation and precludes the tmux-untethered design's mid-turn steering (the whole reason for running CLIs under tmux). Using `--print` for Cursor would deviate from the design for one provider; mtime debounce keeps Cursor in the same invocation shape as the others.
+
+**Sample fragment** (verbatim from `~/.cursor/projects/.../agent-transcripts/925e7f09-2601-4c64-9f0f-32cb1ed7e1cc.jsonl`, hex-inspected 2026-04-19):
+```
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\nSay hello\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Hello."}]}}
+```
+
+**Edge cases to handle in the watcher:**
+
+1. **File doesn't exist yet.** A new session's transcript file is not created until the first `handleCheckpoint` fires. The watcher must treat "file missing" as "turn in progress" rather than erroring. Poll for creation; apply the mtime rule only once the file exists.
+
+2. **Partial-write race.** `CliTranscriptWriter.writeFile` rewrites the file in place on each checkpoint. A reader that opens the file between truncation and completion may see an incomplete final line. The watcher must tolerate JSON parse errors on the last line: if the file's last line fails to parse, treat it as "in progress" (a fresh write is underway) and re-read on the next mtime-stable check rather than firing `turn_complete`.
+
+3. **Long-running tool call mid-turn.** The transcript captures only top-level `user` / `assistant` messages; intra-turn tool events do not add records. If a single tool call runs longer than the 3-second debounce window without any accompanying checkpoint write, the mtime can appear "stable" mid-turn with the last record still `role: "assistant"` (from a previous assistant message that preceded a tool call). This could falsely trigger `turn_complete`. Mitigations:
+    - Pair the mtime rule with tmux pane-output quiescence (the pane still shows tool activity), OR
+    - Require the record count to be unchanged across two consecutive mtime-stable checks, OR
+    - Increase the threshold if the pathological case is observed in practice.
+
+   The design currently assumes Cursor's checkpoint cadence makes this case rare in practice. If the empirical sanity-check (`tmux-untethered-58q`) observes it, adopt one of the mitigations above. The existing test fixture `backend/test-resources/provider-fixtures/cursor-transcript.jsonl` intentionally contains two consecutive `role: "assistant"` records with an implicit tool call between them — it is the shape that would false-fire under a naive mtime rule and should be asserted against.
+
+**Version sensitivity.** The evidence above is pinned to `cursor-agent@2026.02.13-41ac335`. The `CliTranscriptWriter` instantiation, the `handleCheckpoint` → `writeFromState` wiring, and the `{writeText:!1, writeJsonl:!0}` config are all implementation details of the shipped Node bundle — a future Cursor release may change or remove any of them. Re-verify the write path when upgrading `cursor-agent`; a short script that runs a trivial TUI turn and asserts the transcript file's mtime advanced is sufficient.
+
+**Open verification.** The live-session sanity-check (drive a real TUI turn, observe the transcript write burst, confirm mtime stabilizes ≥3s after the final assistant record) has not yet been run — local Cursor auth was unavailable when §5.3 was drafted. Tracked as `tmux-untethered-58q`.
 
 **File:** `backend/test-resources/provider-fixtures/cursor-transcript.jsonl`
 
@@ -612,5 +650,5 @@ The parts directory for a message contains files written sequentially: `step-sta
 |----------|---------------------|--------|-----------|
 | Claude | `type: "assistant"` with `message.stop_reason: "end_turn"` | `~/.claude/projects/.../<uuid>.jsonl` | Yes |
 | Copilot | `type: "assistant.turn_end"` when last `assistant.message` has `toolRequests: []` | `~/.copilot/session-state/<uuid>/events.jsonl` | Yes |
-| Cursor | No explicit marker (last `role: "assistant"` line) | `~/.cursor/projects/.../agent-transcripts/<uuid>.jsonl` | No — use mtime debounce |
+| Cursor | mtime stable ≥3s AND last record has `role: "assistant"` | `~/.cursor/projects/.../agent-transcripts/<uuid>.jsonl` | Mostly (mtime debounce; TUI write path source-verified in cursor-agent 2026.02.13; live-runtime check pending `tmux-untethered-58q`) |
 | OpenCode | Part file `type: "step-finish"` with `reason: "stop"` | `~/.local/share/opencode/storage/part/<msg-id>/*.json` | Yes |
