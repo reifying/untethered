@@ -634,14 +634,6 @@
   (or (get-in recipe [:steps step-name :model])
       (:model recipe)))
 
-(defn get-step-env
-  "Get env vars for a step. Merges recipe :env with step :env (step wins)."
-  [recipe step-name]
-  (let [recipe-env (:env recipe)
-        step-env (get-in recipe [:steps step-name :env])]
-    (when (or recipe-env step-env)
-      (merge recipe-env step-env))))
-
 (defn get-available-recipes-list
   "Get list of available recipes with metadata for client.
    Dynamically reads from recipes/all-recipes."
@@ -847,8 +839,7 @@
    (let [step-prompt (or prompt-override (get-next-step-prompt session-id orch-state recipe))
          current-step (:current-step orch-state)
          session-created? (:session-created? orch-state)
-         step-model (get-step-model recipe current-step)
-         step-env (get-step-env recipe current-step)]
+         step-model (get-step-model recipe current-step)]
      (if step-prompt
        (do
          (log/info "Executing recipe step"
@@ -866,12 +857,6 @@
                       :recipe-id (:recipe-id orch-state)
                       :step current-step
                       :requested-model step-model}))
-         (when (seq step-env)
-           (log/warn "Recipe step requests env override, which is not honored under tmux invocation"
-                     {:session-id session-id
-                      :recipe-id (:recipe-id orch-state)
-                      :step current-step
-                      :requested-env step-env}))
 
          (when-not prompt-override
            (send-to-client! channel

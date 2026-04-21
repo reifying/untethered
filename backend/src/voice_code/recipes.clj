@@ -112,7 +112,6 @@ If working on a beads task, update its status first:
    :label "Document Design"
    :description "Create a detailed design document with examples and verification"
    :model "opus"
-   :env {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"}
    :initial-step :document
    :steps
    {:document
@@ -252,7 +251,6 @@ Report any gaps or issues found. Do not make changes yet."
    :label "Break Down Tasks"
    :description "Create implementation tasks from design document using beads"
    :model "opus"
-   :env {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"}
    :initial-step :analyze
    :steps
    {:analyze

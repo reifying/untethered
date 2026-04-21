@@ -479,10 +479,6 @@
     (let [recipe (recipes/get-recipe :document-design)]
       (is (= "opus" (:model recipe)))))
 
-  (testing "has CLAUDE_CODE_DISABLE_1M_CONTEXT env var"
-    (let [recipe (recipes/get-recipe :document-design)]
-      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (:env recipe)))))
-
   (testing "passes validation"
     (let [recipe (recipes/document-design-recipe)]
       (is (nil? (recipes/validate-recipe recipe))))))
@@ -501,10 +497,6 @@
   (testing "has opus model"
     (let [recipe (recipes/get-recipe :break-down-tasks)]
       (is (= "opus" (:model recipe)))))
-
-  (testing "has CLAUDE_CODE_DISABLE_1M_CONTEXT env var"
-    (let [recipe (recipes/get-recipe :break-down-tasks)]
-      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (:env recipe)))))
 
   (testing "passes validation"
     (let [recipe (recipes/break-down-tasks-recipe)]

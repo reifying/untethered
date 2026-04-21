@@ -1487,44 +1487,6 @@
       (is (nil? (server/get-step-model recipe :code-review)))
       (is (nil? (server/get-step-model recipe :fix))))))
 
-(deftest test-get-step-env
-  (testing "returns step-level env when present"
-    (let [recipe {:steps {:document {:env {"FOO" "bar"}
-                                     :prompt "test"
-                                     :outcomes #{:done}
-                                     :on-outcome {}}}}]
-      (is (= {"FOO" "bar"} (server/get-step-env recipe :document)))))
-
-  (testing "returns recipe-level env when step has no env"
-    (let [recipe {:env {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"}
-                  :steps {:document {:prompt "test"
-                                     :outcomes #{:done}
-                                     :on-outcome {}}}}]
-      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (server/get-step-env recipe :document)))))
-
-  (testing "step-level env merges with and overrides recipe-level env"
-    (let [recipe {:env {"A" "1" "B" "2"}
-                  :steps {:document {:env {"B" "override" "C" "3"}
-                                     :prompt "test"
-                                     :outcomes #{:done}
-                                     :on-outcome {}}}}]
-      (is (= {"A" "1" "B" "override" "C" "3"} (server/get-step-env recipe :document)))))
-
-  (testing "returns nil when neither step nor recipe has env"
-    (let [recipe {:steps {:implement {:prompt "test"
-                                      :outcomes #{:done}
-                                      :on-outcome {}}}}]
-      (is (nil? (server/get-step-env recipe :implement)))))
-
-  (testing "works with document-design recipe"
-    (let [recipe (recipes/get-recipe :document-design)]
-      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (server/get-step-env recipe :document)))
-      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (server/get-step-env recipe :review)))))
-
-  (testing "works with break-down-tasks recipe"
-    (let [recipe (recipes/get-recipe :break-down-tasks)]
-      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (server/get-step-env recipe :analyze))))))
-
 (deftest test-session-exists?
   (testing "returns false when get-session-metadata returns nil"
     (with-redefs [repl/get-session-metadata (constantly nil)]
