@@ -154,6 +154,76 @@
       (is (false? (ready? "Loading model..."))))))
 
 ;; ============================================================================
+;; wait-for-ready: --resume confirmation dialog handshake
+;; ============================================================================
+
+(def ^:private resume-dialog-pane
+  "This session is 4d old and 118.8k tokens.\n\n❯ 1. Resume from summary (recommended)\n  2. Resume full session as-is\n  3. Don't ask me again")
+
+(deftest wait-for-ready-dismisses-claude-resume-dialog
+  (testing "dismisses the --resume dialog with 3+Enter, then reaches ready"
+    (let [call-log (atom [])
+          state (atom :dialog)
+          invoker (fn [& args]
+                    (swap! call-log conj (vec args))
+                    (cond
+                      (some #{"capture-pane"} args)
+                      (case @state
+                        :dialog  {:exit 0 :out resume-dialog-pane :err ""}
+                        :loading {:exit 0 :out "Loading..." :err ""}
+                        :ready   {:exit 0 :out "> prompt\n? for shortcuts · bypass permissions" :err ""})
+                      (and (some #{"send-keys"} args)
+                           (some #{"-l"} args)
+                           (some #{"3"} args))
+                      (do (reset! state :loading) {:exit 0 :out "" :err ""})
+                      (and (some #{"send-keys"} args) (some #{"Enter"} args))
+                      (do (reset! state :ready) {:exit 0 :out "" :err ""})
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :ready (tmux/wait-for-ready "sess" "win" :claude
+                                           :timeout-ms 3000 :poll-ms 1))))
+      (let [send-keys-calls (filter #(some #{"send-keys"} %) @call-log)
+            literal-3 (filter #(and (some #{"-l"} %) (some #{"3"} %)) send-keys-calls)
+            enters (filter #(some #{"Enter"} %) send-keys-calls)]
+        (is (= 1 (count literal-3))
+            "exactly one literal '3' should be sent")
+        (is (= 1 (count enters))
+            "exactly one Enter should be sent"))))
+
+  (testing "does NOT dismiss dialog for non-claude providers"
+    (let [dismissed? (atom false)
+          polls (atom 0)
+          invoker (fn [& args]
+                    (cond
+                      (some #{"capture-pane"} args)
+                      (do (swap! polls inc)
+                          {:exit 0 :out resume-dialog-pane :err ""})
+                      (and (some #{"send-keys"} args) (some #{"-l"} args) (some #{"3"} args))
+                      (do (reset! dismissed? true) {:exit 0 :out "" :err ""})
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :timeout (tmux/wait-for-ready "sess" "win" :copilot
+                                             :timeout-ms 50 :poll-ms 1))))
+      (is (false? @dismissed?)
+          "copilot must never send '3' in response to claude's dialog text")
+      (is (pos? @polls))))
+
+  (testing "dialog is dismissed at most once even if it persists"
+    (let [send-3-calls (atom 0)
+          invoker (fn [& args]
+                    (cond
+                      (some #{"capture-pane"} args)
+                      {:exit 0 :out resume-dialog-pane :err ""}
+                      (and (some #{"send-keys"} args) (some #{"-l"} args) (some #{"3"} args))
+                      (do (swap! send-3-calls inc) {:exit 0 :out "" :err ""})
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :timeout (tmux/wait-for-ready "sess" "win" :claude
+                                             :timeout-ms 50 :poll-ms 1))))
+      (is (= 1 @send-3-calls)
+          "even if dialog-like text persists, we must only dismiss once"))))
+
+;; ============================================================================
 ;; build-provider-command
 ;; ============================================================================
 

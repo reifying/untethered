@@ -118,6 +118,12 @@
                  :opencode "Ask anything")]
     (fn [content] (str/includes? content needle))))
 
+(def ^:private claude-resume-dialog-needle
+  "Substring present in the `claude --resume` confirmation dialog shown for
+   old/large sessions. Dialog lists: 'Resume from summary', 'Resume full
+   session as-is', 'Don't ask me again'."
+  "Resume from summary")
+
 (defn- shell-single-quote
   "Wrap s in single quotes, escaping embedded single quotes. Safe for arbitrary
    user text interpolated into a POSIX shell command string."
@@ -220,22 +226,38 @@
 
 (defn wait-for-ready
   "Poll capture-pane until the provider-specific readiness string appears.
+   For :claude, if the `--resume` confirmation dialog is visible, dismiss it
+   with '3' + Enter ('Don't ask me again') once and reset the deadline so the
+   CLI has a fresh budget to actually load the session and reach the TUI.
    Returns :ready on success, :timeout on deadline."
   [tmux-session window provider & {:keys [timeout-ms poll-ms]
                                    :or {timeout-ms 3000 poll-ms 100}}]
   (let [ready? (readiness-predicate provider)
-        target (format "=%s:=%s.0" tmux-session window)
-        deadline (+ (System/currentTimeMillis) timeout-ms)]
-    (loop []
+        target (format "=%s:=%s.0" tmux-session window)]
+    (loop [deadline (+ (System/currentTimeMillis) timeout-ms)
+           dismissed? false]
       (let [{:keys [out exit]} (sh "tmux" "capture-pane" "-t" target "-p")]
         (cond
           (and (zero? exit) (ready? out)) :ready
+
+          (and (zero? exit)
+               (= provider :claude)
+               (not dismissed?)
+               (str/includes? (or out "") claude-resume-dialog-needle))
+          (do (log/info "Dismissing claude --resume confirmation dialog"
+                        {:tmux-session tmux-session :window window})
+              (sh "tmux" "send-keys" "-t" target "-l" "3")
+              (Thread/sleep 100)
+              (sh "tmux" "send-keys" "-t" target "Enter")
+              (Thread/sleep poll-ms)
+              (recur (+ (System/currentTimeMillis) timeout-ms) true))
+
           (>= (System/currentTimeMillis) deadline)
           (do (log/warn "wait-for-ready timed out; pane contents follow"
                         {:tmux-session tmux-session :window window :provider provider
                          :pane-contents (or out "")})
               :timeout)
-          :else (do (Thread/sleep poll-ms) (recur)))))))
+          :else (do (Thread/sleep poll-ms) (recur deadline dismissed?)))))))
 
 (defn nudge!
   "Deliver a message to a running tmux window using the tmux-agent pattern:
