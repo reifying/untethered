@@ -567,6 +567,14 @@
   (or (get-in recipe [:steps step-name :model])
       (:model recipe)))
 
+(defn get-step-env
+  "Get env vars for a step. Merges recipe :env with step :env (step wins)."
+  [recipe step-name]
+  (let [recipe-env (:env recipe)
+        step-env (get-in recipe [:steps step-name :env])]
+    (when (or recipe-env step-env)
+      (merge recipe-env step-env))))
+
 (defn get-available-recipes-list
   "Get list of available recipes with metadata for client.
    Dynamically reads from recipes/all-recipes."
@@ -903,6 +911,7 @@
           (if session-created? :resume-session-id :new-session-id) session-id
           :working-directory working-dir
           :model (get-step-model recipe current-step)
+          :env-vars (get-step-env recipe current-step)
           :timeout-ms 86400000))
        ;; No step prompt available - this shouldn't happen in normal operation
        ;; but we must release the lock if it does

@@ -79,7 +79,6 @@ If working on a beads task, update its status first:
 - Write a clear commit message describing what was implemented
 - If working on a beads task, include the task ID in the commit message
 - Push to the remote repository after committing"
-    :model "haiku"
     :outcomes #{:committed :nothing-to-commit :other}
     :on-outcome
     {:committed {:action :exit :reason "changes-committed"}
@@ -110,6 +109,8 @@ If working on a beads task, update its status first:
   {:id :document-design
    :label "Document Design"
    :description "Create a detailed design document with examples and verification"
+   :model "opus"
+   :env {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"}
    :initial-step :document
    :steps
    {:document
@@ -230,7 +231,6 @@ Report any gaps or issues found. Do not make changes yet."
 
     :commit
     {:prompt "Commit and push the design document. Use a descriptive commit message that summarizes what is being designed."
-     :model "haiku"
      :outcomes #{:committed :nothing-to-commit :other}
      :on-outcome
      {:committed {:action :exit :reason "design-committed"}
@@ -249,6 +249,8 @@ Report any gaps or issues found. Do not make changes yet."
   {:id :break-down-tasks
    :label "Break Down Tasks"
    :description "Create implementation tasks from design document using beads"
+   :model "opus"
+   :env {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"}
    :initial-step :analyze
    :steps
    {:analyze
@@ -466,7 +468,6 @@ Use `bd dep rm <blocked> <blocking>` to remove incorrect dependencies."
 - Write a clear commit message
 
 Example: 'Add implementation tasks for user authentication (epic-abc123)'"
-     :model "haiku"
      :outcomes #{:committed :nothing-to-commit :other}
      :on-outcome
      {:committed {:action :exit :reason "tasks-committed"}
@@ -526,11 +527,10 @@ If working on a beads task, update its status first:
 - Write a clear commit message describing what was implemented
 - If working on a beads task, include the task ID in the commit message
 - Push to the remote repository after committing"
-   :model "haiku"
    :outcomes #{:committed :nothing-to-commit :other}
    :on-outcome
    {:committed {:action :restart-new-session :recipe-id :implement-and-review-all}
-    :nothing-to-commit {:action :exit :reason "no-changes-to-commit"}
+    :nothing-to-commit {:action :restart-new-session :recipe-id :implement-and-review-all}
     :other {:action :exit :reason "user-provided-other"}}})
 
 (defn implement-and-review-recipe
@@ -650,7 +650,6 @@ Provide a brief summary of:
 - Key changes from main that were incorporated
 
 The branch is now rebased on main and ready for further work or pushing."
-     :model "haiku"
      :outcomes #{:done :other}
      :on-outcome
      {:done {:action :exit :reason "rebase-complete"}
@@ -727,7 +726,6 @@ The branch is now rebased on main and ready for further work or pushing."
 3. Note the current structure and content
 
 Report what you found and confirm you're ready to begin the refinement process."
-     :model "haiku"
      :outcomes #{:found :not-found :other}
      :on-outcome
      {:found {:next-step :review-completeness}
@@ -1060,7 +1058,6 @@ Fix the remaining issues, then the design will have one more final review."
 
 Use a commit message that summarizes the refinements made.
 Example: 'Refine user authentication design: add error handling, simplify token flow'"
-     :model "haiku"
      :outcomes #{:committed :nothing-to-commit :other}
      :on-outcome
      {:committed {:action :exit :reason "design-refined-and-committed"}
@@ -1153,10 +1150,11 @@ Example: 'Refine user authentication design: add error handling, simplify token 
   (s/map-of keyword? ::transition))
 
 (s/def ::model valid-models)
+(s/def ::env (s/map-of string? string?))
 
 (s/def ::step-def
   (s/keys :req-un [::prompt ::outcomes ::on-outcome]
-          :opt-un [::model]))
+          :opt-un [::model ::env]))
 
 (s/def ::steps
   (s/map-of keyword? ::step-def))
@@ -1166,4 +1164,4 @@ Example: 'Refine user authentication design: add error handling, simplify token 
 
 (s/def ::recipe
   (s/keys :req-un [::id ::description ::initial-step ::steps]
-          :opt-un [::guardrails ::model]))
+          :opt-un [::guardrails ::model ::env]))

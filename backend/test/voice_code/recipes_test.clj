@@ -27,7 +27,7 @@
   (testing "commit step exits on completion"
     (let [step (:commit recipes/review-commit-steps)]
       (is (= :exit (get-in step [:on-outcome :committed :action])))
-      (is (= "haiku" (:model step))))))
+      (is (nil? (:model step))))))
 
 ;; ============================================================================
 ;; Review & Commit Recipe Tests
@@ -252,10 +252,10 @@
           outcomes (get-in recipe [:steps :commit :outcomes])]
       (is (= #{:committed :nothing-to-commit :other} outcomes))))
 
-  (testing "commit step uses haiku model"
+  (testing "commit step has no model override"
     (let [recipe (recipes/get-recipe :implement-and-review)
           model (get-in recipe [:steps :commit :model])]
-      (is (= "haiku" model))))
+      (is (nil? model))))
 
   (testing "commit step mentions beads and push"
     (let [recipe (recipes/get-recipe :implement-and-review)
@@ -323,11 +323,11 @@
       (is (= :restart-new-session (:action transition)))
       (is (= :implement-and-review-all (:recipe-id transition)))))
 
-  (testing "nothing-to-commit outcome exits"
+  (testing "nothing-to-commit outcome restarts with new session"
     (let [recipe (recipes/get-recipe :implement-and-review-all)
           transition (get-in recipe [:steps :commit :on-outcome :nothing-to-commit])]
-      (is (= :exit (:action transition)))
-      (is (= "no-changes-to-commit" (:reason transition)))))
+      (is (= :restart-new-session (:action transition)))
+      (is (= :implement-and-review-all (:recipe-id transition)))))
 
   (testing "shares implement step with implement-and-review"
     (let [all-recipe (recipes/get-recipe :implement-and-review-all)
@@ -389,10 +389,10 @@
           outcomes (get-in recipe [:steps :complete :outcomes])]
       (is (= #{:done :other} outcomes))))
 
-  (testing "complete step uses haiku model"
+  (testing "complete step has no model override"
     (let [recipe (recipes/get-recipe :rebase)
           model (get-in recipe [:steps :complete :model])]
-      (is (= "haiku" model))))
+      (is (nil? model))))
 
   (testing "has valid guardrails"
     (let [recipe (recipes/get-recipe :rebase)]
@@ -463,3 +463,49 @@
           prompt (get-in recipe [:steps :review :prompt])]
       (is (re-find #"subagent" prompt))
       (is (re-find #"merge conflicts" prompt)))))
+
+;; ============================================================================
+;; Document Design Recipe Tests
+;; ============================================================================
+
+(deftest document-design-recipe-test
+  (testing "recipe exists and has correct metadata"
+    (let [recipe (recipes/get-recipe :document-design)]
+      (is (not (nil? recipe)))
+      (is (= :document-design (:id recipe)))
+      (is (= "Document Design" (:label recipe)))))
+
+  (testing "has opus model"
+    (let [recipe (recipes/get-recipe :document-design)]
+      (is (= "opus" (:model recipe)))))
+
+  (testing "has CLAUDE_CODE_DISABLE_1M_CONTEXT env var"
+    (let [recipe (recipes/get-recipe :document-design)]
+      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (:env recipe)))))
+
+  (testing "passes validation"
+    (let [recipe (recipes/document-design-recipe)]
+      (is (nil? (recipes/validate-recipe recipe))))))
+
+;; ============================================================================
+;; Break Down Tasks Recipe Tests
+;; ============================================================================
+
+(deftest break-down-tasks-recipe-test
+  (testing "recipe exists and has correct metadata"
+    (let [recipe (recipes/get-recipe :break-down-tasks)]
+      (is (not (nil? recipe)))
+      (is (= :break-down-tasks (:id recipe)))
+      (is (= "Break Down Tasks" (:label recipe)))))
+
+  (testing "has opus model"
+    (let [recipe (recipes/get-recipe :break-down-tasks)]
+      (is (= "opus" (:model recipe)))))
+
+  (testing "has CLAUDE_CODE_DISABLE_1M_CONTEXT env var"
+    (let [recipe (recipes/get-recipe :break-down-tasks)]
+      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (:env recipe)))))
+
+  (testing "passes validation"
+    (let [recipe (recipes/break-down-tasks-recipe)]
+      (is (nil? (recipes/validate-recipe recipe))))))

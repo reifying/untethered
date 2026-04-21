@@ -1100,14 +1100,49 @@
 
   (testing "works with implement-and-review recipe"
     (let [recipe (recipes/get-recipe :implement-and-review)]
-      ;; :commit step has "haiku" model
-      (is (= "haiku" (server/get-step-model recipe :commit)))
-      ;; :implement step has no model
+      ;; No steps have model overrides
+      (is (nil? (server/get-step-model recipe :commit)))
       (is (nil? (server/get-step-model recipe :implement)))
-      ;; :code-review step has no model
       (is (nil? (server/get-step-model recipe :code-review)))
-      ;; :fix step has no model
       (is (nil? (server/get-step-model recipe :fix))))))
+
+(deftest test-get-step-env
+  (testing "returns step-level env when present"
+    (let [recipe {:steps {:document {:env {"FOO" "bar"}
+                                     :prompt "test"
+                                     :outcomes #{:done}
+                                     :on-outcome {}}}}]
+      (is (= {"FOO" "bar"} (server/get-step-env recipe :document)))))
+
+  (testing "returns recipe-level env when step has no env"
+    (let [recipe {:env {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"}
+                  :steps {:document {:prompt "test"
+                                     :outcomes #{:done}
+                                     :on-outcome {}}}}]
+      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (server/get-step-env recipe :document)))))
+
+  (testing "step-level env merges with and overrides recipe-level env"
+    (let [recipe {:env {"A" "1" "B" "2"}
+                  :steps {:document {:env {"B" "override" "C" "3"}
+                                     :prompt "test"
+                                     :outcomes #{:done}
+                                     :on-outcome {}}}}]
+      (is (= {"A" "1" "B" "override" "C" "3"} (server/get-step-env recipe :document)))))
+
+  (testing "returns nil when neither step nor recipe has env"
+    (let [recipe {:steps {:implement {:prompt "test"
+                                      :outcomes #{:done}
+                                      :on-outcome {}}}}]
+      (is (nil? (server/get-step-env recipe :implement)))))
+
+  (testing "works with document-design recipe"
+    (let [recipe (recipes/get-recipe :document-design)]
+      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (server/get-step-env recipe :document)))
+      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (server/get-step-env recipe :review)))))
+
+  (testing "works with break-down-tasks recipe"
+    (let [recipe (recipes/get-recipe :break-down-tasks)]
+      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (server/get-step-env recipe :analyze))))))
 
 (deftest test-execute-recipe-step-passes-model
   (testing "execute-recipe-step passes model to invoke-claude-async"
@@ -1120,7 +1155,7 @@
       (reset! voice-code.replication/session-locks #{})
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
 
-      ;; Start recipe at commit step (which has model "haiku")
+      ;; Start recipe at commit step (no model override)
       (server/start-recipe-for-session session-id :implement-and-review false)
       (swap! server/session-orchestration-state assoc-in [session-id :current-step] :commit)
 
@@ -1135,9 +1170,9 @@
               recipe (recipes/get-recipe :implement-and-review)]
           (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
 
-          ;; Verify model was passed correctly
-          (is (= "haiku" @captured-model)
-              "Commit step should use haiku model")))))
+          ;; Verify no model override is passed
+          (is (nil? @captured-model)
+              "Commit step should have no model override")))))
 
   (testing "execute-recipe-step passes nil model for steps without model"
     (let [session-id "test-no-model"
