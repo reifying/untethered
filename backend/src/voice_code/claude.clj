@@ -96,7 +96,7 @@
          (try (.delete stderr-file) (catch Exception e (log/warn e "Failed to delete stderr file"))))))))
 
 (defn invoke-claude
-  [prompt & {:keys [new-session-id resume-session-id model working-directory timeout system-prompt]
+  [prompt & {:keys [new-session-id resume-session-id model working-directory timeout system-prompt extra-env-vars]
              :or {timeout 3600000}}]
   (let [cli-path (get-claude-cli-path)]
     (when-not cli-path
@@ -104,7 +104,10 @@
 
     (let [expanded-dir (expand-tilde working-directory)
           ;; Compute environment variables for this directory (e.g., BEADS_DB for worktrees)
-          env-vars (when expanded-dir (env/env-for-directory expanded-dir))
+          dir-env-vars (when expanded-dir (env/env-for-directory expanded-dir))
+          env-vars (if (seq extra-env-vars)
+                     (merge dir-env-vars extra-env-vars)
+                     dir-env-vars)
           trimmed-system-prompt (when system-prompt (clojure.string/trim system-prompt))
           has-system-prompt? (and trimmed-system-prompt (not (clojure.string/blank? trimmed-system-prompt)))
           args (cond-> ["--dangerously-skip-permissions"
@@ -179,7 +182,7 @@
 
   Returns immediately. Calls callback-fn when done or on timeout.
   Response map will have :success true/false and either :result or :error."
-  [prompt callback-fn & {:keys [new-session-id resume-session-id working-directory model timeout-ms system-prompt]
+  [prompt callback-fn & {:keys [new-session-id resume-session-id working-directory model timeout-ms system-prompt env-vars]
                          :or {timeout-ms 86400000}}]
   (async/go
     (let [response-ch (async/thread
@@ -190,7 +193,8 @@
                                          :model model
                                          :working-directory working-directory
                                          :timeout timeout-ms
-                                         :system-prompt system-prompt)
+                                         :system-prompt system-prompt
+                                         :extra-env-vars env-vars)
                           (catch Exception e
                             (log/error e "Exception in Claude invocation")
                             {:success false

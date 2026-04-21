@@ -323,11 +323,11 @@
       (is (= :restart-new-session (:action transition)))
       (is (= :implement-and-review-all (:recipe-id transition)))))
 
-  (testing "nothing-to-commit outcome exits"
+  (testing "nothing-to-commit outcome restarts with new session"
     (let [recipe (recipes/get-recipe :implement-and-review-all)
           transition (get-in recipe [:steps :commit :on-outcome :nothing-to-commit])]
-      (is (= :exit (:action transition)))
-      (is (= "no-changes-to-commit" (:reason transition)))))
+      (is (= :restart-new-session (:action transition)))
+      (is (= :implement-and-review-all (:recipe-id transition)))))
 
   (testing "shares implement step with implement-and-review"
     (let [all-recipe (recipes/get-recipe :implement-and-review-all)
@@ -463,3 +463,49 @@
           prompt (get-in recipe [:steps :review :prompt])]
       (is (re-find #"subagent" prompt))
       (is (re-find #"merge conflicts" prompt)))))
+
+;; ============================================================================
+;; Document Design Recipe Tests
+;; ============================================================================
+
+(deftest document-design-recipe-test
+  (testing "recipe exists and has correct metadata"
+    (let [recipe (recipes/get-recipe :document-design)]
+      (is (not (nil? recipe)))
+      (is (= :document-design (:id recipe)))
+      (is (= "Document Design" (:label recipe)))))
+
+  (testing "has opus model"
+    (let [recipe (recipes/get-recipe :document-design)]
+      (is (= "opus" (:model recipe)))))
+
+  (testing "has CLAUDE_CODE_DISABLE_1M_CONTEXT env var"
+    (let [recipe (recipes/get-recipe :document-design)]
+      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (:env recipe)))))
+
+  (testing "passes validation"
+    (let [recipe (recipes/document-design-recipe)]
+      (is (nil? (recipes/validate-recipe recipe))))))
+
+;; ============================================================================
+;; Break Down Tasks Recipe Tests
+;; ============================================================================
+
+(deftest break-down-tasks-recipe-test
+  (testing "recipe exists and has correct metadata"
+    (let [recipe (recipes/get-recipe :break-down-tasks)]
+      (is (not (nil? recipe)))
+      (is (= :break-down-tasks (:id recipe)))
+      (is (= "Break Down Tasks" (:label recipe)))))
+
+  (testing "has opus model"
+    (let [recipe (recipes/get-recipe :break-down-tasks)]
+      (is (= "opus" (:model recipe)))))
+
+  (testing "has CLAUDE_CODE_DISABLE_1M_CONTEXT env var"
+    (let [recipe (recipes/get-recipe :break-down-tasks)]
+      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (:env recipe)))))
+
+  (testing "passes validation"
+    (let [recipe (recipes/break-down-tasks-recipe)]
+      (is (nil? (recipes/validate-recipe recipe))))))

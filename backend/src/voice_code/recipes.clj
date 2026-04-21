@@ -111,6 +111,8 @@ If working on a beads task, update its status first:
   {:id :document-design
    :label "Document Design"
    :description "Create a detailed design document with examples and verification"
+   :model "opus"
+   :env {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"}
    :initial-step :document
    :steps
    {:document
@@ -249,6 +251,8 @@ Report any gaps or issues found. Do not make changes yet."
   {:id :break-down-tasks
    :label "Break Down Tasks"
    :description "Create implementation tasks from design document using beads"
+   :model "opus"
+   :env {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"}
    :initial-step :analyze
    :steps
    {:analyze
@@ -482,13 +486,13 @@ Example: 'Add implementation tasks for user authentication (epic-abc123)'"
   {:prompt "Implement the current task from beads.
 
 ## Prerequisites
-1. Run `bd ready --limit 1` and `bd show <task-id>` to see the task details
+1. Run `bd ready --limit 1 -t task` and `bd show <task-id>` to see the task details
 2. Read the design document referenced in the task
 3. Review relevant code standards (@STANDARDS.md, @CLAUDE.md)
 4. Familiarize yourself with the codebase context
 
 ## No Tasks Available
-If `bd ready --limit 1` indicates there are no tasks ready for implementation, select the `no-tasks` outcome. This is a normal situation—the recipe will exit gracefully.
+If `bd ready --limit 1 -t task` indicates there are no tasks ready for implementation, select the `no-tasks` outcome. This is a normal situation—the recipe will exit gracefully.
 
 ## Implementation Requirements
 - Follow the technical approach specified in the task
@@ -529,7 +533,7 @@ If working on a beads task, update its status first:
    :outcomes #{:committed :nothing-to-commit :other}
    :on-outcome
    {:committed {:action :restart-new-session :recipe-id :implement-and-review-all}
-    :nothing-to-commit {:action :exit :reason "no-changes-to-commit"}
+    :nothing-to-commit {:action :restart-new-session :recipe-id :implement-and-review-all}
     :other {:action :exit :reason "user-provided-other"}}})
 
 (defn implement-and-review-recipe
@@ -1149,10 +1153,11 @@ Example: 'Refine user authentication design: add error handling, simplify token 
   (s/map-of keyword? ::transition))
 
 (s/def ::model valid-models)
+(s/def ::env (s/map-of string? string?))
 
 (s/def ::step-def
   (s/keys :req-un [::prompt ::outcomes ::on-outcome]
-          :opt-un [::model]))
+          :opt-un [::model ::env]))
 
 (s/def ::steps
   (s/map-of keyword? ::step-def))
@@ -1162,4 +1167,4 @@ Example: 'Refine user authentication design: add error handling, simplify token 
 
 (s/def ::recipe
   (s/keys :req-un [::id ::description ::initial-step ::steps]
-          :opt-un [::guardrails ::model]))
+          :opt-un [::guardrails ::model ::env]))
