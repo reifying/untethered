@@ -18,11 +18,27 @@ extension Notification.Name {
     static let sessionHistoryDidUpdate = Notification.Name("sessionHistoryDidUpdate")
 }
 
+// MARK: - Delegate
+
+/// Sink for out-of-band sync events that need a UI response. The UI layer
+/// (typically `VoiceCodeClient`) conforms and surfaces these to the user.
+protocol SessionSyncDelegate: AnyObject {
+    /// Fires when the backend replies with a `session_history` payload whose
+    /// `gap.reason == "pruned"` — the server no longer retains the seq range
+    /// the client asked for. The client is expected to warn the user that
+    /// local state is partial; no automatic merge or reload happens.
+    /// See docs/design/append-only-message-stream.md AC5.
+    func didDetectPrunedGap(_ sessionId: String, gap: SessionHistoryPayload.Gap)
+}
+
 /// Manages synchronization of session metadata between backend and CoreData
 class SessionSyncManager {
     private let persistenceController: PersistenceController
     private let context: NSManagedObjectContext
     private weak var voiceOutputManager: VoiceOutputManager?
+
+    /// UI-layer sink for pruned-gap and similar events. See `SessionSyncDelegate`.
+    weak var delegate: SessionSyncDelegate?
 
     init(persistenceController: PersistenceController = .shared, voiceOutputManager: VoiceOutputManager? = nil) {
         self.persistenceController = persistenceController
@@ -249,6 +265,29 @@ class SessionSyncManager {
         }
     }
     
+    // MARK: - Session History Payload (v0.4.0)
+
+    /// v0.4.0 entry point for a decoded `session_history` envelope.
+    ///
+    /// Scope of this method is deliberately narrow: surface `pruned` gaps to
+    /// the delegate and return. Full payload merge (idempotent upsert on
+    /// `(session_id, seq)`, `is_complete` follow-up subscribe) lands with
+    /// tmux-untethered-fh3. Wiring the delegate here first means that
+    /// compaction / prune work won't need iOS changes later.
+    func handleSessionHistoryPayload(_ payload: SessionHistoryPayload) {
+        if let gap = payload.gap, gap.reason == "pruned" {
+            logger.warning("⚠️ Pruned gap for \(payload.sessionId): requested_last_seq=\(gap.requestedLastSeq), min_available_seq=\(gap.minAvailableSeq)")
+            let sessionId = payload.sessionId
+            DispatchQueue.main.async { [weak self] in
+                self?.delegate?.didDetectPrunedGap(sessionId, gap: gap)
+            }
+        }
+        // TODO(tmux-untethered-fh3): merge payload.messages via upsert on
+        // (sessionId, seq); chase `is_complete: false` with a follow-up
+        // subscribe. Until that lands, non-gap payloads arrive via the
+        // legacy dict-based handleSessionHistory(sessionId:messages:).
+    }
+
     // MARK: - Optimistic UI
     
     /// Create an optimistic message immediately when user sends a prompt

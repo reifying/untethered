@@ -29,6 +29,11 @@ class VoiceCodeClient: ObservableObject {
     @Published var availableRecipes: [Recipe] = []  // All recipes from backend
     @Published var activeRecipes: [String: ActiveRecipe] = [:]  // session-id -> active recipe
     @Published var parsedRecentSessions: [RecentSession] = []  // Parsed recent sessions from backend
+    /// Latest pruned-gap notice from `SessionSyncDelegate.didDetectPrunedGap`.
+    /// Keyed by iOS session UUID (lowercased). Views observe this and render
+    /// a warning banner; entries live until the user dismisses them so a
+    /// background gap does not disappear before the user opens the session.
+    @Published var prunedGaps: [String: SessionHistoryPayload.Gap] = [:]
 
     private var webSocket: URLSessionWebSocketTask?
     private var reconnectionTimer: DispatchSourceTimer?
@@ -88,9 +93,17 @@ class VoiceCodeClient: ObservableObject {
             self.sessionSyncManager = SessionSyncManager(voiceOutputManager: voiceOutputManager)
         }
 
+        self.sessionSyncManager.delegate = self
+
         if setupObservers {
             setupLifecycleObservers()
         }
+    }
+
+    /// Clears a pruned-gap warning once the user has acknowledged it.
+    /// Must be called on the main queue (same as any `@Published` write).
+    func dismissPrunedGap(sessionId: String) {
+        prunedGaps.removeValue(forKey: sessionId.lowercased())
     }
 
     private func setupLifecycleObservers() {
@@ -1568,5 +1581,17 @@ class VoiceCodeClient: ObservableObject {
     deinit {
         NotificationCenter.default.removeObserver(self)
         disconnect()
+    }
+}
+
+// MARK: - SessionSyncDelegate
+
+extension VoiceCodeClient: SessionSyncDelegate {
+    /// `SessionSyncManager` hops to the main queue before calling this, so
+    /// the `@Published` write below runs on the main actor.
+    func didDetectPrunedGap(_ sessionId: String, gap: SessionHistoryPayload.Gap) {
+        let key = sessionId.lowercased()
+        logger.info("⚠️ Pruned gap surfaced to UI for \(key)")
+        prunedGaps[key] = gap
     }
 }

@@ -108,10 +108,24 @@ struct ConversationView: View {
         client.requestInferredName(sessionId: session.id.uuidString.lowercased(), messageText: messageText)
     }
 
+    /// Pruned-gap alert for this session, if any. Driven by the
+    /// `SessionSyncDelegate.didDetectPrunedGap` hook in VoiceCodeClient.
+    private var prunedGap: SessionHistoryPayload.Gap? {
+        client.prunedGaps[session.id.uuidString.lowercased()]
+    }
+
     var body: some View {
         let _ = RenderTracker.count(Self.self)
         let _ = RenderLoopDetector.shared.recordRender()
         VStack(spacing: 0) {
+            // Pruned-gap warning — local state is partial. User-driven
+            // (no automatic reload); they may keep browsing or compact/reload.
+            if let gap = prunedGap {
+                PrunedGapBanner(gap: gap) {
+                    client.dismissPrunedGap(sessionId: session.id.uuidString.lowercased())
+                }
+            }
+
             // Messages area
             ZStack(alignment: .bottomTrailing) {
                 if isLoading {
@@ -1410,5 +1424,51 @@ struct ConversationTextInputView: View {
             .disabled(text.isEmpty)
         }
         .padding(.horizontal)
+    }
+}
+
+/// Warning banner shown when the backend reports a pruned gap for the session
+/// currently on screen. Informational only — the user decides how to respond
+/// (dismiss and keep browsing, or trigger a reload elsewhere in the app).
+struct PrunedGapBanner: View {
+    let gap: SessionHistoryPayload.Gap
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Earlier messages unavailable")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Text("The server no longer has the earlier part of this conversation. Local history for this session may be incomplete.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss warning")
+            .accessibilityIdentifier("prunedGapBannerDismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.orange.opacity(0.12))
+        .overlay(
+            Rectangle()
+                .frame(height: 1)
+                .foregroundColor(Color.orange.opacity(0.4)),
+            alignment: .bottom
+        )
+        .accessibilityIdentifier("prunedGapBanner")
     }
 }
