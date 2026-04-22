@@ -369,75 +369,59 @@
             (recur (rest remaining) (conj included m) (+ used m-sz))))))))
 
 (defn build-session-history-response
-  "Build session-history response with delta sync and smart truncation.
+  "Unified session-history reply for subscribe and live push (protocol v0.4.0).
 
-   Algorithm:
-   1. Find messages newer than last-message-id (or all if not provided/found)
-   2. Start from newest, work backwards
-   3. Add messages until budget exhausted or all messages included
-   4. Truncate only messages exceeding per-message-max-bytes
-   5. Reverse to chronological order
+   Returns exactly one of three shapes, keyed on the relationship between the
+   client's `last-seq` and the server's `min-available-seq` / `next-seq`:
+
+     - Pruned:    client is below `min-available-seq - 1`. Reply carries a
+                  `:gap {:reason \"pruned\"}` and no messages.
+     - Caught up: client is at `next-seq - 1` or higher. Empty `:messages`,
+                  no gap.
+     - Packed:    otherwise, filter messages by `:seq > last-seq` and pack
+                  them with `pack-within-budget`. `:is-complete` is false
+                  when the byte budget truncates the range.
 
    Parameters:
-   - messages: vector of message maps (must have :uuid field)
-   - last-message-id: optional UUID string of the most recent message iOS has
-   - max-total-bytes: maximum bytes for the response JSON
+   - messages:          vector of canonical messages, each carrying `:seq`
+   - last-seq:          highest seq the client already has (0 = fresh)
+   - max-total-bytes:   response size budget for the packed branch
+   - min-available-seq: lowest seq the server still retains
+   - next-seq:          seq the server will assign to the next new message
 
-   Returns map with:
-   - :messages - vector of processed messages in chronological order
-   - :is-complete - true if all requested messages fit
-   - :oldest-message-id - UUID of oldest included message
-   - :newest-message-id - UUID of newest included message"
-  [messages last-message-id max-total-bytes]
-  (if (empty? messages)
+   Returns {:messages :first-seq :last-seq :next-seq :is-complete :gap}."
+  [messages last-seq max-total-bytes min-available-seq next-seq]
+  (cond
+    ;; Pruned: client's cursor is below the server's retained range.
+    (< last-seq (dec min-available-seq))
     {:messages []
+     :first-seq nil
+     :last-seq nil
+     :next-seq next-seq
      :is-complete true
-     :oldest-message-id nil
-     :newest-message-id nil}
-    (let [;; Find index of last known message
-          last-idx (when last-message-id
-                     (some (fn [[idx msg]]
-                             (when (= (:uuid msg) last-message-id) idx))
-                           (map-indexed vector messages)))
+     :gap {:requested-last-seq last-seq
+           :min-available-seq min-available-seq
+           :reason "pruned"}}
 
-          ;; Get messages newer than last known (or all if not found)
-          new-messages (if last-idx
-                         (vec (drop (inc last-idx) messages))
-                         messages)
+    ;; Caught up: client is at or beyond the server's newest message.
+    (>= last-seq (dec next-seq))
+    {:messages []
+     :first-seq nil
+     :last-seq nil
+     :next-seq next-seq
+     :is-complete true
+     :gap nil}
 
-          ;; If no new messages after last-message-id, return empty
-          _ (when (and last-idx (empty? new-messages))
-              (log/debug "No new messages since last-message-id"
-                         {:last-message-id last-message-id}))
-
-          ;; Work backwards from newest, building up result
-          reversed-msgs (reverse new-messages)
-          overhead-estimate 200 ;; JSON structure overhead
-
-          result (loop [remaining reversed-msgs
-                        accumulated []
-                        used-bytes overhead-estimate]
-                   (if (empty? remaining)
-                     {:messages (vec (reverse accumulated))
-                      :is-complete true}
-                     (let [msg (first remaining)
-                           ;; Truncate individual large messages
-                           processed-msg (truncate-message-text msg per-message-max-bytes)
-                           msg-json (generate-json processed-msg)
-                           msg-bytes (count (.getBytes msg-json "UTF-8"))
-                           new-total (+ used-bytes msg-bytes 1)] ;; +1 for comma
-                       (if (> new-total max-total-bytes)
-                         ;; Budget exhausted
-                         {:messages (vec (reverse accumulated))
-                          :is-complete false}
-                         ;; Add message and continue
-                         (recur (rest remaining)
-                                (conj accumulated processed-msg)
-                                new-total)))))]
-
-      (assoc result
-             :oldest-message-id (-> result :messages first :uuid)
-             :newest-message-id (-> result :messages last :uuid)))))
+    ;; Packed range.
+    :else
+    (let [candidates (filter #(> (:seq %) last-seq) messages)
+          {:keys [included complete?]} (pack-within-budget candidates max-total-bytes)]
+      {:messages (vec included)
+       :first-seq (:seq (first included))
+       :last-seq (:seq (last included))
+       :next-seq next-seq
+       :is-complete complete?
+       :gap nil})))
 
 (defn truncate-response-text
   "Truncate the :text field of a response message if the total JSON would exceed max size.
@@ -1431,28 +1415,57 @@
                           filtered (vec (repl/filter-internal-messages all-messages))
                           ;; Get client's max message size setting
                           max-bytes (get-client-max-message-size-bytes channel)
-                          ;; Use delta sync algorithm for smart truncation
-                          {:keys [messages is-complete oldest-message-id newest-message-id]}
-                          (build-session-history-response filtered last-message-id max-bytes)]
+                          ;; Middle-truncate messages larger than per-message-max-bytes. The new
+                          ;; build-session-history-response is a pure seq-over-budget packer and
+                          ;; deliberately omits per-message truncation; without this step a single
+                          ;; oversized JSONL entry would be dropped by the budget check and leave
+                          ;; the client stuck at is_complete=false on re-subscribe.
+                          truncated (mapv #(truncate-message-text % per-message-max-bytes) filtered)
+                          ;; UUID→seq shim: protocol v0.4.0 introduces per-session seq, but the
+                          ;; wire still carries last_message_id until the subscribe handler is
+                          ;; reworked. Stamp seqs from list order and translate UUID↔seq locally.
+                          stamped (vec (map-indexed (fn [i m] (assoc m :seq (inc i))) truncated))
+                          client-last-seq (or (when last-message-id
+                                                (some (fn [m]
+                                                        (when (= (:uuid m) last-message-id)
+                                                          (:seq m)))
+                                                      stamped))
+                                              0)
+                          session-next-seq (inc (count stamped))
+                          {response-msgs :messages
+                           is-complete :is-complete
+                           first-seq :first-seq
+                           last-seq :last-seq}
+                          (build-session-history-response stamped client-last-seq max-bytes 1 session-next-seq)
+                          oldest-message-id (when first-seq
+                                              (some (fn [m]
+                                                      (when (= (:seq m) first-seq)
+                                                        (:uuid m)))
+                                                    stamped))
+                          newest-message-id (when last-seq
+                                              (some (fn [m]
+                                                      (when (= (:seq m) last-seq)
+                                                        (:uuid m)))
+                                                    stamped))
+                          ;; Strip the shim-stamped :seq before serializing so the wire stays v0.3.0.
+                          wire-messages (mapv #(dissoc % :seq) response-msgs)]
                       ;; Update file position to current size so incremental parsing starts fresh
                       ;; This ensures we only get NEW messages after this subscription
                       (repl/reset-file-position! file-path)
                       (swap! repl/file-positions assoc file-path current-size)
                       (log/info "Sending session history"
                                 {:session-id session-id
-                                 :message-count (count messages)
+                                 :message-count (count wire-messages)
                                  :total (count filtered)
                                  :is-complete is-complete
                                  :has-delta-sync (some? last-message-id)
                                  :file-position current-size})
                       ;; Send session history with new delta sync fields
-                      ;; Note: we bypass send-to-client! truncation since build-session-history-response
-                      ;; already handled truncation with per-message limits
                       (http/send! channel
                                   (generate-json
                                    {:type :session-history
                                     :session-id session-id
-                                    :messages messages
+                                    :messages wire-messages
                                     :total-count (count filtered)
                                     :oldest-message-id oldest-message-id
                                     :newest-message-id newest-message-id

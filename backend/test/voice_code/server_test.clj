@@ -1986,112 +1986,105 @@
       (is (= ["oldest" "middle" "newest"]
              (mapv :uuid (:included result)))))))
 
-(deftest test-build-session-history-empty-messages
-  (testing "Empty messages returns empty result with nil IDs"
-    (let [result (server/build-session-history-response [] nil 100000)]
+(deftest test-build-session-history-pruned-branch
+  (testing "last-seq below min-available-seq - 1 returns :gap with reason pruned"
+    (let [messages [{:seq 200 :uuid "a" :text "hello"}
+                    {:seq 201 :uuid "b" :text "there"}
+                    {:seq 202 :uuid "c" :text "world"}]
+          result (server/build-session-history-response messages 42 10000 200 203)]
+      (is (= [] (:messages result)))
+      (is (nil? (:first-seq result)))
+      (is (nil? (:last-seq result)))
+      (is (= 203 (:next-seq result)))
+      (is (true? (:is-complete result)))
+      (is (= "pruned" (get-in result [:gap :reason])))
+      (is (= 42 (get-in result [:gap :requested-last-seq])))
+      (is (= 200 (get-in result [:gap :min-available-seq])))))
+
+  (testing "Pruned threshold is strict: last-seq == min-available-seq - 1 is NOT pruned"
+    ;; Boundary: caller has the seq immediately before the retained range.
+    ;; The server still has everything from :min-available-seq onward, so we
+    ;; fall through to the packed branch with a full delta.
+    (let [messages [{:seq 200 :uuid "a"} {:seq 201 :uuid "b"}]
+          result (server/build-session-history-response messages 199 10000 200 202)]
+      (is (nil? (:gap result)))
+      (is (= 2 (count (:messages result))))
+      (is (= 200 (:first-seq result))))))
+
+(deftest test-build-session-history-caught-up-branch
+  (testing "last-seq == next-seq - 1 returns empty messages, no gap"
+    (let [messages [{:seq 1 :uuid "a"} {:seq 2 :uuid "b"}]
+          result (server/build-session-history-response messages 2 10000 1 3)]
+      (is (= [] (:messages result)))
+      (is (nil? (:first-seq result)))
+      (is (nil? (:last-seq result)))
+      (is (= 3 (:next-seq result)))
+      (is (true? (:is-complete result)))
+      (is (nil? (:gap result)))))
+
+  (testing "Client ahead of server (last-seq > next-seq - 1) also returns caught-up"
+    ;; No :gap {:reason \"client_ahead\"} yet — the design defers that branch.
+    ;; For now, an over-ahead cursor just collapses to the caught-up response.
+    (let [result (server/build-session-history-response [] 999 10000 1 5)]
       (is (= [] (:messages result)))
       (is (true? (:is-complete result)))
-      (is (nil? (:oldest-message-id result)))
-      (is (nil? (:newest-message-id result))))))
+      (is (nil? (:gap result)))))
 
-(deftest test-build-session-history-delta-sync
-  (testing "Returns only messages newer than last-message-id"
-    (let [messages [{:uuid "msg-1" :text "old" :type "user"}
-                    {:uuid "msg-2" :text "middle" :type "assistant"}
-                    {:uuid "msg-3" :text "new" :type "user"}]
-          result (server/build-session-history-response messages "msg-1" 100000)]
-      (is (= 2 (count (:messages result))))
-      (is (= "msg-2" (-> result :messages first :uuid)))
-      (is (= "msg-3" (-> result :messages last :uuid)))
+  (testing "Empty session with fresh client (last-seq=0, next-seq=1) is caught up"
+    (let [result (server/build-session-history-response [] 0 10000 1 1)]
+      (is (= [] (:messages result)))
       (is (true? (:is-complete result)))
-      (is (= "msg-2" (:oldest-message-id result)))
-      (is (= "msg-3" (:newest-message-id result))))))
+      (is (nil? (:gap result))))))
 
-(deftest test-build-session-history-no-delta-sync
-  (testing "Returns all messages when last-message-id not provided"
-    (let [messages [{:uuid "msg-1" :text "first" :type "user"}
-                    {:uuid "msg-2" :text "second" :type "assistant"}
-                    {:uuid "msg-3" :text "third" :type "user"}]
-          result (server/build-session-history-response messages nil 100000)]
+(deftest test-build-session-history-packed-complete
+  (testing "Packed range returns messages > last-seq in order, complete when budget holds"
+    (let [messages [{:seq 1 :uuid "a" :text "one"}
+                    {:seq 2 :uuid "b" :text "two"}
+                    {:seq 3 :uuid "c" :text "three"}
+                    {:seq 4 :uuid "d" :text "four"}
+                    {:seq 5 :uuid "e" :text "five"}]
+          result (server/build-session-history-response messages 2 100000 1 6)]
       (is (= 3 (count (:messages result))))
-      (is (= "msg-1" (-> result :messages first :uuid)))
-      (is (= "msg-3" (-> result :messages last :uuid)))
+      (is (= [3 4 5] (mapv :seq (:messages result))))
+      (is (= 3 (:first-seq result)))
+      (is (= 5 (:last-seq result)))
+      (is (= 6 (:next-seq result)))
       (is (true? (:is-complete result)))
-      (is (= "msg-1" (:oldest-message-id result)))
-      (is (= "msg-3" (:newest-message-id result))))))
+      (is (nil? (:gap result)))))
 
-(deftest test-build-session-history-unknown-last-message-id
-  (testing "Returns all messages when last-message-id not found (backward compatible)"
-    (let [messages [{:uuid "msg-1" :text "first" :type "user"}
-                    {:uuid "msg-2" :text "second" :type "assistant"}]
-          result (server/build-session-history-response messages "unknown-id" 100000)]
-      (is (= 2 (count (:messages result))))
-      (is (= "msg-1" (-> result :messages first :uuid)))
-      (is (= "msg-2" (-> result :messages last :uuid)))
+  (testing "Fresh client (last-seq=0) with full budget gets everything"
+    (let [messages [{:seq 1 :uuid "a"} {:seq 2 :uuid "b"} {:seq 3 :uuid "c"}]
+          result (server/build-session-history-response messages 0 100000 1 4)]
+      (is (= 3 (count (:messages result))))
+      (is (= 1 (:first-seq result)))
+      (is (= 3 (:last-seq result)))
       (is (true? (:is-complete result))))))
 
-(deftest test-build-session-history-budget-exhausted
-  (testing "Stops when budget exhausted, prioritizes newest messages"
-    (let [;; Create messages of reasonable sizes
-          messages (vec (for [i (range 10)]
-                          {:uuid (str "msg-" i)
-                           :type "assistant"
-                           :text (apply str (repeat 1000 "x"))}))
-          ;; Budget that can only fit about 5 messages (~1KB each + overhead)
-          result (server/build-session-history-response messages nil 6000)]
-      ;; Should include newest messages, not oldest
-      (is (= "msg-9" (-> result :messages last :uuid)))
-      ;; is-complete should be false since budget was exhausted
-      (is (false? (:is-complete result))))))
+(deftest test-build-session-history-packed-truncated
+  (testing "Packed range stops at budget boundary with :is-complete false"
+    ;; Each message is ~200 bytes of text + envelope; 500-byte budget fits ~1.
+    (let [messages (vec (for [i (range 10)]
+                          {:seq (inc i)
+                           :uuid (str "m-" i)
+                           :text (apply str (repeat 200 "x"))}))
+          result (server/build-session-history-response messages 0 500 1 11)]
+      (is (false? (:is-complete result)))
+      (is (pos? (count (:messages result))))
+      (is (< (count (:messages result)) 10))
+      ;; pack-within-budget walks oldest-first, so :first-seq is always seq 1
+      (is (= 1 (:first-seq result)))
+      ;; :last-seq matches the :seq of the last included message
+      (is (= (:seq (last (:messages result))) (:last-seq result)))
+      (is (nil? (:gap result)))))
 
-(deftest test-build-session-history-preserves-small-messages
-  (testing "Small messages are not truncated"
-    (let [messages [{:uuid "small" :type "user" :text "Hello world"}
-                    {:uuid "also-small" :type "assistant" :text "Hi there!"}]
-          result (server/build-session-history-response messages nil 100000)]
-      ;; Small messages should be unchanged
-      (is (= "Hello world" (-> result :messages first :text)))
-      (is (= "Hi there!" (-> result :messages last :text)))
-      (is (true? (:is-complete result))))))
-
-(deftest test-build-session-history-truncates-large-messages
-  (testing "Large individual messages are truncated to per-message-max-bytes"
-    (let [;; Create a message larger than per-message-max-bytes (20KB)
-          large-text (apply str (repeat 50000 "x"))
-          messages [{:uuid "small" :type "user" :text "Hello"}
-                    {:uuid "large" :type "assistant" :text large-text}]
-          result (server/build-session-history-response messages nil 200000)]
-      ;; Small message unchanged
-      (is (= "Hello" (-> result :messages first :text)))
-      ;; Large message should be truncated and contain truncation marker
-      (let [truncated-text (-> result :messages last :text)]
-        (is (< (count truncated-text) (count large-text)))
-        (is (str/includes? truncated-text "[truncated"))))))
-
-(deftest test-build-session-history-no-new-messages
-  (testing "Returns empty when last-message-id is the newest message"
-    (let [messages [{:uuid "msg-1" :text "first" :type "user"}
-                    {:uuid "msg-2" :text "second" :type "assistant"}]
-          ;; last-message-id is the newest message
-          result (server/build-session-history-response messages "msg-2" 100000)]
-      (is (= 0 (count (:messages result))))
-      (is (true? (:is-complete result)))
-      (is (nil? (:oldest-message-id result)))
-      (is (nil? (:newest-message-id result))))))
-
-(deftest test-build-session-history-maintains-chronological-order
-  (testing "Messages are returned in chronological order (oldest first)"
-    (let [messages [{:uuid "msg-1" :text "first" :type "user"}
-                    {:uuid "msg-2" :text "second" :type "assistant"}
-                    {:uuid "msg-3" :text "third" :type "user"}
-                    {:uuid "msg-4" :text "fourth" :type "assistant"}
-                    {:uuid "msg-5" :text "fifth" :type "user"}]
-          result (server/build-session-history-response messages "msg-2" 100000)]
-      ;; Should return msg-3, msg-4, msg-5 in chronological order
-      (is (= 3 (count (:messages result))))
-      (is (= "msg-3" (-> result :messages (nth 0) :uuid)))
-      (is (= "msg-4" (-> result :messages (nth 1) :uuid)))
-      (is (= "msg-5" (-> result :messages (nth 2) :uuid))))))
+  (testing "Single message larger than budget yields empty :messages, :is-complete false"
+    (let [big-msg {:seq 1 :uuid "big" :text (apply str (repeat 5000 "x"))}
+          result (server/build-session-history-response [big-msg] 0 300 1 2)]
+      (is (= [] (:messages result)))
+      (is (false? (:is-complete result)))
+      (is (nil? (:first-seq result)))
+      (is (nil? (:last-seq result)))
+      (is (nil? (:gap result))))))
 
 (deftest test-subscribe-with-delta-sync
   (testing "Subscribe with last_message_id triggers delta sync"
@@ -2178,6 +2171,50 @@
           (is (= "msg-1" (:oldest_message_id response)))
           (is (= "msg-2" (:newest_message_id response)))
           (is (true? (:is_complete response))))))
+    (reset! server/api-key nil)))
+
+(deftest test-subscribe-middle-truncates-oversized-messages
+  (testing "Subscribe flow middle-truncates messages above per-message-max-bytes"
+    ;; Regression guard: build-session-history-response is a pure byte-budget packer and
+    ;; does not per-message truncate. The subscribe shim must keep doing so, otherwise a
+    ;; single oversized JSONL entry would be silently dropped by pack-within-budget.
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
+    (let [sent-messages (atom [])
+          ;; 60 KB of text — well above per-message-max-bytes (20 KB) but under the 100 KB
+          ;; response budget, so the only reason it would shrink is per-message truncation.
+          big-text (apply str (repeat 60000 "x"))
+          mock-messages [{:uuid "small" :type "user" :text "hi" :message {:role "user" :content "hi"}}
+                         {:uuid "big" :type "assistant" :text big-text :message {:role "assistant" :content big-text}}]]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    voice-code.replication/subscribe-to-session! (fn [_] nil)
+                    voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      {:session-id session-id
+                       :file "/tmp/test-session.jsonl"
+                       :provider :claude
+                       :message-count 2})
+                    voice-code.replication/parse-session-messages (fn [_ _] mock-messages)
+                    voice-code.replication/filter-internal-messages identity
+                    voice-code.replication/reset-file-position! (fn [_] nil)
+                    voice-code.replication/file-positions (atom {})
+                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
+                                                      (length [] 1000)
+                                                      (exists [] true)))]
+        (server/handle-message :test-ch
+                               "{\"type\":\"subscribe\",\"session_id\":\"truncate-session\"}")
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)
+              big-msg (->> response :messages (filter #(= "big" (:uuid %))) first)]
+          (is (some? big-msg) "Large message should be delivered (truncated), not dropped")
+          (is (< (count (:text big-msg)) (count big-text))
+              "Large message text should be shorter than original")
+          (is (str/includes? (:text big-msg) "[truncated")
+              "Truncated message should carry the truncation marker")
+          (is (true? (:is_complete response))
+              "is_complete should be true — per-message truncation keeps the response complete"))))
     (reset! server/api-key nil)))
 
 ;; ============================================================================
