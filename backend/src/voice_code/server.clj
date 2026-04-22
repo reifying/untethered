@@ -1232,36 +1232,78 @@
           (log/debug "No messages to send for new subscribed session"
                      {:session-id session-id}))))))
 
-(defn on-session-updated
-  "Called when a subscribed session has new messages"
+(defn broadcast-session-history!
+  "Flat broadcast of newly-parsed messages as a one-message-window
+   session_history payload (protocol v0.4.0).
+
+   Every eligible subscriber receives the same payload regardless of their
+   own last_seq — the server does NOT tailor per subscriber. Client-side
+   gap detection (`first_seq` vs. `local_last_seq`) is responsible for
+   reconciling missed windows by re-subscribing with the appropriate cursor
+   (see @docs/design/append-only-message-stream.md §Push).
+
+   Eligibility: a connected client that has not marked this session as
+   locally-deleted. Per-session subscription gating is enforced upstream by
+   the watcher (this callback only fires when `is-subscribed?` is true).
+
+   Under v0.3.0 rollback, emits the legacy `session_updated` envelope so
+   existing clients keep working without a redeploy. Messages still carry
+   `:seq` (assign-seq! stamps every parse regardless of protocol), which
+   v0.3.0 clients harmlessly ignore."
   [session-id new-messages]
-  (let [client-count (count @connected-clients)
+  (let [v0-4? (seq-migration-enabled?)
         eligible-clients (filter (fn [[channel _]]
                                    (not (is-session-deleted-for-client? channel session-id)))
                                  @connected-clients)
         eligible-count (count eligible-clients)]
 
-    (log/info "Session updated callback invoked"
+    (log/info "Broadcasting session history"
               {:session-id session-id
                :new-message-count (count new-messages)
-               :total-clients client-count
-               :eligible-clients eligible-count})
+               :total-clients (count @connected-clients)
+               :eligible-clients eligible-count
+               :protocol (if v0-4? :v0.4.0 :v0.3.0)})
 
-    ;; Send to all clients subscribed to this session (and haven't deleted it)
-    (doseq [[channel client-info] eligible-clients]
-      (log/debug "Sending session-updated to client"
-                 {:session-id session-id
-                  :client-session-id (:session-id client-info)
-                  :new-messages (count new-messages)
-                  :channel-id (str channel)})
-      (send-to-client! channel
-                       {:type :session-updated
-                        :session-id session-id
-                        :messages new-messages})
+    (if v0-4?
+      ;; v0.4.0: flat session_history broadcast. One payload built once,
+      ;; shipped to every eligible subscriber unchanged.
+      (let [msgs-vec (vec new-messages)
+            first-seq (:seq (first msgs-vec))
+            last-seq (:seq (last msgs-vec))
+            next-seq (or (:next-seq (repl/get-session-metadata session-id))
+                         (when last-seq (inc last-seq))
+                         1)
+            wire-messages (mapv #(assoc % :session-id session-id) msgs-vec)
+            payload {:type :session-history
+                     :session-id session-id
+                     :messages wire-messages
+                     :first-seq first-seq
+                     :last-seq last-seq
+                     :next-seq next-seq
+                     :is-complete true
+                     :gap nil}]
+        (doseq [[channel client-info] eligible-clients]
+          (log/debug "Broadcasting session-history window to subscriber"
+                     {:session-id session-id
+                      :first-seq first-seq
+                      :last-seq last-seq
+                      :channel-id (str channel)})
+          (send-to-client! channel payload)
+          (let [limit (get client-info :recent-sessions-limit 5)]
+            (send-recent-sessions! channel limit))))
 
-      ;; Send updated recent sessions list to each client
-      (let [limit (get client-info :recent-sessions-limit 5)]
-        (send-recent-sessions! channel limit)))))
+      ;; v0.3.0 rollback: legacy session_updated envelope.
+      (doseq [[channel client-info] eligible-clients]
+        (log/debug "Sending session-updated to client (v0.3.0 rollback)"
+                   {:session-id session-id
+                    :new-messages (count new-messages)
+                    :channel-id (str channel)})
+        (send-to-client! channel
+                         {:type :session-updated
+                          :session-id session-id
+                          :messages new-messages})
+        (let [limit (get client-info :recent-sessions-limit 5)]
+          (send-recent-sessions! channel limit))))))
 
 (defn on-session-deleted
   "Called when a session file is deleted from filesystem"
@@ -2687,7 +2729,7 @@
     (try
       (repl/start-watcher!
        :on-session-created on-session-created
-       :on-session-updated on-session-updated
+       :on-session-updated broadcast-session-history!
        :on-session-deleted on-session-deleted
        :on-turn-complete on-turn-complete)
       (log/info "Filesystem watcher started successfully")

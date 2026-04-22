@@ -371,35 +371,122 @@
                                   @sent-messages)]
           (is (= 2 (count recent-msgs)))))))
 
-  (testing "on-session-updated respects deleted sessions"
-    (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :recent-sessions-limit 5}
-                                      :ch2 {:deleted-sessions #{} :recent-sessions-limit 5}})
-    (let [sent-messages (atom [])]
-      (with-redefs [org.httpkit.server/send! (fn [channel msg]
-                                               (swap! sent-messages conj {:channel channel :msg msg}))]
-        (server/on-session-updated "session-1" [{:role "user" :text "test"}])
+  (testing "broadcast-session-history! (v0.4.0) emits session_history and respects deleted sessions"
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.4.0)
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :recent-sessions-limit 5}
+                                          :ch2 {:deleted-sessions #{} :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))
+                        repl/get-session-metadata (constantly {:session-id "session-1"
+                                                               :next-seq 43
+                                                               :min-available-seq 1})]
+            (server/broadcast-session-history!
+             "session-1"
+             [{:role "assistant" :text "hello" :uuid "u-1" :seq 42}])
 
-        ;; ch1 deleted it, should not receive any messages
-        (is (= 0 (count (filter #(= :ch1 (:channel %)) @sent-messages))))
+            ;; ch1 deleted it, should not receive any messages
+            (is (= 0 (count (filter #(= :ch1 (:channel %)) @sent-messages))))
 
-        ;; ch2 should receive 2 messages: session_updated + recent_sessions
-        (let [ch2-msgs (filter #(= :ch2 (:channel %)) @sent-messages)]
-          (is (= 2 (count ch2-msgs)))
+            ;; ch2 should receive 2 messages: session_history + recent_sessions
+            (let [ch2-msgs (filter #(= :ch2 (:channel %)) @sent-messages)]
+              (is (= 2 (count ch2-msgs)))
 
-          ;; Verify session_updated message
-          (let [updated-msg (first (filter #(= "session_updated"
-                                               (:type (json/parse-string (:msg %) true)))
-                                           ch2-msgs))
-                msg (json/parse-string (:msg updated-msg) true)]
-            (is (= "session_updated" (:type msg)))
-            (is (= "session-1" (:session_id msg)))
-            (is (= 1 (count (:messages msg)))))
-
-          ;; Verify recent_sessions message
-          (let [recent-msg (first (filter #(= "recent_sessions"
+              ;; Verify session_history envelope carries seq range + gap nil
+              (let [history-msg (first (filter #(= "session_history"
+                                                   (:type (json/parse-string (:msg %) true)))
+                                               ch2-msgs))
+                    msg (json/parse-string (:msg history-msg) true)]
+                (is (= "session_history" (:type msg)))
+                (is (= "session-1" (:session_id msg)))
+                (is (= 1 (count (:messages msg))))
+                (is (= 42 (:first_seq msg)))
+                (is (= 42 (:last_seq msg)))
+                (is (= 43 (:next_seq msg)))
+                (is (true? (:is_complete msg)))
+                (is (nil? (:gap msg))
+                    "gap is nil for normal push windows")
+                ;; No stale session_updated envelope in v0.4.0 output
+                (is (nil? (first (filter #(= "session_updated"
                                               (:type (json/parse-string (:msg %) true)))
-                                          ch2-msgs))]
-            (is (some? recent-msg))))))))
+                                         ch2-msgs)))))
+
+              ;; Verify recent_sessions still piggybacks on the push
+              (let [recent-msg (first (filter #(= "recent_sessions"
+                                                  (:type (json/parse-string (:msg %) true)))
+                                              ch2-msgs))]
+                (is (some? recent-msg))))))
+        (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.4.0) delivers identical payload to every subscriber (AC3)"
+    ;; Flat broadcast: every eligible subscriber receives the same bytes
+    ;; regardless of their own last_seq — client-side gap detection reconciles.
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.4.0)
+        (reset! server/connected-clients {:ch-a {:deleted-sessions #{} :recent-sessions-limit 5}
+                                          :ch-b {:deleted-sessions #{} :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))
+                        repl/get-session-metadata (constantly {:session-id "session-flat"
+                                                               :next-seq 11
+                                                               :min-available-seq 1})]
+            (server/broadcast-session-history!
+             "session-flat"
+             [{:role "assistant" :text "a" :uuid "u-9" :seq 9}
+              {:role "user" :text "b" :uuid "u-10" :seq 10}])
+
+            (let [parse-hist (fn [channel]
+                               (some->> @sent-messages
+                                        (filter #(and (= channel (:channel %))
+                                                      (= "session_history"
+                                                         (:type (json/parse-string (:msg %) true)))))
+                                        first
+                                        :msg
+                                        (#(json/parse-string % true))))
+                  a (parse-hist :ch-a)
+                  b (parse-hist :ch-b)]
+              (is (some? a))
+              (is (some? b))
+              (is (= a b)
+                  "ch-a and ch-b receive byte-identical session_history payloads")
+              (is (= 9  (:first_seq a)))
+              (is (= 10 (:last_seq a)))
+              (is (= 11 (:next_seq a))))))
+        (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.3.0 rollback) emits legacy session_updated"
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.3.0)
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :recent-sessions-limit 5}
+                                          :ch2 {:deleted-sessions #{} :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))]
+            (server/broadcast-session-history!
+             "session-1"
+             [{:role "user" :text "test" :seq 42}])
+
+            ;; ch1 deleted → nothing
+            (is (= 0 (count (filter #(= :ch1 (:channel %)) @sent-messages))))
+
+            (let [ch2-msgs (filter #(= :ch2 (:channel %)) @sent-messages)
+                  updated-msg (first (filter #(= "session_updated"
+                                                 (:type (json/parse-string (:msg %) true)))
+                                             ch2-msgs))
+                  msg (json/parse-string (:msg updated-msg) true)]
+              (is (= 2 (count ch2-msgs)))
+              (is (= "session_updated" (:type msg)))
+              (is (= "session-1" (:session_id msg)))
+              (is (= 1 (count (:messages msg)))))))
+        (finally
+          (reset! server/message-stream-version original))))))
 
 (deftest test-new-protocol-connect
   (testing "Connect message returns session list and recent sessions"

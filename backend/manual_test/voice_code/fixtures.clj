@@ -101,7 +101,7 @@
      :on-session-created (fn [metadata]
                            (server/on-session-created metadata))
      :on-session-updated (fn [session-id messages]
-                           (server/on-session-updated session-id messages))
+                           (server/broadcast-session-history! session-id messages))
      :on-session-deleted (fn [session-id]
                            (server/on-session-deleted session-id)))
     (catch Exception e
