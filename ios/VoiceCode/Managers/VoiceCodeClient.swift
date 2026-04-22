@@ -14,12 +14,28 @@ import os.log
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "VoiceCodeClient")
 
 class VoiceCodeClient: ObservableObject {
+    /// Wire-protocol version this client speaks. The backend echoes a version
+    /// string in its `hello` message; anything other than this is treated as
+    /// an incompatible peer and transitions the client into upgrade-required
+    /// state (same visible result as receiving an `unsupported_protocol_version`
+    /// error from the backend).
+    static let supportedProtocolVersion = "0.4.0"
+
     @Published var isConnected = false
     @Published var currentError: String?
     @Published var isProcessing = false
     @Published var isAuthenticated = false
     @Published var authenticationError: String?
     @Published var requiresReauthentication = false  // Shows "re-scan required" UI
+    /// Flipped to true when either: (a) the backend's `hello.version` doesn't
+    /// match `supportedProtocolVersion`, or (b) the backend returns an
+    /// `{"type":"error","code":"unsupported_protocol_version"}`. UI observes
+    /// this to show an app-upgrade banner; reconnection is halted until the
+    /// user installs a compatible app build.
+    @Published var requiresUpgrade = false
+    /// Human-readable detail for the upgrade-required UI (e.g. the version
+    /// mismatch the backend reported). Cleared when `requiresUpgrade` resets.
+    @Published var upgradeRequiredMessage: String?
     @Published var availableCommands: AvailableCommands?  // Available commands for current directory
     @Published var runningCommands: [String: CommandExecution] = [:]  // command_session_id -> execution
     @Published var commandHistory: [CommandHistorySession] = []  // Command history sessions
@@ -109,6 +125,33 @@ class VoiceCodeClient: ObservableObject {
         prunedGaps.removeValue(forKey: sessionId.lowercased())
     }
 
+    /// Transition the client into the terminal "app upgrade required" state:
+    /// set the published flags so the UI can render an upgrade banner, cancel
+    /// any pending WebSocket, and halt reconnection attempts. Idempotent — a
+    /// second call from a different code path (e.g. `hello` mismatch then an
+    /// explicit error) overwrites `upgradeRequiredMessage` but does not
+    /// re-trigger side effects that matter.
+    ///
+    /// Called on the main queue from the message dispatcher.
+    private func enterUpgradeRequiredState(received: String, detail: String) {
+        print("⛔ [VoiceCodeClient] Unsupported protocol version: \(detail)")
+        LogManager.shared.log("Unsupported protocol version (received: \(received)): \(detail)",
+                              category: "VoiceCodeClient")
+
+        requiresUpgrade = true
+        upgradeRequiredMessage = detail
+        currentError = detail
+        isAuthenticated = false
+
+        reconnectionTimer?.cancel()
+        reconnectionTimer = nil
+        stopPingTimer()
+
+        webSocket?.cancel(with: .goingAway, reason: nil)
+        webSocket = nil
+        isConnected = false
+    }
+
     private func setupLifecycleObservers() {
         // Reconnect when app returns to foreground / becomes active
         #if os(iOS)
@@ -153,6 +196,10 @@ class VoiceCodeClient: ObservableObject {
         // Don't reconnect if reauthentication is required - user must provide new credentials
         if requiresReauthentication {
             print("📱 [VoiceCodeClient] App became active, skipping reconnection - reauthentication required")
+            return
+        }
+        if requiresUpgrade {
+            print("📱 [VoiceCodeClient] App became active, skipping reconnection - app upgrade required")
             return
         }
         if !isConnected {
@@ -419,6 +466,15 @@ class VoiceCodeClient: ObservableObject {
                 return
             }
 
+            // Don't reconnect if the protocol versions don't match — the
+            // backend will reject us on every retry until the app is updated.
+            if self.requiresUpgrade {
+                print("⛔ [VoiceCodeClient] Skipping reconnection - app upgrade required")
+                self.reconnectionTimer?.cancel()
+                self.reconnectionTimer = nil
+                return
+            }
+
             if !self.isConnected {
                 // Check if we've exceeded max attempts
                 if self.reconnectionAttempts >= self.maxReconnectionAttempts {
@@ -556,6 +612,19 @@ class VoiceCodeClient: ObservableObject {
                 self.isConnected = true
                 print("📡 [VoiceCodeClient] Received hello from server, connection confirmed")
 
+                // Fail fast if the backend speaks a different wire-protocol version.
+                // A missing or mismatched `version` means we cannot safely send
+                // `subscribe`/decode `session_history` (shape changed at 0.4.0).
+                let serverVersion = json["version"] as? String
+                if serverVersion != VoiceCodeClient.supportedProtocolVersion {
+                    let received = serverVersion ?? "missing"
+                    self.enterUpgradeRequiredState(
+                        received: received,
+                        detail: "Server protocol version \(received) does not match client version \(VoiceCodeClient.supportedProtocolVersion)."
+                    )
+                    return
+                }
+
                 // Check auth_version for compatibility (future-proofing)
                 if let authVersion = json["auth_version"] as? Int {
                     self.serverAuthVersion = authVersion
@@ -661,6 +730,22 @@ class VoiceCodeClient: ObservableObject {
             case "error":
                 scheduleUpdate(key: "isProcessing", value: false)
                 let error = json["message"] as? String ?? "Unknown error"
+                let errorCode = json["code"] as? String
+
+                // A protocol-version mismatch is non-recoverable from a reconnect
+                // loop: the backend will reject the same client on every retry.
+                // Route it to the upgrade-required state instead of surfacing as
+                // a generic error and letting the reconnect timer spin.
+                if errorCode == "unsupported_protocol_version" {
+                    let received = (json["received"] as? String) ?? "unknown"
+                    let required = (json["required"] as? String) ?? VoiceCodeClient.supportedProtocolVersion
+                    self.enterUpgradeRequiredState(
+                        received: received,
+                        detail: "Backend requires protocol version \(required); this client speaks \(received). \(error)"
+                    )
+                    return
+                }
+
                 scheduleUpdate(key: "currentError", value: error as String?)
 
                 // Route to quick prompt handler if applicable
@@ -1131,20 +1216,18 @@ class VoiceCodeClient: ObservableObject {
         // Track subscription for auto-restore on reconnection
         activeSubscriptions.insert(sessionId)
 
-        // Find the newest message we have cached for this session (for delta sync)
-        let lastMessageId = getNewestCachedMessageId(sessionId: sessionId)
+        // Delta-sync cursor is the max seq we've durably persisted for this
+        // session. `0` is the wire sentinel meaning "give me everything" and
+        // is what newestCachedSeq returns for fresh or legacy-only sessions.
+        let lastSeq = newestCachedSeq(sessionId: sessionId)
 
-        var message: [String: Any] = [
+        let message: [String: Any] = [
             "type": "subscribe",
-            "session_id": sessionId
+            "session_id": sessionId,
+            "last_seq": lastSeq
         ]
 
-        if let lastId = lastMessageId {
-            message["last_message_id"] = lastId
-            logger.info("📖 [VoiceCodeClient] Subscribing with delta sync, last: \(lastId), session: \(sessionId) (total active: \(self.activeSubscriptions.count))")
-        } else {
-            logger.info("📖 [VoiceCodeClient] Subscribing without delta sync (no cached messages), session: \(sessionId) (total active: \(self.activeSubscriptions.count))")
-        }
+        logger.info("📖 [VoiceCodeClient] Subscribing, last_seq: \(lastSeq), session: \(sessionId) (total active: \(self.activeSubscriptions.count))")
 
         sendMessage(message)
     }
