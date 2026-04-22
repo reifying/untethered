@@ -65,8 +65,18 @@ The voice-code WebSocket protocol enables persistent sessions across reconnectio
 
 ### Protocol Version History
 
+- `0.4.0` — Append-only message stream with monotonic per-session `seq`. Breaking changes: `subscribe` uses `last_seq` instead of `last_message_id`; `session_updated` is collapsed into `session_history`. See @docs/design/append-only-message-stream.md. The version the backend serves in `hello` is controlled by the `:message-stream-version` config flag (see below); flipping to `:v0.3.0` reverts the hello version string and gates off the seq migration / hello enforcement path.
 - `0.3.0` — Tmux-untethered provider invocation. Breaking changes: removed `set_directory` (client → backend), removed `session_locked` (backend → client), removed `usage` and `cost` from `response`. Added optional `aborted` field on `turn_complete`. `available_commands` is now pushed on connect and on every session creation/resume rather than in response to `set_directory`.
 - `0.2.0` — Previous protocol (per-session locking, one-shot CLI invocation).
+
+### `:message-stream-version` Config Flag
+
+The backend reads `:message-stream-version` from `backend/resources/config.edn` at startup. Supported values:
+
+- `:v0.4.0` (default for new deploys) — hello emits `"0.4.0"`; the one-shot seq migration and hello-version rejection are enabled.
+- `:v0.3.0` (rollback) — hello emits `"0.3.0"`; seq migration and hello enforcement are bypassed so legacy clients keep working.
+
+Flip the value in `config.edn` and restart the backend (`make backend-restart`) to switch paths; no redeploy or code change is required. The flag is read via `voice-code.server/load-config` and materialized into the `voice-code.server/message-stream-version` atom — tests drive behavior by `reset!`-ing that atom. See @docs/design/append-only-message-stream.md §Risks & Mitigations for the full rollback semantics.
 
 ### Connection Flow
 

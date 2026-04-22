@@ -92,7 +92,89 @@
         (is (= "0.0.0.0" (get-in config [:server :host])))
         (is (= "claude" (get-in config [:claude :cli-path])))
         (is (= 86400000 (get-in config [:claude :default-timeout])))
-        (is (= :info (get-in config [:logging :level])))))))
+        (is (= :info (get-in config [:logging :level])))
+        (is (= :v0.4.0 (:message-stream-version config))
+            "Fallback must include the new-deploy default for :message-stream-version")))))
+
+(deftest test-message-stream-version-config
+  (testing "config.edn default is :v0.4.0"
+    (let [config (server/load-config)]
+      (is (= :v0.4.0 (:message-stream-version config)))))
+
+  (testing "coerce-message-stream-version accepts both supported values"
+    (is (= :v0.4.0 (server/coerce-message-stream-version :v0.4.0)))
+    (is (= :v0.3.0 (server/coerce-message-stream-version :v0.3.0))))
+
+  (testing "coerce-message-stream-version accepts string forms (env-var friendly)"
+    (is (= :v0.4.0 (server/coerce-message-stream-version "v0.4.0")))
+    (is (= :v0.3.0 (server/coerce-message-stream-version ":v0.3.0"))))
+
+  (testing "coerce-message-stream-version falls back to default on unknown / nil"
+    (is (= server/default-message-stream-version
+           (server/coerce-message-stream-version nil)))
+    (is (= server/default-message-stream-version
+           (server/coerce-message-stream-version :v9.9.9)))
+    (is (= server/default-message-stream-version
+           (server/coerce-message-stream-version "garbage"))))
+
+  (testing "message-stream-version-string strips the :v prefix"
+    (is (= "0.4.0" (server/message-stream-version-string :v0.4.0)))
+    (is (= "0.3.0" (server/message-stream-version-string :v0.3.0))))
+
+  (testing "gate predicates only fire on :v0.4.0"
+    (is (true?  (server/seq-migration-enabled?     :v0.4.0)))
+    (is (false? (server/seq-migration-enabled?     :v0.3.0)))
+    (is (true?  (server/hello-enforcement-enabled? :v0.4.0)))
+    (is (false? (server/hello-enforcement-enabled? :v0.3.0)))))
+
+(deftest test-load-config-with-v0-3-0-rollback
+  (testing "Reading a config.edn with :message-stream-version :v0.3.0 produces the rollback keyword"
+    (let [tmp (java.io.File/createTempFile "config-rollback" ".edn")]
+      (try
+        (spit tmp "{:server {:port 8080 :host \"0.0.0.0\"}
+                    :claude {:cli-path \"claude\" :default-timeout 86400000}
+                    :logging {:level :info}
+                    :message-stream-version :v0.3.0}")
+        (let [parsed (clojure.edn/read-string (slurp tmp))]
+          (is (= :v0.3.0 (:message-stream-version parsed))
+              "config.edn round-trips :v0.3.0 as a keyword"))
+        (finally
+          (.delete tmp))))))
+
+(defn- hello-payload
+  "Rebuild the hello envelope exactly as the websocket-handler would emit it,
+   so tests can assert on the serialized wire bytes instead of only the
+   derivation expression."
+  []
+  (server/generate-json
+   {:type :hello
+    :message "Welcome to voice-code backend"
+    :version (server/message-stream-version-string @server/message-stream-version)
+    :auth-version 1
+    :instructions "Send connect message with api_key"}))
+
+(deftest test-hello-version-reflects-flag
+  (testing "Flipping the atom to :v0.3.0 reverts the hello handler to emit 0.3.0"
+    (let [original @server/message-stream-version]
+      (try
+        ;; :v0.4.0 path — assert on the serialized envelope, not just the
+        ;; version-string derivation, so the smoke test covers the full
+        ;; hello emission path (generate-json + kebab→snake + atom read).
+        (reset! server/message-stream-version :v0.4.0)
+        (let [json-str (hello-payload)
+              parsed   (json/parse-string json-str)]
+          (is (= "0.4.0" (get parsed "version")))
+          (is (str/includes? json-str "\"version\":\"0.4.0\"")))
+
+        ;; Rollback path — flipping to :v0.3.0 must revert the emitted wire bytes.
+        (reset! server/message-stream-version :v0.3.0)
+        (let [json-str (hello-payload)
+              parsed   (json/parse-string json-str)]
+          (is (= "0.3.0" (get parsed "version"))
+              "Rollback flag must produce the legacy v0.3.0 hello version string")
+          (is (str/includes? json-str "\"version\":\"0.3.0\"")))
+        (finally
+          (reset! server/message-stream-version original))))))
 
 (deftest test-json-key-conversion
   (testing "snake_case to kebab-case conversion"

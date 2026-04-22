@@ -61,7 +61,7 @@
 (defn ensure-config-file
   "Ensure config.edn exists, creating with defaults if needed.
   Only works in development (not when running from JAR).
-  
+
   Accepts optional config-path for testing purposes."
   ([]
    (ensure-config-file "resources/config.edn"))
@@ -75,7 +75,11 @@
                   "          :host \"0.0.0.0\"}\n\n"
                   " :claude {:cli-path \"claude\"\n"
                   "          :default-timeout 86400000}  ; 24 hours in milliseconds\n\n"
-                  " :logging {:level :info}}\n"))))))
+                  " :logging {:level :info}\n\n"
+                  " ;; WebSocket protocol version served to clients and used to gate\n"
+                  " ;; append-only-stream behavior (seq migration, hello version enforcement).\n"
+                  " ;; Flip to :v0.3.0 to roll back to the last_message_id / session_updated paths.\n"
+                  " :message-stream-version :v0.4.0}\n"))))))
 
 (defn load-config
   "Load configuration from resources/config.edn, creating with defaults if needed"
@@ -92,7 +96,58 @@
                 :host "0.0.0.0"}
        :claude {:cli-path "claude"
                 :default-timeout 86400000}
-       :logging {:level :info}})))
+       :logging {:level :info}
+       :message-stream-version :v0.4.0})))
+
+;; Supported values for :message-stream-version. See
+;; @docs/design/append-only-message-stream.md §Risks-Mitigations for the
+;; rollback semantics. :v0.4.0 enables the append-only monotonic-seq path
+;; (post-migration, strict hello enforcement). :v0.3.0 preserves the legacy
+;; last_message_id / session_updated paths for rollback without a redeploy.
+(def supported-message-stream-versions #{:v0.3.0 :v0.4.0})
+
+(def default-message-stream-version :v0.4.0)
+
+(defn coerce-message-stream-version
+  "Coerce a config value to a supported :message-stream-version keyword.
+   Accepts the keyword directly or a string like \"v0.4.0\". Returns
+   default-message-stream-version on nil / unknown input (with a warn log)."
+  [v]
+  (let [k (cond
+            (keyword? v) v
+            (string? v) (keyword (if (str/starts-with? v ":") (subs v 1) v))
+            :else nil)]
+    (if (contains? supported-message-stream-versions k)
+      k
+      (do
+        (when (some? v)
+          (log/warn "Ignoring unknown :message-stream-version; falling back to default"
+                    {:received v :default default-message-stream-version}))
+        default-message-stream-version))))
+
+;; Backend-wide runtime flag. Populated from config.edn at -main startup and
+;; by tests via reset!. Dereferenced by the hello handler (protocol version
+;; string emitted), the future hello-rejection path (T09), and the future
+;; one-shot seq migration (T04).
+(defonce message-stream-version (atom default-message-stream-version))
+
+(defn message-stream-version-string
+  "Human-facing protocol version (e.g. \"0.4.0\") for the given keyword
+   (e.g. :v0.4.0). Used in the hello handler and in rejection error payloads."
+  [v]
+  (str/replace (name v) #"^v" ""))
+
+(defn seq-migration-enabled?
+  "True when the backend should run the one-shot JSONL→seq migration and
+   stamp seq on new messages. Gated on :message-stream-version."
+  ([] (seq-migration-enabled? @message-stream-version))
+  ([v] (= v :v0.4.0)))
+
+(defn hello-enforcement-enabled?
+  "True when the hello handshake should reject clients announcing a protocol
+   version older than :v0.4.0. Gated on :message-stream-version."
+  ([] (hello-enforcement-enabled? @message-stream-version))
+  ([v] (= v :v0.4.0)))
 
 ;; Ephemeral mapping: WebSocket channel -> client state
 ;; This is just for routing messages during an active connection
@@ -2257,7 +2312,7 @@
                       (generate-json
                        {:type :hello
                         :message "Welcome to voice-code backend"
-                        :version "0.3.0"
+                        :version (message-stream-version-string @message-stream-version)
                         :auth-version 1
                         :instructions "Send connect message with api_key"}))
 
@@ -2420,6 +2475,9 @@
         port (get-in config [:server :port] 8080)
         host (get-in config [:server :host] "0.0.0.0")
         default-dir (get-in config [:claude :default-working-directory])
+        stream-version (coerce-message-stream-version (:message-stream-version config))
+        _ (reset! message-stream-version stream-version)
+        _ (log/info "Message stream version" {:version stream-version})
         ;; Daemon thread so the sweeper never prevents JVM exit.
         ;; Captured here (not inside a nested let) so the shutdown hook can
         ;; call .shutdown() for a clean drain.
