@@ -1196,6 +1196,70 @@
               (map-indexed (fn [i m] (assoc m :seq (+ start i))))
               msgs)))))
 
+(defn migrate-session-seqs!
+  "One-shot startup migration: stamp `:next-seq` onto every session whose
+   counter has not yet been computed. For each session the on-disk
+   transcript is parsed in file order (chronological for every provider we
+   support — see @docs/design/append-only-message-stream.md §Migration),
+   and `:next-seq` is set to `(count parsed-messages) + 1` with
+   `:min-available-seq` seeded to 1 (unless already set).
+
+   Idempotent: skips any session whose `:next-seq` is already greater than
+   1, since either a previous migration run or live `assign-seq!` activity
+   has advanced the counter past the default. Empty sessions (0 messages)
+   naturally resolve to `:next-seq 1` on every run and are effectively no-op.
+
+   Logs a warning when the parsed message count does not match the entry's
+   `:message-count` field — useful for diagnosing drift between the two
+   pipelines (index-build vs. canonical-parse).
+
+   Persists the updated index via `save-index!` on completion so the next
+   boot's migration short-circuits on every migrated session.
+
+   Returns a summary map:
+     {:migrated N :skipped N :errors N :mismatches N :elapsed-ms F}."
+  []
+  (let [start-ns (System/nanoTime)
+        sessions @session-index
+        summary (atom {:migrated 0 :skipped 0 :errors 0 :mismatches 0})]
+    (log/info "Starting one-shot seq migration"
+              {:session-count (count sessions)})
+    (doseq [[session-id entry] sessions]
+      (if (and (number? (:next-seq entry)) (> (:next-seq entry) 1))
+        (swap! summary update :skipped inc)
+        (try
+          (let [provider (or (:provider entry) :claude)
+                file-path (:file entry)
+                parsed (if (and file-path
+                                (.exists (io/file file-path)))
+                         (parse-session-messages provider file-path)
+                         [])
+                parsed-count (count parsed)
+                indexed-count (or (:message-count entry) 0)]
+            (swap! session-index update session-id
+                   (fn [e]
+                     (-> (or e {:session-id session-id})
+                         (assoc :next-seq (inc parsed-count))
+                         (update :min-available-seq #(or % 1)))))
+            (when (not= parsed-count indexed-count)
+              (log/warn "seq migration: parsed count differs from :message-count"
+                        {:session-id session-id
+                         :provider provider
+                         :message-count indexed-count
+                         :parsed-count parsed-count})
+              (swap! summary update :mismatches inc))
+            (swap! summary update :migrated inc))
+          (catch Exception e
+            (log/error e "seq migration failed for session"
+                       {:session-id session-id})
+            (swap! summary update :errors inc)))))
+    (when (pos? (:migrated @summary))
+      (save-index! @session-index))
+    (let [elapsed-ms (/ (double (- (System/nanoTime) start-ns)) 1e6)
+          result (assoc @summary :elapsed-ms elapsed-ms)]
+      (log/info "Seq migration complete" result)
+      result)))
+
 (defn ensure-session-in-index!
   "Ensure a session is in the index after CLI invocation.
    Provider-aware: uses the correct file finder and metadata builder per provider.

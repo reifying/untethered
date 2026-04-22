@@ -2661,6 +2661,12 @@
     (log/info "Initializing session replication system")
     (repl/initialize-index!)
 
+    ;; One-shot seq migration (gated on :message-stream-version = :v0.4.0).
+    ;; Idempotent on subsequent boots — skips sessions whose :next-seq has
+    ;; already been computed.
+    (when (seq-migration-enabled?)
+      (repl/migrate-session-seqs!))
+
     ;; Rebuild live-windows from any tmux sessions that survived a prior restart
     (log/info "Scanning for existing tmux windows")
     (tmux/scan-existing-windows!)

@@ -707,6 +707,216 @@
         (.setLevel root-logger original-level)))))
 
 ;; ============================================================================
+;; Seq Migration Tests (tmux-untethered-wyp)
+;; ============================================================================
+
+(defn- migration-claude-session!
+  "Create a Claude .jsonl fixture file in test-dir and a matching session-index
+   entry. `messages` is a vector of text strings; each becomes a user message.
+   Returns [session-id file-path]."
+  [session-id messages & {:keys [message-count]
+                          :or {message-count nil}}]
+  (let [filename (str session-id ".jsonl")
+        lines (mapv (fn [t] (claude-jsonl {:type "user" :text t})) messages)
+        file (create-test-jsonl-file filename lines)
+        file-path (.getAbsolutePath file)]
+    (swap! repl/session-index assoc session-id
+           {:session-id session-id
+            :file file-path
+            :name "Test Session"
+            :provider :claude
+            :message-count (or message-count (count messages))
+            :next-seq 1
+            :min-available-seq 1})
+    [session-id file-path]))
+
+(deftest test-migrate-session-seqs-computes-next-seq-from-parsed-count
+  (testing "For a session with N parseable messages, :next-seq becomes N+1"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (migration-claude-session! "mig-a" ["one" "two" "three"])
+      (let [result (repl/migrate-session-seqs!)
+            entry (get @repl/session-index "mig-a")]
+        (is (= 1 (:migrated result)))
+        (is (= 0 (:skipped result)))
+        (is (= 0 (:errors result)))
+        (is (= 4 (:next-seq entry))
+            ":next-seq = count + 1 for three parseable user messages")
+        (is (= 1 (:min-available-seq entry))
+            ":min-available-seq seeded to 1")))))
+
+(deftest test-migrate-session-seqs-handles-empty-session
+  (testing "Empty session stays at :next-seq 1 with :min-available-seq 1"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (migration-claude-session! "mig-empty" [])
+      (let [result (repl/migrate-session-seqs!)
+            entry (get @repl/session-index "mig-empty")]
+        (is (= 1 (:migrated result)))
+        (is (= 1 (:next-seq entry)))
+        (is (= 1 (:min-available-seq entry)))))))
+
+(deftest test-migrate-session-seqs-skips-already-migrated
+  (testing "Sessions with :next-seq > 1 are skipped; counter preserved"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      ;; Simulate a session that has already been migrated and has live activity.
+      (migration-claude-session! "mig-live" ["old1" "old2"])
+      (swap! repl/session-index assoc-in ["mig-live" :next-seq] 550)
+      (swap! repl/session-index assoc-in ["mig-live" :min-available-seq] 1)
+      (let [result (repl/migrate-session-seqs!)
+            entry (get @repl/session-index "mig-live")]
+        (is (= 1 (:skipped result)))
+        (is (= 0 (:migrated result)))
+        (is (= 550 (:next-seq entry))
+            ":next-seq not rewound by a second migration pass")))))
+
+(deftest test-migrate-session-seqs-idempotent
+  (testing "Running migration twice: second run is a no-op on migrated sessions"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (migration-claude-session! "mig-idem" ["a" "b" "c" "d" "e"])
+      (let [first-result (repl/migrate-session-seqs!)
+            next-seq-after-first (:next-seq (get @repl/session-index "mig-idem"))
+            second-result (repl/migrate-session-seqs!)
+            next-seq-after-second (:next-seq (get @repl/session-index "mig-idem"))]
+        (is (= 1 (:migrated first-result)))
+        (is (= 0 (:skipped first-result)))
+        (is (= 6 next-seq-after-first))
+        (is (= 0 (:migrated second-result))
+            "Second run migrates zero sessions")
+        (is (= 1 (:skipped second-result))
+            "Second run skips the already-migrated session")
+        (is (= 6 next-seq-after-second)
+            ":next-seq unchanged on second run")))))
+
+(deftest test-migrate-session-seqs-logs-message-count-mismatch
+  (let [root-logger (Logger/getLogger "")
+        original-level (.getLevel root-logger)]
+    (try
+      (.setLevel root-logger Level/WARNING)
+      (testing "Warn log fires when parsed count differs from :message-count"
+        (reset! repl/session-index {})
+        (with-redefs [repl/save-index! (fn [_] nil)]
+          ;; Actual file has 2 messages; force :message-count to 99 to trigger mismatch
+          (migration-claude-session! "mig-mismatch" ["x" "y"] :message-count 99)
+          (let [captured (atom [])]
+            (with-redefs [clojure.tools.logging/log*
+                          (fn [_ level _ msg]
+                            (swap! captured conj [level (str msg)]))]
+              (repl/migrate-session-seqs!))
+            (let [warns (filter #(= :warn (first %)) @captured)]
+              (is (seq warns))
+              (is (some (fn [[_ m]] (re-find #"mig-mismatch" m)) warns)
+                  "Warn references the mismatching session-id")))))
+      (finally
+        (.setLevel root-logger original-level)))))
+
+(deftest test-migrate-session-seqs-persists-via-save-index
+  (testing "save-index! is invoked exactly once, with the post-migration index"
+    (reset! repl/session-index {})
+    (let [save-calls (atom [])]
+      (with-redefs [repl/save-index! (fn [idx] (swap! save-calls conj idx))]
+        (migration-claude-session! "mig-save" ["a" "b"])
+        (repl/migrate-session-seqs!))
+      (is (= 1 (count @save-calls)))
+      (let [saved (first @save-calls)]
+        (is (= 3 (get-in saved ["mig-save" :next-seq]))
+            "Saved index reflects the post-migration :next-seq")))))
+
+(deftest test-migrate-session-seqs-handles-missing-file
+  (testing "Session whose :file points to a non-existent path resolves to :next-seq 1"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (swap! repl/session-index assoc "mig-ghost"
+             {:session-id "mig-ghost"
+              :file "/nonexistent/path/never-here.jsonl"
+              :provider :claude
+              :message-count 0
+              :next-seq 1
+              :min-available-seq 1})
+      (let [result (repl/migrate-session-seqs!)
+            entry (get @repl/session-index "mig-ghost")]
+        (is (= 1 (:migrated result)))
+        (is (= 0 (:errors result)))
+        (is (= 1 (:next-seq entry)))))))
+
+(deftest test-migrate-session-seqs-multiple-sessions
+  (testing "Migrates multiple sessions in one pass, counting accurately"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (migration-claude-session! "mig-1" ["a"])
+      (migration-claude-session! "mig-2" ["a" "b" "c"])
+      (migration-claude-session! "mig-3" [])
+      (let [result (repl/migrate-session-seqs!)]
+        (is (= 3 (:migrated result)))
+        (is (= 0 (:skipped result)))
+        (is (= 2 (:next-seq (get @repl/session-index "mig-1"))))
+        (is (= 4 (:next-seq (get @repl/session-index "mig-2"))))
+        (is (= 1 (:next-seq (get @repl/session-index "mig-3"))))))))
+
+(deftest test-migrate-session-seqs-counts-parse-exceptions
+  (testing ":errors increments when parse-session-messages throws; other sessions still migrate"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (migration-claude-session! "mig-ok" ["a" "b"])
+      (migration-claude-session! "mig-boom" ["x"])
+      (let [orig repl/parse-session-messages]
+        (with-redefs [repl/parse-session-messages
+                      (fn [provider file-path]
+                        (if (re-find #"mig-boom" (str file-path))
+                          (throw (ex-info "corrupt" {}))
+                          (orig provider file-path)))]
+          (let [result (repl/migrate-session-seqs!)]
+            (is (= 1 (:errors result))
+                "Exactly one session failed to parse")
+            (is (= 1 (:migrated result))
+                "The healthy session still migrated")
+            (is (= 3 (:next-seq (get @repl/session-index "mig-ok")))
+                ":next-seq correctly set for the session that parsed cleanly")
+            (is (= 1 (:next-seq (get @repl/session-index "mig-boom")))
+                ":next-seq unchanged for the session that threw")))))))
+
+(deftest test-migrate-session-seqs-cursor-provider
+  (testing ":cursor sessions resolve to :next-seq 1 (no transcript to parse)"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      ;; Cursor metadata: :file points at store.db (SQLite binary).
+      ;; parse-session-messages returns [] for :cursor, so count = 0.
+      (let [store-db (create-test-jsonl-file "cursor-store.db" [])
+            file-path (.getAbsolutePath store-db)]
+        (swap! repl/session-index assoc "mig-cursor"
+               {:session-id "mig-cursor"
+                :file file-path
+                :provider :cursor
+                :message-count 1
+                :next-seq 1
+                :min-available-seq 1}))
+      (let [result (repl/migrate-session-seqs!)
+            entry (get @repl/session-index "mig-cursor")]
+        (is (= 1 (:migrated result)))
+        (is (= 0 (:errors result)))
+        (is (= 1 (:next-seq entry)))
+        (is (= 1 (:min-available-seq entry)))))))
+
+(deftest test-migrate-session-seqs-skips-save-when-nothing-migrated
+  (testing "save-index! is not invoked when every session was skipped"
+    (reset! repl/session-index {})
+    (let [save-calls (atom 0)]
+      (with-redefs [repl/save-index! (fn [_] (swap! save-calls inc))]
+        ;; Seed a session that's already migrated (:next-seq > 1) so it skips.
+        (swap! repl/session-index assoc "already-done"
+               {:session-id "already-done"
+                :provider :claude
+                :next-seq 42
+                :min-available-seq 1})
+        (let [result (repl/migrate-session-seqs!)]
+          (is (= 1 (:skipped result)))
+          (is (= 0 (:migrated result)))
+          (is (zero? @save-calls)
+              "Skip-only runs must not write the index to disk"))))))
+
+;; ============================================================================
 ;; Metrics Instrumentation Tests
 ;; ============================================================================
 
