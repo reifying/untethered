@@ -1037,37 +1037,54 @@
            (vec)))))
 
 (defn parse-jsonl-incremental
-  "Parse only new lines from a .jsonl file since last read position.
-  Updates tracked position after successful read.
-  Returns vector of new message maps."
+  "Parse only new lines from a .jsonl file since the tracked read position.
+
+  Newline-terminator-based holdback: the cursor only advances past bytes that
+  are newline-terminated. A buffer that does not end in `\\n` holds the final
+  (unterminated) line back; it will be retried on the next call once the write
+  completes. A newline-terminated line that `parse-jsonl-line` returns nil for
+  (legitimately non-message entries such as sidechain/summary/system) is still
+  fully consumed — only truly partial writes hold the cursor back.
+
+  Does NOT update `file-positions`; callers are responsible for persisting
+  `:new-pos` into the position tracker.
+
+  Returns `{:messages vec :new-pos n}`. On error, returns
+  `{:messages [] :new-pos last-pos}`."
   [file-path]
   (try
     (let [file (io/file file-path)
           last-pos (get @file-positions file-path 0)
           current-size (.length file)]
-
       (if (<= current-size last-pos)
-        ;; No new data
-        []
-
-        ;; Read new data
+        {:messages [] :new-pos last-pos}
         (with-open [raf (RandomAccessFile. file "r")]
           (.seek raf last-pos)
-          (let [remaining-bytes (- current-size last-pos)
-                buffer (byte-array remaining-bytes)
-                _ (.readFully raf buffer)
-                new-content (String. buffer "UTF-8")
-                lines (str/split-lines new-content)
-                messages (->> lines
-                              (map parse-jsonl-line)
-                              (filter some?)
-                              (vec))]
-            ;; Update position
-            (swap! file-positions assoc file-path current-size)
-            messages))))
+          (let [buf (byte-array (- current-size last-pos))
+                _ (.readFully raf buf)
+                buf-len (alength buf)
+                ends-with-nl? (and (pos? buf-len)
+                                   (= (byte \newline) (aget buf (dec buf-len))))
+                text (String. buf "UTF-8")
+                ;; split with -1 keeps trailing empty string when text ends in \n
+                lines (str/split text #"\n" -1)
+                [complete trailing-bytes]
+                (if ends-with-nl?
+                  ;; Every \n-terminated line is complete; butlast drops the
+                  ;; trailing empty "" slot left by split with limit -1.
+                  [(butlast lines) 0]
+                  ;; Last element is the unterminated tail — hold it back.
+                  [(butlast lines)
+                   (count (.getBytes ^String (last lines) "UTF-8"))])
+                parsed (->> complete
+                            (map parse-jsonl-line)
+                            (filter some?)
+                            (vec))
+                new-pos (- current-size trailing-bytes)]
+            {:messages parsed :new-pos new-pos}))))
     (catch Exception e
       (log/error e "Failed to parse .jsonl file incrementally" {:file file-path})
-      [])))
+      {:messages [] :new-pos (get @file-positions file-path 0)})))
 
 (defn reset-file-position!
   "Reset tracked file position (for testing or when file is replaced)"
@@ -1409,10 +1426,21 @@
     (>= (- now last-event-time) debounce-ms)))
 
 (defn parse-with-retry
-  "Parse .jsonl file with retry logic for handling partial writes"
+  "Parse .jsonl file with retry logic for handling partial writes.
+
+  Destructures the `{:messages :new-pos}` return from `parse-jsonl-incremental`,
+  commits the advanced position to `file-positions`, and returns the vector of
+  messages so existing callers (e.g. `handle-file-modified`) see the same
+  vec-returning shape they always did.
+
+  Retries are primarily a defense against I/O exceptions; the newline-terminator
+  holdback in `parse-jsonl-incremental` already protects against reading a
+  partially-written JSON line."
   [file-path retries-left]
   (try
-    (parse-jsonl-incremental file-path)
+    (let [{:keys [messages new-pos]} (parse-jsonl-incremental file-path)]
+      (swap! file-positions assoc file-path new-pos)
+      messages)
     (catch Exception e
       (if (> retries-left 0)
         (do

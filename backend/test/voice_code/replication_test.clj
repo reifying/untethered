@@ -15,11 +15,15 @@
 (def test-dir (str (System/getProperty "java.io.tmpdir") "/voice-code-test-" (System/currentTimeMillis)))
 
 (defn create-test-jsonl-file
-  "Create a test .jsonl file with given messages"
+  "Create a test .jsonl file with given messages. Always writes a trailing
+  newline so the file is a well-formed JSONL stream — parse-jsonl-incremental's
+  newline-terminator holdback would otherwise suppress the final line."
   [filename messages]
   (let [file (io/file test-dir filename)]
     (io/make-parents file)
-    (spit file (str/join "\n" messages))
+    (spit file (if (seq messages)
+                 (str (str/join "\n" messages) "\n")
+                 ""))
     file))
 
 (defn claude-jsonl
@@ -475,23 +479,74 @@
           file-path (.getAbsolutePath file)]
 
       ;; First read - should get all messages
-      (let [parsed1 (repl/parse-jsonl-incremental file-path)]
-        (is (= 1 (count parsed1)))
-        (is (= "msg1" (:text (first parsed1)))))
+      (let [{:keys [messages new-pos]} (repl/parse-jsonl-incremental file-path)]
+        (is (= 1 (count messages)))
+        (is (= "msg1" (:text (first messages))))
+        (swap! repl/file-positions assoc file-path new-pos))
 
-      ;; Append new messages
-      (spit file "\n{\"role\":\"assistant\",\"text\":\"msg2\"}" :append true)
+      ;; Append new messages (trailing \n so the line is complete)
+      (spit file "{\"role\":\"assistant\",\"text\":\"msg2\"}\n" :append true)
 
       ;; Second read - should only get new message
-      (let [parsed2 (repl/parse-jsonl-incremental file-path)]
-        (is (= 1 (count parsed2)))
-        (is (= "msg2" (:text (first parsed2)))))
+      (let [{:keys [messages new-pos]} (repl/parse-jsonl-incremental file-path)]
+        (is (= 1 (count messages)))
+        (is (= "msg2" (:text (first messages))))
+        (swap! repl/file-positions assoc file-path new-pos))
 
       ;; Third read with no new data - should return empty
-      (let [parsed3 (repl/parse-jsonl-incremental file-path)]
-        (is (= 0 (count parsed3))))
+      (let [{:keys [messages]} (repl/parse-jsonl-incremental file-path)]
+        (is (= 0 (count messages))))
 
       ;; Clean up tracked position
+      (repl/reset-file-position! file-path))))
+
+(deftest parse-jsonl-incremental-partial-trailing-line
+  (testing "unterminated tail holds cursor back for next tick"
+    (let [file (io/file test-dir "partial-trailing.jsonl")
+          file-path (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file "")
+      (repl/reset-file-position! file-path)
+
+      ;; First tick: one complete line + an unterminated tail.
+      (spit file "{\"role\":\"user\",\"uuid\":\"a\"}\n{\"role\":\"as" :append true)
+      (let [file-len-1 (.length file)
+            {:keys [messages new-pos]} (repl/parse-jsonl-incremental file-path)]
+        (is (= 1 (count messages))
+            "only the complete line is returned")
+        (is (< new-pos file-len-1)
+            "cursor stops before the partial line")
+        (swap! repl/file-positions assoc file-path new-pos)
+
+        ;; Second tick: the tail becomes newline-terminated.
+        (spit file "sistant\",\"uuid\":\"b\"}\n" :append true)
+        (let [file-len-2 (.length file)
+              r2 (repl/parse-jsonl-incremental file-path)]
+          (is (= 1 (count (:messages r2)))
+              "second tick picks up the now-complete line")
+          (is (= "b" (:uuid (first (:messages r2)))))
+          (is (= file-len-2 (:new-pos r2))
+              "cursor advances fully when the tail line is complete")))
+      (repl/reset-file-position! file-path)))
+
+  (testing "newline-terminated line that parses to nil still advances the cursor"
+    ;; Regression: parse-jsonl-line legitimately returns nil for blank lines and
+    ;; any non-message content. Those lines must NOT be confused with partial
+    ;; writes — as long as the buffer ends in \n, the cursor advances fully.
+    (let [file (io/file test-dir "nil-parse-advances.jsonl")
+          file-path (.getAbsolutePath file)]
+      (io/make-parents file)
+      ;; Blank line (parse-jsonl-line returns nil) followed by a real message,
+      ;; both newline-terminated.
+      (spit file "\n{\"role\":\"assistant\",\"uuid\":\"z\"}\n")
+      (repl/reset-file-position! file-path)
+      (let [file-len (.length file)
+            {:keys [messages new-pos]} (repl/parse-jsonl-incremental file-path)]
+        (is (= 1 (count messages))
+            "blank line is filtered; one assistant message returned")
+        (is (= "z" (:uuid (first messages))))
+        (is (= file-len new-pos)
+            "cursor advances fully when the buffer ends in \\n, regardless of nil parses"))
       (repl/reset-file-position! file-path))))
 
 (deftest test-reset-file-position
@@ -501,15 +556,16 @@
           file-path (.getAbsolutePath file)]
 
       ;; Read file
-      (repl/parse-jsonl-incremental file-path)
+      (let [{:keys [new-pos]} (repl/parse-jsonl-incremental file-path)]
+        (swap! repl/file-positions assoc file-path new-pos))
 
       ;; Reset position
       (repl/reset-file-position! file-path)
 
       ;; Read again - should get all messages again
-      (let [parsed (repl/parse-jsonl-incremental file-path)]
-        (is (= 1 (count parsed)))
-        (is (= "msg1" (:text (first parsed))))))))
+      (let [{:keys [messages]} (repl/parse-jsonl-incremental file-path)]
+        (is (= 1 (count messages)))
+        (is (= "msg1" (:text (first messages))))))))
 
 ;; ============================================================================
 ;; Selective Watching Tests
@@ -1270,12 +1326,12 @@
       ;; Record position after creation
       (let [position-after-creation (get @repl/file-positions file-path)]
 
-        ;; Append new messages to the file
-        (spit file "\n{\"role\":\"assistant\",\"text\":\"message 2\"}" :append true)
-        (spit file "\n{\"role\":\"user\",\"text\":\"message 3\"}" :append true)
+        ;; Append new messages to the file (each with trailing \n)
+        (spit file "{\"role\":\"assistant\",\"text\":\"message 2\"}\n" :append true)
+        (spit file "{\"role\":\"user\",\"text\":\"message 3\"}\n" :append true)
 
-        ;; Now parse incrementally (as handle-file-modified would do)
-        (let [new-messages (repl/parse-jsonl-incremental file-path)]
+        ;; Now parse incrementally (as handle-file-modified would do, via parse-with-retry)
+        (let [new-messages (repl/parse-with-retry file-path 0)]
 
           ;; Should only get the 2 new messages, not all 3
           (is (= 2 (count new-messages)) "Should only parse new messages after creation")
@@ -1306,16 +1362,16 @@
         (repl/handle-file-created file)
 
         ;; Parse after creation - should get nothing (file position is at end)
-        (let [messages-after-creation (repl/parse-jsonl-incremental file-path)]
+        (let [messages-after-creation (repl/parse-with-retry file-path 0)]
           (swap! all-parsed-messages concat messages-after-creation)
           (is (= 0 (count messages-after-creation))
               "Should not parse existing messages after creation"))
 
-        ;; Add a new message
-        (spit file "\n{\"role\":\"user\",\"text\":\"message 3\"}" :append true)
+        ;; Add a new message (trailing \n so the line is complete)
+        (spit file "{\"role\":\"user\",\"text\":\"message 3\"}\n" :append true)
 
         ;; Parse again - should only get the new message
-        (let [messages-after-append (repl/parse-jsonl-incremental file-path)]
+        (let [messages-after-append (repl/parse-with-retry file-path 0)]
           (swap! all-parsed-messages concat messages-after-append)
           (is (= 1 (count messages-after-append))
               "Should only parse the newly added message")
@@ -1344,11 +1400,11 @@
       (is (= 0 (get @repl/file-positions file-path))
           "Empty file should have position 0")
 
-      ;; Add first message
-      (spit file "{\"role\":\"user\",\"text\":\"first message\"}" :append true)
+      ;; Add first message (trailing \n so the line is complete)
+      (spit file "{\"role\":\"user\",\"text\":\"first message\"}\n" :append true)
 
       ;; Parse should get the new message
-      (let [messages (repl/parse-jsonl-incremental file-path)]
+      (let [{:keys [messages]} (repl/parse-jsonl-incremental file-path)]
         (is (= 1 (count messages)))
         (is (= "first message" (:text (first messages))))))))
 
@@ -1483,15 +1539,16 @@
               :file file-path
               :message-count 2})
 
-      ;; First subscription - track initial position
+      ;; First subscription - track initial position. Use parse-with-retry so
+      ;; file-positions advances the way production (handle-file-modified) does.
       (repl/subscribe-to-session! session-id)
-      (let [messages-1 (repl/parse-jsonl-incremental file-path)]
+      (let [messages-1 (repl/parse-with-retry file-path 0)]
         ;; Should get initial messages
         (is (= 2 (count messages-1))))
 
-      ;; Add messages while subscribed
-      (spit file "\n{\"role\":\"user\",\"text\":\"message 3\"}" :append true)
-      (let [messages-2 (repl/parse-jsonl-incremental file-path)]
+      ;; Add messages while subscribed (trailing \n completes the line)
+      (spit file "{\"role\":\"user\",\"text\":\"message 3\"}\n" :append true)
+      (let [messages-2 (repl/parse-with-retry file-path 0)]
         ;; Should get new message
         (is (= 1 (count messages-2)))
         (is (= "message 3" (:text (first messages-2)))))
@@ -1500,7 +1557,7 @@
       (repl/unsubscribe-from-session! session-id)
 
       ;; Add message while unsubscribed
-      (spit file "\n{\"role\":\"assistant\",\"text\":\"message 4\"}" :append true)
+      (spit file "{\"role\":\"assistant\",\"text\":\"message 4\"}\n" :append true)
 
       ;; Resubscribe (simulating refresh button click)
       ;; In the actual server code, this triggers a reset + position update
@@ -1509,10 +1566,10 @@
       (swap! repl/file-positions assoc file-path (.length file))
 
       ;; Add new message after resubscribe
-      (spit file "\n{\"role\":\"user\",\"text\":\"message 5\"}" :append true)
+      (spit file "{\"role\":\"user\",\"text\":\"message 5\"}\n" :append true)
 
       ;; Parse incremental - should ONLY get message 5, not 4
-      (let [messages-3 (repl/parse-jsonl-incremental file-path)]
+      (let [messages-3 (repl/parse-with-retry file-path 0)]
         (is (= 1 (count messages-3))
             "After resubscribe, should only track NEW messages")
         (is (= "message 5" (:text (first messages-3)))
@@ -1611,8 +1668,8 @@
         (is (= 0 (:message-count metadata)))
         (is (false? (:ios-notified metadata))))
 
-      ;; Add real message
-      (spit file (str "\n" (claude-jsonl {:type "user" :text "hello world"})) :append true)
+      ;; Add real message (trailing \n completes the line)
+      (spit file (str (claude-jsonl {:type "user" :text "hello world"}) "\n") :append true)
 
       ;; Trigger modification handler
       (repl/handle-file-modified file)
@@ -1667,8 +1724,8 @@
         (is (= 1 (:message-count metadata)))
         (is (true? (:ios-notified metadata))))
 
-      ;; Add another message
-      (spit file (str "\n" (claude-jsonl {:type "assistant" :text "hi there"})) :append true)
+      ;; Add another message (trailing \n completes the line)
+      (spit file (str (claude-jsonl {:type "assistant" :text "hi there"}) "\n") :append true)
 
       ;; Trigger modification handler
       (repl/handle-file-modified file)
@@ -1716,8 +1773,8 @@
       (repl/handle-file-created file)
       (is (= 1 (count @session-created-notifications)))
 
-      ;; Add message
-      (spit file "\n{\"role\":\"assistant\",\"text\":\"response\"}" :append true)
+      ;; Add message (trailing \n completes the line)
+      (spit file "{\"role\":\"assistant\",\"text\":\"response\"}\n" :append true)
       (repl/handle-file-modified file)
 
       ;; Should NOT send session_updated (not subscribed)
@@ -1745,7 +1802,7 @@
                :max-retries 3
                :debounce-ms 200})
       (repl/handle-file-created file)
-      (spit file "\n{\"role\":\"assistant\",\"text\":\"reply\",\"timestamp\":\"2025-10-22T11:00:00Z\"}" :append true)
+      (spit file "{\"role\":\"assistant\",\"text\":\"reply\",\"timestamp\":\"2025-10-22T11:00:00Z\"}\n" :append true)
       (repl/handle-file-modified file)
       (let [indexed (get @repl/session-index session-id)]
         (is (some? indexed))
