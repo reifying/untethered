@@ -28,6 +28,13 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     private weak var appSettings: AppSettings?
     var onSpeechComplete: (() -> Void)?
 
+    // Set when stop(completion:) is called while the synthesizer is mid-utterance.
+    // Fired from didCancel/didFinish (or a safety-timeout) so the audio session is
+    // fully released before the caller — typically VoiceInputManager — reconfigures
+    // it for recording. All access is on the main queue.
+    private var pendingStopCompletion: (() -> Void)?
+    private var pendingStopTimeoutItem: DispatchWorkItem?
+
     // iOS-only: Audio session manager for silent switch handling
     #if os(iOS)
     private let audioSessionManager = DeviceAudioSessionManager()
@@ -213,12 +220,50 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
 
     func stop() {
+        stop(completion: nil)
+    }
+
+    /// Stop any in-flight TTS, invoking `completion` on the main queue once the
+    /// synthesizer has actually released its audio resources (didCancel/didFinish),
+    /// or after a 300ms safety timeout. If nothing was speaking, `completion` runs
+    /// on the next main-queue tick.
+    ///
+    /// Callers that need the audio session free before reconfiguring it (e.g.
+    /// VoiceInputManager flipping AVAudioSession to .record) must use this form.
+    func stop(completion: (() -> Void)?) {
         #if os(iOS)
         stopKeepAliveTimer()
         #endif
-        synthesizer.stopSpeaking(at: .immediate)
-        DispatchQueue.main.async {
-            self.isSpeaking = false
+
+        let wasSpeaking = synthesizer.isSpeaking
+
+        if wasSpeaking {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.pendingStopTimeoutItem?.cancel()
+                self.pendingStopCompletion = completion
+
+                if completion != nil {
+                    let timeoutItem = DispatchWorkItem { [weak self] in
+                        guard let self = self else { return }
+                        let cb = self.pendingStopCompletion
+                        self.pendingStopCompletion = nil
+                        self.pendingStopTimeoutItem = nil
+                        cb?()
+                    }
+                    self.pendingStopTimeoutItem = timeoutItem
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: timeoutItem)
+                }
+            }
+            synthesizer.stopSpeaking(at: .immediate)
+            DispatchQueue.main.async {
+                self.isSpeaking = false
+            }
+        } else {
+            DispatchQueue.main.async {
+                self.isSpeaking = false
+                completion?()
+            }
         }
     }
 
@@ -264,6 +309,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         DispatchQueue.main.async {
             self.isSpeaking = false
             self.onSpeechComplete?()
+            self.firePendingStopCompletion()
         }
     }
 
@@ -276,7 +322,19 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
         DispatchQueue.main.async {
             self.isSpeaking = false
+            self.firePendingStopCompletion()
         }
+    }
+
+    /// Called on the main queue from didCancel/didFinish so a stop(completion:)
+    /// caller can proceed once the synthesizer has actually released its audio
+    /// resources. Safe to call when nothing is pending.
+    private func firePendingStopCompletion() {
+        pendingStopTimeoutItem?.cancel()
+        pendingStopTimeoutItem = nil
+        let cb = pendingStopCompletion
+        pendingStopCompletion = nil
+        cb?()
     }
 
     deinit {

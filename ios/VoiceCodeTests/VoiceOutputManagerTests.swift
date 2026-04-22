@@ -155,4 +155,49 @@ final class VoiceOutputManagerTests: XCTestCase {
 
         wait(for: [startExpectation], timeout: 2.0)
     }
+
+    // MARK: - stop(completion:) Tests
+
+    /// When the synthesizer was not speaking, stop(completion:) should still invoke
+    /// the completion (on the main queue) so the caller can proceed unconditionally.
+    func testStopCompletionFiresWhenNotSpeaking() {
+        XCTAssertFalse(manager.isSpeaking)
+
+        let expectation = XCTestExpectation(description: "completion fires")
+        manager.stop {
+            XCTAssertTrue(Thread.isMainThread, "completion must run on main queue")
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    /// While speaking, stop(completion:) must defer the completion until the
+    /// synthesizer actually releases its audio resources (didCancel/didFinish), so a
+    /// downstream caller (VoiceInputManager) can safely flip the audio session to
+    /// .record without colliding with mid-utterance teardown.
+    func testStopCompletionDeferredUntilSynthesizerStops() {
+        manager.speak("This is a longer test utterance that should keep the synthesizer busy")
+
+        // Wait long enough for the synthesizer to actually start.
+        let startExpectation = XCTestExpectation(description: "synthesizer starts")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            startExpectation.fulfill()
+        }
+        wait(for: [startExpectation], timeout: 1.0)
+
+        let stopRequestedAt = Date()
+        let completionExpectation = XCTestExpectation(description: "stop completion fires")
+        manager.stop {
+            XCTAssertTrue(Thread.isMainThread, "completion must run on main queue")
+            XCTAssertFalse(self.manager.isSpeaking, "isSpeaking must be false by the time completion fires")
+            // 300ms safety timeout means we're guaranteed an upper bound. The
+            // synthesizer typically reports didCancel well under that.
+            let elapsed = Date().timeIntervalSince(stopRequestedAt)
+            XCTAssertLessThan(elapsed, 1.0, "completion should fire within the safety-timeout window")
+            completionExpectation.fulfill()
+        }
+
+        wait(for: [completionExpectation], timeout: 2.0)
+    }
 }

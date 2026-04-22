@@ -47,10 +47,23 @@ class VoiceInputManager: NSObject, ObservableObject {
     // MARK: - Recording
 
     func startRecording() {
-        // Stop TTS first to prevent mic from picking up speech output
-        // This must happen before auth check so TTS stops even if recording can't start
-        voiceOutputManager?.stop()
+        // Stop TTS first so the mic doesn't pick up speech output AND so the
+        // synthesizer fully releases the audio session before we flip it to
+        // .record. Without waiting, the first tap of the mic during TTS would
+        // configure the session while AVSpeechSynthesizer was still tearing
+        // down, and the audio engine would start without producing audio
+        // buffers — the user had to tap stop and tap mic again to recover.
+        if let voiceOutputManager = voiceOutputManager, voiceOutputManager.isSpeaking {
+            voiceOutputManager.stop { [weak self] in
+                self?.startRecordingAfterTTSStopped()
+            }
+        } else {
+            voiceOutputManager?.stop()
+            startRecordingAfterTTSStopped()
+        }
+    }
 
+    private func startRecordingAfterTTSStopped() {
         // Check authorization
         guard authorizationStatus == .authorized else {
             print("Speech recognition not authorized")
