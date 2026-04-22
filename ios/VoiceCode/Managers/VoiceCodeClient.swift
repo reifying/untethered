@@ -64,6 +64,9 @@ class VoiceCodeClient: ObservableObject {
     // Track active subscriptions for auto-restore on reconnection
     private var activeSubscriptions = Set<String>()
 
+    /// Test seam: invoked for every dict passed to `sendMessage`. Production leaves nil.
+    var onMessageSent: (([String: Any]) -> Void)?
+
     // Continuation for async session list requests
     private var sessionListContinuation: CheckedContinuation<Void, Never>?
 
@@ -583,27 +586,7 @@ class VoiceCodeClient: ObservableObject {
                     self.sendMaxMessageSize(maxSize)
                 }
 
-                // Restore subscriptions after reconnection
-                if !self.activeSubscriptions.isEmpty {
-                    print("🔄 [VoiceCodeClient] Restoring \(self.activeSubscriptions.count) subscription(s) after reconnection")
-                    LogManager.shared.log("Restoring \(self.activeSubscriptions.count) subscription(s) after reconnection", category: "VoiceCodeClient")
-                    for sessionId in self.activeSubscriptions {
-                        // Use subscribe() method to include delta sync support
-                        // Note: activeSubscriptions is not modified since session is already tracked
-                        let lastMessageId = self.getNewestCachedMessageId(sessionId: sessionId)
-                        var message: [String: Any] = [
-                            "type": "subscribe",
-                            "session_id": sessionId
-                        ]
-                        if let lastId = lastMessageId {
-                            message["last_message_id"] = lastId
-                            logger.info("🔄 [VoiceCodeClient] Resubscribing with delta sync, last: \(lastId), session: \(sessionId)")
-                        } else {
-                            logger.info("🔄 [VoiceCodeClient] Resubscribing without delta sync (no cached messages), session: \(sessionId)")
-                        }
-                        self.sendMessage(message)
-                    }
-                }
+                self.restoreSubscriptionsAfterReconnect()
 
                 // Start ping keepalive timer after successful authentication
                 self.startPingTimer()
@@ -1128,6 +1111,22 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
     
+    /// Re-fires `subscribe()` for every session in `activeSubscriptions`.
+    /// Called from the `connected` handler; exposed `internal` so tests can
+    /// drive the reconnect path without standing up a full WebSocket.
+    ///
+    /// Correctness relies on `subscribe()` reading its cursor from CoreData —
+    /// no in-memory "missed updates" queue, no disconnect flag. The durably
+    /// persisted seq is the only source of truth.
+    func restoreSubscriptionsAfterReconnect() {
+        guard !activeSubscriptions.isEmpty else { return }
+        print("🔄 [VoiceCodeClient] Restoring \(activeSubscriptions.count) subscription(s) after reconnection")
+        LogManager.shared.log("Restoring \(activeSubscriptions.count) subscription(s) after reconnection", category: "VoiceCodeClient")
+        for sessionId in activeSubscriptions {
+            subscribe(sessionId: sessionId)
+        }
+    }
+
     func subscribe(sessionId: String) {
         // Track subscription for auto-restore on reconnection
         activeSubscriptions.insert(sessionId)
@@ -1571,6 +1570,8 @@ class VoiceCodeClient: ObservableObject {
         if let messageType = message["type"] as? String {
             LogManager.shared.log("Sending message type: \(messageType)", category: "VoiceCodeClient")
         }
+
+        onMessageSent?(message)
 
         let message = URLSessionWebSocketTask.Message.string(text)
         webSocket?.send(message) { error in
