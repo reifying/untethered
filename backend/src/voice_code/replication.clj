@@ -421,6 +421,8 @@
                   :last-message (:last-message file-metadata)
                   :ios-notified false
                   :first-notification nil
+                  :next-seq 1
+                  :min-available-seq 1
                   ;; Provider field for multi-provider support (Phase 1)
                   :provider :claude}]
     (log/info "Built session metadata"
@@ -517,6 +519,8 @@
                   :last-message (:text last-msg)
                   :ios-notified false
                   :first-notification nil
+                  :next-seq 1
+                  :min-available-seq 1
                   :provider :copilot}]
     (log/info "Built Copilot session metadata"
               {:session-id session-id
@@ -603,7 +607,7 @@
 (defn build-cursor-session-metadata
   "Build metadata map for a single Cursor session directory."
   [session-id session-dir]
-  (let [meta     (read-cursor-session-meta session-dir)
+  (let [meta (read-cursor-session-meta session-dir)
         last-mod (.lastModified session-dir)]
     {:session-id session-id
      :file (.getAbsolutePath (io/file session-dir "store.db"))
@@ -620,6 +624,8 @@
      :last-message nil
      :ios-notified false
      :first-notification nil
+     :next-seq 1
+     :min-available-seq 1
      :provider :cursor}))
 
 (defn- build-cursor-sessions-index
@@ -670,6 +676,8 @@
      :last-message nil
      :ios-notified false
      :first-notification nil
+     :next-seq 1
+     :min-available-seq 1
      :provider :opencode}))
 
 (defn- build-opencode-sessions-index
@@ -1090,6 +1098,45 @@
   "Reset tracked file position (for testing or when file is replaced)"
   [file-path]
   (swap! file-positions dissoc file-path))
+
+(defn assign-seq!
+  "Stamp a strictly increasing `:seq` on each message in `parsed-messages`,
+   drawing from the session's `:next-seq` counter in `session-index`, and
+   atomically advance that counter. Returns a vector of messages with `:seq`
+   assigned, in the same order they were passed in.
+
+   Empty/nil input returns [] and leaves the counter untouched.
+
+   When the session is missing from the index (watcher race or not-yet-indexed
+   provider session), a minimal stub entry is created so the counter survives.
+   The counter write rides on the existing `save-index!` flush path — no
+   separate flush cadence."
+  [session-id parsed-messages]
+  (let [msgs (vec parsed-messages)
+        n (count msgs)]
+    (if (zero? n)
+      msgs
+      (let [[old _]
+            (swap-vals!
+             session-index
+             (fn [idx]
+               (let [entry (get idx session-id)
+                     s (or (:next-seq entry) 1)]
+                 (update idx session-id
+                         (fn [e]
+                           (-> (or e {:session-id session-id})
+                               (update :min-available-seq #(or % 1))
+                               (assoc :next-seq (+ s n))))))))
+            start (or (:next-seq (get old session-id)) 1)]
+        (when-not (contains? old session-id)
+          ;; Upstream should have called ensure-session-in-index! first; log so
+          ;; the missing-index bug is diagnosable. The stub entry lacks
+          ;; :provider / :file / :name, which downstream code may need.
+          (log/warn "assign-seq! created stub entry for unindexed session"
+                    {:session-id session-id :stamped-count n}))
+        (into []
+              (map-indexed (fn [i m] (assoc m :seq (+ start i))))
+              msgs)))))
 
 (defn ensure-session-in-index!
   "Ensure a session is in the index after CLI invocation.

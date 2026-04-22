@@ -567,6 +567,145 @@
         (is (= 1 (count messages)))
         (is (= "msg1" (:text (first messages))))))))
 
+(deftest test-assign-seq-stamps-in-order
+  (testing "Stamps :seq in order starting at 1 for a fresh session"
+    (reset! repl/session-index {})
+    (let [msgs [{:text "a"} {:text "b"} {:text "c"}]
+          stamped (repl/assign-seq! "sid-fresh" msgs)]
+      (is (= [1 2 3] (mapv :seq stamped)))
+      (is (= ["a" "b" "c"] (mapv :text stamped))
+          "Order and content preserved")
+      (let [entry (get @repl/session-index "sid-fresh")]
+        (is (= 4 (:next-seq entry))
+            ":next-seq advanced past the stamped range")
+        (is (= 1 (:min-available-seq entry))
+            ":min-available-seq seeded to 1 on the stub entry")))))
+
+(deftest test-assign-seq-second-call-continues
+  (testing "Second call starts at the advanced :next-seq value"
+    (reset! repl/session-index {})
+    (let [first-batch (repl/assign-seq! "sid-cont" [{:text "a"} {:text "b"}])
+          second-batch (repl/assign-seq! "sid-cont" [{:text "c"} {:text "d"} {:text "e"}])]
+      (is (= [1 2] (mapv :seq first-batch)))
+      (is (= [3 4 5] (mapv :seq second-batch))
+          "Second call picks up exactly where the first left off")
+      (is (= 6 (:next-seq (get @repl/session-index "sid-cont")))))))
+
+(deftest test-assign-seq-visible-via-index-getter
+  (testing "Writes are visible via get-session-metadata"
+    (reset! repl/session-index {})
+    (repl/assign-seq! "sid-visible" [{:text "x"}])
+    (let [entry (repl/get-session-metadata "sid-visible")]
+      (is (some? entry))
+      (is (= 2 (:next-seq entry)))
+      (is (= 1 (:min-available-seq entry))))))
+
+(deftest test-assign-seq-preserves-existing-metadata
+  (testing "Updating an existing entry keeps unrelated metadata and uses its :next-seq"
+    (reset! repl/session-index
+            {"sid-existing" {:session-id "sid-existing"
+                             :name "Session"
+                             :provider :claude
+                             :next-seq 100
+                             :min-available-seq 50
+                             :message-count 99}})
+    (let [stamped (repl/assign-seq! "sid-existing" [{:text "next"}])
+          entry (get @repl/session-index "sid-existing")]
+      (is (= [100] (mapv :seq stamped))
+          "First stamped seq equals the stored :next-seq, not 1")
+      (is (= 101 (:next-seq entry)))
+      (is (= 50 (:min-available-seq entry))
+          ":min-available-seq untouched when already set")
+      (is (= "Session" (:name entry)))
+      (is (= :claude (:provider entry)))
+      (is (= 99 (:message-count entry))))))
+
+(deftest test-assign-seq-empty-and-nil
+  (testing "Empty/nil input returns [] and leaves the counter untouched"
+    (reset! repl/session-index
+            {"sid-noop" {:session-id "sid-noop" :next-seq 42 :min-available-seq 1}})
+    (let [before @repl/session-index]
+      (is (= [] (repl/assign-seq! "sid-noop" [])))
+      (is (= [] (repl/assign-seq! "sid-noop" nil)))
+      (is (= before @repl/session-index)
+          "Counter unchanged across empty and nil calls"))))
+
+(deftest test-assign-seq-concurrent-no-duplicates
+  (testing "Concurrent threads produce unique, contiguous seqs"
+    (reset! repl/session-index {})
+    (let [n-threads 16
+          n-each 25
+          results (atom [])
+          tasks (doall
+                 (for [_ (range n-threads)]
+                   (future
+                     (let [msgs (repeatedly n-each #(hash-map :text "x"))
+                           stamped (repl/assign-seq! "sid-concurrent" msgs)]
+                       (swap! results into (map :seq stamped))))))]
+      (doseq [t tasks] @t)
+      (let [all-seqs @results
+            expected (* n-threads n-each)]
+        (is (= expected (count all-seqs)))
+        (is (= expected (count (distinct all-seqs)))
+            "No duplicate seqs under contention")
+        (is (= 1 (apply min all-seqs)))
+        (is (= expected (apply max all-seqs)))
+        (is (= (inc expected)
+               (:next-seq (get @repl/session-index "sid-concurrent"))))))))
+
+(deftest test-assign-seq-per-session-isolation
+  (testing "Counters are independent per session"
+    (reset! repl/session-index {})
+    (let [a1 (repl/assign-seq! "sid-a" [{:text "a1"} {:text "a2"}])
+          b1 (repl/assign-seq! "sid-b" [{:text "b1"}])
+          a2 (repl/assign-seq! "sid-a" [{:text "a3"}])
+          b2 (repl/assign-seq! "sid-b" [{:text "b2"} {:text "b3"}])]
+      (is (= [1 2] (mapv :seq a1)))
+      (is (= [1] (mapv :seq b1)))
+      (is (= [3] (mapv :seq a2)))
+      (is (= [2 3] (mapv :seq b2)))
+      (is (= 4 (:next-seq (get @repl/session-index "sid-a"))))
+      (is (= 4 (:next-seq (get @repl/session-index "sid-b")))))))
+
+(deftest test-assign-seq-warns-on-stub-creation
+  ;; The :each fixture sets the root logger to Level/OFF, which causes
+  ;; clojure.tools.logging's `enabled?` check to short-circuit before log*
+  ;; is invoked. Re-enable WARNING for the duration of these tests so the
+  ;; log capture fires.
+  (let [root-logger (Logger/getLogger "")
+        original-level (.getLevel root-logger)]
+    (try
+      (.setLevel root-logger Level/WARNING)
+      (testing "Warns when creating a stub entry for an unindexed session"
+        (reset! repl/session-index {})
+        (let [captured (atom [])]
+          (with-redefs [clojure.tools.logging/log*
+                        (fn [_ level _ msg]
+                          (swap! captured conj [level (str msg)]))]
+            (repl/assign-seq! "unindexed-sid" [{:text "a"}]))
+          (let [warn-entries (filter #(= :warn (first %)) @captured)]
+            (is (seq warn-entries)
+                "A warn log fires when assign-seq! creates a stub entry")
+            (is (some (fn [[_ msg]] (re-find #"unindexed-sid" msg)) warn-entries)
+                "The warn message includes the session-id"))))
+
+      (testing "Does NOT warn when the session already has an index entry"
+        (reset! repl/session-index
+                {"existing-sid" {:session-id "existing-sid"
+                                 :provider :claude
+                                 :name "Test"
+                                 :next-seq 1
+                                 :min-available-seq 1}})
+        (let [captured (atom [])]
+          (with-redefs [clojure.tools.logging/log*
+                        (fn [_ level _ msg]
+                          (swap! captured conj [level (str msg)]))]
+            (repl/assign-seq! "existing-sid" [{:text "a"}]))
+          (is (empty? (filter #(= :warn (first %)) @captured))
+              "No warn when entry already exists")))
+      (finally
+        (.setLevel root-logger original-level)))))
+
 ;; ============================================================================
 ;; Selective Watching Tests
 ;; ============================================================================
@@ -2105,16 +2244,16 @@
       (is (instance? Long (:last-modified-ms metadata)))
       (is (= (:last-modified metadata) (:last-modified-ms metadata))))
 
-  (testing "Handles session with no messages"
-    (let [session-id "22222222-2222-2222-2222-222222222222"
-          working-dir "/empty/project"
-          messages [(json/generate-string {:type "session.start"
-                                           :timestamp "2026-01-28T10:00:00Z"})]
-          session-dir (create-copilot-test-session session-id working-dir messages)
-          metadata (repl/build-copilot-session-metadata session-dir)]
-      (is (= session-id (:session-id metadata)))
-      (is (= 0 (:message-count metadata)))
-      (is (= :copilot (:provider metadata)))))))
+    (testing "Handles session with no messages"
+      (let [session-id "22222222-2222-2222-2222-222222222222"
+            working-dir "/empty/project"
+            messages [(json/generate-string {:type "session.start"
+                                             :timestamp "2026-01-28T10:00:00Z"})]
+            session-dir (create-copilot-test-session session-id working-dir messages)
+            metadata (repl/build-copilot-session-metadata session-dir)]
+        (is (= session-id (:session-id metadata)))
+        (is (= 0 (:message-count metadata)))
+        (is (= :copilot (:provider metadata)))))))
 
 (deftest test-build-index-with-copilot-sessions
   (testing "build-index! discovers both Claude and Copilot sessions"
