@@ -19,6 +19,33 @@
   ;; In-memory session metadata index: session-id -> metadata map
   (atom {}))
 
+(defonce metrics-emitter
+  ;; Pluggable metrics sink. Tests rebind via `with-redefs` or `reset!` to
+  ;; capture emissions. Signature:
+  ;;   (fn [metric-type metric-name data] ...)
+  ;; `metric-type` is `:counter` or `:histogram`; `data` is a map containing
+  ;; the payload and any context tags. The default emitter logs at debug
+  ;; level — a real sink (statsd, prometheus, etc.) can be swapped in without
+  ;; touching the call sites.
+  (atom
+   (fn [metric-type metric-name data]
+     (log/debug "metric"
+                {:metric-type metric-type
+                 :metric-name metric-name
+                 :data data}))))
+
+(defn emit-metric!
+  "Emit a metric through the configured `metrics-emitter`.
+
+  Exceptions raised by the emitter are caught and logged so instrumentation
+  never breaks the hot path."
+  [metric-type metric-name data]
+  (try
+    (@metrics-emitter metric-type metric-name data)
+    (catch Throwable t
+      (log/warn t "metrics emitter threw"
+                {:metric-type metric-type :metric-name metric-name}))))
+
 ;; ============================================================================
 ;; Compaction Locking
 ;; ============================================================================
@@ -722,16 +749,26 @@
     index))
 
 (defn save-index!
-  "Persist session index to disk"
+  "Persist session index to disk.
+
+  Emits a `:session-index-save-duration-ms` histogram observation via
+  `emit-metric!` on every call (success OR failure) so p99 write latency is
+  always observable. Failures are logged but never thrown."
   [index]
-  (try
-    (let [index-path (get-index-file-path)
-          index-file (io/file index-path)]
-      (io/make-parents index-file)
-      (spit index-file (pr-str {:sessions index}))
-      (log/debug "Session index saved" {:path index-path :session-count (count index)}))
-    (catch Exception e
-      (log/error e "Failed to save session index"))))
+  (let [start-ns (System/nanoTime)]
+    (try
+      (let [index-path (get-index-file-path)
+            index-file (io/file index-path)]
+        (io/make-parents index-file)
+        (spit index-file (pr-str {:sessions index}))
+        (log/debug "Session index saved" {:path index-path :session-count (count index)}))
+      (catch Exception e
+        (log/error e "Failed to save session index"))
+      (finally
+        (let [elapsed-ms (/ (double (- (System/nanoTime) start-ns)) 1e6)]
+          (emit-metric! :histogram :session-index-save-duration-ms
+                        {:value elapsed-ms
+                         :session-count (count index)}))))))
 
 (defn get-legacy-index-file-path
   "Get path to the legacy index location at ~/.claude/.session-index.edn.
@@ -1054,6 +1091,11 @@
   (legitimately non-message entries such as sidechain/summary/system) is still
   fully consumed — only truly partial writes hold the cursor back.
 
+  Emits two counters via `emit-metric!` when any complete lines were processed:
+  `:jsonl-lines-total` (every newline-terminated line seen) and, when positive,
+  `:jsonl-parse-failures` (non-blank lines that `parse-jsonl-line` rejected).
+  Blank lines are not counted as failures — they are expected background noise.
+
   Does NOT update `file-positions`; callers are responsible for persisting
   `:new-pos` into the position tracker.
 
@@ -1084,11 +1126,27 @@
                   ;; Last element is the unterminated tail — hold it back.
                   [(butlast lines)
                    (count (.getBytes ^String (last lines) "UTF-8"))])
-                parsed (->> complete
-                            (map parse-jsonl-line)
-                            (filter some?)
-                            (vec))
+                complete-vec (vec complete)
+                parsed-with-nils (mapv parse-jsonl-line complete-vec)
+                total-lines (count complete-vec)
+                failures (loop [i 0, f 0]
+                           (if (< i total-lines)
+                             (recur (inc i)
+                                    (if (and (nil? (nth parsed-with-nils i))
+                                             (not (str/blank? (nth complete-vec i))))
+                                      (inc f)
+                                      f))
+                             f))
+                parsed (into [] (filter some?) parsed-with-nils)
                 new-pos (- current-size trailing-bytes)]
+            (when (pos? total-lines)
+              (emit-metric! :counter :jsonl-lines-total
+                            {:file file-path :count total-lines}))
+            (when (pos? failures)
+              (emit-metric! :counter :jsonl-parse-failures
+                            {:file file-path
+                             :count failures
+                             :total total-lines}))
             {:messages parsed :new-pos new-pos}))))
     (catch Exception e
       (log/error e "Failed to parse .jsonl file incrementally" {:file file-path})

@@ -707,6 +707,155 @@
         (.setLevel root-logger original-level)))))
 
 ;; ============================================================================
+;; Metrics Instrumentation Tests
+;; ============================================================================
+
+(defn- with-captured-metrics
+  "Rebinds `repl/metrics-emitter` around `body-fn` to capture every emission
+  as `[metric-type metric-name data]`. Returns the captured vector."
+  [body-fn]
+  (let [captured (atom [])]
+    (with-redefs [repl/metrics-emitter
+                  (atom (fn [mt mn d] (swap! captured conj [mt mn d])))]
+      (body-fn))
+    @captured))
+
+(deftest test-emit-metric-default-emitter-does-not-throw
+  (testing "Default emitter logs without throwing"
+    ;; Root logger is Level/OFF in the :each fixture, which is fine — this
+    ;; just asserts the default path is wired and doesn't blow up.
+    (is (nil? (repl/emit-metric! :counter :test-default {:count 1})))
+    (is (nil? (repl/emit-metric! :histogram :test-default-hist {:value 1.5})))))
+
+(deftest test-emit-metric-swallows-emitter-exceptions
+  (testing "Emitter exceptions never propagate to the call site"
+    (with-redefs [repl/metrics-emitter
+                  (atom (fn [_ _ _] (throw (ex-info "boom" {}))))]
+      (is (nil? (repl/emit-metric! :counter :test-throw {:count 1}))
+          "emit-metric! must not throw even if the emitter does"))))
+
+(deftest test-parse-jsonl-incremental-emits-lines-total-counter
+  (testing "Emits :jsonl-lines-total for every newline-terminated line parsed"
+    (let [msgs ["{\"role\":\"user\",\"uuid\":\"a\"}"
+                "{\"role\":\"assistant\",\"uuid\":\"b\"}"]
+          file (create-test-jsonl-file "metrics-lines-total.jsonl" msgs)
+          file-path (.getAbsolutePath file)
+          captured (with-captured-metrics
+                     #(repl/parse-jsonl-incremental file-path))
+          totals (filter (fn [[mt mn _]]
+                           (and (= :counter mt) (= :jsonl-lines-total mn)))
+                         captured)]
+      (is (= 1 (count totals))
+          "Exactly one :jsonl-lines-total emission per call")
+      (let [[_ _ data] (first totals)]
+        (is (= 2 (:count data)))
+        (is (= file-path (:file data)))))))
+
+(deftest test-parse-jsonl-incremental-emits-parse-failures-counter
+  (testing "Increments :jsonl-parse-failures only for non-blank nil parses"
+    (let [file (io/file test-dir "metrics-parse-failures.jsonl")
+          file-path (.getAbsolutePath file)]
+      (io/make-parents file)
+      ;; blank line (expected nil, NOT a failure) + garbage (failure)
+      ;; + valid (parsed) + whitespace-only (NOT a failure) + another valid
+      (spit file (str "\n"
+                      "garbage-not-json\n"
+                      "{\"role\":\"user\",\"uuid\":\"a\"}\n"
+                      "   \n"
+                      "{\"role\":\"assistant\",\"uuid\":\"b\"}\n"))
+      (repl/reset-file-position! file-path)
+      (let [captured (with-captured-metrics
+                       #(repl/parse-jsonl-incremental file-path))
+            failures (filter (fn [[mt mn _]]
+                               (and (= :counter mt) (= :jsonl-parse-failures mn)))
+                             captured)
+            totals (filter (fn [[mt mn _]]
+                             (and (= :counter mt) (= :jsonl-lines-total mn)))
+                           captured)]
+        (is (= 1 (count totals)))
+        (is (= 5 (get-in (first totals) [2 :count]))
+            "5 total newline-terminated lines seen")
+        (is (= 1 (count failures))
+            "Exactly one :jsonl-parse-failures emission (non-blank garbage line)")
+        (let [[_ _ data] (first failures)]
+          (is (= 1 (:count data)))
+          (is (= 5 (:total data)))
+          (is (= file-path (:file data))))))))
+
+(deftest test-parse-jsonl-incremental-no-failures-emission-when-clean
+  (testing "Skips :jsonl-parse-failures emission when no failures occurred"
+    (let [msgs ["{\"role\":\"user\",\"uuid\":\"a\"}"
+                "{\"role\":\"assistant\",\"uuid\":\"b\"}"]
+          file (create-test-jsonl-file "metrics-clean.jsonl" msgs)
+          file-path (.getAbsolutePath file)
+          captured (with-captured-metrics
+                     #(repl/parse-jsonl-incremental file-path))]
+      (is (empty? (filter (fn [[_ mn _]] (= :jsonl-parse-failures mn))
+                          captured))
+          "No failure counter when every non-blank line parses"))))
+
+(deftest test-parse-jsonl-incremental-no-emission-when-no-new-bytes
+  (testing "Emits nothing when there are no new bytes to read"
+    (let [msgs ["{\"role\":\"user\",\"uuid\":\"a\"}"]
+          file (create-test-jsonl-file "metrics-no-change.jsonl" msgs)
+          file-path (.getAbsolutePath file)]
+      (let [{:keys [new-pos]} (repl/parse-jsonl-incremental file-path)]
+        (swap! repl/file-positions assoc file-path new-pos))
+      (let [captured (with-captured-metrics
+                       #(repl/parse-jsonl-incremental file-path))]
+        (is (empty? captured)
+            "Second call with no new bytes must not emit metrics")))))
+
+(deftest test-parse-jsonl-incremental-partial-line-not-counted-as-failure
+  (testing "Unterminated tail is held back, not counted as a parse failure"
+    (let [file (io/file test-dir "metrics-partial.jsonl")
+          file-path (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file "{\"role\":\"user\",\"uuid\":\"a\"}\n{\"role\":\"as")
+      (repl/reset-file-position! file-path)
+      (let [captured (with-captured-metrics
+                       #(repl/parse-jsonl-incremental file-path))
+            totals (filter (fn [[_ mn _]] (= :jsonl-lines-total mn)) captured)
+            failures (filter (fn [[_ mn _]] (= :jsonl-parse-failures mn)) captured)]
+        (is (= 1 (get-in (first totals) [2 :count]))
+            "Only the complete line counts; the unterminated tail is held back")
+        (is (empty? failures)
+            "The partial tail must NOT be counted as a parse failure")))))
+
+(deftest test-save-index-emits-duration-histogram-on-success
+  (testing "Emits :session-index-save-duration-ms with value and session-count"
+    (let [tmp (doto (File/createTempFile "si-success" ".edn") (.deleteOnExit))]
+      (with-redefs [repl/get-index-file-path (constantly (.getAbsolutePath tmp))]
+        (let [captured (with-captured-metrics
+                         #(repl/save-index! {"sid-a" {:session-id "sid-a"}
+                                             "sid-b" {:session-id "sid-b"}}))
+              histos (filter (fn [[mt mn _]]
+                               (and (= :histogram mt)
+                                    (= :session-index-save-duration-ms mn)))
+                             captured)]
+          (is (= 1 (count histos))
+              "Exactly one histogram emission per save-index! call")
+          (let [[_ _ data] (first histos)]
+            (is (number? (:value data)))
+            (is (>= (:value data) 0.0)
+                "Duration must be a non-negative number of ms")
+            (is (= 2 (:session-count data)))))))))
+
+(deftest test-save-index-emits-duration-histogram-on-failure
+  (testing "Emits histogram even when the spit path fails"
+    ;; Force spit to throw so we exercise the finally-block emission.
+    (with-redefs [repl/get-index-file-path
+                  (constantly "/definitely/not/a/writable/path/idx.edn")]
+      (let [captured (with-captured-metrics
+                       #(repl/save-index! {"sid-a" {:session-id "sid-a"}}))
+            histos (filter (fn [[_ mn _]]
+                             (= :session-index-save-duration-ms mn))
+                           captured)]
+        (is (= 1 (count histos))
+            "Histogram emission must fire even when the write fails")
+        (is (= 1 (get-in (first histos) [2 :session-count])))))))
+
+;; ============================================================================
 ;; Selective Watching Tests
 ;; ============================================================================
 
