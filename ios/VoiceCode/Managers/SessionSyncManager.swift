@@ -29,6 +29,24 @@ protocol SessionSyncDelegate: AnyObject {
     /// local state is partial; no automatic merge or reload happens.
     /// See docs/design/append-only-message-stream.md AC5.
     func didDetectPrunedGap(_ sessionId: String, gap: SessionHistoryPayload.Gap)
+
+    /// Fires when the sync manager needs the client to send a new `subscribe`
+    /// for the given session starting from `fromSeq`. Two triggers:
+    ///   1. A push arrived with `first_seq > local_last_seq + 1` — a missed
+    ///      window needs backfilling. `fromSeq = local_last_seq` (pre-gap).
+    ///   2. The payload carried `is_complete == false` — the server's budget
+    ///      was exhausted and the next window is ready. `fromSeq` is the
+    ///      latest seq we just received.
+    /// The manager never advances any shared cursor past the gap until the
+    /// client completes this resubscribe; see AC3/AC6 of the design.
+    func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64)
+}
+
+extension SessionSyncDelegate {
+    /// Default no-op so existing conformers (VoiceCodeClient shipped before
+    /// tmux-untethered-fh3) compile without modification. Real implementers
+    /// route `fromSeq` into a `subscribe` message on the socket.
+    func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64) {}
 }
 
 /// Manages synchronization of session metadata between backend and CoreData
@@ -267,25 +285,209 @@ class SessionSyncManager {
     
     // MARK: - Session History Payload (v0.4.0)
 
-    /// v0.4.0 entry point for a decoded `session_history` envelope.
+    /// v0.4.0 unified entry point for a decoded `session_history` envelope.
+    /// Used for both initial history replies and real-time pushes; the
+    /// server emits the same shape for both paths.
     ///
-    /// Scope of this method is deliberately narrow: surface `pruned` gaps to
-    /// the delegate and return. Full payload merge (idempotent upsert on
-    /// `(session_id, seq)`, `is_complete` follow-up subscribe) lands with
-    /// tmux-untethered-fh3. Wiring the delegate here first means that
-    /// compaction / prune work won't need iOS changes later.
+    /// Implements the gap contract from
+    /// docs/design/append-only-message-stream.md (AC3/AC4/AC5/AC6):
+    ///
+    /// 1. `gap.reason == "pruned"`: surface to delegate and return — server
+    ///    has lost the range the client asked for. (AC5)
+    /// 2. 3-case seq comparison against `local_last_seq = max(seq)` in cache:
+    ///    - `first_seq == local_last_seq + 1` → contiguous. Upsert + advance.
+    ///    - `first_seq  > local_last_seq + 1` → gap. Upsert the received
+    ///       window *and* fire `sessionSyncNeedsResubscribe(fromSeq:
+    ///       local_last_seq)` so the client backfills before advancing. (AC3)
+    ///    - `first_seq <= local_last_seq` → duplicate / reorder. The upsert
+    ///       is idempotent on `(sessionId, seq)`, so it's a no-op or
+    ///       in-place update; `local_last_seq` does not regress. (AC3)
+    /// 3. `is_complete == false` → immediately re-subscribe with the
+    ///    advanced cursor so the next window loads without user action. (AC6)
+    ///
+    /// The `client_ahead` gap reason is handled as a normal merge path (no
+    /// delegate fire) — the server sends a full resync via `messages` in
+    /// that case, and the client upserts it like any other payload.
     func handleSessionHistoryPayload(_ payload: SessionHistoryPayload) {
+        // Pruned gap: surface to delegate and stop. Merging anything under a
+        // pruned reply would silently partial-view the user's history.
         if let gap = payload.gap, gap.reason == "pruned" {
             logger.warning("⚠️ Pruned gap for \(payload.sessionId): requested_last_seq=\(gap.requestedLastSeq), min_available_seq=\(gap.minAvailableSeq)")
             let sessionId = payload.sessionId
             DispatchQueue.main.async { [weak self] in
                 self?.delegate?.didDetectPrunedGap(sessionId, gap: gap)
             }
+            return
         }
-        // TODO(tmux-untethered-fh3): merge payload.messages via upsert on
-        // (sessionId, seq); chase `is_complete: false` with a follow-up
-        // subscribe. Until that lands, non-gap payloads arrive via the
-        // legacy dict-based handleSessionHistory(sessionId:messages:).
+
+        guard let sessionUUID = UUID(uuidString: payload.sessionId) else {
+            logger.error("Invalid session ID format in handleSessionHistoryPayload: \(payload.sessionId)")
+            return
+        }
+
+        persistenceController.performBackgroundTask { [weak self] backgroundContext in
+            guard let self = self else { return }
+
+            // Snapshot the current contiguous cursor BEFORE mutating — we
+            // need the pre-upsert value to emit a correct backfill request.
+            let localLastSeq = self.maxCachedSeq(sessionId: sessionUUID, in: backgroundContext)
+
+            // 3-case gap decision. Empty windows (no first_seq) never trip a gap.
+            let gapDetected: Bool
+            if let firstSeq = payload.firstSeq, firstSeq > localLastSeq + 1 {
+                logger.warning("📭 Gap for \(payload.sessionId): local_last_seq=\(localLastSeq), first_seq=\(firstSeq); backfilling from \(localLastSeq)")
+                gapDetected = true
+            } else {
+                gapDetected = false
+            }
+
+            let session = self.fetchOrCreateSession(id: sessionUUID, in: backgroundContext)
+
+            // Idempotent upsert on (sessionId, seq). Safe under double
+            // delivery (push+history overlap, gap-backfill crossing).
+            var newRows = 0
+            for wireMessage in payload.messages {
+                if self.upsertMessage(wireMessage, session: session, in: backgroundContext) {
+                    newRows += 1
+                }
+            }
+
+            // Preview reflects the newest message the client has actually
+            // seen, which is the last element in the ascending payload.
+            if let lastMessage = payload.messages.last {
+                session.preview = String(lastMessage.text.prefix(100))
+            }
+
+            // Keep messageCount in sync with actual row count to avoid
+            // drift between the sidebar count and the conversation view.
+            // `session.messages` reflects pending inserts synchronously
+            // because `message.session = session` walks the inverse and
+            // updates the NSSet before save.
+            if let currentMessages = session.messages?.allObjects as? [CDMessage] {
+                session.messageCount = Int32(currentMessages.count)
+            }
+
+            do {
+                if backgroundContext.hasChanges {
+                    try backgroundContext.save()
+                    if newRows > 0 {
+                        let sessionId = payload.sessionId
+                        DispatchQueue.main.async {
+                            NotificationCenter.default.post(
+                                name: .sessionHistoryDidUpdate,
+                                object: nil,
+                                userInfo: ["sessionId": sessionId]
+                            )
+                        }
+                    }
+                }
+            } catch {
+                logger.error("Failed to save session_history payload: \(error.localizedDescription)")
+                return
+            }
+
+            // Follow-up subscribes. Gap backfill takes precedence — the gap
+            // window is still open, so chasing `is_complete: false` from this
+            // same payload would advance past it. The gap resubscribe itself
+            // may reply with `is_complete: false`; that subsequent payload
+            // will chain its own window.
+            let sessionId = payload.sessionId
+            if gapDetected {
+                DispatchQueue.main.async { [weak self] in
+                    self?.delegate?.sessionSyncNeedsResubscribe(sessionId, fromSeq: localLastSeq)
+                }
+            } else if !payload.isComplete {
+                // Prefer the payload's reported last_seq; fall back to the
+                // cached cursor if the payload was empty (shouldn't happen
+                // with is_complete == false, but be defensive).
+                let nextCursor = payload.lastSeq ?? localLastSeq
+                DispatchQueue.main.async { [weak self] in
+                    self?.delegate?.sessionSyncNeedsResubscribe(sessionId, fromSeq: nextCursor)
+                }
+            }
+        }
+    }
+
+    // MARK: - Session History Payload helpers
+
+    /// Returns the largest `seq` stored for this session, or 0 if none.
+    /// Used as the client's `local_last_seq` cursor for gap detection.
+    internal func maxCachedSeq(sessionId: UUID, in context: NSManagedObjectContext) -> Int64 {
+        let request = CDMessage.fetchRequest()
+        request.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.seq, ascending: false)]
+        request.fetchLimit = 1
+        return (try? context.fetch(request))?.first?.seq ?? 0
+    }
+
+    /// Fetch an existing `CDBackendSession` by id, or create a minimal one so
+    /// incoming messages have a parent relationship. Mirrors the lazy-create
+    /// path in `handleSessionUpdated`.
+    private func fetchOrCreateSession(id sessionUUID: UUID, in context: NSManagedObjectContext) -> CDBackendSession {
+        let request = CDBackendSession.fetchBackendSession(id: sessionUUID)
+        if let existing = try? context.fetch(request).first {
+            return existing
+        }
+        logger.info("Creating new session from history payload: \(sessionUUID.uuidString.lowercased())")
+        let session = CDBackendSession(context: context)
+        session.id = sessionUUID
+        session.backendName = ""
+        session.workingDirectory = ""
+        session.lastModified = Date()
+        session.unreadCount = 0
+        session.isLocallyCreated = false
+        return session
+    }
+
+    /// Idempotent upsert of a `WireMessage`, keyed on `(sessionId, seq)`.
+    /// - Returns: `true` when a new row was inserted, `false` when an
+    ///   existing row was updated in place (or when the wire sessionId was
+    ///   malformed and the row could not be stored).
+    @discardableResult
+    internal func upsertMessage(_ wireMessage: WireMessage, session: CDBackendSession, in context: NSManagedObjectContext) -> Bool {
+        guard let wireSessionUUID = UUID(uuidString: wireMessage.sessionId) else {
+            logger.warning("Invalid wire session ID in upsert: \(wireMessage.sessionId)")
+            return false
+        }
+
+        // Consistency guard: the wire message's session_id must match the
+        // envelope-level session we're merging into. Drop any mismatched rows
+        // so the scalar `sessionId` and the `session` relationship never
+        // disagree. Backend should never emit this, but trust-but-verify.
+        guard wireSessionUUID == session.id else {
+            logger.error("Wire message session \(wireMessage.sessionId) does not match payload session \(session.id.uuidString.lowercased()); dropping")
+            return false
+        }
+
+        let request = CDMessage.fetchRequest()
+        request.predicate = NSPredicate(format: "sessionId == %@ AND seq == %lld",
+                                        wireSessionUUID as CVarArg,
+                                        wireMessage.seq)
+        request.fetchLimit = 1
+
+        let existing = (try? context.fetch(request))?.first
+        let message = existing ?? CDMessage(context: context)
+        let isNew = existing == nil
+
+        message.sessionId = wireSessionUUID
+        message.role = wireMessage.role
+        message.text = wireMessage.text
+        message.seq = wireMessage.seq
+        message.timestamp = wireMessage.timestamp
+        message.serverTimestamp = wireMessage.timestamp
+        message.messageStatus = .confirmed
+        message.session = session
+
+        // Keep the backend-assigned UUID aligned with what the wire carries.
+        // On brand-new rows we must set an id (CDMessage requires non-nil);
+        // on updates we overwrite to catch any server-side id rewrites.
+        if let wireUUID = UUID(uuidString: wireMessage.uuid) {
+            message.id = wireUUID
+        } else if isNew {
+            message.id = UUID()
+        }
+
+        return isNew
     }
 
     // MARK: - Optimistic UI
