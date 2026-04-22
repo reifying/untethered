@@ -31,6 +31,134 @@ final class VoiceCodeClientDeltaSyncTests: XCTestCase {
         context = nil
     }
 
+    // MARK: - newestCachedSeq Tests
+
+    func testNewestCachedSeqEmpty() {
+        // No messages for this session -> 0
+        let sessionId = UUID().uuidString.lowercased()
+        XCTAssertEqual(client.newestCachedSeq(sessionId: sessionId, context: context), 0)
+    }
+
+    func testNewestCachedSeqPopulated() throws {
+        // Populated session returns the max seq, not the newest timestamp.
+        // Deliberately ordered so timestamp-sort and seq-sort diverge: the
+        // highest-seq row has the *oldest* timestamp, and the lowest-seq row
+        // has the newest timestamp. This pins that seq is the cursor.
+        let sessionId = UUID()
+        let now = Date()
+
+        let m1 = CDMessage(context: context)
+        m1.id = UUID()
+        m1.sessionId = sessionId
+        m1.role = "user"
+        m1.text = "first"
+        m1.seq = 17
+        m1.timestamp = now.addingTimeInterval(-300)
+        m1.messageStatus = .confirmed
+
+        let m2 = CDMessage(context: context)
+        m2.id = UUID()
+        m2.sessionId = sessionId
+        m2.role = "assistant"
+        m2.text = "middle"
+        m2.seq = 42
+        m2.timestamp = now.addingTimeInterval(-600)
+        m2.messageStatus = .confirmed
+
+        let m3 = CDMessage(context: context)
+        m3.id = UUID()
+        m3.sessionId = sessionId
+        m3.role = "user"
+        m3.text = "last by timestamp, lowest seq"
+        m3.seq = 5
+        m3.timestamp = now
+        m3.messageStatus = .confirmed
+
+        try context.save()
+
+        let result = client.newestCachedSeq(sessionId: sessionId.uuidString.lowercased(), context: context)
+        XCTAssertEqual(result, 42)
+    }
+
+    func testNewestCachedSeqRespectsSessionScope() throws {
+        // Two sessions with overlapping seq space — each is its own counter.
+        let sessionA = UUID()
+        let sessionB = UUID()
+
+        let a1 = CDMessage(context: context)
+        a1.id = UUID()
+        a1.sessionId = sessionA
+        a1.role = "user"
+        a1.text = "A-1"
+        a1.seq = 3
+        a1.timestamp = Date().addingTimeInterval(-100)
+        a1.messageStatus = .confirmed
+
+        let a2 = CDMessage(context: context)
+        a2.id = UUID()
+        a2.sessionId = sessionA
+        a2.role = "assistant"
+        a2.text = "A-2"
+        a2.seq = 7
+        a2.timestamp = Date()
+        a2.messageStatus = .confirmed
+
+        let b1 = CDMessage(context: context)
+        b1.id = UUID()
+        b1.sessionId = sessionB
+        b1.role = "user"
+        b1.text = "B-1"
+        b1.seq = 500
+        b1.timestamp = Date().addingTimeInterval(-50)
+        b1.messageStatus = .confirmed
+
+        try context.save()
+
+        XCTAssertEqual(client.newestCachedSeq(sessionId: sessionA.uuidString.lowercased(), context: context), 7)
+        XCTAssertEqual(client.newestCachedSeq(sessionId: sessionB.uuidString.lowercased(), context: context), 500)
+    }
+
+    func testNewestCachedSeqInvalidUUID() {
+        // Malformed session ID -> 0 (no crash, no fetch)
+        XCTAssertEqual(client.newestCachedSeq(sessionId: "not-a-valid-uuid", context: context), 0)
+        XCTAssertEqual(client.newestCachedSeq(sessionId: "", context: context), 0)
+    }
+
+    func testNewestCachedSeqZeroSeqRows() throws {
+        // Legacy/optimistic rows with seq=0 must not be returned as "newest".
+        // After migration, seq=0 means "unknown" — if all rows are 0, the
+        // cursor stays 0 and iOS will ask for the full history.
+        let sessionId = UUID()
+
+        let legacy = CDMessage(context: context)
+        legacy.id = UUID()
+        legacy.sessionId = sessionId
+        legacy.role = "user"
+        legacy.text = "pre-migration row"
+        legacy.seq = 0
+        legacy.timestamp = Date().addingTimeInterval(-100)
+        legacy.messageStatus = .confirmed
+
+        try context.save()
+
+        // All-zero session: cursor is 0 (start from beginning on wire).
+        XCTAssertEqual(client.newestCachedSeq(sessionId: sessionId.uuidString.lowercased(), context: context), 0)
+
+        // After a seq-bearing message arrives, that seq wins.
+        let assigned = CDMessage(context: context)
+        assigned.id = UUID()
+        assigned.sessionId = sessionId
+        assigned.role = "assistant"
+        assigned.text = "post-migration row"
+        assigned.seq = 12
+        assigned.timestamp = Date()
+        assigned.messageStatus = .confirmed
+
+        try context.save()
+
+        XCTAssertEqual(client.newestCachedSeq(sessionId: sessionId.uuidString.lowercased(), context: context), 12)
+    }
+
     // MARK: - getNewestCachedMessageId Tests
 
     func testGetNewestCachedMessageIdWithMessages() throws {

@@ -1150,12 +1150,41 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
+    /// Highest `seq` value cached for the given session.
+    /// Used as the delta-sync cursor in protocol v0.4.0 — iOS sends this as `last_seq`
+    /// on `subscribe` so the backend can stream only `seq > N` messages.
+    /// - Parameters:
+    ///   - sessionId: Claude session ID (lowercase UUID string)
+    ///   - context: Optional CoreData context for testing. Uses PersistenceController.shared.container.viewContext if nil.
+    /// - Returns: Max `seq` for the session, or `0` if the session has no messages or the ID is invalid.
+    ///   `0` is the documented "start from the beginning" sentinel on the wire.
+    func newestCachedSeq(sessionId: String, context: NSManagedObjectContext? = nil) -> Int64 {
+        guard let sessionUUID = UUID(uuidString: sessionId) else {
+            logger.warning("⚠️ [VoiceCodeClient] Invalid session ID for delta sync: \(sessionId)")
+            return 0
+        }
+
+        let ctx = context ?? PersistenceController.shared.container.viewContext
+        let request = CDMessage.fetchRequest()
+        request.predicate = NSPredicate(format: "sessionId == %@", sessionUUID as CVarArg)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.seq, ascending: false)]
+        request.fetchLimit = 1
+
+        do {
+            return try ctx.fetch(request).first?.seq ?? 0
+        } catch {
+            logger.error("⚠️ [VoiceCodeClient] Failed to fetch newest seq for delta sync: \(error.localizedDescription)")
+            return 0
+        }
+    }
+
     /// Get the UUID of the newest cached message for a session
     /// Used for delta sync - sending last_message_id to backend to only receive new messages
     /// - Parameters:
     ///   - sessionId: Claude session ID (lowercase UUID string)
     ///   - context: Optional CoreData context for testing. Uses PersistenceController.shared.container.viewContext if nil.
     /// - Returns: Lowercase UUID string of newest message, or nil if no messages or error
+    @available(*, deprecated, message: "Use newestCachedSeq(sessionId:context:) — protocol v0.4.0 uses Int64 seq as the cursor")
     func getNewestCachedMessageId(sessionId: String, context: NSManagedObjectContext? = nil) -> String? {
         guard let sessionUUID = UUID(uuidString: sessionId) else {
             logger.warning("⚠️ [VoiceCodeClient] Invalid session ID for delta sync: \(sessionId)")
