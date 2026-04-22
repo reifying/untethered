@@ -149,6 +149,29 @@
   ([] (hello-enforcement-enabled? @message-stream-version))
   ([v] (= v :v0.4.0)))
 
+(defn parse-protocol-version
+  "Parse a semver-like wire string (e.g. \"0.3.0\") into [major minor patch]
+   so two announcements can be compared with `compare`. Pre-release / build
+   suffixes (\"-rc1\", \"+build\") are stripped before parsing. Returns nil
+   for anything that doesn't resolve to exactly three numeric parts."
+  [s]
+  (when (string? s)
+    (let [stripped (str/replace s #"[-+].*$" "")
+          parts (str/split stripped #"\.")]
+      (when (= 3 (count parts))
+        (try
+          (mapv #(Integer/parseInt %) parts)
+          (catch NumberFormatException _ nil))))))
+
+(defn client-protocol-too-old?
+  "True only when the client explicitly announced a protocol version below
+   0.4.0 in its hello/connect handshake. A missing or unparseable
+   :protocol-version is treated as 'unknown, not too old' so existing
+   v0.4.0 clients (which do not announce a version) still pass through."
+  [data]
+  (when-let [parsed (parse-protocol-version (:protocol-version data))]
+    (neg? (compare parsed [0 4 0]))))
+
 ;; Ephemeral mapping: WebSocket channel -> client state
 ;; This is just for routing messages during an active connection
 ;; Persistent session data comes from the replication system (filesystem-based)
@@ -463,6 +486,37 @@
               (generate-json {:type :auth-error
                               :message "Authentication failed"}))
   (http/close channel))
+
+(defn reject-unsupported-protocol-version!
+  "Send the canonical unsupported_protocol_version error payload exactly as
+   required by the v0.4.0 hello contract and close the socket. The payload
+   shape is asserted by tests, so do not reshape it without also updating
+   the iOS client and the protocol docs."
+  [channel received-version]
+  (log/warn "Rejecting client for unsupported protocol version"
+            {:received received-version :required "0.4.0"})
+  (http/send! channel
+              (generate-json
+               {:type "error"
+                :code "unsupported_protocol_version"
+                :required "0.4.0"
+                :received received-version
+                :message "Client is too old; upgrade required"}))
+  (http/close channel))
+
+(defn enforce-protocol-version!
+  "Hello-handshake guard: reject clients announcing a protocol version older
+   than 0.4.0 when enforcement is on (:message-stream-version = :v0.4.0).
+   Returns true when the client may proceed to authentication. Returns false
+   and has already sent the error + closed the socket when rejection fires.
+   A :v0.3.0 message-stream-version disables the guard so rollback keeps
+   legacy clients working."
+  [channel data]
+  (if (and (hello-enforcement-enabled?)
+           (client-protocol-too-old? data))
+    (do (reject-unsupported-protocol-version! channel (:protocol-version data))
+        false)
+    true))
 
 (defn authenticate-connect!
   "Validate API key on connect message and mark channel as authenticated.
@@ -1260,7 +1314,8 @@
 
         ;; Connect requires API key authentication
         (= msg-type "connect")
-        (when (authenticate-connect! channel data)
+        (when (and (enforce-protocol-version! channel data)
+                   (authenticate-connect! channel data))
           ;; Authentication succeeded, proceed with connect logic
           (log/info "Client connected and authenticated")
 
