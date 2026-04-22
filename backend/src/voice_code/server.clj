@@ -343,6 +343,31 @@
                          :max-bytes max-total-bytes})
               (mapv #(truncate-message-text % 500) messages))))))))
 
+(defn pack-within-budget
+  "Walk candidates oldest-first, including each if the running JSON byte
+   estimate stays under max-bytes. Returns {:included vec :complete? bool}.
+
+   - Starts with a 200-byte envelope overhead estimate.
+   - Each candidate contributes its JSON byte count plus 1 (comma).
+   - Stops at the first candidate that would push total past max-bytes,
+     returning :complete? false. Exhausting the input returns :complete? true.
+
+   Pure helper: no I/O, no state, no truncation. Individual over-budget
+   messages are handled by the caller (e.g. via truncate-message-text)."
+  [candidates max-bytes]
+  (let [overhead 200]
+    (loop [remaining candidates
+           included []
+           used overhead]
+      (if (empty? remaining)
+        {:included included :complete? true}
+        (let [m (first remaining)
+              m-json (generate-json m)
+              m-sz (inc (count (.getBytes ^String m-json "UTF-8")))]
+          (if (> (+ used m-sz) max-bytes)
+            {:included included :complete? false}
+            (recur (rest remaining) (conj included m) (+ used m-sz))))))))
+
 (defn build-session-history-response
   "Build session-history response with delta sync and smart truncation.
 

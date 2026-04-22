@@ -1932,6 +1932,60 @@
 
 ;; Delta Sync Session History Tests
 
+;; pack-within-budget helper tests
+
+(deftest test-pack-within-budget-empty-candidates
+  (testing "Empty candidates returns empty vec and complete?=true"
+    (let [result (server/pack-within-budget [] 10000)]
+      (is (= [] (:included result)))
+      (is (true? (:complete? result))))))
+
+(deftest test-pack-within-budget-full-fit
+  (testing "All candidates fit within budget -> complete?=true, preserves order"
+    (let [msgs [{:uuid "a" :text "hello"}
+                {:uuid "b" :text "world"}
+                {:uuid "c" :text "again"}]
+          result (server/pack-within-budget msgs 10000)]
+      (is (true? (:complete? result)))
+      (is (= msgs (:included result)))
+      (is (= ["a" "b" "c"] (mapv :uuid (:included result)))))))
+
+(deftest test-pack-within-budget-partial-fit
+  (testing "Budget exhausted partway -> complete?=false and stops at boundary"
+    (let [msgs (vec (for [i (range 10)]
+                      {:uuid (str "msg-" i)
+                       :text (apply str (repeat 100 "x"))}))
+          result (server/pack-within-budget msgs 500)]
+      (is (false? (:complete? result)))
+      (is (= "msg-0" (-> result :included first :uuid)))
+      (is (pos? (count (:included result))))
+      (is (< (count (:included result)) (count msgs)))
+      (is (= (mapv :uuid (take (count (:included result)) msgs))
+             (mapv :uuid (:included result)))))))
+
+(deftest test-pack-within-budget-single-message-over-budget
+  (testing "First message alone exceeds budget -> empty included, complete?=false"
+    (let [msgs [{:uuid "big" :text (apply str (repeat 1000 "x"))}]
+          result (server/pack-within-budget msgs 300)]
+      (is (= [] (:included result)))
+      (is (false? (:complete? result))))))
+
+(deftest test-pack-within-budget-exact-fit-at-boundary
+  (testing "Budget just large enough for overhead alone -> no messages included"
+    (let [msgs [{:uuid "a" :text "hi"}]
+          result (server/pack-within-budget msgs 200)]
+      (is (= [] (:included result)))
+      (is (false? (:complete? result))))))
+
+(deftest test-pack-within-budget-oldest-first-order
+  (testing "Walks candidates oldest-first (input order), not newest-first"
+    (let [msgs [{:uuid "oldest" :text "1"}
+                {:uuid "middle" :text "2"}
+                {:uuid "newest" :text "3"}]
+          result (server/pack-within-budget msgs 10000)]
+      (is (= ["oldest" "middle" "newest"]
+             (mapv :uuid (:included result)))))))
+
 (deftest test-build-session-history-empty-messages
   (testing "Empty messages returns empty result with nil IDs"
     (let [result (server/build-session-history-response [] nil 100000)]
