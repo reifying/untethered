@@ -142,12 +142,30 @@
       (is (str/includes? result "{\"outcome\": \"complete\"}"))))
 
   (testing "reminder prompt shows concrete examples"
-    (let [reminder (orch/get-outcome-reminder-prompt :commit #{:committed :nothing-to-commit :other} "No JSON found")]
+    (let [reminder (orch/get-outcome-reminder-prompt :commit #{:committed :nothing-to-commit :other} "No JSON block found in response")]
       (is (str/includes? reminder "{\"outcome\": \"committed\"}"))
       (is (str/includes? reminder "{\"outcome\": \"nothing-to-commit\"}"))
       (is (str/includes? reminder "{\"outcome\": \"other\", \"otherDescription\":"))
       (is (not (str/includes? reminder "{\"outcome\": \"<outcome>\"}"))
-          "Reminder should not use placeholder format"))))
+          "Reminder should not use placeholder format")))
+
+  (testing "reminder opener matches the actual error category"
+    ;; Regression for tmux-untethered-uqj. A 'outcome not in expected'
+    ;; failure must not be framed as 'did not include a JSON block'.
+    (let [outcomes #{:complete :other}
+          no-block (orch/get-outcome-reminder-prompt :fix outcomes "No JSON block found in response")
+          bad-outcome (orch/get-outcome-reminder-prompt :fix outcomes
+                                                       "Outcome ':issues-found' not in expected outcomes: #{:complete :other}")
+          missing-field (orch/get-outcome-reminder-prompt :fix outcomes "JSON missing 'outcome' field")
+          missing-other (orch/get-outcome-reminder-prompt :fix outcomes "Outcome 'other' requires 'otherDescription' field")
+          parse-fail (orch/get-outcome-reminder-prompt :fix outcomes "JSON parse failed: Unexpected character")]
+      (is (str/includes? no-block "did not include the required JSON outcome block"))
+      (is (str/includes? bad-outcome "outcome that is not valid for this step"))
+      (is (not (str/includes? bad-outcome "did not include the required JSON outcome block"))
+          "Outcome-mismatch opener must not claim the response was missing a JSON block")
+      (is (str/includes? missing-field "missing the 'outcome' field"))
+      (is (str/includes? missing-other "missing the required 'otherDescription' field"))
+      (is (str/includes? parse-fail "JSON block did not parse")))))
 
 (deftest orchestration-state-test
   (testing "creates initial state for recipe"

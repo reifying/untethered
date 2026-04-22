@@ -374,11 +374,12 @@
         (is (nil? (:session-name @start-args))
             "session-name is nil when no metadata; start-window! falls back to session-<uuid6>"))))
 
-  (testing "registers callback in recipe-turn-callbacks atom"
+  (testing "registers callback in recipe-turn-callbacks atom with watermark"
     (let [session-id "dispatch-callback-test"
           cb (fn [_] nil)]
       (with-redefs [tmux/deliver! (fn [_ _] nil)
-                    tmux/start-window! (fn [_] nil)]
+                    tmux/start-window! (fn [_] nil)
+                    replication/get-session-metadata (constantly nil)]
         (server/dispatch-recipe-step-via-tmux!
          {:provider :claude
           :session-id session-id
@@ -386,8 +387,31 @@
           :prompt-text "x"
           :working-dir "/wd"}
          cb)
-        (is (= cb (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id))
-            "Callback should be registered under session-id"))))
+        (let [entry (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id)]
+          (is (map? entry) "Registered value should be a wrapper map")
+          (is (= cb (:callback entry)) "Callback fn should be stored under :callback")
+          (is (contains? entry :since-uuid)
+              "Watermark UUID (possibly nil) should be captured at dispatch")))))
+
+  (testing "captures the current last-assistant UUID as the watermark"
+    (let [session-id "dispatch-watermark-test"]
+      (with-redefs [tmux/deliver! (fn [_ _] nil)
+                    tmux/start-window! (fn [_] nil)
+                    replication/get-session-metadata
+                    (constantly {:provider :claude :file "/tmp/fake.jsonl"})
+                    replication/parse-session-messages
+                    (constantly [{:role "user" :uuid "u-1"}
+                                 {:role "assistant" :uuid "a-1" :text "prior"}])]
+        (server/dispatch-recipe-step-via-tmux!
+         {:provider :claude
+          :session-id session-id
+          :session-created? true
+          :prompt-text "x"
+          :working-dir "/wd"}
+         (fn [_] nil))
+        (is (= "a-1"
+               (:since-uuid (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id)))
+            "Watermark must match the last assistant UUID visible at dispatch"))))
 
   (testing "tmux failure invokes callback with error and unregisters"
     (let [session-id "dispatch-failure-test"
@@ -406,18 +430,18 @@
             "Callback should be unregistered on failure")))))
 
 (deftest on-turn-complete-fires-recipe-callback-test
-  (testing "on-turn-complete invokes registered recipe callback with last assistant text"
+  (testing "on-turn-complete invokes callback when a newer assistant message exists"
     (let [session-id "turn-complete-test"
           callback-response (atom nil)]
-      ;; Register a callback directly into the atom (simulating prior dispatch)
       (swap! @(resolve 'voice-code.server/recipe-turn-callbacks)
              assoc session-id
-             (fn [resp] (reset! callback-response resp)))
+             {:callback (fn [resp] (reset! callback-response resp))
+              :since-uuid "a-prev"})
       (with-redefs [replication/get-session-metadata
                     (constantly {:provider :claude :file "/tmp/fake.jsonl"})
                     replication/parse-session-messages
-                    (constantly [{:role "user" :text "prompt"}
-                                 {:role "assistant" :text "final response"}])
+                    (constantly [{:role "user" :uuid "u-1" :text "prompt"}
+                                 {:role "assistant" :uuid "a-new" :text "final response"}])
                     org.httpkit.server/send! (fn [_ _] nil)]
         (server/on-turn-complete session-id)
         (is (= true (:success @callback-response)))
@@ -428,28 +452,44 @@
 
   (testing "on-turn-complete without registered callback is a no-op for recipes"
     (let [session-id "turn-complete-noop-test"]
-      ;; No callback registered; suppress broadcast
       (with-redefs [org.httpkit.server/send! (fn [_ _] nil)]
-        ;; Should not throw
         (is (nil? (server/on-turn-complete session-id))))))
 
-  (testing "on-turn-complete fires callback with :success false when no assistant text is available"
-    ;; If read-last-assistant-text returns nil (missing metadata or no assistant
-    ;; messages yet), surface it as an error so the callback's error branch
-    ;; exits the recipe cleanly instead of feeding nil into JSON parsing.
-    (let [session-id "turn-complete-no-text-test"
+  (testing "spurious fire (no newer assistant message) leaves the callback registered"
+    ;; Regression for tmux-untethered-uqj: a stale :review response must not
+    ;; be re-delivered to the :fix-step callback.
+    (let [session-id "turn-complete-stale-test"
+          callback-fires (atom 0)
+          cb (fn [_] (swap! callback-fires inc))]
+      (swap! @(resolve 'voice-code.server/recipe-turn-callbacks)
+             assoc session-id
+             {:callback cb :since-uuid "a-stale"})
+      (with-redefs [replication/get-session-metadata
+                    (constantly {:provider :claude :file "/tmp/fake.jsonl"})
+                    replication/parse-session-messages
+                    (constantly [{:role "assistant" :uuid "a-stale" :text "prior turn"}])
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/on-turn-complete session-id)
+        (is (zero? @callback-fires)
+            "Callback must not fire when the last-assistant UUID matches the watermark")
+        (is (some? (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id))
+            "Callback should remain registered to await a fresh response"))))
+
+  (testing "watermark of nil (no prior assistant) still accepts the first real response"
+    (let [session-id "turn-complete-first-test"
           callback-response (atom nil)]
       (swap! @(resolve 'voice-code.server/recipe-turn-callbacks)
              assoc session-id
-             (fn [resp] (reset! callback-response resp)))
-      (with-redefs [replication/get-session-metadata (constantly nil)
+             {:callback (fn [resp] (reset! callback-response resp))
+              :since-uuid nil})
+      (with-redefs [replication/get-session-metadata
+                    (constantly {:provider :claude :file "/tmp/fake.jsonl"})
+                    replication/parse-session-messages
+                    (constantly [{:role "assistant" :uuid "a-first" :text "first reply"}])
                     org.httpkit.server/send! (fn [_ _] nil)]
         (server/on-turn-complete session-id)
-        (is (false? (:success @callback-response)))
-        (is (string? (:error @callback-response)))
-        (is (= session-id (:session-id @callback-response)))
-        (is (nil? (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id))
-            "Callback should be drained even when text is unavailable")))))
+        (is (true? (:success @callback-response)))
+        (is (= "first reply" (:result @callback-response)))))))
 
 (deftest exit-recipe-clears-pending-turn-callback-test
   (testing "exit-recipe-for-session removes orphaned entries from recipe-turn-callbacks"

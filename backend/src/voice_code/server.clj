@@ -748,10 +748,10 @@
   ;; provider's terminal marker.
   (atom {}))
 
-(defn- read-last-assistant-text
+(defn- last-assistant-message
   "Read the session's JSONL via the provider's canonical parser and return the
-   text of the last assistant message. Returns nil if the session has no
-   assistant messages or metadata cannot be located."
+   last assistant message map (with :uuid and :text). Returns nil if the
+   session has no assistant messages or metadata cannot be located."
   [session-id]
   (try
     (when-let [metadata (repl/get-session-metadata session-id)]
@@ -760,11 +760,23 @@
         (when (and provider file-path)
           (let [messages (repl/parse-session-messages provider file-path)
                 assistant (filter #(= "assistant" (:role %)) messages)]
-            (:text (last assistant))))))
+            (last assistant)))))
     (catch Exception e
       (log/warn e "Failed to read last assistant message"
                 {:session-id session-id})
       nil)))
+
+(defn- read-fresh-assistant-text
+  "Return the text of the session's last assistant message only if it is
+   strictly newer than since-uuid (the watermark captured at step dispatch).
+   Returns nil when there is no newer assistant message, so a spurious
+   turn-complete fire (e.g. triggered by a non-assistant JSONL write between
+   dispatch and the provider's actual response) does not hand stale text to
+   the orchestrator. since-uuid may be nil for the first step of a session."
+  [session-id since-uuid]
+  (when-let [msg (last-assistant-message session-id)]
+    (when (or (nil? since-uuid) (not= since-uuid (:uuid msg)))
+      (:text msg))))
 
 (defn dispatch-recipe-step-via-tmux!
   "Dispatch a recipe step prompt through tmux and register a turn-complete
@@ -787,7 +799,13 @@
    {:success false :error ...} and the registration is cleared."
   [{:keys [provider session-id session-created? prompt-text working-dir]}
    callback-fn]
-  (swap! recipe-turn-callbacks assoc session-id callback-fn)
+  ;; Capture the "last assistant message" watermark before dispatch so
+  ;; on-turn-complete can distinguish a fresh response from a spurious fire
+  ;; caused by non-assistant JSONL writes (interrupt markers, permission-mode
+  ;; entries, etc.). See tmux-untethered-uqj.
+  (let [since-uuid (:uuid (last-assistant-message session-id))]
+    (swap! recipe-turn-callbacks assoc session-id
+           {:callback callback-fn :since-uuid since-uuid}))
   (try
     (locking repl/compaction-dispatch-lock
       (if (repl/is-compaction-locked? session-id)
@@ -1138,21 +1156,24 @@
 
    Always broadcasts `{:type :turn-complete :session-id X}` to every connected
    client subscribed to the session. Additionally, if a recipe step is waiting
-   on this turn, fires its callback with the last assistant message text."
+   on this turn, fires its callback with the last assistant message text —
+   but only if the text is strictly newer than the watermark captured at
+   dispatch. Spurious fires (no fresh assistant message) leave the callback
+   registered so a later, legitimate turn-complete can drain it."
   [session-id]
   (log/info "Turn-complete callback invoked" {:session-id session-id})
-  (when-let [cb (get @recipe-turn-callbacks session-id)]
-    (swap! recipe-turn-callbacks dissoc session-id)
-    (try
-      (let [text (read-last-assistant-text session-id)]
-        (if (nil? text)
-          (cb {:success false
-               :error "No assistant text available for session"
-               :session-id session-id})
-          (cb {:success true :result text :session-id session-id})))
-      (catch Throwable e
-        (log/error e "Recipe turn-complete callback failed"
-                   {:session-id session-id}))))
+  (when-let [{:keys [callback since-uuid]} (get @recipe-turn-callbacks session-id)]
+    (let [text (read-fresh-assistant-text session-id since-uuid)]
+      (if (nil? text)
+        (log/info "Turn-complete fire ignored: no fresh assistant message"
+                  {:session-id session-id :since-uuid since-uuid})
+        (do
+          (swap! recipe-turn-callbacks dissoc session-id)
+          (try
+            (callback {:success true :result text :session-id session-id})
+            (catch Throwable e
+              (log/error e "Recipe turn-complete callback failed"
+                         {:session-id session-id})))))))
   (doseq [[channel client-info] @connected-clients]
     (let [subscribed (or (:subscribed-sessions client-info) #{})]
       (when (and (contains? subscribed session-id)
