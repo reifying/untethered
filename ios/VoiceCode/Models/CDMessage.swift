@@ -21,6 +21,10 @@ public class CDMessage: NSManagedObject {
     @NSManaged private var status: String
     @NSManaged public var serverTimestamp: Date?
     @NSManaged public var session: CDBackendSession?
+    /// Monotonic per-session sequence number assigned by the backend. 0 means
+    /// "unknown" — applies to legacy rows from before the v4 migration and to
+    /// optimistic rows created locally before the server has assigned a seq.
+    @NSManaged public var seq: Int64
     
     /// Typed status accessor
     var messageStatus: MessageStatus {

@@ -604,6 +604,121 @@ final class CoreDataTests: XCTestCase {
         wait(for: [expectation], timeout: 2.0)
     }
 
+    // MARK: - seq Attribute & v4 Migration Tests
+
+    func testCDMessageSeqDefaultsToZero() throws {
+        let message = CDMessage(context: context)
+        message.id = UUID()
+        message.sessionId = UUID()
+        message.role = "user"
+        message.text = "Hello"
+        message.timestamp = Date()
+        message.messageStatus = .confirmed
+
+        try context.save()
+        XCTAssertEqual(message.seq, 0, "seq should default to 0 when not set")
+
+        message.seq = 42
+        try context.save()
+        XCTAssertEqual(message.seq, 42)
+    }
+
+    func testCDMessageHasCompoundIndexOnSessionIdAndSeq() throws {
+        let model = persistenceController.container.managedObjectModel
+        let entity = try XCTUnwrap(model.entitiesByName["CDMessage"])
+
+        let bySessionAndSeq = entity.indexes.first { idx in
+            idx.elements.map { $0.propertyName } == ["sessionId", "seq"]
+        }
+        let index = try XCTUnwrap(
+            bySessionAndSeq,
+            "CDMessage should have a (sessionId, seq) compound index"
+        )
+        XCTAssertEqual(index.elements.count, 2)
+        XCTAssertTrue(index.elements[0].isAscending, "sessionId element should be ascending")
+        XCTAssertFalse(index.elements[1].isAscending, "seq element should be descending")
+    }
+
+    func testLightweightMigrationFromV3AddsSeqDefault() throws {
+        let bundle = Bundle(for: PersistenceController.self)
+        let momdURL = try XCTUnwrap(bundle.url(forResource: "VoiceCode", withExtension: "momd"))
+        let v3URL = momdURL.appendingPathComponent("VoiceCode 3.mom")
+        let v3Model = try XCTUnwrap(NSManagedObjectModel(contentsOf: v3URL),
+                                    "Failed to load v3 model from \(v3URL.path)")
+
+        // The CDMessage Swift class declares @NSManaged var seq, which the
+        // v3 entity lacks. Use the generic NSManagedObject class for v3
+        // inserts so the property accessor never runs against a v3 row.
+        for entity in v3Model.entities {
+            entity.managedObjectClassName = "NSManagedObject"
+        }
+
+        let storeURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("CDMessageMigration-\(UUID().uuidString).sqlite")
+        addTeardownBlock {
+            for path in [storeURL.path, storeURL.path + "-wal", storeURL.path + "-shm"] {
+                try? FileManager.default.removeItem(atPath: path)
+            }
+        }
+
+        // 1. Write a row under the v3 schema (no seq column).
+        let v3Coordinator = NSPersistentStoreCoordinator(managedObjectModel: v3Model)
+        _ = try v3Coordinator.addPersistentStore(
+            ofType: NSSQLiteStoreType,
+            configurationName: nil,
+            at: storeURL,
+            options: nil
+        )
+        let v3Context = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
+        v3Context.persistentStoreCoordinator = v3Coordinator
+
+        let messageId = UUID()
+        let sessionId = UUID()
+        let v3Entity = try XCTUnwrap(v3Model.entitiesByName["CDMessage"])
+        let v3Msg = NSManagedObject(entity: v3Entity, insertInto: v3Context)
+        v3Msg.setValue(messageId, forKey: "id")
+        v3Msg.setValue(sessionId, forKey: "sessionId")
+        v3Msg.setValue("user", forKey: "role")
+        v3Msg.setValue("hello", forKey: "text")
+        v3Msg.setValue(Date(), forKey: "timestamp")
+        v3Msg.setValue("confirmed", forKey: "status")
+        try v3Context.save()
+
+        if let store = v3Coordinator.persistentStores.first {
+            try v3Coordinator.remove(store)
+        }
+
+        // 2. Reopen with the current (v4) model and let lightweight migration run.
+        let v4Model = persistenceController.container.managedObjectModel
+        let v4Coordinator = NSPersistentStoreCoordinator(managedObjectModel: v4Model)
+        _ = try v4Coordinator.addPersistentStore(
+            ofType: NSSQLiteStoreType,
+            configurationName: nil,
+            at: storeURL,
+            options: [
+                NSMigratePersistentStoresAutomaticallyOption: true,
+                NSInferMappingModelAutomaticallyOption: true
+            ]
+        )
+        let v4Context = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
+        v4Context.persistentStoreCoordinator = v4Coordinator
+
+        // 3. The legacy row should round-trip with seq defaulting to 0.
+        let req = CDMessage.fetchRequest()
+        req.predicate = NSPredicate(format: "id == %@", messageId as CVarArg)
+        let migrated = try v4Context.fetch(req)
+        XCTAssertEqual(migrated.count, 1, "Pre-migration message should still be present")
+        XCTAssertEqual(migrated.first?.seq, 0, "seq should default to 0 for legacy rows")
+        XCTAssertEqual(migrated.first?.text, "hello")
+        XCTAssertEqual(migrated.first?.sessionId, sessionId)
+
+        // Close the v4 store before the teardown unlinks the file, so SQLite
+        // doesn't log "vnode unlinked while in use" warnings.
+        if let store = v4Coordinator.persistentStores.first {
+            try v4Coordinator.remove(store)
+        }
+    }
+
     // MARK: - Message Pruning Tests
 
     func testPruneOldMessagesDeletesOldest() throws {
