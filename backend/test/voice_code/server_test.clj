@@ -1689,31 +1689,32 @@
 ;; Session Subscribe Tests - verifies size-based message limiting
 
 (deftest test-subscribe-sends-messages-within-size-budget
-  (testing "Subscribe sends messages within client's size budget"
+  (testing "Subscribe (v0.4.0) returns full packed range when client is fresh (last_seq omitted)"
     ;; Client with default max-message-size-kb (100KB)
+    (reset! server/message-stream-version :v0.4.0)
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
     (let [sent-messages (atom [])
-          ;; Create small messages that easily fit in 100KB budget
-          mock-messages (vec (for [i (range 50)]
-                               {:uuid (str "uuid-" i)
-                                :type (if (even? i) "user" "assistant")
-                                :text (str "Message " i)
-                                :message {:role (if (even? i) "user" "assistant")
-                                          :content (str "Message " i)}}))]
+          ;; Canonical messages already in the format parse-session-messages produces.
+          canonical-messages (vec (for [i (range 50)]
+                                    {:uuid (str "uuid-" i)
+                                     :role (if (even? i) "user" "assistant")
+                                     :text (str "Message " i)
+                                     :timestamp "2026-01-30T12:00:00Z"
+                                     :provider :claude}))]
       (with-redefs [org.httpkit.server/send!
-                    (fn [ch msg]
+                    (fn [_ch msg]
                       (swap! sent-messages conj (json/parse-string msg true)))
                     voice-code.replication/subscribe-to-session! (fn [_] nil)
                     voice-code.replication/get-session-metadata
                     (fn [session-id]
                       {:session-id session-id
                        :file "/tmp/test-session.jsonl"
+                       :provider :claude
                        :message-count 50})
-                    voice-code.replication/parse-jsonl-file
-                    (fn [_] mock-messages)
-                    voice-code.replication/filter-internal-messages
-                    (fn [msgs] msgs) ;; No filtering for this test
+                    voice-code.replication/parse-session-messages
+                    (fn [_provider _file-path] canonical-messages)
+                    voice-code.replication/filter-internal-messages identity
                     voice-code.replication/reset-file-position! (fn [_] nil)
                     voice-code.replication/file-positions (atom {})
                     clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
@@ -1722,40 +1723,163 @@
 
         (server/handle-message :test-ch "{\"type\":\"subscribe\",\"session_id\":\"test-session-123\"}")
 
-        ;; All small messages should fit in 100KB budget
         (is (= 1 (count @sent-messages)))
         (let [response (first @sent-messages)]
           (is (= "session_history" (:type response)))
           (is (= "test-session-123" (:session_id response)))
-          (is (= 50 (count (:messages response)))
-              "All messages should fit within size budget")
-          (is (= 50 (:total_count response))
-              "total_count should reflect filtered messages")
-          ;; Verify messages are in chronological order (oldest first)
-          (is (= "Message 0" (-> response :messages first :text))
-              "First message should be Message 0")
-          (is (= "Message 49" (-> response :messages last :text))
-              "Last message should be Message 49")
-          ;; Delta sync fields should be present
-          (is (true? (:is_complete response))
-              "is_complete should be true when all messages fit"))))
+          (is (= 50 (count (:messages response))) "All messages packed in one reply")
+          (is (= 1 (:first_seq response)) "first_seq starts at 1 for fresh session")
+          (is (= 50 (:last_seq response)) "last_seq matches the last stamped index")
+          (is (= 51 (:next_seq response)) "next_seq = count+1")
+          (is (true? (:is_complete response)) "is_complete true when all messages fit")
+          (is (nil? (:gap response)) "no gap on fresh subscribe")
+          (is (= "Message 0" (-> response :messages first :text)))
+          (is (= "Message 49" (-> response :messages last :text)))
+          (is (= 1 (-> response :messages first :seq)) "per-message seq starts at 1")
+          (is (= 50 (-> response :messages last :seq)) "per-message seq ends at 50")
+          (is (= "test-session-123" (-> response :messages first :session_id))
+              "Every wire message carries session_id"))))
+    (reset! server/api-key nil)))
+
+(deftest test-subscribe-delta-sync-with-last-seq
+  (testing "Subscribe with last_seq=N returns only messages with seq > N"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
+    (let [sent-messages (atom [])
+          canonical-messages (vec (for [i (range 10)]
+                                    {:uuid (str "uuid-" i)
+                                     :role (if (even? i) "user" "assistant")
+                                     :text (str "Message " i)
+                                     :timestamp "2026-01-30T12:00:00Z"
+                                     :provider :claude}))]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    voice-code.replication/subscribe-to-session! (fn [_] nil)
+                    voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      {:session-id session-id :file "/tmp/f.jsonl" :provider :claude :message-count 10})
+                    voice-code.replication/parse-session-messages
+                    (fn [_ _] canonical-messages)
+                    voice-code.replication/filter-internal-messages identity
+                    voice-code.replication/reset-file-position! (fn [_] nil)
+                    voice-code.replication/file-positions (atom {})
+                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
+                                                      (length [] 1000)
+                                                      (exists [] true)))]
+
+        (server/handle-message :test-ch
+                               "{\"type\":\"subscribe\",\"session_id\":\"sess\",\"last_seq\":7}")
+
+        (let [response (first @sent-messages)]
+          (is (= "session_history" (:type response)))
+          (is (= 3 (count (:messages response))) "only seq > 7 are returned")
+          (is (= 8 (:first_seq response)))
+          (is (= 10 (:last_seq response)))
+          (is (= 11 (:next_seq response)))
+          (is (true? (:is_complete response)))
+          (is (nil? (:gap response)))
+          (is (= [8 9 10] (mapv :seq (:messages response)))))))
+    (reset! server/api-key nil)))
+
+(deftest test-subscribe-caught-up-returns-empty
+  (testing "Subscribe with last_seq at next_seq-1 returns empty packed range, no gap"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
+    (let [sent-messages (atom [])
+          canonical-messages (vec (for [i (range 5)]
+                                    {:uuid (str "uuid-" i)
+                                     :role "user"
+                                     :text (str "Message " i)
+                                     :timestamp "2026-01-30T12:00:00Z"
+                                     :provider :claude}))]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    voice-code.replication/subscribe-to-session! (fn [_] nil)
+                    voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      {:session-id session-id :file "/tmp/f.jsonl" :provider :claude :message-count 5})
+                    voice-code.replication/parse-session-messages
+                    (fn [_ _] canonical-messages)
+                    voice-code.replication/filter-internal-messages identity
+                    voice-code.replication/reset-file-position! (fn [_] nil)
+                    voice-code.replication/file-positions (atom {})
+                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
+                                                      (length [] 1000)
+                                                      (exists [] true)))]
+
+        (server/handle-message :test-ch
+                               "{\"type\":\"subscribe\",\"session_id\":\"sess\",\"last_seq\":5}")
+
+        (let [response (first @sent-messages)]
+          (is (= "session_history" (:type response)))
+          (is (= [] (:messages response)))
+          (is (nil? (:first_seq response)))
+          (is (nil? (:last_seq response)))
+          (is (= 6 (:next_seq response)))
+          (is (true? (:is_complete response)))
+          (is (nil? (:gap response))))))
+    (reset! server/api-key nil)))
+
+(deftest test-subscribe-rejects-last-message-id-in-v0-4-0
+  (testing "Subscribe under v0.4.0 rejects stale clients that still send last_message_id"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))]
+        (server/handle-message :test-ch
+                               (str "{\"type\":\"subscribe\","
+                                    "\"session_id\":\"sess\","
+                                    "\"last_message_id\":\"abc\"}"))
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (= "unsupported_subscribe_field" (:code response)))
+          (is (str/includes? (:message response) "last_message_id"))
+          (is (str/includes? (:message response) "last_seq")))))
+    (reset! server/api-key nil)))
+
+(deftest test-subscribe-rejects-non-integer-last-seq
+  (testing "Subscribe rejects last_seq values that are not non-negative integers"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
+    (doseq [bad ["\"not-a-number\"" "-1" "1.5"]]
+      (let [sent-messages (atom [])]
+        (with-redefs [org.httpkit.server/send!
+                      (fn [_ch msg]
+                        (swap! sent-messages conj (json/parse-string msg true)))]
+          (server/handle-message :test-ch
+                                 (str "{\"type\":\"subscribe\","
+                                      "\"session_id\":\"sess\","
+                                      "\"last_seq\":" bad "}"))
+          (is (= 1 (count @sent-messages))
+              (str "bad last_seq " bad " produces exactly one error reply"))
+          (let [response (first @sent-messages)]
+            (is (= "error" (:type response)))
+            (is (= "invalid_subscribe" (:code response)))))))
     (reset! server/api-key nil)))
 
 (deftest test-subscribe-filters-internal-messages
   (testing "Subscribe filters out internal messages via parse-session-messages transformation"
     ;; With canonical format, parse-session-messages now handles all filtering
     ;; via providers/parse-message (filters summary, system, sidechain)
-    ;; and the subsequent filter-internal-messages call is a no-op for canonical format
+    ;; and the subsequent filter-internal-messages call is a no-op for canonical format.
+    (reset! server/message-stream-version :v0.4.0)
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
     (let [sent-messages (atom [])
-          ;; Create canonical format messages (already transformed)
-          ;; parse-session-messages filters out summary/system/sidechain during transformation
           canonical-messages [{:uuid "uuid-1" :role "user" :text "Real message 1" :timestamp "2026-01-30T12:00:00Z" :provider :claude}
                               {:uuid "uuid-3" :role "assistant" :text "Real message 2" :timestamp "2026-01-30T12:00:05Z" :provider :claude}
                               {:uuid "uuid-6" :role "user" :text "Real message 4" :timestamp "2026-01-30T12:00:15Z" :provider :claude}]]
       (with-redefs [org.httpkit.server/send!
-                    (fn [ch msg]
+                    (fn [_ch msg]
                       (swap! sent-messages conj (json/parse-string msg true)))
                     voice-code.replication/subscribe-to-session! (fn [_] nil)
                     voice-code.replication/get-session-metadata
@@ -1764,13 +1888,9 @@
                        :file "/tmp/test-session.jsonl"
                        :provider :claude
                        :message-count 3})
-                    ;; Mock parse-session-messages to return canonical format directly
                     voice-code.replication/parse-session-messages
                     (fn [_provider _file-path] canonical-messages)
-                    voice-code.replication/filter-internal-messages
-                    ;; With canonical format, filter-internal-messages is a no-op
-                    ;; (sidechain/summary/system already filtered by parse-message)
-                    identity
+                    voice-code.replication/filter-internal-messages identity
                     voice-code.replication/reset-file-position! (fn [_] nil)
                     voice-code.replication/file-positions (atom {})
                     clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
@@ -1779,14 +1899,55 @@
 
         (server/handle-message :test-ch "{\"type\":\"subscribe\",\"session_id\":\"test-session-456\"}")
 
-        ;; Verify all canonical messages are sent (already filtered at parse time)
         (is (= 1 (count @sent-messages)))
         (let [response (first @sent-messages)]
           (is (= "session_history" (:type response)))
           (is (= 3 (count (:messages response)))
               "Should send all 3 canonical messages (filtering happened at parse time)")
-          ;; Total count reflects displayable (filtered) messages
-          (is (= 3 (:total_count response))))))
+          (is (= 3 (:last_seq response)) "last_seq matches count"))))
+    (reset! server/api-key nil)))
+
+(deftest test-subscribe-v0-3-0-rollback-path
+  (testing "Subscribe under :v0.3.0 config keeps the legacy last_message_id + total_count wire"
+    (reset! server/message-stream-version :v0.3.0)
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
+    (let [sent-messages (atom [])
+          canonical-messages [{:uuid "uuid-a" :role "user" :text "first" :timestamp "2026-01-30T12:00:00Z" :provider :claude}
+                              {:uuid "uuid-b" :role "assistant" :text "second" :timestamp "2026-01-30T12:00:05Z" :provider :claude}
+                              {:uuid "uuid-c" :role "user" :text "third" :timestamp "2026-01-30T12:00:10Z" :provider :claude}]]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    voice-code.replication/subscribe-to-session! (fn [_] nil)
+                    voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      {:session-id session-id :file "/tmp/f.jsonl" :provider :claude :message-count 3})
+                    voice-code.replication/parse-session-messages (fn [_ _] canonical-messages)
+                    voice-code.replication/filter-internal-messages identity
+                    voice-code.replication/reset-file-position! (fn [_] nil)
+                    voice-code.replication/file-positions (atom {})
+                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
+                                                      (length [] 1000)
+                                                      (exists [] true)))]
+        ;; Legacy client still sends last_message_id — in v0.3.0 mode this must work.
+        (server/handle-message :test-ch
+                               (str "{\"type\":\"subscribe\","
+                                    "\"session_id\":\"sess-old\","
+                                    "\"last_message_id\":\"uuid-a\"}"))
+
+        (let [response (first @sent-messages)]
+          (is (= "session_history" (:type response)))
+          (is (= 3 (:total_count response)) "legacy wire carries total_count")
+          (is (= 2 (count (:messages response)))
+              "UUID-scan cursor picks up from uuid-a, returning uuid-b and uuid-c")
+          (is (= "uuid-b" (:oldest_message_id response)))
+          (is (= "uuid-c" (:newest_message_id response)))
+          (is (not (contains? response :gap)) "gap field is only present under v0.4.0")
+          (is (not (contains? response :next_seq)) "next_seq is only present under v0.4.0"))))
+    ;; Reset the version atom back to v0.4.0 so the rest of the suite keeps
+    ;; testing the default path.
+    (reset! server/message-stream-version :v0.4.0)
     (reset! server/api-key nil)))
 
 ;; Message Size Truncation Tests
@@ -2086,92 +2247,13 @@
       (is (nil? (:last-seq result)))
       (is (nil? (:gap result))))))
 
-(deftest test-subscribe-with-delta-sync
-  (testing "Subscribe with last_message_id triggers delta sync"
-    (reset! server/api-key test-api-key)
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
-    (let [sent-messages (atom [])
-          mock-messages [{:uuid "msg-1" :type "user" :text "old message"}
-                         {:uuid "msg-2" :type "assistant" :text "older response"}
-                         {:uuid "msg-3" :type "user" :text "new message"}]]
-      (with-redefs [org.httpkit.server/send!
-                    (fn [ch msg]
-                      (swap! sent-messages conj (json/parse-string msg true)))
-                    voice-code.replication/subscribe-to-session! (fn [_] nil)
-                    voice-code.replication/get-session-metadata
-                    (fn [session-id]
-                      {:session-id session-id
-                       :file "/tmp/test-session.jsonl"})
-                    voice-code.replication/parse-jsonl-file
-                    (fn [_] mock-messages)
-                    voice-code.replication/filter-internal-messages
-                    (fn [msgs] msgs)
-                    voice-code.replication/reset-file-position! (fn [_] nil)
-                    voice-code.replication/file-positions (atom {})
-                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
-                                                      (length [] 1000)
-                                                      (exists [] true)))]
-
-        ;; Subscribe with last_message_id
-        (server/handle-message :test-ch
-                               "{\"type\":\"subscribe\",\"session_id\":\"test-session\",\"last_message_id\":\"msg-1\"}")
-
-        (is (= 1 (count @sent-messages)))
-        (let [response (first @sent-messages)]
-          (is (= "session_history" (:type response)))
-          ;; Should only return messages newer than msg-1
-          (is (= 2 (count (:messages response))))
-          (is (= "msg-2" (-> response :messages first :uuid)))
-          (is (= "msg-3" (-> response :messages last :uuid)))
-          ;; Should include new delta sync fields
-          (is (contains? response :oldest_message_id))
-          (is (contains? response :newest_message_id))
-          (is (contains? response :is_complete))
-          (is (= "msg-2" (:oldest_message_id response)))
-          (is (= "msg-3" (:newest_message_id response)))
-          (is (true? (:is_complete response))))))
-    (reset! server/api-key nil)))
-
-(deftest test-subscribe-backward-compatible
-  (testing "Subscribe without last_message_id works (backward compatible)"
-    (reset! server/api-key test-api-key)
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
-    (let [sent-messages (atom [])
-          mock-messages [{:uuid "msg-1" :type "user" :text "first"}
-                         {:uuid "msg-2" :type "assistant" :text "second"}]]
-      (with-redefs [org.httpkit.server/send!
-                    (fn [ch msg]
-                      (swap! sent-messages conj (json/parse-string msg true)))
-                    voice-code.replication/subscribe-to-session! (fn [_] nil)
-                    voice-code.replication/get-session-metadata
-                    (fn [session-id]
-                      {:session-id session-id
-                       :file "/tmp/test-session.jsonl"})
-                    voice-code.replication/parse-jsonl-file
-                    (fn [_] mock-messages)
-                    voice-code.replication/filter-internal-messages
-                    (fn [msgs] msgs)
-                    voice-code.replication/reset-file-position! (fn [_] nil)
-                    voice-code.replication/file-positions (atom {})
-                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
-                                                      (length [] 1000)
-                                                      (exists [] true)))]
-
-        ;; Subscribe WITHOUT last_message_id (backward compatible)
-        (server/handle-message :test-ch
-                               "{\"type\":\"subscribe\",\"session_id\":\"test-session\"}")
-
-        (is (= 1 (count @sent-messages)))
-        (let [response (first @sent-messages)]
-          (is (= "session_history" (:type response)))
-          ;; Should return all messages
-          (is (= 2 (count (:messages response))))
-          (is (= "msg-1" (-> response :messages first :uuid)))
-          ;; Should include new fields for backward compat
-          (is (= "msg-1" (:oldest_message_id response)))
-          (is (= "msg-2" (:newest_message_id response)))
-          (is (true? (:is_complete response))))))
-    (reset! server/api-key nil)))
+;; The v0.3.0 delta-sync / backward-compat tests have been superseded by the
+;; v0.4.0 subscribe tests earlier in this file:
+;;   - test-subscribe-sends-messages-within-size-budget  (no cursor → full range)
+;;   - test-subscribe-delta-sync-with-last-seq           (last_seq=N → seq > N)
+;;   - test-subscribe-caught-up-returns-empty            (last_seq=max → empty)
+;;   - test-subscribe-rejects-last-message-id-in-v0-4-0  (stale client rejected)
+;;   - test-subscribe-v0-3-0-rollback-path               (rollback flag preserves old wire)
 
 (deftest test-subscribe-middle-truncates-oversized-messages
   (testing "Subscribe flow middle-truncates messages above per-message-max-bytes"

@@ -1383,93 +1383,157 @@
           ;; Authenticated - process remaining message types
           (case msg-type
             "subscribe"
-            ;; Client requests session history with optional delta sync
+            ;; Client requests session history. In v0.4.0 the cursor is an
+            ;; integer `last_seq`; in v0.3.0 (rollback) it is `last_message_id`
+            ;; (UUID of the newest message the client already has).
             (let [session-id (:session-id data)
-                  last-message-id (:last-message-id data)] ;; Delta sync: UUID of newest message iOS has
-              (if-not session-id
+                  last-seq-val (:last-seq data)
+                  last-message-id (:last-message-id data)
+                  v0-4? (seq-migration-enabled?)]
+              (cond
+                (not session-id)
                 (http/send! channel
                             (generate-json
                              {:type :error
                               :message "session_id required in subscribe message"}))
+
+                ;; v0.4.0 rejects the legacy cursor field so a pre-upgrade
+                ;; client that slipped past hello-enforcement is caught here
+                ;; instead of silently receiving wrong data.
+                (and v0-4? (some? last-message-id))
+                (http/send! channel
+                            (generate-json
+                             {:type "error"
+                              :code "unsupported_subscribe_field"
+                              :message (str "last_message_id is not supported in protocol "
+                                            "v0.4.0; use last_seq instead")}))
+
+                ;; Reject anything that isn't a non-negative integer under v0.4.0.
+                ;; nil is allowed (client defaults to 0). A non-nil value must be
+                ;; an integer AND non-negative — any other shape is a client bug.
+                (and v0-4?
+                     (some? last-seq-val)
+                     (or (not (integer? last-seq-val))
+                         (neg? last-seq-val)))
+                (http/send! channel
+                            (generate-json
+                             {:type "error"
+                              :code "invalid_subscribe"
+                              :message "last_seq must be a non-negative integer"}))
+
+                :else
                 (do
                   (log/info "Client subscribing to session"
                             {:session-id session-id
+                             :last-seq last-seq-val
                              :last-message-id last-message-id
-                             :has-delta-sync (some? last-message-id)})
+                             :protocol (if v0-4? :v0.4.0 :v0.3.0)})
 
                   ;; Subscribe in replication system (global) and track per-client
                   (repl/subscribe-to-session! session-id)
                   (swap! connected-clients update-in [channel :subscribed-sessions]
                          (fnil conj #{}) session-id)
 
-                  ;; Get session metadata
                   (if-let [metadata (repl/get-session-metadata session-id)]
                     (let [file-path (:file metadata)
                           provider (:provider metadata :claude)
-                          ;; Get current file size to update position BEFORE reading
                           file (io/file file-path)
                           current-size (.length file)
-                          ;; Use provider-aware parser for correct message format
                           all-messages (repl/parse-session-messages provider file-path)
-                          ;; Filter internal messages (sidechain, summary, system)
                           filtered (vec (repl/filter-internal-messages all-messages))
-                          ;; Get client's max message size setting
                           max-bytes (get-client-max-message-size-bytes channel)
-                          ;; Middle-truncate messages larger than per-message-max-bytes. The new
-                          ;; build-session-history-response is a pure seq-over-budget packer and
-                          ;; deliberately omits per-message truncation; without this step a single
-                          ;; oversized JSONL entry would be dropped by the budget check and leave
-                          ;; the client stuck at is_complete=false on re-subscribe.
+                          ;; Middle-truncate individual messages larger than
+                          ;; per-message-max-bytes — build-session-history-response
+                          ;; is a pure seq/budget packer and would otherwise drop an
+                          ;; oversized entry, leaving the client stuck at
+                          ;; is_complete=false on re-subscribe.
                           truncated (mapv #(truncate-message-text % per-message-max-bytes) filtered)
-                          ;; UUID→seq shim: protocol v0.4.0 introduces per-session seq, but the
-                          ;; wire still carries last_message_id until the subscribe handler is
-                          ;; reworked. Stamp seqs from list order and translate UUID↔seq locally.
+                          ;; Shim: stamp seq from list order until the watcher
+                          ;; pipeline (tmux-untethered-lre/e1r) assigns seq at
+                          ;; parse time. Each message gets `:seq (inc index)`.
                           stamped (vec (map-indexed (fn [i m] (assoc m :seq (inc i))) truncated))
-                          client-last-seq (or (when last-message-id
-                                                (some (fn [m]
-                                                        (when (= (:uuid m) last-message-id)
-                                                          (:seq m)))
-                                                      stamped))
-                                              0)
-                          session-next-seq (inc (count stamped))
-                          {response-msgs :messages
-                           is-complete :is-complete
-                           first-seq :first-seq
-                           last-seq :last-seq}
-                          (build-session-history-response stamped client-last-seq max-bytes 1 session-next-seq)
-                          oldest-message-id (when first-seq
-                                              (some (fn [m]
-                                                      (when (= (:seq m) first-seq)
-                                                        (:uuid m)))
-                                                    stamped))
-                          newest-message-id (when last-seq
-                                              (some (fn [m]
-                                                      (when (= (:seq m) last-seq)
-                                                        (:uuid m)))
-                                                    stamped))
-                          ;; Strip the shim-stamped :seq before serializing so the wire stays v0.3.0.
-                          wire-messages (mapv #(dissoc % :seq) response-msgs)]
-                      ;; Update file position to current size so incremental parsing starts fresh
-                      ;; This ensures we only get NEW messages after this subscription
+                          session-next-seq (inc (count stamped))]
+                      ;; Reset incremental parse cursor so this subscription
+                      ;; starts fresh from the current file position.
                       (repl/reset-file-position! file-path)
                       (swap! repl/file-positions assoc file-path current-size)
-                      (log/info "Sending session history"
-                                {:session-id session-id
-                                 :message-count (count wire-messages)
-                                 :total (count filtered)
-                                 :is-complete is-complete
-                                 :has-delta-sync (some? last-message-id)
-                                 :file-position current-size})
-                      ;; Send session history with new delta sync fields
-                      (http/send! channel
-                                  (generate-json
-                                   {:type :session-history
-                                    :session-id session-id
-                                    :messages wire-messages
-                                    :total-count (count filtered)
-                                    :oldest-message-id oldest-message-id
-                                    :newest-message-id newest-message-id
-                                    :is-complete is-complete})))
+                      (if v0-4?
+                        ;; v0.4.0 wire: last_seq cursor, per-message seq + session_id,
+                        ;; top-level first_seq / last_seq / next_seq / gap.
+                        (let [client-last-seq (or last-seq-val 0)
+                              {response-msgs :messages
+                               is-complete :is-complete
+                               first-seq :first-seq
+                               last-seq :last-seq
+                               next-seq :next-seq
+                               gap :gap}
+                              (build-session-history-response stamped client-last-seq
+                                                              max-bytes 1 session-next-seq)
+                              wire-messages (mapv #(assoc % :session-id session-id) response-msgs)]
+                          (log/info "Sending session history"
+                                    {:session-id session-id
+                                     :protocol :v0.4.0
+                                     :message-count (count wire-messages)
+                                     :client-last-seq client-last-seq
+                                     :first-seq first-seq
+                                     :last-seq last-seq
+                                     :next-seq next-seq
+                                     :gap gap
+                                     :is-complete is-complete
+                                     :file-position current-size})
+                          (http/send! channel
+                                      (generate-json
+                                       {:type :session-history
+                                        :session-id session-id
+                                        :messages wire-messages
+                                        :first-seq first-seq
+                                        :last-seq last-seq
+                                        :next-seq next-seq
+                                        :is-complete is-complete
+                                        :gap gap})))
+                        ;; v0.3.0 (rollback) legacy path: UUID-scan cursor and
+                        ;; oldest_message_id / newest_message_id / total_count
+                        ;; envelope.
+                        (let [client-last-seq (or (when last-message-id
+                                                    (some (fn [m]
+                                                            (when (= (:uuid m) last-message-id)
+                                                              (:seq m)))
+                                                          stamped))
+                                                  0)
+                              {response-msgs :messages
+                               is-complete :is-complete
+                               first-seq :first-seq
+                               last-seq :last-seq}
+                              (build-session-history-response stamped client-last-seq
+                                                              max-bytes 1 session-next-seq)
+                              oldest-message-id (when first-seq
+                                                  (some (fn [m]
+                                                          (when (= (:seq m) first-seq)
+                                                            (:uuid m)))
+                                                        stamped))
+                              newest-message-id (when last-seq
+                                                  (some (fn [m]
+                                                          (when (= (:seq m) last-seq)
+                                                            (:uuid m)))
+                                                        stamped))
+                              wire-messages (mapv #(dissoc % :seq) response-msgs)]
+                          (log/info "Sending session history"
+                                    {:session-id session-id
+                                     :protocol :v0.3.0
+                                     :message-count (count wire-messages)
+                                     :total (count filtered)
+                                     :is-complete is-complete
+                                     :has-delta-sync (some? last-message-id)
+                                     :file-position current-size})
+                          (http/send! channel
+                                      (generate-json
+                                       {:type :session-history
+                                        :session-id session-id
+                                        :messages wire-messages
+                                        :total-count (count filtered)
+                                        :oldest-message-id oldest-message-id
+                                        :newest-message-id newest-message-id
+                                        :is-complete is-complete})))))
                     (do
                       (log/warn "Session not found" {:session-id session-id})
                       (http/send! channel
