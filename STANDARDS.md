@@ -92,7 +92,7 @@ iOS → Backend: WebSocket connection established
 Backend → iOS: {
   "type": "hello",
   "message": "Welcome to voice-code backend",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "auth_version": 1,
   "instructions": "Send connect message with api_key"
 }
@@ -110,7 +110,8 @@ Backend → iOS: {
 iOS → Backend: {
   "type": "connect",
   "session_id": "<iOS-session-UUID>",
-  "api_key": "untethered-a1b2c3d4e5f678901234567890abcdef"
+  "api_key": "untethered-a1b2c3d4e5f678901234567890abcdef",
+  "protocol_version": "0.4.0"
 }
 ```
 
@@ -118,6 +119,7 @@ iOS → Backend: {
 - `type` (required): Always `"connect"`
 - `session_id` (required): iOS session UUID (lowercase)
 - `api_key` (required): Pre-shared API key for authentication. Must match the key stored on the backend. Format: `untethered-` prefix followed by 32 lowercase hex characters (43 characters total).
+- `protocol_version` (optional): Semver string (e.g. `"0.4.0"`) the client supports. When `:message-stream-version` is `:v0.4.0` and this field is present but below `"0.4.0"`, the backend rejects the connection with `unsupported_protocol_version` (see **Error Handling**). Missing or unparseable values are treated as "unknown, not too old" and pass through so existing v0.4.0 clients (which do not announce a version) keep connecting.
 
 **Connected Confirmation**
 ```json
@@ -232,15 +234,19 @@ iOS sends this message after receiving `connected` confirmation and whenever the
 {
   "type": "subscribe",
   "session_id": "<claude-session-id>",
-  "last_message_id": "<uuid-of-newest-message-ios-has>"  // Optional: for delta sync
+  "last_seq": 548
 }
 ```
 
-Subscribes to session history and real-time updates. Supports delta sync for efficient reconnections.
+Subscribes to session history and real-time updates. The backend replies with messages whose `seq > last_seq`, then broadcasts every subsequent new message on the same session as a one-window `session_history` push.
 
 **Fields:**
 - `session_id` (required): Claude session ID to subscribe to
-- `last_message_id` (optional): UUID of the newest message iOS already has. If provided, backend returns only messages newer than this ID. If omitted or not found, backend returns all messages (backward compatible).
+- `last_seq` (optional, default `0`): Highest `seq` the client already has for this session. `0` means "I have nothing; send everything." Must be a non-negative integer.
+
+**Errors:**
+- Non-integer or negative `last_seq` → `{"type":"error","code":"invalid_subscribe","message":"last_seq must be a non-negative integer"}`
+- Including the legacy `last_message_id` field → `{"type":"error","code":"unsupported_subscribe_field","message":"last_message_id is not supported in protocol v0.4.0; use last_seq instead"}`
 
 **Refresh Sessions**
 ```json
@@ -357,34 +363,69 @@ Sent when a provider CLI finishes processing a prompt successfully (turn is comp
 }
 ```
 
-**Session History (Response to Subscribe)**
+**Session History (Subscribe Reply + Live Push)**
+
+`session_history` is the single append-only delivery envelope. It is sent both in direct response to a `subscribe` message and as a flat broadcast to every eligible subscriber whenever the watcher parses new messages for that session. There is no separate `session_updated` type.
+
 ```json
 {
   "type": "session_history",
   "session_id": "<claude-session-id>",
-  "messages": [...],
-  "total_count": 150,
-  "oldest_message_id": "<uuid-of-oldest-returned>",
-  "newest_message_id": "<uuid-of-newest-returned>",
-  "is_complete": true
+  "messages": [
+    {
+      "uuid": "<message-uuid>",
+      "role": "user" | "assistant",
+      "text": "...",
+      "timestamp": "<ISO-8601>",
+      "session_id": "<claude-session-id>",
+      "seq": 549
+    }
+  ],
+  "first_seq": 549,
+  "last_seq": 560,
+  "next_seq": 561,
+  "is_complete": true,
+  "gap": null
 }
 ```
 
-Sent in response to a `subscribe` message. Contains session conversation history.
-
 **Fields:**
 - `session_id` (required): Claude session ID
-- `messages` (required): Array of message objects in chronological order (oldest first)
-- `total_count` (required): Total number of messages in the session (including those not returned)
-- `oldest_message_id` (optional): UUID of the oldest message in the response. Nil if no messages returned.
-- `newest_message_id` (optional): UUID of the newest message in the response. Nil if no messages returned.
-- `is_complete` (required): True if all requested messages were included. False if truncation occurred due to size limits.
+- `messages` (required): Array of canonical messages in ascending `seq` order. Every message carries a `seq` field (1-indexed, monotonic per session, strictly increasing). Each message also carries its own `session_id` for iOS routing.
+- `first_seq` (nullable integer): Smallest `seq` in `messages`. Null when `messages` is empty.
+- `last_seq` (nullable integer): Largest `seq` in `messages`. Null when `messages` is empty.
+- `next_seq` (required integer): The `seq` the server will assign to the next new message. A client is caught up when `next_seq == last_seq + 1` and the server has no newer writes.
+- `is_complete` (required boolean): `true` when every message in the requested range fit in the size budget. `false` means more messages remain after `last_seq`; the client should immediately re-subscribe with `last_seq` set to the returned `last_seq` to fetch the next window.
+- `gap` (nullable object): Present when the server cannot satisfy the requested range. See **Gap Schema** below. `null` on normal replies.
 
-**Delta Sync Behavior:**
-- When `last_message_id` was provided in subscribe request: returns only messages newer than that ID
-- When `last_message_id` was omitted or not found: returns all messages (up to size limit)
-- Large individual messages (>20KB) are truncated with middle truncation to preserve start and end
-- Prioritizes newest messages when size budget is exhausted
+**Live Push Semantics:**
+
+Each new message produced by the watcher emits a one-message-window `session_history` payload with `first_seq == last_seq == messages[0].seq` and `is_complete: true`. The broadcast is flat — every eligible subscriber receives the same payload regardless of their individual `last_seq`. Client-side gap detection (comparing `first_seq` against the client's local `last_seq`) is responsible for reconciling missed windows.
+
+**Client Gap-Detection Contract:**
+- `first_seq == local_last_seq + 1` → contiguous; upsert the window and advance `local_last_seq`.
+- `first_seq > local_last_seq + 1` → a push was missed; upsert the received window *and* immediately re-subscribe with `last_seq = local_last_seq` to backfill. Do not advance `local_last_seq` past the gap until the backfill arrives.
+- `first_seq <= local_last_seq` → duplicate or reorder; upsert is idempotent on `(session_id, seq)` and `local_last_seq` must not regress.
+
+**Budget Truncation:**
+- Large individual messages are middle-truncated to preserve start and end.
+- When the byte budget is exhausted the response sets `is_complete: false`; the client advances its cursor to the returned `last_seq` and re-subscribes to fetch the next window.
+
+**Gap Schema:**
+
+When the backend cannot satisfy a subscribe request, `gap` is populated and `messages` is empty:
+
+```json
+"gap": {
+  "requested_last_seq": 42,
+  "min_available_seq": 200,
+  "reason": "pruned"
+}
+```
+
+`reason` is one of:
+- `"pruned"` — the client's `last_seq` is below `min_available_seq`. The server has lost state the client expected (e.g. a corrupted session recovered with fewer messages). The client should surface this to the user rather than silently merging a partial view.
+- `"client_ahead"` — reserved for the case where the client's `last_seq` is greater than `next_seq - 1` (e.g. after a backend rollback that discarded messages the client had already seen). Clients should be prepared to drop local state and reload on receipt. The current backend does not emit this reason — it collapses an over-ahead cursor into the caught-up empty response with `gap: null`. This branch is deferred per the append-only-message-stream design doc and may be enabled in a later revision.
 
 **Compaction Complete**
 ```json
@@ -482,6 +523,21 @@ Session compaction summarizes conversation history to reduce context window usag
 - Sending `prompt` before `connect` → `auth_error` (must authenticate first)
 - Missing `session_id` in `connect` → Error: "session_id required in connect message"
 - Unknown message type → Error: "Unknown message type: <type>"
+- Client announces a `protocol_version` older than `0.4.0` on the `connect` message (when `:message-stream-version` is `:v0.4.0`) → `unsupported_protocol_version` + connection closed:
+
+  ```json
+  {
+    "type": "error",
+    "code": "unsupported_protocol_version",
+    "required": "0.4.0",
+    "received": "<client-version>",
+    "message": "Client is too old; upgrade required"
+  }
+  ```
+
+  Under `:v0.3.0` rollback this guard is disabled so legacy clients keep working.
+- `subscribe` with a non-integer or negative `last_seq` → `invalid_subscribe` (see Subscribe section).
+- `subscribe` carrying the legacy `last_message_id` field → `unsupported_subscribe_field` (see Subscribe section).
 
 **Connection Errors:**
 - WebSocket disconnect → iOS reconnects with same session UUID and re-authenticates with stored API key
