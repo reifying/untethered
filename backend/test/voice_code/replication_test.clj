@@ -1778,6 +1778,118 @@
       (repl/unsubscribe-from-session! session-id)
       (repl/reset-file-position! file-path))))
 
+(deftest test-handle-file-modified-stamps-monotonic-seq
+  (testing "Watcher stamps :seq on broadcast messages and advances :next-seq
+           contiguously across append batches, so every downstream consumer sees
+           monotonically-increasing seqs. This is the core acceptance criterion
+           for hooking assign-seq! into the JSONL watcher pipeline."
+    (let [captured-batches (atom [])
+          session-id "550e8400-e29b-41d4-a716-446655440500"
+          file (create-test-jsonl-file (str session-id ".jsonl") [])
+          file-path (.getAbsolutePath file)]
+
+      (repl/reset-file-position! file-path)
+      (repl/subscribe-to-session! session-id)
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :message-count 0
+              :last-modified (.lastModified file)
+              :ios-notified true})
+
+      (reset! repl/watcher-state
+              {:running false
+               :watch-service nil
+               :watcher-thread nil
+               :subscribed-sessions #{session-id}
+               :event-queue (atom {})
+               :on-session-updated (fn [_ msgs]
+                                     (swap! captured-batches conj (vec msgs)))
+               :max-retries 3
+               :debounce-ms 200})
+
+      ;; Batch 1: two assistant messages (both flow through to the callback).
+      (spit file (str (json/generate-string
+                       {:type "assistant"
+                        :uuid "aaaaaaaa-0000-0000-0000-000000000001"
+                        :timestamp "2026-04-21T12:00:01Z"
+                        :isSidechain false
+                        :message {:role "assistant"
+                                  :content [{:type "text" :text "one"}]}})
+                      "\n"
+                      (json/generate-string
+                       {:type "assistant"
+                        :uuid "aaaaaaaa-0000-0000-0000-000000000002"
+                        :timestamp "2026-04-21T12:00:02Z"
+                        :isSidechain false
+                        :message {:role "assistant"
+                                  :content [{:type "text" :text "two"}]}})
+                      "\n"))
+      (repl/handle-file-modified file)
+
+      ;; Batch 2: a human prompt (dropped from broadcast, but still consumes
+      ;; a :seq) followed by an assistant reply (broadcast with its own seq).
+      (spit file (str (json/generate-string
+                       {:type "user"
+                        :uuid "bbbbbbbb-0000-0000-0000-000000000001"
+                        :timestamp "2026-04-21T12:00:03Z"
+                        :isSidechain false
+                        :message {:role "user"
+                                  :content "what's the weather"}})
+                      "\n"
+                      (json/generate-string
+                       {:type "assistant"
+                        :uuid "aaaaaaaa-0000-0000-0000-000000000003"
+                        :timestamp "2026-04-21T12:00:04Z"
+                        :isSidechain false
+                        :message {:role "assistant"
+                                  :content [{:type "text" :text "three"}]}})
+                      "\n")
+            :append true)
+      ;; Debounce holds back events within the window; sleep past it so the
+      ;; second handle-file-modified call is actually processed.
+      (Thread/sleep 250)
+      (repl/handle-file-modified file)
+
+      ;; Batch 3: one more assistant message.
+      (spit file (str (json/generate-string
+                       {:type "assistant"
+                        :uuid "aaaaaaaa-0000-0000-0000-000000000004"
+                        :timestamp "2026-04-21T12:00:05Z"
+                        :isSidechain false
+                        :message {:role "assistant"
+                                  :content [{:type "text" :text "four"}]}})
+                      "\n")
+            :append true)
+      (Thread/sleep 250)
+      (repl/handle-file-modified file)
+
+      (let [all-broadcast (vec (mapcat identity @captured-batches))
+            seqs (mapv :seq all-broadcast)
+            texts (mapv :text all-broadcast)]
+        (is (= 4 (count all-broadcast))
+            "four assistant messages should have been broadcast across batches (user prompt dropped)")
+        (is (= ["one" "two" "three" "four"] texts)
+            "broadcast order preserved across batches; human prompt suppressed")
+        (is (every? some? seqs)
+            "every emitted message carries :seq")
+        (is (apply < seqs)
+            "seqs are strictly increasing across batches")
+        ;; Batch 1 stamps seqs 1 & 2 (both broadcast); the user prompt in batch
+        ;; 2 consumes seq 3 (advances counter but is dropped from broadcast);
+        ;; the assistant reply in batch 2 is seq 4; batch 3's single message
+        ;; is seq 5. Broadcast therefore carries [1 2 4 5].
+        (is (= [1 2 4 5] seqs)
+            "counter advances over suppressed human prompts — broadcast seqs skip 3"))
+
+      ;; Index carries the advanced :next-seq.
+      (is (= 6 (:next-seq (repl/get-session-metadata session-id)))
+          ":next-seq is advanced past every canonical message seen (5 total)")
+      (is (= 1 (:min-available-seq (repl/get-session-metadata session-id)))
+          ":min-available-seq is seeded to 1")
+
+      (repl/unsubscribe-from-session! session-id)
+      (repl/reset-file-position! file-path))))
+
 ;; ============================================================================
 ;; File Creation Position Tracking Tests (Issue voice-code-121)
 ;; ============================================================================

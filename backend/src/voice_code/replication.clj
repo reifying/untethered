@@ -1712,7 +1712,39 @@
               (check-claude-turn-complete! session-id new-messages)
 
               (when (seq filtered-messages)
-                (let [old-count (:message-count old-metadata 0)
+                (let [;; Pair each raw filtered message with its canonical form,
+                      ;; in file order. filter-internal-messages has already
+                      ;; dropped sidechain/summary/system and parse-message
+                      ;; :claude rejects exactly that same set, so in practice
+                      ;; every raw yields a canonical; the `keep` is defensive
+                      ;; for malformed content that somehow slips through.
+                      raw+canonical (->> filtered-messages
+                                         (keep (fn [raw]
+                                                 (when-let [c (providers/parse-message :claude raw)]
+                                                   [raw c])))
+                                         (vec))
+                      ;; Atomically stamp :seq on the whole batch BEFORE any
+                      ;; downstream branch or broadcast filter. Canonicalizing
+                      ;; over the full filtered batch (not just what we're
+                      ;; about to send) mirrors what parse-session-messages
+                      ;; emits for the same byte range, so :next-seq advances
+                      ;; in lockstep with migrate-session-seqs! regardless of
+                      ;; whether the batch is pushed to iOS, held for a
+                      ;; delayed session_created notification, or delivered
+                      ;; to nobody (no active subscriber).
+                      canonical-seq (assign-seq! session-id (mapv second raw+canonical))
+                      ;; Drop human-typed user prompts from broadcast (iOS
+                      ;; already rendered them optimistically on send); keep
+                      ;; tool_result user messages so the UI can render tool
+                      ;; output live. Partition on the raw predicate directly
+                      ;; — claude-human-prompt? inspects raw-only fields
+                      ;; (:type / nested :message.content), and positional
+                      ;; pairing (rather than joining on :uuid) keeps the
+                      ;; filter correct even for raw entries that lack :uuid.
+                      broadcast-messages (->> (map vector (map first raw+canonical) canonical-seq)
+                                              (remove (fn [[raw _]] (claude-human-prompt? raw)))
+                                              (mapv second))
+                      old-count (:message-count old-metadata 0)
                       new-count (+ old-count (count filtered-messages))
                       ios-notified? (:ios-notified old-metadata false)
                       ;; Extract timestamp from last message, fall back to file modification time
@@ -1726,21 +1758,27 @@
                                                      nil))))
                       last-modified (or last-message-timestamp (.lastModified file))]
 
-                  ;; ALWAYS update index with correct timestamp
-                  (let [new-metadata (assoc old-metadata
-                                            :last-modified last-modified
-                                            :last-modified-ms (or (some-> last-modified long) 0)
-                                            :message-count new-count)]
-                    (swap! session-index assoc session-id new-metadata)
-                    (save-index! @session-index)
+                  ;; ALWAYS update index with correct timestamp.
+                  ;; Merge onto the current entry (which now carries the
+                  ;; :next-seq/:min-available-seq assign-seq! just wrote) —
+                  ;; NOT onto the pre-stamp `old-metadata` snapshot, which
+                  ;; would silently clobber the advanced counter on every
+                  ;; file-modified event.
+                  (swap! session-index update session-id
+                         (fn [entry]
+                           (-> (or entry old-metadata)
+                               (assoc :last-modified last-modified
+                                      :last-modified-ms (or (some-> last-modified long) 0)
+                                      :message-count new-count))))
+                  (save-index! @session-index)
 
-                    (log/info "Updated session index"
-                              {:session-id session-id
-                               :old-count old-count
-                               :new-count new-count
-                               :last-modified last-modified
-                               :used-message-timestamp (boolean last-message-timestamp)
-                               :ios-notified ios-notified?}))
+                  (log/info "Updated session index"
+                            {:session-id session-id
+                             :old-count old-count
+                             :new-count new-count
+                             :last-modified last-modified
+                             :used-message-timestamp (boolean last-message-timestamp)
+                             :ios-notified ios-notified?})
 
                   ;; Check if this is the 0→N transition (time to notify iOS!)
                   (if (and (zero? old-count)
@@ -1763,23 +1801,16 @@
                       (save-index! @session-index))
 
                     ;; Send updates to subscribed clients (regardless of ios-notified flag).
-                    ;; Transform raw Claude .jsonl messages to canonical wire format
-                    ;; (with :role/:text/:uuid/:timestamp/:provider) so iOS can extract them.
-                    ;; Drop human-typed user prompts (already shown optimistically on iOS) but
-                    ;; keep tool_result user messages so iOS can render tool output live.
+                    ;; Canonical wire format with :seq already stamped; human prompts
+                    ;; already filtered above.
                     (when (is-subscribed? session-id)
-                      (let [canonical-messages (->> filtered-messages
-                                                    (remove claude-human-prompt?)
-                                                    (map #(providers/parse-message :claude %))
-                                                    (filter some?)
-                                                    (vec))]
-                        (log/info "Sending update to subscribed iOS client"
-                                  {:session-id session-id
-                                   :new-messages (count canonical-messages)
-                                   :raw-messages (count filtered-messages)})
-                        (when (and (seq canonical-messages)
-                                   (:on-session-updated @watcher-state))
-                          ((:on-session-updated @watcher-state) session-id canonical-messages))))))))
+                      (log/info "Sending update to subscribed iOS client"
+                                {:session-id session-id
+                                 :new-messages (count broadcast-messages)
+                                 :raw-messages (count filtered-messages)})
+                      (when (and (seq broadcast-messages)
+                                 (:on-session-updated @watcher-state))
+                        ((:on-session-updated @watcher-state) session-id broadcast-messages)))))))
             (catch Exception e
               (log/error e "Failed to handle file modification"
                          {:file (.getPath file)
