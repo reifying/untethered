@@ -167,8 +167,14 @@ class PersistenceController {
         }
     }
 
-    /// Perform a background task
+    /// Perform a background task. Sets the merge policy on the supplied
+    /// context so uniqueness-constraint conflicts (e.g. CDMessage.id) merge
+    /// instead of throwing — without this, default NSErrorMergePolicyType
+    /// makes background saves fail and silently drop wire messages.
     func performBackgroundTask(_ block: @escaping (NSManagedObjectContext) -> Void) {
-        container.performBackgroundTask(block)
+        container.performBackgroundTask { context in
+            context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+            block(context)
+        }
     }
 }

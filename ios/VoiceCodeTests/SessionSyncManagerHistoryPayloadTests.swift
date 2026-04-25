@@ -451,4 +451,100 @@ final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
         XCTAssertEqual(delegate.resubscribes.first?.fromSeq, 0,
                        "empty cache → backfill from seq 0 (server returns seq > 0)")
     }
+
+    // MARK: - Optimistic reconciliation (tmux-untethered-41z)
+
+    func test_optimistic_user_message_reconciles_in_place_instead_of_duplicating() {
+        // Seed: session exists, user has an optimistic "sending" row at seq=0
+        // from createOptimisticMessage (the iOS-local prompt they just typed).
+        let session = CDBackendSession(context: context)
+        session.id = sessionUUID
+        session.backendName = "test"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.provider = "claude"
+
+        let optimistic = CDMessage(context: context)
+        let optimisticId = UUID()
+        optimistic.id = optimisticId
+        optimistic.sessionId = sessionUUID
+        optimistic.role = "user"
+        optimistic.text = "hello claude"
+        optimistic.timestamp = Date()
+        optimistic.seq = 0 // unknown — no backend confirmation yet
+        optimistic.messageStatus = .sending
+        optimistic.session = session
+        try! context.save()
+
+        // Backend echoes the same prompt back with a real seq + uuid.
+        let backendUuid = UUID()
+        let echo = WireMessage(
+            sessionId: sessionIdString,
+            seq: 1,
+            role: "user",
+            text: "hello claude",
+            uuid: backendUuid.uuidString.lowercased(),
+            timestamp: Date()
+        )
+        let p = payload(firstSeq: 1, lastSeq: 1, nextSeq: 2,
+                        isComplete: true, messages: [echo])
+
+        manager.handleSessionHistoryPayload(p)
+        // Reconciliation updates an existing row in place (newRows == 0), so
+        // the manager does not post .sessionHistoryDidUpdate — @FetchRequest
+        // picks up the in-place change via context merge. Just drain and check.
+        drainMainQueue(for: 0.5)
+
+        let rows = fetchMessages()
+        XCTAssertEqual(rows.count, 1,
+                       "optimistic row must be upgraded in place — no duplicate bubble")
+        let row = rows.first!
+        XCTAssertEqual(row.seq, 1, "seq must advance to the backend's assigned value")
+        XCTAssertEqual(row.messageStatus, .confirmed, "status must flip to confirmed on echo")
+        XCTAssertEqual(row.id, backendUuid, "id must align with the backend-assigned uuid")
+    }
+
+    // MARK: - Background-context merge policy regression
+
+    /// Regression for the silent-drop bug where background saves threw on
+    /// uniqueness-constraint conflicts on `CDMessage.id`. Without
+    /// `NSMergeByPropertyObjectTrumpMergePolicy` on the background context,
+    /// `upsertMessage`'s `message.id = wireUUID` write trips the constraint
+    /// when that UUID already exists in the store — and the early `return`
+    /// in the catch block silently drops the wire message.
+    func test_save_succeeds_when_wire_uuid_collides_with_existing_row_id() {
+        // Pre-seed seqs 1..2 with known ids. The wire payload below uses
+        // seed-2's id, which would otherwise trip the uniqueness constraint
+        // and throw on save.
+        seedSession(seqs: 1...2)
+        let collidingId = fetchMessages().first(where: { $0.seq == 2 })!.id
+
+        let echo = WireMessage(
+            sessionId: sessionIdString,
+            seq: 3,
+            role: "assistant",
+            text: "fresh-3",
+            uuid: collidingId.uuidString.lowercased(),
+            timestamp: Date()
+        )
+        let p = payload(firstSeq: 3, lastSeq: 3, nextSeq: 4,
+                        isComplete: true, messages: [echo])
+
+        manager.handleSessionHistoryPayload(p)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        // Regression contract: the wire row is present (no silent drop) and
+        // no recovery resubscribe fires (which would mean the catch block
+        // ran). The merge policy resolves the contrived id collision by
+        // evicting the older row; we don't pin which one survives.
+        let all = fetchMessages()
+        let wireRow = all.first(where: { $0.seq == 3 })
+        XCTAssertNotNil(wireRow, "wire row must survive — pre-fix save threw and dropped it")
+        XCTAssertEqual(wireRow?.text, "fresh-3")
+        XCTAssertTrue(delegate.resubscribes.isEmpty,
+                      "save success means no recovery resubscribe")
+    }
 }

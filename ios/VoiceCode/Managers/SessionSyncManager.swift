@@ -342,13 +342,21 @@ class SessionSyncManager {
             }
 
             let session = self.fetchOrCreateSession(id: sessionUUID, in: backgroundContext)
+            let isActiveSession = ActiveSessionManager.shared.isActive(sessionUUID)
 
             // Idempotent upsert on (sessionId, seq). Safe under double
             // delivery (push+history overlap, gap-backfill crossing).
+            // Collect assistant message text from newly-inserted rows so we
+            // can fire auto-speak / notifications / priority-queue post-save.
             var newRows = 0
+            var newAssistantTexts: [String] = []
             for wireMessage in payload.messages {
-                if self.upsertMessage(wireMessage, session: session, in: backgroundContext) {
+                let inserted = self.upsertMessage(wireMessage, session: session, in: backgroundContext)
+                if inserted {
                     newRows += 1
+                    if wireMessage.role == "assistant" {
+                        newAssistantTexts.append(wireMessage.text)
+                    }
                 }
             }
 
@@ -356,6 +364,22 @@ class SessionSyncManager {
             // seen, which is the last element in the ascending payload.
             if let lastMessage = payload.messages.last {
                 session.preview = String(lastMessage.text.prefix(100))
+            }
+
+            // Background sessions track unread count so the sidebar badge can
+            // flag inbound activity the user hasn't seen. Active sessions do
+            // not — the user is already looking at them.
+            if !isActiveSession && newRows > 0 {
+                session.unreadCount += Int32(newRows)
+            }
+
+            // Auto-add to priority queue when an assistant response lands on a
+            // session the user has opted into. Read the flag before save so
+            // the relationship mutation batches into the same context commit.
+            if !newAssistantTexts.isEmpty
+                && UserDefaults.standard.bool(forKey: "priorityQueueEnabled") {
+                CDBackendSession.addToPriorityQueue(session, context: backgroundContext)
+                logger.info("📌 Auto-added session to priority queue after assistant response: \(payload.sessionId)")
             }
 
             // Keep messageCount in sync with actual row count to avoid
@@ -382,8 +406,56 @@ class SessionSyncManager {
                     }
                 }
             } catch {
-                logger.error("Failed to save session_history payload: \(error.localizedDescription)")
+                let nsError = error as NSError
+                logger.error("Failed to save session_history payload: domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) userInfo=\(nsError.userInfo, privacy: .public)")
+                // Don't stay stuck: ask the client to resubscribe from the
+                // pre-payload cursor so the next push attempts a fresh save
+                // instead of permanently leaving local_last_seq stale.
+                let sessionId = payload.sessionId
+                DispatchQueue.main.async { [weak self] in
+                    self?.delegate?.sessionSyncNeedsResubscribe(sessionId, fromSeq: localLastSeq)
+                }
                 return
+            }
+
+            // Prune old messages to keep CoreData footprint bounded during
+            // long conversations. Only runs past the retention threshold.
+            if newRows > 0 && CDMessage.needsPruning(sessionId: sessionUUID, in: backgroundContext) {
+                let deletedCount = CDMessage.pruneOldMessages(sessionId: sessionUUID, in: backgroundContext)
+                if deletedCount > 0 {
+                    try? backgroundContext.save()
+                    logger.info("🧹 Pruned \(deletedCount) old messages from session \(payload.sessionId)")
+                }
+            }
+
+            // Side-effect fan-out for new assistant messages. Active sessions
+            // speak; background sessions post a local notification so the
+            // user can surface the response from outside the app.
+            if !newAssistantTexts.isEmpty {
+                if isActiveSession {
+                    let workingDirectory = session.workingDirectory
+                    let voiceManager = self.voiceOutputManager
+                    DispatchQueue.main.async {
+                        guard let voiceManager = voiceManager else { return }
+                        for text in newAssistantTexts {
+                            let processedText = TextProcessor.prepareForSpeech(from: text)
+                            voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory)
+                        }
+                    }
+                } else {
+                    let sessionName = session.displayName(context: backgroundContext)
+                    let workingDirectory = session.workingDirectory
+                    let combinedText = newAssistantTexts.joined(separator: "\n\n")
+                    DispatchQueue.main.async {
+                        Task {
+                            await NotificationManager.shared.postResponseNotification(
+                                text: combinedText,
+                                sessionName: sessionName,
+                                workingDirectory: workingDirectory
+                            )
+                        }
+                    }
+                }
             }
 
             // Follow-up subscribes. Gap backfill takes precedence — the gap
@@ -439,7 +511,12 @@ class SessionSyncManager {
         return session
     }
 
-    /// Idempotent upsert of a `WireMessage`, keyed on `(sessionId, seq)`.
+    /// Idempotent upsert of a `WireMessage`, keyed on `(sessionId, seq)` with
+    /// an optimistic-reconciliation fallback on `(sessionId, role, text,
+    /// status == .sending)`. The fallback upgrades a locally-created
+    /// "sending" row to "confirmed" in place rather than spawning a duplicate
+    /// when the backend echoes a user prompt. See `createOptimisticMessage`.
+    ///
     /// - Returns: `true` when a new row was inserted, `false` when an
     ///   existing row was updated in place (or when the wire sessionId was
     ///   malformed and the row could not be stored).
@@ -459,13 +536,30 @@ class SessionSyncManager {
             return false
         }
 
-        let request = CDMessage.fetchRequest()
-        request.predicate = NSPredicate(format: "sessionId == %@ AND seq == %lld",
-                                        wireSessionUUID as CVarArg,
-                                        wireMessage.seq)
-        request.fetchLimit = 1
+        let seqRequest = CDMessage.fetchRequest()
+        seqRequest.predicate = NSPredicate(format: "sessionId == %@ AND seq == %lld",
+                                           wireSessionUUID as CVarArg,
+                                           wireMessage.seq)
+        seqRequest.fetchLimit = 1
 
-        let existing = (try? context.fetch(request))?.first
+        let seqHit = (try? context.fetch(seqRequest))?.first
+
+        // Optimistic fallback: no row with this seq yet, but we may already
+        // have a locally-created "sending" row with matching role+text. Upgrade
+        // it in place so the UI reconciles without a duplicate bubble.
+        let optimistic: CDMessage? = {
+            guard seqHit == nil else { return nil }
+            let req = CDMessage.fetchRequest()
+            req.predicate = NSPredicate(format: "sessionId == %@ AND role == %@ AND text == %@ AND status == %@",
+                                        wireSessionUUID as CVarArg,
+                                        wireMessage.role,
+                                        wireMessage.text,
+                                        MessageStatus.sending.rawValue)
+            req.fetchLimit = 1
+            return (try? context.fetch(req))?.first
+        }()
+
+        let existing = seqHit ?? optimistic
         let message = existing ?? CDMessage(context: context)
         let isNew = existing == nil
 
