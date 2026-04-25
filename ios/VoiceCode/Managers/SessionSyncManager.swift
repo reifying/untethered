@@ -575,13 +575,35 @@ class SessionSyncManager {
         // Keep the backend-assigned UUID aligned with what the wire carries.
         // On brand-new rows we must set an id (CDMessage requires non-nil);
         // on updates we overwrite to catch any server-side id rewrites.
+        // For *existing* rows, skip the reassignment when another row already
+        // holds wireUUID — that would trip the (id) uniqueness constraint and
+        // throw on save. The current row keeps its existing id (which is
+        // unique). The merge policy on background contexts is the belt; this
+        // guard is the suspenders that avoids reaching it for the predictable
+        // collision. Brand-new rows have no @NSManaged id yet — read-before-
+        // write is undefined, so we skip the comparison entirely on isNew.
         if let wireUUID = UUID(uuidString: wireMessage.uuid) {
-            message.id = wireUUID
+            if isNew {
+                message.id = wireUUID
+            } else if message.id != wireUUID && wireUUIDIsUnique(wireUUID, in: context) {
+                message.id = wireUUID
+            }
         } else if isNew {
             message.id = UUID()
         }
 
         return isNew
+    }
+
+    /// True when no row in `context` already holds `id`. The caller has
+    /// already verified `message.id != id`, so a hit can only be a different
+    /// row — there is no need for a `SELF != %@` clause (which behaves
+    /// unreliably against unsaved-temporary-objectID rows).
+    private func wireUUIDIsUnique(_ id: UUID, in context: NSManagedObjectContext) -> Bool {
+        let req = CDMessage.fetchRequest()
+        req.predicate = NSPredicate(format: "id == %@", id as CVarArg)
+        req.fetchLimit = 1
+        return ((try? context.count(for: req)) ?? 0) == 0
     }
 
     // MARK: - Optimistic UI

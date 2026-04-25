@@ -547,4 +547,66 @@ final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
         XCTAssertTrue(delegate.resubscribes.isEmpty,
                       "save success means no recovery resubscribe")
     }
+
+    /// Production reproducer: the colliding id is reached through the
+    /// `optimistic-fallback` branch of `upsertMessage`, which is what the
+    /// user-visible bug actually exercised. Without the merge-policy fix
+    /// the optimistic row's id reassignment to wireUUID conflicts with a
+    /// pre-existing seeded row that already holds wireUUID.
+    func test_save_succeeds_when_optimistic_fallback_id_reassign_collides() {
+        // Pre-seed seq=1 (the row whose id will be the collision target).
+        seedSession(seqs: 1...1)
+        let collidingId = fetchMessages().first(where: { $0.seq == 1 })!.id
+
+        // Add a pending optimistic user row — same session, role+text+status
+        // matches the optimistic-fallback predicate at upsertMessage:557.
+        let session = (try! context.fetch(CDBackendSession.fetchBackendSession(id: sessionUUID))).first!
+        let optimistic = CDMessage(context: context)
+        optimistic.id = UUID()
+        optimistic.sessionId = sessionUUID
+        optimistic.role = "user"
+        optimistic.text = "hello"
+        optimistic.timestamp = Date(timeIntervalSince1970: 100)
+        optimistic.seq = 0
+        optimistic.messageStatus = .sending
+        optimistic.session = session
+        try! context.save()
+
+        // Backend echoes the user message: new (sessionId, seq) so seqHit is
+        // nil, optimistic predicate matches, and message.id = wireUUID would
+        // collide with the seeded row's id pre-fix.
+        let echo = WireMessage(
+            sessionId: sessionIdString,
+            seq: 2,
+            role: "user",
+            text: "hello",
+            uuid: collidingId.uuidString.lowercased(),
+            timestamp: Date()
+        )
+        let p = payload(firstSeq: 2, lastSeq: 2, nextSeq: 3,
+                        isComplete: true, messages: [echo])
+
+        manager.handleSessionHistoryPayload(p)
+        // Optimistic reconciliation updates a row in place (newRows == 0),
+        // so the manager doesn't post .sessionHistoryDidUpdate. Just drain.
+        drainMainQueue(for: 0.5)
+
+        // Targeted guard: the reconciled user row keeps its existing
+        // (random optimistic) id rather than taking the colliding wireUUID,
+        // so the seeded row also survives. seq, role, text all flip to
+        // backend-assigned values; only the id stays put.
+        let all = fetchMessages()
+        let userRow = all.first(where: { $0.role == "user" && $0.text == "hello" })
+        XCTAssertNotNil(userRow,
+                        "optimistic row must reconcile, not get dropped — pre-fix save threw")
+        XCTAssertEqual(userRow?.seq, 2, "reconciled row must carry backend-assigned seq")
+        XCTAssertEqual(userRow?.messageStatus, .confirmed,
+                       "status must flip to confirmed on echo")
+        XCTAssertNotEqual(userRow?.id, collidingId,
+                          "guard must skip the id reassignment that would collide")
+        XCTAssertNotNil(all.first(where: { $0.seq == 1 }),
+                        "seeded row must survive — guard prevents constraint violation")
+        XCTAssertTrue(delegate.resubscribes.isEmpty,
+                      "save success means no recovery resubscribe")
+    }
 }

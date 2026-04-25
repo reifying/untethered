@@ -809,38 +809,32 @@ class VoiceCodeClient: ObservableObject {
                 self.sessionSyncManager.handleSessionCreated(json)
 
             case "session_history":
-                // Full conversation history (response to subscribe)
-                if let sessionId = json["session_id"] as? String,
-                   let messages = json["messages"] as? [[String: Any]] {
-                    // Parse delta sync metadata fields (default true for backward compatibility)
-                    let isComplete = json["is_complete"] as? Bool ?? true
-                    let oldestMessageId = json["oldest_message_id"] as? String
-                    let newestMessageId = json["newest_message_id"] as? String
+                // Unified delivery envelope for both subscribe replies and
+                // live pushes. Decode into the v0.4.0 typed payload and route
+                // through handleSessionHistoryPayload, which owns cursor math,
+                // gap detection, optimistic reconciliation, and auto-speak.
+                let sessionId = json["session_id"] as? String
+                do {
+                    let data = try JSONSerialization.data(withJSONObject: json, options: [])
+                    let decoder = JSONDecoder()
+                    let payload = try decoder.decode(SessionHistoryPayload.self, from: data)
 
-                    if isComplete {
-                        logger.info("📚 [VoiceCodeClient] Received session_history for \(sessionId) with \(messages.count) messages (complete)")
+                    if payload.isComplete {
+                        logger.info("📚 [VoiceCodeClient] session_history \(payload.sessionId) count=\(payload.messages.count) first=\(payload.firstSeq.map { String($0) } ?? "-") last=\(payload.lastSeq.map { String($0) } ?? "-") next=\(payload.nextSeq)")
                     } else {
-                        logger.warning("⚠️ [VoiceCodeClient] Session history incomplete for \(sessionId): budget exhausted before sending all messages. Received \(messages.count) messages.")
+                        logger.warning("⚠️ [VoiceCodeClient] session_history \(payload.sessionId) is_complete=false; \(payload.messages.count) messages, will chain re-subscribe")
                     }
 
-                    if let oldest = oldestMessageId, let newest = newestMessageId {
-                        logger.debug("📚 [VoiceCodeClient] Session history range: oldest=\(oldest), newest=\(newest)")
-                    }
-
-                    self.sessionSyncManager.handleSessionHistory(sessionId: sessionId, messages: messages)
-
-                    // Resume any waiting refresh continuation
-                    if let continuation = self.sessionRefreshContinuations.removeValue(forKey: sessionId) {
-                        continuation.resume()
-                    }
+                    self.sessionSyncManager.handleSessionHistoryPayload(payload)
+                } catch {
+                    logger.error("❌ [VoiceCodeClient] Failed to decode session_history payload: \(error.localizedDescription)")
                 }
 
-            case "session_updated":
-                // Incremental updates for subscribed session
-                if let sessionId = json["session_id"] as? String,
-                   let messages = json["messages"] as? [[String: Any]] {
-                    print("🔄 [VoiceCodeClient] Received session_updated for \(sessionId) with \(messages.count) messages")
-                    self.sessionSyncManager.handleSessionUpdated(sessionId: sessionId, messages: messages)
+                // Resume any waiting refresh continuation regardless of
+                // decode success — a failure still terminates the refresh.
+                if let sessionId = sessionId,
+                   let continuation = self.sessionRefreshContinuations.removeValue(forKey: sessionId) {
+                    continuation.resume()
                 }
 
             case "session_ready":
@@ -1706,5 +1700,21 @@ extension VoiceCodeClient: SessionSyncDelegate {
         let key = sessionId.lowercased()
         logger.info("⚠️ Pruned gap surfaced to UI for \(key)")
         prunedGaps[key] = gap
+    }
+
+    /// Re-issue a subscribe so the backend resends `seq > fromSeq`. Fires from
+    /// three sites in `SessionSyncManager`: gap detection, `is_complete:false`
+    /// chain, and save-failure recovery. Without this implementation the
+    /// default no-op extension swallows all three, leaving the cursor stuck
+    /// when a push is missed or a save throws.
+    ///
+    /// `subscribe(sessionId:)` reads the cursor from CoreData via
+    /// `newestCachedSeq`, which equals the `fromSeq` we'd send here as long as
+    /// the prior payload was either fully merged (gap/is_complete cases) or
+    /// not merged at all (save-failure case). We rely on that equivalence
+    /// rather than threading `fromSeq` through a second subscribe variant.
+    func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64) {
+        logger.info("🔁 Resubscribe requested for \(sessionId) fromSeq=\(fromSeq)")
+        subscribe(sessionId: sessionId)
     }
 }
