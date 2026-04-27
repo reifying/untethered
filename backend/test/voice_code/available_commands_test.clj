@@ -2,6 +2,7 @@
   (:require [clojure.test :refer :all]
             [voice-code.server :as server]
             [voice-code.commands :as commands]
+            [voice-code.replication :as repl]
             [voice-code.tmux :as tmux]
             [cheshire.core :as json]))
 
@@ -276,3 +277,53 @@
           (is (= :command (:type cmd)) "Should be flattened to a command")
           (is (= "docker.compose.up" (:id cmd)))
           (is (= "Docker Compose Up" (:label cmd))))))))
+
+(deftest test-available-commands-sent-on-subscribe
+  (testing "Subscribing to an existing session sends available_commands for that session's directory.
+   This ensures project commands are visible after reconnect, when the client
+   resubscribes without sending a new prompt."
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [sent-messages (atom [])
+          session-workdir "/tmp/subscribe-test-dir"
+          parse-args (atom nil)]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_channel msg]
+                      (swap! sent-messages conj msg))
+                    commands/parse-makefile
+                    (fn [path]
+                      (reset! parse-args path)
+                      [{:id "build" :label "Build" :type :command}
+                       {:id "test" :label "Test" :type :command}])
+                    repl/get-session-metadata
+                    (fn [_] {:provider :claude
+                             :file "/tmp/session.jsonl"
+                             :working-directory session-workdir
+                             :name "test-session"
+                             :message-count 0
+                             :next-seq 1
+                             :min-available-seq 1})
+                    repl/parse-session-messages (fn [_ _] [])
+                    repl/filter-internal-messages (fn [msgs] msgs)
+                    repl/subscribe-to-session! (fn [_] nil)
+                    repl/reset-file-position! (fn [_] nil)
+                    repl/file-positions (atom {})]
+        (server/handle-message :test-ch
+                               (json/generate-string
+                                {:type "subscribe"
+                                 :session_id "sub-session-1"
+                                 :last_seq 0}))
+
+        (is (= session-workdir @parse-args)
+            "parse-makefile should be called with the subscribed session's working directory")
+        (let [messages (parse-messages @sent-messages)
+              available-cmd (first (filter #(= "available_commands" (:type %)) messages))]
+          (is (some? available-cmd)
+              "available_commands should be sent on subscribe")
+          (is (= session-workdir (:working_directory available-cmd))
+              "working_directory should match the session's directory")
+          (is (= 2 (count (:project_commands available-cmd)))
+              "project_commands should contain Makefile targets for the session's directory")
+          (is (= 5 (count (:general_commands available-cmd)))
+              "general_commands should always be present"))))
+    (reset! server/api-key nil)))

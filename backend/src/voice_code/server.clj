@@ -1499,6 +1499,12 @@
                       ;; starts fresh from the current file position.
                       (repl/reset-file-position! file-path)
                       (swap! repl/file-positions assoc file-path current-size)
+                      ;; Refresh project commands for this session's directory.
+                      ;; Without this, available_commands after reconnect only has
+                      ;; general commands (sent at connect time with nil working-dir).
+                      ;; The last subscribed session's directory wins, which mirrors
+                      ;; the prompt-path behavior.
+                      (send-available-commands! channel (:working-directory metadata))
                       (if v0-4?
                         ;; v0.4.0 wire: last_seq cursor, per-message seq + session_id,
                         ;; top-level first_seq / last_seq / next_seq / gap.
@@ -1755,9 +1761,10 @@
                                               (:working-directory session-metadata))]
                         (send-available-commands! channel session-workdir))
 
-                      ;; Dispatch to tmux. start-window! can block up to ~3s for
-                      ;; TUI readiness, so run off-thread to keep the ack fast and
-                      ;; avoid blocking other messages on this channel.
+                      ;; Dispatch to tmux. start-window! can block up to the
+                      ;; wait-for-ready timeout (20s by default) for TUI readiness,
+                      ;; so run off-thread to keep the ack fast and avoid blocking
+                      ;; other messages on this channel.
                       ;;
                       ;; The dispatch is serialized against compact_session via
                       ;; repl/compaction-dispatch-lock so a compaction arriving

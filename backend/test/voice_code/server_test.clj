@@ -6,7 +6,8 @@
             [voice-code.recipes :as recipes]
             [voice-code.tmux :as tmux]
             [cheshire.core :as json]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [voice-code.commands :as commands]))
 
 ;; Test API key for authentication tests
 (def test-api-key "voice-code-0123456789abcdef0123456789abcdef")
@@ -1806,13 +1807,14 @@
                     voice-code.replication/file-positions (atom {})
                     clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
                                                       (length [] 1000)
-                                                      (exists [] true)))]
+                                                      (exists [] true)))
+                    voice-code.commands/parse-makefile (fn [_] [])]
 
         (server/handle-message :test-ch "{\"type\":\"subscribe\",\"session_id\":\"test-session-123\"}")
 
-        (is (= 1 (count @sent-messages)))
-        (let [response (first @sent-messages)]
-          (is (= "session_history" (:type response)))
+        (is (= 2 (count @sent-messages)))
+        (let [response (first (filter #(= "session_history" (:type %)) @sent-messages))]
+          (is (some? response) "Should have a session_history message")
           (is (= "test-session-123" (:session_id response)))
           (is (= 50 (count (:messages response))) "All messages packed in one reply")
           (is (= 1 (:first_seq response)) "first_seq starts at 1 for fresh session")
@@ -1854,13 +1856,14 @@
                     voice-code.replication/file-positions (atom {})
                     clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
                                                       (length [] 1000)
-                                                      (exists [] true)))]
+                                                      (exists [] true)))
+                    voice-code.commands/parse-makefile (fn [_] [])]
 
         (server/handle-message :test-ch
                                "{\"type\":\"subscribe\",\"session_id\":\"sess\",\"last_seq\":7}")
 
-        (let [response (first @sent-messages)]
-          (is (= "session_history" (:type response)))
+        (let [response (first (filter #(= "session_history" (:type %)) @sent-messages))]
+          (is (some? response) "Should have a session_history message")
           (is (= 3 (count (:messages response))) "only seq > 7 are returned")
           (is (= 8 (:first_seq response)))
           (is (= 10 (:last_seq response)))
@@ -1896,13 +1899,14 @@
                     voice-code.replication/file-positions (atom {})
                     clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
                                                       (length [] 1000)
-                                                      (exists [] true)))]
+                                                      (exists [] true)))
+                    voice-code.commands/parse-makefile (fn [_] [])]
 
         (server/handle-message :test-ch
                                "{\"type\":\"subscribe\",\"session_id\":\"sess\",\"last_seq\":5}")
 
-        (let [response (first @sent-messages)]
-          (is (= "session_history" (:type response)))
+        (let [response (first (filter #(= "session_history" (:type %)) @sent-messages))]
+          (is (some? response) "Should have a session_history message")
           (is (= [] (:messages response)))
           (is (nil? (:first_seq response)))
           (is (nil? (:last_seq response)))
@@ -1982,13 +1986,14 @@
                     voice-code.replication/file-positions (atom {})
                     clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
                                                       (length [] 1000)
-                                                      (exists [] true)))]
+                                                      (exists [] true)))
+                    voice-code.commands/parse-makefile (fn [_] [])]
 
         (server/handle-message :test-ch "{\"type\":\"subscribe\",\"session_id\":\"test-session-456\"}")
 
-        (is (= 1 (count @sent-messages)))
-        (let [response (first @sent-messages)]
-          (is (= "session_history" (:type response)))
+        (is (= 2 (count @sent-messages)))
+        (let [response (first (filter #(= "session_history" (:type %)) @sent-messages))]
+          (is (some? response) "Should have a session_history message")
           (is (= 3 (count (:messages response)))
               "Should send all 3 canonical messages (filtering happened at parse time)")
           (is (= 3 (:last_seq response)) "last_seq matches count"))))
@@ -2016,15 +2021,16 @@
                     voice-code.replication/file-positions (atom {})
                     clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
                                                       (length [] 1000)
-                                                      (exists [] true)))]
+                                                      (exists [] true)))
+                    voice-code.commands/parse-makefile (fn [_] [])]
         ;; Legacy client still sends last_message_id — in v0.3.0 mode this must work.
         (server/handle-message :test-ch
                                (str "{\"type\":\"subscribe\","
                                     "\"session_id\":\"sess-old\","
                                     "\"last_message_id\":\"uuid-a\"}"))
 
-        (let [response (first @sent-messages)]
-          (is (= "session_history" (:type response)))
+        (let [response (first (filter #(= "session_history" (:type %)) @sent-messages))]
+          (is (some? response) "Should have a session_history message")
           (is (= 3 (:total_count response)) "legacy wire carries total_count")
           (is (= 2 (count (:messages response)))
               "UUID-scan cursor picks up from uuid-a, returning uuid-b and uuid-c")
@@ -2371,11 +2377,12 @@
                     voice-code.replication/file-positions (atom {})
                     clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
                                                       (length [] 1000)
-                                                      (exists [] true)))]
+                                                      (exists [] true)))
+                    voice-code.commands/parse-makefile (fn [_] [])]
         (server/handle-message :test-ch
                                "{\"type\":\"subscribe\",\"session_id\":\"truncate-session\"}")
-        (is (= 1 (count @sent-messages)))
-        (let [response (first @sent-messages)
+        (is (= 2 (count @sent-messages)))
+        (let [response (first (filter #(= "session_history" (:type %)) @sent-messages))
               big-msg (->> response :messages (filter #(= "big" (:uuid %))) first)]
           (is (some? big-msg) "Large message should be delivered (truncated), not dropped")
           (is (< (count (:text big-msg)) (count big-text))
