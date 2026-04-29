@@ -436,3 +436,53 @@
             (is (= [1 2 3 4] deduped)
                 "after dedup on :seq, the materialized view is [1..4] contiguous")
             (is (contiguous-from-1? deduped))))))))
+
+(deftest test-subscribe-empty-session-distinct-from-caught-up
+  (testing "Subscribing with last_seq=0 to a session that has never received
+           any messages returns the caught-up empty shape with next_seq=1.
+
+           This pins the boundary between two superficially identical replies:
+             - empty session       → messages=[], next_seq=1
+             - caught-up after N   → messages=[], next_seq=N+1
+           The server hits the `(>= last-seq (dec next-seq))` branch in
+           build-session-history-response, not the pruned branch — gap stays
+           nil because min-available-seq=1 and last-seq=0 are equal."
+    (let [session-id "550e8400-e29b-41d4-a716-446655440720"
+          ;; Empty seed list → empty .jsonl file, message-count=0, next-seq=1.
+          file (create-session-jsonl session-id [])
+          captured (atom {})
+          ch :chan-empty]
+      (seed-session-index! session-id file [])
+      (wire-broadcast-callback! session-id)
+      (register-client! ch session-id)
+
+      ;; Sanity: the seeded index entry is genuinely fresh, not caught-up
+      ;; after a prior message. If this regresses to next-seq>1 the test
+      ;; below stops distinguishing the two cases.
+      (let [meta (repl/get-session-metadata session-id)]
+        (is (= 0 (:message-count meta)))
+        (is (= 1 (:next-seq meta))))
+
+      (with-redefs [org.httpkit.server/send! (capture-sends captured)]
+        (server/handle-message ch
+                               (json/generate-string
+                                {:type "subscribe"
+                                 :session_id session-id
+                                 :last_seq 0}))
+
+        (let [histories (history-msgs-for @captured ch)
+              reply (first histories)]
+          (is (= 1 (count histories))
+              "subscribe to an empty session emits exactly one session_history reply")
+          (is (= session-id (:session_id reply)))
+          (is (= [] (:messages reply))
+              "no messages have ever been written, so the reply carries none")
+          (is (nil? (:first_seq reply)))
+          (is (nil? (:last_seq reply)))
+          (is (= 1 (:next_seq reply))
+              "next_seq=1 is the marker that distinguishes a fresh session
+               from a caught-up subscriber on a non-empty one")
+          (is (true? (:is_complete reply)))
+          (is (nil? (:gap reply))
+              "gap is nil — last_seq=0 equals min_available_seq-1, so the
+               server treats this as caught-up rather than pruned"))))))
