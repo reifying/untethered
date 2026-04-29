@@ -901,10 +901,19 @@ class VoiceCodeClient: ObservableObject {
                     print("✅ [VoiceCodeClient] Received turn_complete for \(sessionId) (aborted: \(aborted))")
 
                     // Note: Subscription now happens earlier via session_ready message
-                    // This is kept as fallback for compatibility
-                    if !self.activeSubscriptions.contains(sessionId) {
-                        print("📥 [VoiceCodeClient] Auto-subscribing to new session after turn_complete (fallback): \(sessionId)")
-                        self.subscribe(sessionId: sessionId)
+                    // This is kept as fallback for compatibility. Same isActive() guard
+                    // as session_ready: if the user has navigated away, attaching here
+                    // would route pushes (and TTS) to an off-screen session.
+                    let isStillActive: Bool = UUID(uuidString: sessionId)
+                        .map { ActiveSessionManager.shared.isActive($0) } ?? false
+
+                    if isStillActive {
+                        if !self.activeSubscriptions.contains(sessionId) {
+                            print("📥 [VoiceCodeClient] Auto-subscribing to new session after turn_complete (fallback): \(sessionId)")
+                            self.subscribe(sessionId: sessionId)
+                        }
+                    } else {
+                        print("⏭️ [VoiceCodeClient] Skipping turn_complete fallback subscribe for \(sessionId) — no longer the active session")
                     }
                 }
 
