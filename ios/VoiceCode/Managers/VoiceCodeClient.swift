@@ -818,7 +818,6 @@ class VoiceCodeClient: ObservableObject {
                 // live pushes. Decode into the v0.4.0 typed payload and route
                 // through handleSessionHistoryPayload, which owns cursor math,
                 // gap detection, optimistic reconciliation, and auto-speak.
-                let sessionId = json["session_id"] as? String
                 do {
                     let data = try JSONSerialization.data(withJSONObject: json, options: [])
                     let decoder = JSONDecoder()
@@ -831,15 +830,16 @@ class VoiceCodeClient: ObservableObject {
                     }
 
                     self.sessionSyncManager.handleSessionHistoryPayload(payload)
+
+                    // Only resume a waiting refresh continuation when decode
+                    // succeeded; otherwise the awaiting caller would proceed
+                    // with stale state. On failure, let the refresh timeout
+                    // fire instead.
+                    if let continuation = self.sessionRefreshContinuations.removeValue(forKey: payload.sessionId) {
+                        continuation.resume()
+                    }
                 } catch {
                     logger.error("❌ [VoiceCodeClient] Failed to decode session_history payload: \(error.localizedDescription)")
-                }
-
-                // Resume any waiting refresh continuation regardless of
-                // decode success — a failure still terminates the refresh.
-                if let sessionId = sessionId,
-                   let continuation = self.sessionRefreshContinuations.removeValue(forKey: sessionId) {
-                    continuation.resume()
                 }
 
             case "session_ready":

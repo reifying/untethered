@@ -1742,4 +1742,77 @@ final class VoiceCodeClientTests: XCTestCase {
         testClient.disconnect()
     }
 
+    // MARK: - Session Refresh Continuation Decode-Failure Tests (tmux-untethered-ash)
+
+    /// Sanity-check counterpart to the failure test below: a well-formed
+    /// session_history payload must resume the awaiting refresh continuation
+    /// promptly (well before the 10-second timeout).
+    func testSessionHistoryRefreshContinuationResumesOnSuccessfulDecode() {
+        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+        let sessionId = "decode-success-session"
+
+        let refreshCompleted = XCTestExpectation(description: "Refresh continuation resumed")
+        Task {
+            await testClient.requestSessionRefresh(sessionId: sessionId)
+            refreshCompleted.fulfill()
+        }
+
+        let registered = XCTestExpectation(description: "Continuation registered")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { registered.fulfill() }
+        wait(for: [registered], timeout: 1.0)
+
+        let json: [String: Any] = [
+            "type": "session_history",
+            "session_id": sessionId,
+            "messages": [],
+            "first_seq": NSNull(),
+            "last_seq": NSNull(),
+            "next_seq": 1,
+            "is_complete": true,
+            "gap": NSNull()
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let text = String(data: data, encoding: .utf8)!
+        testClient.handleMessage(text)
+
+        wait(for: [refreshCompleted], timeout: 2.0)
+    }
+
+    /// The bug: a malformed session_history previously resumed the refresh
+    /// continuation regardless of decode success, so callers awaiting
+    /// `requestSessionRefresh` returned immediately with stale state. The fix
+    /// only resumes inside the successful decode path; on failure the caller
+    /// must wait for the refresh timeout.
+    func testSessionHistoryRefreshContinuationDoesNotResumeOnDecodeFailure() {
+        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+        let sessionId = "decode-failure-session"
+
+        let refreshCompleted = XCTestExpectation(description: "Refresh continuation resumed")
+        refreshCompleted.isInverted = true
+        Task {
+            await testClient.requestSessionRefresh(sessionId: sessionId)
+            refreshCompleted.fulfill()
+        }
+
+        let registered = XCTestExpectation(description: "Continuation registered")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { registered.fulfill() }
+        wait(for: [registered], timeout: 1.0)
+
+        // Missing required `next_seq` — SessionHistoryPayload decode fails.
+        let json: [String: Any] = [
+            "type": "session_history",
+            "session_id": sessionId,
+            "messages": [],
+            "is_complete": true
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let text = String(data: data, encoding: .utf8)!
+        testClient.handleMessage(text)
+
+        // Inverted expectation: success means the continuation did NOT resume
+        // within the wait window, leaving the caller waiting for the 10s
+        // timeout (which is the intended behavior on decode failure).
+        wait(for: [refreshCompleted], timeout: 2.0)
+    }
+
 }
