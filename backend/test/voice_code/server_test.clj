@@ -633,6 +633,45 @@
               (is (= 1 (:next_seq msg))
                   "Fallback to 1 when metadata :next-seq missing AND messages empty"))))
         (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.4.0) ignores stale metadata :next-seq advanced by concurrent assign-seq! (tmux-untethered-9ww)"
+    ;; Regression: a concurrent assign-seq! call (different batch, same
+    ;; session) can advance session-index :next-seq past last-seq+1 of the
+    ;; current broadcast. The payload must report (inc last-seq) — the
+    ;; "next seq after this window" — not the global counter, so subscribers
+    ;; do not interpret the broadcast as a multi-seq gap and re-subscribe.
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.4.0)
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))
+                        ;; Simulate concurrent assign-seq! that already
+                        ;; pushed :next-seq to 61 while this broadcast only
+                        ;; covers seqs up through 55.
+                        repl/get-session-metadata (constantly {:session-id "session-race"
+                                                               :next-seq 61
+                                                               :min-available-seq 1})]
+            (server/broadcast-session-history!
+             "session-race"
+             [{:role "user" :text "a" :uuid "u-54" :seq 54}
+              {:role "assistant" :text "b" :uuid "u-55" :seq 55}])
+
+            (let [ch1-msgs (filter #(= :ch1 (:channel %)) @sent-messages)
+                  history-msg (first (filter #(= "session_history"
+                                                 (:type (json/parse-string (:msg %) true)))
+                                             ch1-msgs))
+                  msg (json/parse-string (:msg history-msg) true)]
+              (is (some? history-msg))
+              (is (= 54 (:first_seq msg)))
+              (is (= 55 (:last_seq msg)))
+              (is (= 56 (:next_seq msg))
+                  "next_seq must be (inc last-seq), NOT the racing metadata value 61")
+              (is (true? (:is_complete msg)))
+              (is (nil? (:gap msg))))))
+        (finally
           (reset! server/message-stream-version original))))))
 
 (deftest test-new-protocol-connect

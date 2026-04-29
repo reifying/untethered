@@ -1290,8 +1290,15 @@
       (let [msgs-vec (vec new-messages)
             first-seq (:seq (first msgs-vec))
             last-seq (:seq (last msgs-vec))
-            next-seq (or (:next-seq (repl/get-session-metadata session-id))
-                         (when last-seq (inc last-seq))
+            ;; (inc last-seq) is atomic with the message vector — assign-seq!
+            ;; advanced :next-seq to (inc last-stamped-seq) when stamping these
+            ;; messages. Reading session-index here would race a concurrent
+            ;; assign-seq! that already pushed the counter past last-seq+1,
+            ;; making the payload look like a multi-seq gap and triggering
+            ;; spurious resubscribes. Metadata read remains as fallback for
+            ;; empty broadcasts where last-seq is nil.
+            next-seq (or (when last-seq (inc last-seq))
+                         (:next-seq (repl/get-session-metadata session-id))
                          1)
             wire-messages (mapv #(assoc % :session-id session-id) msgs-vec)
             payload {:type :session-history
