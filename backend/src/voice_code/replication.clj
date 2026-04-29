@@ -1213,6 +1213,12 @@
    `:message-count` field — useful for diagnosing drift between the two
    pipelines (index-build vs. canonical-parse).
 
+   For byte-cursor providers (`:claude`, `:copilot`) also restores
+   `file-positions[file-path]` to the current file length, so the watcher
+   resumes from the end of the file on the first post-restart modification
+   rather than re-parsing already-migrated content (and re-stamping seqs
+   into a duplicate range — see tmux-untethered-911).
+
    Persists the updated index via `save-index!` on completion so the next
    boot's migration short-circuits on every migrated session.
 
@@ -1230,8 +1236,9 @@
         (try
           (let [provider (or (:provider entry) :claude)
                 file-path (:file entry)
-                parsed (if (and file-path
-                                (.exists (io/file file-path)))
+                file (when file-path (io/file file-path))
+                file-exists? (and file (.exists file))
+                parsed (if file-exists?
                          (parse-session-messages provider file-path)
                          [])
                 parsed-count (count parsed)
@@ -1241,6 +1248,20 @@
                      (-> (or e {:session-id session-id})
                          (assoc :next-seq (inc parsed-count))
                          (update :min-available-seq #(or % 1)))))
+            ;; Restore the watcher's byte cursor for providers that use
+            ;; file-positions (Claude, Copilot). Without this, after a
+            ;; crash-restart the in-memory file-positions atom is empty,
+            ;; and the next file-modified event causes parse-jsonl-incremental
+            ;; to re-read the entire file from byte 0 — producing duplicate
+            ;; seqs because assign-seq! has already advanced :next-seq.
+            (when (and file-exists?
+                       (contains? #{:claude :copilot} provider))
+              (let [file-size (.length file)]
+                (swap! file-positions
+                       (fn [positions]
+                         (update positions file-path
+                                 (fn [old-pos]
+                                   (max (or old-pos 0) file-size)))))))
             (when (not= parsed-count indexed-count)
               (log/warn "seq migration: parsed count differs from :message-count"
                         {:session-id session-id

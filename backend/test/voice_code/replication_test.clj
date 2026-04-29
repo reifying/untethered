@@ -968,6 +968,155 @@
           (is (zero? @save-calls)
               "Skip-only runs must not write the index to disk"))))))
 
+(deftest test-migrate-session-seqs-restores-file-position-after-crash
+  ;; Simulates a backend crash-restart scenario (tmux-untethered-911):
+  ;; 1. Pre-crash, the session has N messages on disk; assign-seq! has already
+  ;;    advanced :next-seq in-memory but the debounced save-index! flush had
+  ;;    not landed yet (or landed with a lower :next-seq).
+  ;; 2. Restart wipes the in-memory file-positions atom (it doesn't persist).
+  ;; 3. migrate-session-seqs! re-derives :next-seq from JSONL line count.
+  ;; 4. The first watcher tick fires for an unrelated reason (e.g. mtime
+  ;;    refresh) — without the file-positions restore, parse-jsonl-incremental
+  ;;    would re-read the entire file from byte 0, hand the same N messages
+  ;;    back to assign-seq!, and stamp them with seqs N+1..2N — duplicating
+  ;;    every migrated message under a new seq range.
+  (testing "Watcher tick after crash + migration does not re-parse migrated content"
+    (reset! repl/session-index {})
+    (reset! repl/file-positions {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (let [session-id "mig-restart"
+            [_ file-path] (migration-claude-session!
+                           session-id ["one" "two" "three"])]
+        ;; Simulate crash: in-memory file-positions wiped.
+        (reset! repl/file-positions {})
+        ;; Migration re-derives :next-seq from on-disk content.
+        (repl/migrate-session-seqs!)
+        (let [entry (get @repl/session-index session-id)
+              file-size (.length (io/file file-path))]
+          (is (= 4 (:next-seq entry))
+              ":next-seq re-derived as parsed-count + 1")
+          (is (= file-size (get @repl/file-positions file-path))
+              "Migration restores file-positions to file size so the
+               watcher resumes from the end of the file, not byte 0"))
+        ;; First post-restart watcher tick on the unmodified file.
+        ;; parse-jsonl-incremental reads from the restored cursor (= file size),
+        ;; so it sees zero new bytes and returns no messages — assign-seq!
+        ;; stamps nothing, :next-seq does not advance.
+        (let [{:keys [messages new-pos]} (repl/parse-jsonl-incremental file-path)
+              canonical (->> messages
+                             (keep #(providers/parse-message :claude %))
+                             vec)
+              stamped (repl/assign-seq! session-id canonical)]
+          (is (zero? (count messages))
+              "No messages re-parsed — cursor was already at EOF")
+          (is (zero? (count stamped))
+              "No new seqs stamped on a no-op tick")
+          (is (= 4 (:next-seq (get @repl/session-index session-id)))
+              ":next-seq unchanged across the no-op tick — no duplicates")
+          (is (= (.length (io/file file-path)) new-pos)
+              "Cursor remains at EOF"))))))
+
+(deftest test-migrate-session-seqs-post-restart-tick-stamps-only-new-content
+  ;; Companion to the no-op case above: after migration restores the byte
+  ;; cursor, a tick that runs against a file with NEW content appended
+  ;; post-restart must stamp only the new content, with seqs that continue
+  ;; from the migrated :next-seq — not from 1.
+  (testing "Watcher tick on appended content after restart stamps only the new lines"
+    (reset! repl/session-index {})
+    (reset! repl/file-positions {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (let [session-id "mig-restart-append"
+            [_ file-path] (migration-claude-session!
+                           session-id ["one" "two" "three"])]
+        (reset! repl/file-positions {})
+        (repl/migrate-session-seqs!)
+        ;; Append two new messages after migration, mirroring activity that
+        ;; arrives between startup and the first watcher event.
+        (let [new-lines [(claude-jsonl {:type "user" :text "four"})
+                         (claude-jsonl {:type "user" :text "five"})]]
+          (spit file-path
+                (str (str/join "\n" new-lines) "\n")
+                :append true))
+        (let [{:keys [messages]} (repl/parse-jsonl-incremental file-path)
+              canonical (->> messages
+                             (keep #(providers/parse-message :claude %))
+                             vec)
+              stamped (repl/assign-seq! session-id canonical)]
+          (is (= 2 (count messages))
+              "Only the two appended lines are parsed, not the migrated three")
+          (is (= [4 5] (mapv :seq stamped))
+              "Stamped seqs continue from migrated :next-seq, no overlap with 1..3")
+          (is (= 6 (:next-seq (get @repl/session-index session-id)))
+              ":next-seq advances exactly past the newly stamped pair"))))))
+
+(deftest test-migrate-session-seqs-restores-file-position-for-copilot
+  ;; Same restart-cursor restore must apply to Copilot sessions, whose
+  ;; events.jsonl path is the byte-cursor key for the watcher.
+  (testing "Migration restores file-positions for :copilot sessions"
+    (reset! repl/session-index {})
+    (reset! repl/file-positions {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      ;; Build a minimal events.jsonl with two parseable Copilot user events
+      ;; — enough surface for parse-session-messages :copilot to count them.
+      (let [events-file (create-test-jsonl-file
+                         "copilot-restart-events.jsonl"
+                         [(json/generate-string
+                           {:type "user.message"
+                            :timestamp "2026-04-19T00:00:00Z"
+                            :data {:messageId (str (java.util.UUID/randomUUID))
+                                   :content "hi"}})
+                          (json/generate-string
+                           {:type "assistant.message"
+                            :timestamp "2026-04-19T00:00:01Z"
+                            :data {:messageId (str (java.util.UUID/randomUUID))
+                                   :content "hello"}})])
+            file-path (.getAbsolutePath events-file)
+            session-id "mig-copilot-restart"]
+        (swap! repl/session-index assoc session-id
+               {:session-id session-id
+                :file file-path
+                :provider :copilot
+                :message-count 2
+                :next-seq 1
+                :min-available-seq 1})
+        (reset! repl/file-positions {})
+        (repl/migrate-session-seqs!)
+        (is (= (.length events-file) (get @repl/file-positions file-path))
+            "Copilot events.jsonl byte cursor restored to file size")))))
+
+(deftest test-migrate-session-seqs-skips-file-position-for-non-byte-providers
+  ;; Cursor and OpenCode use their own provider-specific watch paths; their
+  ;; :file (store.db, session JSON) is NOT a key the byte-cursor watcher
+  ;; reads. The migration should not pollute file-positions with paths the
+  ;; watcher will never consult.
+  (testing "Migration leaves file-positions unset for :cursor and :opencode"
+    (reset! repl/session-index {})
+    (reset! repl/file-positions {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (let [cursor-file (create-test-jsonl-file "cursor-store.db" [])
+            opencode-file (create-test-jsonl-file "opencode-session.json" [])
+            cursor-path (.getAbsolutePath cursor-file)
+            opencode-path (.getAbsolutePath opencode-file)]
+        (swap! repl/session-index assoc "mig-cursor-fp"
+               {:session-id "mig-cursor-fp"
+                :file cursor-path
+                :provider :cursor
+                :message-count 0
+                :next-seq 1
+                :min-available-seq 1})
+        (swap! repl/session-index assoc "mig-opencode-fp"
+               {:session-id "mig-opencode-fp"
+                :file opencode-path
+                :provider :opencode
+                :message-count 0
+                :next-seq 1
+                :min-available-seq 1})
+        (repl/migrate-session-seqs!)
+        (is (not (contains? @repl/file-positions cursor-path))
+            "Cursor :file is not a byte-cursor watch path; do not pollute file-positions")
+        (is (not (contains? @repl/file-positions opencode-path))
+            "OpenCode :file is not a byte-cursor watch path; do not pollute file-positions")))))
+
 ;; ============================================================================
 ;; Metrics Instrumentation Tests
 ;; ============================================================================
