@@ -416,12 +416,34 @@
     :else
     (let [candidates (filter #(> (:seq %) last-seq) messages)
           {:keys [included complete?]} (pack-within-budget candidates max-total-bytes)]
-      {:messages (vec included)
-       :first-seq (:seq (first included))
-       :last-seq (:seq (last included))
-       :next-seq next-seq
-       :is-complete complete?
-       :gap nil})))
+      (if (empty? included)
+        ;; Defensive guard: no candidate fit the byte budget. Without this
+        ;; branch the response would carry nil first-seq/last-seq with
+        ;; is-complete:false, leaving the client unable to advance its
+        ;; cursor and stuck in an infinite resubscribe loop. Upstream
+        ;; (subscribe handler) middle-truncates messages above
+        ;; per-message-max-bytes precisely to keep this branch unreachable;
+        ;; if it ever fires, log a warning and report caught-up so the
+        ;; client stops looping.
+        (do
+          (log/warn "build-session-history-response: no candidate fit byte budget; returning caught-up to break resubscribe loop"
+                    {:last-seq last-seq
+                     :max-total-bytes max-total-bytes
+                     :next-seq next-seq
+                     :candidate-count (count candidates)
+                     :first-candidate-seq (:seq (first candidates))})
+          {:messages []
+           :first-seq nil
+           :last-seq nil
+           :next-seq next-seq
+           :is-complete true
+           :gap nil})
+        {:messages (vec included)
+         :first-seq (:seq (first included))
+         :last-seq (:seq (last included))
+         :next-seq next-seq
+         :is-complete complete?
+         :gap nil}))))
 
 (defn truncate-response-text
   "Truncate the :text field of a response message if the total JSON would exceed max size.

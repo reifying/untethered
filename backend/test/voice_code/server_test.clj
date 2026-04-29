@@ -2516,11 +2516,18 @@
       (is (= (:seq (last (:messages result))) (:last-seq result)))
       (is (nil? (:gap result)))))
 
-  (testing "Single message larger than budget yields empty :messages, :is-complete false"
+  (testing "Single message larger than budget reports caught-up to break resubscribe loop"
+    ;; Defensive guard: when no candidate fits the byte budget the packed
+    ;; branch would otherwise return nil first/last-seq with is-complete:false,
+    ;; leaving the client unable to advance its cursor and stuck in an
+    ;; infinite resubscribe loop. The guard returns an explicit nil-seq map
+    ;; with is-complete:true so the client treats it as caught-up and stops.
+    ;; Upstream truncation in the subscribe handler keeps this branch
+    ;; unreachable in practice; this is belt-and-suspenders.
     (let [big-msg {:seq 1 :uuid "big" :text (apply str (repeat 5000 "x"))}
           result (server/build-session-history-response [big-msg] 0 300 1 2)]
       (is (= [] (:messages result)))
-      (is (false? (:is-complete result)))
+      (is (true? (:is-complete result)))
       (is (nil? (:first-seq result)))
       (is (nil? (:last-seq result)))
       (is (nil? (:gap result))))))
@@ -2592,6 +2599,30 @@
           collected-seqs (mapv :seq collected)]
       (is (= (mapv :seq messages) collected-seqs))
       (is (= (count (set collected-seqs)) (count collected-seqs))))))
+
+(deftest test-build-session-history-empty-included-breaks-loop
+  (testing "Resubscribe loop terminates when no candidate fits the byte budget"
+    ;; Regression: under the old code the packed branch returned :is-complete
+    ;; false with nil :last-seq when included was empty, so a client looping
+    ;; on (:last-seq r) would never advance and would resubscribe forever.
+    ;; The defensive guard now reports caught-up; a loop that keys termination
+    ;; on (:is-complete r) must terminate within a single iteration.
+    (let [messages [{:seq 1 :uuid "huge" :text (apply str (repeat 5000 "x"))}]
+          next-seq 2
+          iter-count
+          (loop [last-seq 0
+                 iters 0]
+            (if (>= iters 5)
+              (throw (ex-info "infinite resubscribe loop" {:last-seq last-seq}))
+              (let [r (server/build-session-history-response messages
+                                                             last-seq
+                                                             300
+                                                             1
+                                                             next-seq)]
+                (if (:is-complete r)
+                  (inc iters)
+                  (recur (or (:last-seq r) last-seq) (inc iters))))))]
+      (is (= 1 iter-count) "loop terminates on the first iteration"))))
 
 ;; The v0.3.0 delta-sync / backward-compat tests have been superseded by the
 ;; v0.4.0 subscribe tests earlier in this file:
