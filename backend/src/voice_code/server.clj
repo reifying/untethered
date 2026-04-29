@@ -591,17 +591,33 @@
   (str (java.util.UUID/randomUUID)))
 
 (defn broadcast-to-all-clients!
-  "Broadcast a message to all connected clients"
+  "Broadcast a message to all connected clients.
+
+   On send failure (e.g. dead socket), remove the offending channel from
+   `connected-clients` and unsubscribe it from all sessions via
+   `unregister-channel!`. Without this cleanup the channel would persist
+   as a zombie subscriber, slowing every subsequent broadcast and leaking
+   memory (see beads tmux-untethered-rxr)."
   [message-data]
   (doseq [[channel _client-info] @connected-clients]
     (try
       (http/send! channel (generate-json message-data))
       (catch Exception e
-        (log/warn e "Failed to broadcast to client")))))
+        (log/warn e "Failed to broadcast to client; removing dead channel")
+        (try
+          (unregister-channel! channel)
+          (catch Exception cleanup-e
+            (log/warn cleanup-e "Failed to clean up dead channel after broadcast failure")))))))
 
 (defn send-to-client!
   "Send message to a specific channel if it's connected.
-   Applies truncation for messages with :text or :messages fields if needed."
+   Applies truncation for messages with :text or :messages fields if needed.
+
+   On send failure (e.g. dead socket), remove the channel from
+   `connected-clients` and unsubscribe it from all sessions via
+   `unregister-channel!`. Without this cleanup the channel would persist
+   as a zombie subscriber, slowing every subsequent broadcast and leaking
+   memory (see beads tmux-untethered-rxr)."
   [channel message-data]
   (if (contains? @connected-clients channel)
     (do
@@ -615,7 +631,11 @@
           (http/send! channel json-str)
           (log/info "Message sent successfully" {:type (:type message-data)})
           (catch Exception e
-            (log/warn e "Failed to send to client")))))
+            (log/warn e "Failed to send to client; removing dead channel")
+            (try
+              (unregister-channel! channel)
+              (catch Exception cleanup-e
+                (log/warn cleanup-e "Failed to clean up dead channel after send failure")))))))
     (log/warn "Channel not in connected-clients, skipping send" {:type (:type message-data)})))
 
 (defn send-recent-sessions!

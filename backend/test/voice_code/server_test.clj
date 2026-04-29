@@ -341,6 +341,93 @@
 
     (is (not (contains? @server/connected-clients :ch1)))))
 
+(deftest test-cleanup-on-failed-channel-send
+  ;; Regression coverage for tmux-untethered-rxr: when http/send! throws
+  ;; (dead socket / network failure), the offending channel must be
+  ;; removed from connected-clients AND unsubscribed from every session
+  ;; it was subscribed to. Without this, dead channels accumulate as
+  ;; zombie subscribers and broadcast-session-history! iterates them
+  ;; on every new message.
+  (testing "broadcast-to-all-clients! removes channel from connected-clients on send failure"
+    (reset! server/connected-clients
+            {:dead-ch {:deleted-sessions #{}
+                       :subscribed-sessions #{"session-1" "session-2"}}
+             :live-ch {:deleted-sessions #{}
+                       :subscribed-sessions #{"session-1"}}})
+    (reset! repl/watcher-state {:subscribed-sessions #{"session-1" "session-2"}})
+
+    (with-redefs [org.httpkit.server/send! (fn [channel _msg]
+                                             (when (= channel :dead-ch)
+                                               (throw (java.io.IOException. "broken pipe")))
+                                             true)]
+      (server/broadcast-to-all-clients! {:type "test" :data "hello"}))
+
+    (is (not (contains? @server/connected-clients :dead-ch))
+        "Dead channel must be removed from connected-clients")
+    (is (contains? @server/connected-clients :live-ch)
+        "Live channel must remain in connected-clients")
+    (is (repl/is-subscribed? "session-1")
+        "session-1 must remain globally subscribed (live-ch still needs it)")
+    (is (not (repl/is-subscribed? "session-2"))
+        "session-2 must be unsubscribed globally (only dead-ch needed it)"))
+
+  (testing "send-to-client! removes channel from connected-clients on send failure"
+    (reset! server/connected-clients
+            {:dead-ch {:deleted-sessions #{}
+                       :subscribed-sessions #{"session-1" "session-2"}}})
+    (reset! repl/watcher-state {:subscribed-sessions #{"session-1" "session-2"}})
+
+    (with-redefs [org.httpkit.server/send! (fn [_channel _msg]
+                                             (throw (java.io.IOException. "broken pipe")))]
+      (server/send-to-client! :dead-ch {:type "test" :data "hello"}))
+
+    (is (not (contains? @server/connected-clients :dead-ch))
+        "Dead channel must be removed from connected-clients")
+    (is (not (repl/is-subscribed? "session-1"))
+        "session-1 must be unsubscribed globally after dead-ch removal")
+    (is (not (repl/is-subscribed? "session-2"))
+        "session-2 must be unsubscribed globally after dead-ch removal"))
+
+  (testing "send-to-client! does not propagate exception when send fails for a channel with no subscriptions"
+    (reset! server/connected-clients
+            {:dead-ch {:deleted-sessions #{}
+                       :subscribed-sessions #{}}})
+    (reset! repl/watcher-state {:subscribed-sessions #{}})
+
+    (with-redefs [org.httpkit.server/send! (fn [_channel _msg]
+                                             (throw (java.io.IOException. "broken pipe")))]
+      ;; Direct exception check: send-to-client! must swallow the underlying
+      ;; failure so callers (broadcast loops, recipe handlers) keep working.
+      (is (= ::no-throw
+             (try (server/send-to-client! :dead-ch {:type "test"})
+                  ::no-throw
+                  (catch Exception _ ::threw)))
+          "send-to-client! must not propagate http/send! exceptions"))
+
+    (is (not (contains? @server/connected-clients :dead-ch))
+        "Channel removed even when no subscriptions to clean up"))
+
+  (testing "broadcast-to-all-clients! removes only failing channels, not surviving ones"
+    (reset! server/connected-clients
+            {:dead-ch1 {:deleted-sessions #{} :subscribed-sessions #{"only-dead-1"}}
+             :dead-ch2 {:deleted-sessions #{} :subscribed-sessions #{"only-dead-2"}}
+             :live-ch {:deleted-sessions #{} :subscribed-sessions #{"shared"}}})
+    (reset! repl/watcher-state
+            {:subscribed-sessions #{"only-dead-1" "only-dead-2" "shared"}})
+
+    (with-redefs [org.httpkit.server/send! (fn [channel _msg]
+                                             (when (#{:dead-ch1 :dead-ch2} channel)
+                                               (throw (java.io.IOException. "broken pipe")))
+                                             true)]
+      (server/broadcast-to-all-clients! {:type "test"}))
+
+    (is (= #{:live-ch} (set (keys @server/connected-clients)))
+        "Both dead channels removed; live channel preserved")
+    (is (repl/is-subscribed? "shared")
+        "Sessions live-ch is subscribed to remain globally subscribed")
+    (is (not (repl/is-subscribed? "only-dead-1")))
+    (is (not (repl/is-subscribed? "only-dead-2")))))
+
 (deftest test-watcher-callbacks
   (testing "on-session-created broadcasts to all clients"
     (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :recent-sessions-limit 5}
