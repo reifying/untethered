@@ -347,26 +347,41 @@
   "Walk candidates oldest-first, including each if the running JSON byte
    estimate stays under max-bytes. Returns {:included vec :complete? bool}.
 
-   - Starts with a 200-byte envelope overhead estimate.
-   - Each candidate contributes its JSON byte count plus 1 (comma).
-   - Stops at the first candidate that would push total past max-bytes,
-     returning :complete? false. Exhausting the input returns :complete? true.
+   - envelope-overhead: bytes reserved for the response envelope around the
+     :messages array (e.g. :type, :session-id, :first-seq, :last-seq,
+     :next-seq, :is-complete, :gap). Callers should measure their actual
+     envelope and pass the result; the 2-arg form falls back to a 300-byte
+     conservative default that covers the v0.4.0 session_history envelope
+     including a populated gap object.
+   - per-message-extra: bytes the caller will :assoc onto each message
+     after packing (e.g. ~52 bytes for the :session-id field added by the
+     subscribe handler and broadcast path before serialization). Reserved
+     per included message so the wire response stays under max-bytes
+     after the caller's post-processing.
+
+   Each candidate contributes its JSON byte count plus 1 (comma) plus
+   per-message-extra. Stops at the first candidate that would push total
+   past max-bytes, returning :complete? false. Exhausting the input
+   returns :complete? true.
 
    Pure helper: no I/O, no state, no truncation. Individual over-budget
    messages are handled by the caller (e.g. via truncate-message-text)."
-  [candidates max-bytes]
-  (let [overhead 200]
-    (loop [remaining candidates
-           included []
-           used overhead]
-      (if (empty? remaining)
-        {:included included :complete? true}
-        (let [m (first remaining)
-              m-json (generate-json m)
-              m-sz (inc (count (.getBytes ^String m-json "UTF-8")))]
-          (if (> (+ used m-sz) max-bytes)
-            {:included included :complete? false}
-            (recur (rest remaining) (conj included m) (+ used m-sz))))))))
+  ([candidates max-bytes]
+   (pack-within-budget candidates max-bytes 300 0))
+  ([candidates max-bytes envelope-overhead per-message-extra]
+   (loop [remaining candidates
+          included []
+          used envelope-overhead]
+     (if (empty? remaining)
+       {:included included :complete? true}
+       (let [m (first remaining)
+             m-json (generate-json m)
+             m-sz (+ (count (.getBytes ^String m-json "UTF-8"))
+                     1
+                     per-message-extra)]
+         (if (> (+ used m-sz) max-bytes)
+           {:included included :complete? false}
+           (recur (rest remaining) (conj included m) (+ used m-sz))))))))
 
 (defn build-session-history-response
   "Unified session-history reply for subscribe and live push (protocol v0.4.0).
@@ -415,7 +430,31 @@
     ;; Packed range.
     :else
     (let [candidates (filter #(> (:seq %) last-seq) messages)
-          {:keys [included complete?]} (pack-within-budget candidates max-total-bytes)]
+          ;; Measure the actual session_history envelope around an empty
+          ;; :messages array. The packed branch always has gap=nil and uses
+          ;; a placeholder UUID-shaped session-id so the byte count matches
+          ;; what the caller will serialize. Replaces a fixed 200-byte
+          ;; estimate that ignored long session-ids and gap-bearing payloads.
+          envelope-overhead
+          (count (.getBytes ^String
+                  (generate-json
+                   {:type :session-history
+                    :session-id "00000000-0000-0000-0000-000000000000"
+                    :messages []
+                    :first-seq next-seq
+                    :last-seq next-seq
+                    :next-seq next-seq
+                    :is-complete true
+                    :gap nil})
+                            "UTF-8"))
+          ;; The subscribe and broadcast paths :assoc :session-id onto each
+          ;; message after pack-within-budget runs. A 36-char UUID adds
+          ;; `,"session_id":"<36-chars>"` = 52 bytes per message; reserve
+          ;; that here so the wire response stays under max-total-bytes.
+          per-message-extra 52
+          {:keys [included complete?]}
+          (pack-within-budget candidates max-total-bytes
+                              envelope-overhead per-message-extra)]
       (if (empty? included)
         ;; Defensive guard: no candidate fit the byte budget. Without this
         ;; branch the response would carry nil first-seq/last-seq with

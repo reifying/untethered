@@ -2650,17 +2650,19 @@
 
 (deftest test-build-session-history-resubscribe-cursor-continuity
   (testing "Two consecutive windows cover the full range with no gap and no overlap"
-    ;; 10 messages, budget=1500 → ~5 messages fit per window. The cursor returned
-    ;; from window 1 (:last-seq) is fed back as last-seq for window 2.
+    ;; 10 messages, budget=1700 → ~5 messages fit per window. The cursor returned
+    ;; from window 1 (:last-seq) is fed back as last-seq for window 2. Budget
+    ;; sized to clear the dynamic envelope (~163B) plus 5 × (~226B msg + 1
+    ;; comma + 52B per-msg session-id reserve) ≈ 1558B with comfortable headroom.
     (let [messages (vec (for [i (range 10)]
                           {:seq (inc i)
                            :uuid (str "m-" i)
                            :text (apply str (repeat 200 "x"))}))
           next-seq 11
-          window1 (server/build-session-history-response messages 0 1500 1 next-seq)
+          window1 (server/build-session-history-response messages 0 1700 1 next-seq)
           window2 (server/build-session-history-response messages
                                                          (:last-seq window1)
-                                                         1500
+                                                         1700
                                                          1
                                                          next-seq)
           combined (into (:messages window1) (:messages window2))
@@ -2739,6 +2741,51 @@
                   (inc iters)
                   (recur (or (:last-seq r) last-seq) (inc iters))))))]
       (is (= 1 iter-count) "loop terminates on the first iteration"))))
+
+(deftest test-build-session-history-wire-stays-under-max-bytes
+  (testing "Assembled wire response stays under max-bytes after caller adds session-id"
+    ;; Regression: pack-within-budget once used a fixed 200-byte overhead that
+    ;; ignored both (a) long session-ids in the envelope and (b) the per-message
+    ;; :session-id field the subscribe and broadcast paths :assoc onto every
+    ;; message before serialization (~52 bytes per message). On responses with
+    ;; many messages the cumulative undercount pushed the wire payload past the
+    ;; client's max_message_size. build-session-history-response now measures
+    ;; the actual envelope and reserves per-message session-id bytes, so the
+    ;; assembled wire response must always fit within the requested budget.
+    (let [session-id "550e8400-e29b-41d4-a716-446655440000"
+          ;; 100 modest messages plus a 36-char session-id assoc per message
+          ;; is the worst case the bug actually surfaced under.
+          messages (vec (for [i (range 100)]
+                          {:seq (inc i)
+                           :uuid (str "msg-" i)
+                           :role "assistant"
+                           :text (apply str (repeat 200 "x"))}))
+          ;; Budget chosen so the packer truncates partway through 100 msgs.
+          ;; Under the old 200-byte fixed overhead pack-within-budget would
+          ;; have sized N to fit in 20000 bytes ignoring the +52B per-message
+          ;; session-id assoc, then the wire payload would have exceeded
+          ;; max-bytes by N×52 ≈ 4500B once the caller serialized.
+          max-bytes 20000
+          result (server/build-session-history-response messages 0 max-bytes 1 101)
+          ;; Reproduce what the subscribe handler / broadcast path does after
+          ;; build-session-history-response returns: wrap the messages in the
+          ;; session-history envelope and :assoc :session-id onto each.
+          wire-payload {:type :session-history
+                        :session-id session-id
+                        :messages (mapv #(assoc % :session-id session-id)
+                                        (:messages result))
+                        :first-seq (:first-seq result)
+                        :last-seq (:last-seq result)
+                        :next-seq (:next-seq result)
+                        :is-complete (:is-complete result)
+                        :gap (:gap result)}
+          wire-bytes (count (.getBytes ^String (server/generate-json wire-payload) "UTF-8"))]
+      (is (<= wire-bytes max-bytes)
+          (str "Wire payload " wire-bytes " bytes must fit within max-bytes " max-bytes))
+      (is (pos? (count (:messages result)))
+          "Some messages must be packed (otherwise the test does not exercise the bug)")
+      (is (false? (:is-complete result))
+          "Budget should truncate at this scale, exercising the byte-accounting path"))))
 
 ;; The v0.3.0 delta-sync / backward-compat tests have been superseded by the
 ;; v0.4.0 subscribe tests earlier in this file:
