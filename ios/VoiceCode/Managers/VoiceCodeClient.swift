@@ -51,6 +51,14 @@ class VoiceCodeClient: ObservableObject {
     /// background gap does not disappear before the user opens the session.
     @Published var prunedGaps: [String: SessionHistoryPayload.Gap] = [:]
 
+    /// Cursors at which an `is_complete: false` resubscribe chain has been
+    /// aborted because the server stopped advancing. Keyed by lowercased
+    /// session UUID. Views observe this so they can surface a banner —
+    /// without it, a chain that hits a too-large message would silently
+    /// stop loading older history. Entries persist until the user dismisses
+    /// them via `dismissStalledChain`. See beads tmux-untethered-l8t.
+    @Published var stalledChains: [String: Int64] = [:]
+
     private var webSocket: URLSessionWebSocketTask?
     private var reconnectionTimer: DispatchSourceTimer?
     private var pingTimer: DispatchSourceTimer?  // Keepalive ping timer
@@ -128,6 +136,15 @@ class VoiceCodeClient: ObservableObject {
     func dismissPrunedGap(sessionId: String) {
         prunedGaps.removeValue(forKey: sessionId.lowercased())
         sessionSyncManager.clearPrunedFlag(sessionId: sessionId)
+    }
+
+    /// Clears a stalled-chain banner once the user has acknowledged it.
+    /// The sync manager has already cleared its own chain-cursor entry
+    /// when the stall was emitted, so the next `is_complete: false`
+    /// payload will start a fresh chain regardless of dismissal — this
+    /// just hides the banner.
+    func dismissStalledChain(sessionId: String) {
+        stalledChains.removeValue(forKey: sessionId.lowercased())
     }
 
     /// Transition the client into the terminal "app upgrade required" state:
@@ -1759,5 +1776,17 @@ extension VoiceCodeClient: SessionSyncDelegate {
     func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64) {
         logger.info("🔁 Resubscribe requested for \(sessionId) fromSeq=\(fromSeq)")
         subscribe(sessionId: sessionId)
+    }
+
+    /// Surface a stalled `is_complete: false` chain to the UI. The sync
+    /// manager has already aborted the chain to prevent an infinite
+    /// resubscribe loop; this records the failure cursor so a banner can
+    /// inform the user that older history past `cursor` is not loading.
+    /// `SessionSyncManager` hops to main before calling, so the
+    /// `@Published` write below runs on the main actor.
+    func sessionSyncDidStallChain(_ sessionId: String, atCursor: Int64) {
+        let key = sessionId.lowercased()
+        logger.error("⛔ is_complete chain stalled for \(key) at cursor \(atCursor)")
+        stalledChains[key] = atCursor
     }
 }

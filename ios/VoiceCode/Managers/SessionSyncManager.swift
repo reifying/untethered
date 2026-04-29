@@ -40,6 +40,17 @@ protocol SessionSyncDelegate: AnyObject {
     /// The manager never advances any shared cursor past the gap until the
     /// client completes this resubscribe; see AC3/AC6 of the design.
     func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64)
+
+    /// Fires when the manager has aborted a chained `is_complete: false`
+    /// resubscribe loop because the server is not making progress — i.e.
+    /// the most recent payload's `last_seq` did not advance past the
+    /// cursor we asked from. Likeliest cause is a single message whose
+    /// JSON encoding exceeds the per-window byte budget so the server
+    /// can't fit it. `cursor` is the unchanged cursor at which the chain
+    /// stopped; the UI should surface this so the user knows older history
+    /// past this point cannot load automatically. See beads
+    /// tmux-untethered-l8t.
+    func sessionSyncDidStallChain(_ sessionId: String, atCursor: Int64)
 }
 
 extension SessionSyncDelegate {
@@ -47,6 +58,13 @@ extension SessionSyncDelegate {
     /// tmux-untethered-fh3) compile without modification. Real implementers
     /// route `fromSeq` into a `subscribe` message on the socket.
     func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64) {}
+
+    /// Default no-op for backwards compatibility. The default behavior on
+    /// chain stall is to fall silent — the manager has already stopped
+    /// firing resubscribes, so the only consequence of a no-op is the user
+    /// not being told why the conversation stopped loading. Implementers
+    /// that care should surface a banner or warning.
+    func sessionSyncDidStallChain(_ sessionId: String, atCursor: Int64) {}
 }
 
 /// Manages synchronization of session metadata between backend and CoreData
@@ -74,6 +92,25 @@ class SessionSyncManager {
     /// `handleSessionHistoryPayload` to main, and `clearPrunedFlag` is
     /// documented as main-only.
     private(set) var prunedSessions: Set<String> = []
+
+    /// For each session with an in-flight `is_complete: false` chain, the
+    /// cursor we last asked the server to resume from (i.e. the `last_seq`
+    /// passed to the most recent chained subscribe). Keyed by lowercased
+    /// session UUID. A subsequent `is_complete: false` payload whose
+    /// `last_seq` does not advance past this cursor (or is nil) means the
+    /// server cannot make progress for the current cursor — typically a
+    /// single message whose JSON encoding exceeds the per-window byte
+    /// budget. The chain is aborted instead of spinning at maximum speed,
+    /// and the failure is surfaced via `sessionSyncDidStallChain`. See
+    /// beads tmux-untethered-l8t.
+    ///
+    /// Cleared whenever the chain terminates: `is_complete: true`, gap
+    /// (either reason), pruned-gap event, or save-failure recovery — any
+    /// of which kicks off a path that doesn't share the chain's cursor.
+    ///
+    /// Accessed only on the main queue. All reads/writes happen inside the
+    /// `DispatchQueue.main.async` block where the resubscribe is fired.
+    private var incompleteChainCursors: [String: Int64] = [:]
 
     init(persistenceController: PersistenceController = .shared, voiceOutputManager: VoiceOutputManager? = nil) {
         self.persistenceController = persistenceController
@@ -337,7 +374,12 @@ class SessionSyncManager {
             prunedSessions.insert(prunedKey)
             let sessionId = payload.sessionId
             DispatchQueue.main.async { [weak self] in
-                self?.delegate?.didDetectPrunedGap(sessionId, gap: gap)
+                guard let self = self else { return }
+                // Pruned gap means the chain (if any) is moot — the server
+                // can't satisfy our cursor and the next user action runs
+                // through the dismiss flow, not a chain continuation.
+                self.incompleteChainCursors.removeValue(forKey: prunedKey)
+                self.delegate?.didDetectPrunedGap(sessionId, gap: gap)
             }
             return
         }
@@ -442,10 +484,14 @@ class SessionSyncManager {
                 logger.error("Failed to save session_history payload: domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) userInfo=\(nsError.userInfo, privacy: .public)")
                 // Don't stay stuck: ask the client to resubscribe from the
                 // pre-payload cursor so the next push attempts a fresh save
-                // instead of permanently leaving local_last_seq stale.
+                // instead of permanently leaving local_last_seq stale. Also
+                // drop the chain cursor — recovery is a fresh start, not a
+                // continuation of whatever is_complete chain was active.
                 let sessionId = payload.sessionId
                 DispatchQueue.main.async { [weak self] in
-                    self?.delegate?.sessionSyncNeedsResubscribe(sessionId, fromSeq: localLastSeq)
+                    guard let self = self else { return }
+                    self.incompleteChainCursors.removeValue(forKey: sessionId.lowercased())
+                    self.delegate?.sessionSyncNeedsResubscribe(sessionId, fromSeq: localLastSeq)
                 }
                 return
             }
@@ -501,18 +547,59 @@ class SessionSyncManager {
             // same payload would advance past it. The gap resubscribe itself
             // may reply with `is_complete: false`; that subsequent payload
             // will chain its own window.
+            //
+            // The chain-cursor bookkeeping below guards against an unbounded
+            // is_complete:false loop (beads tmux-untethered-l8t): if the
+            // server keeps returning is_complete:false without advancing
+            // past the cursor we asked from, the chain is aborted and the
+            // failure is surfaced via `sessionSyncDidStallChain`. All
+            // mutation of `incompleteChainCursors` happens on main, where
+            // the resubscribe is already dispatched.
             let sessionId = payload.sessionId
-            if gapDetected {
-                DispatchQueue.main.async { [weak self] in
-                    self?.delegate?.sessionSyncNeedsResubscribe(sessionId, fromSeq: localLastSeq)
-                }
-            } else if !payload.isComplete {
-                // Prefer the payload's reported last_seq; fall back to the
-                // cached cursor if the payload was empty (shouldn't happen
-                // with is_complete == false, but be defensive).
-                let nextCursor = payload.lastSeq ?? localLastSeq
-                DispatchQueue.main.async { [weak self] in
-                    self?.delegate?.sessionSyncNeedsResubscribe(sessionId, fromSeq: nextCursor)
+            let isComplete = payload.isComplete
+            let receivedLastSeq = payload.lastSeq
+            let preGapCursor = localLastSeq
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                let key = sessionId.lowercased()
+
+                if gapDetected {
+                    // Switching to gap-backfill path — drop any in-flight
+                    // is_complete chain so a later payload doesn't compare
+                    // its lastSeq against a stale cursor from a different
+                    // resubscribe sequence.
+                    self.incompleteChainCursors.removeValue(forKey: key)
+                    self.delegate?.sessionSyncNeedsResubscribe(sessionId, fromSeq: preGapCursor)
+                } else if !isComplete {
+                    // Empty payload with is_complete:false means the server
+                    // could not fit even one message in the byte budget for
+                    // the requested cursor — the pathological case the
+                    // chain guard exists for. Fall back to the pre-payload
+                    // cursor only so logs show the unchanged value;
+                    // advancement is judged from `receivedLastSeq`.
+                    let nextCursor = receivedLastSeq ?? preGapCursor
+                    if let prevAskedCursor = self.incompleteChainCursors[key] {
+                        // Did the server include at least one message above
+                        // where we asked? lastSeq == nil means no messages
+                        // at all, which is non-progress by definition.
+                        let advanced: Bool
+                        if let last = receivedLastSeq {
+                            advanced = last > prevAskedCursor
+                        } else {
+                            advanced = false
+                        }
+                        if !advanced {
+                            logger.error("⛔ Aborting is_complete:false chain for \(sessionId): cursor stalled at \(prevAskedCursor); payload last_seq=\(receivedLastSeq.map(String.init) ?? "nil")")
+                            self.incompleteChainCursors.removeValue(forKey: key)
+                            self.delegate?.sessionSyncDidStallChain(sessionId, atCursor: prevAskedCursor)
+                            return
+                        }
+                    }
+                    self.incompleteChainCursors[key] = nextCursor
+                    self.delegate?.sessionSyncNeedsResubscribe(sessionId, fromSeq: nextCursor)
+                } else {
+                    // is_complete: true → chain (if any) terminated naturally.
+                    self.incompleteChainCursors.removeValue(forKey: key)
                 }
             }
         }

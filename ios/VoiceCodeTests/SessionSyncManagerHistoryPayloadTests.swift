@@ -39,10 +39,17 @@ final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
             let fromSeq: Int64
         }
 
+        struct StallCall: Equatable {
+            let sessionId: String
+            let atCursor: Int64
+        }
+
         var prunedGaps: [(sessionId: String, gap: SessionHistoryPayload.Gap)] = []
         var resubscribes: [ResubscribeCall] = []
+        var stalls: [StallCall] = []
         var onResubscribe: (() -> Void)?
         var onPruned: (() -> Void)?
+        var onStall: (() -> Void)?
 
         func didDetectPrunedGap(_ sessionId: String, gap: SessionHistoryPayload.Gap) {
             prunedGaps.append((sessionId: sessionId, gap: gap))
@@ -52,6 +59,11 @@ final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
         func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64) {
             resubscribes.append(ResubscribeCall(sessionId: sessionId, fromSeq: fromSeq))
             onResubscribe?()
+        }
+
+        func sessionSyncDidStallChain(_ sessionId: String, atCursor: Int64) {
+            stalls.append(StallCall(sessionId: sessionId, atCursor: atCursor))
+            onStall?()
         }
     }
 
@@ -248,6 +260,278 @@ final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
 
         XCTAssertTrue(delegate.resubscribes.isEmpty,
                       "is_complete:true must not trigger any follow-up subscribe")
+    }
+
+    // MARK: - is_complete:false chain stall guard (tmux-untethered-l8t)
+
+    func test_first_is_complete_false_payload_proceeds_with_no_baseline_check() {
+        // Regression guard against an off-by-one where the chain check could
+        // fire on the very first is_complete:false step. With no prior chain
+        // cursor recorded, the first step must always proceed.
+        seedSession(seqs: 1...3)
+
+        let exp = expectation(description: "first chain step fires resubscribe")
+        delegate.onResubscribe = { exp.fulfill() }
+
+        let p = payload(firstSeq: 4, lastSeq: 5, nextSeq: 100,
+                        isComplete: false,
+                        messages: [wireMessage(seq: 4), wireMessage(seq: 5)])
+        manager.handleSessionHistoryPayload(p)
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertEqual(delegate.resubscribes.count, 1,
+                       "first is_complete:false fires the chain step")
+        XCTAssertTrue(delegate.stalls.isEmpty,
+                      "no stall on the very first chain step — there is nothing to compare against")
+    }
+
+    func test_chain_aborts_when_followup_payload_is_empty_with_nil_lastSeq() {
+        // Pathological case the guard exists for: a single message above the
+        // cursor exceeds the per-window byte budget, so the server returns
+        // an empty payload (no first/last seq) with is_complete:false. Pre-fix
+        // this spun the chain at maximum speed; the guard must abort.
+        seedSession(seqs: 1...5)
+
+        let firstResub = expectation(description: "first chain step fires")
+        delegate.onResubscribe = { firstResub.fulfill() }
+
+        let p1 = payload(firstSeq: 6, lastSeq: 10, nextSeq: 100,
+                         isComplete: false,
+                         messages: (6...10).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p1)
+        wait(for: [firstResub], timeout: 2.0)
+        XCTAssertEqual(delegate.resubscribes.last?.fromSeq, 10,
+                       "first chain step asks server to resume from last received seq")
+
+        // Empty follow-up: server can't fit seq 11 in the budget.
+        delegate.onResubscribe = {
+            XCTFail("a stalled chain must NOT fire another resubscribe")
+        }
+        let stalled = expectation(description: "chain stall fires")
+        delegate.onStall = { stalled.fulfill() }
+
+        let p2 = payload(firstSeq: nil, lastSeq: nil, nextSeq: 100,
+                         isComplete: false, messages: [])
+        manager.handleSessionHistoryPayload(p2)
+        wait(for: [stalled], timeout: 2.0)
+        drainMainQueue(for: 0.3)
+
+        XCTAssertEqual(delegate.stalls.count, 1, "stall fires exactly once")
+        XCTAssertEqual(delegate.stalls.first?.sessionId, sessionIdString)
+        XCTAssertEqual(delegate.stalls.first?.atCursor, 10,
+                       "stall reports the unchanged cursor we asked the server to resume from")
+        XCTAssertEqual(delegate.resubscribes.count, 1,
+                       "no second resubscribe — the chain is broken at this cursor")
+    }
+
+    func test_chain_aborts_when_lastSeq_does_not_advance_past_cursor() {
+        // Server returns a payload whose lastSeq equals the cursor we asked
+        // from. That violates the protocol contract (subscribe(last_seq=N)
+        // should return only seqs > N), and even if some malformed payload
+        // got through, the chain must not loop on it.
+        seedSession(seqs: 1...5)
+
+        let firstResub = expectation(description: "first chain step fires")
+        delegate.onResubscribe = { firstResub.fulfill() }
+
+        let p1 = payload(firstSeq: 6, lastSeq: 10, nextSeq: 100,
+                         isComplete: false,
+                         messages: (6...10).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p1)
+        wait(for: [firstResub], timeout: 2.0)
+
+        delegate.onResubscribe = {
+            XCTFail("stalled chain must not fire another resubscribe")
+        }
+        let stalled = expectation(description: "chain stall fires")
+        delegate.onStall = { stalled.fulfill() }
+
+        // lastSeq=10 == prev cursor → no advance.
+        let p2 = payload(firstSeq: nil, lastSeq: 10, nextSeq: 100,
+                         isComplete: false, messages: [])
+        manager.handleSessionHistoryPayload(p2)
+        wait(for: [stalled], timeout: 2.0)
+        drainMainQueue(for: 0.3)
+
+        XCTAssertEqual(delegate.stalls.first?.atCursor, 10)
+        XCTAssertEqual(delegate.resubscribes.count, 1)
+    }
+
+    func test_chain_continues_when_lastSeq_advances() {
+        // Healthy path: each chained payload advances lastSeq; both fire
+        // resubscribe with the bumped cursor and no stall ever fires.
+        seedSession(seqs: 1...5)
+
+        let exp1 = expectation(description: "first chain step")
+        delegate.onResubscribe = { exp1.fulfill() }
+        let p1 = payload(firstSeq: 6, lastSeq: 10, nextSeq: 100,
+                         isComplete: false,
+                         messages: (6...10).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p1)
+        wait(for: [exp1], timeout: 2.0)
+
+        let exp2 = expectation(description: "second chain step")
+        delegate.onResubscribe = { exp2.fulfill() }
+        let p2 = payload(firstSeq: 11, lastSeq: 20, nextSeq: 100,
+                         isComplete: false,
+                         messages: (11...20).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p2)
+        wait(for: [exp2], timeout: 2.0)
+        drainMainQueue(for: 0.2)
+
+        XCTAssertEqual(delegate.resubscribes.count, 2,
+                       "both chain steps fire when the cursor advances")
+        XCTAssertEqual(delegate.resubscribes[0].fromSeq, 10)
+        XCTAssertEqual(delegate.resubscribes[1].fromSeq, 20)
+        XCTAssertTrue(delegate.stalls.isEmpty,
+                      "advancing chain must not trigger stall")
+    }
+
+    func test_is_complete_true_resets_chain_so_next_chain_starts_fresh() {
+        // After a successful is_complete:true, the chain cursor must clear.
+        // A subsequent is_complete:false on the same session is then treated
+        // as a fresh first step, not a continuation — without this clear,
+        // the new chain's first cursor would be compared against the stale
+        // previous chain's cursor and could falsely stall.
+        seedSession(seqs: 1...5)
+
+        let exp1 = expectation(description: "first chain step")
+        delegate.onResubscribe = { exp1.fulfill() }
+        let p1 = payload(firstSeq: 6, lastSeq: 10, nextSeq: 100,
+                         isComplete: false,
+                         messages: (6...10).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p1)
+        wait(for: [exp1], timeout: 2.0)
+
+        // is_complete:true terminates the chain.
+        delegate.onResubscribe = {
+            XCTFail("is_complete:true must not fire any resubscribe")
+        }
+        let p2 = payload(firstSeq: 11, lastSeq: 11, nextSeq: 12,
+                         isComplete: true, messages: [wireMessage(seq: 11)])
+        manager.handleSessionHistoryPayload(p2)
+        waitForHistoryUpdate()
+        drainMainQueue(for: 0.3)
+
+        // Brand-new is_complete:false on the same session — fresh start.
+        // Pick a lastSeq deliberately less than the first chain's cursor (10)
+        // so that, if the cursor weren't cleared, the chain check would
+        // fire stall instead of advancing. With the clear in place, the
+        // chain proceeds and records the new cursor.
+        let exp3 = expectation(description: "fresh chain after reset")
+        delegate.onResubscribe = { exp3.fulfill() }
+        let p3 = payload(firstSeq: 12, lastSeq: 13, nextSeq: 100,
+                         isComplete: false,
+                         messages: (12...13).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p3)
+        wait(for: [exp3], timeout: 2.0)
+
+        XCTAssertEqual(delegate.resubscribes.count, 2,
+                       "p1 + p3 fire; p2 (is_complete:true) does not")
+        XCTAssertEqual(delegate.resubscribes.last?.fromSeq, 13,
+                       "fresh chain advances to the new lastSeq")
+        XCTAssertTrue(delegate.stalls.isEmpty,
+                      "is_complete:true cleared the cursor so the new chain doesn't false-stall")
+    }
+
+    func test_stall_clears_chain_so_next_chain_starts_fresh() {
+        // Recoverability: after a stall, a later payload must be able to
+        // start a fresh chain. Otherwise a one-time hiccup permanently
+        // blocks the session from chaining is_complete:false.
+        seedSession(seqs: 1...5)
+
+        let exp1 = expectation(description: "first chain step")
+        delegate.onResubscribe = { exp1.fulfill() }
+        let p1 = payload(firstSeq: 6, lastSeq: 10, nextSeq: 100,
+                         isComplete: false,
+                         messages: (6...10).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p1)
+        wait(for: [exp1], timeout: 2.0)
+
+        // Stall.
+        let stalled = expectation(description: "stall fires")
+        delegate.onStall = { stalled.fulfill() }
+        let p2 = payload(firstSeq: nil, lastSeq: nil, nextSeq: 100,
+                         isComplete: false, messages: [])
+        manager.handleSessionHistoryPayload(p2)
+        wait(for: [stalled], timeout: 2.0)
+
+        // A new is_complete:false (e.g. user retried, or new state landed)
+        // must be allowed to start a fresh chain rather than being blocked
+        // by the stale stall cursor.
+        let exp3 = expectation(description: "fresh chain after stall")
+        delegate.onResubscribe = { exp3.fulfill() }
+        let p3 = payload(firstSeq: 11, lastSeq: 15, nextSeq: 100,
+                         isComplete: false,
+                         messages: (11...15).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p3)
+        wait(for: [exp3], timeout: 2.0)
+
+        XCTAssertEqual(delegate.resubscribes.count, 2,
+                       "p1 + p3 fire; p2 stalled and never resubscribes")
+        XCTAssertEqual(delegate.resubscribes.last?.fromSeq, 15)
+        XCTAssertEqual(delegate.stalls.count, 1)
+    }
+
+    func test_chain_cursors_are_tracked_independently_per_session() {
+        // Two sessions chain in parallel — a stall on one must not affect
+        // the other. Without per-session keying, the second session would
+        // inherit the first's cursor and false-stall.
+        seedSession(seqs: 1...3)
+
+        let otherSessionId = "22223333-4444-5555-6666-777777777777"
+        let otherUUID = UUID(uuidString: otherSessionId)!
+        let otherSession = CDBackendSession(context: context)
+        otherSession.id = otherUUID
+        otherSession.backendName = "other"
+        otherSession.workingDirectory = "/tmp/other"
+        otherSession.lastModified = Date()
+        otherSession.messageCount = 0
+        otherSession.preview = ""
+        otherSession.provider = "claude"
+        try! context.save()
+
+        // Session A: chain step
+        let expA1 = expectation(description: "A first chain step")
+        delegate.onResubscribe = { expA1.fulfill() }
+        let pA1 = payload(firstSeq: 4, lastSeq: 8, nextSeq: 100,
+                          isComplete: false,
+                          messages: (4...8).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(pA1)
+        wait(for: [expA1], timeout: 2.0)
+
+        // Session A stalls.
+        let stalledA = expectation(description: "A stalls")
+        delegate.onStall = { stalledA.fulfill() }
+        let pA2 = payload(firstSeq: nil, lastSeq: nil, nextSeq: 100,
+                          isComplete: false, messages: [])
+        manager.handleSessionHistoryPayload(pA2)
+        wait(for: [stalledA], timeout: 2.0)
+
+        // Session B: starts its OWN chain — must not be affected by A's stall.
+        let expB1 = expectation(description: "B first chain step proceeds")
+        delegate.onResubscribe = { expB1.fulfill() }
+        let bMessages: [WireMessage] = (1...3).map {
+            WireMessage(sessionId: otherSessionId,
+                        seq: Int64($0),
+                        role: "assistant",
+                        text: "B-\($0)",
+                        uuid: UUID().uuidString.lowercased(),
+                        timestamp: Date())
+        }
+        let pB1 = payload(firstSeq: 1, lastSeq: 3, nextSeq: 50,
+                          isComplete: false,
+                          messages: bMessages,
+                          sessionId: otherSessionId)
+        manager.handleSessionHistoryPayload(pB1)
+        wait(for: [expB1], timeout: 2.0)
+
+        XCTAssertEqual(delegate.resubscribes.count, 2,
+                       "A's first step + B's first step both fire")
+        XCTAssertEqual(delegate.resubscribes.last?.sessionId, otherSessionId)
+        XCTAssertEqual(delegate.resubscribes.last?.fromSeq, 3)
+        XCTAssertEqual(delegate.stalls.count, 1, "only A stalled")
+        XCTAssertEqual(delegate.stalls.first?.sessionId, sessionIdString)
     }
 
     func test_gap_takes_precedence_over_is_complete_false() {
