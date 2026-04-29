@@ -59,6 +59,12 @@ final class VoiceCodeClientReconnectTests: XCTestCase {
         client.subscribe(sessionId: sessionAString)
         client.subscribe(sessionId: sessionBString)
 
+        // restoreSubscriptionsAfterReconnect is called from the `connected`
+        // handler — at which point isAuthenticated is already true. Mirror
+        // that here so subscribe()'s isAuthenticated guard lets the
+        // resubscribe send.
+        client.isAuthenticated = true
+
         // Capture only the reconnect-initiated subscribes.
         var sent: [[String: Any]] = []
         client.onMessageSent = { sent.append($0) }
@@ -184,7 +190,12 @@ final class VoiceCodeClientReconnectTests: XCTestCase {
                        5,
                        "test setup: persisted cursor must equal last-received seq before reconnect")
 
-        // Step 3: socket flap. Capture only the reconnect-driven sends.
+        // Step 3: socket flap. The reconnect handler runs after `connected`
+        // is received, which means `isAuthenticated` is true at that moment.
+        // Mirror that here so subscribe() actually sends on the wire.
+        testClient.isAuthenticated = true
+
+        // Capture only the reconnect-driven sends.
         var sent: [[String: Any]] = []
         testClient.onMessageSent = { sent.append($0) }
 
@@ -227,6 +238,12 @@ final class VoiceCodeClientReconnectTests: XCTestCase {
         userSession.createdAt = Date()
         try context.save()
 
+        // restoreSubscriptionsAfterReconnect is called from the `connected`
+        // handler — at which point isAuthenticated is already true. Mirror
+        // that here so subscribe()'s isAuthenticated guard lets the
+        // resubscribe send.
+        client.isAuthenticated = true
+
         // Capture only reconnect-initiated sends.
         var sent: [[String: Any]] = []
         client.onMessageSent = { sent.append($0) }
@@ -249,5 +266,88 @@ final class VoiceCodeClientReconnectTests: XCTestCase {
         let secondPassIds = secondPass.compactMap { $0["session_id"] as? String }
         XCTAssertFalse(secondPassIds.contains(deletedSessionString),
                        "Deleted session must be dropped from activeSubscriptions, not re-evaluated each reconnect with stale state")
+    }
+
+    /// `subscribe()` called while `isAuthenticated == false` must not invoke
+    /// `sendMessage` — `webSocket?.send(...)` would be a no-op (when the
+    /// socket is nil) or would race the auth handshake (between hello and
+    /// connected, the backend rejects with auth_error). Instead the session
+    /// ID is buffered into `activeSubscriptions` so the next `connected`
+    /// handshake re-fires it. This test pins both halves of the contract:
+    /// zero wire sends now, and exactly one wire send once authenticated.
+    /// Bug: tmux-untethered-n54.
+    func testSubscribeWhileUnauthenticatedDoesNotSendOnTheWire() {
+        let sessionId = UUID().uuidString.lowercased()
+
+        // Precondition: fresh client, never authenticated.
+        XCTAssertFalse(client.isAuthenticated,
+                       "Test precondition: client must start unauthenticated")
+
+        // Arm the capture *before* the call so we'd see any send.
+        var sent: [[String: Any]] = []
+        client.onMessageSent = { sent.append($0) }
+
+        client.subscribe(sessionId: sessionId)
+
+        // No wire send happened — sendMessage was guarded by isAuthenticated.
+        XCTAssertTrue(sent.isEmpty,
+                      "subscribe() while unauthenticated must not call sendMessage; got: \(sent)")
+
+        // Even with isConnected flipped true (the hello → connected window),
+        // an unauthenticated subscribe must still defer.
+        client.isConnected = true
+        client.subscribe(sessionId: sessionId)
+        XCTAssertTrue(sent.isEmpty,
+                      "subscribe() between hello and connected must defer to avoid auth_error; got: \(sent)")
+
+        // Now simulate the full `connected` handshake: isAuthenticated flips
+        // true and restoreSubscriptionsAfterReconnect re-fires the buffered
+        // subscribe.
+        client.isAuthenticated = true
+        client.restoreSubscriptionsAfterReconnect()
+
+        let subscribes = sent.filter { ($0["type"] as? String) == "subscribe" }
+        XCTAssertEqual(subscribes.count, 1,
+                       "Buffered subscribe must be re-fired exactly once on reconnect")
+        XCTAssertEqual(subscribes.first?["session_id"] as? String, sessionId,
+                       "The buffered session_id must be the one re-sent")
+    }
+
+    /// `isAuthenticated` is socket-scoped — it must reset when the socket
+    /// goes down so subscribe()'s auth guard doesn't see a stale `true`
+    /// during the reconnect window. Without this, a subscribe between
+    /// `disconnect` and the next `connected` would pass the guard and
+    /// either hit a nil socket (no-op) or race the new socket's auth
+    /// handshake (auth_error). Regression coverage for tmux-untethered-n54.
+    func testDisconnectClearsAuthenticatedFlag() {
+        let sessionId = UUID().uuidString.lowercased()
+
+        // Get the client into a fully-authenticated state.
+        client.isConnected = true
+        client.isAuthenticated = true
+
+        // Sanity: a subscribe in this state sends on the wire.
+        var sent: [[String: Any]] = []
+        client.onMessageSent = { sent.append($0) }
+        client.subscribe(sessionId: sessionId)
+        XCTAssertEqual(sent.filter { ($0["type"] as? String) == "subscribe" }.count, 1,
+                       "Sanity: authenticated subscribe must send")
+        sent.removeAll()
+
+        // Tear the socket down. Both flags must clear.
+        client.disconnect()
+
+        let drained = expectation(description: "main queue drained after disconnect")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { drained.fulfill() }
+        wait(for: [drained], timeout: 1.0)
+
+        XCTAssertFalse(client.isConnected, "disconnect must clear isConnected")
+        XCTAssertFalse(client.isAuthenticated,
+                       "disconnect must clear isAuthenticated; otherwise subscribe()'s guard sees a stale flag during the reconnect window")
+
+        // A subscribe issued during the reconnect window must defer.
+        client.subscribe(sessionId: sessionId)
+        XCTAssertTrue(sent.filter { ($0["type"] as? String) == "subscribe" }.isEmpty,
+                      "Post-disconnect subscribe must defer until the new socket re-authenticates")
     }
 }

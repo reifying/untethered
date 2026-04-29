@@ -423,6 +423,12 @@ class VoiceCodeClient: ObservableObject {
             guard let self = self else { return }
             logger.debug("🔄 VoiceCodeClient updating: isConnected=false")
             self.isConnected = false
+            // Auth state belongs to a specific socket; once that socket is
+            // gone, isAuthenticated is stale. The next `connected` after
+            // reconnect re-asserts it. Without this reset, subscribe()'s
+            // isAuthenticated guard would let calls through during the
+            // reconnect window before re-auth lands.
+            self.isAuthenticated = false
         }
     }
 
@@ -600,6 +606,12 @@ class VoiceCodeClient: ObservableObject {
 
                     logger.debug("🔄 VoiceCodeClient updating: isConnected=false (failure)")
                     self.isConnected = false
+                    // Auth state is socket-scoped; clear it so subscribe()'s
+                    // isAuthenticated guard doesn't let calls through during
+                    // the reconnect window (the new socket needs its own
+                    // hello → connect → connected handshake before sends are
+                    // valid). The next `connected` re-asserts it.
+                    self.isAuthenticated = false
                     self.scheduleUpdate(key: "currentError", value: error.localizedDescription as String?)
                     self.flushPendingUpdates()
                 }
@@ -1264,8 +1276,21 @@ class VoiceCodeClient: ObservableObject {
     }
 
     func subscribe(sessionId: String, context: NSManagedObjectContext? = nil) {
-        // Track subscription for auto-restore on reconnection
+        // Always track in activeSubscriptions first — restoreSubscriptions-
+        // AfterReconnect picks this up on the next `connected` handshake,
+        // so the wire send below is safe to skip when we're not ready yet.
         activeSubscriptions.insert(sessionId)
+
+        // Gate on isAuthenticated, not isConnected: between `hello` (which
+        // flips isConnected) and `connected` (which flips isAuthenticated),
+        // the backend hasn't yet authenticated this socket. A subscribe in
+        // that window would be rejected with auth_error and drop the
+        // connection. Authenticated implies connected, so this also covers
+        // the disconnected case the bug report flagged.
+        guard isAuthenticated else {
+            logger.info("📖 [VoiceCodeClient] Deferring subscribe (not authenticated), session: \(sessionId) (total active: \(self.activeSubscriptions.count))")
+            return
+        }
 
         // Delta-sync cursor is the max seq we've durably persisted for this
         // session. `0` is the wire sentinel meaning "give me everything" and

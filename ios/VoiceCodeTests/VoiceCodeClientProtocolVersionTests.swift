@@ -48,6 +48,12 @@ final class VoiceCodeClientProtocolVersionTests: XCTestCase {
     func testSubscribePayloadOnFreshSessionSendsLastSeqZero() {
         let sessionId = UUID().uuidString.lowercased()
 
+        // subscribe() sends on the wire only when isAuthenticated is true
+        // (otherwise the call is buffered into activeSubscriptions and the
+        // next `connected` handshake re-fires it). The wire-shape contract
+        // applies to the authenticated case; mirror that state here.
+        client.isAuthenticated = true
+
         var sent: [[String: Any]] = []
         client.onMessageSent = { sent.append($0) }
 
@@ -118,6 +124,10 @@ final class VoiceCodeClientProtocolVersionTests: XCTestCase {
     /// NSNumber; the assertion is that it round-trips as an integer).
     func testSubscribePayloadSerializesAsJSON() throws {
         let sessionId = UUID().uuidString.lowercased()
+
+        // subscribe() sends on the wire only when isAuthenticated is true;
+        // pin that here so the wire-serialization assertions have a payload.
+        client.isAuthenticated = true
 
         var sent: [[String: Any]] = []
         client.onMessageSent = { sent.append($0) }

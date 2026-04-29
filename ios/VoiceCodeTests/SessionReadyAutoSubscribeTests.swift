@@ -53,6 +53,9 @@ final class SessionReadyAutoSubscribeTests: XCTestCase {
         let sessionId = sessionUUID.uuidString.lowercased()
 
         ActiveSessionManager.shared.setActiveSession(sessionUUID)
+        // session_ready only ever arrives over an authenticated connection;
+        // subscribe()'s isAuthenticated guard would otherwise buffer the call.
+        client.isAuthenticated = true
 
         client.handleMessage(sessionReadyJSON(sessionId))
         waitForMainQueue()
