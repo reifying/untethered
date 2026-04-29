@@ -71,16 +71,24 @@ class SmartSpeakingTests: XCTestCase {
         // Mark session as active
         ActiveSessionManager.shared.setActiveSession(sessionId)
 
-        // Simulate backend sending message to active session
-        let messages: [[String: Any]] = [
-            [
-                "role": "assistant",
-                "text": "Active response",
-                "timestamp": 1697485000000.0
-            ]
-        ]
+        // Simulate backend pushing an assistant message via the v0.4.0
+        // append-only stream (session_history envelope).
+        let payload = SessionHistoryPayload(
+            sessionId: sessionId.uuidString.lowercased(),
+            messages: [
+                WireMessage(
+                    sessionId: sessionId.uuidString.lowercased(),
+                    seq: 1,
+                    role: "assistant",
+                    text: "Active response",
+                    uuid: UUID().uuidString.lowercased(),
+                    timestamp: Date(timeIntervalSince1970: 1697485000)
+                )
+            ],
+            firstSeq: 1, lastSeq: 1, nextSeq: 2, isComplete: true, gap: nil
+        )
 
-        syncManager.handleSessionUpdated(sessionId: sessionId.uuidString, messages: messages)
+        syncManager.handleSessionHistoryPayload(payload)
 
         // Wait for background save
         let expectation = XCTestExpectation(description: "Wait for save")
@@ -193,19 +201,27 @@ class SmartSpeakingTests: XCTestCase {
         // Mark session as active
         ActiveSessionManager.shared.setActiveSession(sessionId)
 
-        // Simulate backend sending assistant message to active session (canonical wire format)
+        // Simulate backend pushing assistant message to active session via
+        // the v0.4.0 append-only stream. Regression guard for
+        // tmux-untethered-41z: auto-speak used to live only in the v0.3.0
+        // handleSessionUpdated path and silently broke on protocol migration.
         let testMessage = "This should be spoken aloud"
-        let messages: [[String: Any]] = [
-            [
-                "uuid": UUID().uuidString.lowercased(),
-                "role": "assistant",
-                "text": testMessage,
-                "timestamp": "2024-01-01T12:00:00.000Z",
-                "provider": "claude"
-            ]
-        ]
+        let payload = SessionHistoryPayload(
+            sessionId: sessionId.uuidString.lowercased(),
+            messages: [
+                WireMessage(
+                    sessionId: sessionId.uuidString.lowercased(),
+                    seq: 1,
+                    role: "assistant",
+                    text: testMessage,
+                    uuid: UUID().uuidString.lowercased(),
+                    timestamp: Date()
+                )
+            ],
+            firstSeq: 1, lastSeq: 1, nextSeq: 2, isComplete: true, gap: nil
+        )
 
-        syncManagerWithVoice.handleSessionUpdated(sessionId: sessionId.uuidString, messages: messages)
+        syncManagerWithVoice.handleSessionHistoryPayload(payload)
 
         // Wait for async processing
         let expectation = XCTestExpectation(description: "Wait for auto-speak")
@@ -244,18 +260,24 @@ class SmartSpeakingTests: XCTestCase {
 
         // DO NOT mark session as active (it's in background)
 
-        // Simulate backend sending assistant message to inactive session (canonical wire format)
-        let messages: [[String: Any]] = [
-            [
-                "uuid": UUID().uuidString.lowercased(),
-                "role": "assistant",
-                "text": "This should NOT be spoken",
-                "timestamp": "2024-01-01T12:00:00.000Z",
-                "provider": "claude"
-            ]
-        ]
+        // Simulate backend pushing assistant message to inactive session via
+        // the v0.4.0 append-only stream.
+        let payload = SessionHistoryPayload(
+            sessionId: sessionId.uuidString.lowercased(),
+            messages: [
+                WireMessage(
+                    sessionId: sessionId.uuidString.lowercased(),
+                    seq: 1,
+                    role: "assistant",
+                    text: "This should NOT be spoken",
+                    uuid: UUID().uuidString.lowercased(),
+                    timestamp: Date()
+                )
+            ],
+            firstSeq: 1, lastSeq: 1, nextSeq: 2, isComplete: true, gap: nil
+        )
 
-        syncManagerWithVoice.handleSessionUpdated(sessionId: sessionId.uuidString, messages: messages)
+        syncManagerWithVoice.handleSessionHistoryPayload(payload)
 
         // Wait for async processing
         let expectation = XCTestExpectation(description: "Wait for processing")
@@ -266,6 +288,67 @@ class SmartSpeakingTests: XCTestCase {
 
         // Verify speak was NOT called for background session
         XCTAssertFalse(mockVoiceOutput.speakWasCalled, "speak() should NOT be called for background session")
+    }
+
+    // Regression: tmux-untethered-7pp. handleSessionHistoryPayload snapshots
+    // ActiveSessionManager.isActive(uuid) before the CoreData background save
+    // and queues TTS off that snapshot. If the user switches sessions during
+    // the async save gap, the second gate on the main thread must drop the
+    // TTS so we don't speak for a session they no longer have open.
+    func testActiveSessionFlippingDuringSaveSuppressesAutoSpeak() throws {
+        let mockVoiceOutput = MockVoiceOutputManager()
+        let syncManagerWithVoice = SessionSyncManager(
+            persistenceController: persistenceController,
+            voiceOutputManager: mockVoiceOutput
+        )
+
+        let sessionId = UUID()
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "Was Active"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.unreadCount = 0
+        try context.save()
+
+        ActiveSessionManager.shared.setActiveSession(sessionId)
+
+        let payload = SessionHistoryPayload(
+            sessionId: sessionId.uuidString.lowercased(),
+            messages: [
+                WireMessage(
+                    sessionId: sessionId.uuidString.lowercased(),
+                    seq: 1,
+                    role: "assistant",
+                    text: "Should be suppressed after switch",
+                    uuid: UUID().uuidString.lowercased(),
+                    timestamp: Date()
+                )
+            ],
+            firstSeq: 1, lastSeq: 1, nextSeq: 2, isComplete: true, gap: nil
+        )
+
+        syncManagerWithVoice.handleSessionHistoryPayload(payload)
+
+        // Flip active session synchronously so the dispatched TTS block,
+        // which runs on the next main-queue tick, sees the new state.
+        // ActiveSessionManager mutations are main-thread-only and we are on
+        // the main thread here — the change is visible immediately.
+        let otherSessionId = UUID()
+        ActiveSessionManager.shared.setActiveSession(otherSessionId)
+
+        let expectation = XCTestExpectation(description: "Wait for TTS dispatch attempt")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+
+        XCTAssertFalse(
+            mockVoiceOutput.speakWasCalled,
+            "speak() must not fire when the user switched sessions during the save gap"
+        )
     }
 }
 

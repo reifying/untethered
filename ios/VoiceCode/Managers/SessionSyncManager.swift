@@ -436,6 +436,12 @@ class SessionSyncManager {
                     let workingDirectory = session.workingDirectory
                     let voiceManager = self.voiceOutputManager
                     DispatchQueue.main.async {
+                        // Re-check on main thread: the snapshot above was
+                        // taken before the CoreData save; the user may have
+                        // switched sessions during the async gap. Speaking
+                        // against a stale snapshot would TTS for a session
+                        // they no longer have open.
+                        guard ActiveSessionManager.shared.isActive(sessionUUID) else { return }
                         guard let voiceManager = voiceManager else { return }
                         for text in newAssistantTexts {
                             let processedText = TextProcessor.prepareForSpeech(from: text)
