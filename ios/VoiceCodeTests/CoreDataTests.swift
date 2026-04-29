@@ -979,4 +979,101 @@ final class CoreDataTests: XCTestCase {
 
         wait(for: [expectation], timeout: 5.0)
     }
+
+    // MARK: - bySessionAndSeq Index Coverage Tests (tmux-untethered-8rd)
+
+    func testBySessionAndSeqIndexNamedAndOrdered() throws {
+        // Verify the compound fetch index is named `bySessionAndSeq` and
+        // covers `(sessionId ASC, seq DESC)` — the exact key shape that
+        // `VoiceCodeClient.newestCachedSeq` relies on (predicate sessionId,
+        // sort seq DESC, fetchLimit 1). A model edit that drops or renames
+        // the index, or flips seq to ascending, would silently regress the
+        // delta-sync subscribe path to a full-table scan; this test makes
+        // that regression a build failure instead.
+        let model = persistenceController.container.managedObjectModel
+        let entity = try XCTUnwrap(model.entitiesByName["CDMessage"])
+
+        let index = try XCTUnwrap(
+            entity.indexes.first { $0.name == "bySessionAndSeq" },
+            "CDMessage should declare a fetch index named bySessionAndSeq covering newestCachedSeq's predicate+sort"
+        )
+        XCTAssertEqual(
+            index.elements.map { $0.propertyName },
+            ["sessionId", "seq"],
+            "Index must cover sessionId then seq so the WHERE+ORDER BY is fully satisfied by the index"
+        )
+        XCTAssertTrue(index.elements[0].isAscending, "sessionId element should be ascending")
+        XCTAssertFalse(
+            index.elements[1].isAscending,
+            "seq element must be descending — newestCachedSeq sorts seq DESC with fetchLimit 1"
+        )
+    }
+
+    func testMaxCachedSeqFetchOnLargeDatasetReturnsCorrectMax() throws {
+        // Insert 10k+ messages spread across two sessions and confirm the
+        // exact fetch shape used by VoiceCodeClient.newestCachedSeq
+        // (predicate sessionId, sort seq DESC, fetchLimit 1) returns the
+        // correct max for the target session. The bySessionAndSeq compound
+        // index makes this an indexed lookup; a regression that removes the
+        // index would still return the right answer but become a 10k-row
+        // table scan, so we wrap the fetch in a `measure` block to surface
+        // performance regressions in trends.
+        //
+        // The seq values are interleaved so insertion order is the *reverse*
+        // of seq order within each session — guards against a regression
+        // where the fetch accidentally returns the most-recently-inserted
+        // row instead of the highest seq.
+        let targetSession = UUID()
+        let otherSession = UUID()
+        let perSession = 5_001
+        let totalRows = perSession * 2 // 10_002 rows
+
+        for i in 0..<totalRows {
+            let isTarget = (i % 2 == 0)
+            let perSessionIndex = i / 2
+            // Assign seqs so that the FIRST inserted row of each session
+            // carries the highest seq for that session, not the last.
+            // Offset other-session seqs above target so a query that drops
+            // the predicate would return otherSession's max instead.
+            let seqValue: Int64 = isTarget
+                ? Int64(perSession - perSessionIndex)            // 5001..1
+                : Int64(100_000 + perSession - perSessionIndex)  // 105001..100001
+
+            let message = CDMessage(context: context)
+            message.id = UUID()
+            message.sessionId = isTarget ? targetSession : otherSession
+            message.role = "user"
+            message.text = "M\(i)"
+            message.timestamp = Date()
+            message.messageStatus = .confirmed
+            message.seq = seqValue
+        }
+        try context.save()
+
+        let request = CDMessage.fetchRequest()
+        request.predicate = NSPredicate(format: "sessionId == %@", targetSession as CVarArg)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.seq, ascending: false)]
+        request.fetchLimit = 1
+
+        let result = try XCTUnwrap(try context.fetch(request).first,
+                                   "Indexed fetch must return a row for the target session")
+        XCTAssertEqual(
+            result.seq, Int64(perSession),
+            "Indexed fetch must return the highest seq (\(perSession)) for the target session across \(totalRows) rows"
+        )
+        XCTAssertEqual(
+            result.sessionId, targetSession,
+            "Result must scope to the target session — otherSession holds higher seqs (>100k) and would surface here if the predicate were ignored"
+        )
+
+        // Performance probe: with bySessionAndSeq the fetch is an indexed
+        // seek; without it it becomes a 10k-row scan. The measure block
+        // captures latency for trend tracking rather than asserting a
+        // strict bound (CI variance makes hard cutoffs flaky).
+        measure {
+            for _ in 0..<50 {
+                _ = try? context.fetch(request)
+            }
+        }
+    }
 }
