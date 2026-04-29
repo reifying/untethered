@@ -355,4 +355,165 @@ final class SessionSyncManagerPrunedGapTests: XCTestCase {
         request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.seq, ascending: true)]
         return (try? context.fetch(request)) ?? []
     }
+
+    // MARK: - Pruned-flag merge guard (tmux-untethered-8i4)
+
+    /// The bug: a non-gap `session_history` push for the same session can
+    /// arrive between `handleSessionHistoryPayload`'s pruned-gap branch and
+    /// the async delegate hop. Without a synchronous flag, that push gets
+    /// merged normally — mixing stale and post-gap messages with no visual
+    /// break. The fix sets `prunedSessions` synchronously inside the pruned
+    /// branch and refuses subsequent merges until explicitly cleared.
+    func test_prunedGap_blocksSubsequentNonGapMerge_beforeDelegateFires() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let manager = SessionSyncManager(persistenceController: persistenceController)
+        // Intentionally no delegate set — we want to assert the synchronous
+        // flag, not the delegate dispatch.
+
+        let sessionId = "deadbeef-0000-1111-2222-333344445555"
+        let sessionUUID = UUID(uuidString: sessionId)!
+
+        // 1. Pruned gap arrives; flag must be set synchronously.
+        manager.handleSessionHistoryPayload(prunedPayload(sessionId: sessionId,
+                                                          requested: 5,
+                                                          minAvailable: 200))
+        XCTAssertTrue(manager.prunedSessions.contains(sessionId.lowercased()),
+                      "pruned flag must be populated synchronously, before any async hop")
+
+        // 2. Immediately on the same call site (no run-loop tick), a fresh
+        //    non-gap payload arrives. This is the race the bug describes —
+        //    in production the WebSocket pump dispatches both calls to main
+        //    serially, so there is no opportunity for an async delegate to
+        //    have run between them.
+        let stalePush = SessionHistoryPayload(
+            sessionId: sessionId,
+            messages: [
+                WireMessage(sessionId: sessionId,
+                            seq: 6,
+                            role: "assistant",
+                            text: "stale-pre-gap-content",
+                            uuid: UUID().uuidString.lowercased(),
+                            timestamp: Date(timeIntervalSince1970: 6))
+            ],
+            firstSeq: 6,
+            lastSeq: 6,
+            nextSeq: 7,
+            isComplete: true,
+            gap: nil
+        )
+        manager.handleSessionHistoryPayload(stalePush)
+
+        // Drain to make sure no background task ran the merge.
+        drainMainQueue(for: 0.3)
+
+        // Nothing must have been written.
+        let rows = messagesForSession(sessionUUID, in: persistenceController.container.viewContext)
+        XCTAssertTrue(rows.isEmpty,
+                      "non-gap payload must NOT merge while pruned flag is set; got \(rows.count) row(s)")
+
+        // Flag still set — only the user can clear it.
+        XCTAssertTrue(manager.prunedSessions.contains(sessionId.lowercased()))
+    }
+
+    /// `clearPrunedFlag` is the manager-side reset that lets future payloads
+    /// merge again. Once cleared, the same payload that was previously
+    /// refused must merge normally.
+    func test_clearPrunedFlag_allowsSubsequentMerge() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let manager = SessionSyncManager(persistenceController: persistenceController)
+
+        let sessionId = "feedface-0000-1111-2222-333344445555"
+        let sessionUUID = UUID(uuidString: sessionId)!
+
+        manager.handleSessionHistoryPayload(prunedPayload(sessionId: sessionId,
+                                                          requested: 5,
+                                                          minAvailable: 200))
+        XCTAssertTrue(manager.prunedSessions.contains(sessionId.lowercased()))
+
+        // Try a refresh while still flagged → blocked.
+        let refresh = SessionHistoryPayload(
+            sessionId: sessionId,
+            messages: [
+                WireMessage(sessionId: sessionId,
+                            seq: 200,
+                            role: "assistant",
+                            text: "after-refresh-200",
+                            uuid: UUID().uuidString.lowercased(),
+                            timestamp: Date(timeIntervalSince1970: 200))
+            ],
+            firstSeq: 200,
+            lastSeq: 200,
+            nextSeq: 201,
+            isComplete: true,
+            gap: nil
+        )
+        manager.handleSessionHistoryPayload(refresh)
+        drainMainQueue(for: 0.2)
+        XCTAssertEqual(messagesForSession(sessionUUID,
+                                          in: persistenceController.container.viewContext).count,
+                       0,
+                       "merge should still be blocked before clearPrunedFlag")
+
+        // Clear the flag and re-deliver the same payload → merges.
+        manager.clearPrunedFlag(sessionId: sessionId)
+        XCTAssertFalse(manager.prunedSessions.contains(sessionId.lowercased()))
+
+        let merged = expectation(forNotification: .sessionHistoryDidUpdate,
+                                 object: nil,
+                                 handler: { note in
+            (note.userInfo?["sessionId"] as? String) == sessionId
+        })
+        manager.handleSessionHistoryPayload(refresh)
+        wait(for: [merged], timeout: 2.0)
+        drainMainQueue(for: 0.2)
+
+        let rows = messagesForSession(sessionUUID,
+                                      in: persistenceController.container.viewContext)
+        XCTAssertEqual(rows.map(\.seq), [200],
+                       "merge must succeed once the pruned flag is cleared")
+    }
+
+    /// `clearPrunedFlag` normalizes case the same way the publish path does.
+    func test_clearPrunedFlag_normalizesMixedCase() {
+        let manager = makeManager()
+        let mixedCase = "AaBbCcDd-1111-2222-3333-444444444444"
+        let lower = mixedCase.lowercased()
+
+        manager.handleSessionHistoryPayload(prunedPayload(sessionId: mixedCase,
+                                                          requested: 1,
+                                                          minAvailable: 10))
+        XCTAssertTrue(manager.prunedSessions.contains(lower))
+
+        manager.clearPrunedFlag(sessionId: mixedCase)
+        XCTAssertFalse(manager.prunedSessions.contains(lower))
+    }
+
+    /// `VoiceCodeClient.dismissPrunedGap` must clear both the published gap
+    /// (UI banner) AND the sync-manager flag (merge guard). Otherwise the
+    /// banner disappears while the manager keeps refusing merges.
+    func test_voiceCodeClient_dismissPrunedGap_clearsManagerFlag() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let manager = SessionSyncManager(persistenceController: persistenceController)
+        let client = VoiceCodeClient(serverURL: "ws://localhost",
+                                     sessionSyncManager: manager,
+                                     setupObservers: false)
+        let sessionId = "11112222-3333-4444-5555-666666666666"
+
+        manager.handleSessionHistoryPayload(prunedPayload(sessionId: sessionId,
+                                                          requested: 5,
+                                                          minAvailable: 200))
+        XCTAssertTrue(manager.prunedSessions.contains(sessionId.lowercased()))
+
+        // Wait for the published banner state too, so the dismiss is realistic.
+        waitForMainQueue(timeout: 2.0) {
+            client.prunedGaps[sessionId.lowercased()] != nil
+        }
+
+        client.dismissPrunedGap(sessionId: sessionId)
+
+        XCTAssertNil(client.prunedGaps[sessionId.lowercased()],
+                     "dismiss must clear the published gap")
+        XCTAssertFalse(manager.prunedSessions.contains(sessionId.lowercased()),
+                       "dismiss must also clear the sync-manager merge guard")
+    }
 }

@@ -58,6 +58,23 @@ class SessionSyncManager {
     /// UI-layer sink for pruned-gap and similar events. See `SessionSyncDelegate`.
     weak var delegate: SessionSyncDelegate?
 
+    /// Sessions for which a pruned-gap payload has been received and not yet
+    /// acknowledged by the user. Keyed by lowercased session UUID. Set
+    /// synchronously when a pruned `session_history` lands so that any
+    /// subsequent payload arriving on the same WebSocket pump tick is
+    /// refused before it reaches the upsert path. Cleared via
+    /// `clearPrunedFlag(sessionId:)` (typically when the user dismisses the
+    /// banner). See AC5 of docs/design/append-only-message-stream.md and
+    /// beads tmux-untethered-8i4: without this guard, a non-gap push
+    /// arriving between the synchronous pruned-detection branch and the
+    /// async delegate dispatch would silently mix stale messages with new
+    /// post-gap ones.
+    ///
+    /// Accessed only on the main queue. The WebSocket pump dispatches
+    /// `handleSessionHistoryPayload` to main, and `clearPrunedFlag` is
+    /// documented as main-only.
+    private(set) var prunedSessions: Set<String> = []
+
     init(persistenceController: PersistenceController = .shared, voiceOutputManager: VoiceOutputManager? = nil) {
         self.persistenceController = persistenceController
         self.context = persistenceController.container.viewContext
@@ -309,14 +326,29 @@ class SessionSyncManager {
     /// delegate fire) — the server sends a full resync via `messages` in
     /// that case, and the client upserts it like any other payload.
     func handleSessionHistoryPayload(_ payload: SessionHistoryPayload) {
+        let prunedKey = payload.sessionId.lowercased()
+
         // Pruned gap: surface to delegate and stop. Merging anything under a
         // pruned reply would silently partial-view the user's history.
+        // Mark the session synchronously so any subsequent non-gap payload
+        // that arrives before the async delegate hop runs is refused below.
         if let gap = payload.gap, gap.reason == "pruned" {
             logger.warning("⚠️ Pruned gap for \(payload.sessionId): requested_last_seq=\(gap.requestedLastSeq), min_available_seq=\(gap.minAvailableSeq)")
+            prunedSessions.insert(prunedKey)
             let sessionId = payload.sessionId
             DispatchQueue.main.async { [weak self] in
                 self?.delegate?.didDetectPrunedGap(sessionId, gap: gap)
             }
+            return
+        }
+
+        // Refuse to merge while the user has unacknowledged pruned-gap state
+        // for this session. The flag is cleared by `clearPrunedFlag` (wired
+        // to the dismiss action). Without this guard a fresh push that lands
+        // between pruned detection and the delegate hop would mix stale and
+        // post-gap messages with no visual break.
+        if prunedSessions.contains(prunedKey) {
+            logger.warning("🚫 Refusing session_history merge for \(payload.sessionId) — pruned-gap flag still set; awaiting user acknowledgment")
             return
         }
 
@@ -484,6 +516,14 @@ class SessionSyncManager {
                 }
             }
         }
+    }
+
+    /// Clear the pruned-gap flag for a session so subsequent
+    /// `session_history` payloads merge normally. Wired to the dismiss
+    /// action in the UI layer (see `VoiceCodeClient.dismissPrunedGap`).
+    /// Must be called on the main queue.
+    func clearPrunedFlag(sessionId: String) {
+        prunedSessions.remove(sessionId.lowercased())
     }
 
     // MARK: - Session History Payload helpers

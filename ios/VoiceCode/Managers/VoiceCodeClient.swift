@@ -121,8 +121,13 @@ class VoiceCodeClient: ObservableObject {
 
     /// Clears a pruned-gap warning once the user has acknowledged it.
     /// Must be called on the main queue (same as any `@Published` write).
+    /// Also clears the sync manager's `prunedSessions` flag so the next
+    /// `session_history` payload merges normally — without this the manager
+    /// would keep refusing merges after the banner is dismissed (see
+    /// beads tmux-untethered-8i4).
     func dismissPrunedGap(sessionId: String) {
         prunedGaps.removeValue(forKey: sessionId.lowercased())
+        sessionSyncManager.clearPrunedFlag(sessionId: sessionId)
     }
 
     /// Transition the client into the terminal "app upgrade required" state:
