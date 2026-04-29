@@ -463,8 +463,8 @@
     (let [original @server/message-stream-version]
       (try
         (reset! server/message-stream-version :v0.4.0)
-        (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :recent-sessions-limit 5}
-                                          :ch2 {:deleted-sessions #{} :recent-sessions-limit 5}})
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5}
+                                          :ch2 {:deleted-sessions #{} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5}})
         (let [sent-messages (atom [])]
           (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                    (swap! sent-messages conj {:channel channel :msg msg}))
@@ -515,8 +515,8 @@
     (let [original @server/message-stream-version]
       (try
         (reset! server/message-stream-version :v0.4.0)
-        (reset! server/connected-clients {:ch-a {:deleted-sessions #{} :recent-sessions-limit 5}
-                                          :ch-b {:deleted-sessions #{} :recent-sessions-limit 5}})
+        (reset! server/connected-clients {:ch-a {:deleted-sessions #{} :subscribed-sessions #{"session-flat"} :recent-sessions-limit 5}
+                                          :ch-b {:deleted-sessions #{} :subscribed-sessions #{"session-flat"} :recent-sessions-limit 5}})
         (let [sent-messages (atom [])]
           (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                    (swap! sent-messages conj {:channel channel :msg msg}))
@@ -552,8 +552,8 @@
     (let [original @server/message-stream-version]
       (try
         (reset! server/message-stream-version :v0.3.0)
-        (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :recent-sessions-limit 5}
-                                          :ch2 {:deleted-sessions #{} :recent-sessions-limit 5}})
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5}
+                                          :ch2 {:deleted-sessions #{} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5}})
         (let [sent-messages (atom [])]
           (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                    (swap! sent-messages conj {:channel channel :msg msg}))]
@@ -580,7 +580,7 @@
     (let [original @server/message-stream-version]
       (try
         (reset! server/message-stream-version :v0.4.0)
-        (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :recent-sessions-limit 5}})
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :subscribed-sessions #{"session-no-next"} :recent-sessions-limit 5}})
         (let [sent-messages (atom [])]
           (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                    (swap! sent-messages conj {:channel channel :msg msg}))
@@ -613,7 +613,7 @@
     (let [original @server/message-stream-version]
       (try
         (reset! server/message-stream-version :v0.4.0)
-        (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :recent-sessions-limit 5}})
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :subscribed-sessions #{"session-empty"} :recent-sessions-limit 5}})
         (let [sent-messages (atom [])]
           (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                    (swap! sent-messages conj {:channel channel :msg msg}))
@@ -644,7 +644,7 @@
     (let [original @server/message-stream-version]
       (try
         (reset! server/message-stream-version :v0.4.0)
-        (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :recent-sessions-limit 5}})
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :subscribed-sessions #{"session-race"} :recent-sessions-limit 5}})
         (let [sent-messages (atom [])]
           (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                    (swap! sent-messages conj {:channel channel :msg msg}))
@@ -671,6 +671,122 @@
                   "next_seq must be (inc last-seq), NOT the racing metadata value 61")
               (is (true? (:is_complete msg)))
               (is (nil? (:gap msg))))))
+        (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.4.0) gates by per-channel :subscribed-sessions (tmux-untethered-2yp)"
+    ;; Cross-session TTS leak repro: client A subscribed to session-A,
+    ;; client B subscribed to session-B. A push for session-A must NOT
+    ;; reach client B even though B is connected and has not deleted
+    ;; session-A — B simply never asked for it. The replication watcher's
+    ;; is-subscribed? gate is global; per-channel filtering lives here.
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.4.0)
+        (reset! server/connected-clients
+                {:ch-a {:deleted-sessions #{}
+                        :subscribed-sessions #{"session-A"}
+                        :recent-sessions-limit 5}
+                 :ch-b {:deleted-sessions #{}
+                        :subscribed-sessions #{"session-B"}
+                        :recent-sessions-limit 5}
+                 :ch-none {:deleted-sessions #{}
+                           :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))
+                        repl/get-session-metadata (constantly {:session-id "session-A"
+                                                               :next-seq 11
+                                                               :min-available-seq 1})]
+            (server/broadcast-session-history!
+             "session-A"
+             [{:role "assistant" :text "for A only" :uuid "u-10" :seq 10}])
+
+            (let [history-for (fn [channel]
+                                (filter #(and (= channel (:channel %))
+                                              (= "session_history"
+                                                 (:type (json/parse-string (:msg %) true))))
+                                        @sent-messages))]
+              (is (= 1 (count (history-for :ch-a)))
+                  "ch-a is subscribed to session-A and must receive the push")
+              (is (= 0 (count (history-for :ch-b)))
+                  "ch-b is subscribed only to session-B and must NOT receive a session-A push")
+              (is (= 0 (count (history-for :ch-none)))
+                  "ch-none never subscribed to anything and must NOT receive any push"))))
+        (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.4.0) sends recent_sessions to all non-deleted clients regardless of subscription"
+    ;; The push body (session_history) is per-channel-subscribed, but the
+    ;; recent_sessions side-channel must keep fanning out to every
+    ;; connected non-deleted client so the Recent panel updates for
+    ;; activity on sessions the client isn't currently subscribed to.
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.4.0)
+        (reset! server/connected-clients
+                {:ch-sub {:deleted-sessions #{}
+                          :subscribed-sessions #{"session-fan"}
+                          :recent-sessions-limit 5}
+                 :ch-other {:deleted-sessions #{}
+                            :subscribed-sessions #{"session-different"}
+                            :recent-sessions-limit 5}
+                 :ch-deleted {:deleted-sessions #{"session-fan"}
+                              :subscribed-sessions #{"session-fan"}
+                              :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))
+                        repl/get-session-metadata (constantly {:session-id "session-fan"
+                                                               :next-seq 2
+                                                               :min-available-seq 1})
+                        repl/get-all-sessions (constantly [])]
+            (server/broadcast-session-history!
+             "session-fan"
+             [{:role "assistant" :text "x" :uuid "u-1" :seq 1}])
+
+            (let [recent-for (fn [channel]
+                               (filter #(and (= channel (:channel %))
+                                             (= "recent_sessions"
+                                                (:type (json/parse-string (:msg %) true))))
+                                       @sent-messages))]
+              (is (= 1 (count (recent-for :ch-sub)))
+                  "subscriber receives recent_sessions")
+              (is (= 1 (count (recent-for :ch-other)))
+                  "non-subscriber still receives recent_sessions so its Recent panel refreshes")
+              (is (= 0 (count (recent-for :ch-deleted)))
+                  "client that locally-deleted the session does NOT receive recent_sessions for it"))))
+        (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.3.0 rollback) also gates by per-channel :subscribed-sessions"
+    ;; Same per-channel guard applies to the legacy session_updated envelope
+    ;; under v0.3.0 rollback — otherwise the rollback path leaks across
+    ;; sessions even though the v0.4.0 path is fixed.
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.3.0)
+        (reset! server/connected-clients
+                {:ch-a {:deleted-sessions #{}
+                        :subscribed-sessions #{"session-A"}
+                        :recent-sessions-limit 5}
+                 :ch-b {:deleted-sessions #{}
+                        :subscribed-sessions #{"session-B"}
+                        :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))]
+            (server/broadcast-session-history!
+             "session-A"
+             [{:role "assistant" :text "for A only" :seq 10}])
+
+            (let [updated-for (fn [channel]
+                                (filter #(and (= channel (:channel %))
+                                              (= "session_updated"
+                                                 (:type (json/parse-string (:msg %) true))))
+                                        @sent-messages))]
+              (is (= 1 (count (updated-for :ch-a))))
+              (is (= 0 (count (updated-for :ch-b)))))))
         (finally
           (reset! server/message-stream-version original))))))
 

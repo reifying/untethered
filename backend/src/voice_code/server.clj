@@ -1284,9 +1284,20 @@
    reconciling missed windows by re-subscribing with the appropriate cursor
    (see @docs/design/append-only-message-stream.md §Push).
 
-   Eligibility: a connected client that has not marked this session as
-   locally-deleted. Per-session subscription gating is enforced upstream by
-   the watcher (this callback only fires when `is-subscribed?` is true).
+   Push eligibility (session_history / session_updated body): a connected
+   client that has explicitly subscribed to this session AND has not
+   marked it as locally-deleted. The replication watcher's `is-subscribed?`
+   flag is a global session-level set, not a per-channel filter, so
+   without per-channel gating here every connected client would receive
+   every push for any session any client subscribed to. That leak is the
+   root of cross-session TTS bleed (tmux-untethered-2yp): the iOS
+   active-session check is the last line of defense, not the first.
+
+   recent_sessions piggybacks on every push and goes to all connected
+   non-deleted clients regardless of subscription, so a client viewing
+   session B still sees session A move to the top of its Recent list when
+   session A is written. Otherwise the Recent panel would freeze for any
+   activity outside the currently-subscribed sessions.
 
    Under v0.3.0 rollback, emits the legacy `session_updated` envelope so
    existing clients keep working without a redeploy. Messages still carry
@@ -1294,16 +1305,21 @@
    v0.3.0 clients harmlessly ignore."
   [session-id new-messages]
   (let [v0-4? (seq-migration-enabled?)
-        eligible-clients (filter (fn [[channel _]]
-                                   (not (is-session-deleted-for-client? channel session-id)))
-                                 @connected-clients)
-        eligible-count (count eligible-clients)]
+        not-deleted-clients (filter (fn [[channel _]]
+                                      (not (is-session-deleted-for-client? channel session-id)))
+                                    @connected-clients)
+        push-clients (filter (fn [[_ client-info]]
+                               (contains? (or (:subscribed-sessions client-info) #{})
+                                          session-id))
+                             not-deleted-clients)
+        push-count (count push-clients)]
 
     (log/info "Broadcasting session history"
               {:session-id session-id
                :new-message-count (count new-messages)
                :total-clients (count @connected-clients)
-               :eligible-clients eligible-count
+               :push-clients push-count
+               :recent-sessions-clients (count not-deleted-clients)
                :protocol (if v0-4? :v0.4.0 :v0.3.0)})
 
     (if v0-4?
@@ -1331,18 +1347,16 @@
                      :next-seq next-seq
                      :is-complete true
                      :gap nil}]
-        (doseq [[channel client-info] eligible-clients]
+        (doseq [[channel _] push-clients]
           (log/debug "Broadcasting session-history window to subscriber"
                      {:session-id session-id
                       :first-seq first-seq
                       :last-seq last-seq
                       :channel-id (str channel)})
-          (send-to-client! channel payload)
-          (let [limit (get client-info :recent-sessions-limit 5)]
-            (send-recent-sessions! channel limit))))
+          (send-to-client! channel payload)))
 
       ;; v0.3.0 rollback: legacy session_updated envelope.
-      (doseq [[channel client-info] eligible-clients]
+      (doseq [[channel _] push-clients]
         (log/debug "Sending session-updated to client (v0.3.0 rollback)"
                    {:session-id session-id
                     :new-messages (count new-messages)
@@ -1350,9 +1364,13 @@
         (send-to-client! channel
                          {:type :session-updated
                           :session-id session-id
-                          :messages new-messages})
-        (let [limit (get client-info :recent-sessions-limit 5)]
-          (send-recent-sessions! channel limit))))))
+                          :messages new-messages})))
+
+    ;; recent_sessions piggybacks for every connected non-deleted client,
+    ;; not just per-session subscribers — see docstring.
+    (doseq [[channel client-info] not-deleted-clients]
+      (let [limit (get client-info :recent-sessions-limit 5)]
+        (send-recent-sessions! channel limit)))))
 
 (defn on-session-deleted
   "Called when a session file is deleted from filesystem"
