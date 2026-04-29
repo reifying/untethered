@@ -1228,18 +1228,18 @@ class VoiceCodeClient: ObservableObject {
         print("🔄 [VoiceCodeClient] Restoring \(toRestore.count) subscription(s) after reconnection")
         LogManager.shared.log("Restoring \(toRestore.count) subscription(s) after reconnection", category: "VoiceCodeClient")
         for sessionId in toRestore {
-            subscribe(sessionId: sessionId)
+            subscribe(sessionId: sessionId, context: context)
         }
     }
 
-    func subscribe(sessionId: String) {
+    func subscribe(sessionId: String, context: NSManagedObjectContext? = nil) {
         // Track subscription for auto-restore on reconnection
         activeSubscriptions.insert(sessionId)
 
         // Delta-sync cursor is the max seq we've durably persisted for this
         // session. `0` is the wire sentinel meaning "give me everything" and
         // is what newestCachedSeq returns for fresh or legacy-only sessions.
-        let lastSeq = newestCachedSeq(sessionId: sessionId)
+        let lastSeq = newestCachedSeq(sessionId: sessionId, context: context)
 
         let message: [String: Any] = [
             "type": "subscribe",

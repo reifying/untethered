@@ -101,6 +101,109 @@ final class VoiceCodeClientReconnectTests: XCTestCase {
         XCTAssertTrue(sent.isEmpty)
     }
 
+    /// AC4 + AC6 combined: a socket flap during a multi-step `is_complete:false`
+    /// chain must resume from the last persisted seq, not regress to 0.
+    ///
+    /// Scenario:
+    ///   1. Client subscribes (last_seq=0 — empty cache).
+    ///   2. Server replies with chain step 1: seqs 1..5, `is_complete:false`.
+    ///      SessionSyncManager persists the rows. The chain delegate would
+    ///      normally fire `sessionSyncNeedsResubscribe(fromSeq: 5)` to fetch
+    ///      step 2, but the socket drops first — we simulate that by simply
+    ///      not driving the follow-up subscribe.
+    ///   3. Reconnect → `restoreSubscriptionsAfterReconnect` re-fires
+    ///      subscribe for every tracked session.
+    ///
+    /// Contract: the wire `last_seq` on that resubscribe equals 5 (the
+    /// highest seq persisted), not 0 (cache-empty sentinel) and not the
+    /// pre-chain cursor.  This pins that the durable cursor is the only
+    /// source of truth across reconnect — neither in-memory chain state
+    /// nor a "was I mid-chain?" flag participates.
+    func testReconnectMidIsCompleteFalseChainSendsCursorFromPersistedSeq() throws {
+        let sessionUUID = UUID()
+        let sessionId = sessionUUID.uuidString.lowercased()
+
+        // Wire VoiceCodeClient to the same in-memory store SessionSyncManager
+        // writes to, so the cursor read on resubscribe sees the chain rows.
+        let syncManager = SessionSyncManager(persistenceController: persistenceController)
+        let testClient = VoiceCodeClient(
+            serverURL: "ws://localhost:8080",
+            sessionSyncManager: syncManager,
+            setupObservers: false
+        )
+        defer { testClient.disconnect() }
+
+        // Step 1: cache empty → wire goes out as last_seq=0. We don't capture
+        // this send; only the reconnect-driven resubscribe needs assertion.
+        testClient.subscribe(sessionId: sessionId, context: context)
+
+        // Step 2: server sends chain step 1 with `is_complete:false`. Drive
+        // the persistence path through SessionSyncManager so the rows land
+        // in the same store the client will read on reconnect.
+        let chainMessages: [WireMessage] = (1...5).map { i in
+            WireMessage(
+                sessionId: sessionId,
+                seq: Int64(i),
+                role: "assistant",
+                text: "msg-\(i)",
+                uuid: UUID().uuidString.lowercased(),
+                timestamp: Date()
+            )
+        }
+        let chainPayload = SessionHistoryPayload(
+            sessionId: sessionId,
+            messages: chainMessages,
+            firstSeq: 1,
+            lastSeq: 5,
+            nextSeq: 20,
+            isComplete: false,
+            gap: nil
+        )
+
+        let persisted = expectation(forNotification: .sessionHistoryDidUpdate,
+                                    object: nil,
+                                    handler: { note in
+            (note.userInfo?["sessionId"] as? String) == sessionId
+        })
+        syncManager.handleSessionHistoryPayload(chainPayload)
+        wait(for: [persisted], timeout: 2.0)
+
+        // Drain main once so the parent-merge observer folds the saved
+        // background context into our viewContext before we read from it.
+        let drained = expectation(description: "main drained after persist")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { drained.fulfill() }
+        wait(for: [drained], timeout: 1.0)
+        context.refreshAllObjects()
+
+        // Note: the chain delegate (`sessionSyncNeedsResubscribe`) is
+        // intentionally not driven here — that's the "disconnect mid-chain"
+        // condition. The next thing iOS does is reconnect.
+
+        // Sanity: the durable cursor reflects the chain step we received.
+        XCTAssertEqual(testClient.newestCachedSeq(sessionId: sessionId, context: context),
+                       5,
+                       "test setup: persisted cursor must equal last-received seq before reconnect")
+
+        // Step 3: socket flap. Capture only the reconnect-driven sends.
+        var sent: [[String: Any]] = []
+        testClient.onMessageSent = { sent.append($0) }
+
+        testClient.restoreSubscriptionsAfterReconnect(context: context)
+
+        // Verify the wire payload — exactly one resubscribe and last_seq=5.
+        let subscribes = sent.filter { ($0["type"] as? String) == "subscribe" }
+        XCTAssertEqual(subscribes.count, 1,
+                       "exactly one resubscribe for the tracked session")
+        let payload = try XCTUnwrap(subscribes.first)
+        XCTAssertEqual(payload["session_id"] as? String, sessionId)
+
+        // last_seq may serialize as Int or Int64 depending on platform.
+        let lastSeq = (payload["last_seq"] as? Int64)
+            ?? Int64(payload["last_seq"] as? Int ?? -1)
+        XCTAssertEqual(lastSeq, 5,
+                       "cursor sent on resubscribe must equal last-received seq before disconnect, not regress to 0")
+    }
+
     /// A session marked CDUserSession.isUserDeleted=true must not be
     /// resubscribed on reconnect, even if it lingers in `activeSubscriptions`
     /// (e.g. deletion happened via a code path that bypassed `unsubscribe`,
