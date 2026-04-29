@@ -574,6 +574,65 @@
               (is (= "session-1" (:session_id msg)))
               (is (= 1 (count (:messages msg)))))))
         (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.4.0) falls back to (inc last-seq) when metadata lacks :next-seq"
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.4.0)
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))
+                        repl/get-session-metadata (constantly {:session-id "session-no-next"
+                                                               :min-available-seq 1})]
+            (server/broadcast-session-history!
+             "session-no-next"
+             [{:role "user" :text "a" :uuid "u-50" :seq 50}
+              {:role "assistant" :text "b" :uuid "u-51" :seq 51}])
+
+            (let [ch1-msgs (filter #(= :ch1 (:channel %)) @sent-messages)
+                  history-msg (first (filter #(= "session_history"
+                                                 (:type (json/parse-string (:msg %) true)))
+                                             ch1-msgs))
+                  msg (json/parse-string (:msg history-msg) true)]
+              (is (some? history-msg)
+                  "session_history must still be emitted when metadata lacks :next-seq")
+              (is (= "session_history" (:type msg)))
+              (is (= "session-no-next" (:session_id msg)))
+              (is (= 50 (:first_seq msg)))
+              (is (= 51 (:last_seq msg)))
+              (is (= 52 (:next_seq msg))
+                  "Fallback computes (inc last-seq) when :next-seq missing from metadata")
+              (is (true? (:is_complete msg)))
+              (is (nil? (:gap msg))))))
+        (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.4.0) falls back to 1 when metadata lacks :next-seq and messages are empty"
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.4.0)
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))
+                        repl/get-session-metadata (constantly {:session-id "session-empty"
+                                                               :min-available-seq 1})]
+            (server/broadcast-session-history! "session-empty" [])
+
+            (let [ch1-msgs (filter #(= :ch1 (:channel %)) @sent-messages)
+                  history-msg (first (filter #(= "session_history"
+                                                  (:type (json/parse-string (:msg %) true)))
+                                             ch1-msgs))
+                  msg (json/parse-string (:msg history-msg) true)]
+              (is (some? history-msg))
+              (is (= 0 (count (:messages msg))))
+              (is (nil? (:first_seq msg)))
+              (is (nil? (:last_seq msg)))
+              (is (= 1 (:next_seq msg))
+                  "Fallback to 1 when metadata :next-seq missing AND messages empty"))))
+        (finally
           (reset! server/message-stream-version original))))))
 
 (deftest test-new-protocol-connect

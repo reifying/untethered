@@ -71,3 +71,4 @@
 {"id":"int-6c5c0b52","kind":"field_change","created_at":"2026-04-29T16:18:48.511162Z","actor":"Travis Brown","issue_id":"tmux-untethered-09a","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-0f346086","kind":"field_change","created_at":"2026-04-29T16:22:10.156853Z","actor":"Travis Brown","issue_id":"tmux-untethered-yew","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-1118f228","kind":"field_change","created_at":"2026-04-29T16:28:56.41543Z","actor":"Travis Brown","issue_id":"tmux-untethered-ukw","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-a73c655e","kind":"field_change","created_at":"2026-04-29T16:37:32.073881Z","actor":"Travis Brown","issue_id":"tmux-untethered-4x7","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
