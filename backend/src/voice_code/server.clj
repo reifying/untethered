@@ -1245,7 +1245,15 @@
 ;; Removed duplicate comment here
 
 (defn on-session-created
-  "Called when a new session file is detected"
+  "Called when a new session file is detected.
+
+   The session-created envelope and recent-sessions side-channel fan out to
+   every connected non-deleted client (so any client viewing Projects sees
+   the new row). The session-updated push body, however, must be gated by
+   per-channel :subscribed-sessions — same shape as broadcast-session-history!
+   (tmux-untethered-2yp). Without that gate a connected client that has never
+   subscribed to this session can still receive its messages on the new-session
+   race path, which is the cross-session leak we're closing."
   [session-metadata]
   (let [session-id (:session-id session-metadata)
         client-count (count @connected-clients)
@@ -1294,18 +1302,25 @@
       (let [limit (get client-info :recent-sessions-limit 5)]
         (send-recent-sessions! channel limit)))
 
-    ;; Also send messages if client is subscribed (handles new session race condition)
+    ;; Also send messages if client is subscribed (handles new session race condition).
+    ;; Gate by per-channel :subscribed-sessions — repl/is-subscribed? is a
+    ;; global session-level flag, not a per-channel filter.
     (when (repl/is-subscribed? session-id)
       (let [file-path (:file session-metadata)
             all-messages (repl/parse-jsonl-file file-path)
-            messages (repl/filter-internal-messages all-messages)]
+            messages (repl/filter-internal-messages all-messages)
+            push-clients (filter (fn [[_ client-info]]
+                                   (contains? (or (:subscribed-sessions client-info) #{})
+                                              session-id))
+                                 eligible-clients)]
         (if (seq messages)
           (do
             (log/info "Sending initial messages for new subscribed session"
                       {:session-id session-id
                        :message-count (count messages)
-                       :client-count eligible-count})
-            (doseq [[channel client-info] eligible-clients]
+                       :eligible-clients eligible-count
+                       :push-clients (count push-clients)})
+            (doseq [[channel _] push-clients]
               (send-to-client! channel
                                {:type :session-updated
                                 :session-id session-id

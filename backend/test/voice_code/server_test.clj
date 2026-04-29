@@ -459,6 +459,56 @@
                                   @sent-messages)]
           (is (= 2 (count recent-msgs)))))))
 
+  (testing "on-session-created gates session_updated push by per-channel :subscribed-sessions (tmux-untethered-44u)"
+    ;; Cross-session leak repro on the new-session race path: client A
+    ;; subscribed to new-session-A, client B subscribed only to some-other-session,
+    ;; client C subscribed to nothing. When new-session-A's file appears
+    ;; with pre-existing messages and is-subscribed? is globally true
+    ;; (because A asked for it), only A may receive the session_updated body.
+    ;; B and C must NOT — they never subscribed to new-session-A.
+    (reset! server/connected-clients
+            {:ch-a {:deleted-sessions #{}
+                    :subscribed-sessions #{"new-session-A"}
+                    :recent-sessions-limit 5}
+             :ch-b {:deleted-sessions #{}
+                    :subscribed-sessions #{"some-other-session"}
+                    :recent-sessions-limit 5}
+             :ch-c {:deleted-sessions #{}
+                    :subscribed-sessions #{}
+                    :recent-sessions-limit 5}})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                               (swap! sent-messages conj {:channel channel :msg msg}))
+                    repl/is-subscribed? (fn [sid] (= "new-session-A" sid))
+                    repl/parse-jsonl-file (constantly [{:role "assistant" :text "hello" :uuid "u-1"}])
+                    repl/filter-internal-messages identity
+                    repl/get-all-sessions (constantly [])]
+        (server/on-session-created {:session-id "new-session-A"
+                                    :name "Race Session"
+                                    :working-directory "/tmp"
+                                    :last-modified 1234567890
+                                    :message-count 1
+                                    :preview "hello"
+                                    :file "/tmp/new-session-A.jsonl"})
+
+        (let [updated-for (fn [channel]
+                            (filter #(and (= channel (:channel %))
+                                          (= "session_updated"
+                                             (:type (json/parse-string (:msg %) true))))
+                                    @sent-messages))]
+          (is (= 1 (count (updated-for :ch-a)))
+              "ch-a is subscribed to new-session-A and must receive the session_updated push")
+          (is (= 0 (count (updated-for :ch-b)))
+              "ch-b is subscribed only to some-other-session and must NOT receive a new-session-A push")
+          (is (= 0 (count (updated-for :ch-c)))
+              "ch-c never subscribed to anything and must NOT receive any session_updated push"))
+
+        ;; session_created envelope still fans out to all connected non-deleted clients
+        (let [created-msgs (filter #(= "session_created" (:type (json/parse-string (:msg %) true)))
+                                   @sent-messages)]
+          (is (= 3 (count created-msgs))
+              "session_created envelope still fans out to every connected non-deleted client")))))
+
   (testing "broadcast-session-history! (v0.4.0) emits session_history and respects deleted sessions"
     (let [original @server/message-stream-version]
       (try
