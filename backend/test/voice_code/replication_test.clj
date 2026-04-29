@@ -549,6 +549,75 @@
             "cursor advances fully when the buffer ends in \\n, regardless of nil parses"))
       (repl/reset-file-position! file-path))))
 
+(deftest parse-jsonl-incremental-multibyte-utf8-split
+  ;; Regression: a 4-byte UTF-8 character (rocket emoji 🚀, F0 9F 9A 80)
+  ;; whose bytes straddle a watcher tick must not be consumed mid-character.
+  ;; The cursor must hold the truncated byte sequence back so the second
+  ;; tick reassembles the character once the remaining bytes arrive.
+  (testing "Multi-byte UTF-8 character split across two ticks"
+    (let [file (io/file test-dir "utf8-split.jsonl")
+          file-path (.getAbsolutePath file)
+          prior-line (claude-jsonl {:type "user" :text "hello"
+                                    :uuid "u-prior"})
+          second-line (claude-jsonl {:type "user" :text "🚀"
+                                     :uuid "u-emoji"})
+          second-bytes (.getBytes ^String second-line "UTF-8")
+          emoji-bytes (.getBytes "🚀" "UTF-8")
+          emoji-start (loop [i 0]
+                        (cond
+                          (> (+ i 4) (alength second-bytes)) -1
+                          (and (= (aget second-bytes i) (aget emoji-bytes 0))
+                               (= (aget second-bytes (+ i 1)) (aget emoji-bytes 1))
+                               (= (aget second-bytes (+ i 2)) (aget emoji-bytes 2))
+                               (= (aget second-bytes (+ i 3)) (aget emoji-bytes 3)))
+                          i
+                          :else (recur (inc i))))
+          prior-line-end (alength (.getBytes (str prior-line "\n") "UTF-8"))
+          tick1-bytes (byte-array (concat (.getBytes (str prior-line "\n") "UTF-8")
+                                          (take (+ emoji-start 2) second-bytes)))
+          tick2-tail-bytes (byte-array (concat (drop (+ emoji-start 2) second-bytes)
+                                               (.getBytes "\n" "UTF-8")))]
+      (is (>= emoji-start 0)
+          "Test setup: emoji must appear in the second line bytes")
+      (io/make-parents file)
+      (with-open [out (io/output-stream file)]
+        (.write out tick1-bytes))
+      (repl/reset-file-position! file-path)
+
+      ;; Tick 1: prior complete line + partial second line ending mid-emoji.
+      (let [{:keys [messages new-pos]} (repl/parse-jsonl-incremental file-path)]
+        (is (= 1 (count messages))
+            "Tick 1 returns only the prior complete line; partial line is held back")
+        (is (= "u-prior" (:uuid (first messages))))
+        (is (<= new-pos prior-line-end)
+            "Cursor stops at or before the start of the partial line")
+        ;; The byte at new-pos must not be a UTF-8 continuation byte
+        ;; (0x80-0xBF), which would mean the cursor landed inside a
+        ;; multi-byte sequence. Single-byte ASCII and UTF-8 leading bytes
+        ;; (>= 0xC0) are valid character boundaries.
+        (when (< new-pos (alength tick1-bytes))
+          (let [b (bit-and 0xFF (aget tick1-bytes new-pos))]
+            (is (not (<= 0x80 b 0xBF))
+                (str "Cursor at byte " new-pos " (=0x"
+                     (format "%02X" b) ") must not land on a UTF-8 "
+                     "continuation byte (would split a multi-byte char)"))))
+        (swap! repl/file-positions assoc file-path new-pos))
+
+      ;; Tick 2: append remaining emoji bytes + JSON suffix + \n.
+      (with-open [out (io/output-stream file :append true)]
+        (.write out tick2-tail-bytes))
+
+      (let [{:keys [messages new-pos]} (repl/parse-jsonl-incremental file-path)
+            second-msg (first (filter #(= "u-emoji" (:uuid %)) messages))]
+        (is (some? second-msg)
+            "Tick 2 emits the now-complete second line")
+        (is (= "🚀" (get-in second-msg [:message :content]))
+            "Multi-byte UTF-8 character was reassembled across ticks without corruption")
+        (is (= (.length file) new-pos)
+            "Cursor advances to current EOF after the full line is consumed"))
+
+      (repl/reset-file-position! file-path))))
+
 (deftest parse-jsonl-incremental-cursor-reset-after-shrink
   ;; Regression for tmux-untethered-df2: claude --compact and similar
   ;; operations rewrite the JSONL file in place, leaving it smaller than
