@@ -4,7 +4,7 @@
   "backups": {
     "backup_export": {
       "name": "backup_export",
-      "url": "file:///Users/travisbrown/code/mono/active/voice-code-tmux-untethered/.beads/backup",
+      "url": "file:///Users/travisbrown/code/mono/active/voice-code/.beads/backup",
       "fetch_specs": [
         "refs/heads/*:refs/remotes/backup_export/*"
       ],

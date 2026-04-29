@@ -569,6 +569,103 @@ final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
         XCTAssertEqual(row.id, backendUuid, "id must align with the backend-assigned uuid")
     }
 
+    func test_two_concurrent_optimistic_messages_both_reconcile_no_seq_zero_orphans() {
+        // Regression for tmux-untethered-2sx: when the user fires two prompts
+        // back-to-back before the backend has assigned either a seq, both
+        // optimistic rows live at the same (sessionId, seq=0) primary key
+        // pair. The echo payload must reconcile each one against its own
+        // optimistic row (matched by text via the optimistic-fallback
+        // predicate) so the (sessionId, seq) collision at seq=0 does not
+        // strand a duplicate bubble or leak a stale seq=0 row.
+        let session = CDBackendSession(context: context)
+        session.id = sessionUUID
+        session.backendName = "test"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.provider = "claude"
+
+        let optimistic1 = CDMessage(context: context)
+        let optimistic1Id = UUID()
+        optimistic1.id = optimistic1Id
+        optimistic1.sessionId = sessionUUID
+        optimistic1.role = "user"
+        optimistic1.text = "first prompt"
+        optimistic1.timestamp = Date(timeIntervalSince1970: 100)
+        optimistic1.seq = 0
+        optimistic1.messageStatus = .sending
+        optimistic1.session = session
+
+        let optimistic2 = CDMessage(context: context)
+        let optimistic2Id = UUID()
+        optimistic2.id = optimistic2Id
+        optimistic2.sessionId = sessionUUID
+        optimistic2.role = "user"
+        optimistic2.text = "second prompt"
+        optimistic2.timestamp = Date(timeIntervalSince1970: 200)
+        optimistic2.seq = 0
+        optimistic2.messageStatus = .sending
+        optimistic2.session = session
+        try! context.save()
+
+        // Sanity: two rows, both at seq=0, both .sending.
+        let preRows = fetchMessages()
+        XCTAssertEqual(preRows.count, 2)
+        XCTAssertEqual(preRows.filter { $0.seq == 0 }.count, 2,
+                       "precondition: both optimistic rows share the seq=0 key")
+
+        // Backend echoes both prompts back with their assigned seqs.
+        let backendUuid1 = UUID()
+        let backendUuid2 = UUID()
+        let echo1 = WireMessage(
+            sessionId: sessionIdString,
+            seq: 1,
+            role: "user",
+            text: "first prompt",
+            uuid: backendUuid1.uuidString.lowercased(),
+            timestamp: Date(timeIntervalSince1970: 101)
+        )
+        let echo2 = WireMessage(
+            sessionId: sessionIdString,
+            seq: 2,
+            role: "user",
+            text: "second prompt",
+            uuid: backendUuid2.uuidString.lowercased(),
+            timestamp: Date(timeIntervalSince1970: 202)
+        )
+        let p = payload(firstSeq: 1, lastSeq: 2, nextSeq: 3,
+                        isComplete: true, messages: [echo1, echo2])
+
+        manager.handleSessionHistoryPayload(p)
+        // Both echoes reconcile in place (newRows == 0), so no
+        // .sessionHistoryDidUpdate is posted — drain instead.
+        drainMainQueue(for: 0.5)
+
+        let rows = fetchMessages()
+        XCTAssertEqual(rows.count, 2,
+                       "two optimistic rows + two echoes must collapse to two rows total — no duplicates")
+        XCTAssertTrue(rows.allSatisfy { $0.seq != 0 },
+                      "no orphaned seq=0 rows may remain after reconciliation")
+        XCTAssertEqual(rows.map(\.seq).sorted(), [1, 2],
+                       "rows must carry backend-assigned seqs, one each")
+        XCTAssertTrue(rows.allSatisfy { $0.messageStatus == .confirmed },
+                      "both reconciled rows must flip to confirmed")
+
+        let row1 = rows.first(where: { $0.seq == 1 })!
+        let row2 = rows.first(where: { $0.seq == 2 })!
+        XCTAssertEqual(row1.text, "first prompt")
+        XCTAssertEqual(row2.text, "second prompt")
+        XCTAssertEqual(row1.id, backendUuid1,
+                       "first echo must align with optimistic1's row, now carrying the backend uuid")
+        XCTAssertEqual(row2.id, backendUuid2,
+                       "second echo must align with optimistic2's row, now carrying the backend uuid")
+        XCTAssertTrue(delegate.resubscribes.isEmpty,
+                      "happy-path concurrent reconciliation must not trigger backfill")
+        XCTAssertTrue(delegate.prunedGaps.isEmpty,
+                      "no pruned gap on a happy-path payload")
+    }
+
     // MARK: - Background-context merge policy regression
 
     /// Regression for the silent-drop bug where background saves threw on
