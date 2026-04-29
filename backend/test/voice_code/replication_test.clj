@@ -706,6 +706,58 @@
       (finally
         (.setLevel root-logger original-level)))))
 
+(deftest test-watcher-tick-concurrent-no-duplicate-seqs
+  ;; A watcher tick is parse-jsonl-incremental + assign-seq! on the same
+  ;; session. Two ticks may overlap if the JSONL watcher fires twice for
+  ;; the same file before the first tick has committed its position. This
+  ;; test fires N concurrent ticks against the same file and asserts that
+  ;; assign-seq! still produces unique, contiguous seqs across the whole
+  ;; population — the per-session counter never hands the same seq to two
+  ;; threads, and never leaves a gap in the assigned range.
+  (testing "Concurrent watcher ticks on same JSONL file produce no duplicate seqs"
+    (reset! repl/session-index {})
+    (reset! repl/file-positions {})
+    (let [n-messages 30
+          n-threads 8
+          messages (for [i (range n-messages)]
+                     (claude-jsonl {:type "user"
+                                    :text (str "msg-" i)
+                                    :uuid (str (java.util.UUID/randomUUID))}))
+          file (create-test-jsonl-file "watcher-concurrent.jsonl" messages)
+          file-path (.getAbsolutePath file)
+          session-id "sid-watcher-concurrent"
+          all-seqs (atom [])
+          tasks (doall
+                 (for [_ (range n-threads)]
+                   (future
+                     ;; Mirror the production watcher tick: parse new bytes,
+                     ;; canonicalize, then stamp seq. parse-jsonl-incremental
+                     ;; is read-only (caller commits :new-pos), so without
+                     ;; coordination both threads observe the same byte range
+                     ;; and pass equal-sized batches into assign-seq!.
+                     (let [{:keys [messages]} (repl/parse-jsonl-incremental file-path)
+                           canonical (->> messages
+                                          (keep #(providers/parse-message :claude %))
+                                          (vec))
+                           stamped (repl/assign-seq! session-id canonical)]
+                       (swap! all-seqs into (map :seq stamped))))))]
+      (doseq [t tasks] @t)
+      (let [seqs @all-seqs
+            total (count seqs)
+            distinct-count (count (distinct seqs))]
+        (is (= (* n-threads n-messages) total)
+            "Each concurrent tick stamps every message it parsed")
+        (is (= total distinct-count)
+            "No duplicate seqs across concurrent watcher ticks")
+        (is (= (range 1 (inc total)) (sort seqs))
+            "Seqs span [1, total] contiguously with no gaps")
+        (is (= (inc total)
+               (:next-seq (get @repl/session-index session-id)))
+            ":next-seq advanced exactly past the highest stamped seq")
+        (is (= 1
+               (:min-available-seq (get @repl/session-index session-id)))
+            ":min-available-seq seeded to 1 on the stub entry")))))
+
 ;; ============================================================================
 ;; Seq Migration Tests (tmux-untethered-wyp)
 ;; ============================================================================
