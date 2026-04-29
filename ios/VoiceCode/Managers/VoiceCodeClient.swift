@@ -847,10 +847,19 @@ class VoiceCodeClient: ObservableObject {
                 if let sessionId = json["session_id"] as? String {
                     print("✅ [VoiceCodeClient] Received session_ready for \(sessionId)")
 
-                    // Subscribe immediately now that backend has confirmed session exists in index
-                    if !self.activeSubscriptions.contains(sessionId) {
-                        print("📥 [VoiceCodeClient] Auto-subscribing to new session after session_ready: \(sessionId)")
-                        self.subscribe(sessionId: sessionId)
+                    // Only auto-subscribe if this session is still the foreground session.
+                    // If the user navigated away before session_ready arrived, attaching
+                    // would deliver pushes (and trigger TTS) for an off-screen session.
+                    let isStillActive: Bool = UUID(uuidString: sessionId)
+                        .map { ActiveSessionManager.shared.isActive($0) } ?? false
+
+                    if isStillActive {
+                        if !self.activeSubscriptions.contains(sessionId) {
+                            print("📥 [VoiceCodeClient] Auto-subscribing to new session after session_ready: \(sessionId)")
+                            self.subscribe(sessionId: sessionId)
+                        }
+                    } else {
+                        print("⏭️ [VoiceCodeClient] Skipping auto-subscribe for \(sessionId) — no longer the active session")
                     }
                 }
 
