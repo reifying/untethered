@@ -219,3 +219,68 @@
           "no unsupported_protocol_version should be emitted in lax mode")
       ;; Clean up state so we don't leak into other tests.
       (swap! server/connected-clients dissoc fake-channel))))
+
+(deftest connect-message-allows-missing-and-nil-protocol-version-in-enforce-mode
+  ;; The hello guard treats two distinct wire shapes as equivalent: a connect
+  ;; with no `protocol_version` key (the path every existing v0.4.0 iOS client
+  ;; actually walks today) and a connect that explicitly sends
+  ;; `protocol_version: null`. `client-protocol-too-old?` already pins the
+  ;; pure-function behavior; this test pins the integration: with enforcement
+  ;; on, both messages must complete authentication and emit no
+  ;; unsupported_protocol_version error.
+  (testing "no protocol_version key: connect succeeds without rejection"
+    (reset! server/message-stream-version :v0.4.0)
+    (let [fake-channel (Object.)
+          sent (atom [])
+          closed (atom false)
+          msg (server/generate-json {:type "connect"
+                                     :api-key test-api-key})]
+      (is (not (re-find #"protocol_version" msg))
+          "sanity: this branch must omit the key on the wire")
+      (with-redefs [org.httpkit.server/send! (fn [_ m] (swap! sent conj m))
+                    org.httpkit.server/close (fn [_] (reset! closed true))
+                    voice-code.replication/get-all-sessions (constantly [])
+                    server/send-recent-sessions! (fn [_ _] nil)
+                    server/send-available-commands! (fn [_ _] nil)
+                    voice-code.supervisor/start-supervisor! (fn [_] nil)]
+        (server/handle-message fake-channel msg))
+      (is (false? @closed)
+          "missing protocol_version must not trip the enforce-mode guard")
+      (is (server/channel-authenticated? fake-channel)
+          "connection should complete authentication normally")
+      (is (not-any? (fn [m]
+                      (let [p (server/parse-json m)]
+                        (and (= "error" (:type p))
+                             (= "unsupported_protocol_version" (:code p)))))
+                    @sent)
+          "no unsupported_protocol_version envelope should be emitted")
+      (swap! server/connected-clients dissoc fake-channel)))
+
+  (testing "explicit protocol_version: null: connect succeeds without rejection"
+    (reset! server/message-stream-version :v0.4.0)
+    (let [fake-channel (Object.)
+          sent (atom [])
+          closed (atom false)
+          msg (server/generate-json {:type "connect"
+                                     :api-key test-api-key
+                                     :protocol-version nil})]
+      (is (re-find #"\"protocol_version\":null" msg)
+          "sanity: this branch must emit an explicit null on the wire")
+      (with-redefs [org.httpkit.server/send! (fn [_ m] (swap! sent conj m))
+                    org.httpkit.server/close (fn [_] (reset! closed true))
+                    voice-code.replication/get-all-sessions (constantly [])
+                    server/send-recent-sessions! (fn [_ _] nil)
+                    server/send-available-commands! (fn [_ _] nil)
+                    voice-code.supervisor/start-supervisor! (fn [_] nil)]
+        (server/handle-message fake-channel msg))
+      (is (false? @closed)
+          "explicit null protocol_version must be treated identically to a missing key")
+      (is (server/channel-authenticated? fake-channel)
+          "connection should complete authentication normally")
+      (is (not-any? (fn [m]
+                      (let [p (server/parse-json m)]
+                        (and (= "error" (:type p))
+                             (= "unsupported_protocol_version" (:code p)))))
+                    @sent)
+          "no unsupported_protocol_version envelope should be emitted")
+      (swap! server/connected-clients dissoc fake-channel))))
