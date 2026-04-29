@@ -569,6 +569,131 @@ final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
         XCTAssertEqual(row.id, backendUuid, "id must align with the backend-assigned uuid")
     }
 
+    /// Reproduction for tmux-untethered-mgp: three optimistic prompts dictated
+    /// rapidly, each persisted via `createOptimisticMessage`, then echoed back
+    /// in one payload. Pre-fix, every optimistic row carried `seq=0`, so the
+    /// fetch-then-update pattern stranded one row per "extra" prompt. The fix
+    /// stamps each optimistic row with a deterministic *negative* seq drawn
+    /// from its UUID, so all three reconcile cleanly. The test drives the
+    /// real `createOptimisticMessage` path so any regression that revives
+    /// the seq=0 default fails here too.
+    func test_three_optimistic_messages_via_createOptimisticMessage_all_reconcile() {
+        let session = CDBackendSession(context: context)
+        session.id = sessionUUID
+        session.backendName = "test"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.provider = "claude"
+        try! context.save()
+
+        let exp1 = expectation(description: "opt1")
+        let exp2 = expectation(description: "opt2")
+        let exp3 = expectation(description: "opt3")
+        manager.createOptimisticMessage(sessionId: sessionUUID, text: "alpha") { _ in exp1.fulfill() }
+        wait(for: [exp1], timeout: 2.0)
+        manager.createOptimisticMessage(sessionId: sessionUUID, text: "beta") { _ in exp2.fulfill() }
+        wait(for: [exp2], timeout: 2.0)
+        manager.createOptimisticMessage(sessionId: sessionUUID, text: "gamma") { _ in exp3.fulfill() }
+        wait(for: [exp3], timeout: 2.0)
+        drainMainQueue(for: 0.3)
+
+        let preRows = fetchMessages()
+        XCTAssertEqual(preRows.count, 3, "all three optimistic rows must persist")
+        XCTAssertTrue(preRows.allSatisfy { $0.seq < 0 },
+                      "every optimistic row must carry a negative seq — not seq=0")
+        XCTAssertEqual(Set(preRows.map(\.seq)).count, 3,
+                       "three optimistic rows must have three distinct seqs (no collision)")
+
+        // Backend echoes all three in one payload with consecutive seqs.
+        let echoes: [WireMessage] = ["alpha", "beta", "gamma"].enumerated().map { (i, text) in
+            WireMessage(
+                sessionId: sessionIdString,
+                seq: Int64(i + 1),
+                role: "user",
+                text: text,
+                uuid: UUID().uuidString.lowercased(),
+                timestamp: Date(timeIntervalSince1970: TimeInterval(100 + i))
+            )
+        }
+        let p = payload(firstSeq: 1, lastSeq: 3, nextSeq: 4, isComplete: true, messages: echoes)
+
+        manager.handleSessionHistoryPayload(p)
+        // All three reconcile in place (newRows == 0), so no
+        // sessionHistoryDidUpdate is posted — drain instead.
+        drainMainQueue(for: 0.5)
+
+        let rows = fetchMessages()
+        XCTAssertEqual(rows.count, 3,
+                       "no orphaned rows — pre-fix, two of the three would have been left at seq=0/sending")
+        XCTAssertTrue(rows.allSatisfy { $0.messageStatus == .confirmed },
+                      "all three must flip to confirmed; pre-fix the second and third stayed in .sending")
+        XCTAssertEqual(rows.map(\.seq).sorted(), [1, 2, 3],
+                       "rows must carry the backend-assigned seqs, no negative seqs left")
+        XCTAssertEqual(rows.first(where: { $0.seq == 1 })?.text, "alpha")
+        XCTAssertEqual(rows.first(where: { $0.seq == 2 })?.text, "beta")
+        XCTAssertEqual(rows.first(where: { $0.seq == 3 })?.text, "gamma")
+        XCTAssertTrue(delegate.resubscribes.isEmpty)
+        XCTAssertTrue(delegate.prunedGaps.isEmpty)
+    }
+
+    /// `maxCachedSeq` is the gap-detection cursor. Optimistic rows carry
+    /// negative seqs and must be excluded from the cursor — otherwise the
+    /// 3-case comparison in `handleSessionHistoryPayload` would treat a
+    /// fresh session with only optimistic rows as "ahead of seq 1" and
+    /// chase phantom backfills.
+    func test_maxCachedSeq_excludes_negative_optimistic_seqs() {
+        let session = CDBackendSession(context: context)
+        session.id = sessionUUID
+        session.backendName = "test"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.provider = "claude"
+
+        // Two optimistic rows with negative seqs — only state on a fresh session.
+        let optimistic1 = CDMessage(context: context)
+        optimistic1.id = UUID()
+        optimistic1.sessionId = sessionUUID
+        optimistic1.role = "user"
+        optimistic1.text = "pending 1"
+        optimistic1.seq = SessionSyncManager.optimisticSeq(for: optimistic1.id)
+        optimistic1.timestamp = Date(timeIntervalSince1970: 100)
+        optimistic1.messageStatus = .sending
+        optimistic1.session = session
+
+        let optimistic2 = CDMessage(context: context)
+        optimistic2.id = UUID()
+        optimistic2.sessionId = sessionUUID
+        optimistic2.role = "user"
+        optimistic2.text = "pending 2"
+        optimistic2.seq = SessionSyncManager.optimisticSeq(for: optimistic2.id)
+        optimistic2.timestamp = Date(timeIntervalSince1970: 200)
+        optimistic2.messageStatus = .sending
+        optimistic2.session = session
+        try! context.save()
+
+        XCTAssertEqual(manager.maxCachedSeq(sessionId: sessionUUID, in: context), 0,
+                       "negative optimistic seqs must clamp the cursor to 0")
+
+        // After a confirmed row arrives, its seq dominates.
+        let confirmed = CDMessage(context: context)
+        confirmed.id = UUID()
+        confirmed.sessionId = sessionUUID
+        confirmed.role = "assistant"
+        confirmed.text = "ack"
+        confirmed.seq = 7
+        confirmed.timestamp = Date(timeIntervalSince1970: 300)
+        confirmed.messageStatus = .confirmed
+        confirmed.session = session
+        try! context.save()
+
+        XCTAssertEqual(manager.maxCachedSeq(sessionId: sessionUUID, in: context), 7,
+                       "confirmed positive seq must dominate over coexisting negative optimistic seqs")
+    }
+
     func test_two_concurrent_optimistic_messages_both_reconcile_no_seq_zero_orphans() {
         // Regression for tmux-untethered-2sx: when the user fires two prompts
         // back-to-back before the backend has assigned either a seq, both

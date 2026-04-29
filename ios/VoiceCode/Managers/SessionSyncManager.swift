@@ -528,11 +528,15 @@ class SessionSyncManager {
 
     // MARK: - Session History Payload helpers
 
-    /// Returns the largest `seq` stored for this session, or 0 if none.
-    /// Used as the client's `local_last_seq` cursor for gap detection.
+    /// Returns the largest backend-assigned `seq` stored for this session,
+    /// or 0 if none. Used as the client's `local_last_seq` cursor for gap
+    /// detection. Optimistic rows carry a deterministic negative seq (see
+    /// `optimisticSeq(for:)`) and are excluded from the cursor — the wire
+    /// treats `seq=0` as "send everything", which is the right state when
+    /// only locally-created rows exist.
     internal func maxCachedSeq(sessionId: UUID, in context: NSManagedObjectContext) -> Int64 {
         let request = CDMessage.fetchRequest()
-        request.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
+        request.predicate = NSPredicate(format: "sessionId == %@ AND seq > 0", sessionId as CVarArg)
         request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.seq, ascending: false)]
         request.fetchLimit = 1
         return (try? context.fetch(request))?.first?.seq ?? 0
@@ -653,7 +657,44 @@ class SessionSyncManager {
     }
 
     // MARK: - Optimistic UI
-    
+
+    /// Deterministic negative seq for an optimistic message, derived from its
+    /// UUID. Two optimistic messages with different UUIDs produce different
+    /// seqs, so multiple pending offline rows have unique `(sessionId, seq)`
+    /// pairs instead of all colliding on `seq=0`. Backend-assigned seqs start
+    /// at 1, so a strictly-negative seq is unambiguously "not yet confirmed
+    /// by server" and never matches the seq lookup in `upsertMessage`. See
+    /// beads tmux-untethered-mgp.
+    internal static func optimisticSeq(for id: UUID) -> Int64 {
+        // Squeeze the 128-bit UUID into a 63-bit non-zero magnitude using
+        // the first 8 bytes XORed with the last 8 bytes — preserves entropy
+        // without depending on Swift's hashValue (which is salted per-run
+        // and would defeat determinism across launches).
+        let bytes = id.uuid
+        var hi: UInt64 = 0
+        var lo: UInt64 = 0
+        hi |= UInt64(bytes.0) << 56
+        hi |= UInt64(bytes.1) << 48
+        hi |= UInt64(bytes.2) << 40
+        hi |= UInt64(bytes.3) << 32
+        hi |= UInt64(bytes.4) << 24
+        hi |= UInt64(bytes.5) << 16
+        hi |= UInt64(bytes.6) << 8
+        hi |= UInt64(bytes.7)
+        lo |= UInt64(bytes.8) << 56
+        lo |= UInt64(bytes.9) << 48
+        lo |= UInt64(bytes.10) << 40
+        lo |= UInt64(bytes.11) << 32
+        lo |= UInt64(bytes.12) << 24
+        lo |= UInt64(bytes.13) << 16
+        lo |= UInt64(bytes.14) << 8
+        lo |= UInt64(bytes.15)
+        // Clear the sign bit to keep the magnitude in [0, Int64.max], then
+        // ensure non-zero so the result is strictly negative after negation.
+        let magnitude = Int64((hi ^ lo) & 0x7FFF_FFFF_FFFF_FFFF)
+        return magnitude == 0 ? -1 : -magnitude
+    }
+
     /// Create an optimistic message immediately when user sends a prompt
     /// - Parameters:
     ///   - sessionId: Session UUID
@@ -674,7 +715,7 @@ class SessionSyncManager {
                 logger.warning("Session not found for optimistic message: \(sessionId.uuidString.lowercased())")
                 return
             }
-            
+
             // Create optimistic message
             let message = CDMessage(context: backgroundContext)
             message.id = messageId
@@ -684,8 +725,13 @@ class SessionSyncManager {
             message.timestamp = Date()
             message.messageStatus = .sending
             message.session = session
-            
-            logger.info("📝 Optimistic message prepared: id=\(messageId) sessionId=\(sessionId.uuidString.lowercased()) role=user text_length=\(text.count) status=sending")
+            // Distinct negative seq per optimistic row: prevents two
+            // back-to-back prompts from colliding on the seq=0 default and
+            // stranding the second one when the backend echo arrives. See
+            // beads tmux-untethered-mgp.
+            message.seq = Self.optimisticSeq(for: messageId)
+
+            logger.info("📝 Optimistic message prepared: id=\(messageId) sessionId=\(sessionId.uuidString.lowercased()) role=user text_length=\(text.count) status=sending seq=\(message.seq)")
             
             // Update session metadata optimistically
             session.lastModified = Date()

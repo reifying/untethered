@@ -159,6 +159,54 @@ final class VoiceCodeClientDeltaSyncTests: XCTestCase {
         XCTAssertEqual(client.newestCachedSeq(sessionId: sessionId.uuidString.lowercased(), context: context), 12)
     }
 
+    func testNewestCachedSeqNegativeSeqRowsExcluded() throws {
+        // Optimistic rows carry a deterministic *negative* seq so multiple
+        // pending offline prompts have unique (sessionId, seq) keys instead
+        // of all colliding on seq=0 (beads tmux-untethered-mgp). The wire
+        // cursor must not include these — the backend rejects negative
+        // last_seq values.
+        let sessionId = UUID()
+
+        let optimistic1 = CDMessage(context: context)
+        optimistic1.id = UUID()
+        optimistic1.sessionId = sessionId
+        optimistic1.role = "user"
+        optimistic1.text = "pending 1"
+        optimistic1.seq = SessionSyncManager.optimisticSeq(for: optimistic1.id)
+        optimistic1.timestamp = Date().addingTimeInterval(-50)
+        optimistic1.messageStatus = .sending
+
+        let optimistic2 = CDMessage(context: context)
+        optimistic2.id = UUID()
+        optimistic2.sessionId = sessionId
+        optimistic2.role = "user"
+        optimistic2.text = "pending 2"
+        optimistic2.seq = SessionSyncManager.optimisticSeq(for: optimistic2.id)
+        optimistic2.timestamp = Date()
+        optimistic2.messageStatus = .sending
+
+        try context.save()
+
+        // Only optimistic (negative) rows: cursor must clamp to 0, not return
+        // the largest negative value.
+        XCTAssertEqual(client.newestCachedSeq(sessionId: sessionId.uuidString.lowercased(), context: context), 0,
+                       "negative optimistic seqs must be excluded from the wire cursor")
+
+        // Mix in a confirmed row: positive seq wins.
+        let confirmed = CDMessage(context: context)
+        confirmed.id = UUID()
+        confirmed.sessionId = sessionId
+        confirmed.role = "assistant"
+        confirmed.text = "echo"
+        confirmed.seq = 9
+        confirmed.timestamp = Date().addingTimeInterval(10)
+        confirmed.messageStatus = .confirmed
+        try context.save()
+
+        XCTAssertEqual(client.newestCachedSeq(sessionId: sessionId.uuidString.lowercased(), context: context), 9,
+                       "confirmed seq must dominate over coexisting negative optimistic seqs")
+    }
+
     // MARK: - getNewestCachedMessageId Tests
 
     func testGetNewestCachedMessageIdWithMessages() throws {

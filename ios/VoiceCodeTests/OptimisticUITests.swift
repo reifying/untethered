@@ -92,21 +92,90 @@ class OptimisticUITests: XCTestCase {
     
     func testCreateOptimisticMessageForNonexistentSession() throws {
         let nonexistentId = UUID()
-        
+
         let expectation = XCTestExpectation(description: "Should not call completion")
         expectation.isInverted = true
-        
+
         syncManager.createOptimisticMessage(sessionId: nonexistentId, text: "Test") { _ in
             expectation.fulfill()
         }
-        
+
         wait(for: [expectation], timeout: 1.0)
-        
+
         // Verify no messages were created
         let fetchRequest = CDMessage.fetchMessages(sessionId: nonexistentId)
         let messages = try context.fetch(fetchRequest)
-        
+
         XCTAssertEqual(messages.count, 0)
     }
-    
+
+    // MARK: - Optimistic Seq Assignment (tmux-untethered-mgp)
+
+    /// `optimisticSeq(for:)` must be deterministic — same UUID always maps
+    /// to the same seq. Without determinism, a row's seq would shift every
+    /// process launch and the upsert path could not rely on negative-seq
+    /// optimistic rows being stable across context merges.
+    func testOptimisticSeqIsDeterministic() {
+        let id = UUID()
+        let s1 = SessionSyncManager.optimisticSeq(for: id)
+        let s2 = SessionSyncManager.optimisticSeq(for: id)
+        XCTAssertEqual(s1, s2, "same UUID must always map to the same optimistic seq")
+        XCTAssertLessThan(s1, 0, "optimistic seq must be strictly negative — backend uses positive seqs")
+    }
+
+    /// Distinct UUIDs map to distinct seqs with overwhelmingly high probability.
+    /// The fix's whole point: two rapid prompts produce optimistic rows with
+    /// different `(sessionId, seq)` keys instead of colliding on `seq=0`.
+    func testOptimisticSeqIsDistinctForDistinctUUIDs() {
+        var seen: Set<Int64> = []
+        for _ in 0..<100 {
+            let s = SessionSyncManager.optimisticSeq(for: UUID())
+            XCTAssertLessThan(s, 0, "every optimistic seq must be strictly negative")
+            XCTAssertFalse(seen.contains(s),
+                           "duplicate optimistic seq across 100 random UUIDs — collision risk too high")
+            seen.insert(s)
+        }
+    }
+
+    /// End-to-end: two consecutive optimistic creates land with different
+    /// negative seqs in CoreData, so a subsequent reconciliation fetch keyed
+    /// on `(sessionId, seq)` cannot accidentally match the wrong row.
+    func testTwoOptimisticMessagesGetDistinctNegativeSeqs() throws {
+        let sessionId = UUID()
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "Test Session"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        try context.save()
+
+        let exp1 = XCTestExpectation(description: "first optimistic")
+        let exp2 = XCTestExpectation(description: "second optimistic")
+        syncManager.createOptimisticMessage(sessionId: sessionId, text: "first") { _ in
+            exp1.fulfill()
+        }
+        wait(for: [exp1], timeout: 2.0)
+
+        syncManager.createOptimisticMessage(sessionId: sessionId, text: "second") { _ in
+            exp2.fulfill()
+        }
+        wait(for: [exp2], timeout: 2.0)
+
+        let saveExpectation = XCTestExpectation(description: "Wait for saves")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            saveExpectation.fulfill()
+        }
+        wait(for: [saveExpectation], timeout: 1.0)
+
+        context.refreshAllObjects()
+        let messages = try context.fetch(CDMessage.fetchMessages(sessionId: sessionId))
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertTrue(messages.allSatisfy { $0.seq < 0 },
+                      "both optimistic rows must carry negative seqs (backend assigns positive)")
+        let seqs = Set(messages.map(\.seq))
+        XCTAssertEqual(seqs.count, 2,
+                       "two optimistic rows must have distinct seqs — no seq=0 collision")
+    }
 }

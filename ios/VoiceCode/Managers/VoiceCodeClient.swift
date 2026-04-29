@@ -1257,14 +1257,17 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
-    /// Highest `seq` value cached for the given session.
+    /// Highest backend-assigned `seq` cached for the given session.
     /// Used as the delta-sync cursor in protocol v0.4.0 — iOS sends this as `last_seq`
     /// on `subscribe` so the backend can stream only `seq > N` messages.
+    /// Optimistic rows carry a deterministic negative seq and are excluded from
+    /// the cursor so they don't poison `last_seq` on the wire.
     /// - Parameters:
     ///   - sessionId: Claude session ID (lowercase UUID string)
     ///   - context: Optional CoreData context for testing. Uses PersistenceController.shared.container.viewContext if nil.
-    /// - Returns: Max `seq` for the session, or `0` if the session has no messages or the ID is invalid.
-    ///   `0` is the documented "start from the beginning" sentinel on the wire.
+    /// - Returns: Max backend-assigned `seq` for the session, or `0` if no
+    ///   confirmed rows exist or the ID is invalid. `0` is the documented
+    ///   "start from the beginning" sentinel on the wire.
     func newestCachedSeq(sessionId: String, context: NSManagedObjectContext? = nil) -> Int64 {
         guard let sessionUUID = UUID(uuidString: sessionId) else {
             logger.warning("⚠️ [VoiceCodeClient] Invalid session ID for delta sync: \(sessionId)")
@@ -1273,7 +1276,7 @@ class VoiceCodeClient: ObservableObject {
 
         let ctx = context ?? PersistenceController.shared.container.viewContext
         let request = CDMessage.fetchRequest()
-        request.predicate = NSPredicate(format: "sessionId == %@", sessionUUID as CVarArg)
+        request.predicate = NSPredicate(format: "sessionId == %@ AND seq > 0", sessionUUID as CVarArg)
         request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.seq, ascending: false)]
         request.fetchLimit = 1
 
