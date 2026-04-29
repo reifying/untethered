@@ -701,8 +701,13 @@
         (is (= "msg1" (:text (first messages))))))))
 
 (deftest test-assign-seq-stamps-in-order
-  (testing "Stamps :seq in order starting at 1 for a fresh session"
-    (reset! repl/session-index {})
+  (testing "Stamps :seq in order starting at 1 for a freshly indexed session"
+    (reset! repl/session-index
+            {"sid-fresh" {:session-id "sid-fresh"
+                          :provider :claude
+                          :name "Fresh"
+                          :next-seq 1
+                          :min-available-seq 1}})
     (let [msgs [{:text "a"} {:text "b"} {:text "c"}]
           stamped (repl/assign-seq! "sid-fresh" msgs)]
       (is (= [1 2 3] (mapv :seq stamped)))
@@ -712,11 +717,19 @@
         (is (= 4 (:next-seq entry))
             ":next-seq advanced past the stamped range")
         (is (= 1 (:min-available-seq entry))
-            ":min-available-seq seeded to 1 on the stub entry")))))
+            ":min-available-seq preserved at 1")
+        (is (= :claude (:provider entry))
+            "Provider metadata preserved across the swap")
+        (is (= "Fresh" (:name entry))
+            "Name metadata preserved across the swap")))))
 
 (deftest test-assign-seq-second-call-continues
   (testing "Second call starts at the advanced :next-seq value"
-    (reset! repl/session-index {})
+    (reset! repl/session-index
+            {"sid-cont" {:session-id "sid-cont"
+                         :provider :claude
+                         :next-seq 1
+                         :min-available-seq 1}})
     (let [first-batch (repl/assign-seq! "sid-cont" [{:text "a"} {:text "b"}])
           second-batch (repl/assign-seq! "sid-cont" [{:text "c"} {:text "d"} {:text "e"}])]
       (is (= [1 2] (mapv :seq first-batch)))
@@ -726,7 +739,11 @@
 
 (deftest test-assign-seq-visible-via-index-getter
   (testing "Writes are visible via get-session-metadata"
-    (reset! repl/session-index {})
+    (reset! repl/session-index
+            {"sid-visible" {:session-id "sid-visible"
+                            :provider :claude
+                            :next-seq 1
+                            :min-available-seq 1}})
     (repl/assign-seq! "sid-visible" [{:text "x"}])
     (let [entry (repl/get-session-metadata "sid-visible")]
       (is (some? entry))
@@ -761,11 +778,24 @@
       (is (= [] (repl/assign-seq! "sid-noop" [])))
       (is (= [] (repl/assign-seq! "sid-noop" nil)))
       (is (= before @repl/session-index)
-          "Counter unchanged across empty and nil calls"))))
+          "Counter unchanged across empty and nil calls")))
+  (testing "Empty/nil input is a no-op even when the session is missing from the index"
+    ;; Empty/nil input has no work to do, so it should not throw —
+    ;; only the path that actually attempts to stamp seqs requires an
+    ;; indexed session.
+    (reset! repl/session-index {})
+    (is (= [] (repl/assign-seq! "missing-sid" [])))
+    (is (= [] (repl/assign-seq! "missing-sid" nil)))
+    (is (nil? (get @repl/session-index "missing-sid"))
+        "Empty/nil call did not create a stub entry for a missing session")))
 
 (deftest test-assign-seq-concurrent-no-duplicates
   (testing "Concurrent threads produce unique, contiguous seqs"
-    (reset! repl/session-index {})
+    (reset! repl/session-index
+            {"sid-concurrent" {:session-id "sid-concurrent"
+                               :provider :claude
+                               :next-seq 1
+                               :min-available-seq 1}})
     (let [n-threads 16
           n-each 25
           results (atom [])
@@ -788,7 +818,9 @@
 
 (deftest test-assign-seq-per-session-isolation
   (testing "Counters are independent per session"
-    (reset! repl/session-index {})
+    (reset! repl/session-index
+            {"sid-a" {:session-id "sid-a" :provider :claude :next-seq 1 :min-available-seq 1}
+             "sid-b" {:session-id "sid-b" :provider :claude :next-seq 1 :min-available-seq 1}})
     (let [a1 (repl/assign-seq! "sid-a" [{:text "a1"} {:text "a2"}])
           b1 (repl/assign-seq! "sid-b" [{:text "b1"}])
           a2 (repl/assign-seq! "sid-a" [{:text "a3"}])
@@ -800,44 +832,39 @@
       (is (= 4 (:next-seq (get @repl/session-index "sid-a"))))
       (is (= 4 (:next-seq (get @repl/session-index "sid-b")))))))
 
-(deftest test-assign-seq-warns-on-stub-creation
-  ;; The :each fixture sets the root logger to Level/OFF, which causes
-  ;; clojure.tools.logging's `enabled?` check to short-circuit before log*
-  ;; is invoked. Re-enable WARNING for the duration of these tests so the
-  ;; log capture fires.
-  (let [root-logger (Logger/getLogger "")
-        original-level (.getLevel root-logger)]
-    (try
-      (.setLevel root-logger Level/WARNING)
-      (testing "Warns when creating a stub entry for an unindexed session"
-        (reset! repl/session-index {})
-        (let [captured (atom [])]
-          (with-redefs [clojure.tools.logging/log*
-                        (fn [_ level _ msg]
-                          (swap! captured conj [level (str msg)]))]
-            (repl/assign-seq! "unindexed-sid" [{:text "a"}]))
-          (let [warn-entries (filter #(= :warn (first %)) @captured)]
-            (is (seq warn-entries)
-                "A warn log fires when assign-seq! creates a stub entry")
-            (is (some (fn [[_ msg]] (re-find #"unindexed-sid" msg)) warn-entries)
-                "The warn message includes the session-id"))))
+(deftest test-assign-seq-throws-on-missing-index-entry
+  ;; Regression for tmux-untethered-gf7: previously assign-seq! silently
+  ;; created a stub :session-index entry containing only :session-id /
+  ;; :next-seq / :min-available-seq, which then leaked through save-index!
+  ;; and surfaced as nil :provider/:file/:name to downstream code. Callers
+  ;; must now ensure-session-in-index! first; assign-seq! refuses to invent
+  ;; a session record on its own.
+  (testing "Throws ex-info when called for a session not in the index"
+    (reset! repl/session-index {})
+    (let [thrown (try
+                   (repl/assign-seq! "unindexed-sid" [{:text "a"}])
+                   (catch clojure.lang.ExceptionInfo e e))]
+      (is (instance? clojure.lang.ExceptionInfo thrown)
+          "assign-seq! must throw when the session is missing from the index")
+      (is (re-find #"unindexed session" (ex-message thrown))
+          "Exception message names the precondition that was violated")
+      (is (= "unindexed-sid" (:session-id (ex-data thrown)))
+          "ex-data carries the session-id so the caller can diagnose")
+      (is (= 1 (:message-count (ex-data thrown)))
+          "ex-data carries the dropped batch size"))
+    (is (nil? (get @repl/session-index "unindexed-sid"))
+        "No stub entry is created on the failed call — index stays clean"))
 
-      (testing "Does NOT warn when the session already has an index entry"
-        (reset! repl/session-index
-                {"existing-sid" {:session-id "existing-sid"
-                                 :provider :claude
-                                 :name "Test"
-                                 :next-seq 1
-                                 :min-available-seq 1}})
-        (let [captured (atom [])]
-          (with-redefs [clojure.tools.logging/log*
-                        (fn [_ level _ msg]
-                          (swap! captured conj [level (str msg)]))]
-            (repl/assign-seq! "existing-sid" [{:text "a"}]))
-          (is (empty? (filter #(= :warn (first %)) @captured))
-              "No warn when entry already exists")))
-      (finally
-        (.setLevel root-logger original-level)))))
+  (testing "Does not throw when the session already has an index entry"
+    (reset! repl/session-index
+            {"existing-sid" {:session-id "existing-sid"
+                             :provider :claude
+                             :name "Test"
+                             :next-seq 1
+                             :min-available-seq 1}})
+    (let [stamped (repl/assign-seq! "existing-sid" [{:text "a"}])]
+      (is (= [1] (mapv :seq stamped))
+          "Existing entry path stamps seqs as before"))))
 
 (deftest test-watcher-tick-concurrent-no-duplicate-seqs
   ;; A watcher tick is parse-jsonl-incremental + assign-seq! on the same
@@ -848,7 +875,6 @@
   ;; population — the per-session counter never hands the same seq to two
   ;; threads, and never leaves a gap in the assigned range.
   (testing "Concurrent watcher ticks on same JSONL file produce no duplicate seqs"
-    (reset! repl/session-index {})
     (reset! repl/file-positions {})
     (let [n-messages 30
           n-threads 8
@@ -859,6 +885,17 @@
           file (create-test-jsonl-file "watcher-concurrent.jsonl" messages)
           file-path (.getAbsolutePath file)
           session-id "sid-watcher-concurrent"
+          ;; Seed the index entry the watcher would have created via
+          ;; ensure-session-in-index! / handle-file-created. assign-seq!
+          ;; now requires this and won't conjure a stub on its own.
+          _ (reset! repl/session-index
+                    {session-id {:session-id session-id
+                                 :file file-path
+                                 :provider :claude
+                                 :name "Watcher Concurrent"
+                                 :message-count 0
+                                 :next-seq 1
+                                 :min-available-seq 1}})
           all-seqs (atom [])
           tasks (doall
                  (for [_ (range n-threads)]
@@ -877,19 +914,20 @@
       (doseq [t tasks] @t)
       (let [seqs @all-seqs
             total (count seqs)
-            distinct-count (count (distinct seqs))]
+            distinct-count (count (distinct seqs))
+            entry (get @repl/session-index session-id)]
         (is (= (* n-threads n-messages) total)
             "Each concurrent tick stamps every message it parsed")
         (is (= total distinct-count)
             "No duplicate seqs across concurrent watcher ticks")
         (is (= (range 1 (inc total)) (sort seqs))
             "Seqs span [1, total] contiguously with no gaps")
-        (is (= (inc total)
-               (:next-seq (get @repl/session-index session-id)))
+        (is (= (inc total) (:next-seq entry))
             ":next-seq advanced exactly past the highest stamped seq")
-        (is (= 1
-               (:min-available-seq (get @repl/session-index session-id)))
-            ":min-available-seq seeded to 1 on the stub entry")))))
+        (is (= 1 (:min-available-seq entry))
+            ":min-available-seq preserved at 1")
+        (is (= :claude (:provider entry))
+            "Provider metadata preserved across concurrent stamping")))))
 
 ;; ============================================================================
 ;; Seq Migration Tests (tmux-untethered-wyp)

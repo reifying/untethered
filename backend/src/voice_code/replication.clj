@@ -1178,8 +1178,12 @@
 
    Empty/nil input returns [] and leaves the counter untouched.
 
-   When the session is missing from the index (watcher race or not-yet-indexed
-   provider session), a minimal stub entry is created so the counter survives.
+   Throws `ex-info` if the session is not present in `session-index`. Callers
+   MUST call `ensure-session-in-index!` first; assign-seq! never creates the
+   entry on its own. A stub entry would lack `:provider` / `:file` / `:name`
+   and silently persist a malformed record via `save-index!`, breaking
+   downstream code that expects those fields (tmux-untethered-gf7).
+
    The counter write rides on the existing `save-index!` flush path — no
    separate flush cadence."
   [session-id parsed-messages]
@@ -1191,20 +1195,17 @@
             (swap-vals!
              session-index
              (fn [idx]
-               (let [entry (get idx session-id)
-                     s (or (:next-seq entry) 1)]
-                 (update idx session-id
-                         (fn [e]
-                           (-> (or e {:session-id session-id})
-                               (update :min-available-seq #(or % 1))
-                               (assoc :next-seq (+ s n))))))))
+               (if-let [entry (get idx session-id)]
+                 (let [s (or (:next-seq entry) 1)]
+                   (update idx session-id
+                           (fn [e]
+                             (-> e
+                                 (update :min-available-seq #(or % 1))
+                                 (assoc :next-seq (+ s n))))))
+                 (throw (ex-info "assign-seq! called for unindexed session; ensure-session-in-index! must be called first"
+                                 {:session-id session-id
+                                  :message-count n})))))
             start (or (:next-seq (get old session-id)) 1)]
-        (when-not (contains? old session-id)
-          ;; Upstream should have called ensure-session-in-index! first; log so
-          ;; the missing-index bug is diagnosable. The stub entry lacks
-          ;; :provider / :file / :name, which downstream code may need.
-          (log/warn "assign-seq! created stub entry for unindexed session"
-                    {:session-id session-id :stamped-count n}))
         (into []
               (map-indexed (fn [i m] (assoc m :seq (+ start i))))
               msgs)))))
