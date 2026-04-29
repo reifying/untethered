@@ -1197,11 +1197,37 @@ class VoiceCodeClient: ObservableObject {
     /// Correctness relies on `subscribe()` reading its cursor from CoreData —
     /// no in-memory "missed updates" queue, no disconnect flag. The durably
     /// persisted seq is the only source of truth.
-    func restoreSubscriptionsAfterReconnect() {
+    ///
+    /// Sessions the user has marked deleted (CDUserSession.isUserDeleted) are
+    /// filtered out and dropped from `activeSubscriptions`. The deleteSession
+    /// flow in SessionsForDirectoryView already calls `unsubscribe` so this
+    /// filter is defense-in-depth for any path that mutates isUserDeleted
+    /// without going through `unsubscribe`.
+    func restoreSubscriptionsAfterReconnect(context: NSManagedObjectContext? = nil) {
         guard !activeSubscriptions.isEmpty else { return }
-        print("🔄 [VoiceCodeClient] Restoring \(activeSubscriptions.count) subscription(s) after reconnection")
-        LogManager.shared.log("Restoring \(activeSubscriptions.count) subscription(s) after reconnection", category: "VoiceCodeClient")
-        for sessionId in activeSubscriptions {
+
+        let ctx = context ?? PersistenceController.shared.container.viewContext
+        let toRestore = activeSubscriptions.filter { sessionId in
+            guard let uuid = UUID(uuidString: sessionId) else { return true }
+            let request = CDUserSession.fetchUserSession(id: uuid)
+            if let userSession = try? ctx.fetch(request).first, userSession.isUserDeleted {
+                return false
+            }
+            return true
+        }
+
+        let dropped = activeSubscriptions.subtracting(toRestore)
+        if !dropped.isEmpty {
+            for sessionId in dropped {
+                logger.info("🧹 [VoiceCodeClient] Skipping reconnect-resubscribe for user-deleted session: \(sessionId)")
+            }
+            activeSubscriptions.subtract(dropped)
+        }
+
+        guard !toRestore.isEmpty else { return }
+        print("🔄 [VoiceCodeClient] Restoring \(toRestore.count) subscription(s) after reconnection")
+        LogManager.shared.log("Restoring \(toRestore.count) subscription(s) after reconnection", category: "VoiceCodeClient")
+        for sessionId in toRestore {
             subscribe(sessionId: sessionId)
         }
     }

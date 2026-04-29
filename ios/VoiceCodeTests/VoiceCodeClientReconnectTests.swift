@@ -100,4 +100,51 @@ final class VoiceCodeClientReconnectTests: XCTestCase {
 
         XCTAssertTrue(sent.isEmpty)
     }
+
+    /// A session marked CDUserSession.isUserDeleted=true must not be
+    /// resubscribed on reconnect, even if it lingers in `activeSubscriptions`
+    /// (e.g. deletion happened via a code path that bypassed `unsubscribe`,
+    /// or while the client was offline). The deleted entry must also be
+    /// dropped from `activeSubscriptions` so it doesn't survive future
+    /// reconnect cycles.
+    func testReconnectIgnoresUserDeletedSessions() throws {
+        let liveSession = UUID()
+        let deletedSession = UUID()
+        let liveSessionString = liveSession.uuidString.lowercased()
+        let deletedSessionString = deletedSession.uuidString.lowercased()
+
+        // Both sessions enter activeSubscriptions via the normal subscribe path.
+        client.subscribe(sessionId: liveSessionString)
+        client.subscribe(sessionId: deletedSessionString)
+
+        // Mark deletedSession as user-deleted in the test context.
+        let userSession = CDUserSession(context: context)
+        userSession.id = deletedSession
+        userSession.isUserDeleted = true
+        userSession.createdAt = Date()
+        try context.save()
+
+        // Capture only reconnect-initiated sends.
+        var sent: [[String: Any]] = []
+        client.onMessageSent = { sent.append($0) }
+
+        client.restoreSubscriptionsAfterReconnect(context: context)
+
+        let subscribeMessages = sent.filter { ($0["type"] as? String) == "subscribe" }
+        XCTAssertEqual(subscribeMessages.count, 1,
+                       "Expected only the live session to be resubscribed; deleted session must be filtered")
+
+        let sessionIds = subscribeMessages.compactMap { $0["session_id"] as? String }
+        XCTAssertEqual(sessionIds, [liveSessionString])
+        XCTAssertFalse(sessionIds.contains(deletedSessionString),
+                       "Deleted session must not appear in any reconnect subscribe")
+
+        // Subsequent reconnects must not re-attempt the deleted session.
+        sent.removeAll()
+        client.restoreSubscriptionsAfterReconnect(context: context)
+        let secondPass = sent.filter { ($0["type"] as? String) == "subscribe" }
+        let secondPassIds = secondPass.compactMap { $0["session_id"] as? String }
+        XCTAssertFalse(secondPassIds.contains(deletedSessionString),
+                       "Deleted session must be dropped from activeSubscriptions, not re-evaluated each reconnect with stale state")
+    }
 }
