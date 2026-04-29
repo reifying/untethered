@@ -3,6 +3,7 @@
 // append-only message stream design).
 
 import XCTest
+import CoreData
 import SwiftUI
 @testable import VoiceCode
 
@@ -243,5 +244,115 @@ final class SessionSyncManagerPrunedGapTests: XCTestCase {
             client.prunedGaps[sessionId.lowercased()] != nil
         }
         XCTAssertEqual(client.prunedGaps[sessionId.lowercased()]?.minAvailableSeq, 50)
+    }
+
+    // MARK: - Full recovery flow (pruned gap → dismiss → refresh)
+
+    /// End-to-end pruned-gap recovery (tmux-untethered-09a):
+    ///
+    /// 1. A pruned-gap `session_history` lands. The published `prunedGaps`
+    ///    entry is set on the client AND no rows are merged into CoreData
+    ///    (the manager returns before touching the upsert path).
+    /// 2. The user dismisses the warning via `VoiceCodeClient.dismissPrunedGap`.
+    ///    The flag is cleared.
+    /// 3. A fresh non-gap `session_history` arrives (the post-refresh subscribe
+    ///    reply). It must merge normally — the manager has no persistent
+    ///    "blocked" state past the single pruned payload — and the gap flag
+    ///    must stay clear.
+    func test_prunedGap_thenDismiss_thenRefresh_clearsFlagAndMergesNewPayload() {
+        let persistenceController = PersistenceController(inMemory: true)
+        let manager = SessionSyncManager(persistenceController: persistenceController)
+        let client = VoiceCodeClient(serverURL: "ws://localhost",
+                                     sessionSyncManager: manager,
+                                     setupObservers: false)
+
+        let sessionId = "11112222-3333-4444-5555-666666666666"
+        let sessionUUID = UUID(uuidString: sessionId)!
+        let lowerKey = sessionId.lowercased()
+
+        // 1. Inject pruned gap. Server has min_available_seq=200; client asked
+        //    for last_seq=5 (way behind). Payload carries no messages per the
+        //    design contract.
+        let pruned = prunedPayload(sessionId: sessionId,
+                                   requested: 5,
+                                   minAvailable: 200)
+
+        manager.handleSessionHistoryPayload(pruned)
+
+        waitForMainQueue(timeout: 2.0) {
+            client.prunedGaps[lowerKey] != nil
+        }
+        XCTAssertEqual(client.prunedGaps[lowerKey]?.requestedLastSeq, 5)
+        XCTAssertEqual(client.prunedGaps[lowerKey]?.minAvailableSeq, 200)
+        XCTAssertEqual(client.prunedGaps[lowerKey]?.reason, "pruned")
+
+        // Drain to make sure no background merge sneaks in after the delegate
+        // hop — pruned must short-circuit before the persistence task runs.
+        drainMainQueue(for: 0.3)
+
+        let viewContext = persistenceController.container.viewContext
+        XCTAssertEqual(messagesForSession(sessionUUID, in: viewContext).count, 0,
+                       "pruned-gap payload must NOT merge any messages")
+
+        // 2. User dismisses the banner.
+        client.dismissPrunedGap(sessionId: sessionId)
+        XCTAssertNil(client.prunedGaps[lowerKey],
+                     "dismiss must clear the published gap entry")
+
+        // 3. Refresh: a fresh session_history arrives carrying messages from
+        //    the new server-side range (seqs 200..201, contiguous from
+        //    min_available_seq). It must merge normally.
+        let refresh = SessionHistoryPayload(
+            sessionId: sessionId,
+            messages: [
+                WireMessage(sessionId: sessionId,
+                            seq: 200,
+                            role: "assistant",
+                            text: "after-refresh-200",
+                            uuid: UUID().uuidString.lowercased(),
+                            timestamp: Date(timeIntervalSince1970: 200)),
+                WireMessage(sessionId: sessionId,
+                            seq: 201,
+                            role: "user",
+                            text: "after-refresh-201",
+                            uuid: UUID().uuidString.lowercased(),
+                            timestamp: Date(timeIntervalSince1970: 201))
+            ],
+            firstSeq: 200,
+            lastSeq: 201,
+            nextSeq: 202,
+            isComplete: true,
+            gap: nil
+        )
+
+        let merged = expectation(forNotification: .sessionHistoryDidUpdate,
+                                 object: nil,
+                                 handler: { note in
+            (note.userInfo?["sessionId"] as? String) == sessionId
+        })
+
+        manager.handleSessionHistoryPayload(refresh)
+        wait(for: [merged], timeout: 2.0)
+        drainMainQueue(for: 0.2)
+
+        // Gap flag stays cleared — a clean payload must not re-introduce it.
+        XCTAssertNil(client.prunedGaps[lowerKey],
+                     "non-gap payload after dismiss must not re-set prunedGaps")
+
+        // Messages now in the store with the right seq ordering.
+        let rows = messagesForSession(sessionUUID, in: viewContext)
+        XCTAssertEqual(rows.map(\.seq), [200, 201],
+                       "post-dismiss refresh payload must merge normally")
+        XCTAssertEqual(rows.first(where: { $0.seq == 200 })?.text, "after-refresh-200")
+        XCTAssertEqual(rows.first(where: { $0.seq == 201 })?.text, "after-refresh-201")
+    }
+
+    private func messagesForSession(_ sessionId: UUID,
+                                    in context: NSManagedObjectContext) -> [CDMessage] {
+        context.refreshAllObjects()
+        let request = CDMessage.fetchRequest()
+        request.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.seq, ascending: true)]
+        return (try? context.fetch(request)) ?? []
     }
 }
