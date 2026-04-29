@@ -2427,6 +2427,74 @@
       (is (nil? (:last-seq result)))
       (is (nil? (:gap result))))))
 
+(deftest test-build-session-history-resubscribe-cursor-continuity
+  (testing "Two consecutive windows cover the full range with no gap and no overlap"
+    ;; 10 messages, budget=1500 → ~5 messages fit per window. The cursor returned
+    ;; from window 1 (:last-seq) is fed back as last-seq for window 2.
+    (let [messages (vec (for [i (range 10)]
+                          {:seq (inc i)
+                           :uuid (str "m-" i)
+                           :text (apply str (repeat 200 "x"))}))
+          next-seq 11
+          window1 (server/build-session-history-response messages 0 1500 1 next-seq)
+          window2 (server/build-session-history-response messages
+                                                         (:last-seq window1)
+                                                         1500
+                                                         1
+                                                         next-seq)
+          combined (into (:messages window1) (:messages window2))
+          combined-seqs (mapv :seq combined)]
+      ;; Window 1 is partial (budget exhausted before all 10 messages packed).
+      (is (false? (:is-complete window1)))
+      (is (pos? (count (:messages window1))))
+      (is (< (count (:messages window1)) (count messages)))
+      (is (= 1 (:first-seq window1)))
+      ;; Window 2 starts immediately after window 1 — no gap, no overlap.
+      (is (= (inc (:last-seq window1)) (:first-seq window2)))
+      ;; Together they cover every seq from 1..10 exactly once, in ascending order.
+      (is (= (mapv :seq messages) combined-seqs))
+      (is (= (count messages) (count combined)))
+      (is (= (count (set combined-seqs)) (count combined-seqs)))
+      ;; The second window completes the range and reports caught-up.
+      (is (true? (:is-complete window2)))
+      (is (= (count messages) (:last-seq window2)))))
+
+  (testing "Repeated re-subscription with tiny budget eventually covers all messages"
+    ;; Stress-test the cursor contract: budget=500 forces 1 message per window.
+    ;; Looping with the returned :last-seq must walk the full range with no
+    ;; gaps and no duplicates, even across many windows.
+    (let [messages (vec (for [i (range 10)]
+                          {:seq (inc i)
+                           :uuid (str "m-" i)
+                           :text (apply str (repeat 200 "x"))}))
+          next-seq 11
+          collected (loop [last-seq 0
+                           acc []
+                           iters 0]
+                      (if (>= iters 50)
+                        (throw (ex-info "did not converge" {:acc acc}))
+                        (let [r (server/build-session-history-response messages
+                                                                       last-seq
+                                                                       500
+                                                                       1
+                                                                       next-seq)]
+                          (cond
+                            ;; Caught up — done.
+                            (and (:is-complete r) (empty? (:messages r)))
+                            acc
+                            ;; A window that returns no messages but is incomplete
+                            ;; would mean the next message is larger than the budget.
+                            ;; Not the case here, but guard against an infinite loop.
+                            (empty? (:messages r))
+                            (throw (ex-info "non-progressing window" {:r r}))
+                            :else
+                            (recur (:last-seq r)
+                                   (into acc (:messages r))
+                                   (inc iters))))))
+          collected-seqs (mapv :seq collected)]
+      (is (= (mapv :seq messages) collected-seqs))
+      (is (= (count (set collected-seqs)) (count collected-seqs))))))
+
 ;; The v0.3.0 delta-sync / backward-compat tests have been superseded by the
 ;; v0.4.0 subscribe tests earlier in this file:
 ;;   - test-subscribe-sends-messages-within-size-budget  (no cursor → full range)
