@@ -549,6 +549,70 @@
             "cursor advances fully when the buffer ends in \\n, regardless of nil parses"))
       (repl/reset-file-position! file-path))))
 
+(deftest parse-jsonl-incremental-cursor-reset-after-shrink
+  ;; Regression for tmux-untethered-df2: claude --compact and similar
+  ;; operations rewrite the JSONL file in place, leaving it smaller than
+  ;; before. Without truncation detection, the tracked cursor points past
+  ;; the new EOF and every post-shrink append is silently skipped. This
+  ;; test simulates the rewrite (truncate + append) and asserts the cursor
+  ;; resets to 0, the (now-deleted) old messages are not re-emitted, and
+  ;; the new content is parsed exactly once.
+  (testing "File truncated then appended: cursor resets to 0 and parses only new content"
+    (let [file (io/file test-dir "shrink-recover.jsonl")
+          file-path (.getAbsolutePath file)]
+      (io/make-parents file)
+      (repl/reset-file-position! file-path)
+
+      ;; 1. Initial state: two messages, cursor advances to EOF.
+      (spit file (str (claude-jsonl {:type "user" :text "old-1" :uuid "u-old-1"}) "\n"
+                      (claude-jsonl {:type "assistant" :text "old-2" :uuid "u-old-2"}) "\n"))
+      (let [initial-len (.length file)
+            {:keys [messages new-pos]} (repl/parse-jsonl-incremental file-path)]
+        (is (= 2 (count messages))
+            "Initial parse returns both pre-shrink messages")
+        (is (= initial-len new-pos)
+            "Cursor advances to end of file")
+        (swap! repl/file-positions assoc file-path new-pos))
+
+      (let [tracked-before (get @repl/file-positions file-path)]
+        (is (pos? tracked-before)
+            "Cursor is non-zero before truncation"))
+
+      ;; 2. Simulate compaction: rewrite file with strictly less content.
+      ;;    Delete + recreate is the simplest way to drop the on-disk size
+      ;;    below the tracked cursor.
+      (.delete file)
+      (spit file (str (claude-jsonl {:type "user" :text "new-1" :uuid "u-new-1"}) "\n"))
+      (let [new-len (.length file)
+            tracked (get @repl/file-positions file-path)]
+        (is (< new-len tracked)
+            "Test precondition: new file is smaller than tracked cursor"))
+
+      ;; 3. Parse after shrink — cursor must reset to 0 and read the new file.
+      (let [shrunk-len (.length file)
+            {:keys [messages new-pos]} (repl/parse-jsonl-incremental file-path)
+            uuids (mapv :uuid messages)]
+        (is (= 1 (count messages))
+            "Only the post-shrink message is returned; cursor was reset to 0")
+        (is (= ["u-new-1"] uuids)
+            "Old messages are NOT re-emitted (they were physically deleted from disk)")
+        (is (= shrunk-len new-pos)
+            "Cursor advances to current EOF, not to the stale tracked position")
+        (swap! repl/file-positions assoc file-path new-pos))
+
+      ;; 4. Subsequent appends from the new cursor work normally
+      ;;    (no further re-parsing of the post-shrink content).
+      (spit file (str (claude-jsonl {:type "assistant" :text "new-2" :uuid "u-new-2"}) "\n")
+            :append true)
+      (let [{:keys [messages new-pos]} (repl/parse-jsonl-incremental file-path)]
+        (is (= 1 (count messages))
+            "Only the newly appended message is returned, not the prior post-shrink one")
+        (is (= "u-new-2" (:uuid (first messages))))
+        (is (= (.length file) new-pos)
+            "Cursor tracks subsequent appends correctly"))
+
+      (repl/reset-file-position! file-path))))
+
 (deftest test-reset-file-position
   (testing "Reset file position clears tracking"
     (let [messages ["{\"role\":\"user\",\"text\":\"msg1\"}"]

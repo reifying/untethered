@@ -1091,6 +1091,12 @@
   (legitimately non-message entries such as sidechain/summary/system) is still
   fully consumed — only truly partial writes hold the cursor back.
 
+  File-shrink recovery: if the on-disk file is smaller than the tracked
+  position (e.g. `claude --compact` rewrote the JSONL in place), the cursor
+  is reset to 0 and the entire current file is re-read. Without this reset
+  the cursor would point past EOF and every post-shrink message would be
+  silently skipped.
+
   Emits two counters via `emit-metric!` when any complete lines were processed:
   `:jsonl-lines-total` (every newline-terminated line seen) and, when positive,
   `:jsonl-parse-failures` (non-blank lines that `parse-jsonl-line` rejected).
@@ -1104,8 +1110,15 @@
   [file-path]
   (try
     (let [file (io/file file-path)
-          last-pos (get @file-positions file-path 0)
-          current-size (.length file)]
+          tracked-pos (get @file-positions file-path 0)
+          current-size (.length file)
+          shrunk? (< current-size tracked-pos)
+          last-pos (if shrunk? 0 tracked-pos)]
+      (when shrunk?
+        (log/warn "JSONL file shrank below tracked cursor; resetting to 0"
+                  {:file file-path
+                   :tracked-pos tracked-pos
+                   :current-size current-size}))
       (if (<= current-size last-pos)
         {:messages [] :new-pos last-pos}
         (with-open [raf (RandomAccessFile. file "r")]
