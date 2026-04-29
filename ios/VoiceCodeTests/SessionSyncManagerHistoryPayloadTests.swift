@@ -327,6 +327,69 @@ final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
                        "overlapping deliveries still yield contiguous, unique seqs")
     }
 
+    func test_concurrent_payloads_for_same_session_produce_one_row_per_seq() {
+        // Simulates two payloads landing on the same session at the same time
+        // — e.g. a subscribe reply crossing a live `session_history` push, or
+        // two backfill requests dispatched in quick succession. Each payload
+        // is delivered on its own queue so they execute against independent
+        // background contexts in parallel. End-state contract: exactly one
+        // row per seq (idempotent on (session_id, seq) per AC3 of the
+        // append-only message stream design).
+        //
+        // CURRENTLY FAILING — the upsert path does fetch-then-create against
+        // independent stale snapshots, so overlapping seqs land twice. Tracked
+        // by tmux-untethered-prf; remove XCTExpectFailure once that lands.
+        XCTExpectFailure("tmux-untethered-prf: concurrent upserts produce duplicate rows for overlapping seqs")
+
+        seedSession(seqs: 1...5)
+
+        // Overlapping seq ranges. Each payload carries seqs the other does
+        // NOT, so both reliably post `sessionHistoryDidUpdate` regardless of
+        // which one writes first — letting us wait deterministically for
+        // both background saves to complete via expectedFulfillmentCount.
+        let aMessages = (6...10).map { wireMessage(seq: Int64($0), text: "A-\($0)") }
+        let bMessages = (8...12).map { wireMessage(seq: Int64($0), text: "B-\($0)") }
+        let pA = payload(firstSeq: 6, lastSeq: 10, nextSeq: 13,
+                         isComplete: true, messages: aMessages)
+        let pB = payload(firstSeq: 8, lastSeq: 12, nextSeq: 13,
+                         isComplete: true, messages: bMessages)
+
+        let exp = expectation(forNotification: .sessionHistoryDidUpdate,
+                              object: nil,
+                              handler: { note in
+            (note.userInfo?["sessionId"] as? String) == self.sessionIdString
+        })
+        exp.expectedFulfillmentCount = 2
+        exp.assertForOverFulfill = false
+
+        // Fire both payloads concurrently from separate global queues so
+        // they enter `performBackgroundTask` from different threads.
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.manager.handleSessionHistoryPayload(pA)
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.manager.handleSessionHistoryPayload(pB)
+        }
+
+        wait(for: [exp], timeout: 5.0)
+        drainMainQueue(for: 0.3)
+
+        let seqs = fetchMessages().map(\.seq)
+        XCTAssertEqual(seqs, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+                       "concurrent overlapping payloads must collapse to one row per seq")
+
+        let countsBySeq = Dictionary(seqs.map { ($0, 1) }, uniquingKeysWith: +)
+        for (s, count) in countsBySeq {
+            XCTAssertEqual(count, 1,
+                           "seq \(s) appeared \(count) times — concurrent upsert produced a duplicate row")
+        }
+
+        XCTAssertTrue(delegate.resubscribes.isEmpty,
+                      "happy-path concurrent delivery must not trigger backfill")
+        XCTAssertTrue(delegate.prunedGaps.isEmpty,
+                      "no pruned gap on a happy-path payload")
+    }
+
     // MARK: - client_ahead gap (full-resync path)
 
     func test_client_ahead_gap_merges_messages_and_does_not_fire_pruned_delegate() {
