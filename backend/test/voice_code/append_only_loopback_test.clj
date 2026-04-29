@@ -486,3 +486,50 @@
           (is (nil? (:gap reply))
               "gap is nil — last_seq=0 equals min_available_seq-1, so the
                server treats this as caught-up rather than pruned"))))))
+
+(deftest test-subscribe-pruned-gap-from-session-index
+  (testing "Subscribe handler reads :min-available-seq from session-index
+           metadata. When the index reports a pruned range (e.g. seqs 1..150
+           dropped after compaction), a client cursor below min-available-seq-1
+           gets a session_history reply with gap.reason='pruned' instead of
+           silently receiving a partial view.
+
+           Regression for tmux-untethered-1ob: previously the handler hardcoded
+           min-available-seq=1, so the pruned-gap branch never fired."
+    (let [session-id "550e8400-e29b-41d4-a716-446655440730"
+          ;; Seed the file with two messages that the shim will stamp as
+          ;; seqs 1 and 2 in list order.
+          seed-lines [(claude-assistant-line {:uuid "post-prune-1" :text "hi"})
+                      (claude-assistant-line {:uuid "post-prune-2" :text "again"})]
+          file (create-session-jsonl session-id seed-lines)
+          captured (atom {})
+          ch :chan-pruned]
+      (seed-session-index! session-id file seed-lines)
+      ;; Simulate post-compaction state: the session index reports that
+      ;; everything below seq 200 has been pruned. The client's last_seq=0
+      ;; cursor is far below this, so subscribe must return a pruned gap.
+      (swap! repl/session-index assoc-in [session-id :min-available-seq] 200)
+      (wire-broadcast-callback! session-id)
+      (register-client! ch session-id)
+
+      (with-redefs [org.httpkit.server/send! (capture-sends captured)]
+        (server/handle-message ch
+                               (json/generate-string
+                                {:type "subscribe"
+                                 :session_id session-id
+                                 :last_seq 0}))
+
+        (let [reply (first (history-msgs-for @captured ch))]
+          (is (some? reply)
+              "subscribe emits a session_history reply even on pruned gap")
+          (is (= [] (:messages reply))
+              "pruned reply carries no messages")
+          (is (nil? (:first_seq reply)))
+          (is (nil? (:last_seq reply)))
+          (is (true? (:is_complete reply)))
+          (is (some? (:gap reply))
+              "gap is populated — handler read :min-available-seq from index
+               instead of hardcoding 1")
+          (is (= "pruned" (get-in reply [:gap :reason])))
+          (is (= 0 (get-in reply [:gap :requested_last_seq])))
+          (is (= 200 (get-in reply [:gap :min_available_seq]))))))))

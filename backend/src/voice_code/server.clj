@@ -1622,7 +1622,9 @@
                                next-seq :next-seq
                                gap :gap}
                               (build-session-history-response stamped client-last-seq
-                                                              max-bytes 1 session-next-seq)
+                                                              max-bytes
+                                                              (or (:min-available-seq metadata) 1)
+                                                              session-next-seq)
                               wire-messages (mapv #(assoc % :session-id session-id) response-msgs)]
                           (log/info "Sending session history"
                                     {:session-id session-id
@@ -1659,7 +1661,9 @@
                                first-seq :first-seq
                                last-seq :last-seq}
                               (build-session-history-response stamped client-last-seq
-                                                              max-bytes 1 session-next-seq)
+                                                              max-bytes
+                                                              (or (:min-available-seq metadata) 1)
+                                                              session-next-seq)
                               oldest-message-id (when first-seq
                                                   (some (fn [m]
                                                           (when (= (:seq m) first-seq)
