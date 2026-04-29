@@ -572,6 +572,117 @@ final class VoiceCodeClientDeltaSyncTests: XCTestCase {
         XCTAssertEqual(lastId2, message2Id.uuidString.lowercased())
     }
 
+    // MARK: - newestCachedSeq Production Path (tmux-untethered-igh)
+
+    /// Smoke-tests the production code path of `newestCachedSeq` — i.e. the
+    /// `context: nil` branch that opens a fresh `newBackgroundContext()` from
+    /// the supplied (or shared) container and reads through the persistent
+    /// store coordinator. The other tests in this file pass `context:`, which
+    /// short-circuits that branch.
+    ///
+    /// Why the production path matters: `SessionSyncManager` writes via
+    /// background contexts. Their saves post `NSManagedObjectContextDidSave`,
+    /// which `PersistenceController` merges into `viewContext`
+    /// asynchronously on the main queue (the observer is registered with
+    /// `queue: .main`, so the merge closure is enqueued rather than run
+    /// inline). If `subscribe()` runs in the same main-queue turn that
+    /// posted the notification, `viewContext`'s in-memory state can lag the
+    /// persistent store. Reading through a fresh background context bypasses
+    /// that lag entirely — see `newestCachedSeq`'s doc comment and beads
+    /// `tmux-untethered-igh`. Reproducing the lag deterministically in a
+    /// unit test is racy (Core Data's auto-merge is sometimes prompt enough
+    /// that `viewContext` sees the write before any assertion runs), so this
+    /// test settles for pinning the contract the fix establishes: when the
+    /// caller does not supply a context, the function reads through the
+    /// supplied container's coordinator and returns whatever has been
+    /// committed there.
+    func testNewestCachedSeqProductionPathReadsThroughContainer() throws {
+        let isolated = PersistenceController(inMemory: true)
+        let sessionId = UUID()
+        let sessionIdString = sessionId.uuidString.lowercased()
+
+        // Seed via a background context, mirroring how SessionSyncManager
+        // writes in production. After `performAndWait` returns, the row is
+        // committed to the persistent store coordinator.
+        let bgCtx = isolated.container.newBackgroundContext()
+        bgCtx.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        var writeError: Error?
+        bgCtx.performAndWait {
+            let fresh = CDMessage(context: bgCtx)
+            fresh.id = UUID()
+            fresh.sessionId = sessionId
+            fresh.role = "assistant"
+            fresh.text = "post-background-save"
+            fresh.seq = 99
+            fresh.timestamp = Date()
+            fresh.messageStatus = .confirmed
+            do {
+                try bgCtx.save()
+            } catch {
+                writeError = error
+            }
+        }
+        XCTAssertNil(writeError, "background save must succeed: \(String(describing: writeError))")
+
+        // Production path: no `context:` override. The function must spin
+        // up its own `newBackgroundContext()` from the supplied container
+        // and return what the coordinator has committed. A regression that
+        // routed this through `viewContext` would still pass *this* test
+        // when auto-merge is prompt, but would fail under the timing where
+        // the bug originally surfaced (see beads tmux-untethered-igh).
+        let observed = client.newestCachedSeq(sessionId: sessionIdString, container: isolated.container)
+        XCTAssertEqual(observed, 99,
+                       "newestCachedSeq's production path must surface the latest committed seq from the supplied container. Got \(observed); expected 99.")
+    }
+
+    /// Defense-in-depth check: with the `viewContext` cache deliberately
+    /// scrubbed, the production path still finds the persisted row.
+    ///
+    /// `viewContext.reset()` invalidates every in-memory managed object
+    /// without touching the persistent store. If `newestCachedSeq` were
+    /// (re-)wired to read through `viewContext`, this test would still
+    /// succeed because Core Data fetches re-hit the coordinator after a
+    /// reset — but it would *also* succeed if a regression caused the
+    /// function to return `0` from a stale in-memory cache. So the value
+    /// of the test is twofold: it pins that the production branch is
+    /// resilient to viewContext-cache disruption, and it locks in the
+    /// `container:` injection seam used elsewhere.
+    func testNewestCachedSeqProductionPathSurvivesViewContextReset() throws {
+        let isolated = PersistenceController(inMemory: true)
+        let sessionId = UUID()
+        let sessionIdString = sessionId.uuidString.lowercased()
+
+        let bgCtx = isolated.container.newBackgroundContext()
+        bgCtx.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        var writeError: Error?
+        bgCtx.performAndWait {
+            let row = CDMessage(context: bgCtx)
+            row.id = UUID()
+            row.sessionId = sessionId
+            row.role = "assistant"
+            row.text = "fresh"
+            row.seq = 7
+            row.timestamp = Date()
+            row.messageStatus = .confirmed
+            do {
+                try bgCtx.save()
+            } catch {
+                writeError = error
+            }
+        }
+        XCTAssertNil(writeError, "background save must succeed: \(String(describing: writeError))")
+
+        // Drop any in-memory state viewContext may have accumulated from
+        // auto-merge. The persistent store still has seq=7.
+        isolated.container.viewContext.performAndWait {
+            isolated.container.viewContext.reset()
+        }
+
+        let observed = client.newestCachedSeq(sessionId: sessionIdString, container: isolated.container)
+        XCTAssertEqual(observed, 7,
+                       "Production path must read from the coordinator, not a stale viewContext cache. Got \(observed); expected 7.")
+    }
+
     // MARK: - Subscribe-Before-Connect Buffering
 
     /// `handleMessage` dispatches its switch to the main queue. Tests that
