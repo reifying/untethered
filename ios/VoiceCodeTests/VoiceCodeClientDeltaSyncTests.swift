@@ -523,4 +523,75 @@ final class VoiceCodeClientDeltaSyncTests: XCTestCase {
         XCTAssertEqual(lastId1, message1Id.uuidString.lowercased())
         XCTAssertEqual(lastId2, message2Id.uuidString.lowercased())
     }
+
+    // MARK: - Subscribe-Before-Connect Buffering
+
+    /// `handleMessage` dispatches its switch to the main queue. Tests that
+    /// drive it directly must drain one tick before reading state set by the
+    /// dispatched closure, or assertions race the handler.
+    private func drainMainQueue(timeout: TimeInterval = 1.0) {
+        let expectation = XCTestExpectation(description: "main queue drained")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: timeout)
+    }
+
+    /// A subscribe issued while the WebSocket is down (isConnected=false,
+    /// webSocket=nil) must not be silently dropped — it must be buffered into
+    /// `activeSubscriptions` and re-fired once the hello → connected handshake
+    /// completes (the `connected` handler calls
+    /// `restoreSubscriptionsAfterReconnect`, which iterates the buffer).
+    ///
+    /// This pins the contract for callers that race the connection: a view
+    /// that subscribes during cold start (or while a flap is in progress)
+    /// can rely on the subscription surviving until the socket is up.
+    func testSubscribeBeforeConnectIsBufferedAndSentDuringHandshake() throws {
+        let sessionId = UUID().uuidString.lowercased()
+
+        // Precondition: client starts disconnected. This is what setUp
+        // produces — no `connect()` call, no socket, no hello yet.
+        XCTAssertFalse(client.isConnected,
+                       "Test precondition: client must start disconnected so subscribe() runs in the buffered path")
+
+        // Subscribe while disconnected. Capture is intentionally not armed
+        // yet, so this call's onMessageSent invocation is dropped — we want
+        // the assertion below to reflect only the reconnect-driven send.
+        client.subscribe(sessionId: sessionId)
+
+        // Arm capture for handshake-driven sends only.
+        var sent: [[String: Any]] = []
+        client.onMessageSent = { sent.append($0) }
+
+        // Drive the handshake. Hello flips isConnected=true; connected runs
+        // restoreSubscriptionsAfterReconnect, which re-fires subscribe() for
+        // every session in activeSubscriptions.
+        let hello: [String: Any] = [
+            "type": "hello",
+            "message": "Welcome",
+            "version": VoiceCodeClient.supportedProtocolVersion,
+            "auth_version": 1,
+            "instructions": "Send connect"
+        ]
+        client.handleMessage(String(data: try JSONSerialization.data(withJSONObject: hello),
+                                    encoding: .utf8)!)
+        drainMainQueue()
+
+        let connected: [String: Any] = [
+            "type": "connected",
+            "message": "Session registered",
+            "session_id": sessionId
+        ]
+        client.handleMessage(String(data: try JSONSerialization.data(withJSONObject: connected),
+                                    encoding: .utf8)!)
+        drainMainQueue()
+
+        let subscribeMessages = sent.filter { ($0["type"] as? String) == "subscribe" }
+        XCTAssertFalse(subscribeMessages.isEmpty,
+                       "subscribe() called with isConnected=false must not be silently dropped — restoreSubscriptionsAfterReconnect should re-fire it after the handshake")
+
+        let subscribedIds = subscribeMessages.compactMap { $0["session_id"] as? String }
+        XCTAssertTrue(subscribedIds.contains(sessionId),
+                      "Buffered subscription for \(sessionId) must be re-fired during reconnect resubscribe; got: \(subscribedIds)")
+    }
 }
