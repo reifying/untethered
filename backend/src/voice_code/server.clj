@@ -1586,6 +1586,16 @@
           ;; Authentication succeeded, proceed with connect logic
           (log/info "Client connected and authenticated")
 
+          ;; Send connected confirmation per STANDARDS.md protocol.
+          ;; iOS only sets isAuthenticated=true on receipt of this message;
+          ;; without it, subscribe() defers forever and session_history
+          ;; pushes never reach the client.
+          (http/send! channel
+                      (generate-json
+                       {:type :connected
+                        :message "Session registered"
+                        :session-id (:session-id data)}))
+
           ;; Register client with initial state (merge to preserve :authenticated flag)
           (let [limit (or (:recent-sessions-limit data) 5)]
             (swap! connected-clients update channel merge

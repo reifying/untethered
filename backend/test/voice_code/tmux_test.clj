@@ -169,9 +169,9 @@
                     (cond
                       (some #{"capture-pane"} args)
                       (case @state
-                        :dialog  {:exit 0 :out resume-dialog-pane :err ""}
+                        :dialog {:exit 0 :out resume-dialog-pane :err ""}
                         :loading {:exit 0 :out "Loading..." :err ""}
-                        :ready   {:exit 0 :out "> prompt\n? for shortcuts · bypass permissions" :err ""})
+                        :ready {:exit 0 :out "> prompt\n? for shortcuts · bypass permissions" :err ""})
                       (and (some #{"send-keys"} args)
                            (some #{"-l"} args)
                            (some #{"3"} args))
@@ -674,6 +674,51 @@
                                :workdir "/tmp/proj"}))
         (is (seq @kill-window-calls) "expected kill-window to be called for evicted window")))))
 
+(deftest start-window!-timeout-test
+  (testing "throws ex-info when wait-for-ready times out, and does not nudge"
+    (let [uuid "ffffffff-0000-0000-0000-000000000000"
+          nudge-send-keys (atom [])
+          invoker (fn [& args]
+                    ;; Track literal send-keys (prompt nudges) specifically
+                    (when (and (some #{"send-keys"} args) (some #{"-l"} args))
+                      (swap! nudge-send-keys conj (vec args)))
+                    (cond
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      (some #{"list-windows"} args) {:exit 0 :out "_holder\n" :err ""}
+                      (some #{"show-environment"} args) {:exit 0 :out "" :err ""}
+                      ;; capture-pane: never shows readiness string — always blank
+                      (some #{"capture-pane"} args) {:exit 0 :out "" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (with-redefs [voice-code.providers/cli-path (constantly "/usr/bin/claude")
+                      voice-code.providers/session-metadata (constantly nil)
+                      ;; Short-circuit the 20s production default so tests
+                      ;; exercise the timeout path quickly.
+                      tmux/wait-for-ready (fn [& _] :timeout)]
+          (let [thrown (try
+                         (tmux/start-window! {:session-uuid uuid
+                                              :session-name "Test"
+                                              :provider :claude
+                                              :workdir "/tmp/proj"
+                                              :initial-prompt "Do the thing"})
+                         nil
+                         (catch clojure.lang.ExceptionInfo e e))]
+            (is (some? thrown) "expected start-window! to throw on readiness timeout")
+            (is (= :wait-for-ready-timeout (:kind (ex-data thrown)))
+                "ex-info should be tagged with :kind :wait-for-ready-timeout")
+            (is (= uuid (:session-uuid (ex-data thrown))))
+            (is (= :claude (:provider (ex-data thrown)))))
+          (is (empty? @nudge-send-keys)
+              "initial-prompt must not be nudged when TUI readiness times out"))))))
+
+(deftest wait-for-ready-default-timeout-test
+  (testing "default :timeout-ms is the 20s production constant, not 3s"
+    ;; Regression guard for tmux-untethered-8vb: a 3s default silently dropped
+    ;; the initial prompt when Claude's MCP/config resolution ran long.
+    (is (= 20000 tmux/wait-for-ready-default-timeout-ms)
+        "production default must stay generous; lowering it re-opens the hang bug")))
+
 ;; ============================================================================
 ;; sweep!
 ;; ============================================================================
@@ -691,17 +736,17 @@
                     {:exit 0 :out "" :err ""})]
       (binding [tmux/*tmux-invoker* invoker]
         (reset! tmux/live-windows
-                {old-uuid    {:tmux-session "proj" :tmux-window "old-win"    :provider :claude :workdir "/tmp"}
+                {old-uuid {:tmux-session "proj" :tmux-window "old-win" :provider :claude :workdir "/tmp"}
                  recent-uuid {:tmux-session "proj" :tmux-window "recent-win" :provider :claude :workdir "/tmp"}})
         (with-redefs [voice-code.providers/session-metadata
                       (fn [uuid]
                         (cond
-                          (= uuid old-uuid)    {:last-modified-ms old-ms}
+                          (= uuid old-uuid) {:last-modified-ms old-ms}
                           (= uuid recent-uuid) {:last-modified-ms recent-ms}))]
           (tmux/sweep!)))
       (is (seq @kill-calls) "expected kill-window for stale window")
       (is (some (fn [call] (some (fn [arg] (and (string? arg) (clojure.string/includes? arg "old-win"))) call))
-               @kill-calls)
+                @kill-calls)
           "expected old-win to be killed")
       (is (not (contains? @tmux/live-windows old-uuid)) "expected old-uuid removed")
       (is (contains? @tmux/live-windows recent-uuid) "expected recent-uuid still present")))

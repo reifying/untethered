@@ -224,14 +224,26 @@
     (doseq [[k v] vars]
       (sh "tmux" "set-environment" "-t" (str "=" tmux-session) (str k "_" suffix) v))))
 
+(def wait-for-ready-default-timeout-ms
+  "Default budget for the TUI readiness handshake. Claude cold-starts (MCP
+   config resolution, first open of an unseen working directory) can take
+   well over the previous 3s default; a silent timeout means start-window!
+   drops the initial prompt and the session hangs. See tmux-untethered-8vb."
+  20000)
+
 (defn wait-for-ready
   "Poll capture-pane until the provider-specific readiness string appears.
    For :claude, if the `--resume` confirmation dialog is visible, dismiss it
    with '3' + Enter ('Don't ask me again') once and reset the deadline so the
    CLI has a fresh budget to actually load the session and reach the TUI.
-   Returns :ready on success, :timeout on deadline."
+   Returns :ready on success, :timeout on deadline.
+
+   Default timeout is 20s: Claude cold-starts (MCP config resolution, first
+   open of an unseen working directory) can take well over the previous 3s
+   budget; a silent timeout means start-window! drops the initial prompt and
+   the session hangs. See tmux-untethered-8vb."
   [tmux-session window provider & {:keys [timeout-ms poll-ms]
-                                   :or {timeout-ms 3000 poll-ms 100}}]
+                                   :or {timeout-ms wait-for-ready-default-timeout-ms poll-ms 100}}]
   (let [ready? (readiness-predicate provider)
         target (format "=%s:=%s.0" tmux-session window)]
     (loop [deadline (+ (System/currentTimeMillis) timeout-ms)
@@ -344,7 +356,12 @@
    otherwise it starts a fresh session keyed to session-uuid.
 
    `:system-prompt` is only honored for new :claude sessions; see
-   build-provider-command for the trimming/provider rules."
+   build-provider-command for the trimming/provider rules.
+
+   Throws ex-info with {:kind :wait-for-ready-timeout ...} if the provider
+   TUI does not become ready within the timeout. Callers wrap dispatch in
+   try/catch so this surfaces as an {type: error, session_id} envelope to
+   the client rather than a silent hang (tmux-untethered-8vb)."
   [{:keys [session-uuid session-name provider workdir initial-prompt resume? system-prompt]}]
   (let [window (window-name session-name session-uuid)
         cmd (build-provider-command provider
@@ -377,11 +394,19 @@
                                   :workdir workdir
                                   :started-at started-at}]
                   (swap! live-windows assoc session-uuid descriptor)
-                  [tmux-session descriptor]))))]
-      (when (= :ready (wait-for-ready tmux-session window provider))
-        (when initial-prompt
-          (nudge! tmux-session window initial-prompt)))
-      descriptor)))
+                  [tmux-session descriptor]))))
+          ready-result (wait-for-ready tmux-session window provider)]
+      (if (= :ready ready-result)
+        (do (when initial-prompt
+              (nudge! tmux-session window initial-prompt))
+            descriptor)
+        (throw (ex-info "Provider TUI did not become ready before timeout"
+                        {:kind :wait-for-ready-timeout
+                         :session-uuid session-uuid
+                         :tmux-session tmux-session
+                         :tmux-window window
+                         :provider provider
+                         :resume? (boolean resume?)}))))))
 
 (defn- respawn-and-deliver!
   "Respawn an evicted session with --resume and deliver the prompt.
