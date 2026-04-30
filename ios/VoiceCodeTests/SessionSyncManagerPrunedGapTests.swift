@@ -516,4 +516,139 @@ final class SessionSyncManagerPrunedGapTests: XCTestCase {
         XCTAssertFalse(manager.prunedSessions.contains(sessionId.lowercased()),
                        "dismiss must also clear the sync-manager merge guard")
     }
+
+    // MARK: - ConversationView banner-dismissal lifecycle (tmux-untethered-9t9)
+
+    /// Seeds 50 messages (seqs 1..50) for a session, lands a pruned gap (so the
+    /// banner shows for the user), dismisses, then injects a new push at
+    /// seq 205. Asserts the data the rendered list reads from:
+    ///
+    /// - The seq discontinuity (1..50 → 205) is preserved verbatim in CoreData.
+    ///   The new message is NOT auto-filled with synthesized 51..204 rows;
+    ///   ConversationView's `List(messages)` will render the gap as a visible
+    ///   jump between 50 and 205.
+    /// - Dismissing the banner clears `prunedGaps[sessionId]` and the manager
+    ///   flag so the next push merges normally.
+    /// - The post-dismiss push at seq 205 must NOT re-introduce a `prunedGaps`
+    ///   entry — i.e. dismissing the banner does not silently re-show it for
+    ///   any subsequent non-gap window.
+    ///
+    /// Note: the actual scroll position after `messages.count` change is owned
+    /// by `ScrollViewProxy` inside ConversationView and can only be observed
+    /// via XCUITest with a UI host, which is out of scope for this unit test.
+    /// The data-level continuity asserted here is what the SwiftUI list
+    /// renders, so a visible discontinuity at the gap is implied by the store
+    /// state.
+    func test_conversationView_prunedGapDismiss_preservesSeqDiscontinuityOnNewPush() throws {
+        let persistenceController = PersistenceController(inMemory: true)
+        let manager = SessionSyncManager(persistenceController: persistenceController)
+        let client = VoiceCodeClient(serverURL: "ws://localhost",
+                                     sessionSyncManager: manager,
+                                     setupObservers: false)
+
+        let sessionId = "9999aaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        let sessionUUID = try XCTUnwrap(UUID(uuidString: sessionId))
+        let lowerKey = sessionId.lowercased()
+        let viewContext = persistenceController.container.viewContext
+
+        // 1. Seed seqs 1..50 directly so the conversation has a substantial
+        //    history before the gap arrives. Mirrors the production state
+        //    where a user has been chatting and then the server prunes
+        //    older history out from under them.
+        for i: Int64 in 1...50 {
+            let m = CDMessage(context: viewContext)
+            m.id = UUID()
+            m.sessionId = sessionUUID
+            m.role = (i.isMultiple(of: 2)) ? "assistant" : "user"
+            m.text = "seed-\(i)"
+            m.timestamp = Date(timeIntervalSince1970: TimeInterval(i))
+            m.messageStatus = .confirmed
+            m.seq = i
+        }
+        try viewContext.save()
+        XCTAssertEqual(messagesForSession(sessionUUID, in: viewContext).count, 50,
+                       "seeding precondition: 50 rows in store")
+
+        // 2. Pruned gap arrives. min_available_seq=200 means the server has
+        //    forgotten everything up to and including seq 199; the user's
+        //    requested cursor (last_seq=51) is far below the retained range.
+        //    Banner state must publish for the UI; no rows must merge.
+        let pruned = prunedPayload(sessionId: sessionId,
+                                   requested: 51,
+                                   minAvailable: 200)
+        manager.handleSessionHistoryPayload(pruned)
+
+        waitForMainQueue(timeout: 2.0) { client.prunedGaps[lowerKey] != nil }
+        XCTAssertEqual(client.prunedGaps[lowerKey]?.minAvailableSeq, 200,
+                       "banner data is the gap object the view binds to")
+        XCTAssertEqual(client.prunedGaps[lowerKey]?.requestedLastSeq, 51)
+
+        // Sanity: the pruned payload itself must not have written rows.
+        drainMainQueue(for: 0.2)
+        XCTAssertEqual(messagesForSession(sessionUUID, in: viewContext).count, 50,
+                       "pruned payload must not merge anything; seeded rows untouched")
+
+        // 3. User taps the banner's dismiss button. In production this maps
+        //    to `client.dismissPrunedGap(sessionId:)` (see ConversationView
+        //    PrunedGapBanner action wiring). After this call:
+        //      - The banner is hidden (prunedGaps entry gone).
+        //      - The manager merge-guard flag is cleared so subsequent
+        //        non-gap pushes merge again.
+        client.dismissPrunedGap(sessionId: sessionId)
+        XCTAssertNil(client.prunedGaps[lowerKey],
+                     "banner must be hidden post-dismiss (UI binding goes nil)")
+        XCTAssertFalse(manager.prunedSessions.contains(lowerKey),
+                       "merge guard must clear so the next push is not silently dropped")
+
+        // 4. New push lands at seq 205 — a fresh assistant turn after the
+        //    server's retained range. This is the moment ConversationView's
+        //    `onChange(of: messages.count)` fires and triggers the auto-scroll
+        //    to the new last message. We assert the underlying data so the
+        //    list renders the gap visibly between seq 50 and seq 205.
+        let postDismissPush = SessionHistoryPayload(
+            sessionId: sessionId,
+            messages: [
+                WireMessage(sessionId: sessionId,
+                            seq: 205,
+                            role: "assistant",
+                            text: "post-dismiss-205",
+                            uuid: UUID().uuidString.lowercased(),
+                            timestamp: Date(timeIntervalSince1970: 205))
+            ],
+            firstSeq: 205,
+            lastSeq: 205,
+            nextSeq: 206,
+            isComplete: true,
+            gap: nil
+        )
+
+        let merged = expectation(forNotification: .sessionHistoryDidUpdate,
+                                 object: nil,
+                                 handler: { note in
+            (note.userInfo?["sessionId"] as? String) == sessionId
+        })
+        manager.handleSessionHistoryPayload(postDismissPush)
+        wait(for: [merged], timeout: 2.0)
+        drainMainQueue(for: 0.2)
+
+        // 5a. Discontinuity preserved in the data. Seqs 51..204 are NOT
+        //     auto-filled; the list reads exactly [1..50, 205].
+        let rows = messagesForSession(sessionUUID, in: viewContext)
+        let observedSeqs = rows.map(\.seq)
+        let expectedSeqs: [Int64] = Array(Int64(1)...Int64(50)) + [205]
+        XCTAssertEqual(observedSeqs, expectedSeqs,
+                       "store must contain seqs [1..50, 205] only — no auto-fill of the pruned range")
+        XCTAssertEqual(rows.last?.text, "post-dismiss-205",
+                       "newest row is the post-dismiss push at seq 205")
+        XCTAssertEqual(rows.last?.seq, 205,
+                       "last-message seq is what ConversationView's auto-scroll targets via proxy.scrollTo")
+
+        // 5b. Banner stays dismissed. A non-gap window must not silently
+        //     re-show the warning to the user — once they've acknowledged the
+        //     prune, the banner is gone until a fresh pruned payload arrives.
+        XCTAssertNil(client.prunedGaps[lowerKey],
+                     "post-dismiss non-gap push must not re-set prunedGaps; banner must stay hidden")
+        XCTAssertFalse(manager.prunedSessions.contains(lowerKey),
+                       "merge guard must remain cleared after the non-gap push")
+    }
 }
