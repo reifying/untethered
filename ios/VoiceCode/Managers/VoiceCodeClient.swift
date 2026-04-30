@@ -85,8 +85,29 @@ class VoiceCodeClient: ObservableObject {
     let sessionSyncManager: SessionSyncManager
     private var appSettings: AppSettings?
 
-    // Track active subscriptions for auto-restore on reconnection
-    private var activeSubscriptions = Set<String>()
+    // Per-session subscription state.
+    //
+    // `.desired` records caller intent; the wire `subscribe` has not been sent
+    // on the current socket. `.confirmed` means we have sent a wire `subscribe`
+    // on the current socket. On socket loss every `.confirmed` is demoted back
+    // to `.desired` so the next `connected` resends it through
+    // `restoreSubscriptionsAfterReconnect`. Removing an entry means we no
+    // longer want to be subscribed (caller invoked `unsubscribe`).
+    //
+    // The split exists because the prior single `Set<String>` lied: caller
+    // intent was being recorded *before* the auth gate, so a pre-auth
+    // `subscribe()` poisoned the set with an entry for which no wire send
+    // ever fired. The contains-check in `session_ready` / `turn_complete`
+    // then suppressed the legitimate recovery path. See
+    // tmux-untethered-a83.
+    enum SubscriptionPhase: Equatable {
+        case desired
+        case confirmed
+    }
+    private var subscriptions: [String: SubscriptionPhase] = [:]
+
+    /// Test seam: read-only view of the current subscription map.
+    var subscriptionsForTesting: [String: SubscriptionPhase] { subscriptions }
 
     /// Test seam: invoked for every dict passed to `sendMessage`. Production leaves nil.
     var onMessageSent: (([String: Any]) -> Void)?
@@ -497,6 +518,9 @@ class VoiceCodeClient: ObservableObject {
             // isAuthenticated guard would let calls through during the
             // reconnect window before re-auth lands.
             self.isAuthenticated = false
+            // Wire confirmation belonged to the dead socket; demote so the
+            // next reconnect re-fires every desired subscribe.
+            self.demoteConfirmedSubscriptions()
         }
     }
 
@@ -680,6 +704,9 @@ class VoiceCodeClient: ObservableObject {
                     // hello → connect → connected handshake before sends are
                     // valid). The next `connected` re-asserts it.
                     self.isAuthenticated = false
+                    // Wire confirmation belonged to this dead socket; demote
+                    // so reconnect re-fires every desired subscribe.
+                    self.demoteConfirmedSubscriptions()
                     self.scheduleUpdate(key: "currentError", value: error.localizedDescription as String?)
                     self.flushPendingUpdates()
                 }
@@ -975,10 +1002,13 @@ class VoiceCodeClient: ObservableObject {
                         .map { ActiveSessionManager.shared.isActive($0) } ?? false
 
                     if isStillActive {
-                        if !self.activeSubscriptions.contains(sessionId) {
-                            print("📥 [VoiceCodeClient] Auto-subscribing to new session after session_ready: \(sessionId)")
-                            self.subscribe(sessionId: sessionId)
-                        }
+                        // Always call subscribe — it is idempotent on a
+                        // .confirmed entry and forces a wire send on a
+                        // .desired one. The prior `!contains` guard suppressed
+                        // recovery whenever the set was poisoned by a pre-auth
+                        // call (tmux-untethered-a83).
+                        print("📥 [VoiceCodeClient] Auto-subscribing to new session after session_ready: \(sessionId)")
+                        self.subscribe(sessionId: sessionId)
                     } else {
                         print("⏭️ [VoiceCodeClient] Skipping auto-subscribe for \(sessionId) — no longer the active session")
                     }
@@ -1000,10 +1030,9 @@ class VoiceCodeClient: ObservableObject {
                         .map { ActiveSessionManager.shared.isActive($0) } ?? false
 
                     if isStillActive {
-                        if !self.activeSubscriptions.contains(sessionId) {
-                            print("📥 [VoiceCodeClient] Auto-subscribing to new session after turn_complete (fallback): \(sessionId)")
-                            self.subscribe(sessionId: sessionId)
-                        }
+                        // Idempotent — see session_ready handler above.
+                        print("📥 [VoiceCodeClient] Auto-subscribing to new session after turn_complete (fallback): \(sessionId)")
+                        self.subscribe(sessionId: sessionId)
                     } else {
                         print("⏭️ [VoiceCodeClient] Skipping turn_complete fallback subscribe for \(sessionId) — no longer the active session")
                     }
@@ -1382,7 +1411,17 @@ class VoiceCodeClient: ObservableObject {
         }
     }
     
-    /// Re-fires `subscribe()` for every session in `activeSubscriptions`.
+    /// Demote every `.confirmed` entry back to `.desired`. Called whenever
+    /// the current socket goes away — the wire confirmation belongs to that
+    /// socket, so once it's gone we owe a fresh wire `subscribe` on the
+    /// next one. Caller intent (the entry's existence) is preserved.
+    private func demoteConfirmedSubscriptions() {
+        for (sid, phase) in subscriptions where phase == .confirmed {
+            subscriptions[sid] = .desired
+        }
+    }
+
+    /// Re-fires `subscribe()` for every entry currently in `.desired`.
     /// Called from the `connected` handler; exposed `internal` so tests can
     /// drive the reconnect path without standing up a full WebSocket.
     ///
@@ -1391,15 +1430,16 @@ class VoiceCodeClient: ObservableObject {
     /// persisted seq is the only source of truth.
     ///
     /// Sessions the user has marked deleted (CDUserSession.isUserDeleted) are
-    /// filtered out and dropped from `activeSubscriptions`. The deleteSession
+    /// filtered out and removed from the subscription map. The deleteSession
     /// flow in SessionsForDirectoryView already calls `unsubscribe` so this
     /// filter is defense-in-depth for any path that mutates isUserDeleted
     /// without going through `unsubscribe`.
     func restoreSubscriptionsAfterReconnect(context: NSManagedObjectContext? = nil) {
-        guard !activeSubscriptions.isEmpty else { return }
+        guard !subscriptions.isEmpty else { return }
 
         let ctx = context ?? PersistenceController.shared.container.viewContext
-        let toRestore = activeSubscriptions.filter { sessionId in
+        let allKeys = Array(subscriptions.keys)
+        let toRestore = allKeys.filter { sessionId in
             guard let uuid = UUID(uuidString: sessionId) else { return true }
             let request = CDUserSession.fetchUserSession(id: uuid)
             if let userSession = try? ctx.fetch(request).first, userSession.isUserDeleted {
@@ -1408,12 +1448,12 @@ class VoiceCodeClient: ObservableObject {
             return true
         }
 
-        let dropped = activeSubscriptions.subtracting(toRestore)
+        let dropped = Set(allKeys).subtracting(toRestore)
         if !dropped.isEmpty {
             for sessionId in dropped {
                 logger.info("🧹 [VoiceCodeClient] Skipping reconnect-resubscribe for user-deleted session: \(sessionId)")
+                subscriptions[sessionId] = nil
             }
-            activeSubscriptions.subtract(dropped)
         }
 
         guard !toRestore.isEmpty else { return }
@@ -1424,21 +1464,38 @@ class VoiceCodeClient: ObservableObject {
         }
     }
 
+    /// Idempotent. Decision table:
+    ///
+    ///   isAuthenticated == false  → record `.desired` (unless already
+    ///                                `.confirmed`, which is a bug elsewhere
+    ///                                we let a disconnect demote correct);
+    ///                                no wire send.
+    ///   isAuthenticated == true,  → no-op; wire `subscribe` already sent
+    ///   entry == .confirmed         on this socket.
+    ///   isAuthenticated == true,  → send wire `subscribe`, transition to
+    ///   entry ∈ {nil, .desired}     `.confirmed`.
+    ///
+    /// The auth gate prevents `auth_error`-and-disconnect for sends in the
+    /// `hello`-but-not-yet-`connected` window. Pre-auth intent is preserved
+    /// in `.desired` so the next `connected` resends it through
+    /// `restoreSubscriptionsAfterReconnect`.
     func subscribe(sessionId: String, context: NSManagedObjectContext? = nil) {
-        // Always track in activeSubscriptions first — restoreSubscriptions-
-        // AfterReconnect picks this up on the next `connected` handshake,
-        // so the wire send below is safe to skip when we're not ready yet.
-        activeSubscriptions.insert(sessionId)
-
-        // Gate on isAuthenticated, not isConnected: between `hello` (which
-        // flips isConnected) and `connected` (which flips isAuthenticated),
-        // the backend hasn't yet authenticated this socket. A subscribe in
-        // that window would be rejected with auth_error and drop the
-        // connection. Authenticated implies connected, so this also covers
-        // the disconnected case the bug report flagged.
         guard isAuthenticated else {
-            logger.info("📖 [VoiceCodeClient] Deferring subscribe (not authenticated), session: \(sessionId) (total active: \(self.activeSubscriptions.count))")
+            if subscriptions[sessionId] != .confirmed {
+                subscriptions[sessionId] = .desired
+            }
+            logger.info("📖 [VoiceCodeClient] Deferring subscribe (not authenticated), session: \(sessionId) (total tracked: \(self.subscriptions.count))")
             return
+        }
+
+        if subscriptions[sessionId] == .confirmed {
+            return
+        }
+
+        // Ensure the entry is tracked before we log/send so the count is
+        // stable across the rest of the function.
+        if subscriptions[sessionId] == nil {
+            subscriptions[sessionId] = .desired
         }
 
         // Delta-sync cursor is the max seq we've durably persisted for this
@@ -1452,9 +1509,11 @@ class VoiceCodeClient: ObservableObject {
             "last_seq": lastSeq
         ]
 
-        logger.info("📖 [VoiceCodeClient] Subscribing, last_seq: \(lastSeq), session: \(sessionId) (total active: \(self.activeSubscriptions.count))")
+        let trackedCount = subscriptions.count
+        logger.info("📖 [VoiceCodeClient] Subscribing, last_seq: \(lastSeq), session: \(sessionId) (total tracked: \(trackedCount))")
 
         sendMessage(message)
+        subscriptions[sessionId] = .confirmed
     }
 
     /// Highest backend-assigned `seq` cached for the given session.
@@ -1581,14 +1640,16 @@ class VoiceCodeClient: ObservableObject {
     }
     
     func unsubscribe(sessionId: String) {
-        // Remove from active subscriptions
-        activeSubscriptions.remove(sessionId)
+        // Drop both intent and confirmation. Wire send is best-effort —
+        // backend tolerates an `unsubscribe` for a session it doesn't know
+        // about, so we don't gate on auth state.
+        subscriptions[sessionId] = nil
 
         let message: [String: Any] = [
             "type": "unsubscribe",
             "session_id": sessionId
         ]
-        print("📕 [VoiceCodeClient] Unsubscribing from session: \(sessionId) (total active: \(activeSubscriptions.count))")
+        print("📕 [VoiceCodeClient] Unsubscribing from session: \(sessionId) (total tracked: \(subscriptions.count))")
         sendMessage(message)
     }
 
