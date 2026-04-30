@@ -3,6 +3,9 @@
 // See docs/design/append-only-message-stream.md.
 
 import Foundation
+import os.log
+
+private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "MessageStreamTypes")
 
 /// Decoded shape of a single message in a `session_history.messages` array.
 /// Replaces ad-hoc dictionary access in SessionSyncManager with a typed struct
@@ -100,6 +103,46 @@ struct SessionHistoryPayload: Codable, Equatable {
         self.gap = gap
     }
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+
+        // Decode messages leniently. A single malformed entry (missing seq,
+        // wrong type, bad timestamp) skips just that message instead of
+        // dropping the entire batch — without this, one bad message causes
+        // every other message in the same payload to be lost silently.
+        var messagesContainer = try container.nestedUnkeyedContainer(forKey: .messages)
+        var decoded: [WireMessage] = []
+        var skipCount = 0
+        var firstFailureReason: String?
+        while !messagesContainer.isAtEnd {
+            let wrapper = try messagesContainer.decode(LenientWireMessage.self)
+            if let msg = wrapper.value {
+                decoded.append(msg)
+            } else {
+                skipCount += 1
+                if firstFailureReason == nil {
+                    firstFailureReason = wrapper.failureReason
+                }
+            }
+        }
+        messages = decoded
+
+        firstSeq = try container.decodeIfPresent(Int64.self, forKey: .firstSeq)
+        lastSeq = try container.decodeIfPresent(Int64.self, forKey: .lastSeq)
+        nextSeq = try container.decode(Int64.self, forKey: .nextSeq)
+        isComplete = try container.decode(Bool.self, forKey: .isComplete)
+        gap = try container.decodeIfPresent(Gap.self, forKey: .gap)
+
+        if skipCount > 0 {
+            // Bind locals so the os.log autoclosures don't capture `self`
+            // mid-init (which would be a mutating-self capture error).
+            let sid = sessionId
+            let reason = firstFailureReason ?? "unknown"
+            logger.warning("session_history for \(sid, privacy: .public): skipped \(skipCount, privacy: .public) malformed message(s); first reason: \(reason, privacy: .public)")
+        }
+    }
+
     /// Signal from the server that it cannot satisfy the requested range.
     /// `reason` is one of `"pruned"` or `"client_ahead"`.
     struct Gap: Codable, Equatable {
@@ -111,6 +154,24 @@ struct SessionHistoryPayload: Codable, Equatable {
             case requestedLastSeq = "requested_last_seq"
             case minAvailableSeq = "min_available_seq"
             case reason
+        }
+    }
+}
+
+/// Wraps `WireMessage` decode in a non-throwing facade so that an unkeyed
+/// container can advance past a malformed element instead of aborting the
+/// whole array. Used only by `SessionHistoryPayload`'s lenient decode path.
+private struct LenientWireMessage: Decodable {
+    let value: WireMessage?
+    let failureReason: String?
+
+    init(from decoder: Decoder) throws {
+        do {
+            value = try WireMessage(from: decoder)
+            failureReason = nil
+        } catch {
+            value = nil
+            failureReason = String(describing: error)
         }
     }
 }

@@ -281,6 +281,157 @@ final class MessageStreamTypesTests: XCTestCase {
         XCTAssertNil(dict["minAvailableSeq"])
     }
 
+    // MARK: - Lenient batch decoding (regression: tmux-untethered-0a0)
+
+    /// A malformed message inside a batch must not drop the rest of the batch.
+    /// Before the fix, a single missing-seq / wrong-type entry caused the whole
+    /// SessionHistoryPayload decode to throw and every message in the payload
+    /// was lost silently (just a log line, no user-visible error).
+    func test_sessionHistoryPayload_oneMalformedMessage_doesNotDropBatch() throws {
+        let json = """
+        {
+          "session_id": "s",
+          "messages": [
+            {
+              "session_id": "s",
+              "seq": 100,
+              "role": "user",
+              "text": "good-1",
+              "uuid": "u1",
+              "timestamp": "2026-04-20T18:12:59Z"
+            },
+            {
+              "session_id": "s",
+              "role": "assistant",
+              "text": "bad — missing seq",
+              "uuid": "u2",
+              "timestamp": "2026-04-20T18:13:00Z"
+            },
+            {
+              "session_id": "s",
+              "seq": 102,
+              "role": "assistant",
+              "text": "good-2",
+              "uuid": "u3",
+              "timestamp": "2026-04-20T18:13:01Z"
+            }
+          ],
+          "first_seq": 100,
+          "last_seq": 102,
+          "next_seq": 103,
+          "is_complete": true,
+          "gap": null
+        }
+        """.data(using: .utf8)!
+
+        let payload = try JSONDecoder().decode(SessionHistoryPayload.self, from: json)
+
+        XCTAssertEqual(payload.messages.count, 2,
+                       "Both well-formed messages must survive a malformed sibling")
+        XCTAssertEqual(payload.messages[0].seq, 100)
+        XCTAssertEqual(payload.messages[0].text, "good-1")
+        XCTAssertEqual(payload.messages[1].seq, 102)
+        XCTAssertEqual(payload.messages[1].text, "good-2")
+        XCTAssertEqual(payload.nextSeq, 103)
+    }
+
+    func test_sessionHistoryPayload_seqWrongType_skipsOnlyThatMessage() throws {
+        let json = """
+        {
+          "session_id": "s",
+          "messages": [
+            {
+              "session_id": "s",
+              "seq": "not-an-int",
+              "role": "user",
+              "text": "bad",
+              "uuid": "u1",
+              "timestamp": "2026-04-20T18:12:59Z"
+            },
+            {
+              "session_id": "s",
+              "seq": 200,
+              "role": "assistant",
+              "text": "good",
+              "uuid": "u2",
+              "timestamp": "2026-04-20T18:13:00Z"
+            }
+          ],
+          "first_seq": 200,
+          "last_seq": 200,
+          "next_seq": 201,
+          "is_complete": true,
+          "gap": null
+        }
+        """.data(using: .utf8)!
+
+        let payload = try JSONDecoder().decode(SessionHistoryPayload.self, from: json)
+
+        XCTAssertEqual(payload.messages.count, 1)
+        XCTAssertEqual(payload.messages.first?.seq, 200)
+        XCTAssertEqual(payload.messages.first?.text, "good")
+    }
+
+    func test_sessionHistoryPayload_invalidTimestampInOneMessage_skipsOnlyThatMessage() throws {
+        let json = """
+        {
+          "session_id": "s",
+          "messages": [
+            {
+              "session_id": "s",
+              "seq": 1,
+              "role": "user",
+              "text": "good",
+              "uuid": "u1",
+              "timestamp": "2026-04-20T18:12:59Z"
+            },
+            {
+              "session_id": "s",
+              "seq": 2,
+              "role": "assistant",
+              "text": "bad timestamp",
+              "uuid": "u2",
+              "timestamp": "totally-not-a-date"
+            }
+          ],
+          "first_seq": 1,
+          "last_seq": 2,
+          "next_seq": 3,
+          "is_complete": true,
+          "gap": null
+        }
+        """.data(using: .utf8)!
+
+        let payload = try JSONDecoder().decode(SessionHistoryPayload.self, from: json)
+
+        XCTAssertEqual(payload.messages.count, 1)
+        XCTAssertEqual(payload.messages.first?.seq, 1)
+    }
+
+    func test_sessionHistoryPayload_allMessagesMalformed_decodesEnvelope() throws {
+        // When every message is malformed the envelope itself (cursor fields,
+        // gap, etc.) must still decode so the client's bookkeeping advances.
+        let json = """
+        {
+          "session_id": "s",
+          "messages": [
+            { "role": "user", "text": "no seq, no uuid" },
+            { "session_id": "s", "seq": "bad", "role": "user", "text": "wrong type", "uuid": "u", "timestamp": "2026-04-20T18:12:59Z" }
+          ],
+          "first_seq": null,
+          "last_seq": null,
+          "next_seq": 999,
+          "is_complete": true,
+          "gap": null
+        }
+        """.data(using: .utf8)!
+
+        let payload = try JSONDecoder().decode(SessionHistoryPayload.self, from: json)
+        XCTAssertTrue(payload.messages.isEmpty)
+        XCTAssertEqual(payload.nextSeq, 999)
+        XCTAssertTrue(payload.isComplete)
+    }
+
     func test_payloadWithGap_roundTrip() throws {
         let gap = SessionHistoryPayload.Gap(
             requestedLastSeq: 42,
