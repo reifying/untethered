@@ -419,16 +419,22 @@
 (defn build-session-history-response
   "Unified session-history reply for subscribe and live push (protocol v0.4.0).
 
-   Returns exactly one of three shapes, keyed on the relationship between the
+   Returns exactly one of four shapes, keyed on the relationship between the
    client's `last-seq` and the server's `min-available-seq` / `next-seq`:
 
-     - Pruned:    client is below `min-available-seq - 1`. Reply carries a
-                  `:gap {:reason \"pruned\"}` and no messages.
-     - Caught up: client is at `next-seq - 1` or higher. Empty `:messages`,
-                  no gap.
-     - Packed:    otherwise, filter messages by `:seq > last-seq` and pack
-                  them with `pack-within-budget`. `:is-complete` is false
-                  when the byte budget truncates the range.
+     - Pruned:       client is below `min-available-seq - 1`. Reply carries a
+                     `:gap {:reason \"pruned\"}` and no messages.
+     - Client-ahead: client is above `next-seq - 1`, i.e. claims a seq the
+                     server never assigned. Happens after a backend rollback
+                     that discarded messages the client already saw. Reply
+                     carries a `:gap {:reason \"client_ahead\"}` and a full
+                     resync of `messages` from `min-available-seq` onward so
+                     the client can drop local state and reload.
+     - Caught up:    client is at exactly `next-seq - 1`. Empty `:messages`,
+                     no gap.
+     - Packed:       otherwise, filter messages by `:seq > last-seq` and pack
+                     them with `pack-within-budget`. `:is-complete` is false
+                     when the byte budget truncates the range.
 
    Parameters:
    - messages:          vector of canonical messages, each carrying `:seq`
@@ -439,83 +445,90 @@
 
    Returns {:messages :first-seq :last-seq :next-seq :is-complete :gap}."
   [messages last-seq max-total-bytes min-available-seq next-seq]
-  (cond
-    ;; Pruned: client's cursor is below the server's retained range.
-    (< last-seq (dec min-available-seq))
-    {:messages []
-     :first-seq nil
-     :last-seq nil
-     :next-seq next-seq
-     :is-complete true
-     :gap {:requested-last-seq last-seq
-           :min-available-seq min-available-seq
-           :reason "pruned"}}
+  (let [pack-and-build
+        (fn [filter-fn gap]
+          ;; Measure the actual session_history envelope bytes (with the gap
+          ;; object baked in) so the wire response stays under
+          ;; max-total-bytes after the caller :assoc's :session-id onto each
+          ;; message. Used by both the packed and client-ahead branches.
+          (let [candidates (filter filter-fn messages)
+                envelope-overhead
+                (count (.getBytes ^String
+                        (generate-json
+                         {:type :session-history
+                          :session-id "00000000-0000-0000-0000-000000000000"
+                          :messages []
+                          :first-seq next-seq
+                          :last-seq next-seq
+                          :next-seq next-seq
+                          :is-complete true
+                          :gap gap})
+                                  "UTF-8"))
+                per-message-extra 52
+                {:keys [included complete?]}
+                (pack-within-budget candidates max-total-bytes
+                                    envelope-overhead per-message-extra)]
+            (if (empty? included)
+              ;; Defensive guard: no candidate fit the byte budget. For the
+              ;; packed branch this would otherwise leave the client unable
+              ;; to advance its cursor, so we report caught-up. For the
+              ;; client-ahead branch we preserve the gap so the client still
+              ;; receives the drop-state signal even if the resync itself is
+              ;; empty (e.g. server has zero messages).
+              (do
+                (when (and (nil? gap) (seq candidates))
+                  (log/warn "build-session-history-response: no candidate fit byte budget; returning caught-up to break resubscribe loop"
+                            {:last-seq last-seq
+                             :max-total-bytes max-total-bytes
+                             :next-seq next-seq
+                             :candidate-count (count candidates)
+                             :first-candidate-seq (:seq (first candidates))}))
+                {:messages []
+                 :first-seq nil
+                 :last-seq nil
+                 :next-seq next-seq
+                 :is-complete true
+                 :gap gap})
+              {:messages (vec included)
+               :first-seq (:seq (first included))
+               :last-seq (:seq (last included))
+               :next-seq next-seq
+               :is-complete complete?
+               :gap gap})))]
+    (cond
+      ;; Pruned: client's cursor is below the server's retained range.
+      (< last-seq (dec min-available-seq))
+      {:messages []
+       :first-seq nil
+       :last-seq nil
+       :next-seq next-seq
+       :is-complete true
+       :gap {:requested-last-seq last-seq
+             :min-available-seq min-available-seq
+             :reason "pruned"}}
 
-    ;; Caught up: client is at or beyond the server's newest message.
-    (>= last-seq (dec next-seq))
-    {:messages []
-     :first-seq nil
-     :last-seq nil
-     :next-seq next-seq
-     :is-complete true
-     :gap nil}
+      ;; Client ahead: client claims a seq the server never assigned (e.g.
+      ;; after a backend rollback that discarded messages). Return a full
+      ;; resync from min-available-seq so the client can drop local state
+      ;; and reload to the server's truth.
+      (> last-seq (dec next-seq))
+      (pack-and-build (fn [m] (>= (:seq m) min-available-seq))
+                      {:requested-last-seq last-seq
+                       :min-available-seq min-available-seq
+                       :reason "client_ahead"})
 
-    ;; Packed range.
-    :else
-    (let [candidates (filter #(> (:seq %) last-seq) messages)
-          ;; Measure the actual session_history envelope around an empty
-          ;; :messages array. The packed branch always has gap=nil and uses
-          ;; a placeholder UUID-shaped session-id so the byte count matches
-          ;; what the caller will serialize. Replaces a fixed 200-byte
-          ;; estimate that ignored long session-ids and gap-bearing payloads.
-          envelope-overhead
-          (count (.getBytes ^String
-                  (generate-json
-                   {:type :session-history
-                    :session-id "00000000-0000-0000-0000-000000000000"
-                    :messages []
-                    :first-seq next-seq
-                    :last-seq next-seq
-                    :next-seq next-seq
-                    :is-complete true
-                    :gap nil})
-                            "UTF-8"))
-          ;; The subscribe and broadcast paths :assoc :session-id onto each
-          ;; message after pack-within-budget runs. A 36-char UUID adds
-          ;; `,"session_id":"<36-chars>"` = 52 bytes per message; reserve
-          ;; that here so the wire response stays under max-total-bytes.
-          per-message-extra 52
-          {:keys [included complete?]}
-          (pack-within-budget candidates max-total-bytes
-                              envelope-overhead per-message-extra)]
-      (if (empty? included)
-        ;; Defensive guard: no candidate fit the byte budget. Without this
-        ;; branch the response would carry nil first-seq/last-seq with
-        ;; is-complete:false, leaving the client unable to advance its
-        ;; cursor and stuck in an infinite resubscribe loop. Upstream
-        ;; (subscribe handler) middle-truncates messages above
-        ;; per-message-max-bytes precisely to keep this branch unreachable;
-        ;; if it ever fires, log a warning and report caught-up so the
-        ;; client stops looping.
-        (do
-          (log/warn "build-session-history-response: no candidate fit byte budget; returning caught-up to break resubscribe loop"
-                    {:last-seq last-seq
-                     :max-total-bytes max-total-bytes
-                     :next-seq next-seq
-                     :candidate-count (count candidates)
-                     :first-candidate-seq (:seq (first candidates))})
-          {:messages []
-           :first-seq nil
-           :last-seq nil
-           :next-seq next-seq
-           :is-complete true
-           :gap nil})
-        {:messages (vec included)
-         :first-seq (:seq (first included))
-         :last-seq (:seq (last included))
-         :next-seq next-seq
-         :is-complete complete?
-         :gap nil}))))
+      ;; Caught up: client is at exactly next-seq - 1.
+      (= last-seq (dec next-seq))
+      {:messages []
+       :first-seq nil
+       :last-seq nil
+       :next-seq next-seq
+       :is-complete true
+       :gap nil}
+
+      ;; Packed range.
+      :else
+      (pack-and-build (fn [m] (> (:seq m) last-seq)) nil))))
 
 (defn truncate-response-text
   "Truncate the :text field of a response message if the total JSON would exceed max size.

@@ -2645,19 +2645,105 @@
       (is (true? (:is-complete result)))
       (is (nil? (:gap result)))))
 
-  (testing "Client ahead of server (last-seq > next-seq - 1) also returns caught-up"
-    ;; No :gap {:reason \"client_ahead\"} yet — the design defers that branch.
-    ;; For now, an over-ahead cursor just collapses to the caught-up response.
-    (let [result (server/build-session-history-response [] 999 10000 1 5)]
-      (is (= [] (:messages result)))
-      (is (true? (:is-complete result)))
-      (is (nil? (:gap result)))))
-
   (testing "Empty session with fresh client (last-seq=0, next-seq=1) is caught up"
     (let [result (server/build-session-history-response [] 0 10000 1 1)]
       (is (= [] (:messages result)))
       (is (true? (:is-complete result)))
       (is (nil? (:gap result))))))
+
+(deftest test-build-session-history-client-ahead-branch
+  (testing "last-seq > next-seq - 1 returns :gap with reason client_ahead and full resync"
+    ;; Server has 3 messages (seqs 1..3, next-seq=4). Client claims to be at
+    ;; seq 999 — only possible after a backend rollback that discarded
+    ;; messages the client already saw. Reply must surface a client_ahead
+    ;; gap and a full resync starting from min-available-seq so the client
+    ;; can drop local state and reload to the server's truth.
+    (let [messages [{:seq 1 :uuid "a" :text "one"}
+                    {:seq 2 :uuid "b" :text "two"}
+                    {:seq 3 :uuid "c" :text "three"}]
+          result (server/build-session-history-response messages 999 10000 1 4)]
+      (is (= 3 (count (:messages result))))
+      (is (= [1 2 3] (mapv :seq (:messages result))))
+      (is (= 1 (:first-seq result)))
+      (is (= 3 (:last-seq result)))
+      (is (= 4 (:next-seq result)))
+      (is (true? (:is-complete result)))
+      (is (= "client_ahead" (get-in result [:gap :reason])))
+      (is (= 999 (get-in result [:gap :requested-last-seq])))
+      (is (= 1 (get-in result [:gap :min-available-seq])))))
+
+  (testing "Empty server with client-ahead cursor still emits the gap signal"
+    ;; Empty session (next-seq=1, no messages). last-seq=999 means the
+    ;; client somehow has state for a session the server has nothing for.
+    ;; Messages array is empty, but the gap object MUST be preserved so the
+    ;; client receives the drop-state signal.
+    (let [result (server/build-session-history-response [] 999 10000 1 1)]
+      (is (= [] (:messages result)))
+      (is (nil? (:first-seq result)))
+      (is (nil? (:last-seq result)))
+      (is (= 1 (:next-seq result)))
+      (is (true? (:is-complete result)))
+      (is (= "client_ahead" (get-in result [:gap :reason])))
+      (is (= 999 (get-in result [:gap :requested-last-seq])))))
+
+  (testing "last-seq == next-seq (one above caught-up boundary) is client_ahead"
+    ;; Boundary: last-seq=3 with next-seq=3 means client claims seq 3 but
+    ;; server's next assignment is 3, i.e. server has only seqs 1..2.
+    ;; That's strictly above next-seq - 1 = 2, so this is client_ahead, not
+    ;; caught-up.
+    (let [messages [{:seq 1 :uuid "a"} {:seq 2 :uuid "b"}]
+          result (server/build-session-history-response messages 3 10000 1 3)]
+      (is (= 2 (count (:messages result))))
+      (is (= [1 2] (mapv :seq (:messages result))))
+      (is (= "client_ahead" (get-in result [:gap :reason])))
+      (is (= 3 (get-in result [:gap :requested-last-seq])))))
+
+  (testing "Client-ahead resync filters messages below min-available-seq"
+    ;; Defensive: if the caller passes messages outside the retained range
+    ;; (orphans below min-available-seq), the resync must drop them so the
+    ;; client doesn't merge state the server has explicitly forgotten.
+    (let [messages [{:seq 50 :uuid "stale"}
+                    {:seq 200 :uuid "a"}
+                    {:seq 201 :uuid "b"}]
+          result (server/build-session-history-response messages 999 10000 200 202)]
+      (is (= [200 201] (mapv :seq (:messages result))))
+      (is (= 200 (:first-seq result)))
+      (is (= 201 (:last-seq result)))
+      (is (= "client_ahead" (get-in result [:gap :reason])))
+      (is (= 200 (get-in result [:gap :min-available-seq])))))
+
+  (testing "Client-ahead with no message fitting the budget still preserves the gap"
+    ;; Defensive: if even a single message in the resync exceeds the budget,
+    ;; the empty-included guard fires. For the packed branch that guard
+    ;; reports caught-up to break the resubscribe loop, but for client_ahead
+    ;; it MUST keep the gap so the client still receives the drop-state
+    ;; signal — otherwise the over-ahead cursor would silently linger.
+    (let [messages [{:seq 1 :uuid "huge" :text (apply str (repeat 5000 "x"))}]
+          result (server/build-session-history-response messages 999 300 1 2)]
+      (is (= [] (:messages result)))
+      (is (true? (:is-complete result)))
+      (is (= "client_ahead" (get-in result [:gap :reason])))
+      (is (= 999 (get-in result [:gap :requested-last-seq])))))
+
+  (testing "Client-ahead respects byte budget and reports is-complete=false on truncation"
+    ;; If the full resync exceeds the budget, the client gets a partial
+    ;; window with is_complete=false. The gap is still attached so the
+    ;; client knows to drop state; the is_complete=false chain handles
+    ;; pulling the rest in subsequent windows (which run through the
+    ;; normal packed branch once the cursor advances below next-seq).
+    (let [messages (vec (for [i (range 10)]
+                          {:seq (inc i)
+                           :uuid (str "m-" i)
+                           :text (apply str (repeat 200 "x"))}))
+          ;; Budget=1700 fits ~5 of the 10 messages; the rest are deferred
+          ;; to the next window (which then runs through the packed branch
+          ;; once the cursor is below next-seq).
+          result (server/build-session-history-response messages 999 1700 1 11)]
+      (is (false? (:is-complete result)))
+      (is (pos? (count (:messages result))))
+      (is (< (count (:messages result)) 10))
+      (is (= 1 (:first-seq result)))
+      (is (= "client_ahead" (get-in result [:gap :reason]))))))
 
 (deftest test-build-session-history-packed-complete
   (testing "Packed range returns messages > last-seq in order, complete when budget holds"
