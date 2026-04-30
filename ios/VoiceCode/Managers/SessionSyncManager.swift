@@ -112,6 +112,26 @@ class SessionSyncManager {
     /// `DispatchQueue.main.async` block where the resubscribe is fired.
     private var incompleteChainCursors: [String: Int64] = [:]
 
+    /// Per-session serial queues that gate concurrent
+    /// `handleSessionHistoryPayload` invocations for the same session.
+    /// Without this, two payloads landing simultaneously (subscribe reply
+    /// crossing a live push, two backfills in quick succession) each spawn
+    /// independent background contexts whose seqHit fetches see stale
+    /// snapshots and both insert duplicate rows for overlapping seqs.
+    /// See beads tmux-untethered-prf. Different sessions still process in
+    /// parallel — only same-session payloads serialize.
+    private var sessionUpsertQueues: [String: DispatchQueue] = [:]
+    private let sessionUpsertQueuesLock = NSLock()
+
+    private func upsertQueue(forSessionId sessionId: String) -> DispatchQueue {
+        sessionUpsertQueuesLock.lock()
+        defer { sessionUpsertQueuesLock.unlock() }
+        if let existing = sessionUpsertQueues[sessionId] { return existing }
+        let q = DispatchQueue(label: "dev.910labs.voice-code.SessionSync.upsert.\(sessionId)")
+        sessionUpsertQueues[sessionId] = q
+        return q
+    }
+
     init(persistenceController: PersistenceController = .shared, voiceOutputManager: VoiceOutputManager? = nil) {
         self.persistenceController = persistenceController
         self.context = persistenceController.container.viewContext
@@ -399,8 +419,21 @@ class SessionSyncManager {
             return
         }
 
-        persistenceController.performBackgroundTask { [weak self] backgroundContext in
+        // Serialize per-session so the seqHit fetch and the insert/save form
+        // a single critical section against the persistent store. Two
+        // payloads on the same session that land concurrently (subscribe
+        // reply crossing a live push, two backfills in quick succession)
+        // would otherwise each fetch against an independent stale background
+        // context and both insert duplicate rows for overlapping seqs. See
+        // beads tmux-untethered-prf. Different sessions keep parallelism via
+        // the per-session keying. The inner `performAndWait` blocks the
+        // serial queue until the save commits, so the next dispatched
+        // payload reads the freshly-saved store.
+        upsertQueue(forSessionId: prunedKey).async { [weak self] in
             guard let self = self else { return }
+            let backgroundContext = self.persistenceController.container.newBackgroundContext()
+            backgroundContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+            backgroundContext.performAndWait {
 
             // Snapshot the current contiguous cursor BEFORE mutating — we
             // need the pre-upsert value to emit a correct backfill request.
@@ -601,6 +634,7 @@ class SessionSyncManager {
                     // is_complete: true → chain (if any) terminated naturally.
                     self.incompleteChainCursors.removeValue(forKey: key)
                 }
+            }
             }
         }
     }

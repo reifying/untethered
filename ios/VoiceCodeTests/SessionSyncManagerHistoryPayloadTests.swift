@@ -620,11 +620,6 @@ final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
         // row per seq (idempotent on (session_id, seq) per AC3 of the
         // append-only message stream design).
         //
-        // CURRENTLY FAILING — the upsert path does fetch-then-create against
-        // independent stale snapshots, so overlapping seqs land twice. Tracked
-        // by tmux-untethered-prf; remove XCTExpectFailure once that lands.
-        XCTExpectFailure("tmux-untethered-prf: concurrent upserts produce duplicate rows for overlapping seqs")
-
         seedSession(seqs: 1...5)
 
         // Overlapping seq ranges. Each payload carries seqs the other does
