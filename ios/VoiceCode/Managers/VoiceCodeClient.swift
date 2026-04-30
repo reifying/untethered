@@ -94,8 +94,63 @@ class VoiceCodeClient: ObservableObject {
     // Continuation for async session list requests
     private var sessionListContinuation: CheckedContinuation<Void, Never>?
 
-    // Continuations for async session refresh requests (sessionId -> continuation)
-    private var sessionRefreshContinuations: [String: CheckedContinuation<Void, Never>] = [:]
+    // Per-session refresh state. The latest call to requestSessionRefresh
+    // wins: each call increments the per-session epoch and the
+    // session_history handler only resumes the entry whose epoch matches.
+    // Replaces the prior unsubscribe → 100ms sleep → subscribe handshake,
+    // whose 100ms gap was insufficient to guarantee the backend had
+    // processed the unsubscribe before the subscribe arrived
+    // (tmux-untethered-1vn).
+    private final class PendingSessionRefresh {
+        let epoch: Int
+        private var continuation: CheckedContinuation<Void, Never>?
+        init(epoch: Int, continuation: CheckedContinuation<Void, Never>) {
+            self.epoch = epoch
+            self.continuation = continuation
+        }
+        func resumeOnce() {
+            _ = resumeOnceIfPending()
+        }
+        /// Resume if not yet resumed; return whether this call did the resume.
+        /// Lets the timeout site decide whether to log "timed out" only when
+        /// it actually fired the resume (the handler/supersede paths are
+        /// no-ops at the timeout because they already resumed).
+        @discardableResult
+        func resumeOnceIfPending() -> Bool {
+            if let c = continuation {
+                continuation = nil
+                c.resume()
+                return true
+            }
+            return false
+        }
+    }
+    private var sessionRefreshEpoch: [String: Int] = [:]
+    private var sessionRefreshPending: [String: PendingSessionRefresh] = [:]
+
+    // Pong correlation. The protocol's ping/pong messages carry no nonce
+    // and the keepalive timer fires its own (unawaited) pings, so we
+    // count both pings sent and pongs received and let awaiting callers
+    // wait for `pongsReceived >= their target`. WebSocket FIFO ordering
+    // guarantees the keepalive's pong cannot leapfrog a refresh's pong
+    // when its ping was sent first.
+    private var pingsSent: Int = 0
+    private var pongsReceived: Int = 0
+    private final class PongWaiter {
+        let target: Int
+        private var continuation: CheckedContinuation<Void, Never>?
+        init(target: Int, continuation: CheckedContinuation<Void, Never>) {
+            self.target = target
+            self.continuation = continuation
+        }
+        func resumeOnce() {
+            if let c = continuation {
+                continuation = nil
+                c.resume()
+            }
+        }
+    }
+    private var pongWaiters: [PongWaiter] = []
 
     // Continuations for async command execution requests (commandId -> continuation)
     private var commandExecutionContinuations: [String: CheckedContinuation<String, Never>] = [:]
@@ -806,8 +861,21 @@ class VoiceCodeClient: ObservableObject {
                 // Note: Backend will close connection after auth_error
 
             case "pong":
-                // Pong response to ping
-                break
+                // Pong response to ping. Pings/pongs are FIFO and the
+                // backend echoes one pong per ping, so the running
+                // `pongsReceived` counter pairs 1:1 with `pingsSent`.
+                // Any waiter whose target sequence has been reached is
+                // resumed. See `awaitPongBarrier`.
+                self.pongsReceived += 1
+                var stillPending: [PongWaiter] = []
+                for waiter in self.pongWaiters {
+                    if self.pongsReceived >= waiter.target {
+                        waiter.resumeOnce()
+                    } else {
+                        stillPending.append(waiter)
+                    }
+                }
+                self.pongWaiters = stillPending
 
             case "session_list":
                 // Initial session list received after connection
@@ -864,8 +932,8 @@ class VoiceCodeClient: ObservableObject {
                     // succeeded; otherwise the awaiting caller would proceed
                     // with stale state. On failure, let the refresh timeout
                     // fire instead.
-                    if let continuation = self.sessionRefreshContinuations.removeValue(forKey: payload.sessionId) {
-                        continuation.resume()
+                    if let pending = self.sessionRefreshPending.removeValue(forKey: payload.sessionId) {
+                        pending.resumeOnce()
                     }
                 } catch {
                     logger.error("❌ [VoiceCodeClient] Failed to decode session_history payload: \(error.localizedDescription)")
@@ -1238,8 +1306,56 @@ class VoiceCodeClient: ObservableObject {
     }
 
     func ping() {
+        // All pings — keepalive and barrier alike — bump pingsSent so
+        // the FIFO pong-counter correlation in the "pong" handler stays
+        // honest. See `awaitPongBarrier` for the awaited variant used
+        // by `requestSessionRefresh`.
+        pingsSent += 1
         let message: [String: Any] = ["type": "ping"]
         sendMessage(message)
+    }
+
+    /// Send a ping and suspend until its pong arrives, used by
+    /// `requestSessionRefresh` as a response-based barrier between
+    /// `unsubscribe` and `subscribe`. WebSocket FIFO ordering gives us:
+    /// once the backend's pong reaches us, every message we sent before
+    /// the ping has been processed (including the unsubscribe), and any
+    /// session_history pushes for the prior subscription window have
+    /// already been delivered. The next session_history we receive
+    /// after the subsequent subscribe is therefore the subscribe-reply,
+    /// not a leftover live push.
+    ///
+    /// Multiple in-flight pings (e.g., keepalive concurrent with a
+    /// refresh) are correlated by counting: each ping bumps `pingsSent`
+    /// and each pong bumps `pongsReceived`, with `target = pingsSent`
+    /// captured at send time.
+    private func awaitPongBarrier(timeoutSeconds: TimeInterval) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else {
+                    continuation.resume()
+                    return
+                }
+                self.pingsSent += 1
+                let target = self.pingsSent
+                let waiter = PongWaiter(target: target, continuation: continuation)
+                self.pongWaiters.append(waiter)
+                let message: [String: Any] = ["type": "ping"]
+                self.sendMessage(message)
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSeconds) { [weak self] in
+                    // Always resume the waiter so the awaiting Task
+                    // can't hang past the timeout, even if `self` was
+                    // deallocated in the interim. Removal from the
+                    // waiter queue is best-effort cleanup.
+                    if let self = self,
+                       let idx = self.pongWaiters.firstIndex(where: { $0 === waiter }) {
+                        self.pongWaiters.remove(at: idx)
+                    }
+                    waiter.resumeOnce()
+                }
+            }
+        }
     }
     
     /// Re-fires `subscribe()` for every session in `activeSubscriptions`.
@@ -1493,24 +1609,99 @@ class VoiceCodeClient: ObservableObject {
 
     func requestSessionRefresh(sessionId: String) async {
         // Refresh a specific session by unsubscribing and re-subscribing
-        // This will fetch the latest messages from the backend
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            // Store continuation to resume when session_history is received
-            sessionRefreshContinuations[sessionId] = continuation
+        // (forcing the backend to send a fresh session_history reply).
+        //
+        // The prior implementation used `unsubscribe → 100ms sleep →
+        // subscribe → wait for any session_history`. That handshake had
+        // two failure modes (tmux-untethered-1vn):
+        //
+        //   1. The 100ms gap could not guarantee the backend had
+        //      processed the unsubscribe before the subscribe arrived,
+        //      so a session_history push from the prior subscription
+        //      window could land between the subscribe send and its
+        //      reply, prematurely resuming the awaiting continuation
+        //      with partial/stale data.
+        //   2. Concurrent calls for the same session shared one
+        //      continuation slot, so the latter overwrote the former
+        //      and the original caller hung until the 10s timeout.
+        //
+        // The fix combines a response-based ping/pong barrier (so
+        // `subscribe` is only sent after the backend has demonstrably
+        // processed the unsubscribe — at which point no further pushes
+        // for the prior subscription window can arrive) with a
+        // per-session epoch counter (so a superseding call resumes the
+        // prior continuation immediately and the session_history
+        // handler only resumes the latest epoch's entry).
 
-            print("🔄 [VoiceCodeClient] Requesting session refresh: \(sessionId)")
-            unsubscribe(sessionId: sessionId)
+        // Phase 1: claim a fresh epoch on the main queue and send the
+        // unsubscribe. Done synchronously inside the dispatch so the
+        // epoch bump and the wire send are atomic with respect to
+        // handleMessage and the keepalive ping timer.
+        let epoch: Int = await withCheckedContinuation { (continuation: CheckedContinuation<Int, Never>) in
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else {
+                    continuation.resume(returning: -1)
+                    return
+                }
 
-            // Re-subscribe after a brief delay to ensure clean state
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.subscribe(sessionId: sessionId)
+                if let prior = self.sessionRefreshPending.removeValue(forKey: sessionId) {
+                    prior.resumeOnce()
+                }
+
+                let newEpoch = (self.sessionRefreshEpoch[sessionId] ?? 0) + 1
+                self.sessionRefreshEpoch[sessionId] = newEpoch
+
+                print("🔄 [VoiceCodeClient] Requesting session refresh: \(sessionId) (epoch \(newEpoch))")
+                self.unsubscribe(sessionId: sessionId)
+
+                continuation.resume(returning: newEpoch)
             }
+        }
 
-            // Set a timeout to prevent infinite waiting
-            DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
-                if let cont = self?.sessionRefreshContinuations.removeValue(forKey: sessionId) {
-                    cont.resume()
-                    print("⚠️ [VoiceCodeClient] Session refresh request timed out after 10 seconds for \(sessionId)")
+        guard epoch >= 0 else { return }
+
+        // Phase 2: barrier. The pong proves the backend has finished
+        // processing every message we sent before the ping (notably the
+        // unsubscribe). After this point no leftover session_history
+        // pushes for this session can arrive on our channel.
+        await awaitPongBarrier(timeoutSeconds: 5.0)
+
+        // Phase 3: send subscribe and await the resulting session_history
+        // reply. If a newer refresh has superseded us between phases,
+        // bail out — the newer call owns the wire send and our
+        // continuation has already been resumed in phase 1 of that call.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else {
+                    continuation.resume()
+                    return
+                }
+                guard self.sessionRefreshEpoch[sessionId] == epoch else {
+                    continuation.resume()
+                    return
+                }
+
+                let pending = PendingSessionRefresh(epoch: epoch, continuation: continuation)
+                self.sessionRefreshPending[sessionId] = pending
+                self.subscribe(sessionId: sessionId)
+
+                // Capture `pending` strongly in the timeout. Its
+                // `resumeOnce()` is idempotent, so even if a
+                // session_history or supersede has already resumed and
+                // removed this entry, the timeout's call is a no-op
+                // rather than a double-resume trap. When `self` is nil
+                // by timer-fire time we still resume — the awaiting
+                // Task otherwise hangs past the 10s budget — and we
+                // skip the dictionary cleanup since the dictionary is
+                // gone with self.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
+                    if let self = self,
+                       self.sessionRefreshPending[sessionId] === pending {
+                        self.sessionRefreshPending.removeValue(forKey: sessionId)
+                    }
+                    if pending.resumeOnceIfPending() {
+                        print("⚠️ [VoiceCodeClient] Session refresh request timed out after 10 seconds for \(sessionId) (epoch \(epoch))")
+                    }
                 }
             }
         }
