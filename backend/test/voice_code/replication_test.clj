@@ -618,6 +618,118 @@
 
       (repl/reset-file-position! file-path))))
 
+(deftest parse-jsonl-incremental-multibyte-utf8-exact-cursor
+  ;; Regression for tmux-untethered-e1a: when raw bytes end mid-character,
+  ;; decoding to a String first replaces the truncated byte(s) with U+FFFD.
+  ;; Re-encoding U+FFFD to UTF-8 yields 3 bytes (EF BF BD), which differs
+  ;; from the truncated original (1 or 2 bytes for a 4-byte emoji), placing
+  ;; the cursor in the wrong position — sometimes inside the prior complete
+  ;; line. The fix computes holdback in raw bytes by finding the last \n
+  ;; byte rather than decoding first.
+  (testing "1-byte trailing fragment: cursor lands at start of partial line"
+    (let [file (io/file test-dir "utf8-1byte-exact.jsonl")
+          file-path (.getAbsolutePath file)
+          prior-line (claude-jsonl {:type "user" :text "hello"
+                                    :uuid "u-prior"})
+          prior-bytes (.getBytes (str prior-line "\n") "UTF-8")
+          ;; First byte of a 4-byte UTF-8 sequence (the emoji 🚀, F0 9F 9A 80)
+          partial-byte (byte-array [(unchecked-byte 0xF0)])
+          tick1-bytes (byte-array (concat prior-bytes partial-byte))
+          prior-end (alength prior-bytes)]
+      (io/make-parents file)
+      (with-open [out (io/output-stream file)]
+        (.write out tick1-bytes))
+      (repl/reset-file-position! file-path)
+
+      (let [{:keys [messages new-pos]} (repl/parse-jsonl-incremental file-path)]
+        (is (= 1 (count messages))
+            "prior complete line is returned")
+        (is (= "u-prior" (:uuid (first messages))))
+        (is (= prior-end new-pos)
+            "Cursor lands exactly at start of partial line — not inside the prior line. Old buggy behavior would put it at prior-end - 2 because U+FFFD re-encoded is 3 bytes vs the 1 truncated byte.")
+        (is (= 1 (- (.length file) new-pos))
+            "Exactly 1 trailing byte (the F0) is held back"))
+      (repl/reset-file-position! file-path)))
+
+  (testing "2-byte trailing fragment: cursor lands at start of partial line"
+    ;; Same scenario but with 2 bytes of the partial emoji held back. Old
+    ;; buggy behavior had off-by-1 (cursor on the prior \n byte). New
+    ;; behavior pinpoints the start of the partial line exactly.
+    (let [file (io/file test-dir "utf8-2byte-exact.jsonl")
+          file-path (.getAbsolutePath file)
+          prior-line (claude-jsonl {:type "user" :text "hello"
+                                    :uuid "u-prior-2"})
+          prior-bytes (.getBytes (str prior-line "\n") "UTF-8")
+          partial-bytes (byte-array [(unchecked-byte 0xF0) (unchecked-byte 0x9F)])
+          tick1-bytes (byte-array (concat prior-bytes partial-bytes))
+          prior-end (alength prior-bytes)]
+      (io/make-parents file)
+      (with-open [out (io/output-stream file)]
+        (.write out tick1-bytes))
+      (repl/reset-file-position! file-path)
+
+      (let [{:keys [new-pos]} (repl/parse-jsonl-incremental file-path)]
+        (is (= prior-end new-pos)
+            "Cursor lands exactly at start of partial line, not on the prior \\n byte")
+        (is (= 2 (- (.length file) new-pos))
+            "Exactly 2 trailing bytes are held back"))
+      (repl/reset-file-position! file-path)))
+
+  (testing "Mid-line emoji split: held-back tail is appended next tick without corruption"
+    ;; End-to-end: split a JSON line in the middle of a 4-byte emoji.
+    ;; Tick 1 holds the truncated bytes back. Tick 2 appends the rest and
+    ;; the message decodes correctly. No bytes are duplicated or dropped.
+    (let [file (io/file test-dir "utf8-emoji-roundtrip.jsonl")
+          file-path (.getAbsolutePath file)
+          prior-line (claude-jsonl {:type "user" :text "first"
+                                    :uuid "u-prior-3"})
+          second-line (claude-jsonl {:type "user" :text "🚀"
+                                     :uuid "u-emoji"})
+          second-bytes (.getBytes ^String second-line "UTF-8")
+          emoji-bytes (.getBytes "🚀" "UTF-8")
+          ;; Find the start index of the emoji bytes within second-bytes.
+          emoji-start (loop [i 0]
+                        (cond
+                          (> (+ i 4) (alength second-bytes)) -1
+                          (and (= (aget second-bytes i) (aget emoji-bytes 0))
+                               (= (aget second-bytes (+ i 1)) (aget emoji-bytes 1))
+                               (= (aget second-bytes (+ i 2)) (aget emoji-bytes 2))
+                               (= (aget second-bytes (+ i 3)) (aget emoji-bytes 3)))
+                          i
+                          :else (recur (inc i))))
+          prior-bytes (.getBytes (str prior-line "\n") "UTF-8")
+          ;; Tick 1: prior + 1 byte of the 4-byte emoji (worst-case split).
+          tick1-bytes (byte-array (concat prior-bytes
+                                          (take (inc emoji-start) second-bytes)))
+          ;; Tick 2: remaining 3 emoji bytes + JSON suffix + \n.
+          tick2-bytes (byte-array (concat (drop (inc emoji-start) second-bytes)
+                                          (.getBytes "\n" "UTF-8")))
+          prior-end (alength prior-bytes)]
+      (is (>= emoji-start 0) "Test setup: emoji must appear in the second line bytes")
+      (io/make-parents file)
+      (with-open [out (io/output-stream file)]
+        (.write out tick1-bytes))
+      (repl/reset-file-position! file-path)
+
+      (let [{:keys [messages new-pos]} (repl/parse-jsonl-incremental file-path)]
+        (is (= 1 (count messages)))
+        (is (= "u-prior-3" (:uuid (first messages))))
+        (is (= prior-end new-pos)
+            "Cursor at exact start of partial line so tick 2 reads only the new content")
+        (swap! repl/file-positions assoc file-path new-pos))
+
+      (with-open [out (io/output-stream file :append true)]
+        (.write out tick2-bytes))
+
+      (let [{:keys [messages new-pos]} (repl/parse-jsonl-incremental file-path)
+            emoji-msg (first (filter #(= "u-emoji" (:uuid %)) messages))]
+        (is (some? emoji-msg) "Tick 2 emits the now-complete second line")
+        (is (= "🚀" (get-in emoji-msg [:message :content]))
+            "Multi-byte UTF-8 character reassembled across ticks without corruption")
+        (is (= (.length file) new-pos)
+            "Cursor advances to EOF after the partial line is completed"))
+      (repl/reset-file-position! file-path))))
+
 (deftest parse-jsonl-incremental-cursor-reset-after-shrink
   ;; Regression for tmux-untethered-df2: claude --compact and similar
   ;; operations rewrite the JSONL file in place, leaving it smaller than

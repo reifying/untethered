@@ -1091,6 +1091,15 @@
   (legitimately non-message entries such as sidechain/summary/system) is still
   fully consumed — only truly partial writes hold the cursor back.
 
+  Holdback is computed in **bytes**, not characters: the implementation finds
+  the last `\\n` byte in the raw buffer and treats everything after it as the
+  unterminated tail. This matters for multi-byte UTF-8 characters whose bytes
+  straddle a tick boundary — decoding the whole buffer to a String first would
+  turn the truncated trailing bytes into a Unicode replacement character, and
+  re-encoding that replacement back to UTF-8 yields a different byte length
+  than the original truncated sequence (e.g. 1 trailing byte of a 4-byte emoji
+  becomes 3 bytes of `EF BF BD`), placing the cursor in the wrong position.
+
   File-shrink recovery: if the on-disk file is smaller than the tracked
   position (e.g. `claude --compact` rewrote the JSONL in place), the cursor
   is reset to 0 and the entire current file is re-read. Without this reset
@@ -1126,19 +1135,27 @@
           (let [buf (byte-array (- current-size last-pos))
                 _ (.readFully raf buf)
                 buf-len (alength buf)
-                ends-with-nl? (and (pos? buf-len)
-                                   (= (byte \newline) (aget buf (dec buf-len))))
-                text (String. buf "UTF-8")
-                ;; split with -1 keeps trailing empty string when text ends in \n
-                lines (str/split text #"\n" -1)
-                [complete trailing-bytes]
-                (if ends-with-nl?
-                  ;; Every \n-terminated line is complete; butlast drops the
-                  ;; trailing empty "" slot left by split with limit -1.
-                  [(butlast lines) 0]
-                  ;; Last element is the unterminated tail — hold it back.
-                  [(butlast lines)
-                   (count (.getBytes ^String (last lines) "UTF-8"))])
+                ;; Find the last \n byte in raw bytes. -1 if none.
+                ;; This avoids decoding the (possibly mid-character) tail.
+                last-nl-idx (loop [i (dec buf-len)]
+                              (cond
+                                (< i 0) -1
+                                (= (byte \newline) (aget buf i)) i
+                                :else (recur (dec i))))
+                ;; Bytes [0, last-nl-idx] are newline-terminated and complete.
+                ;; Bytes (last-nl-idx, buf-len) are the held-back partial tail.
+                complete-byte-len (inc last-nl-idx)
+                trailing-bytes (- buf-len complete-byte-len)
+                ;; Decode only the complete portion. The byte at last-nl-idx
+                ;; is `\n` (ASCII), so the slice is guaranteed to end at a
+                ;; valid UTF-8 character boundary.
+                complete-text (if (pos? complete-byte-len)
+                                (String. buf 0 complete-byte-len "UTF-8")
+                                "")
+                ;; split with -1 keeps trailing empty "" left by the final \n
+                lines (str/split complete-text #"\n" -1)
+                ;; butlast drops the trailing empty "" slot.
+                complete (butlast lines)
                 complete-vec (vec complete)
                 parsed-with-nils (mapv parse-jsonl-line complete-vec)
                 total-lines (count complete-vec)
