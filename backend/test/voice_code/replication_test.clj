@@ -682,6 +682,133 @@
 
       (repl/reset-file-position! file-path))))
 
+(deftest parse-copilot-events-incremental-cursor-reset-after-shrink
+  ;; Regression for tmux-untethered-d9j: parse-copilot-events-incremental
+  ;; had the same shrink-cursor bug as the Claude path (tmux-untethered-df2).
+  ;; If a Copilot events.jsonl is rewritten externally and ends up smaller
+  ;; than the tracked cursor, the function returned an empty result and
+  ;; never reset the cursor — every post-shrink append was silently skipped.
+  (testing "Copilot events.jsonl truncated then appended: cursor resets to 0 and parses only new content"
+    (let [parse-incremental @#'repl/parse-copilot-events-incremental
+          session-id "11111111-2222-3333-4444-555555555555"
+          session-dir (io/file test-dir ".copilot" "session-state" session-id)
+          events-file (io/file session-dir "events.jsonl")
+          file-path (.getAbsolutePath events-file)]
+      (.mkdirs session-dir)
+      (repl/reset-file-position! file-path)
+
+      (spit events-file
+            (str (json/generate-string
+                  {:type "user.message"
+                   :timestamp "2026-04-19T00:00:00Z"
+                   :data {:content "old-1" :messageId "m-old-1"}})
+                 "\n"
+                 (json/generate-string
+                  {:type "assistant.message"
+                   :timestamp "2026-04-19T00:00:01Z"
+                   :data {:content "old-2" :messageId "m-old-2"}})
+                 "\n"))
+      (let [initial-len (.length events-file)
+            {:keys [messages]} (parse-incremental file-path)]
+        (is (= 2 (count messages))
+            "Initial parse returns both pre-shrink Copilot messages")
+        (is (= initial-len (get @repl/file-positions file-path))
+            "Cursor advances to end of file"))
+
+      (let [tracked-before (get @repl/file-positions file-path)]
+        (is (pos? tracked-before)
+            "Cursor is non-zero before truncation"))
+
+      (.delete events-file)
+      (spit events-file
+            (str (json/generate-string
+                  {:type "user.message"
+                   :timestamp "2026-04-19T01:00:00Z"
+                   :data {:content "new-1" :messageId "m-new-1"}})
+                 "\n"))
+      (let [new-len (.length events-file)
+            tracked (get @repl/file-positions file-path)]
+        (is (< new-len tracked)
+            "Test precondition: new file is smaller than tracked cursor"))
+
+      (let [shrunk-len (.length events-file)
+            {:keys [messages]} (parse-incremental file-path)
+            ids (mapv :uuid messages)]
+        (is (= 1 (count messages))
+            "Only the post-shrink event is returned; cursor was reset to 0")
+        (is (= ["m-new-1"] ids)
+            "Old events are NOT re-emitted (they were physically deleted)")
+        (is (= shrunk-len (get @repl/file-positions file-path))
+            "Cursor advances to current EOF, not to the stale tracked position"))
+
+      (spit events-file
+            (str (json/generate-string
+                  {:type "assistant.message"
+                   :timestamp "2026-04-19T01:00:05Z"
+                   :data {:content "new-2" :messageId "m-new-2"}})
+                 "\n")
+            :append true)
+      (let [{:keys [messages]} (parse-incremental file-path)]
+        (is (= 1 (count messages))
+            "Only the newly appended event is returned, not the prior post-shrink one")
+        (is (= "m-new-2" (:uuid (first messages))))
+        (is (= (.length events-file) (get @repl/file-positions file-path))
+            "Cursor tracks subsequent appends correctly"))
+
+      (repl/reset-file-position! file-path))))
+
+(deftest parse-copilot-events-incremental-shrink-to-empty-resets-cursor
+  ;; Edge case for tmux-untethered-d9j: a rewrite that goes through an
+  ;; intermediate empty state must still reset the cursor. Otherwise the
+  ;; early-return path (current-size <= last-pos) would leave a stale
+  ;; tracked-pos behind, and a subsequent grow-back-past-old-EOF would
+  ;; silently skip the rewritten prefix.
+  (testing "Copilot events.jsonl observed empty after shrink: cursor is reset to 0 even when nothing is parsed"
+    (let [parse-incremental @#'repl/parse-copilot-events-incremental
+          session-id "22222222-3333-4444-5555-666666666666"
+          session-dir (io/file test-dir ".copilot" "session-state" session-id)
+          events-file (io/file session-dir "events.jsonl")
+          file-path (.getAbsolutePath events-file)]
+      (.mkdirs session-dir)
+      (repl/reset-file-position! file-path)
+
+      (spit events-file
+            (str (json/generate-string
+                  {:type "user.message"
+                   :timestamp "2026-04-19T00:00:00Z"
+                   :data {:content "before" :messageId "m-before"}})
+                 "\n"))
+      (parse-incremental file-path)
+      (let [tracked (get @repl/file-positions file-path)]
+        (is (pos? tracked)
+            "Cursor is non-zero after the initial parse"))
+
+      (.delete events-file)
+      (spit events-file "")
+      (is (zero? (.length events-file))
+          "Test precondition: file is empty between observations")
+
+      (let [{:keys [messages raw-events]} (parse-incremental file-path)]
+        (is (empty? messages))
+        (is (empty? raw-events))
+        (is (zero? (get @repl/file-positions file-path))
+            "Cursor must be reset to 0 even on the empty early-return path"))
+
+      (spit events-file
+            (str (json/generate-string
+                  {:type "user.message"
+                   :timestamp "2026-04-19T02:00:00Z"
+                   :data {:content "after" :messageId "m-after"}})
+                 "\n")
+            :append true)
+      (let [{:keys [messages]} (parse-incremental file-path)]
+        (is (= 1 (count messages))
+            "Subsequent append after empty-state is parsed from byte 0, not skipped")
+        (is (= "m-after" (:uuid (first messages))))
+        (is (= (.length events-file) (get @repl/file-positions file-path))))
+
+      (repl/reset-file-position! file-path))))
+
 (deftest test-reset-file-position
   (testing "Reset file position clears tracking"
     (let [messages ["{\"role\":\"user\",\"text\":\"msg1\"}"]

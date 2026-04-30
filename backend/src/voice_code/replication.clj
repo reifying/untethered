@@ -1957,12 +1957,28 @@
 
 (defn- parse-copilot-events-incremental
   "Parse only new lines from a Copilot events.jsonl file since last read position.
-   Returns {:messages [...canonical...] :raw-events [...raw-json...]}."
+   Returns {:messages [...canonical...] :raw-events [...raw-json...]}.
+
+   File-shrink recovery: if the on-disk file is smaller than the tracked
+   position (e.g. the session was rewritten externally or edited in place),
+   the cursor is reset to 0 and the entire current file is re-read. The
+   reset is persisted to `file-positions` even when the post-shrink file is
+   empty, so a rewrite that goes through an intermediate empty state cannot
+   leave a stale cursor that would later skip the new prefix
+   (tmux-untethered-d9j)."
   [file-path]
   (try
     (let [file (io/file file-path)
-          last-pos (get @file-positions file-path 0)
-          current-size (.length file)]
+          tracked-pos (get @file-positions file-path 0)
+          current-size (.length file)
+          shrunk? (< current-size tracked-pos)
+          last-pos (if shrunk? 0 tracked-pos)]
+      (when shrunk?
+        (log/warn "Copilot events.jsonl shrank below tracked cursor; resetting to 0"
+                  {:file file-path
+                   :tracked-pos tracked-pos
+                   :current-size current-size})
+        (swap! file-positions assoc file-path 0))
       (if (<= current-size last-pos)
         {:messages [] :raw-events []}
         (with-open [raf (java.io.RandomAccessFile. file "r")]
@@ -1980,7 +1996,6 @@
                               (map #(providers/parse-message :copilot %))
                               (filter some?)
                               (vec))]
-            ;; Update position
             (swap! file-positions assoc file-path current-size)
             {:messages messages :raw-events raw-events}))))
     (catch Exception e
