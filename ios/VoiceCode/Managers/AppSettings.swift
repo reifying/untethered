@@ -124,9 +124,11 @@ class AppSettings: ObservableObject {
         return "ws://\(cleanURL):\(cleanPort)"
     }
 
-    /// Returns true if the server has been configured (non-empty address)
+    /// Returns true if the server has been configured (non-empty address and numeric port)
     var isServerConfigured: Bool {
-        !serverURL.trimmingCharacters(in: .whitespaces).isEmpty
+        let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
+        let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
+        return !cleanURL.isEmpty && Int(cleanPort) != nil
     }
 
     // Cache for voices to avoid blocking main thread
@@ -280,7 +282,8 @@ class AppSettings: ObservableObject {
     init() {
         // Load initial values BEFORE setting up publishers to avoid triggering writes on launch
         self.serverURL = UserDefaults.standard.string(forKey: "serverURL") ?? ""
-        self.serverPort = UserDefaults.standard.string(forKey: "serverPort") ?? "8080"
+        // Default empty (not "8080") so fresh installs don't silently dial a wrong port before the user configures the server.
+        self.serverPort = UserDefaults.standard.string(forKey: "serverPort") ?? ""
 
         // On first launch, default to the first available premium voice
         if let savedVoice = UserDefaults.standard.string(forKey: "selectedVoiceIdentifier") {

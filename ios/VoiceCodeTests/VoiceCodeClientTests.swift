@@ -2052,4 +2052,48 @@ final class VoiceCodeClientTests: XCTestCase {
         wait(for: [firstCompleted], timeout: 2.0)
     }
 
+    // MARK: - Unconfigured Server Guard (tmux-untethered-el1)
+
+    func testConnectWithEmptyURLSetsErrorAndDoesNotConnect() {
+        let unconfigured = VoiceCodeClient(serverURL: "", setupObservers: false)
+        XCTAssertFalse(unconfigured.isConnected)
+        XCTAssertNil(unconfigured.currentError)
+
+        unconfigured.connect()
+
+        let waited = XCTestExpectation(description: "currentError dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waited.fulfill() }
+        wait(for: [waited], timeout: 1.0)
+
+        XCTAssertFalse(unconfigured.isConnected,
+                       "connect() must not flip isConnected when URL is unusable")
+        XCTAssertNotNil(unconfigured.currentError,
+                        "connect() must set currentError when URL is unusable")
+    }
+
+    func testConnectWithMissingPortDoesNotConnect() {
+        // No port — must short-circuit even though URL parses
+        let unconfigured = VoiceCodeClient(serverURL: "ws://192.168.1.50", setupObservers: false)
+        unconfigured.connect()
+
+        let waited = XCTestExpectation(description: "currentError dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waited.fulfill() }
+        wait(for: [waited], timeout: 1.0)
+
+        XCTAssertFalse(unconfigured.isConnected)
+        XCTAssertNotNil(unconfigured.currentError)
+    }
+
+    func testConnectWithGarbageURLDoesNotConnect() {
+        let unconfigured = VoiceCodeClient(serverURL: "not a url at all", setupObservers: false)
+        unconfigured.connect()
+
+        let waited = XCTestExpectation(description: "currentError dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waited.fulfill() }
+        wait(for: [waited], timeout: 1.0)
+
+        XCTAssertFalse(unconfigured.isConnected)
+        XCTAssertNotNil(unconfigured.currentError)
+    }
+
 }

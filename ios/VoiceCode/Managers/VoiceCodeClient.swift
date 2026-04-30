@@ -413,6 +413,19 @@ class VoiceCodeClient: ObservableObject {
     // MARK: - Connection Management
 
     func connect(sessionId: String? = nil) {
+        // Bail out before touching any sockets if the URL isn't usable.
+        // Single point of truth so the reconnect timer can't busy-loop on a bad URL either.
+        let parsed = URL(string: serverURL)
+        let hasHost = !((parsed?.host) ?? "").isEmpty
+        let hasPort = (parsed?.port ?? 0) > 0
+        guard parsed != nil, hasHost, hasPort else {
+            LogManager.shared.log("Server not configured; skipping connect (serverURL=\(serverURL))", category: "VoiceCodeClient")
+            DispatchQueue.main.async { [weak self] in
+                self?.currentError = "Server not configured"
+            }
+            return
+        }
+
         // If we have an existing WebSocket, check if it's still valid
         // Only skip reconnection for .running state; clean up non-running sockets
         if let existingSocket = webSocket {
