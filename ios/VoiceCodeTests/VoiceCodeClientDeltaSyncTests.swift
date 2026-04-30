@@ -207,6 +207,141 @@ final class VoiceCodeClientDeltaSyncTests: XCTestCase {
                        "confirmed seq must dominate over coexisting negative optimistic seqs")
     }
 
+    // MARK: - newestCachedSeq + persisted nextSeq (tmux-untethered-fkz)
+
+    /// Resubscribe after local message pruning must use the session-level
+    /// `nextSeq` cursor (persisted on every payload) rather than rolling
+    /// back to 0 because no `CDMessage` rows survive locally. The cursor
+    /// the wire wants is `last_seq` = max seq the client has — i.e. the
+    /// highest seq the server already assigned, which is `nextSeq - 1`.
+    func testNewestCachedSeqUsesSessionNextSeqWhenMessagesArePruned() throws {
+        // Session metadata persists; messages were pruned. This is the bug:
+        // pre-fix, newestCachedSeq returned 0 here, forcing a redundant
+        // full resync.
+        let sessionId = UUID()
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "test"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.provider = "claude"
+        session.nextSeq = 100  // Server's last-seen next_seq
+        try context.save()
+
+        // No CDMessage rows for this session — they were pruned locally.
+        let result = client.newestCachedSeq(sessionId: sessionId.uuidString.lowercased(),
+                                            context: context)
+        XCTAssertEqual(result, 99,
+                       "cursor must be nextSeq-1 when local messages are pruned but session nextSeq is recorded")
+    }
+
+    func testNewestCachedSeqTakesMaxOfMessageSeqAndSessionNextSeq() throws {
+        // Both signals present. Healthy case: cached messages and stored
+        // nextSeq agree (max message seq = nextSeq - 1). Both branches
+        // produce the same answer.
+        let sessionId = UUID()
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "test"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 1
+        session.preview = ""
+        session.provider = "claude"
+        session.nextSeq = 51
+
+        let m = CDMessage(context: context)
+        m.id = UUID()
+        m.sessionId = sessionId
+        m.role = "assistant"
+        m.text = "msg"
+        m.seq = 50
+        m.timestamp = Date()
+        m.messageStatus = .confirmed
+        m.session = session
+        try context.save()
+
+        let result = client.newestCachedSeq(sessionId: sessionId.uuidString.lowercased(),
+                                            context: context)
+        XCTAssertEqual(result, 50,
+                       "with both signals agreeing, cursor is the message-seq max which equals nextSeq-1")
+    }
+
+    func testNewestCachedSeqFallsBackToMessageSeqWhenSessionNextSeqUnset() throws {
+        // No persisted nextSeq (default 0 sentinel) — must not regress
+        // pre-fix behavior. Cursor still derives from the message rows.
+        let sessionId = UUID()
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "test"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 1
+        session.preview = ""
+        session.provider = "claude"
+        // session.nextSeq stays at default 0
+
+        let m = CDMessage(context: context)
+        m.id = UUID()
+        m.sessionId = sessionId
+        m.role = "assistant"
+        m.text = "msg"
+        m.seq = 17
+        m.timestamp = Date()
+        m.messageStatus = .confirmed
+        m.session = session
+        try context.save()
+
+        let result = client.newestCachedSeq(sessionId: sessionId.uuidString.lowercased(),
+                                            context: context)
+        XCTAssertEqual(result, 17,
+                       "with no persisted nextSeq, cursor must come from message rows")
+    }
+
+    func testNewestCachedSeqReturnsZeroWhenNeitherSourcePresent() {
+        // Session row may not exist at all (never received a payload).
+        // Cursor must be 0 — the sentinel for "send everything".
+        let sessionId = UUID().uuidString.lowercased()
+        XCTAssertEqual(client.newestCachedSeq(sessionId: sessionId, context: context), 0,
+                       "no session, no messages → cursor 0 (full resync)")
+    }
+
+    func testNewestCachedSeqPrefersSessionNextSeqWhenItExceedsMessageMax() throws {
+        // Mix of fresh nextSeq and stale message rows: e.g. a payload
+        // arrived but the message rows were since pruned, leaving a few
+        // older messages behind. The cursor must reflect the server's
+        // most recent next_seq, not the surviving messages.
+        let sessionId = UUID()
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "test"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 1
+        session.preview = ""
+        session.provider = "claude"
+        session.nextSeq = 200
+
+        // Stale low-seq message that survived pruning.
+        let stale = CDMessage(context: context)
+        stale.id = UUID()
+        stale.sessionId = sessionId
+        stale.role = "assistant"
+        stale.text = "old"
+        stale.seq = 5
+        stale.timestamp = Date()
+        stale.messageStatus = .confirmed
+        stale.session = session
+        try context.save()
+
+        let result = client.newestCachedSeq(sessionId: sessionId.uuidString.lowercased(),
+                                            context: context)
+        XCTAssertEqual(result, 199,
+                       "session.nextSeq-1 must dominate when it exceeds the surviving message-seq max")
+    }
+
     // MARK: - getNewestCachedMessageId Tests
 
     func testGetNewestCachedMessageIdWithMessages() throws {

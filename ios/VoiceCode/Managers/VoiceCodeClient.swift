@@ -1323,6 +1323,15 @@ class VoiceCodeClient: ObservableObject {
     /// Optimistic rows carry a deterministic negative seq and are excluded from
     /// the cursor so they don't poison `last_seq` on the wire.
     ///
+    /// The cursor is the max of two sources: the highest `seq` on a confirmed
+    /// `CDMessage` for this session, and `CDBackendSession.nextSeq - 1` (the
+    /// server-reported `next_seq` from the most recent payload, persisted on
+    /// the session). The session-level cursor matters when local message
+    /// pruning has dropped rows the server still considers delivered — without
+    /// it, `newestCachedSeq` would fall back to the next-highest surviving
+    /// row (or `0`) and force a redundant resync. See beads
+    /// tmux-untethered-fkz.
+    ///
     /// In production this fetches via a fresh `newBackgroundContext()` rather
     /// than `viewContext`. `SessionSyncManager` writes via background contexts;
     /// their saves post `NSManagedObjectContextDidSave`, and
@@ -1360,16 +1369,33 @@ class VoiceCodeClient: ObservableObject {
         }
 
         let runFetch: (NSManagedObjectContext) -> Int64 = { ctx in
-            let request = CDMessage.fetchRequest()
-            request.predicate = NSPredicate(format: "sessionId == %@ AND seq > 0", sessionUUID as CVarArg)
-            request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.seq, ascending: false)]
-            request.fetchLimit = 1
+            let messageRequest = CDMessage.fetchRequest()
+            messageRequest.predicate = NSPredicate(format: "sessionId == %@ AND seq > 0", sessionUUID as CVarArg)
+            messageRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.seq, ascending: false)]
+            messageRequest.fetchLimit = 1
+            let messageMax: Int64
             do {
-                return try ctx.fetch(request).first?.seq ?? 0
+                messageMax = try ctx.fetch(messageRequest).first?.seq ?? 0
             } catch {
                 logger.error("⚠️ [VoiceCodeClient] Failed to fetch newest seq for delta sync: \(error.localizedDescription)")
-                return 0
+                messageMax = 0
             }
+
+            // Session-level cursor: the server's last-seen `next_seq` minus
+            // one is the highest seq the server has assigned. `0` is the
+            // sentinel for "never received a payload" — drop it on the
+            // floor so it doesn't poison the cursor as `-1`.
+            let sessionRequest = CDBackendSession.fetchBackendSession(id: sessionUUID)
+            let sessionCursor: Int64
+            do {
+                let storedNextSeq = try ctx.fetch(sessionRequest).first?.nextSeq ?? 0
+                sessionCursor = storedNextSeq > 0 ? storedNextSeq - 1 : 0
+            } catch {
+                logger.error("⚠️ [VoiceCodeClient] Failed to fetch session next_seq for delta sync: \(error.localizedDescription)")
+                sessionCursor = 0
+            }
+
+            return max(messageMax, sessionCursor)
         }
 
         if let ctx = context {

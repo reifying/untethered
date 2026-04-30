@@ -473,6 +473,15 @@ class SessionSyncManager {
                 session.preview = String(lastMessage.text.prefix(100))
             }
 
+            // Persist the server-reported next-seq so reconnect after local
+            // cache pruning still resumes at the right cursor. Take the max
+            // so an out-of-order payload (e.g. a backfill landing after a
+            // newer push) cannot regress the cursor. See beads
+            // tmux-untethered-fkz.
+            if payload.nextSeq > session.nextSeq {
+                session.nextSeq = payload.nextSeq
+            }
+
             // Background sessions track unread count so the sidebar badge can
             // flag inbound activity the user hasn't seen. Active sessions do
             // not — the user is already looking at them.

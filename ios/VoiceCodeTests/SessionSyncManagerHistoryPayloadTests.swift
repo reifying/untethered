@@ -1173,4 +1173,78 @@ final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
         XCTAssertTrue(delegate.resubscribes.isEmpty,
                       "save success means no recovery resubscribe")
     }
+
+    // MARK: - nextSeq persistence (tmux-untethered-fkz)
+
+    private func fetchSession() -> CDBackendSession? {
+        let request = CDBackendSession.fetchBackendSession(id: sessionUUID)
+        context.refreshAllObjects()
+        return (try? context.fetch(request))?.first
+    }
+
+    func test_handleSessionHistoryPayload_persists_nextSeq_on_session() {
+        // Reconnect cursor must survive local message pruning. The fix
+        // stores `next_seq` on the session itself (not derived from messages)
+        // so a pruned cache still resumes at the right cursor. See beads
+        // tmux-untethered-fkz.
+        seedSession(seqs: 1...5)
+        XCTAssertEqual(fetchSession()?.nextSeq, 0,
+                       "fresh session has no recorded next_seq before any payload")
+
+        let p = payload(firstSeq: 6, lastSeq: 7, nextSeq: 8,
+                        isComplete: true,
+                        messages: [wireMessage(seq: 6), wireMessage(seq: 7)])
+        manager.handleSessionHistoryPayload(p)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        XCTAssertEqual(fetchSession()?.nextSeq, 8,
+                       "payload's next_seq must be persisted on CDBackendSession.nextSeq")
+    }
+
+    func test_handleSessionHistoryPayload_nextSeq_never_regresses() {
+        // An out-of-order payload (e.g. a backfill landing after a newer
+        // push) must not pull the persisted cursor backward. Take the max.
+        seedSession(seqs: 1...5)
+
+        // First, a high next_seq from a forward push.
+        let pHigh = payload(firstSeq: 20, lastSeq: 22, nextSeq: 23,
+                            isComplete: true,
+                            messages: [wireMessage(seq: 20),
+                                       wireMessage(seq: 21),
+                                       wireMessage(seq: 22)])
+        manager.handleSessionHistoryPayload(pHigh)
+        waitForHistoryUpdate()
+        drainMainQueue()
+        XCTAssertEqual(fetchSession()?.nextSeq, 23)
+
+        // Then a backfill window with an older next_seq. Must not regress.
+        let pLow = payload(firstSeq: 6, lastSeq: 10, nextSeq: 11,
+                           isComplete: true,
+                           messages: (6...10).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(pLow)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        XCTAssertEqual(fetchSession()?.nextSeq, 23,
+                       "later payload with lower next_seq must not regress the persisted cursor")
+    }
+
+    func test_handleSessionHistoryPayload_persists_nextSeq_even_for_empty_window() {
+        // A `session_history` reply that delivers zero new messages (e.g. a
+        // subscribe answer when the client is already caught up) still
+        // carries a next_seq. The cursor needs to be stored even then —
+        // otherwise local pruning drops the only signal of where the server
+        // is, and reconnect rolls back to 0.
+        seedSession(seqs: 1...5)
+
+        let p = payload(firstSeq: nil, lastSeq: nil, nextSeq: 12,
+                        isComplete: true, messages: [])
+        manager.handleSessionHistoryPayload(p)
+        // Empty window posts no .sessionHistoryDidUpdate — just drain.
+        drainMainQueue(for: 0.5)
+
+        XCTAssertEqual(fetchSession()?.nextSeq, 12,
+                       "empty windows must still persist next_seq for the cursor path")
+    }
 }

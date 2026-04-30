@@ -16,6 +16,13 @@ public class CDBackendSession: NSManagedObject {
     @NSManaged public var isLocallyCreated: Bool
     @NSManaged public var messages: NSSet?
 
+    /// Server-reported `next_seq` from the most recent `session_history`
+    /// payload — the seq the backend will assign to the next new message.
+    /// Persisted on the session (not on messages) so the resubscribe cursor
+    /// survives local message pruning. `0` is the sentinel for "never
+    /// received a payload"; real values from the wire start at `1`.
+    @NSManaged public var nextSeq: Int64
+
     /// Provider identifier (e.g., "claude", "copilot")
     /// Defaults to "claude" for backward compatibility
     @NSManaged public var provider: String
