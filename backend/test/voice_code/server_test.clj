@@ -2445,6 +2445,24 @@
       (is (re-find #"truncated ~1[45]\d KB" result)
           "Should show approximately 145-159 KB truncated"))))
 
+(deftest test-truncate-text-middle-respects-max-bytes-when-marker-large
+  (testing "Result never exceeds max-bytes even when marker would not fit"
+    (doseq [max-bytes [1 10 20 28 29 35 100]]
+      (let [text (apply str (repeat 5000 "x"))
+            result (server/truncate-text-middle text max-bytes)
+            result-bytes (count (.getBytes result "UTF-8"))]
+        (is (<= result-bytes max-bytes)
+            (str "max-bytes=" max-bytes " produced " result-bytes " bytes"))))))
+
+(deftest test-truncate-text-middle-respects-max-bytes-utf8
+  (testing "Multi-byte UTF-8 input never exceeds max-bytes after assembly"
+    (let [text (apply str (repeat 5000 "日本語"))]
+      (doseq [max-bytes [50 100 200 500 1000]]
+        (let [result (server/truncate-text-middle text max-bytes)
+              result-bytes (count (.getBytes result "UTF-8"))]
+          (is (<= result-bytes max-bytes)
+              (str "max-bytes=" max-bytes " produced " result-bytes " bytes")))))))
+
 (deftest test-truncate-response-text-no-text-field
   (testing "Messages without text field are passed through unchanged"
     (let [msg {:type :ack :message "Processing..."}

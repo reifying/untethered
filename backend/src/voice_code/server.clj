@@ -192,50 +192,83 @@
 ;; Messages larger than this are truncated individually, smaller messages are preserved intact
 (def per-message-max-bytes (* 20 1024)) ;; 20KB per message max
 
+(defn- take-prefix-bytes
+  "Return the longest prefix of text whose UTF-8 byte length is <= max-bytes.
+   Stops on character boundaries to avoid splitting multi-byte sequences."
+  [text max-bytes]
+  (if (<= max-bytes 0)
+    ""
+    (loop [chars (seq text)
+           result []
+           bytes 0]
+      (if (empty? chars)
+        (apply str result)
+        (let [ch (first chars)
+              ch-bytes (count (.getBytes (str ch) "UTF-8"))
+              new-bytes (+ bytes ch-bytes)]
+          (if (> new-bytes max-bytes)
+            (apply str result)
+            (recur (rest chars) (conj result ch) new-bytes)))))))
+
+(defn- take-suffix-bytes
+  "Return the longest suffix of text whose UTF-8 byte length is <= max-bytes."
+  [text max-bytes]
+  (if (<= max-bytes 0)
+    ""
+    (loop [chars (reverse (seq text))
+           result []
+           bytes 0]
+      (if (empty? chars)
+        (apply str (reverse result))
+        (let [ch (first chars)
+              ch-bytes (count (.getBytes (str ch) "UTF-8"))
+              new-bytes (+ bytes ch-bytes)]
+          (if (> new-bytes max-bytes)
+            (apply str (reverse result))
+            (recur (rest chars) (conj result ch) new-bytes)))))))
+
 (defn truncate-text-middle
   "Truncate text to fit within max-bytes by keeping first and last portions.
    Inserts a marker showing how much was truncated.
-   Returns the original text if it fits within the limit."
+   Returns the original text if it fits within the limit.
+
+   The assembled string is verified against max-bytes after construction.
+   If it overshoots (e.g. the marker is close to or larger than max-bytes),
+   half-bytes is reduced by the overage and the parts are rebuilt. As a
+   final safety net the result is byte-truncated to max-bytes."
   [text max-bytes]
   (let [text-bytes (.getBytes text "UTF-8")
         text-size (count text-bytes)]
     (if (<= text-size max-bytes)
       text
-      ;; Need to truncate
       (let [marker-template "\n\n... [truncated ~%d KB] ...\n\n"
-            ;; Estimate marker size (will recalculate)
             truncated-kb (int (/ (- text-size max-bytes) 1024))
             marker (format marker-template truncated-kb)
             marker-bytes (count (.getBytes marker "UTF-8"))
-            ;; Available space for content (half for each side)
             available-bytes (- max-bytes marker-bytes)
             half-bytes (int (/ available-bytes 2))
-            ;; We need to be careful with UTF-8 multi-byte characters
-            ;; Take characters until we exceed byte limit
-            first-part (loop [chars (seq text)
-                              result []
-                              bytes 0]
-                         (if (or (empty? chars) (>= bytes half-bytes))
-                           (apply str result)
-                           (let [ch (first chars)
-                                 ch-bytes (count (.getBytes (str ch) "UTF-8"))
-                                 new-bytes (+ bytes ch-bytes)]
-                             (if (> new-bytes half-bytes)
-                               (apply str result)
-                               (recur (rest chars) (conj result ch) new-bytes)))))
-            ;; Take from end
-            last-part (loop [chars (reverse (seq text))
-                             result []
-                             bytes 0]
-                        (if (or (empty? chars) (>= bytes half-bytes))
-                          (apply str (reverse result))
-                          (let [ch (first chars)
-                                ch-bytes (count (.getBytes (str ch) "UTF-8"))
-                                new-bytes (+ bytes ch-bytes)]
-                            (if (> new-bytes half-bytes)
-                              (apply str (reverse result))
-                              (recur (rest chars) (conj result ch) new-bytes)))))]
-        (str first-part marker last-part)))))
+            first-part (take-prefix-bytes text half-bytes)
+            last-part (take-suffix-bytes text half-bytes)
+            assembled (str first-part marker last-part)
+            assembled-bytes (count (.getBytes assembled "UTF-8"))]
+        (cond
+          (<= assembled-bytes max-bytes)
+          assembled
+
+          (>= marker-bytes max-bytes)
+          (take-prefix-bytes assembled max-bytes)
+
+          :else
+          (let [overage (- assembled-bytes max-bytes)
+                shrink (int (Math/ceil (/ overage 2.0)))
+                new-half (max 0 (- half-bytes shrink))
+                first-part' (take-prefix-bytes text new-half)
+                last-part' (take-suffix-bytes text new-half)
+                retry (str first-part' marker last-part')
+                retry-bytes (count (.getBytes retry "UTF-8"))]
+            (if (<= retry-bytes max-bytes)
+              retry
+              (take-prefix-bytes retry max-bytes))))))))
 
 (defn get-client-max-message-size-bytes
   "Get the max message size in bytes for a client channel."
