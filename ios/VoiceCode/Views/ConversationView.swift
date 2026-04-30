@@ -711,17 +711,22 @@ struct ConversationView: View {
             }
         }
 
-        // Subscribe to the session to load full history
-        // Skip subscribe for new sessions (messageCount == 0) to avoid "session not found" error
-        // The session will be created when the first prompt is sent
-        // Subscribe on every onAppear to ensure fresh messages (no staleness)
-        // Backend sends ALL filtered messages on subscribe (no 20-message limit)
+        // Subscribe unless this is a brand-new locally-created session that
+        // hasn't been pushed to backend yet. The "Session not found" branch
+        // the old `messageCount > 0` gate was avoiding only fires for sessions
+        // the backend has never seen, which is exactly `isLocallyCreated &&
+        // messageCount == 0`. Backend-known sessions can have messageCount=0
+        // locally (recent_sessions hadn't merged into CoreData yet, never
+        // opened, etc.) and the old gate silently dropped them — leaving
+        // backend writes ungated and the iPhone never seeing replies. See
+        // tmux-untethered-9o9.
         let subscribeMs = Int(Date().timeIntervalSince(loadStart) * 1000)
-        if session.messageCount > 0 {
-            logger.info("⏱️ +\(subscribeMs)ms - subscribing to session (messageCount: \(self.session.messageCount))")
+        let skipSubscribe = session.isLocallyCreated && session.messageCount == 0
+        if !skipSubscribe {
+            logger.info("⏱️ +\(subscribeMs)ms - subscribing (messageCount=\(self.session.messageCount), locallyCreated=\(self.session.isLocallyCreated))")
             client.subscribe(sessionId: session.id.uuidString.lowercased())
         } else {
-            logger.info("⏱️ +\(subscribeMs)ms - skipping subscribe (new session)")
+            logger.info("⏱️ +\(subscribeMs)ms - skipping subscribe (locally-created new session, no backend file yet)")
         }
 
         // Fallback timeout to hide loading indicator if messages don't arrive

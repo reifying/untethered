@@ -706,6 +706,17 @@ class VoiceCodeClient: ObservableObject {
             return
         }
 
+        // One concise inbound line per message. Keep total length < ~120 chars
+        // so the iOS log copy buffer (15K chars ≈ 120 lines) covers a useful
+        // window. summarizeIncoming below picks the small set of fields that
+        // matter per type — add to it instead of layering more LogManager
+        // calls inside individual case branches.
+        // Silence pong (every keepalive) and command_output (per-line stream)
+        // so high-frequency traffic doesn't push real signals out of the buffer.
+        if !VoiceCodeClient.wireLogSilenced(type: type) {
+            LogManager.shared.log("← \(VoiceCodeClient.summarizeIncoming(type: type, json: json))", category: "VoiceCodeClient")
+        }
+
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             switch type {
@@ -2005,8 +2016,11 @@ class VoiceCodeClient: ObservableObject {
             return
         }
 
-        if let messageType = message["type"] as? String {
-            LogManager.shared.log("Sending message type: \(messageType)", category: "VoiceCodeClient")
+        // One concise outbound line per message. Keep tight — see the matching
+        // comment on the inbound log in handleMessage.
+        let outgoingType = (message["type"] as? String) ?? "?"
+        if !VoiceCodeClient.wireLogSilenced(type: outgoingType) {
+            LogManager.shared.log("→ \(VoiceCodeClient.summarizeOutgoing(message))", category: "VoiceCodeClient")
         }
 
         onMessageSent?(message)
@@ -2021,6 +2035,101 @@ class VoiceCodeClient: ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - Wire trace helpers
+    //
+    // One terse line per inbound and outbound message. The iOS log-copy
+    // buffer caps around 15K characters, so prefer dense key=value pairs
+    // and short session-id prefixes. Add fields here when a new type
+    // shows up — don't sprinkle ad-hoc LogManager calls in individual
+    // case branches.
+
+    static func summarizeOutgoing(_ message: [String: Any]) -> String {
+        let type = (message["type"] as? String) ?? "?"
+        let extras = wireSummaryFields(type: type, dict: message)
+        return extras.isEmpty ? type : "\(type) \(extras)"
+    }
+
+    /// Types whose volume would dominate the iOS log copy buffer
+    /// (pong fires every keepalive; command_output streams per-line).
+    /// We deliberately do not trace these — diagnose ping health and
+    /// command output flow via OSLog/console, not the LogManager buffer.
+    static func wireLogSilenced(type: String) -> Bool {
+        switch type {
+        case "pong", "ping", "command_output":
+            return true
+        default:
+            return false
+        }
+    }
+
+    static func summarizeIncoming(type: String, json: [String: Any]) -> String {
+        let extras = wireSummaryFields(type: type, dict: json)
+        return extras.isEmpty ? type : "\(type) \(extras)"
+    }
+
+    /// Pick a small, fixed set of fields per type. Keep the total under
+    /// ~80 chars so log lines stay scannable. `dict` is either an outbound
+    /// message dict or a parsed inbound JSON.
+    private static func wireSummaryFields(type: String, dict: [String: Any]) -> String {
+        var parts: [String] = []
+        let shortSess: (String?) -> String? = { s in
+            guard let s = s, !s.isEmpty else { return nil }
+            return "sess=\(s.prefix(8))"
+        }
+        switch type {
+        case "subscribe":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+            if let n = dict["last_seq"] as? Int64 { parts.append("last_seq=\(n)") }
+            else if let n = dict["last_seq"] as? Int { parts.append("last_seq=\(n)") }
+        case "unsubscribe":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+        case "prompt":
+            // Don't reuse `shortSess` (which prefixes "sess=") — for prompt we
+            // want "new=<id>" / "resume=<id>" so the diff between resume and
+            // new is obvious in a glance at the trace.
+            if let s = dict["new_session_id"] as? String, !s.isEmpty { parts.append("new=\(s.prefix(8))") }
+            if let s = dict["resume_session_id"] as? String, !s.isEmpty { parts.append("resume=\(s.prefix(8))") }
+            if let p = dict["provider"] as? String { parts.append("prov=\(p)") }
+            if let t = dict["text"] as? String { parts.append("len=\(t.count)") }
+        case "session_history":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+            if let n = dict["first_seq"] as? Int { parts.append("first=\(n)") }
+            else if let n = dict["first_seq"] as? Int64 { parts.append("first=\(n)") }
+            if let n = dict["last_seq"] as? Int { parts.append("last=\(n)") }
+            else if let n = dict["last_seq"] as? Int64 { parts.append("last=\(n)") }
+            if let n = dict["next_seq"] as? Int { parts.append("next=\(n)") }
+            else if let n = dict["next_seq"] as? Int64 { parts.append("next=\(n)") }
+            if let c = dict["is_complete"] as? Bool { parts.append("complete=\(c)") }
+            if let msgs = dict["messages"] as? [[String: Any]] { parts.append("msgs=\(msgs.count)") }
+            if let gap = dict["gap"] as? [String: Any], let r = gap["reason"] as? String { parts.append("gap=\(r)") }
+        case "turn_complete":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+            if let a = dict["aborted"] as? Bool, a { parts.append("aborted=true") }
+        case "session_created", "session_ready", "session_updated", "session_deleted",
+             "compaction_complete", "compaction_error":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+            if let n = dict["message_count"] as? Int { parts.append("msgs=\(n)") }
+        case "error", "auth_error":
+            if let c = dict["code"] as? String { parts.append("code=\(c)") }
+            if let m = dict["message"] as? String { parts.append("msg=\(m.prefix(40))") }
+        case "hello":
+            if let v = dict["version"] as? String { parts.append("ver=\(v)") }
+        case "connect":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+            if let v = dict["protocol_version"] as? String { parts.append("proto=\(v)") }
+        case "connected":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+        case "session_list", "recent_sessions":
+            if let arr = dict["sessions"] as? [[String: Any]] { parts.append("count=\(arr.count)") }
+        case "available_commands":
+            if let arr = dict["project_commands"] as? [[String: Any]] { parts.append("proj=\(arr.count)") }
+            if let arr = dict["general_commands"] as? [[String: Any]] { parts.append("gen=\(arr.count)") }
+        default:
+            break
+        }
+        return parts.joined(separator: " ")
     }
 
     // MARK: - Resources

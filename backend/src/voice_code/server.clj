@@ -727,22 +727,38 @@
    memory (see beads tmux-untethered-rxr)."
   [channel message-data]
   (if (contains? @connected-clients channel)
-    (do
-      (log/info "Sending message to client" {:type (:type message-data)})
-      (let [;; Apply truncation for messages that might have large content
-            max-bytes (get-client-max-message-size-bytes channel)
-            final-data (truncate-response-text message-data max-bytes)
-            json-str (generate-json final-data)]
-        (log/debug "JSON payload" {:size (count json-str)})
-        (try
-          (http/send! channel json-str)
-          (log/info "Message sent successfully" {:type (:type message-data)})
-          (catch Exception e
-            (log/warn e "Failed to send to client; removing dead channel")
-            (try
-              (unregister-channel! channel)
-              (catch Exception cleanup-e
-                (log/warn cleanup-e "Failed to clean up dead channel after send failure")))))))
+    (let [;; Apply truncation for messages that might have large content
+          max-bytes (get-client-max-message-size-bytes channel)
+          final-data (truncate-response-text message-data max-bytes)
+          json-str (generate-json final-data)
+          ;; One terse outbound line, with the fields that matter per type.
+          ;; A failure path adds a separate `warn` below; absence of the warn
+          ;; is the implicit "send succeeded."
+          ;; Silence high-frequency types so they don't dominate logs:
+          ;; :pong fires every keepalive, :command-output streams per-line.
+          msg-type (:type message-data)
+          silenced? (contains? #{:pong :command-output} msg-type)
+          summary (cond-> {:bytes (count json-str)}
+                    (:session-id message-data)  (assoc :sess (subs (str (:session-id message-data)) 0 (min 8 (count (str (:session-id message-data))))))
+                    (:first-seq message-data)   (assoc :first (:first-seq message-data))
+                    (:last-seq message-data)    (assoc :last (:last-seq message-data))
+                    (:next-seq message-data)    (assoc :next (:next-seq message-data))
+                    (:is-complete message-data) (assoc :complete? (:is-complete message-data))
+                    (:gap message-data)         (assoc :gap (get-in message-data [:gap :reason]))
+                    (:messages message-data)    (assoc :msgs (count (:messages message-data)))
+                    (:exit-code message-data)   (assoc :exit (:exit-code message-data))
+                    (:code message-data)        (assoc :code (:code message-data)))]
+      (when-not silenced?
+        (log/info (str "→ " msg-type) summary))
+      (try
+        (http/send! channel json-str)
+        (catch Exception e
+          (log/warn e "Failed to send to client; removing dead channel"
+                    {:type msg-type :bytes (count json-str)})
+          (try
+            (unregister-channel! channel)
+            (catch Exception cleanup-e
+              (log/warn cleanup-e "Failed to clean up dead channel after send failure"))))))
     (log/warn "Channel not in connected-clients, skipping send" {:type (:type message-data)})))
 
 (defn send-recent-sessions!
@@ -1414,13 +1430,24 @@
                              not-deleted-clients)
         push-count (count push-clients)]
 
-    (log/info "Broadcasting session history"
-              {:session-id session-id
-               :new-message-count (count new-messages)
-               :total-clients (count @connected-clients)
-               :push-clients push-count
-               :recent-sessions-clients (count not-deleted-clients)
-               :protocol (if v0-4? :v0.4.0 :v0.3.0)})
+    (if (zero? push-count)
+      ;; Surface the no-subscriber case at INFO so the symptom is visible
+      ;; from logs alone. tmux-untethered-9o9 was effectively invisible
+      ;; under the prior INFO line because it logged the same way whether
+      ;; the broadcast actually fanned out or got dropped on the floor.
+      (log/info (str "⚠ session-history fan-out skipped — no subscribers")
+                {:session-id session-id
+                 :new-message-count (count new-messages)
+                 :total-clients (count @connected-clients)
+                 :recent-sessions-clients (count not-deleted-clients)
+                 :protocol (if v0-4? :v0.4.0 :v0.3.0)})
+      (log/info "Broadcasting session history"
+                {:session-id session-id
+                 :new-message-count (count new-messages)
+                 :total-clients (count @connected-clients)
+                 :push-clients push-count
+                 :recent-sessions-clients (count not-deleted-clients)
+                 :protocol (if v0-4? :v0.4.0 :v0.3.0)}))
 
     (if v0-4?
       ;; v0.4.0: flat session_history broadcast. One payload built once,
@@ -1520,8 +1547,30 @@
   [channel msg]
   (try
     (let [data (parse-json msg)
-          msg-type (:type data)]
-      (log/info "=== Received message ===" {:type msg-type :type-class (class msg-type) :type-bytes (mapv int msg-type)})
+          msg-type (:type data)
+          ;; Concise inbound line, mirroring the outbound formatter in
+          ;; `send-to-client!`. Pull the few fields we actually want to
+          ;; trace per type. Add new ones here rather than scattering
+          ;; per-handler log calls.
+          short-sess (when-let [s (:session-id data)]
+                       (subs (str s) 0 (min 8 (count (str s)))))
+          short-new (when-let [s (:new-session-id data)]
+                      (subs (str s) 0 (min 8 (count (str s)))))
+          short-resume (when-let [s (:resume-session-id data)]
+                         (subs (str s) 0 (min 8 (count (str s)))))
+          summary (cond-> {}
+                    short-sess              (assoc :sess short-sess)
+                    short-new               (assoc :new short-new)
+                    short-resume            (assoc :resume short-resume)
+                    (:last-seq data)        (assoc :last_seq (:last-seq data))
+                    (:provider data)        (assoc :prov (:provider data))
+                    (:command-id data)      (assoc :cmd (:command-id data))
+                    (:size-kb data)         (assoc :kb (:size-kb data))
+                    (:text data)            (assoc :len (count (str (:text data))))
+                    (:protocol-version data) (assoc :proto (:protocol-version data)))]
+      ;; Mirror send-to-client!'s silencing — ping fires every keepalive.
+      (when-not (= msg-type "ping")
+        (log/info (str "← " msg-type) summary))
 
       (cond
         ;; Ping is always allowed (health check, no auth required)
