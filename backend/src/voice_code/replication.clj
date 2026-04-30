@@ -1081,6 +1081,17 @@
            (filter some?)
            (vec)))))
 
+(defn- file-length-bytes
+  "Indirection over `java.io.File/length` so tests can stage a TOCTOU race by
+  redefining this var to return a stale size while appending bytes underneath.
+  Production callers get the live length unchanged.
+
+  Returns a boxed `Long` rather than a primitive `long` on purpose: a primitive
+  return type causes the compiler to emit `invokePrim` direct calls that bypass
+  the var, which would defeat `with-redefs` in the regression test."
+  [^java.io.File f]
+  (.length f))
+
 (defn parse-jsonl-incremental
   "Parse only new lines from a .jsonl file since the tracked read position.
 
@@ -1099,6 +1110,13 @@
   re-encoding that replacement back to UTF-8 yields a different byte length
   than the original truncated sequence (e.g. 1 trailing byte of a 4-byte emoji
   becomes 3 bytes of `EF BF BD`), placing the cursor in the wrong position.
+
+  TOCTOU: the size used to allocate the read buffer and compute the new cursor
+  is read from the open `RandomAccessFile` after `seek`, not from the earlier
+  `java.io.File.length` probe. The earlier probe is kept only as a fast-path
+  to skip opening the file when no work is pending. Bytes that land in the
+  window between the two checks are picked up in the same tick rather than
+  deferred to the next watcher firing (tmux-untethered-ubc).
 
   File-shrink recovery: if the on-disk file is smaller than the tracked
   position (e.g. `claude --compact` rewrote the JSONL in place), the cursor
@@ -1120,64 +1138,75 @@
   (try
     (let [file (io/file file-path)
           tracked-pos (get @file-positions file-path 0)
-          current-size (.length file)
-          shrunk? (< current-size tracked-pos)
+          initial-size (file-length-bytes file)
+          shrunk? (< initial-size tracked-pos)
           last-pos (if shrunk? 0 tracked-pos)]
       (when shrunk?
         (log/warn "JSONL file shrank below tracked cursor; resetting to 0"
                   {:file file-path
                    :tracked-pos tracked-pos
-                   :current-size current-size}))
-      (if (<= current-size last-pos)
+                   :current-size initial-size}))
+      (if (<= initial-size last-pos)
         {:messages [] :new-pos last-pos}
         (with-open [raf (RandomAccessFile. file "r")]
           (.seek raf last-pos)
-          (let [buf (byte-array (- current-size last-pos))
-                _ (.readFully raf buf)
-                buf-len (alength buf)
-                ;; Find the last \n byte in raw bytes. -1 if none.
-                ;; This avoids decoding the (possibly mid-character) tail.
-                last-nl-idx (loop [i (dec buf-len)]
-                              (cond
-                                (< i 0) -1
-                                (= (byte \newline) (aget buf i)) i
-                                :else (recur (dec i))))
-                ;; Bytes [0, last-nl-idx] are newline-terminated and complete.
-                ;; Bytes (last-nl-idx, buf-len) are the held-back partial tail.
-                complete-byte-len (inc last-nl-idx)
-                trailing-bytes (- buf-len complete-byte-len)
-                ;; Decode only the complete portion. The byte at last-nl-idx
-                ;; is `\n` (ASCII), so the slice is guaranteed to end at a
-                ;; valid UTF-8 character boundary.
-                complete-text (if (pos? complete-byte-len)
-                                (String. buf 0 complete-byte-len "UTF-8")
-                                "")
-                ;; split with -1 keeps trailing empty "" left by the final \n
-                lines (str/split complete-text #"\n" -1)
-                ;; butlast drops the trailing empty "" slot.
-                complete (butlast lines)
-                complete-vec (vec complete)
-                parsed-with-nils (mapv parse-jsonl-line complete-vec)
-                total-lines (count complete-vec)
-                failures (loop [i 0, f 0]
-                           (if (< i total-lines)
-                             (recur (inc i)
-                                    (if (and (nil? (nth parsed-with-nils i))
-                                             (not (str/blank? (nth complete-vec i))))
-                                      (inc f)
-                                      f))
-                             f))
-                parsed (into [] (filter some?) parsed-with-nils)
-                new-pos (- current-size trailing-bytes)]
-            (when (pos? total-lines)
-              (emit-metric! :counter :jsonl-lines-total
-                            {:file file-path :count total-lines}))
-            (when (pos? failures)
-              (emit-metric! :counter :jsonl-parse-failures
-                            {:file file-path
-                             :count failures
-                             :total total-lines}))
-            {:messages parsed :new-pos new-pos}))))
+          ;; Re-read length AFTER seek to capture bytes that landed in the
+          ;; TOCTOU window between `file-length-bytes` above and now. Without
+          ;; this, we'd size the buffer from a stale probe and `readFully`
+          ;; would short the new bytes off this tick (tmux-untethered-ubc).
+          (let [current-size (.length raf)
+                read-len (- current-size last-pos)]
+            (if (not (pos? read-len))
+              ;; File shrunk between the initial probe and `raf.length` — bail
+              ;; without advancing the cursor; the next tick will detect the
+              ;; shrink via the existing reset-to-0 path.
+              {:messages [] :new-pos last-pos}
+              (let [buf (byte-array read-len)
+                    _ (.readFully raf buf)
+                    buf-len (alength buf)
+                    ;; Find the last \n byte in raw bytes. -1 if none.
+                    ;; This avoids decoding the (possibly mid-character) tail.
+                    last-nl-idx (loop [i (dec buf-len)]
+                                  (cond
+                                    (< i 0) -1
+                                    (= (byte \newline) (aget buf i)) i
+                                    :else (recur (dec i))))
+                    ;; Bytes [0, last-nl-idx] are newline-terminated and complete.
+                    ;; Bytes (last-nl-idx, buf-len) are the held-back partial tail.
+                    complete-byte-len (inc last-nl-idx)
+                    trailing-bytes (- buf-len complete-byte-len)
+                    ;; Decode only the complete portion. The byte at last-nl-idx
+                    ;; is `\n` (ASCII), so the slice is guaranteed to end at a
+                    ;; valid UTF-8 character boundary.
+                    complete-text (if (pos? complete-byte-len)
+                                    (String. buf 0 complete-byte-len "UTF-8")
+                                    "")
+                    ;; split with -1 keeps trailing empty "" left by the final \n
+                    lines (str/split complete-text #"\n" -1)
+                    ;; butlast drops the trailing empty "" slot.
+                    complete (butlast lines)
+                    complete-vec (vec complete)
+                    parsed-with-nils (mapv parse-jsonl-line complete-vec)
+                    total-lines (count complete-vec)
+                    failures (loop [i 0, f 0]
+                               (if (< i total-lines)
+                                 (recur (inc i)
+                                        (if (and (nil? (nth parsed-with-nils i))
+                                                 (not (str/blank? (nth complete-vec i))))
+                                          (inc f)
+                                          f))
+                                 f))
+                    parsed (into [] (filter some?) parsed-with-nils)
+                    new-pos (- current-size trailing-bytes)]
+                (when (pos? total-lines)
+                  (emit-metric! :counter :jsonl-lines-total
+                                {:file file-path :count total-lines}))
+                (when (pos? failures)
+                  (emit-metric! :counter :jsonl-parse-failures
+                                {:file file-path
+                                 :count failures
+                                 :total total-lines}))
+                {:messages parsed :new-pos new-pos}))))))
     (catch Exception e
       (log/error e "Failed to parse .jsonl file incrementally" {:file file-path})
       {:messages [] :new-pos (get @file-positions file-path 0)})))

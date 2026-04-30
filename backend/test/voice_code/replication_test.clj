@@ -794,6 +794,58 @@
 
       (repl/reset-file-position! file-path))))
 
+(deftest parse-jsonl-incremental-toctou-bytes-after-initial-size-check
+  ;; Regression for tmux-untethered-ubc: parse-jsonl-incremental originally
+  ;; called (.length file) once and used that value for both the early-exit
+  ;; check and for sizing the read buffer / computing :new-pos. Bytes that
+  ;; landed between the .length probe and readFully were not picked up on
+  ;; that tick — they had to wait for the next watcher firing, producing
+  ;; inconsistent message batching. The fix re-reads (.length raf) after the
+  ;; seek so the buffer captures everything currently in the file.
+  ;;
+  ;; This test stages the race deterministically by redefining the private
+  ;; `file-length-bytes` helper to (1) record the pre-write size, (2) append
+  ;; a complete second line, and (3) return the stale pre-write size. With
+  ;; the fix, parse-jsonl-incremental will see the live size via raf.length
+  ;; and return both lines; without the fix it would return only the first.
+  (testing "Bytes appended between the initial size check and the RAF read are picked up in the same tick"
+    (let [file (io/file test-dir "toctou-mid-tick.jsonl")
+          file-path (.getAbsolutePath file)
+          line-a (str (claude-jsonl {:type "user" :text "before-probe" :uuid "u-a"}) "\n")
+          line-b (str (claude-jsonl {:type "assistant" :text "after-probe" :uuid "u-b"}) "\n")]
+      (io/make-parents file)
+      (repl/reset-file-position! file-path)
+      (spit file line-a)
+
+      (let [pre-write-size (.length file)
+            real-fn @#'repl/file-length-bytes
+            invocations (atom 0)]
+        (with-redefs [repl/file-length-bytes
+                      (fn [^java.io.File f]
+                        (let [n (long (real-fn f))]
+                          (when (zero? @invocations)
+                            ;; Stage the race exactly once: append the second
+                            ;; line *after* the caller has read the size. The
+                            ;; returned value reflects the file's state before
+                            ;; the append, mimicking a producer that wrote
+                            ;; between (.length file) and the RAF read.
+                            (swap! invocations inc)
+                            (spit f line-b :append true))
+                          n))]
+          (let [{:keys [messages new-pos]} (repl/parse-jsonl-incremental file-path)
+                uuids (mapv :uuid messages)
+                final-len (.length file)]
+            (is (< pre-write-size final-len)
+                "Test precondition: line-b actually grew the file")
+            (is (= 2 (count messages))
+                "Both pre-probe and post-probe lines must be returned in the same tick")
+            (is (= ["u-a" "u-b"] uuids)
+                "Lines are returned in file order (a then b)")
+            (is (= final-len new-pos)
+                "Cursor advances to the live file length, not the stale probe length"))))
+
+      (repl/reset-file-position! file-path))))
+
 (deftest parse-copilot-events-incremental-cursor-reset-after-shrink
   ;; Regression for tmux-untethered-d9j: parse-copilot-events-incremental
   ;; had the same shrink-cursor bug as the Claude path (tmux-untethered-df2).
