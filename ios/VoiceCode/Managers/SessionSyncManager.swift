@@ -451,17 +451,38 @@ class SessionSyncManager {
             let session = self.fetchOrCreateSession(id: sessionUUID, in: backgroundContext)
             let isActiveSession = ActiveSessionManager.shared.isActive(sessionUUID)
 
+            // TTS gate: capture the boundary between historical and live the
+            // first time we see a payload for this session in the current app
+            // launch. `liveFromSeq` is reset to 0 by PersistenceController on
+            // launch and by `clearLiveFromSeq` on unsubscribe, so a re-entry
+            // re-captures a fresh boundary. See tmux-untethered-i2n.
+            //
+            // Read into a local before the loop so chain replies (the catch-up
+            // window split across multiple is_complete:false re-subscribes)
+            // see the same boundary that was captured on the first reply —
+            // their messages all have seq < liveFromSeq and are correctly
+            // suppressed.
+            if session.liveFromSeq == 0 && payload.nextSeq > 0 {
+                session.liveFromSeq = payload.nextSeq
+            }
+            let liveFromSeq = session.liveFromSeq
+
             // Idempotent upsert on (sessionId, seq). Safe under double
             // delivery (push+history overlap, gap-backfill crossing).
             // Collect assistant message text from newly-inserted rows so we
             // can fire auto-speak / notifications / priority-queue post-save.
+            // Only assistant messages whose seq is at-or-above `liveFromSeq`
+            // are eligible — anything below was already on the backend when
+            // the user opened the session.
             var newRows = 0
             var newAssistantTexts: [String] = []
             for wireMessage in payload.messages {
                 let inserted = self.upsertMessage(wireMessage, session: session, in: backgroundContext)
                 if inserted {
                     newRows += 1
-                    if wireMessage.role == "assistant" {
+                    if wireMessage.role == "assistant"
+                        && liveFromSeq > 0
+                        && wireMessage.seq >= liveFromSeq {
                         newAssistantTexts.append(wireMessage.text)
                     }
                 }
@@ -654,6 +675,24 @@ class SessionSyncManager {
     /// Must be called on the main queue.
     func clearPrunedFlag(sessionId: String) {
         prunedSessions.remove(sessionId.lowercased())
+    }
+
+    /// Reset the TTS gate cursor for a session so the next subscribe reply
+    /// re-captures `liveFromSeq` from its `nextSeq`. Called from
+    /// `VoiceCodeClient.unsubscribe` so leaving and re-entering a session
+    /// treats messages produced during the absence as historical (the user
+    /// expects voice-out only for content produced after they reopened the
+    /// session). See tmux-untethered-i2n.
+    func clearLiveFromSeq(sessionId: String) {
+        guard let sessionUUID = UUID(uuidString: sessionId) else { return }
+        persistenceController.performBackgroundTask { backgroundContext in
+            let request = CDBackendSession.fetchBackendSession(id: sessionUUID)
+            guard let session = try? backgroundContext.fetch(request).first else { return }
+            if session.liveFromSeq != 0 {
+                session.liveFromSeq = 0
+                try? backgroundContext.save()
+            }
+        }
     }
 
     // MARK: - Session History Payload helpers

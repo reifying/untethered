@@ -23,6 +23,17 @@ public class CDBackendSession: NSManagedObject {
     /// received a payload"; real values from the wire start at `1`.
     @NSManaged public var nextSeq: Int64
 
+    /// TTS gate cursor: the `seq` at-or-above which assistant messages are
+    /// considered live (produced after the user opened this session in the
+    /// current app launch). Captured once per app-session per CDBackendSession
+    /// from the FIRST `session_history` reply's `nextSeq` after subscribe.
+    /// Messages below this cursor were already on the backend when the user
+    /// opened the session and must not be read aloud (tmux-untethered-i2n).
+    /// `0` is the sentinel for "no boundary captured yet — suppress all TTS".
+    /// Reset to `0` on app launch (PersistenceController) and on `unsubscribe`
+    /// so a fresh open re-captures the boundary.
+    @NSManaged public var liveFromSeq: Int64
+
     /// Provider identifier (e.g., "claude", "copilot")
     /// Defaults to "claude" for backward compatibility
     @NSManaged public var provider: String

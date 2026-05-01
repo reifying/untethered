@@ -1645,6 +1645,13 @@ class VoiceCodeClient: ObservableObject {
         // about, so we don't gate on auth state.
         subscriptions[sessionId] = nil
 
+        // Reset the TTS gate cursor so the next subscribe reply re-captures
+        // a fresh boundary from the new `next_seq`. Without this, leaving and
+        // re-entering a session would speak any messages that arrived during
+        // the absence — the opposite of what the user wants. See
+        // tmux-untethered-i2n.
+        sessionSyncManager.clearLiveFromSeq(sessionId: sessionId)
+
         let message: [String: Any] = [
             "type": "unsubscribe",
             "session_id": sessionId
