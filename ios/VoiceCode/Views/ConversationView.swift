@@ -1242,7 +1242,7 @@ struct MessageDetailView: View {
                         voiceOutput.stop()
                     } else {
                         let processedText = TextProcessor.prepareForSpeech(from: message.text)
-                        voiceOutput.speak(processedText, workingDirectory: message.session?.workingDirectory)
+                        voiceOutput.speak(processedText, workingDirectory: message.session?.workingDirectory, sessionId: message.session?.id)
                     }
                 }) {
                     VStack(spacing: 4) {

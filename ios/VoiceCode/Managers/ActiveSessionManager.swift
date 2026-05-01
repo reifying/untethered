@@ -14,7 +14,7 @@ class ActiveSessionManager: ObservableObject {
 
     @Published private(set) var activeSessionId: UUID?
 
-    private init() {}
+    init() {}
 
     /// Mark a session as active (user opened it)
     func setActiveSession(_ sessionId: UUID?) {

@@ -200,4 +200,91 @@ final class VoiceOutputManagerTests: XCTestCase {
 
         wait(for: [completionExpectation], timeout: 2.0)
     }
+
+    // MARK: - In-flight Cancellation on Session Focus Change (tmux-untethered-0sz)
+
+    /// `inFlightSessionId` is set synchronously when a session-tagged speak() call is
+    /// made, so a focus-change observer racing the speak call sees the new tag.
+    func testInFlightSessionIdSetSynchronouslyWhenSpeakingWithSession() {
+        let activeSession = ActiveSessionManager()
+        let testManager = VoiceOutputManager(appSettings: settings, activeSession: activeSession)
+        let sessionId = UUID()
+
+        XCTAssertNil(testManager.inFlightSessionId, "should start nil")
+
+        testManager.speak("Test", sessionId: sessionId)
+
+        XCTAssertEqual(testManager.inFlightSessionId, sessionId,
+                       "inFlightSessionId must be set synchronously inside speakWithVoice, before any async work")
+
+        testManager.stop()
+    }
+
+    /// AC: with TTS playing in session A, switching focus to session B stops speech
+    /// and clears `inFlightSessionId`.
+    func testActiveSessionChangeToDifferentUUIDStopsSpeech() {
+        let activeSession = ActiveSessionManager()
+        let testManager = VoiceOutputManager(appSettings: settings, activeSession: activeSession)
+        let sessionA = UUID()
+        let sessionB = UUID()
+
+        activeSession.setActiveSession(sessionA)
+        testManager.speak("This is a longer test utterance that should keep the synthesizer busy for a moment",
+                          sessionId: sessionA)
+
+        // Let the synthesizer actually start so didCancel will fire when we stop it.
+        let started = XCTestExpectation(description: "synthesizer starts")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { started.fulfill() }
+        wait(for: [started], timeout: 1.0)
+
+        XCTAssertEqual(testManager.inFlightSessionId, sessionA, "tag should be set after speak()")
+
+        // Switch focus to a different session — observer must invoke stopSpeaking,
+        // which fires didCancel asynchronously, which clears the tag.
+        activeSession.setActiveSession(sessionB)
+
+        let cleared = XCTestExpectation(description: "tag cleared after focus change")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            XCTAssertNil(testManager.inFlightSessionId,
+                         "inFlightSessionId should be cleared after didCancel fires from focus-driven stop")
+            XCTAssertFalse(testManager.isSpeaking,
+                           "isSpeaking should be false after focus-driven stop completes")
+            cleared.fulfill()
+        }
+        wait(for: [cleared], timeout: 2.0)
+    }
+
+    /// AC: re-asserting the same active session UUID must NOT cancel in-flight TTS.
+    /// Guards against spurious cancellations on view re-renders or duplicate
+    /// `setActiveSession` calls during navigation.
+    func testActiveSessionChangeToSameUUIDDoesNotStopSpeech() {
+        let activeSession = ActiveSessionManager()
+        let testManager = VoiceOutputManager(appSettings: settings, activeSession: activeSession)
+        let sessionA = UUID()
+
+        activeSession.setActiveSession(sessionA)
+        testManager.speak("This is a longer test utterance that should keep the synthesizer busy for a moment",
+                          sessionId: sessionA)
+
+        let started = XCTestExpectation(description: "synthesizer starts")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { started.fulfill() }
+        wait(for: [started], timeout: 1.0)
+
+        XCTAssertEqual(testManager.inFlightSessionId, sessionA)
+
+        // Re-emit the same UUID through the publisher.
+        activeSession.setActiveSession(sessionA)
+
+        // Give the sink time to fire on main; tag must still be A and synthesizer
+        // must still be speaking.
+        let unchanged = XCTestExpectation(description: "tag unchanged after same-UUID re-emit")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            XCTAssertEqual(testManager.inFlightSessionId, sessionA,
+                           "re-asserting the same session must not cancel speech")
+            unchanged.fulfill()
+        }
+        wait(for: [unchanged], timeout: 1.0)
+
+        testManager.stop()
+    }
 }
