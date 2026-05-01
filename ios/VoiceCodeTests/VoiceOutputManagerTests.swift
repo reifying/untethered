@@ -254,6 +254,39 @@ final class VoiceOutputManagerTests: XCTestCase {
         wait(for: [cleared], timeout: 2.0)
     }
 
+    /// Conservative behavior: navigation to a nil active session (e.g. spurious
+    /// onDisappear during a sheet presentation or partial swipe-back) must NOT
+    /// cancel in-flight TTS. Trading AC2 ("nav to home stops TTS") for AC1
+    /// reliability — see handleActiveSessionChange comment.
+    func testActiveSessionChangeToNilDoesNotStopSpeech() {
+        let activeSession = ActiveSessionManager()
+        let testManager = VoiceOutputManager(appSettings: settings, activeSession: activeSession)
+        let sessionA = UUID()
+
+        activeSession.setActiveSession(sessionA)
+        testManager.speak("This is a longer test utterance that should keep the synthesizer busy for a moment",
+                          sessionId: sessionA)
+
+        let started = XCTestExpectation(description: "synthesizer starts")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { started.fulfill() }
+        wait(for: [started], timeout: 1.0)
+
+        XCTAssertEqual(testManager.inFlightSessionId, sessionA)
+
+        // Simulate spurious clear (e.g., transient onDisappear from a sheet).
+        activeSession.clearActiveSession()
+
+        let unchanged = XCTestExpectation(description: "tag unchanged after nil transition")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            XCTAssertEqual(testManager.inFlightSessionId, sessionA,
+                           "nil active session must not cancel in-flight TTS (conservative behavior)")
+            unchanged.fulfill()
+        }
+        wait(for: [unchanged], timeout: 1.0)
+
+        testManager.stop()
+    }
+
     /// AC: re-asserting the same active session UUID must NOT cancel in-flight TTS.
     /// Guards against spurious cancellations on view re-renders or duplicate
     /// `setActiveSession` calls during navigation.

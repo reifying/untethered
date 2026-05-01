@@ -93,8 +93,21 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
 
     private func handleActiveSessionChange(_ activeId: UUID?) {
-        guard let inFlight = inFlightSessionId, inFlight != activeId else { return }
-        logger.info("🔇 Active session changed (in-flight: \(inFlight.uuidString.lowercased(), privacy: .public), now: \(activeId?.uuidString.lowercased() ?? "nil", privacy: .public)); stopping TTS")
+        let inFlightStr = inFlightSessionId?.uuidString.lowercased() ?? "nil"
+        let activeStr = activeId?.uuidString.lowercased() ?? "nil"
+        logger.info("🎯 handleActiveSessionChange: inFlight=\(inFlightStr, privacy: .public) active=\(activeStr, privacy: .public)")
+        // Only cancel on transitions to a DIFFERENT non-nil session. Ignoring
+        // nil transitions avoids false positives from SwiftUI firing
+        // onDisappear during transient view rebuilds (sheet presentation,
+        // partial swipe-back gestures, etc.) — those would otherwise kill
+        // TTS for the session the user is still looking at. AC2 ("navigate
+        // to home stops TTS") is sacrificed for now in favor of AC1
+        // ("navigate to a different session stops TTS"); a follow-up can
+        // restore home-stops behavior once we have a more reliable
+        // "user is no longer in any session" signal.
+        guard let newActive = activeId else { return }
+        guard let inFlight = inFlightSessionId, inFlight != newActive else { return }
+        logger.info("🔇 STOPPING TTS — in-flight \(inFlight.uuidString.lowercased(), privacy: .public) != active \(activeStr, privacy: .public)")
         synthesizer.stopSpeaking(at: .immediate)
     }
 
@@ -263,7 +276,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         inFlightSessionId = sessionId
 
         // Speak
-        logger.info("🔊 Invoking synthesizer.speak() with text length: \(text.count), voice: \(utterance.voice?.name ?? "system default", privacy: .public)")
+        logger.info("🔊 Invoking synthesizer.speak() with text length: \(text.count), voice: \(utterance.voice?.name ?? "system default", privacy: .public), sessionId: \(sessionId?.uuidString.lowercased() ?? "nil", privacy: .public)")
         synthesizer.speak(utterance)
 
         DispatchQueue.main.async {
