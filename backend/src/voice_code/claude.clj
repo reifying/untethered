@@ -10,62 +10,24 @@
   (:import [java.io File]
            [java.lang ProcessBuilder$Redirect]))
 
-;; ============================================================================
-;; Active Claude Process Tracking
-;; ============================================================================
-
-;; Atom tracking active Claude CLI processes: session-id -> Process object.
-;; Used to enable killing in-progress sessions.
-(defonce active-claude-processes (atom {}))
-
-(defn kill-claude-session
-  "Kill an active Claude CLI process for the given session ID.
-
-  Attempts graceful termination with .destroy() first, then force-kills
-  with .destroyForcibly() if the process doesn't exit within 200ms.
-
-  Returns:
-    {:success true} if process was killed or didn't exist
-    {:success false :error string} if kill failed"
-  [session-id]
-  (if-let [process (get @active-claude-processes session-id)]
-    (try
-      (log/info "Killing Claude process" {:session-id session-id})
-
-      ;; Attempt graceful shutdown first
-      (.destroy process)
-
-      ;; Wait briefly for graceful exit
-      (Thread/sleep 200)
-
-      ;; Force kill if still alive
-      (when (.isAlive process)
-        (log/warn "Process still alive after destroy, force killing" {:session-id session-id})
-        (.destroyForcibly process))
-
-      ;; Remove from tracking
-      (swap! active-claude-processes dissoc session-id)
-
-      (log/info "Successfully killed Claude process" {:session-id session-id})
-      {:success true}
-
-      (catch Exception e
-        (log/error e "Failed to kill Claude process" {:session-id session-id})
-        {:success false
-         :error (ex-message e)}))
-    ;; Process not found - return success (idempotent)
-    (do
-      (log/debug "No active process to kill" {:session-id session-id})
-      {:success true})))
-
 (defn get-claude-cli-path
+  "Returns the path to the Claude CLI executable.
+   Checks in order:
+   1. CLAUDE_CLI_PATH environment variable
+   2. ~/.claude/local/claude (legacy default)
+   3. 'which claude' (PATH lookup)"
   []
   (or (System/getenv "CLAUDE_CLI_PATH")
       (let [home (System/getProperty "user.home")
             default-path (str home "/.claude/local/claude")]
-        (if (.exists (io/file default-path))
-          default-path
-          nil))))
+        (when (.exists (io/file default-path))
+          default-path))
+      ;; Fallback: check if claude is in PATH
+      (try
+        (let [result (clojure.java.shell/sh "which" "claude")]
+          (when (zero? (:exit result))
+            (clojure.string/trim (:out result))))
+        (catch Exception _ nil))))
 
 (defn expand-tilde
   "Expand ~ to user home directory in path.
@@ -81,17 +43,13 @@
   Returns a map with :exit, :out, and :err.
   This function can be mocked in tests.
   Supports optional timeout in milliseconds.
-  If session-id is provided, tracks the process in active-claude-processes.
   If env-vars is provided (a map), those environment variables are added to the process."
   ([cli-path args working-dir]
-   (run-process-with-file-redirection cli-path args working-dir nil nil nil))
+   (run-process-with-file-redirection cli-path args working-dir nil nil))
   ([cli-path args working-dir timeout-ms]
-   (run-process-with-file-redirection cli-path args working-dir timeout-ms nil nil))
-  ([cli-path args working-dir timeout-ms session-id]
-   (run-process-with-file-redirection cli-path args working-dir timeout-ms session-id nil))
-  ([cli-path args working-dir timeout-ms session-id env-vars]
+   (run-process-with-file-redirection cli-path args working-dir timeout-ms nil))
+  ([cli-path args working-dir timeout-ms env-vars]
    (log/info "run-process-with-file-redirection" {:working-dir working-dir
-                                                  :session-id session-id
                                                   :env-vars env-vars
                                                   :has-env-vars? (boolean (seq env-vars))})
    (let [stdout-path (java.nio.file.Files/createTempFile
@@ -107,11 +65,7 @@
          stdout-file (.toFile stdout-path)
          stderr-file (.toFile stderr-path)]
      (try
-       (let [;; Build clean environment for Claude CLI:
-             ;; Use env/clean-env to strip nesting-guard vars (CLAUDECODE,
-             ;; CLAUDE_CODE_ENTRYPOINT) that would trigger "cannot be launched
-             ;; inside another Claude Code session" errors.
-             base-env (env/clean-env)
+       (let [base-env (env/clean-env)
              merged-env (if (seq env-vars)
                           (merge base-env env-vars)
                           base-env)
@@ -125,51 +79,31 @@
              all-args (into [cli-path] args)
              process (apply proc/start process-opts all-args)
              exit-ref (proc/exit-ref process)]
-
-         ;; Track process if session-id provided
-         (when session-id
-           (swap! active-claude-processes assoc session-id process)
-           (log/info "Tracking Claude process" {:session-id session-id}))
-
          (.close (.getOutputStream process))
-         (try
-           (let [exit-code (if timeout-ms
-                             (deref exit-ref timeout-ms :timeout)
-                             @exit-ref)]
-             (when (= exit-code :timeout)
-               (.destroyForcibly process)
-               (throw (ex-info "Process timeout" {:timeout-ms timeout-ms})))
-             (let [stdout (slurp stdout-file)
-                   stderr (slurp stderr-file)]
-               {:exit exit-code
-                :out stdout
-                :err stderr}))
-           (finally
-             ;; Clean up process tracking
-             (when session-id
-               (swap! active-claude-processes dissoc session-id)
-               (log/info "Removed Claude process tracking" {:session-id session-id})))))
+         (let [exit-code (if timeout-ms
+                           (deref exit-ref timeout-ms :timeout)
+                           @exit-ref)]
+           (when (= exit-code :timeout)
+             (.destroyForcibly process)
+             (throw (ex-info "Process timeout" {:timeout-ms timeout-ms})))
+           (let [stdout (slurp stdout-file)
+                 stderr (slurp stderr-file)]
+             {:exit exit-code
+              :out stdout
+              :err stderr})))
        (finally
          (try (.delete stdout-file) (catch Exception e (log/warn e "Failed to delete stdout file")))
          (try (.delete stderr-file) (catch Exception e (log/warn e "Failed to delete stderr file"))))))))
 
 (defn invoke-claude
-  [prompt & {:keys [new-session-id resume-session-id model working-directory timeout system-prompt extra-env-vars]
+  [prompt & {:keys [new-session-id resume-session-id model working-directory timeout system-prompt]
              :or {timeout 3600000}}]
   (let [cli-path (get-claude-cli-path)]
     (when-not cli-path
       (throw (ex-info "Claude CLI not found" {})))
 
     (let [expanded-dir (expand-tilde working-directory)
-          ;; Compute environment variables for this directory (e.g., BEADS_DB for worktrees)
-          ;; Merge with any extra env vars from recipe/step (extra-env-vars wins)
-          dir-env-vars (when expanded-dir (env/env-for-directory expanded-dir))
-          env-vars (if (seq extra-env-vars)
-                     (merge dir-env-vars extra-env-vars)
-                     dir-env-vars)
-          ;; Determine which session-id to use for tracking (new or resume)
-          tracking-session-id (or new-session-id resume-session-id)
-          ;; Trim and check if system-prompt has content
+          env-vars (when expanded-dir (env/env-for-directory expanded-dir))
           trimmed-system-prompt (when system-prompt (clojure.string/trim system-prompt))
           has-system-prompt? (and trimmed-system-prompt (not (clojure.string/blank? trimmed-system-prompt)))
           args (cond-> ["--dangerously-skip-permissions"
@@ -189,7 +123,7 @@
                        :has-system-prompt has-system-prompt?
                        :env-vars (when (seq env-vars) env-vars)})
 
-          result (run-process-with-file-redirection cli-path args expanded-dir timeout tracking-session-id env-vars)]
+          result (run-process-with-file-redirection cli-path args expanded-dir timeout env-vars)]
 
       (log/debug "Claude CLI completed"
                  {:exit (:exit result)
@@ -211,9 +145,7 @@
               (if success
                 {:success true
                  :result result-text
-                 :session-id session-id
-                 :usage (:usage result-obj)
-                 :cost (:total_cost_usd result-obj)}
+                 :session-id session-id}
                 {:success false
                  :error (str "Claude CLI returned error: " result-text)
                  :cli-response result-obj})))
@@ -246,7 +178,7 @@
 
   Returns immediately. Calls callback-fn when done or on timeout.
   Response map will have :success true/false and either :result or :error."
-  [prompt callback-fn & {:keys [new-session-id resume-session-id working-directory model timeout-ms system-prompt env-vars]
+  [prompt callback-fn & {:keys [new-session-id resume-session-id working-directory model timeout-ms system-prompt]
                          :or {timeout-ms 86400000}}]
   (async/go
     (let [response-ch (async/thread
@@ -257,8 +189,7 @@
                                          :model model
                                          :working-directory working-directory
                                          :timeout timeout-ms
-                                         :system-prompt system-prompt
-                                         :extra-env-vars env-vars)
+                                         :system-prompt system-prompt)
                           (catch Exception e
                             (log/error e "Exception in Claude invocation")
                             {:success false

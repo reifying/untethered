@@ -187,7 +187,7 @@ final class SessionRowDisplayTests: XCTestCase {
 
     // MARK: - Helper Methods
 
-    private func createTestSession(name: String, workingDirectory: String) -> CDBackendSession {
+    private func createTestSession(name: String, workingDirectory: String, provider: String = "claude") -> CDBackendSession {
         let session = CDBackendSession(context: context)
         session.id = UUID()
         session.backendName = name
@@ -195,6 +195,7 @@ final class SessionRowDisplayTests: XCTestCase {
         session.lastModified = Date()
         session.messageCount = 0
         session.preview = ""
+        session.provider = provider
         session.isLocallyCreated = false
         session.unreadCount = 0
         session.isInQueue = false
@@ -202,5 +203,99 @@ final class SessionRowDisplayTests: XCTestCase {
         session.queuedAt = nil
 
         return session
+    }
+
+    // MARK: - Provider Badge Tests
+
+    func testClaudeSessionDoesNotShowBadge() throws {
+        // Given: A session with default Claude provider
+        let session = createTestSession(
+            name: "Claude Session",
+            workingDirectory: "/test/path",
+            provider: "claude"
+        )
+
+        // Then: Provider should be "claude" (badge not shown for Claude)
+        XCTAssertEqual(session.provider, "claude")
+    }
+
+    func testCopilotSessionShowsBadge() throws {
+        // Given: A session with Copilot provider
+        let session = createTestSession(
+            name: "Copilot Session",
+            workingDirectory: "/test/path",
+            provider: "copilot"
+        )
+
+        // Then: Provider should be "copilot" (badge should be shown)
+        XCTAssertEqual(session.provider, "copilot")
+        XCTAssertNotEqual(session.provider, "claude")
+    }
+
+    func testProviderDefaultsToClaude() throws {
+        // Given: A session created without explicit provider
+        let session = createTestSession(
+            name: "Default Session",
+            workingDirectory: "/test/path"
+        )
+
+        // Then: Provider should default to "claude"
+        XCTAssertEqual(session.provider, "claude")
+    }
+
+    func testCursorSessionShowsBadge() throws {
+        // Given: A session with Cursor provider
+        let session = createTestSession(
+            name: "Cursor Session",
+            workingDirectory: "/test/path",
+            provider: "cursor"
+        )
+
+        // Then: Provider should be "cursor" (badge should be shown)
+        XCTAssertEqual(session.provider, "cursor")
+        XCTAssertNotEqual(session.provider, "claude")
+    }
+
+    func testOpenCodeSessionShowsBadge() throws {
+        // Given: A session with OpenCode provider
+        let session = createTestSession(
+            name: "OpenCode Session",
+            workingDirectory: "/test/path",
+            provider: "opencode"
+        )
+
+        // Then: Provider should be "opencode" (badge should be shown)
+        XCTAssertEqual(session.provider, "opencode")
+        XCTAssertNotEqual(session.provider, "claude")
+    }
+
+    func testMultipleProviderSessions() throws {
+        // Given: Sessions from different providers
+        let claudeSession = createTestSession(
+            name: "Claude Session",
+            workingDirectory: "/test/claude",
+            provider: "claude"
+        )
+        let copilotSession = createTestSession(
+            name: "Copilot Session",
+            workingDirectory: "/test/copilot",
+            provider: "copilot"
+        )
+        let cursorSession = createTestSession(
+            name: "Cursor Session",
+            workingDirectory: "/test/cursor",
+            provider: "cursor"
+        )
+        let opencodeSession = createTestSession(
+            name: "OpenCode Session",
+            workingDirectory: "/test/opencode",
+            provider: "opencode"
+        )
+
+        // Then: Each session should have correct provider
+        XCTAssertEqual(claudeSession.provider, "claude")
+        XCTAssertEqual(copilotSession.provider, "copilot")
+        XCTAssertEqual(cursorSession.provider, "cursor")
+        XCTAssertEqual(opencodeSession.provider, "opencode")
     }
 }

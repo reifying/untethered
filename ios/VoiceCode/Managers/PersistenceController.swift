@@ -125,6 +125,42 @@ class PersistenceController {
         // Set merge policy to prefer property-level changes
         container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
 
+        // Reset CDBackendSession.liveFromSeq across all sessions on app launch.
+        // liveFromSeq is the TTS gate cursor — anything below it is treated
+        // as historical (do not speak). Persisted only so it survives the
+        // is_complete:false re-subscribe chain within a single app session;
+        // it must not leak across app launches or the first subscribe reply
+        // after relaunch would misclassify messages as live and read aloud
+        // hours-old transcripts. See tmux-untethered-i2n.
+        if !inMemory {
+            resetLiveFromSeqOnAllSessions()
+        }
+    }
+
+    private func resetLiveFromSeqOnAllSessions() {
+        let context = container.newBackgroundContext()
+        context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        context.perform {
+            // NSBatchUpdateRequest skips the in-memory object graph and goes
+            // straight to the store — much cheaper than fetching every row
+            // when the user has hundreds of sessions.
+            let batchUpdate = NSBatchUpdateRequest(entityName: "CDBackendSession")
+            batchUpdate.propertiesToUpdate = ["liveFromSeq": Int64(0)]
+            batchUpdate.resultType = .updatedObjectsCountResultType
+            do {
+                let result = try context.execute(batchUpdate) as? NSBatchUpdateResult
+                if let count = result?.result as? Int, count > 0 {
+                    logger.info("Reset liveFromSeq on \(count) sessions for fresh app launch")
+                }
+            } catch {
+                // Non-fatal: TTS gate falls back to "suppress all" behavior
+                // until each session captures liveFromSeq from its first
+                // post-launch reply, which is correct (just slightly more
+                // aggressive than intended).
+                logger.error("Failed to reset liveFromSeq: \(error.localizedDescription)")
+            }
+        }
+
         // CRITICAL: Ensure all CoreData merge notifications arrive on main queue
         // This prevents SwiftUI @FetchRequest updates from occurring on background threads
         // which would cause AttributeGraph crashes during rapid UI updates (typing/voice input)
@@ -167,8 +203,14 @@ class PersistenceController {
         }
     }
 
-    /// Perform a background task
+    /// Perform a background task. Sets the merge policy on the supplied
+    /// context so uniqueness-constraint conflicts (e.g. CDMessage.id) merge
+    /// instead of throwing — without this, default NSErrorMergePolicyType
+    /// makes background saves fail and silently drop wire messages.
     func performBackgroundTask(_ block: @escaping (NSManagedObjectContext) -> Void) {
-        container.performBackgroundTask(block)
+        container.performBackgroundTask { context in
+            context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+            block(context)
+        }
     }
 }

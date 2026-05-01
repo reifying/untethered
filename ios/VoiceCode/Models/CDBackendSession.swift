@@ -16,6 +16,28 @@ public class CDBackendSession: NSManagedObject {
     @NSManaged public var isLocallyCreated: Bool
     @NSManaged public var messages: NSSet?
 
+    /// Server-reported `next_seq` from the most recent `session_history`
+    /// payload — the seq the backend will assign to the next new message.
+    /// Persisted on the session (not on messages) so the resubscribe cursor
+    /// survives local message pruning. `0` is the sentinel for "never
+    /// received a payload"; real values from the wire start at `1`.
+    @NSManaged public var nextSeq: Int64
+
+    /// TTS gate cursor: the `seq` at-or-above which assistant messages are
+    /// considered live (produced after the user opened this session in the
+    /// current app launch). Captured once per app-session per CDBackendSession
+    /// from the FIRST `session_history` reply's `nextSeq` after subscribe.
+    /// Messages below this cursor were already on the backend when the user
+    /// opened the session and must not be read aloud (tmux-untethered-i2n).
+    /// `0` is the sentinel for "no boundary captured yet — suppress all TTS".
+    /// Reset to `0` on app launch (PersistenceController) and on `unsubscribe`
+    /// so a fresh open re-captures the boundary.
+    @NSManaged public var liveFromSeq: Int64
+
+    /// Provider identifier (e.g., "claude", "copilot")
+    /// Defaults to "claude" for backward compatibility
+    @NSManaged public var provider: String
+
     // Queue management properties
     @NSManaged public var isInQueue: Bool
     @NSManaged public var queuePosition: Int32
@@ -87,6 +109,14 @@ extension CDBackendSession {
     static func fetchBackendSession(id: UUID) -> NSFetchRequest<CDBackendSession> {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "id == %@", id as CVarArg)
+        request.fetchLimit = 1
+        return request
+    }
+
+    /// Fetch a specific session by backend name (Claude session ID)
+    static func fetchBackendSession(backendName: String) -> NSFetchRequest<CDBackendSession> {
+        let request = fetchRequest()
+        request.predicate = NSPredicate(format: "backendName == %@", backendName)
         request.fetchLimit = 1
         return request
     }

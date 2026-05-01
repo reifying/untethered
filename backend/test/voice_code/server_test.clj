@@ -4,8 +4,10 @@
             [voice-code.server :as server]
             [voice-code.replication :as repl]
             [voice-code.recipes :as recipes]
+            [voice-code.tmux :as tmux]
             [cheshire.core :as json]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [voice-code.commands :as commands]))
 
 ;; Test API key for authentication tests
 (def test-api-key "voice-code-0123456789abcdef0123456789abcdef")
@@ -91,7 +93,89 @@
         (is (= "0.0.0.0" (get-in config [:server :host])))
         (is (= "claude" (get-in config [:claude :cli-path])))
         (is (= 86400000 (get-in config [:claude :default-timeout])))
-        (is (= :info (get-in config [:logging :level])))))))
+        (is (= :info (get-in config [:logging :level])))
+        (is (= :v0.4.0 (:message-stream-version config))
+            "Fallback must include the new-deploy default for :message-stream-version")))))
+
+(deftest test-message-stream-version-config
+  (testing "config.edn default is :v0.4.0"
+    (let [config (server/load-config)]
+      (is (= :v0.4.0 (:message-stream-version config)))))
+
+  (testing "coerce-message-stream-version accepts both supported values"
+    (is (= :v0.4.0 (server/coerce-message-stream-version :v0.4.0)))
+    (is (= :v0.3.0 (server/coerce-message-stream-version :v0.3.0))))
+
+  (testing "coerce-message-stream-version accepts string forms (env-var friendly)"
+    (is (= :v0.4.0 (server/coerce-message-stream-version "v0.4.0")))
+    (is (= :v0.3.0 (server/coerce-message-stream-version ":v0.3.0"))))
+
+  (testing "coerce-message-stream-version falls back to default on unknown / nil"
+    (is (= server/default-message-stream-version
+           (server/coerce-message-stream-version nil)))
+    (is (= server/default-message-stream-version
+           (server/coerce-message-stream-version :v9.9.9)))
+    (is (= server/default-message-stream-version
+           (server/coerce-message-stream-version "garbage"))))
+
+  (testing "message-stream-version-string strips the :v prefix"
+    (is (= "0.4.0" (server/message-stream-version-string :v0.4.0)))
+    (is (= "0.3.0" (server/message-stream-version-string :v0.3.0))))
+
+  (testing "gate predicates only fire on :v0.4.0"
+    (is (true?  (server/seq-migration-enabled?     :v0.4.0)))
+    (is (false? (server/seq-migration-enabled?     :v0.3.0)))
+    (is (true?  (server/hello-enforcement-enabled? :v0.4.0)))
+    (is (false? (server/hello-enforcement-enabled? :v0.3.0)))))
+
+(deftest test-load-config-with-v0-3-0-rollback
+  (testing "Reading a config.edn with :message-stream-version :v0.3.0 produces the rollback keyword"
+    (let [tmp (java.io.File/createTempFile "config-rollback" ".edn")]
+      (try
+        (spit tmp "{:server {:port 8080 :host \"0.0.0.0\"}
+                    :claude {:cli-path \"claude\" :default-timeout 86400000}
+                    :logging {:level :info}
+                    :message-stream-version :v0.3.0}")
+        (let [parsed (clojure.edn/read-string (slurp tmp))]
+          (is (= :v0.3.0 (:message-stream-version parsed))
+              "config.edn round-trips :v0.3.0 as a keyword"))
+        (finally
+          (.delete tmp))))))
+
+(defn- hello-payload
+  "Rebuild the hello envelope exactly as the websocket-handler would emit it,
+   so tests can assert on the serialized wire bytes instead of only the
+   derivation expression."
+  []
+  (server/generate-json
+   {:type :hello
+    :message "Welcome to voice-code backend"
+    :version (server/message-stream-version-string @server/message-stream-version)
+    :auth-version 1
+    :instructions "Send connect message with api_key"}))
+
+(deftest test-hello-version-reflects-flag
+  (testing "Flipping the atom to :v0.3.0 reverts the hello handler to emit 0.3.0"
+    (let [original @server/message-stream-version]
+      (try
+        ;; :v0.4.0 path — assert on the serialized envelope, not just the
+        ;; version-string derivation, so the smoke test covers the full
+        ;; hello emission path (generate-json + kebab→snake + atom read).
+        (reset! server/message-stream-version :v0.4.0)
+        (let [json-str (hello-payload)
+              parsed   (json/parse-string json-str)]
+          (is (= "0.4.0" (get parsed "version")))
+          (is (str/includes? json-str "\"version\":\"0.4.0\"")))
+
+        ;; Rollback path — flipping to :v0.3.0 must revert the emitted wire bytes.
+        (reset! server/message-stream-version :v0.3.0)
+        (let [json-str (hello-payload)
+              parsed   (json/parse-string json-str)]
+          (is (= "0.3.0" (get parsed "version"))
+              "Rollback flag must produce the legacy v0.3.0 hello version string")
+          (is (str/includes? json-str "\"version\":\"0.3.0\"")))
+        (finally
+          (reset! server/message-stream-version original))))))
 
 (deftest test-json-key-conversion
   (testing "snake_case to kebab-case conversion"
@@ -201,6 +285,149 @@
     (is (server/is-session-deleted-for-client? :ch1 "session-1"))
     (is (not (server/is-session-deleted-for-client? :ch2 "session-1")))))
 
+(deftest test-subscription-cleanup-on-disconnect
+  (testing "Subscriptions are cleaned up when client disconnects"
+    ;; Setup: one client subscribed to two sessions
+    (reset! server/connected-clients
+            {:ch1 {:deleted-sessions #{}
+                   :subscribed-sessions #{"session-1" "session-2"}}})
+    (reset! repl/watcher-state {:subscribed-sessions #{"session-1" "session-2"}})
+
+    ;; Disconnect the client
+    (server/unregister-channel! :ch1)
+
+    ;; Verify client removed
+    (is (not (contains? @server/connected-clients :ch1)))
+
+    ;; Verify global subscriptions cleaned up
+    (is (not (repl/is-subscribed? "session-1")))
+    (is (not (repl/is-subscribed? "session-2"))))
+
+  (testing "Shared subscriptions preserved when other client still needs them"
+    ;; Setup: two clients, both subscribed to session-1, only ch1 to session-2
+    (reset! server/connected-clients
+            {:ch1 {:deleted-sessions #{}
+                   :subscribed-sessions #{"session-1" "session-2"}}
+             :ch2 {:deleted-sessions #{}
+                   :subscribed-sessions #{"session-1"}}})
+    (reset! repl/watcher-state {:subscribed-sessions #{"session-1" "session-2"}})
+
+    ;; Disconnect ch1
+    (server/unregister-channel! :ch1)
+
+    ;; session-1 should still be subscribed (ch2 needs it)
+    (is (repl/is-subscribed? "session-1"))
+    ;; session-2 should be unsubscribed (only ch1 needed it)
+    (is (not (repl/is-subscribed? "session-2"))))
+
+  (testing "Client with no subscriptions disconnects cleanly"
+    (reset! server/connected-clients
+            {:ch1 {:deleted-sessions #{}
+                   :subscribed-sessions #{}}})
+    (reset! repl/watcher-state {:subscribed-sessions #{}})
+
+    ;; Should not throw
+    (server/unregister-channel! :ch1)
+
+    (is (not (contains? @server/connected-clients :ch1))))
+
+  (testing "Client with nil subscribed-sessions disconnects cleanly"
+    (reset! server/connected-clients
+            {:ch1 {:deleted-sessions #{}}}) ;; no :subscribed-sessions key
+    (reset! repl/watcher-state {:subscribed-sessions #{}})
+
+    ;; Should not throw
+    (server/unregister-channel! :ch1)
+
+    (is (not (contains? @server/connected-clients :ch1)))))
+
+(deftest test-cleanup-on-failed-channel-send
+  ;; Regression coverage for tmux-untethered-rxr: when http/send! throws
+  ;; (dead socket / network failure), the offending channel must be
+  ;; removed from connected-clients AND unsubscribed from every session
+  ;; it was subscribed to. Without this, dead channels accumulate as
+  ;; zombie subscribers and broadcast-session-history! iterates them
+  ;; on every new message.
+  (testing "broadcast-to-all-clients! removes channel from connected-clients on send failure"
+    (reset! server/connected-clients
+            {:dead-ch {:deleted-sessions #{}
+                       :subscribed-sessions #{"session-1" "session-2"}}
+             :live-ch {:deleted-sessions #{}
+                       :subscribed-sessions #{"session-1"}}})
+    (reset! repl/watcher-state {:subscribed-sessions #{"session-1" "session-2"}})
+
+    (with-redefs [org.httpkit.server/send! (fn [channel _msg]
+                                             (when (= channel :dead-ch)
+                                               (throw (java.io.IOException. "broken pipe")))
+                                             true)]
+      (server/broadcast-to-all-clients! {:type "test" :data "hello"}))
+
+    (is (not (contains? @server/connected-clients :dead-ch))
+        "Dead channel must be removed from connected-clients")
+    (is (contains? @server/connected-clients :live-ch)
+        "Live channel must remain in connected-clients")
+    (is (repl/is-subscribed? "session-1")
+        "session-1 must remain globally subscribed (live-ch still needs it)")
+    (is (not (repl/is-subscribed? "session-2"))
+        "session-2 must be unsubscribed globally (only dead-ch needed it)"))
+
+  (testing "send-to-client! removes channel from connected-clients on send failure"
+    (reset! server/connected-clients
+            {:dead-ch {:deleted-sessions #{}
+                       :subscribed-sessions #{"session-1" "session-2"}}})
+    (reset! repl/watcher-state {:subscribed-sessions #{"session-1" "session-2"}})
+
+    (with-redefs [org.httpkit.server/send! (fn [_channel _msg]
+                                             (throw (java.io.IOException. "broken pipe")))]
+      (server/send-to-client! :dead-ch {:type "test" :data "hello"}))
+
+    (is (not (contains? @server/connected-clients :dead-ch))
+        "Dead channel must be removed from connected-clients")
+    (is (not (repl/is-subscribed? "session-1"))
+        "session-1 must be unsubscribed globally after dead-ch removal")
+    (is (not (repl/is-subscribed? "session-2"))
+        "session-2 must be unsubscribed globally after dead-ch removal"))
+
+  (testing "send-to-client! does not propagate exception when send fails for a channel with no subscriptions"
+    (reset! server/connected-clients
+            {:dead-ch {:deleted-sessions #{}
+                       :subscribed-sessions #{}}})
+    (reset! repl/watcher-state {:subscribed-sessions #{}})
+
+    (with-redefs [org.httpkit.server/send! (fn [_channel _msg]
+                                             (throw (java.io.IOException. "broken pipe")))]
+      ;; Direct exception check: send-to-client! must swallow the underlying
+      ;; failure so callers (broadcast loops, recipe handlers) keep working.
+      (is (= ::no-throw
+             (try (server/send-to-client! :dead-ch {:type "test"})
+                  ::no-throw
+                  (catch Exception _ ::threw)))
+          "send-to-client! must not propagate http/send! exceptions"))
+
+    (is (not (contains? @server/connected-clients :dead-ch))
+        "Channel removed even when no subscriptions to clean up"))
+
+  (testing "broadcast-to-all-clients! removes only failing channels, not surviving ones"
+    (reset! server/connected-clients
+            {:dead-ch1 {:deleted-sessions #{} :subscribed-sessions #{"only-dead-1"}}
+             :dead-ch2 {:deleted-sessions #{} :subscribed-sessions #{"only-dead-2"}}
+             :live-ch {:deleted-sessions #{} :subscribed-sessions #{"shared"}}})
+    (reset! repl/watcher-state
+            {:subscribed-sessions #{"only-dead-1" "only-dead-2" "shared"}})
+
+    (with-redefs [org.httpkit.server/send! (fn [channel _msg]
+                                             (when (#{:dead-ch1 :dead-ch2} channel)
+                                               (throw (java.io.IOException. "broken pipe")))
+                                             true)]
+      (server/broadcast-to-all-clients! {:type "test"}))
+
+    (is (= #{:live-ch} (set (keys @server/connected-clients)))
+        "Both dead channels removed; live channel preserved")
+    (is (repl/is-subscribed? "shared")
+        "Sessions live-ch is subscribed to remain globally subscribed")
+    (is (not (repl/is-subscribed? "only-dead-1")))
+    (is (not (repl/is-subscribed? "only-dead-2")))))
+
 (deftest test-watcher-callbacks
   (testing "on-session-created broadcasts to all clients"
     (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :recent-sessions-limit 5}
@@ -232,35 +459,386 @@
                                   @sent-messages)]
           (is (= 2 (count recent-msgs)))))))
 
-  (testing "on-session-updated respects deleted sessions"
-    (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :recent-sessions-limit 5}
-                                      :ch2 {:deleted-sessions #{} :recent-sessions-limit 5}})
+  (testing "on-session-created gates session_updated push by per-channel :subscribed-sessions (tmux-untethered-44u)"
+    ;; Cross-session leak repro on the new-session race path: client A
+    ;; subscribed to new-session-A, client B subscribed only to some-other-session,
+    ;; client C subscribed to nothing. When new-session-A's file appears
+    ;; with pre-existing messages and is-subscribed? is globally true
+    ;; (because A asked for it), only A may receive the session_updated body.
+    ;; B and C must NOT — they never subscribed to new-session-A.
+    (reset! server/connected-clients
+            {:ch-a {:deleted-sessions #{}
+                    :subscribed-sessions #{"new-session-A"}
+                    :recent-sessions-limit 5}
+             :ch-b {:deleted-sessions #{}
+                    :subscribed-sessions #{"some-other-session"}
+                    :recent-sessions-limit 5}
+             :ch-c {:deleted-sessions #{}
+                    :subscribed-sessions #{}
+                    :recent-sessions-limit 5}})
     (let [sent-messages (atom [])]
       (with-redefs [org.httpkit.server/send! (fn [channel msg]
-                                               (swap! sent-messages conj {:channel channel :msg msg}))]
-        (server/on-session-updated "session-1" [{:role "user" :text "test"}])
+                                               (swap! sent-messages conj {:channel channel :msg msg}))
+                    repl/is-subscribed? (fn [sid] (= "new-session-A" sid))
+                    repl/parse-jsonl-file (constantly [{:role "assistant" :text "hello" :uuid "u-1"}])
+                    repl/filter-internal-messages identity
+                    repl/get-all-sessions (constantly [])]
+        (server/on-session-created {:session-id "new-session-A"
+                                    :name "Race Session"
+                                    :working-directory "/tmp"
+                                    :last-modified 1234567890
+                                    :message-count 1
+                                    :preview "hello"
+                                    :file "/tmp/new-session-A.jsonl"})
 
-        ;; ch1 deleted it, should not receive any messages
-        (is (= 0 (count (filter #(= :ch1 (:channel %)) @sent-messages))))
+        (let [updated-for (fn [channel]
+                            (filter #(and (= channel (:channel %))
+                                          (= "session_updated"
+                                             (:type (json/parse-string (:msg %) true))))
+                                    @sent-messages))]
+          (is (= 1 (count (updated-for :ch-a)))
+              "ch-a is subscribed to new-session-A and must receive the session_updated push")
+          (is (= 0 (count (updated-for :ch-b)))
+              "ch-b is subscribed only to some-other-session and must NOT receive a new-session-A push")
+          (is (= 0 (count (updated-for :ch-c)))
+              "ch-c never subscribed to anything and must NOT receive any session_updated push"))
 
-        ;; ch2 should receive 2 messages: session_updated + recent_sessions
-        (let [ch2-msgs (filter #(= :ch2 (:channel %)) @sent-messages)]
-          (is (= 2 (count ch2-msgs)))
+        ;; session_created envelope still fans out to all connected non-deleted clients
+        (let [created-msgs (filter #(= "session_created" (:type (json/parse-string (:msg %) true)))
+                                   @sent-messages)]
+          (is (= 3 (count created-msgs))
+              "session_created envelope still fans out to every connected non-deleted client")))))
 
-          ;; Verify session_updated message
-          (let [updated-msg (first (filter #(= "session_updated"
-                                               (:type (json/parse-string (:msg %) true)))
-                                           ch2-msgs))
-                msg (json/parse-string (:msg updated-msg) true)]
-            (is (= "session_updated" (:type msg)))
-            (is (= "session-1" (:session_id msg)))
-            (is (= 1 (count (:messages msg)))))
+  (testing "broadcast-session-history! (v0.4.0) emits session_history and respects deleted sessions"
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.4.0)
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5}
+                                          :ch2 {:deleted-sessions #{} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))
+                        repl/get-session-metadata (constantly {:session-id "session-1"
+                                                               :next-seq 43
+                                                               :min-available-seq 1})]
+            (server/broadcast-session-history!
+             "session-1"
+             [{:role "assistant" :text "hello" :uuid "u-1" :seq 42}])
 
-          ;; Verify recent_sessions message
-          (let [recent-msg (first (filter #(= "recent_sessions"
+            ;; ch1 deleted it, should not receive any messages
+            (is (= 0 (count (filter #(= :ch1 (:channel %)) @sent-messages))))
+
+            ;; ch2 should receive 2 messages: session_history + recent_sessions
+            (let [ch2-msgs (filter #(= :ch2 (:channel %)) @sent-messages)]
+              (is (= 2 (count ch2-msgs)))
+
+              ;; Verify session_history envelope carries seq range + gap nil
+              (let [history-msg (first (filter #(= "session_history"
+                                                   (:type (json/parse-string (:msg %) true)))
+                                               ch2-msgs))
+                    msg (json/parse-string (:msg history-msg) true)]
+                (is (= "session_history" (:type msg)))
+                (is (= "session-1" (:session_id msg)))
+                (is (= 1 (count (:messages msg))))
+                (is (= 42 (:first_seq msg)))
+                (is (= 42 (:last_seq msg)))
+                (is (= 43 (:next_seq msg)))
+                (is (true? (:is_complete msg)))
+                (is (nil? (:gap msg))
+                    "gap is nil for normal push windows")
+                ;; No stale session_updated envelope in v0.4.0 output
+                (is (nil? (first (filter #(= "session_updated"
                                               (:type (json/parse-string (:msg %) true)))
-                                          ch2-msgs))]
-            (is (some? recent-msg))))))))
+                                         ch2-msgs)))))
+
+              ;; Verify recent_sessions still piggybacks on the push
+              (let [recent-msg (first (filter #(= "recent_sessions"
+                                                  (:type (json/parse-string (:msg %) true)))
+                                              ch2-msgs))]
+                (is (some? recent-msg))))))
+        (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.4.0) delivers identical payload to every subscriber (AC3)"
+    ;; Flat broadcast: every eligible subscriber receives the same bytes
+    ;; regardless of their own last_seq — client-side gap detection reconciles.
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.4.0)
+        (reset! server/connected-clients {:ch-a {:deleted-sessions #{} :subscribed-sessions #{"session-flat"} :recent-sessions-limit 5}
+                                          :ch-b {:deleted-sessions #{} :subscribed-sessions #{"session-flat"} :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))
+                        repl/get-session-metadata (constantly {:session-id "session-flat"
+                                                               :next-seq 11
+                                                               :min-available-seq 1})]
+            (server/broadcast-session-history!
+             "session-flat"
+             [{:role "assistant" :text "a" :uuid "u-9" :seq 9}
+              {:role "user" :text "b" :uuid "u-10" :seq 10}])
+
+            (let [parse-hist (fn [channel]
+                               (some->> @sent-messages
+                                        (filter #(and (= channel (:channel %))
+                                                      (= "session_history"
+                                                         (:type (json/parse-string (:msg %) true)))))
+                                        first
+                                        :msg
+                                        (#(json/parse-string % true))))
+                  a (parse-hist :ch-a)
+                  b (parse-hist :ch-b)]
+              (is (some? a))
+              (is (some? b))
+              (is (= a b)
+                  "ch-a and ch-b receive byte-identical session_history payloads")
+              (is (= 9  (:first_seq a)))
+              (is (= 10 (:last_seq a)))
+              (is (= 11 (:next_seq a))))))
+        (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.3.0 rollback) emits legacy session_updated"
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.3.0)
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5}
+                                          :ch2 {:deleted-sessions #{} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))]
+            (server/broadcast-session-history!
+             "session-1"
+             [{:role "user" :text "test" :seq 42}])
+
+            ;; ch1 deleted → nothing
+            (is (= 0 (count (filter #(= :ch1 (:channel %)) @sent-messages))))
+
+            (let [ch2-msgs (filter #(= :ch2 (:channel %)) @sent-messages)
+                  updated-msg (first (filter #(= "session_updated"
+                                                 (:type (json/parse-string (:msg %) true)))
+                                             ch2-msgs))
+                  msg (json/parse-string (:msg updated-msg) true)]
+              (is (= 2 (count ch2-msgs)))
+              (is (= "session_updated" (:type msg)))
+              (is (= "session-1" (:session_id msg)))
+              (is (= 1 (count (:messages msg)))))))
+        (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.4.0) falls back to (inc last-seq) when metadata lacks :next-seq"
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.4.0)
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :subscribed-sessions #{"session-no-next"} :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))
+                        repl/get-session-metadata (constantly {:session-id "session-no-next"
+                                                               :min-available-seq 1})]
+            (server/broadcast-session-history!
+             "session-no-next"
+             [{:role "user" :text "a" :uuid "u-50" :seq 50}
+              {:role "assistant" :text "b" :uuid "u-51" :seq 51}])
+
+            (let [ch1-msgs (filter #(= :ch1 (:channel %)) @sent-messages)
+                  history-msg (first (filter #(= "session_history"
+                                                 (:type (json/parse-string (:msg %) true)))
+                                             ch1-msgs))
+                  msg (json/parse-string (:msg history-msg) true)]
+              (is (some? history-msg)
+                  "session_history must still be emitted when metadata lacks :next-seq")
+              (is (= "session_history" (:type msg)))
+              (is (= "session-no-next" (:session_id msg)))
+              (is (= 50 (:first_seq msg)))
+              (is (= 51 (:last_seq msg)))
+              (is (= 52 (:next_seq msg))
+                  "Fallback computes (inc last-seq) when :next-seq missing from metadata")
+              (is (true? (:is_complete msg)))
+              (is (nil? (:gap msg))))))
+        (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.4.0) falls back to 1 when metadata lacks :next-seq and messages are empty"
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.4.0)
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :subscribed-sessions #{"session-empty"} :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))
+                        repl/get-session-metadata (constantly {:session-id "session-empty"
+                                                               :min-available-seq 1})]
+            (server/broadcast-session-history! "session-empty" [])
+
+            (let [ch1-msgs (filter #(= :ch1 (:channel %)) @sent-messages)
+                  history-msg (first (filter #(= "session_history"
+                                                  (:type (json/parse-string (:msg %) true)))
+                                             ch1-msgs))
+                  msg (json/parse-string (:msg history-msg) true)]
+              (is (some? history-msg))
+              (is (= 0 (count (:messages msg))))
+              (is (nil? (:first_seq msg)))
+              (is (nil? (:last_seq msg)))
+              (is (= 1 (:next_seq msg))
+                  "Fallback to 1 when metadata :next-seq missing AND messages empty"))))
+        (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.4.0) ignores stale metadata :next-seq advanced by concurrent assign-seq! (tmux-untethered-9ww)"
+    ;; Regression: a concurrent assign-seq! call (different batch, same
+    ;; session) can advance session-index :next-seq past last-seq+1 of the
+    ;; current broadcast. The payload must report (inc last-seq) — the
+    ;; "next seq after this window" — not the global counter, so subscribers
+    ;; do not interpret the broadcast as a multi-seq gap and re-subscribe.
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.4.0)
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{} :subscribed-sessions #{"session-race"} :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))
+                        ;; Simulate concurrent assign-seq! that already
+                        ;; pushed :next-seq to 61 while this broadcast only
+                        ;; covers seqs up through 55.
+                        repl/get-session-metadata (constantly {:session-id "session-race"
+                                                               :next-seq 61
+                                                               :min-available-seq 1})]
+            (server/broadcast-session-history!
+             "session-race"
+             [{:role "user" :text "a" :uuid "u-54" :seq 54}
+              {:role "assistant" :text "b" :uuid "u-55" :seq 55}])
+
+            (let [ch1-msgs (filter #(= :ch1 (:channel %)) @sent-messages)
+                  history-msg (first (filter #(= "session_history"
+                                                 (:type (json/parse-string (:msg %) true)))
+                                             ch1-msgs))
+                  msg (json/parse-string (:msg history-msg) true)]
+              (is (some? history-msg))
+              (is (= 54 (:first_seq msg)))
+              (is (= 55 (:last_seq msg)))
+              (is (= 56 (:next_seq msg))
+                  "next_seq must be (inc last-seq), NOT the racing metadata value 61")
+              (is (true? (:is_complete msg)))
+              (is (nil? (:gap msg))))))
+        (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.4.0) gates by per-channel :subscribed-sessions (tmux-untethered-2yp)"
+    ;; Cross-session TTS leak repro: client A subscribed to session-A,
+    ;; client B subscribed to session-B. A push for session-A must NOT
+    ;; reach client B even though B is connected and has not deleted
+    ;; session-A — B simply never asked for it. The replication watcher's
+    ;; is-subscribed? gate is global; per-channel filtering lives here.
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.4.0)
+        (reset! server/connected-clients
+                {:ch-a {:deleted-sessions #{}
+                        :subscribed-sessions #{"session-A"}
+                        :recent-sessions-limit 5}
+                 :ch-b {:deleted-sessions #{}
+                        :subscribed-sessions #{"session-B"}
+                        :recent-sessions-limit 5}
+                 :ch-none {:deleted-sessions #{}
+                           :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))
+                        repl/get-session-metadata (constantly {:session-id "session-A"
+                                                               :next-seq 11
+                                                               :min-available-seq 1})]
+            (server/broadcast-session-history!
+             "session-A"
+             [{:role "assistant" :text "for A only" :uuid "u-10" :seq 10}])
+
+            (let [history-for (fn [channel]
+                                (filter #(and (= channel (:channel %))
+                                              (= "session_history"
+                                                 (:type (json/parse-string (:msg %) true))))
+                                        @sent-messages))]
+              (is (= 1 (count (history-for :ch-a)))
+                  "ch-a is subscribed to session-A and must receive the push")
+              (is (= 0 (count (history-for :ch-b)))
+                  "ch-b is subscribed only to session-B and must NOT receive a session-A push")
+              (is (= 0 (count (history-for :ch-none)))
+                  "ch-none never subscribed to anything and must NOT receive any push"))))
+        (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.4.0) sends recent_sessions to all non-deleted clients regardless of subscription"
+    ;; The push body (session_history) is per-channel-subscribed, but the
+    ;; recent_sessions side-channel must keep fanning out to every
+    ;; connected non-deleted client so the Recent panel updates for
+    ;; activity on sessions the client isn't currently subscribed to.
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.4.0)
+        (reset! server/connected-clients
+                {:ch-sub {:deleted-sessions #{}
+                          :subscribed-sessions #{"session-fan"}
+                          :recent-sessions-limit 5}
+                 :ch-other {:deleted-sessions #{}
+                            :subscribed-sessions #{"session-different"}
+                            :recent-sessions-limit 5}
+                 :ch-deleted {:deleted-sessions #{"session-fan"}
+                              :subscribed-sessions #{"session-fan"}
+                              :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))
+                        repl/get-session-metadata (constantly {:session-id "session-fan"
+                                                               :next-seq 2
+                                                               :min-available-seq 1})
+                        repl/get-all-sessions (constantly [])]
+            (server/broadcast-session-history!
+             "session-fan"
+             [{:role "assistant" :text "x" :uuid "u-1" :seq 1}])
+
+            (let [recent-for (fn [channel]
+                               (filter #(and (= channel (:channel %))
+                                             (= "recent_sessions"
+                                                (:type (json/parse-string (:msg %) true))))
+                                       @sent-messages))]
+              (is (= 1 (count (recent-for :ch-sub)))
+                  "subscriber receives recent_sessions")
+              (is (= 1 (count (recent-for :ch-other)))
+                  "non-subscriber still receives recent_sessions so its Recent panel refreshes")
+              (is (= 0 (count (recent-for :ch-deleted)))
+                  "client that locally-deleted the session does NOT receive recent_sessions for it"))))
+        (finally
+          (reset! server/message-stream-version original)))))
+
+  (testing "broadcast-session-history! (v0.3.0 rollback) also gates by per-channel :subscribed-sessions"
+    ;; Same per-channel guard applies to the legacy session_updated envelope
+    ;; under v0.3.0 rollback — otherwise the rollback path leaks across
+    ;; sessions even though the v0.4.0 path is fixed.
+    (let [original @server/message-stream-version]
+      (try
+        (reset! server/message-stream-version :v0.3.0)
+        (reset! server/connected-clients
+                {:ch-a {:deleted-sessions #{}
+                        :subscribed-sessions #{"session-A"}
+                        :recent-sessions-limit 5}
+                 :ch-b {:deleted-sessions #{}
+                        :subscribed-sessions #{"session-B"}
+                        :recent-sessions-limit 5}})
+        (let [sent-messages (atom [])]
+          (with-redefs [org.httpkit.server/send! (fn [channel msg]
+                                                   (swap! sent-messages conj {:channel channel :msg msg}))]
+            (server/broadcast-session-history!
+             "session-A"
+             [{:role "assistant" :text "for A only" :seq 10}])
+
+            (let [updated-for (fn [channel]
+                                (filter #(and (= channel (:channel %))
+                                              (= "session_updated"
+                                                 (:type (json/parse-string (:msg %) true))))
+                                        @sent-messages))]
+              (is (= 1 (count (updated-for :ch-a))))
+              (is (= 0 (count (updated-for :ch-b)))))))
+        (finally
+          (reset! server/message-stream-version original))))))
 
 (deftest test-new-protocol-connect
   (testing "Connect message returns session list and recent sessions"
@@ -277,56 +855,447 @@
           ;; Verify client registered
           (is (contains? @server/connected-clients :test-ch))
 
-          ;; Verify three messages sent: session_list, recent_sessions, available_commands
-          (is (= 3 (count @sent-messages)))
+          ;; Verify four messages sent: connected, session_list, recent_sessions, available_commands
+          (is (= 4 (count @sent-messages)))
 
-          ;; First message should be session_list
-          (let [msg1 (json/parse-string (first @sent-messages) true)]
+          ;; First message should be connected (auth confirmation)
+          (let [msg0 (json/parse-string (first @sent-messages) true)]
+            (is (= "connected" (:type msg0)))
+            (is (= "Session registered" (:message msg0))))
+
+          ;; Second message should be session_list
+          (let [msg1 (json/parse-string (second @sent-messages) true)]
             (is (= "session_list" (:type msg1)))
             (is (= 2 (count (:sessions msg1))))
             ;; Sessions are sorted by last-modified descending, so s2 comes first
             (is (= "s2" (:session_id (first (:sessions msg1))))))
 
-          ;; Second message should be recent_sessions with default limit of 5
-          (let [msg2 (json/parse-string (second @sent-messages) true)]
+          ;; Third message should be recent_sessions with default limit of 5
+          (let [msg2 (json/parse-string (nth @sent-messages 2) true)]
             (is (= "recent_sessions" (:type msg2)))
             (is (= 5 (:limit msg2))) ;; Default limit is 5
             (is (vector? (:sessions msg2)))))))
     (reset! server/api-key nil)))
 
-(deftest test-prompt-session-id-distinction
-  (testing "Prompt with new_session_id uses --session-id flag"
+;; Helper: wait for a promise or fail the test after timeout. Returns the
+;; promise value on success; `:timeout` when the deadline expires. Used to
+;; await the `(future ...)` that the prompt handler spawns for tmux dispatch.
+(defn- await-dispatch [p]
+  (deref p 2000 :timeout))
+
+(deftest test-prompt-new-session-dispatches-to-start-window!
+  (testing "Prompt with new_session_id calls tmux/start-window! with resume? false"
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
-    (let [claude-args (atom nil)]
-      (with-redefs [voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & {:keys [new-session-id resume-session-id]}]
-                      (reset! claude-args {:new-session-id new-session-id
-                                           :resume-session-id resume-session-id})
-                      ;; Call callback immediately for test
-                      (callback {:success true :session-id "test-123"}))
+    (let [dispatched (promise)]
+      (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
+                    tmux/deliver!      (fn [& _]
+                                         (deliver dispatched :unexpected-deliver-call))
                     org.httpkit.server/send! (fn [_ _] nil)]
-        (server/handle-message :test-ch "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-123\"}")
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-123\",\"working_directory\":\"/tmp\"}")
+        (let [args (await-dispatch dispatched)]
+          (is (map? args) "expected start-window! to be called with an options map")
+          (is (= "new-123" (:session-uuid args)))
+          (is (= "hello"   (:initial-prompt args)))
+          (is (= :claude   (:provider args)))
+          (is (= "/tmp"    (:workdir args)))
+          (is (false?      (:resume? args))))))
+    (reset! server/api-key nil)))
 
-        (is (= "new-123" (:new-session-id @claude-args)))
-        (is (nil? (:resume-session-id @claude-args)))))
+(deftest test-prompt-resume-session-dispatches-to-deliver!
+  (testing "Prompt with resume_session_id calls tmux/deliver! with prompt text"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [dispatched (promise)]
+      (with-redefs [tmux/deliver!     (fn [uuid text]
+                                        (deliver dispatched {:uuid uuid :text text}))
+                    tmux/start-window! (fn [& _]
+                                         (deliver dispatched :unexpected-start-window-call))
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp"})
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"continue\",\"resume_session_id\":\"resume-456\"}")
+        (let [args (await-dispatch dispatched)]
+          (is (map? args) "expected deliver! to be called with uuid and text")
+          (is (= "resume-456" (:uuid args)))
+          (is (= "continue"   (:text args))))))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-provider-extraction-for-new-session
+  (testing "Prompt with explicit provider for new session uses that provider"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [dispatched (promise)]
+      (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-123\",\"provider\":\"copilot\",\"working_directory\":\"/tmp\"}")
+        (is (= :copilot (:provider (await-dispatch dispatched)))
+            "Should pass explicit provider to start-window!")))
     (reset! server/api-key nil))
 
-  (testing "Prompt with resume_session_id uses --resume flag"
+  (testing "Prompt without explicit provider defaults via resolve-provider"
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
-    (let [claude-args (atom nil)]
-      (with-redefs [voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & {:keys [new-session-id resume-session-id]}]
-                      (reset! claude-args {:new-session-id new-session-id
-                                           :resume-session-id resume-session-id})
-                      ;; Call callback immediately for test
-                      (callback {:success true :session-id "test-456"}))
+    (let [dispatched (promise)]
+      (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
                     org.httpkit.server/send! (fn [_ _] nil)]
-        (server/handle-message :test-ch "{\"type\":\"prompt\",\"text\":\"continue\",\"resume_session_id\":\"resume-456\"}")
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-456\",\"working_directory\":\"/tmp\"}")
+        ;; Default provider is :claude when no explicit and no metadata
+        (is (= :claude (:provider (await-dispatch dispatched)))
+            "Should default to claude when no provider specified")))
+    (reset! server/api-key nil)))
 
-        (is (nil? (:new-session-id @claude-args)))
-        (is (= "resume-456" (:resume-session-id @claude-args)))))
+(deftest test-prompt-provider-ignored-for-resume
+  (testing "Prompt with provider field is silently ignored for resumed sessions"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [dispatched (promise)]
+      (with-redefs [;; deliver! handles the live-window case; respawn is an implementation detail
+                    tmux/deliver! (fn [uuid text]
+                                    (deliver dispatched {:uuid uuid :text text}))
+                    tmux/start-window! (fn [opts] (deliver dispatched opts))
+                    ;; Mock session metadata to return :copilot as stored provider
+                    voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      {:session-id session-id
+                       :provider :copilot
+                       :working-directory "/test/dir"})
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        ;; Send provider="claude" but resuming a copilot session. Provider is
+        ;; silently dropped; deliver! receives only the UUID and text because
+        ;; provider metadata lives with the session, not the delivery call.
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"continue\",\"resume_session_id\":\"resume-123\",\"provider\":\"claude\"}")
+        (let [args (await-dispatch dispatched)]
+          (is (= "resume-123" (:uuid args)))
+          (is (= "continue"   (:text args))))))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-system-prompt-forwarded-to-start-window!
+  (testing "Prompt with system_prompt forwards it to tmux/start-window! for new sessions"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [dispatched (promise)]
+      (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-sp-1\",\"working_directory\":\"/tmp\",\"system_prompt\":\"Be terse\"}")
+        (let [args (await-dispatch dispatched)]
+          (is (map? args))
+          (is (= "Be terse" (:system-prompt args))
+              "system_prompt from JSON payload should be passed as :system-prompt to start-window!"))))
+    (reset! server/api-key nil))
+
+  (testing "Prompt without system_prompt passes nil to tmux/start-window!"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [dispatched (promise)]
+      (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-sp-2\",\"working_directory\":\"/tmp\"}")
+        (let [args (await-dispatch dispatched)]
+          (is (nil? (:system-prompt args))))))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-invalid-provider-returns-error
+  (testing "Prompt with invalid provider returns error for new session"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [sent-messages (atom [])
+          tmux-invoked (atom false)]
+      (with-redefs [tmux/start-window! (fn [& _] (reset! tmux-invoked true))
+                    tmux/deliver!      (fn [& _] (reset! tmux-invoked true))
+                    org.httpkit.server/send!
+                    (fn [_ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))]
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-789\",\"provider\":\"unknown-provider\"}")
+
+        (is (not @tmux-invoked) "Should not dispatch to tmux for invalid provider")
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (str/includes? (:message response) "Invalid provider"))
+          (is (str/includes? (:message response) "unknown-provider"))
+          (is (str/includes? (:message response) "claude"))
+          (is (str/includes? (:message response) "copilot")))))
+    (reset! server/api-key nil))
+
+  (testing "Invalid provider on resume is silently ignored (uses metadata)"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [dispatched (promise)]
+      (with-redefs [tmux/deliver! (fn [uuid text]
+                                    (deliver dispatched {:uuid uuid :text text}))
+                    tmux/start-window! (fn [& _]
+                                         (deliver dispatched :unexpected-start-window-call))
+                    voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      {:session-id session-id
+                       :provider :claude
+                       :working-directory "/test/dir"})
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        ;; Even invalid provider is ignored for resume - deliver! is provider-agnostic
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"continue\",\"resume_session_id\":\"resume-456\",\"provider\":\"invalid\"}")
+        (is (= "resume-456" (:uuid (await-dispatch dispatched))))))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-rejected-during-compaction
+  ;; tmux-untethered-shs: a resume prompt that arrives while
+  ;; `claude --compact` is rewriting the session JSONL must NOT respawn the
+  ;; provider (which would write to the same file concurrently). The handler
+  ;; rejects with a clear iOS-visible error and never invokes tmux.
+  (testing "Resume prompt is rejected when compaction is in progress for that session"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (reset! repl/compaction-locks #{"resume-during-compact"})
+    (let [sent-messages (atom [])
+          tmux-invoked (atom false)]
+      (with-redefs [tmux/deliver! (fn [& _] (reset! tmux-invoked true))
+                    tmux/start-window! (fn [& _] (reset! tmux-invoked true))
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp"})
+                    org.httpkit.server/send!
+                    (fn [_ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))]
+        (server/handle-message
+         :test-ch
+         "{\"type\":\"prompt\",\"text\":\"hi\",\"resume_session_id\":\"resume-during-compact\"}")
+        (is (false? @tmux-invoked)
+            "tmux must not be invoked while compaction holds the JSONL")
+        (is (= 1 (count @sent-messages))
+            "exactly one error response is emitted")
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (= "resume-during-compact" (:session_id response))
+              "error carries session_id so iOS can route it to the right session")
+          (is (str/includes? (:message response) "Compaction in progress")
+              "error message names the cause"))))
+    (reset! repl/compaction-locks #{})
+    (reset! server/api-key nil))
+
+  (testing "New session prompt is unaffected by an unrelated session's compaction lock"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (reset! repl/compaction-locks #{"some-other-session"})
+    (let [dispatched (promise)]
+      (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
+                    tmux/deliver! (fn [& _]
+                                    (deliver dispatched :unexpected-deliver-call))
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message
+         :test-ch
+         "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"fresh-uuid\",\"working_directory\":\"/tmp\"}")
+        (let [args (await-dispatch dispatched)]
+          (is (map? args) "fresh session UUID cannot collide with a compaction lock")
+          (is (= "fresh-uuid" (:session-uuid args))))))
+    (reset! repl/compaction-locks #{})
+    (reset! server/api-key nil))
+
+  (testing "Resume prompt proceeds normally once compaction releases the lock"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (reset! repl/compaction-locks #{})
+    (let [dispatched (promise)]
+      (with-redefs [tmux/deliver! (fn [uuid text]
+                                    (deliver dispatched {:uuid uuid :text text}))
+                    tmux/start-window! (fn [& _]
+                                         (deliver dispatched :unexpected-start-window-call))
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp"})
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/handle-message
+         :test-ch
+         "{\"type\":\"prompt\",\"text\":\"go\",\"resume_session_id\":\"post-compact\"}")
+        (let [args (await-dispatch dispatched)]
+          (is (= "post-compact" (:uuid args)))
+          (is (= "go" (:text args))))))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-and-compact-never-race-on-same-jsonl
+  ;; tmux-untethered-22g: the compaction-lock check in the prompt handler
+  ;; happens synchronously, but the tmux/deliver! call runs inside a (future
+  ;; ...). A compact_session arriving between those two points must not cause
+  ;; the prompt to respawn the provider while `claude --compact` is rewriting
+  ;; the same JSONL.
+  ;;
+  ;; Scenario 1 (deterministic): force the TOCTOU interleaving by stalling
+  ;; the prompt's future until a compaction has definitely acquired the lock.
+  ;; We drive this with a CountDownLatch inside the tmux mocks and a
+  ;; cooperative hand-off with the compact_session critical section. Without
+  ;; the re-check under repl/compaction-dispatch-lock, the future would
+  ;; invoke tmux/deliver! / start-window! while @compaction-locks holds the
+  ;; session-id. With the fix the future aborts cleanly.
+  (testing "Prompt future scheduled before compaction acquire never dispatches tmux after compaction wins"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (reset! repl/compaction-locks #{})
+    (reset! tmux/live-windows {})
+    (let [session-id "race-session-deterministic"
+          ;; Future body starts running, wants to acquire dispatch-lock, but
+          ;; we first make sure a compaction has grabbed the lock so the
+          ;; future sees it locked.
+          compaction-acquired (java.util.concurrent.CountDownLatch. 1)
+          compaction-holding (java.util.concurrent.CountDownLatch. 1)
+          violations (atom [])
+          tmux-invocations (atom 0)]
+      (with-redefs [tmux/deliver! (fn [_ _]
+                                    (when (contains? @repl/compaction-locks session-id)
+                                      (swap! violations conj :deliver-during-compaction))
+                                    (swap! tmux-invocations inc))
+                    tmux/start-window! (fn [_]
+                                         (when (contains? @repl/compaction-locks session-id)
+                                           (swap! violations conj :start-window-during-compaction))
+                                         (swap! tmux-invocations inc))
+                    tmux/kill-window! (fn [& _] nil)
+                    voice-code.claude/compact-session
+                    (fn [_]
+                      (.countDown compaction-acquired)
+                      ;; Hold the compaction long enough that any prompt
+                      ;; future scheduled below will either block on the
+                      ;; dispatch-lock (fix) or race through it (bug).
+                      (.await compaction-holding 2 java.util.concurrent.TimeUnit/SECONDS)
+                      {:success true})
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp" :name "race"})
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (swap! tmux/live-windows assoc session-id
+               {:tmux-session "s" :tmux-window "w"})
+        ;; Schedule the compaction in a worker: it will acquire the lock,
+        ;; kill the (mocked) window, and then block inside compact-session
+        ;; until we release it.
+        (let [compact-worker
+              (future
+                (server/handle-message
+                 :test-ch
+                 (format "{\"type\":\"compact_session\",\"session_id\":\"%s\"}" session-id)))]
+          (.await compaction-acquired 2 java.util.concurrent.TimeUnit/SECONDS)
+          ;; Compaction is now holding the atom lock. live-windows no longer
+          ;; has the session. If a prompt's future now runs without the
+          ;; re-check, it will dispatch tmux (respawn) while compaction is
+          ;; writing the JSONL.
+          (let [prompt-workers
+                (doall
+                 (for [i (range 30)]
+                   (future
+                     (server/handle-message
+                      :test-ch
+                      (format "{\"type\":\"prompt\",\"text\":\"p%d\",\"resume_session_id\":\"%s\"}"
+                              i session-id)))))]
+            (doseq [w prompt-workers] @w)
+            ;; Give the futures scheduled inside the handler time to run.
+            (Thread/sleep 200)
+            (is (empty? @violations)
+                (format "No tmux dispatch should fire while compaction holds the lock. Violations: %s"
+                        (pr-str @violations)))
+            (is (zero? @tmux-invocations)
+                "All prompt futures should abort while the compaction lock is held"))
+          ;; Release compaction so the worker can finish and release the lock.
+          (.countDown compaction-holding)
+          @compact-worker))
+      ;; After compaction releases, a follow-up prompt should dispatch cleanly.
+      (Thread/sleep 100)
+      (swap! tmux/live-windows assoc session-id
+             {:tmux-session "s" :tmux-window "w"})
+      (let [follow-up-dispatched (promise)]
+        (with-redefs [tmux/deliver! (fn [s _] (deliver follow-up-dispatched s))
+                      tmux/start-window! (fn [opts] (deliver follow-up-dispatched (:session-uuid opts)))
+                      voice-code.replication/get-session-metadata
+                      (fn [_] {:provider :claude :working-directory "/tmp" :name "race"})
+                      org.httpkit.server/send! (fn [_ _] nil)]
+          (server/handle-message
+           :test-ch
+           (format "{\"type\":\"prompt\",\"text\":\"post-release\",\"resume_session_id\":\"%s\"}" session-id))
+          (is (= session-id (deref follow-up-dispatched 2000 :timeout))
+              "After compaction releases the lock, subsequent prompts dispatch normally"))))
+    (reset! repl/compaction-locks #{})
+    (reset! tmux/live-windows {})
+    (reset! server/api-key nil))
+
+  ;; Scenario 2 (stress): flood the handler with interleaved prompt and
+  ;; compact_session messages on the same session-id. With or without the
+  ;; fix, the outcome is non-deterministic — but the invariant
+  ;; "tmux dispatch never observes @compaction-locks holding this session"
+  ;; must hold in all cases.
+  (testing "Flood of interleaved prompt + compact_session never violates the invariant"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (reset! repl/compaction-locks #{})
+    (reset! tmux/live-windows {})
+    (let [session-id "race-session-stress"
+          iterations 200
+          violations (atom [])]
+      (with-redefs [tmux/deliver! (fn [_ _]
+                                    (when (contains? @repl/compaction-locks session-id)
+                                      (swap! violations conj :deliver-during-compaction)))
+                    tmux/start-window! (fn [opts]
+                                         (when (contains? @repl/compaction-locks session-id)
+                                           (swap! violations conj :start-window-during-compaction))
+                                         (swap! tmux/live-windows assoc
+                                                (:session-uuid opts)
+                                                {:tmux-session "s" :tmux-window "w"}))
+                    tmux/kill-window! (fn [& _] nil)
+                    voice-code.claude/compact-session
+                    (fn [_] (Thread/sleep 2) {:success true})
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp" :name "race"})
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (swap! tmux/live-windows assoc session-id
+               {:tmux-session "s" :tmux-window "w"})
+        (let [workers
+              (doall
+               (for [i (range iterations)]
+                 (future
+                   (if (even? i)
+                     (server/handle-message :test-ch
+                                            (format "{\"type\":\"prompt\",\"text\":\"p%d\",\"resume_session_id\":\"%s\"}"
+                                                    i session-id))
+                     (server/handle-message :test-ch
+                                            (format "{\"type\":\"compact_session\",\"session_id\":\"%s\"}"
+                                                    session-id))))))]
+          (doseq [w workers] @w))
+        (Thread/sleep 500))
+      (is (empty? @violations)
+          (format "tmux dispatch must never run while compaction-locks holds this session. Violations: %s"
+                  (pr-str @violations))))
+    (reset! repl/compaction-locks #{})
+    (reset! tmux/live-windows {})
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-never-sends-session-locked
+  ;; AC #1 from tmux-untethered design §4: concurrent prompts to the same
+  ;; session UUID must never produce a session_locked response. We simulate
+  ;; two back-to-back prompts without releasing any lock between them and
+  ;; assert no session_locked message is emitted.
+  (testing "Two concurrent prompts to the same session never return session_locked"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [sent-messages (atom [])
+          ;; CountDownLatch is deterministic: the assertion waits until both
+          ;; futures complete (or the timeout fires) instead of racing a sleep.
+          latch (java.util.concurrent.CountDownLatch. 2)]
+      (with-redefs [tmux/deliver! (fn [& _] (.countDown latch))
+                    tmux/start-window! (fn [& _] (.countDown latch))
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp"})
+                    org.httpkit.server/send!
+                    (fn [_ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))]
+        ;; Two prompts to the same session UUID
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"first\",\"resume_session_id\":\"same-uuid\"}")
+        (server/handle-message :test-ch
+                               "{\"type\":\"prompt\",\"text\":\"second\",\"resume_session_id\":\"same-uuid\"}")
+        (is (.await latch 2 java.util.concurrent.TimeUnit/SECONDS)
+            "Both dispatches should complete within 2s")
+        (is (not-any? #(= "session_locked" (:type %)) @sent-messages)
+            "No message should be of type session_locked")))
     (reset! server/api-key nil)))
 
 ;; Compaction Tests
@@ -423,42 +1392,149 @@
           (is (re-find #"Test exception" (:error response))))))
     (reset! server/api-key nil)))
 
-(deftest test-prompt-uses-stored-working-dir-for-resume
-  (testing "Prompt with resume_session_id uses stored working directory from session metadata"
-    (reset! server/api-key test-api-key)
-    (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
-    (let [working-dir-used (atom nil)]
-      (with-redefs [voice-code.replication/get-session-metadata
-                    (fn [session-id]
-                      (when (= session-id "resume-456")
-                        {:session-id "resume-456"
-                         :working-directory "/Users/test/real/path"
-                         :message-count 10}))
-                    voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & {:keys [working-directory]}]
-                      (reset! working-dir-used working-directory)
-                      (callback {:success true :session-id "resume-456"}))
-                    org.httpkit.server/send! (fn [_ _] nil)]
-        (server/handle-message :test-ch
-                               (json/generate-string
-                                {:type "prompt"
-                                 :text "continue work"
-                                 :resume_session_id "resume-456"
-                                 :working_directory "[from project: -Users-test-placeholder]"}))
+;; Kill Session Tests
 
-        (is (= "/Users/test/real/path" @working-dir-used)
-            "Should use stored working directory from session metadata, not iOS placeholder")))
+(deftest test-kill-session-missing-session-id
+  (testing "kill_session without session_id returns error"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ msg] (swap! sent-messages conj (json/parse-string msg true)))]
+        (server/handle-message :test-ch "{\"type\":\"kill_session\"}")
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (= "session_id required in kill_session message" (:message response))))))
+    (reset! server/api-key nil)))
+
+(deftest test-kill-session-live-window-kills-and-broadcasts-aborted
+  ;; AC for tmux-untethered-ahs: a live window is killed via tmux/kill-window!,
+  ;; removed from live-windows, and a turn_complete{aborted:true} is broadcast
+  ;; to every subscriber of the session.
+  (testing "kill_session for a live window kills it and emits aborted turn_complete"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients
+            {:killer-ch {:deleted-sessions #{} :subscribed-sessions #{} :authenticated true}
+             :subscriber-ch {:deleted-sessions #{}
+                             :subscribed-sessions #{"sess-abc"}
+                             :authenticated true}})
+    (reset! tmux/live-windows {"sess-abc" {:tmux-session "proj"
+                                           :tmux-window "win-abc"
+                                           :provider :claude
+                                           :workdir "/tmp/proj"
+                                           :started-at "2026-04-20T00:00:00Z"}})
+    (let [sent (atom [])
+          kill-args (atom nil)]
+      (with-redefs [tmux/kill-window! (fn [s w] (reset! kill-args [s w]))
+                    org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent conj {:ch ch :msg (json/parse-string msg true)}))]
+        (server/handle-message :killer-ch
+                               "{\"type\":\"kill_session\",\"session_id\":\"sess-abc\"}")
+        (is (= ["proj" "win-abc"] @kill-args)
+            "tmux/kill-window! should be called with the descriptor's session and window")
+        (is (nil? (get @tmux/live-windows "sess-abc"))
+            "live-windows entry for the UUID should be removed")
+        (let [types-by-ch (group-by :ch @sent)]
+          (let [subscriber-msgs (map :msg (get types-by-ch :subscriber-ch))]
+            (is (some #(and (= "turn_complete" (:type %))
+                            (= "sess-abc" (:session_id %))
+                            (true? (:aborted %)))
+                      subscriber-msgs)
+                "Subscriber should receive turn_complete with aborted:true"))
+          (let [killer-msgs (map :msg (get types-by-ch :killer-ch))]
+            (is (some #(= "session_killed" (:type %)) killer-msgs)
+                "Killer channel should receive session_killed")
+            (is (not-any? #(and (= "turn_complete" (:type %)) (true? (:aborted %)))
+                          killer-msgs)
+                "Killer channel should not receive the aborted turn_complete unless it is also subscribed")))))
+    (reset! tmux/live-windows {})
+    (reset! server/api-key nil)))
+
+(deftest test-kill-session-no-live-window-sends-session-killed-only
+  (testing "kill_session for a session with no live window sends session_killed but no turn_complete"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients
+            {:killer-ch {:deleted-sessions #{} :subscribed-sessions #{} :authenticated true}
+             :subscriber-ch {:deleted-sessions #{}
+                             :subscribed-sessions #{"sess-gone"}
+                             :authenticated true}})
+    (reset! tmux/live-windows {})
+    (let [sent (atom [])
+          kill-called (atom false)]
+      (with-redefs [tmux/kill-window! (fn [& _] (reset! kill-called true))
+                    org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent conj {:ch ch :msg (json/parse-string msg true)}))]
+        (server/handle-message :killer-ch
+                               "{\"type\":\"kill_session\",\"session_id\":\"sess-gone\"}")
+        (is (false? @kill-called)
+            "tmux/kill-window! should not be called when no live window exists")
+        (let [all-msgs (map :msg @sent)]
+          (is (some #(= "session_killed" (:type %)) all-msgs)
+              "session_killed should still be sent even when nothing was live")
+          (is (not-any? #(= "turn_complete" (:type %)) all-msgs)
+              "No synthetic turn_complete should be broadcast when nothing was processing"))))
+    (reset! server/api-key nil)))
+
+(deftest test-kill-session-skips-deleted-subscribers
+  (testing "kill_session does not broadcast aborted turn_complete to subscribers who locally deleted the session"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients
+            {:killer-ch {:deleted-sessions #{} :subscribed-sessions #{} :authenticated true}
+             :deleter-ch {:deleted-sessions #{"sess-xyz"}
+                          :subscribed-sessions #{"sess-xyz"}
+                          :authenticated true}})
+    (reset! tmux/live-windows {"sess-xyz" {:tmux-session "proj"
+                                           :tmux-window "win-xyz"
+                                           :provider :claude
+                                           :workdir "/tmp/proj"
+                                           :started-at "2026-04-20T00:00:00Z"}})
+    (let [sent (atom [])]
+      (with-redefs [tmux/kill-window! (fn [& _] nil)
+                    org.httpkit.server/send!
+                    (fn [ch msg]
+                      (swap! sent conj {:ch ch :msg (json/parse-string msg true)}))]
+        (server/handle-message :killer-ch
+                               "{\"type\":\"kill_session\",\"session_id\":\"sess-xyz\"}")
+        (let [deleter-msgs (map :msg (filter #(= :deleter-ch (:ch %)) @sent))]
+          (is (not-any? #(= "turn_complete" (:type %)) deleter-msgs)
+              "Subscriber who locally deleted the session should not receive turn_complete"))))
+    (reset! tmux/live-windows {})
+    (reset! server/api-key nil)))
+
+(deftest test-kill-session-tolerates-tmux-kill-failure
+  (testing "kill_session cleans up state and still emits aborted turn_complete when tmux/kill-window! throws"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients
+            {:killer-ch {:deleted-sessions #{} :subscribed-sessions #{"sess-err"} :authenticated true}})
+    (reset! tmux/live-windows {"sess-err" {:tmux-session "proj"
+                                           :tmux-window "win-err"
+                                           :provider :claude
+                                           :workdir "/tmp/proj"
+                                           :started-at "2026-04-20T00:00:00Z"}})
+    (let [sent (atom [])]
+      (with-redefs [tmux/kill-window! (fn [& _] (throw (Exception. "tmux exploded")))
+                    org.httpkit.server/send!
+                    (fn [_ msg] (swap! sent conj (json/parse-string msg true)))]
+        (server/handle-message :killer-ch
+                               "{\"type\":\"kill_session\",\"session_id\":\"sess-err\"}")
+        (is (nil? (get @tmux/live-windows "sess-err"))
+            "live-windows entry should be removed even when tmux kill fails")
+        (is (some #(and (= "turn_complete" (:type %)) (true? (:aborted %))) @sent)
+            "Aborted turn_complete should still be emitted")
+        (is (some #(= "session_killed" (:type %)) @sent)
+            "session_killed should still be sent")))
+    (reset! tmux/live-windows {})
     (reset! server/api-key nil)))
 
 (deftest test-prompt-uses-ios-working-dir-for-new-session
   (testing "Prompt with new_session_id uses iOS-provided working directory"
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
-    (let [working-dir-used (atom nil)]
-      (with-redefs [voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & {:keys [working-directory]}]
-                      (reset! working-dir-used working-directory)
-                      (callback {:success true :session-id "new-789"}))
+    (let [dispatched (promise)]
+      (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
                     org.httpkit.server/send! (fn [_ _] nil)]
         (server/handle-message :test-ch
                                (json/generate-string
@@ -467,7 +1543,7 @@
                                  :new_session_id "new-789"
                                  :working_directory "/Users/test/new/project"}))
 
-        (is (= "/Users/test/new/project" @working-dir-used)
+        (is (= "/Users/test/new/project" (:workdir (await-dispatch dispatched)))
             "Should use iOS-provided working directory for new sessions")))
     (reset! server/api-key nil)))
 
@@ -475,16 +1551,13 @@
   (testing "Prompt with new_session_id converts placeholder working directory"
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
-    (let [working-dir-used (atom nil)]
+    (let [dispatched (promise)]
       (with-redefs [voice-code.replication/project-name->working-dir
                     (fn [project-name]
                       (if (= project-name "-Users-test-real-path")
                         "/Users/test/real/path"
                         (str "[from project: " project-name "]")))
-                    voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & {:keys [working-directory]}]
-                      (reset! working-dir-used working-directory)
-                      (callback {:success true :session-id "new-789"}))
+                    tmux/start-window! (fn [opts] (deliver dispatched opts))
                     org.httpkit.server/send! (fn [_ _] nil)]
         (server/handle-message :test-ch
                                (json/generate-string
@@ -493,35 +1566,12 @@
                                  :new_session_id "new-789"
                                  :working_directory "[from project: -Users-test-real-path]"}))
 
-        (is (= "/Users/test/real/path" @working-dir-used)
+        (is (= "/Users/test/real/path" (:workdir (await-dispatch dispatched)))
             "Should convert placeholder to real path for new sessions")))
     (reset! server/api-key nil)))
 
-(deftest test-prompt-handles-missing-session-metadata
-  (testing "Prompt with resume_session_id falls back to iOS dir if session metadata not found"
-    (reset! server/api-key test-api-key)
-    (reset! server/connected-clients {:test-ch {:ios-session-id "ios-123" :authenticated true}})
-    (let [working-dir-used (atom nil)]
-      (with-redefs [voice-code.replication/get-session-metadata
-                    (fn [session-id] nil) ; Session not found
-                    voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & {:keys [working-directory]}]
-                      (reset! working-dir-used working-directory)
-                      (callback {:success true :session-id "resume-999"}))
-                    org.httpkit.server/send! (fn [_ _] nil)]
-        (server/handle-message :test-ch
-                               (json/generate-string
-                                {:type "prompt"
-                                 :text "continue"
-                                 :resume_session_id "resume-999"
-                                 :working_directory "/Users/test/fallback"}))
-
-        (is (= "/Users/test/fallback" @working-dir-used)
-            "Should fall back to iOS working directory if session metadata not found")))
-    (reset! server/api-key nil)))
-
 (deftest test-recent-sessions-message-format
-  (testing "recent_sessions message uses snake_case and ISO-8601 timestamps (no name field)"
+  (testing "recent_sessions message uses snake_case and ISO-8601 timestamps"
     (with-redefs [server/send-to-client! (fn [channel message]
                                            (is (= :recent-sessions (:type message)))
                                            (is (number? (:limit message)))
@@ -530,10 +1580,12 @@
                                              (let [first-session (first (:sessions message))]
                                                ;; Verify kebab-case keys from Clojure
                                                (is (contains? first-session :session-id))
-                                               ;; Name field removed - iOS provides its own
-                                               (is (not (contains? first-session :name)))
+                                               ;; Name field included per STANDARDS.md protocol spec
+                                               (is (contains? first-session :name))
                                                (is (contains? first-session :working-directory))
                                                (is (contains? first-session :last-modified))
+                                               ;; Provider field added for multi-provider support
+                                               (is (contains? first-session :provider))
                                                ;; Verify timestamp is ISO-8601 string
                                                (is (string? (:last-modified first-session)))
                                                (is (re-matches #"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z"
@@ -605,18 +1657,6 @@
       (is (= "error" (:type parsed)))
       (is (= "Claude CLI failed" (:message parsed)))
       (is (= "test-session-456" (:session_id parsed))))))
-
-(deftest test-session-locked-message-format
-  (testing "Session locked message uses correct snake_case format"
-    (let [test-data {:type :session-locked
-                     :message "Session is currently processing a prompt. Please wait."
-                     :session-id "locked-session-789"}
-          json-str (server/generate-json test-data)
-          parsed (json/parse-string json-str true)]
-      ;; Verify JSON uses snake_case
-      (is (= "session_locked" (:type parsed)))
-      (is (= "Session is currently processing a prompt. Please wait." (:message parsed)))
-      (is (= "locked-session-789" (:session_id parsed))))))
 
 (deftest test-connect-updates-recent-sessions-limit
   (testing "Connect message with recent_sessions_limit parameter stores and uses the limit"
@@ -936,139 +1976,6 @@
             (is (true? (:session-created? updated-state))
                 "session-created? flag should be preserved during step transition")))))))
 
-(deftest test-lock-held-during-recipe-execution
-  (testing "Session lock is held throughout recipe execution and released on exit"
-    (let [session-id "test-session-lock"
-          sent-messages (atom [])
-          mock-channel :test-ch]
-      ;; Setup
-      (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
-      (server/start-recipe-for-session session-id :implement-and-review false)
-
-      ;; Acquire lock (simulating what start_recipe does)
-      (voice-code.replication/acquire-session-lock! session-id)
-
-      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
-        (let [orch-state (server/get-session-recipe-state session-id)
-              recipe (recipes/get-recipe :implement-and-review)]
-
-          ;; Verify lock is held before processing
-          (is (voice-code.replication/is-session-locked? session-id)
-              "Lock should be held before processing")
-
-          ;; Process first response with complete -> transitions to code-review
-          (let [response1 "{\"outcome\": \"complete\"}"
-                result1 (server/process-orchestration-response
-                         session-id orch-state recipe response1 mock-channel)]
-            (is (= :next-step (:action result1)))
-            (is (= :code-review (:step-name result1)))
-            ;; Lock should STILL be held after step transition
-            (is (voice-code.replication/is-session-locked? session-id)
-                "Lock should remain held during step transition"))
-
-          ;; Process second response - triggers retry (no JSON)
-          (let [updated-state (server/get-session-recipe-state session-id)
-                response2 "I reviewed the code but forgot JSON"
-                result2 (server/process-orchestration-response
-                         session-id updated-state recipe response2 mock-channel)]
-            (is (= :retry (:action result2)))
-            ;; Lock should STILL be held during retry
-            (is (voice-code.replication/is-session-locked? session-id)
-                "Lock should remain held during retry"))
-
-          ;; Process no-issues response (code-review step has no-issues -> commit step)
-          (let [updated-state2 (server/get-session-recipe-state session-id)
-                response3 "{\"outcome\": \"no-issues\"}"
-                result3 (server/process-orchestration-response
-                         session-id updated-state2 recipe response3 mock-channel)]
-            (is (= :next-step (:action result3)))
-            (is (= :commit (:step-name result3)))
-            ;; Lock should STILL be held after transition to commit
-            (is (voice-code.replication/is-session-locked? session-id)
-                "Lock should remain held during transition to commit"))
-
-          ;; Process committed response (commit step has committed -> exit)
-          (let [updated-state3 (server/get-session-recipe-state session-id)
-                response4 "{\"outcome\": \"committed\"}"
-                result4 (server/process-orchestration-response
-                         session-id updated-state3 recipe response4 mock-channel)]
-            (is (= :exit (:action result4)))
-            (is (= "changes-committed" (:reason result4)))
-            ;; Note: process-orchestration-response doesn't release lock,
-            ;; execute-recipe-step does. But we verify the action is correct.
-            ))))))
-
-(deftest test-lock-released-on-recipe-exit-action
-  (testing "Lock should be released only when :exit action is returned"
-    (let [session-id "test-session-lock-exit"]
-      ;; This test documents the expected behavior:
-      ;; - :next-step action -> lock should NOT be released (recursive call)
-      ;; - :retry action -> lock should NOT be released (recursive call)  
-      ;; - :exit action -> lock SHOULD be released
-      ;; The actual lock release happens in execute-recipe-step, not process-orchestration-response
-
-      ;; The key invariant: between recipe start and exit, the session is locked
-      ;; This prevents concurrent prompts from forking the session
-
-      (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
-
-      ;; Simulate the recipe lifecycle
-      (server/start-recipe-for-session session-id :implement-and-review false)
-      (voice-code.replication/acquire-session-lock! session-id)
-
-      ;; Lock should be held
-      (is (voice-code.replication/is-session-locked? session-id))
-
-      ;; Simulate what execute-recipe-step does on :exit
-      (voice-code.replication/release-session-lock! session-id)
-
-      ;; Lock should be released
-      (is (not (voice-code.replication/is-session-locked? session-id))))))
-
-(deftest test-lock-released-on-nil-step-prompt
-  (testing "Lock is released when step-prompt is nil (prevents lock leak)"
-    (let [session-id "test-nil-prompt"
-          sent-messages (atom [])
-          mock-channel :test-ch]
-      ;; Setup
-      (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
-
-      ;; Create orchestration state pointing to a non-existent step
-      ;; This simulates a scenario where get-next-step-prompt returns nil
-      (swap! server/session-orchestration-state assoc session-id
-             {:recipe-id :implement-and-review
-              :current-step :nonexistent-step ;; This step doesn't exist
-              :step-count 1
-              :step-visit-counts {:nonexistent-step 1}
-              :step-retry-counts {}})
-
-      ;; Acquire lock (simulating what start_recipe does before calling execute-recipe-step)
-      (voice-code.replication/acquire-session-lock! session-id)
-      (is (voice-code.replication/is-session-locked? session-id)
-          "Lock should be held initially")
-
-      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
-                    voice-code.claude/invoke-claude-async (fn [& _] (throw (Exception. "Should not be called")))]
-        (let [orch-state (server/get-session-recipe-state session-id)
-              recipe (recipes/get-recipe :implement-and-review)]
-          ;; Call execute-recipe-step with an orch-state that will result in nil step-prompt
-          (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
-
-          ;; Lock should be released even though step-prompt was nil
-          (is (not (voice-code.replication/is-session-locked? session-id))
-              "Lock should be released when step-prompt is nil")
-
-          ;; Should have sent recipe-exited and turn-complete messages
-          (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
-                message-types (set (map :type parsed-messages))]
-            (is (contains? message-types "recipe_exited")
-                "Should send recipe_exited message")
-            (is (contains? message-types "turn_complete")
-                "Should send turn_complete message")))))))
-
 (deftest test-get-step-model
   (testing "returns step-level model when present"
     (let [recipe {:steps {:commit {:model "haiku"
@@ -1105,247 +2012,6 @@
       (is (nil? (server/get-step-model recipe :implement)))
       (is (nil? (server/get-step-model recipe :code-review)))
       (is (nil? (server/get-step-model recipe :fix))))))
-
-(deftest test-get-step-env
-  (testing "returns step-level env when present"
-    (let [recipe {:steps {:document {:env {"FOO" "bar"}
-                                     :prompt "test"
-                                     :outcomes #{:done}
-                                     :on-outcome {}}}}]
-      (is (= {"FOO" "bar"} (server/get-step-env recipe :document)))))
-
-  (testing "returns recipe-level env when step has no env"
-    (let [recipe {:env {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"}
-                  :steps {:document {:prompt "test"
-                                     :outcomes #{:done}
-                                     :on-outcome {}}}}]
-      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (server/get-step-env recipe :document)))))
-
-  (testing "step-level env merges with and overrides recipe-level env"
-    (let [recipe {:env {"A" "1" "B" "2"}
-                  :steps {:document {:env {"B" "override" "C" "3"}
-                                     :prompt "test"
-                                     :outcomes #{:done}
-                                     :on-outcome {}}}}]
-      (is (= {"A" "1" "B" "override" "C" "3"} (server/get-step-env recipe :document)))))
-
-  (testing "returns nil when neither step nor recipe has env"
-    (let [recipe {:steps {:implement {:prompt "test"
-                                      :outcomes #{:done}
-                                      :on-outcome {}}}}]
-      (is (nil? (server/get-step-env recipe :implement)))))
-
-  (testing "works with document-design recipe"
-    (let [recipe (recipes/get-recipe :document-design)]
-      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (server/get-step-env recipe :document)))
-      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (server/get-step-env recipe :review)))))
-
-  (testing "works with break-down-tasks recipe"
-    (let [recipe (recipes/get-recipe :break-down-tasks)]
-      (is (= {"CLAUDE_CODE_DISABLE_1M_CONTEXT" "0"} (server/get-step-env recipe :analyze))))))
-
-(deftest test-execute-recipe-step-passes-model
-  (testing "execute-recipe-step passes model to invoke-claude-async"
-    (let [session-id "test-model-pass"
-          sent-messages (atom [])
-          captured-model (atom nil)
-          mock-channel :test-ch]
-      ;; Setup
-      (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
-      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
-
-      ;; Start recipe at commit step (no model override)
-      (server/start-recipe-for-session session-id :implement-and-review false)
-      (swap! server/session-orchestration-state assoc-in [session-id :current-step] :commit)
-
-      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
-                    voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & {:keys [model]}]
-                      (reset! captured-model model)
-                      ;; Call callback with success
-                      (callback {:success true :result "{\"outcome\": \"committed\"}"}))]
-
-        (let [orch-state (server/get-session-recipe-state session-id)
-              recipe (recipes/get-recipe :implement-and-review)]
-          (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
-
-          ;; Verify no model override is passed
-          (is (nil? @captured-model)
-              "Commit step should have no model override")))))
-
-  (testing "execute-recipe-step passes nil model for steps without model"
-    (let [session-id "test-no-model"
-          sent-messages (atom [])
-          captured-model (atom :not-called)
-          mock-channel :test-ch]
-      ;; Setup
-      (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
-      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
-
-      ;; Start recipe at implement step (which has no model)
-      (server/start-recipe-for-session session-id :implement-and-review false)
-
-      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
-                    voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & {:keys [model]}]
-                      (reset! captured-model model)
-                      ;; Call callback with success to exit
-                      (callback {:success true :result "{\"outcome\": \"complete\"}"}))]
-
-        (let [orch-state (server/get-session-recipe-state session-id)
-              recipe (recipes/get-recipe :implement-and-review)]
-          (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
-
-          ;; Verify model was nil (no model for implement step)
-          (is (nil? @captured-model)
-              "Implement step should have nil model"))))))
-
-(deftest test-execute-recipe-step-conditional-session-id
-  (testing "uses new-session-id when session-created? is false"
-    (let [session-id "test-new-session"
-          captured-args (atom nil)
-          mock-channel :test-ch]
-      ;; Setup
-      (reset! server/session-orchestration-state {})
-      (reset! repl/session-locks #{})
-      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
-
-      ;; Start recipe with is-new-session?=true (sets :session-created? to false)
-      (server/start-recipe-for-session session-id :implement-and-review true)
-
-      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)
-                    voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & opts]
-                      (reset! captured-args (apply hash-map opts))
-                      ;; Don't call callback to avoid recursive execution
-                      nil)]
-        (let [orch-state (server/get-session-recipe-state session-id)
-              recipe (recipes/get-recipe :implement-and-review)]
-          ;; Verify initial state
-          (is (false? (:session-created? orch-state))
-              "New session should have :session-created? false")
-
-          (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
-
-          ;; Verify :new-session-id was passed (not :resume-session-id)
-          (is (contains? @captured-args :new-session-id)
-              "Should pass :new-session-id for new session")
-          (is (= session-id (:new-session-id @captured-args)))
-          (is (not (contains? @captured-args :resume-session-id))
-              "Should NOT pass :resume-session-id for new session")))))
-
-  (testing "uses resume-session-id when session-created? is true"
-    (let [session-id "test-existing-session"
-          captured-args (atom nil)
-          mock-channel :test-ch]
-      ;; Setup
-      (reset! server/session-orchestration-state {})
-      (reset! repl/session-locks #{})
-      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
-
-      ;; Start recipe with is-new-session?=false (sets :session-created? to true)
-      (server/start-recipe-for-session session-id :implement-and-review false)
-
-      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)
-                    voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & opts]
-                      (reset! captured-args (apply hash-map opts))
-                      nil)]
-        (let [orch-state (server/get-session-recipe-state session-id)
-              recipe (recipes/get-recipe :implement-and-review)]
-          ;; Verify initial state
-          (is (true? (:session-created? orch-state))
-              "Existing session should have :session-created? true")
-
-          (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
-
-          ;; Verify :resume-session-id was passed (not :new-session-id)
-          (is (contains? @captured-args :resume-session-id)
-              "Should pass :resume-session-id for existing session")
-          (is (= session-id (:resume-session-id @captured-args)))
-          (is (not (contains? @captured-args :new-session-id))
-              "Should NOT pass :new-session-id for existing session")))))
-
-  (testing "state transitions to session-created? true after successful invocation"
-    (let [session-id "test-state-transition"
-          state-after-transition (atom nil)
-          mock-channel :test-ch]
-      ;; Setup
-      (reset! server/session-orchestration-state {})
-      (reset! repl/session-locks #{})
-      (reset! server/connected-clients {mock-channel {:deleted-sessions #{}}})
-
-      ;; Start recipe with is-new-session?=true (sets :session-created? to false)
-      (server/start-recipe-for-session session-id :implement-and-review true)
-
-      ;; Verify initial state
-      (is (false? (:session-created? (server/get-session-recipe-state session-id)))
-          "Should start with :session-created? false")
-
-      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)
-                    voice-code.claude/invoke-claude-async
-                    (fn [prompt callback & opts]
-                      ;; Simulate successful response - callback updates state
-                      (callback {:success true :result "{\"outcome\": \"complete\"}"})
-                      ;; Capture state immediately after callback (before recipe exit cleans up)
-                      ;; Note: By this point the state transition has already happened
-                      nil)
-                    ;; Prevent recursive execution by mocking execute-recipe-step for next-step
-                    server/process-orchestration-response
-                    (fn [session-id orch-state recipe response-text channel]
-                      ;; Capture state after the transition has happened
-                      (reset! state-after-transition (server/get-session-recipe-state session-id))
-                      ;; Return :exit to stop recursion
-                      {:action :exit :reason "test-complete"})]
-        (let [orch-state (server/get-session-recipe-state session-id)
-              recipe (recipes/get-recipe :implement-and-review)]
-          (server/execute-recipe-step mock-channel session-id "/tmp" orch-state recipe)
-
-          ;; Verify state was updated to :session-created? true
-          (is (some? @state-after-transition)
-              "State should exist after transition")
-          (is (true? (:session-created? @state-after-transition))
-              "State should transition to :session-created? true after success"))))))
-
-(deftest test-recipe-state-cleaned-on-lock-failure
-  (testing "Recipe state is cleaned up when lock acquisition fails in start_recipe"
-    (let [session-id "test-lock-fail-cleanup"
-          sent-messages (atom [])
-          mock-channel :test-ch]
-      ;; Setup
-      (reset! server/api-key test-api-key)
-      (reset! server/session-orchestration-state {})
-      (reset! voice-code.replication/session-locks #{})
-      (reset! server/connected-clients {mock-channel {:deleted-sessions #{} :authenticated true}})
-
-      ;; Pre-lock the session to simulate another operation holding the lock
-      (voice-code.replication/acquire-session-lock! session-id)
-      (is (voice-code.replication/is-session-locked? session-id)
-          "Session should be locked by another operation")
-
-      (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
-                    voice-code.replication/get-session-metadata (fn [_] {:working-directory "/tmp"})]
-        ;; Handle start_recipe message when session is already locked
-        (server/handle-message mock-channel
-                               (json/generate-string {:type "start_recipe"
-                                                      :recipe_id "implement-and-review"
-                                                      :session_id session-id}))
-
-        ;; Recipe state should NOT exist (cleaned up because lock failed)
-        (is (nil? (server/get-session-recipe-state session-id))
-            "Recipe state should be cleaned up when lock acquisition fails")
-
-        ;; Should have sent session_locked message
-        (let [parsed-messages (map #(json/parse-string % true) @sent-messages)
-              message-types (set (map :type parsed-messages))]
-          (is (contains? message-types "session_locked")
-              "Should send session_locked message")))
-
-      ;; Cleanup
-      (voice-code.replication/release-session-lock! session-id)
-      (reset! server/api-key nil))))
 
 (deftest test-session-exists?
   (testing "returns false when get-session-metadata returns nil"
@@ -1395,7 +2061,6 @@
       ;; Setup
       (reset! server/api-key test-api-key)
       (reset! server/session-orchestration-state {})
-      (reset! repl/session-locks #{})
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{} :authenticated true}})
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
@@ -1434,7 +2099,6 @@
       ;; Setup
       (reset! server/api-key test-api-key)
       (reset! server/session-orchestration-state {})
-      (reset! repl/session-locks #{})
       (reset! server/connected-clients {mock-channel {:deleted-sessions #{} :authenticated true}})
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))
@@ -1469,104 +2133,270 @@
 ;; Session Subscribe Tests - verifies size-based message limiting
 
 (deftest test-subscribe-sends-messages-within-size-budget
-  (testing "Subscribe sends messages within client's size budget"
+  (testing "Subscribe (v0.4.0) returns full packed range when client is fresh (last_seq omitted)"
     ;; Client with default max-message-size-kb (100KB)
+    (reset! server/message-stream-version :v0.4.0)
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
     (let [sent-messages (atom [])
-          ;; Create small messages that easily fit in 100KB budget
-          mock-messages (vec (for [i (range 50)]
-                               {:uuid (str "uuid-" i)
-                                :type (if (even? i) "user" "assistant")
-                                :text (str "Message " i)
-                                :message {:role (if (even? i) "user" "assistant")
-                                          :content (str "Message " i)}}))]
+          ;; Canonical messages already in the format parse-session-messages produces.
+          canonical-messages (vec (for [i (range 50)]
+                                    {:uuid (str "uuid-" i)
+                                     :role (if (even? i) "user" "assistant")
+                                     :text (str "Message " i)
+                                     :timestamp "2026-01-30T12:00:00Z"
+                                     :provider :claude}))]
       (with-redefs [org.httpkit.server/send!
-                    (fn [ch msg]
+                    (fn [_ch msg]
                       (swap! sent-messages conj (json/parse-string msg true)))
                     voice-code.replication/subscribe-to-session! (fn [_] nil)
                     voice-code.replication/get-session-metadata
                     (fn [session-id]
                       {:session-id session-id
                        :file "/tmp/test-session.jsonl"
+                       :provider :claude
                        :message-count 50})
-                    voice-code.replication/parse-jsonl-file
-                    (fn [_] mock-messages)
-                    voice-code.replication/filter-internal-messages
-                    (fn [msgs] msgs) ;; No filtering for this test
+                    voice-code.replication/parse-session-messages
+                    (fn [_provider _file-path] canonical-messages)
+                    voice-code.replication/filter-internal-messages identity
                     voice-code.replication/reset-file-position! (fn [_] nil)
                     voice-code.replication/file-positions (atom {})
                     clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
                                                       (length [] 1000)
-                                                      (exists [] true)))]
+                                                      (exists [] true)))
+                    voice-code.commands/parse-makefile (fn [_] [])]
 
         (server/handle-message :test-ch "{\"type\":\"subscribe\",\"session_id\":\"test-session-123\"}")
 
-        ;; All small messages should fit in 100KB budget
-        (is (= 1 (count @sent-messages)))
-        (let [response (first @sent-messages)]
-          (is (= "session_history" (:type response)))
+        (is (= 2 (count @sent-messages)))
+        (let [response (first (filter #(= "session_history" (:type %)) @sent-messages))]
+          (is (some? response) "Should have a session_history message")
           (is (= "test-session-123" (:session_id response)))
-          (is (= 50 (count (:messages response)))
-              "All messages should fit within size budget")
-          (is (= 50 (:total_count response))
-              "total_count should reflect filtered messages")
-          ;; Verify messages are in chronological order (oldest first)
-          (is (= "Message 0" (-> response :messages first :text))
-              "First message should be Message 0")
-          (is (= "Message 49" (-> response :messages last :text))
-              "Last message should be Message 49")
-          ;; Delta sync fields should be present
-          (is (true? (:is_complete response))
-              "is_complete should be true when all messages fit"))))
+          (is (= 50 (count (:messages response))) "All messages packed in one reply")
+          (is (= 1 (:first_seq response)) "first_seq starts at 1 for fresh session")
+          (is (= 50 (:last_seq response)) "last_seq matches the last stamped index")
+          (is (= 51 (:next_seq response)) "next_seq = count+1")
+          (is (true? (:is_complete response)) "is_complete true when all messages fit")
+          (is (nil? (:gap response)) "no gap on fresh subscribe")
+          (is (= "Message 0" (-> response :messages first :text)))
+          (is (= "Message 49" (-> response :messages last :text)))
+          (is (= 1 (-> response :messages first :seq)) "per-message seq starts at 1")
+          (is (= 50 (-> response :messages last :seq)) "per-message seq ends at 50")
+          (is (= "test-session-123" (-> response :messages first :session_id))
+              "Every wire message carries session_id"))))
     (reset! server/api-key nil)))
 
-(deftest test-subscribe-filters-internal-messages
-  (testing "Subscribe filters out internal messages (sidechain, summary, system)"
+(deftest test-subscribe-delta-sync-with-last-seq
+  (testing "Subscribe with last_seq=N returns only messages with seq > N"
+    (reset! server/message-stream-version :v0.4.0)
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
     (let [sent-messages (atom [])
-          ;; Create mock messages including internal ones
-          mock-messages [{:uuid "uuid-1" :type "user" :text "Real message 1" :message {:role "user" :content "Real message 1"}}
-                         {:uuid "uuid-2" :type "summary" :summary "Error summary"}
-                         {:uuid "uuid-3" :type "assistant" :text "Real message 2" :message {:role "assistant" :content "Real message 2"}}
-                         {:uuid "uuid-4" :type "system" :content "System notification"}
-                         {:uuid "uuid-5" :type "user" :text "Real message 3" :isSidechain true}
-                         {:uuid "uuid-6" :type "user" :text "Real message 4" :message {:role "user" :content "Real message 4"}}]]
+          canonical-messages (vec (for [i (range 10)]
+                                    {:uuid (str "uuid-" i)
+                                     :role (if (even? i) "user" "assistant")
+                                     :text (str "Message " i)
+                                     :timestamp "2026-01-30T12:00:00Z"
+                                     :provider :claude}))]
       (with-redefs [org.httpkit.server/send!
-                    (fn [ch msg]
+                    (fn [_ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    voice-code.replication/subscribe-to-session! (fn [_] nil)
+                    voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      {:session-id session-id :file "/tmp/f.jsonl" :provider :claude :message-count 10})
+                    voice-code.replication/parse-session-messages
+                    (fn [_ _] canonical-messages)
+                    voice-code.replication/filter-internal-messages identity
+                    voice-code.replication/reset-file-position! (fn [_] nil)
+                    voice-code.replication/file-positions (atom {})
+                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
+                                                      (length [] 1000)
+                                                      (exists [] true)))
+                    voice-code.commands/parse-makefile (fn [_] [])]
+
+        (server/handle-message :test-ch
+                               "{\"type\":\"subscribe\",\"session_id\":\"sess\",\"last_seq\":7}")
+
+        (let [response (first (filter #(= "session_history" (:type %)) @sent-messages))]
+          (is (some? response) "Should have a session_history message")
+          (is (= 3 (count (:messages response))) "only seq > 7 are returned")
+          (is (= 8 (:first_seq response)))
+          (is (= 10 (:last_seq response)))
+          (is (= 11 (:next_seq response)))
+          (is (true? (:is_complete response)))
+          (is (nil? (:gap response)))
+          (is (= [8 9 10] (mapv :seq (:messages response)))))))
+    (reset! server/api-key nil)))
+
+(deftest test-subscribe-caught-up-returns-empty
+  (testing "Subscribe with last_seq at next_seq-1 returns empty packed range, no gap"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
+    (let [sent-messages (atom [])
+          canonical-messages (vec (for [i (range 5)]
+                                    {:uuid (str "uuid-" i)
+                                     :role "user"
+                                     :text (str "Message " i)
+                                     :timestamp "2026-01-30T12:00:00Z"
+                                     :provider :claude}))]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    voice-code.replication/subscribe-to-session! (fn [_] nil)
+                    voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      {:session-id session-id :file "/tmp/f.jsonl" :provider :claude :message-count 5})
+                    voice-code.replication/parse-session-messages
+                    (fn [_ _] canonical-messages)
+                    voice-code.replication/filter-internal-messages identity
+                    voice-code.replication/reset-file-position! (fn [_] nil)
+                    voice-code.replication/file-positions (atom {})
+                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
+                                                      (length [] 1000)
+                                                      (exists [] true)))
+                    voice-code.commands/parse-makefile (fn [_] [])]
+
+        (server/handle-message :test-ch
+                               "{\"type\":\"subscribe\",\"session_id\":\"sess\",\"last_seq\":5}")
+
+        (let [response (first (filter #(= "session_history" (:type %)) @sent-messages))]
+          (is (some? response) "Should have a session_history message")
+          (is (= [] (:messages response)))
+          (is (nil? (:first_seq response)))
+          (is (nil? (:last_seq response)))
+          (is (= 6 (:next_seq response)))
+          (is (true? (:is_complete response)))
+          (is (nil? (:gap response))))))
+    (reset! server/api-key nil)))
+
+(deftest test-subscribe-rejects-last-message-id-in-v0-4-0
+  (testing "Subscribe under v0.4.0 rejects stale clients that still send last_message_id"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
+    (let [sent-messages (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))]
+        (server/handle-message :test-ch
+                               (str "{\"type\":\"subscribe\","
+                                    "\"session_id\":\"sess\","
+                                    "\"last_message_id\":\"abc\"}"))
+        (is (= 1 (count @sent-messages)))
+        (let [response (first @sent-messages)]
+          (is (= "error" (:type response)))
+          (is (= "unsupported_subscribe_field" (:code response)))
+          (is (str/includes? (:message response) "last_message_id"))
+          (is (str/includes? (:message response) "last_seq")))))
+    (reset! server/api-key nil)))
+
+(deftest test-subscribe-rejects-non-integer-last-seq
+  (testing "Subscribe rejects last_seq values that are not non-negative integers"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
+    (doseq [bad ["\"not-a-number\"" "-1" "1.5"]]
+      (let [sent-messages (atom [])]
+        (with-redefs [org.httpkit.server/send!
+                      (fn [_ch msg]
+                        (swap! sent-messages conj (json/parse-string msg true)))]
+          (server/handle-message :test-ch
+                                 (str "{\"type\":\"subscribe\","
+                                      "\"session_id\":\"sess\","
+                                      "\"last_seq\":" bad "}"))
+          (is (= 1 (count @sent-messages))
+              (str "bad last_seq " bad " produces exactly one error reply"))
+          (let [response (first @sent-messages)]
+            (is (= "error" (:type response)))
+            (is (= "invalid_subscribe" (:code response)))))))
+    (reset! server/api-key nil)))
+
+(deftest test-subscribe-filters-internal-messages
+  (testing "Subscribe filters out internal messages via parse-session-messages transformation"
+    ;; With canonical format, parse-session-messages now handles all filtering
+    ;; via providers/parse-message (filters summary, system, sidechain)
+    ;; and the subsequent filter-internal-messages call is a no-op for canonical format.
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
+    (let [sent-messages (atom [])
+          canonical-messages [{:uuid "uuid-1" :role "user" :text "Real message 1" :timestamp "2026-01-30T12:00:00Z" :provider :claude}
+                              {:uuid "uuid-3" :role "assistant" :text "Real message 2" :timestamp "2026-01-30T12:00:05Z" :provider :claude}
+                              {:uuid "uuid-6" :role "user" :text "Real message 4" :timestamp "2026-01-30T12:00:15Z" :provider :claude}]]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg]
                       (swap! sent-messages conj (json/parse-string msg true)))
                     voice-code.replication/subscribe-to-session! (fn [_] nil)
                     voice-code.replication/get-session-metadata
                     (fn [session-id]
                       {:session-id session-id
                        :file "/tmp/test-session.jsonl"
-                       :message-count 6})
-                    voice-code.replication/parse-jsonl-file
-                    (fn [_] mock-messages)
-                    voice-code.replication/filter-internal-messages
-                    ;; Use actual filtering logic
-                    (fn [msgs]
-                      (remove #(or (:isSidechain %)
-                                   (= "summary" (:type %))
-                                   (= "system" (:type %)))
-                              msgs))
+                       :provider :claude
+                       :message-count 3})
+                    voice-code.replication/parse-session-messages
+                    (fn [_provider _file-path] canonical-messages)
+                    voice-code.replication/filter-internal-messages identity
                     voice-code.replication/reset-file-position! (fn [_] nil)
                     voice-code.replication/file-positions (atom {})
                     clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
                                                       (length [] 1000)
-                                                      (exists [] true)))]
+                                                      (exists [] true)))
+                    voice-code.commands/parse-makefile (fn [_] [])]
 
         (server/handle-message :test-ch "{\"type\":\"subscribe\",\"session_id\":\"test-session-456\"}")
 
-        ;; Verify only non-internal messages are sent
-        (is (= 1 (count @sent-messages)))
-        (let [response (first @sent-messages)]
-          (is (= "session_history" (:type response)))
+        (is (= 2 (count @sent-messages)))
+        (let [response (first (filter #(= "session_history" (:type %)) @sent-messages))]
+          (is (some? response) "Should have a session_history message")
           (is (= 3 (count (:messages response)))
-              "Should only send 3 real messages, filtering out summary, system, and sidechain")
-          ;; Total count reflects displayable (filtered) messages
-          (is (= 3 (:total_count response))))))
+              "Should send all 3 canonical messages (filtering happened at parse time)")
+          (is (= 3 (:last_seq response)) "last_seq matches count"))))
+    (reset! server/api-key nil)))
+
+(deftest test-subscribe-v0-3-0-rollback-path
+  (testing "Subscribe under :v0.3.0 config keeps the legacy last_message_id + total_count wire"
+    (reset! server/message-stream-version :v0.3.0)
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
+    (let [sent-messages (atom [])
+          canonical-messages [{:uuid "uuid-a" :role "user" :text "first" :timestamp "2026-01-30T12:00:00Z" :provider :claude}
+                              {:uuid "uuid-b" :role "assistant" :text "second" :timestamp "2026-01-30T12:00:05Z" :provider :claude}
+                              {:uuid "uuid-c" :role "user" :text "third" :timestamp "2026-01-30T12:00:10Z" :provider :claude}]]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg]
+                      (swap! sent-messages conj (json/parse-string msg true)))
+                    voice-code.replication/subscribe-to-session! (fn [_] nil)
+                    voice-code.replication/get-session-metadata
+                    (fn [session-id]
+                      {:session-id session-id :file "/tmp/f.jsonl" :provider :claude :message-count 3})
+                    voice-code.replication/parse-session-messages (fn [_ _] canonical-messages)
+                    voice-code.replication/filter-internal-messages identity
+                    voice-code.replication/reset-file-position! (fn [_] nil)
+                    voice-code.replication/file-positions (atom {})
+                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
+                                                      (length [] 1000)
+                                                      (exists [] true)))
+                    voice-code.commands/parse-makefile (fn [_] [])]
+        ;; Legacy client still sends last_message_id — in v0.3.0 mode this must work.
+        (server/handle-message :test-ch
+                               (str "{\"type\":\"subscribe\","
+                                    "\"session_id\":\"sess-old\","
+                                    "\"last_message_id\":\"uuid-a\"}"))
+
+        (let [response (first (filter #(= "session_history" (:type %)) @sent-messages))]
+          (is (some? response) "Should have a session_history message")
+          (is (= 3 (:total_count response)) "legacy wire carries total_count")
+          (is (= 2 (count (:messages response)))
+              "UUID-scan cursor picks up from uuid-a, returning uuid-b and uuid-c")
+          (is (= "uuid-b" (:oldest_message_id response)))
+          (is (= "uuid-c" (:newest_message_id response)))
+          (is (not (contains? response :gap)) "gap field is only present under v0.4.0")
+          (is (not (contains? response :next_seq)) "next_seq is only present under v0.4.0"))))
+    ;; Reset the version atom back to v0.4.0 so the rest of the suite keeps
+    ;; testing the default path.
+    (reset! server/message-stream-version :v0.4.0)
     (reset! server/api-key nil)))
 
 ;; Message Size Truncation Tests
@@ -1619,6 +2449,24 @@
       ;; Marker should show approximately 150 KB truncated
       (is (re-find #"truncated ~1[45]\d KB" result)
           "Should show approximately 145-159 KB truncated"))))
+
+(deftest test-truncate-text-middle-respects-max-bytes-when-marker-large
+  (testing "Result never exceeds max-bytes even when marker would not fit"
+    (doseq [max-bytes [1 10 20 28 29 35 100]]
+      (let [text (apply str (repeat 5000 "x"))
+            result (server/truncate-text-middle text max-bytes)
+            result-bytes (count (.getBytes result "UTF-8"))]
+        (is (<= result-bytes max-bytes)
+            (str "max-bytes=" max-bytes " produced " result-bytes " bytes"))))))
+
+(deftest test-truncate-text-middle-respects-max-bytes-utf8
+  (testing "Multi-byte UTF-8 input never exceeds max-bytes after assembly"
+    (let [text (apply str (repeat 5000 "日本語"))]
+      (doseq [max-bytes [50 100 200 500 1000]]
+        (let [result (server/truncate-text-middle text max-bytes)
+              result-bytes (count (.getBytes result "UTF-8"))]
+          (is (<= result-bytes max-bytes)
+              (str "max-bytes=" max-bytes " produced " result-bytes " bytes")))))))
 
 (deftest test-truncate-response-text-no-text-field
   (testing "Messages without text field are passed through unchanged"
@@ -1712,197 +2560,536 @@
 
 ;; Delta Sync Session History Tests
 
-(deftest test-build-session-history-empty-messages
-  (testing "Empty messages returns empty result with nil IDs"
-    (let [result (server/build-session-history-response [] nil 100000)]
+;; pack-within-budget helper tests
+
+(deftest test-pack-within-budget-empty-candidates
+  (testing "Empty candidates returns empty vec and complete?=true"
+    (let [result (server/pack-within-budget [] 10000)]
+      (is (= [] (:included result)))
+      (is (true? (:complete? result))))))
+
+(deftest test-pack-within-budget-full-fit
+  (testing "All candidates fit within budget -> complete?=true, preserves order"
+    (let [msgs [{:uuid "a" :text "hello"}
+                {:uuid "b" :text "world"}
+                {:uuid "c" :text "again"}]
+          result (server/pack-within-budget msgs 10000)]
+      (is (true? (:complete? result)))
+      (is (= msgs (:included result)))
+      (is (= ["a" "b" "c"] (mapv :uuid (:included result)))))))
+
+(deftest test-pack-within-budget-partial-fit
+  (testing "Budget exhausted partway -> complete?=false and stops at boundary"
+    (let [msgs (vec (for [i (range 10)]
+                      {:uuid (str "msg-" i)
+                       :text (apply str (repeat 100 "x"))}))
+          result (server/pack-within-budget msgs 500)]
+      (is (false? (:complete? result)))
+      (is (= "msg-0" (-> result :included first :uuid)))
+      (is (pos? (count (:included result))))
+      (is (< (count (:included result)) (count msgs)))
+      (is (= (mapv :uuid (take (count (:included result)) msgs))
+             (mapv :uuid (:included result)))))))
+
+(deftest test-pack-within-budget-single-message-over-budget
+  (testing "First message alone exceeds budget -> empty included, complete?=false"
+    (let [msgs [{:uuid "big" :text (apply str (repeat 1000 "x"))}]
+          result (server/pack-within-budget msgs 300)]
+      (is (= [] (:included result)))
+      (is (false? (:complete? result))))))
+
+(deftest test-pack-within-budget-exact-fit-at-boundary
+  (testing "Budget just large enough for overhead alone -> no messages included"
+    (let [msgs [{:uuid "a" :text "hi"}]
+          result (server/pack-within-budget msgs 200)]
+      (is (= [] (:included result)))
+      (is (false? (:complete? result))))))
+
+(deftest test-pack-within-budget-oldest-first-order
+  (testing "Walks candidates oldest-first (input order), not newest-first"
+    (let [msgs [{:uuid "oldest" :text "1"}
+                {:uuid "middle" :text "2"}
+                {:uuid "newest" :text "3"}]
+          result (server/pack-within-budget msgs 10000)]
+      (is (= ["oldest" "middle" "newest"]
+             (mapv :uuid (:included result)))))))
+
+(deftest test-build-session-history-pruned-branch
+  (testing "last-seq below min-available-seq - 1 returns :gap with reason pruned"
+    (let [messages [{:seq 200 :uuid "a" :text "hello"}
+                    {:seq 201 :uuid "b" :text "there"}
+                    {:seq 202 :uuid "c" :text "world"}]
+          result (server/build-session-history-response messages 42 10000 200 203)]
+      (is (= [] (:messages result)))
+      (is (nil? (:first-seq result)))
+      (is (nil? (:last-seq result)))
+      (is (= 203 (:next-seq result)))
+      (is (true? (:is-complete result)))
+      (is (= "pruned" (get-in result [:gap :reason])))
+      (is (= 42 (get-in result [:gap :requested-last-seq])))
+      (is (= 200 (get-in result [:gap :min-available-seq])))))
+
+  (testing "Pruned threshold is strict: last-seq == min-available-seq - 1 is NOT pruned"
+    ;; Boundary: caller has the seq immediately before the retained range.
+    ;; The server still has everything from :min-available-seq onward, so we
+    ;; fall through to the packed branch with a full delta.
+    (let [messages [{:seq 200 :uuid "a"} {:seq 201 :uuid "b"}]
+          result (server/build-session-history-response messages 199 10000 200 202)]
+      (is (nil? (:gap result)))
+      (is (= 2 (count (:messages result))))
+      (is (= 200 (:first-seq result))))))
+
+(deftest test-build-session-history-caught-up-branch
+  (testing "last-seq == next-seq - 1 returns empty messages, no gap"
+    (let [messages [{:seq 1 :uuid "a"} {:seq 2 :uuid "b"}]
+          result (server/build-session-history-response messages 2 10000 1 3)]
+      (is (= [] (:messages result)))
+      (is (nil? (:first-seq result)))
+      (is (nil? (:last-seq result)))
+      (is (= 3 (:next-seq result)))
+      (is (true? (:is-complete result)))
+      (is (nil? (:gap result)))))
+
+  (testing "Empty session with fresh client (last-seq=0, next-seq=1) is caught up"
+    (let [result (server/build-session-history-response [] 0 10000 1 1)]
       (is (= [] (:messages result)))
       (is (true? (:is-complete result)))
-      (is (nil? (:oldest-message-id result)))
-      (is (nil? (:newest-message-id result))))))
+      (is (nil? (:gap result))))))
 
-(deftest test-build-session-history-delta-sync
-  (testing "Returns only messages newer than last-message-id"
-    (let [messages [{:uuid "msg-1" :text "old" :type "user"}
-                    {:uuid "msg-2" :text "middle" :type "assistant"}
-                    {:uuid "msg-3" :text "new" :type "user"}]
-          result (server/build-session-history-response messages "msg-1" 100000)]
-      (is (= 2 (count (:messages result))))
-      (is (= "msg-2" (-> result :messages first :uuid)))
-      (is (= "msg-3" (-> result :messages last :uuid)))
-      (is (true? (:is-complete result)))
-      (is (= "msg-2" (:oldest-message-id result)))
-      (is (= "msg-3" (:newest-message-id result))))))
-
-(deftest test-build-session-history-no-delta-sync
-  (testing "Returns all messages when last-message-id not provided"
-    (let [messages [{:uuid "msg-1" :text "first" :type "user"}
-                    {:uuid "msg-2" :text "second" :type "assistant"}
-                    {:uuid "msg-3" :text "third" :type "user"}]
-          result (server/build-session-history-response messages nil 100000)]
+(deftest test-build-session-history-client-ahead-branch
+  (testing "last-seq > next-seq - 1 returns :gap with reason client_ahead and full resync"
+    ;; Server has 3 messages (seqs 1..3, next-seq=4). Client claims to be at
+    ;; seq 999 — only possible after a backend rollback that discarded
+    ;; messages the client already saw. Reply must surface a client_ahead
+    ;; gap and a full resync starting from min-available-seq so the client
+    ;; can drop local state and reload to the server's truth.
+    (let [messages [{:seq 1 :uuid "a" :text "one"}
+                    {:seq 2 :uuid "b" :text "two"}
+                    {:seq 3 :uuid "c" :text "three"}]
+          result (server/build-session-history-response messages 999 10000 1 4)]
       (is (= 3 (count (:messages result))))
-      (is (= "msg-1" (-> result :messages first :uuid)))
-      (is (= "msg-3" (-> result :messages last :uuid)))
+      (is (= [1 2 3] (mapv :seq (:messages result))))
+      (is (= 1 (:first-seq result)))
+      (is (= 3 (:last-seq result)))
+      (is (= 4 (:next-seq result)))
       (is (true? (:is-complete result)))
-      (is (= "msg-1" (:oldest-message-id result)))
-      (is (= "msg-3" (:newest-message-id result))))))
+      (is (= "client_ahead" (get-in result [:gap :reason])))
+      (is (= 999 (get-in result [:gap :requested-last-seq])))
+      (is (= 1 (get-in result [:gap :min-available-seq])))))
 
-(deftest test-build-session-history-unknown-last-message-id
-  (testing "Returns all messages when last-message-id not found (backward compatible)"
-    (let [messages [{:uuid "msg-1" :text "first" :type "user"}
-                    {:uuid "msg-2" :text "second" :type "assistant"}]
-          result (server/build-session-history-response messages "unknown-id" 100000)]
+  (testing "Empty server with client-ahead cursor still emits the gap signal"
+    ;; Empty session (next-seq=1, no messages). last-seq=999 means the
+    ;; client somehow has state for a session the server has nothing for.
+    ;; Messages array is empty, but the gap object MUST be preserved so the
+    ;; client receives the drop-state signal.
+    (let [result (server/build-session-history-response [] 999 10000 1 1)]
+      (is (= [] (:messages result)))
+      (is (nil? (:first-seq result)))
+      (is (nil? (:last-seq result)))
+      (is (= 1 (:next-seq result)))
+      (is (true? (:is-complete result)))
+      (is (= "client_ahead" (get-in result [:gap :reason])))
+      (is (= 999 (get-in result [:gap :requested-last-seq])))))
+
+  (testing "last-seq == next-seq (one above caught-up boundary) is client_ahead"
+    ;; Boundary: last-seq=3 with next-seq=3 means client claims seq 3 but
+    ;; server's next assignment is 3, i.e. server has only seqs 1..2.
+    ;; That's strictly above next-seq - 1 = 2, so this is client_ahead, not
+    ;; caught-up.
+    (let [messages [{:seq 1 :uuid "a"} {:seq 2 :uuid "b"}]
+          result (server/build-session-history-response messages 3 10000 1 3)]
       (is (= 2 (count (:messages result))))
-      (is (= "msg-1" (-> result :messages first :uuid)))
-      (is (= "msg-2" (-> result :messages last :uuid)))
+      (is (= [1 2] (mapv :seq (:messages result))))
+      (is (= "client_ahead" (get-in result [:gap :reason])))
+      (is (= 3 (get-in result [:gap :requested-last-seq])))))
+
+  (testing "Client-ahead resync filters messages below min-available-seq"
+    ;; Defensive: if the caller passes messages outside the retained range
+    ;; (orphans below min-available-seq), the resync must drop them so the
+    ;; client doesn't merge state the server has explicitly forgotten.
+    (let [messages [{:seq 50 :uuid "stale"}
+                    {:seq 200 :uuid "a"}
+                    {:seq 201 :uuid "b"}]
+          result (server/build-session-history-response messages 999 10000 200 202)]
+      (is (= [200 201] (mapv :seq (:messages result))))
+      (is (= 200 (:first-seq result)))
+      (is (= 201 (:last-seq result)))
+      (is (= "client_ahead" (get-in result [:gap :reason])))
+      (is (= 200 (get-in result [:gap :min-available-seq])))))
+
+  (testing "Client-ahead with no message fitting the budget still preserves the gap"
+    ;; Defensive: if even a single message in the resync exceeds the budget,
+    ;; the empty-included guard fires. For the packed branch that guard
+    ;; reports caught-up to break the resubscribe loop, but for client_ahead
+    ;; it MUST keep the gap so the client still receives the drop-state
+    ;; signal — otherwise the over-ahead cursor would silently linger.
+    (let [messages [{:seq 1 :uuid "huge" :text (apply str (repeat 5000 "x"))}]
+          result (server/build-session-history-response messages 999 300 1 2)]
+      (is (= [] (:messages result)))
+      (is (true? (:is-complete result)))
+      (is (= "client_ahead" (get-in result [:gap :reason])))
+      (is (= 999 (get-in result [:gap :requested-last-seq])))))
+
+  (testing "Client-ahead respects byte budget and reports is-complete=false on truncation"
+    ;; If the full resync exceeds the budget, the client gets a partial
+    ;; window with is_complete=false. The gap is still attached so the
+    ;; client knows to drop state; the is_complete=false chain handles
+    ;; pulling the rest in subsequent windows (which run through the
+    ;; normal packed branch once the cursor advances below next-seq).
+    (let [messages (vec (for [i (range 10)]
+                          {:seq (inc i)
+                           :uuid (str "m-" i)
+                           :text (apply str (repeat 200 "x"))}))
+          ;; Budget=1700 fits ~5 of the 10 messages; the rest are deferred
+          ;; to the next window (which then runs through the packed branch
+          ;; once the cursor is below next-seq).
+          result (server/build-session-history-response messages 999 1700 1 11)]
+      (is (false? (:is-complete result)))
+      (is (pos? (count (:messages result))))
+      (is (< (count (:messages result)) 10))
+      (is (= 1 (:first-seq result)))
+      (is (= "client_ahead" (get-in result [:gap :reason]))))))
+
+(deftest test-build-session-history-packed-complete
+  (testing "Packed range returns messages > last-seq in order, complete when budget holds"
+    (let [messages [{:seq 1 :uuid "a" :text "one"}
+                    {:seq 2 :uuid "b" :text "two"}
+                    {:seq 3 :uuid "c" :text "three"}
+                    {:seq 4 :uuid "d" :text "four"}
+                    {:seq 5 :uuid "e" :text "five"}]
+          result (server/build-session-history-response messages 2 100000 1 6)]
+      (is (= 3 (count (:messages result))))
+      (is (= [3 4 5] (mapv :seq (:messages result))))
+      (is (= 3 (:first-seq result)))
+      (is (= 5 (:last-seq result)))
+      (is (= 6 (:next-seq result)))
+      (is (true? (:is-complete result)))
+      (is (nil? (:gap result)))))
+
+  (testing "Fresh client (last-seq=0) with full budget gets everything"
+    (let [messages [{:seq 1 :uuid "a"} {:seq 2 :uuid "b"} {:seq 3 :uuid "c"}]
+          result (server/build-session-history-response messages 0 100000 1 4)]
+      (is (= 3 (count (:messages result))))
+      (is (= 1 (:first-seq result)))
+      (is (= 3 (:last-seq result)))
       (is (true? (:is-complete result))))))
 
-(deftest test-build-session-history-budget-exhausted
-  (testing "Stops when budget exhausted, prioritizes newest messages"
-    (let [;; Create messages of reasonable sizes
-          messages (vec (for [i (range 10)]
-                          {:uuid (str "msg-" i)
-                           :type "assistant"
-                           :text (apply str (repeat 1000 "x"))}))
-          ;; Budget that can only fit about 5 messages (~1KB each + overhead)
-          result (server/build-session-history-response messages nil 6000)]
-      ;; Should include newest messages, not oldest
-      (is (= "msg-9" (-> result :messages last :uuid)))
-      ;; is-complete should be false since budget was exhausted
-      (is (false? (:is-complete result))))))
+(deftest test-build-session-history-packed-truncated
+  (testing "Packed range stops at budget boundary with :is-complete false"
+    ;; Each message is ~200 bytes of text + envelope; 500-byte budget fits ~1.
+    (let [messages (vec (for [i (range 10)]
+                          {:seq (inc i)
+                           :uuid (str "m-" i)
+                           :text (apply str (repeat 200 "x"))}))
+          result (server/build-session-history-response messages 0 500 1 11)]
+      (is (false? (:is-complete result)))
+      (is (pos? (count (:messages result))))
+      (is (< (count (:messages result)) 10))
+      ;; pack-within-budget walks oldest-first, so :first-seq is always seq 1
+      (is (= 1 (:first-seq result)))
+      ;; :last-seq matches the :seq of the last included message
+      (is (= (:seq (last (:messages result))) (:last-seq result)))
+      (is (nil? (:gap result)))))
 
-(deftest test-build-session-history-preserves-small-messages
-  (testing "Small messages are not truncated"
-    (let [messages [{:uuid "small" :type "user" :text "Hello world"}
-                    {:uuid "also-small" :type "assistant" :text "Hi there!"}]
-          result (server/build-session-history-response messages nil 100000)]
-      ;; Small messages should be unchanged
-      (is (= "Hello world" (-> result :messages first :text)))
-      (is (= "Hi there!" (-> result :messages last :text)))
-      (is (true? (:is-complete result))))))
-
-(deftest test-build-session-history-truncates-large-messages
-  (testing "Large individual messages are truncated to per-message-max-bytes"
-    (let [;; Create a message larger than per-message-max-bytes (20KB)
-          large-text (apply str (repeat 50000 "x"))
-          messages [{:uuid "small" :type "user" :text "Hello"}
-                    {:uuid "large" :type "assistant" :text large-text}]
-          result (server/build-session-history-response messages nil 200000)]
-      ;; Small message unchanged
-      (is (= "Hello" (-> result :messages first :text)))
-      ;; Large message should be truncated and contain truncation marker
-      (let [truncated-text (-> result :messages last :text)]
-        (is (< (count truncated-text) (count large-text)))
-        (is (str/includes? truncated-text "[truncated"))))))
-
-(deftest test-build-session-history-no-new-messages
-  (testing "Returns empty when last-message-id is the newest message"
-    (let [messages [{:uuid "msg-1" :text "first" :type "user"}
-                    {:uuid "msg-2" :text "second" :type "assistant"}]
-          ;; last-message-id is the newest message
-          result (server/build-session-history-response messages "msg-2" 100000)]
-      (is (= 0 (count (:messages result))))
+  (testing "Single message larger than budget reports caught-up to break resubscribe loop"
+    ;; Defensive guard: when no candidate fits the byte budget the packed
+    ;; branch would otherwise return nil first/last-seq with is-complete:false,
+    ;; leaving the client unable to advance its cursor and stuck in an
+    ;; infinite resubscribe loop. The guard returns an explicit nil-seq map
+    ;; with is-complete:true so the client treats it as caught-up and stops.
+    ;; Upstream truncation in the subscribe handler keeps this branch
+    ;; unreachable in practice; this is belt-and-suspenders.
+    (let [big-msg {:seq 1 :uuid "big" :text (apply str (repeat 5000 "x"))}
+          result (server/build-session-history-response [big-msg] 0 300 1 2)]
+      (is (= [] (:messages result)))
       (is (true? (:is-complete result)))
-      (is (nil? (:oldest-message-id result)))
-      (is (nil? (:newest-message-id result))))))
+      (is (nil? (:first-seq result)))
+      (is (nil? (:last-seq result)))
+      (is (nil? (:gap result))))))
 
-(deftest test-build-session-history-maintains-chronological-order
-  (testing "Messages are returned in chronological order (oldest first)"
-    (let [messages [{:uuid "msg-1" :text "first" :type "user"}
-                    {:uuid "msg-2" :text "second" :type "assistant"}
-                    {:uuid "msg-3" :text "third" :type "user"}
-                    {:uuid "msg-4" :text "fourth" :type "assistant"}
-                    {:uuid "msg-5" :text "fifth" :type "user"}]
-          result (server/build-session-history-response messages "msg-2" 100000)]
-      ;; Should return msg-3, msg-4, msg-5 in chronological order
-      (is (= 3 (count (:messages result))))
-      (is (= "msg-3" (-> result :messages (nth 0) :uuid)))
-      (is (= "msg-4" (-> result :messages (nth 1) :uuid)))
-      (is (= "msg-5" (-> result :messages (nth 2) :uuid))))))
+(deftest test-build-session-history-resubscribe-cursor-continuity
+  (testing "Two consecutive windows cover the full range with no gap and no overlap"
+    ;; 10 messages, budget=1700 → ~5 messages fit per window. The cursor returned
+    ;; from window 1 (:last-seq) is fed back as last-seq for window 2. Budget
+    ;; sized to clear the dynamic envelope (~163B) plus 5 × (~226B msg + 1
+    ;; comma + 52B per-msg session-id reserve) ≈ 1558B with comfortable headroom.
+    (let [messages (vec (for [i (range 10)]
+                          {:seq (inc i)
+                           :uuid (str "m-" i)
+                           :text (apply str (repeat 200 "x"))}))
+          next-seq 11
+          window1 (server/build-session-history-response messages 0 1700 1 next-seq)
+          window2 (server/build-session-history-response messages
+                                                         (:last-seq window1)
+                                                         1700
+                                                         1
+                                                         next-seq)
+          combined (into (:messages window1) (:messages window2))
+          combined-seqs (mapv :seq combined)]
+      ;; Window 1 is partial (budget exhausted before all 10 messages packed).
+      (is (false? (:is-complete window1)))
+      (is (pos? (count (:messages window1))))
+      (is (< (count (:messages window1)) (count messages)))
+      (is (= 1 (:first-seq window1)))
+      ;; Window 2 starts immediately after window 1 — no gap, no overlap.
+      (is (= (inc (:last-seq window1)) (:first-seq window2)))
+      ;; Together they cover every seq from 1..10 exactly once, in ascending order.
+      (is (= (mapv :seq messages) combined-seqs))
+      (is (= (count messages) (count combined)))
+      (is (= (count (set combined-seqs)) (count combined-seqs)))
+      ;; The second window completes the range and reports caught-up.
+      (is (true? (:is-complete window2)))
+      (is (= (count messages) (:last-seq window2)))))
 
-(deftest test-subscribe-with-delta-sync
-  (testing "Subscribe with last_message_id triggers delta sync"
+  (testing "Repeated re-subscription with tiny budget eventually covers all messages"
+    ;; Stress-test the cursor contract: budget=500 forces 1 message per window.
+    ;; Looping with the returned :last-seq must walk the full range with no
+    ;; gaps and no duplicates, even across many windows.
+    (let [messages (vec (for [i (range 10)]
+                          {:seq (inc i)
+                           :uuid (str "m-" i)
+                           :text (apply str (repeat 200 "x"))}))
+          next-seq 11
+          collected (loop [last-seq 0
+                           acc []
+                           iters 0]
+                      (if (>= iters 50)
+                        (throw (ex-info "did not converge" {:acc acc}))
+                        (let [r (server/build-session-history-response messages
+                                                                       last-seq
+                                                                       500
+                                                                       1
+                                                                       next-seq)]
+                          (cond
+                            ;; Caught up — done.
+                            (and (:is-complete r) (empty? (:messages r)))
+                            acc
+                            ;; A window that returns no messages but is incomplete
+                            ;; would mean the next message is larger than the budget.
+                            ;; Not the case here, but guard against an infinite loop.
+                            (empty? (:messages r))
+                            (throw (ex-info "non-progressing window" {:r r}))
+                            :else
+                            (recur (:last-seq r)
+                                   (into acc (:messages r))
+                                   (inc iters))))))
+          collected-seqs (mapv :seq collected)]
+      (is (= (mapv :seq messages) collected-seqs))
+      (is (= (count (set collected-seqs)) (count collected-seqs))))))
+
+(deftest test-build-session-history-empty-included-breaks-loop
+  (testing "Resubscribe loop terminates when no candidate fits the byte budget"
+    ;; Regression: under the old code the packed branch returned :is-complete
+    ;; false with nil :last-seq when included was empty, so a client looping
+    ;; on (:last-seq r) would never advance and would resubscribe forever.
+    ;; The defensive guard now reports caught-up; a loop that keys termination
+    ;; on (:is-complete r) must terminate within a single iteration.
+    (let [messages [{:seq 1 :uuid "huge" :text (apply str (repeat 5000 "x"))}]
+          next-seq 2
+          iter-count
+          (loop [last-seq 0
+                 iters 0]
+            (if (>= iters 5)
+              (throw (ex-info "infinite resubscribe loop" {:last-seq last-seq}))
+              (let [r (server/build-session-history-response messages
+                                                             last-seq
+                                                             300
+                                                             1
+                                                             next-seq)]
+                (if (:is-complete r)
+                  (inc iters)
+                  (recur (or (:last-seq r) last-seq) (inc iters))))))]
+      (is (= 1 iter-count) "loop terminates on the first iteration"))))
+
+(deftest test-build-session-history-wire-stays-under-max-bytes
+  (testing "Assembled wire response stays under max-bytes after caller adds session-id"
+    ;; Regression: pack-within-budget once used a fixed 200-byte overhead that
+    ;; ignored both (a) long session-ids in the envelope and (b) the per-message
+    ;; :session-id field the subscribe and broadcast paths :assoc onto every
+    ;; message before serialization (~52 bytes per message). On responses with
+    ;; many messages the cumulative undercount pushed the wire payload past the
+    ;; client's max_message_size. build-session-history-response now measures
+    ;; the actual envelope and reserves per-message session-id bytes, so the
+    ;; assembled wire response must always fit within the requested budget.
+    (let [session-id "550e8400-e29b-41d4-a716-446655440000"
+          ;; 100 modest messages plus a 36-char session-id assoc per message
+          ;; is the worst case the bug actually surfaced under.
+          messages (vec (for [i (range 100)]
+                          {:seq (inc i)
+                           :uuid (str "msg-" i)
+                           :role "assistant"
+                           :text (apply str (repeat 200 "x"))}))
+          ;; Budget chosen so the packer truncates partway through 100 msgs.
+          ;; Under the old 200-byte fixed overhead pack-within-budget would
+          ;; have sized N to fit in 20000 bytes ignoring the +52B per-message
+          ;; session-id assoc, then the wire payload would have exceeded
+          ;; max-bytes by N×52 ≈ 4500B once the caller serialized.
+          max-bytes 20000
+          result (server/build-session-history-response messages 0 max-bytes 1 101)
+          ;; Reproduce what the subscribe handler / broadcast path does after
+          ;; build-session-history-response returns: wrap the messages in the
+          ;; session-history envelope and :assoc :session-id onto each.
+          wire-payload {:type :session-history
+                        :session-id session-id
+                        :messages (mapv #(assoc % :session-id session-id)
+                                        (:messages result))
+                        :first-seq (:first-seq result)
+                        :last-seq (:last-seq result)
+                        :next-seq (:next-seq result)
+                        :is-complete (:is-complete result)
+                        :gap (:gap result)}
+          wire-bytes (count (.getBytes ^String (server/generate-json wire-payload) "UTF-8"))]
+      (is (<= wire-bytes max-bytes)
+          (str "Wire payload " wire-bytes " bytes must fit within max-bytes " max-bytes))
+      (is (pos? (count (:messages result)))
+          "Some messages must be packed (otherwise the test does not exercise the bug)")
+      (is (false? (:is-complete result))
+          "Budget should truncate at this scale, exercising the byte-accounting path"))))
+
+;; The v0.3.0 delta-sync / backward-compat tests have been superseded by the
+;; v0.4.0 subscribe tests earlier in this file:
+;;   - test-subscribe-sends-messages-within-size-budget  (no cursor → full range)
+;;   - test-subscribe-delta-sync-with-last-seq           (last_seq=N → seq > N)
+;;   - test-subscribe-caught-up-returns-empty            (last_seq=max → empty)
+;;   - test-subscribe-rejects-last-message-id-in-v0-4-0  (stale client rejected)
+;;   - test-subscribe-v0-3-0-rollback-path               (rollback flag preserves old wire)
+
+(deftest test-subscribe-middle-truncates-oversized-messages
+  (testing "Subscribe flow middle-truncates messages above per-message-max-bytes"
+    ;; Regression guard: build-session-history-response is a pure byte-budget packer and
+    ;; does not per-message truncate. The subscribe shim must keep doing so, otherwise a
+    ;; single oversized JSONL entry would be silently dropped by pack-within-budget.
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
     (let [sent-messages (atom [])
-          mock-messages [{:uuid "msg-1" :type "user" :text "old message"}
-                         {:uuid "msg-2" :type "assistant" :text "older response"}
-                         {:uuid "msg-3" :type "user" :text "new message"}]]
+          ;; 60 KB of text — well above per-message-max-bytes (20 KB) but under the 100 KB
+          ;; response budget, so the only reason it would shrink is per-message truncation.
+          big-text (apply str (repeat 60000 "x"))
+          mock-messages [{:uuid "small" :type "user" :text "hi" :message {:role "user" :content "hi"}}
+                         {:uuid "big" :type "assistant" :text big-text :message {:role "assistant" :content big-text}}]]
       (with-redefs [org.httpkit.server/send!
-                    (fn [ch msg]
+                    (fn [_ch msg]
                       (swap! sent-messages conj (json/parse-string msg true)))
                     voice-code.replication/subscribe-to-session! (fn [_] nil)
                     voice-code.replication/get-session-metadata
                     (fn [session-id]
                       {:session-id session-id
-                       :file "/tmp/test-session.jsonl"})
-                    voice-code.replication/parse-jsonl-file
-                    (fn [_] mock-messages)
-                    voice-code.replication/filter-internal-messages
-                    (fn [msgs] msgs)
+                       :file "/tmp/test-session.jsonl"
+                       :provider :claude
+                       :message-count 2})
+                    voice-code.replication/parse-session-messages (fn [_ _] mock-messages)
+                    voice-code.replication/filter-internal-messages identity
                     voice-code.replication/reset-file-position! (fn [_] nil)
                     voice-code.replication/file-positions (atom {})
                     clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
                                                       (length [] 1000)
-                                                      (exists [] true)))]
-
-        ;; Subscribe with last_message_id
+                                                      (exists [] true)))
+                    voice-code.commands/parse-makefile (fn [_] [])]
         (server/handle-message :test-ch
-                               "{\"type\":\"subscribe\",\"session_id\":\"test-session\",\"last_message_id\":\"msg-1\"}")
-
-        (is (= 1 (count @sent-messages)))
-        (let [response (first @sent-messages)]
-          (is (= "session_history" (:type response)))
-          ;; Should only return messages newer than msg-1
-          (is (= 2 (count (:messages response))))
-          (is (= "msg-2" (-> response :messages first :uuid)))
-          (is (= "msg-3" (-> response :messages last :uuid)))
-          ;; Should include new delta sync fields
-          (is (contains? response :oldest_message_id))
-          (is (contains? response :newest_message_id))
-          (is (contains? response :is_complete))
-          (is (= "msg-2" (:oldest_message_id response)))
-          (is (= "msg-3" (:newest_message_id response)))
-          (is (true? (:is_complete response))))))
+                               "{\"type\":\"subscribe\",\"session_id\":\"truncate-session\"}")
+        (is (= 2 (count @sent-messages)))
+        (let [response (first (filter #(= "session_history" (:type %)) @sent-messages))
+              big-msg (->> response :messages (filter #(= "big" (:uuid %))) first)]
+          (is (some? big-msg) "Large message should be delivered (truncated), not dropped")
+          (is (< (count (:text big-msg)) (count big-text))
+              "Large message text should be shorter than original")
+          (is (str/includes? (:text big-msg) "[truncated")
+              "Truncated message should carry the truncation marker")
+          (is (true? (:is_complete response))
+              "is_complete should be true — per-message truncation keeps the response complete"))))
     (reset! server/api-key nil)))
 
-(deftest test-subscribe-backward-compatible
-  (testing "Subscribe without last_message_id works (backward compatible)"
-    (reset! server/api-key test-api-key)
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
-    (let [sent-messages (atom [])
-          mock-messages [{:uuid "msg-1" :type "user" :text "first"}
-                         {:uuid "msg-2" :type "assistant" :text "second"}]]
-      (with-redefs [org.httpkit.server/send!
-                    (fn [ch msg]
-                      (swap! sent-messages conj (json/parse-string msg true)))
-                    voice-code.replication/subscribe-to-session! (fn [_] nil)
-                    voice-code.replication/get-session-metadata
-                    (fn [session-id]
-                      {:session-id session-id
-                       :file "/tmp/test-session.jsonl"})
-                    voice-code.replication/parse-jsonl-file
-                    (fn [_] mock-messages)
-                    voice-code.replication/filter-internal-messages
-                    (fn [msgs] msgs)
-                    voice-code.replication/reset-file-position! (fn [_] nil)
-                    voice-code.replication/file-positions (atom {})
-                    clojure.java.io/file (fn [path] (proxy [java.io.File] [path]
-                                                      (length [] 1000)
-                                                      (exists [] true)))]
+;; ============================================================================
+;; Tests for Task 1.4: Inherit Provider on implement-and-review-all Restart
+;; ============================================================================
 
-        ;; Subscribe WITHOUT last_message_id (backward compatible)
-        (server/handle-message :test-ch
-                               "{\"type\":\"subscribe\",\"session_id\":\"test-session\"}")
+(deftest test-start-recipe-restart-inherits-provider
+  (testing "start-recipe-for-session call with provider parameter preserves provider"
+    (reset! server/session-orchestration-state {})
 
-        (is (= 1 (count @sent-messages)))
-        (let [response (first @sent-messages)]
-          (is (= "session_history" (:type response)))
-          ;; Should return all messages
-          (is (= 2 (count (:messages response))))
-          (is (= "msg-1" (-> response :messages first :uuid)))
-          ;; Should include new fields for backward compat
-          (is (= "msg-1" (:oldest_message_id response)))
-          (is (= "msg-2" (:newest_message_id response)))
-          (is (true? (:is_complete response))))))
-    (reset! server/api-key nil)))
+    ;; Test 1: Restart with copilot provider
+    (let [session-id-1 "restart-session-copilot"
+          orch-state-1 (server/start-recipe-for-session session-id-1 :implement-and-review true :provider :copilot)]
+      (is (= :copilot (:provider orch-state-1)))
+      (is (= :copilot (get-in @server/session-orchestration-state [session-id-1 :provider]))))
 
+    ;; Test 2: Restart with claude provider (default)
+    (let [session-id-2 "restart-session-claude"
+          orch-state-2 (server/start-recipe-for-session session-id-2 :implement-and-review true)]
+      (is (= :claude (:provider orch-state-2)))
+      (is (= :claude (get-in @server/session-orchestration-state [session-id-2 :provider]))))
+
+    (reset! server/session-orchestration-state {})))
+
+(deftest test-recipe-restart-provider-inheritance
+  (testing "Provider is correctly inherited when restarting recipe in new session"
+    (reset! server/session-orchestration-state {})
+
+    ;; Create original session with copilot
+    (server/start-recipe-for-session "old-session-123" :implement-and-review false :provider :copilot)
+    (let [old-orch-state (server/get-session-recipe-state "old-session-123")]
+
+      ;; Verify old provider is copilot
+      (is (= :copilot (:provider old-orch-state)))
+
+      ;; Simulate restarting with new session, inheriting provider
+      (let [inherited-provider (:provider old-orch-state)
+            new-orch-state (server/start-recipe-for-session "new-session-456" :implement-and-review true :provider inherited-provider)]
+
+        ;; Verify new session inherited the provider
+        (is (= :copilot (:provider new-orch-state)))
+        (is (= :copilot (get-in @server/session-orchestration-state ["new-session-456" :provider])))))
+
+    (reset! server/session-orchestration-state {})))
+
+(deftest test-recipe-restart-multiple-iterations
+  (testing "Provider inheritance works across multiple restart iterations"
+    (reset! server/session-orchestration-state {})
+
+    ;; Start with copilot in first session
+    (server/start-recipe-for-session "iter-1" :implement-and-review false :provider :copilot)
+    (let [prov-1 (:provider (server/get-session-recipe-state "iter-1"))]
+      (is (= :copilot prov-1))
+
+      ;; Restart in second session, inheriting provider
+      (server/start-recipe-for-session "iter-2" :implement-and-review true :provider prov-1)
+      (let [prov-2 (:provider (server/get-session-recipe-state "iter-2"))]
+        (is (= :copilot prov-2))
+
+        ;; Restart again in third session, still inheriting provider
+        (server/start-recipe-for-session "iter-3" :implement-and-review true :provider prov-2)
+        (let [prov-3 (:provider (server/get-session-recipe-state "iter-3"))]
+          (is (= :copilot prov-3) "Provider should be preserved across multiple restarts"))))
+
+    (reset! server/session-orchestration-state {})))
+
+;; Note: Direct-response delivery and ensure-session-in-index! tests were
+;; deleted as part of tmux-untethered-ao0. The prompt handler no longer has
+;; a provider-callback path — responses arrive via the filesystem watcher.
+;; Watcher-based direct-response and session-index coverage belongs to
+;; tmux-untethered-44v (JSONL-watcher-based turn-completion detection).
+
+;; ============================================================================
+;; check-tmux-available!
+;; ============================================================================
+
+(deftest check-tmux-available!-test
+  (testing "returns version string when tmux is available"
+    (with-redefs [clojure.java.shell/sh
+                  (fn [& _] {:exit 0 :out "tmux 3.3a\n" :err ""})]
+      (let [result (server/check-tmux-available! (fn [_] nil))]
+        (is (= "tmux 3.3a" result)))))
+
+  (testing "calls exit-fn with 1 when tmux is not available"
+    (with-redefs [clojure.java.shell/sh
+                  (fn [& _] {:exit 127 :out "" :err "tmux: command not found"})]
+      (let [exit-codes (atom [])]
+        (server/check-tmux-available! #(swap! exit-codes conj %))
+        (is (= [1] @exit-codes)))))
+
+  (testing "does not call exit-fn when tmux is available"
+    (with-redefs [clojure.java.shell/sh
+                  (fn [& _] {:exit 0 :out "tmux 3.3a\n" :err ""})]
+      (let [exit-calls (atom 0)]
+        (server/check-tmux-available! #(swap! exit-calls inc))
+        (is (zero? @exit-calls))))))

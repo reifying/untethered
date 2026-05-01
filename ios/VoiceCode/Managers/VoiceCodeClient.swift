@@ -14,13 +14,28 @@ import os.log
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "VoiceCodeClient")
 
 class VoiceCodeClient: ObservableObject {
+    /// Wire-protocol version this client speaks. The backend echoes a version
+    /// string in its `hello` message; anything other than this is treated as
+    /// an incompatible peer and transitions the client into upgrade-required
+    /// state (same visible result as receiving an `unsupported_protocol_version`
+    /// error from the backend).
+    static let supportedProtocolVersion = "0.4.0"
+
     @Published var isConnected = false
     @Published var currentError: String?
     @Published var isProcessing = false
-    @Published var lockedSessions = Set<String>()  // Claude session IDs currently locked
     @Published var isAuthenticated = false
     @Published var authenticationError: String?
     @Published var requiresReauthentication = false  // Shows "re-scan required" UI
+    /// Flipped to true when either: (a) the backend's `hello.version` doesn't
+    /// match `supportedProtocolVersion`, or (b) the backend returns an
+    /// `{"type":"error","code":"unsupported_protocol_version"}`. UI observes
+    /// this to show an app-upgrade banner; reconnection is halted until the
+    /// user installs a compatible app build.
+    @Published var requiresUpgrade = false
+    /// Human-readable detail for the upgrade-required UI (e.g. the version
+    /// mismatch the backend reported). Cleared when `requiresUpgrade` resets.
+    @Published var upgradeRequiredMessage: String?
     @Published var availableCommands: AvailableCommands?  // Available commands for current directory
     @Published var runningCommands: [String: CommandExecution] = [:]  // command_session_id -> execution
     @Published var commandHistory: [CommandHistorySession] = []  // Command history sessions
@@ -29,6 +44,20 @@ class VoiceCodeClient: ObservableObject {
     @Published var resourcesList: [Resource] = []  // List of uploaded resources
     @Published var availableRecipes: [Recipe] = []  // All recipes from backend
     @Published var activeRecipes: [String: ActiveRecipe] = [:]  // session-id -> active recipe
+    @Published var parsedRecentSessions: [RecentSession] = []  // Parsed recent sessions from backend
+    /// Latest pruned-gap notice from `SessionSyncDelegate.didDetectPrunedGap`.
+    /// Keyed by iOS session UUID (lowercased). Views observe this and render
+    /// a warning banner; entries live until the user dismisses them so a
+    /// background gap does not disappear before the user opens the session.
+    @Published var prunedGaps: [String: SessionHistoryPayload.Gap] = [:]
+
+    /// Cursors at which an `is_complete: false` resubscribe chain has been
+    /// aborted because the server stopped advancing. Keyed by lowercased
+    /// session UUID. Views observe this so they can surface a banner —
+    /// without it, a chain that hits a too-large message would silently
+    /// stop loading older history. Entries persist until the user dismisses
+    /// them via `dismissStalledChain`. See beads tmux-untethered-l8t.
+    @Published var stalledChains: [String: Int64] = [:]
 
     private var webSocket: URLSessionWebSocketTask?
     private var reconnectionTimer: DispatchSourceTimer?
@@ -56,17 +85,99 @@ class VoiceCodeClient: ObservableObject {
     let sessionSyncManager: SessionSyncManager
     private var appSettings: AppSettings?
 
-    // Track active subscriptions for auto-restore on reconnection
-    private var activeSubscriptions = Set<String>()
+    // Per-session subscription state.
+    //
+    // `.desired` records caller intent; the wire `subscribe` has not been sent
+    // on the current socket. `.confirmed` means we have sent a wire `subscribe`
+    // on the current socket. On socket loss every `.confirmed` is demoted back
+    // to `.desired` so the next `connected` resends it through
+    // `restoreSubscriptionsAfterReconnect`. Removing an entry means we no
+    // longer want to be subscribed (caller invoked `unsubscribe`).
+    //
+    // The split exists because the prior single `Set<String>` lied: caller
+    // intent was being recorded *before* the auth gate, so a pre-auth
+    // `subscribe()` poisoned the set with an entry for which no wire send
+    // ever fired. The contains-check in `session_ready` / `turn_complete`
+    // then suppressed the legitimate recovery path. See
+    // tmux-untethered-a83.
+    enum SubscriptionPhase: Equatable {
+        case desired
+        case confirmed
+    }
+    private var subscriptions: [String: SubscriptionPhase] = [:]
+
+    /// Test seam: read-only view of the current subscription map.
+    var subscriptionsForTesting: [String: SubscriptionPhase] { subscriptions }
+
+    /// Test seam: invoked for every dict passed to `sendMessage`. Production leaves nil.
+    var onMessageSent: (([String: Any]) -> Void)?
 
     // Continuation for async session list requests
     private var sessionListContinuation: CheckedContinuation<Void, Never>?
 
-    // Continuations for async session refresh requests (sessionId -> continuation)
-    private var sessionRefreshContinuations: [String: CheckedContinuation<Void, Never>] = [:]
+    // Per-session refresh state. The latest call to requestSessionRefresh
+    // wins: each call increments the per-session epoch and the
+    // session_history handler only resumes the entry whose epoch matches.
+    // Replaces the prior unsubscribe → 100ms sleep → subscribe handshake,
+    // whose 100ms gap was insufficient to guarantee the backend had
+    // processed the unsubscribe before the subscribe arrived
+    // (tmux-untethered-1vn).
+    private final class PendingSessionRefresh {
+        let epoch: Int
+        private var continuation: CheckedContinuation<Void, Never>?
+        init(epoch: Int, continuation: CheckedContinuation<Void, Never>) {
+            self.epoch = epoch
+            self.continuation = continuation
+        }
+        func resumeOnce() {
+            _ = resumeOnceIfPending()
+        }
+        /// Resume if not yet resumed; return whether this call did the resume.
+        /// Lets the timeout site decide whether to log "timed out" only when
+        /// it actually fired the resume (the handler/supersede paths are
+        /// no-ops at the timeout because they already resumed).
+        @discardableResult
+        func resumeOnceIfPending() -> Bool {
+            if let c = continuation {
+                continuation = nil
+                c.resume()
+                return true
+            }
+            return false
+        }
+    }
+    private var sessionRefreshEpoch: [String: Int] = [:]
+    private var sessionRefreshPending: [String: PendingSessionRefresh] = [:]
+
+    // Pong correlation. The protocol's ping/pong messages carry no nonce
+    // and the keepalive timer fires its own (unawaited) pings, so we
+    // count both pings sent and pongs received and let awaiting callers
+    // wait for `pongsReceived >= their target`. WebSocket FIFO ordering
+    // guarantees the keepalive's pong cannot leapfrog a refresh's pong
+    // when its ping was sent first.
+    private var pingsSent: Int = 0
+    private var pongsReceived: Int = 0
+    private final class PongWaiter {
+        let target: Int
+        private var continuation: CheckedContinuation<Void, Never>?
+        init(target: Int, continuation: CheckedContinuation<Void, Never>) {
+            self.target = target
+            self.continuation = continuation
+        }
+        func resumeOnce() {
+            if let c = continuation {
+                continuation = nil
+                c.resume()
+            }
+        }
+    }
+    private var pongWaiters: [PongWaiter] = []
 
     // Continuations for async command execution requests (commandId -> continuation)
     private var commandExecutionContinuations: [String: CheckedContinuation<String, Never>] = [:]
+
+    // Quick prompt completion handlers keyed by ios_session_id
+    private var quickPromptHandlers: [String: (String) -> Void] = [:]
 
     // Debouncing mechanism for @Published property updates
     private var pendingUpdates: [String: Any] = [:]
@@ -85,9 +196,58 @@ class VoiceCodeClient: ObservableObject {
             self.sessionSyncManager = SessionSyncManager(voiceOutputManager: voiceOutputManager)
         }
 
+        self.sessionSyncManager.delegate = self
+
         if setupObservers {
             setupLifecycleObservers()
         }
+    }
+
+    /// Clears a pruned-gap warning once the user has acknowledged it.
+    /// Must be called on the main queue (same as any `@Published` write).
+    /// Also clears the sync manager's `prunedSessions` flag so the next
+    /// `session_history` payload merges normally — without this the manager
+    /// would keep refusing merges after the banner is dismissed (see
+    /// beads tmux-untethered-8i4).
+    func dismissPrunedGap(sessionId: String) {
+        prunedGaps.removeValue(forKey: sessionId.lowercased())
+        sessionSyncManager.clearPrunedFlag(sessionId: sessionId)
+    }
+
+    /// Clears a stalled-chain banner once the user has acknowledged it.
+    /// The sync manager has already cleared its own chain-cursor entry
+    /// when the stall was emitted, so the next `is_complete: false`
+    /// payload will start a fresh chain regardless of dismissal — this
+    /// just hides the banner.
+    func dismissStalledChain(sessionId: String) {
+        stalledChains.removeValue(forKey: sessionId.lowercased())
+    }
+
+    /// Transition the client into the terminal "app upgrade required" state:
+    /// set the published flags so the UI can render an upgrade banner, cancel
+    /// any pending WebSocket, and halt reconnection attempts. Idempotent — a
+    /// second call from a different code path (e.g. `hello` mismatch then an
+    /// explicit error) overwrites `upgradeRequiredMessage` but does not
+    /// re-trigger side effects that matter.
+    ///
+    /// Called on the main queue from the message dispatcher.
+    private func enterUpgradeRequiredState(received: String, detail: String) {
+        print("⛔ [VoiceCodeClient] Unsupported protocol version: \(detail)")
+        LogManager.shared.log("Unsupported protocol version (received: \(received)): \(detail)",
+                              category: "VoiceCodeClient")
+
+        requiresUpgrade = true
+        upgradeRequiredMessage = detail
+        currentError = detail
+        isAuthenticated = false
+
+        reconnectionTimer?.cancel()
+        reconnectionTimer = nil
+        stopPingTimer()
+
+        webSocket?.cancel(with: .goingAway, reason: nil)
+        webSocket = nil
+        isConnected = false
     }
 
     private func setupLifecycleObservers() {
@@ -134,6 +294,10 @@ class VoiceCodeClient: ObservableObject {
         // Don't reconnect if reauthentication is required - user must provide new credentials
         if requiresReauthentication {
             print("📱 [VoiceCodeClient] App became active, skipping reconnection - reauthentication required")
+            return
+        }
+        if requiresUpgrade {
+            print("📱 [VoiceCodeClient] App became active, skipping reconnection - app upgrade required")
             return
         }
         if !isConnected {
@@ -186,10 +350,6 @@ class VoiceCodeClient: ObservableObject {
         // Apply all updates atomically on main queue
         for (key, value) in updates {
             switch key {
-            case "lockedSessions":
-                if let sessions = value as? Set<String> {
-                    self.lockedSessions = sessions
-                }
             case "runningCommands":
                 if let commands = value as? [String: CommandExecution] {
                     self.runningCommands = commands
@@ -274,6 +434,19 @@ class VoiceCodeClient: ObservableObject {
     // MARK: - Connection Management
 
     func connect(sessionId: String? = nil) {
+        // Bail out before touching any sockets if the URL isn't usable.
+        // Single point of truth so the reconnect timer can't busy-loop on a bad URL either.
+        let parsed = URL(string: serverURL)
+        let hasHost = !((parsed?.host) ?? "").isEmpty
+        let hasPort = (parsed?.port ?? 0) > 0
+        guard parsed != nil, hasHost, hasPort else {
+            LogManager.shared.log("Server not configured; skipping connect (serverURL=\(serverURL))", category: "VoiceCodeClient")
+            DispatchQueue.main.async { [weak self] in
+                self?.currentError = "Server not configured"
+            }
+            return
+        }
+
         // If we have an existing WebSocket, check if it's still valid
         // Only skip reconnection for .running state; clean up non-running sockets
         if let existingSocket = webSocket {
@@ -339,10 +512,15 @@ class VoiceCodeClient: ObservableObject {
             guard let self = self else { return }
             logger.debug("🔄 VoiceCodeClient updating: isConnected=false")
             self.isConnected = false
-            // Clear all locked sessions on disconnect to prevent stuck locks
-            self.scheduleUpdate(key: "lockedSessions", value: Set<String>())
-            self.flushPendingUpdates()  // Immediate flush for critical operation
-            print("🔓 [VoiceCodeClient] Cleared all locked sessions on disconnect")
+            // Auth state belongs to a specific socket; once that socket is
+            // gone, isAuthenticated is stale. The next `connected` after
+            // reconnect re-asserts it. Without this reset, subscribe()'s
+            // isAuthenticated guard would let calls through during the
+            // reconnect window before re-auth lands.
+            self.isAuthenticated = false
+            // Wire confirmation belonged to the dead socket; demote so the
+            // next reconnect re-fires every desired subscribe.
+            self.demoteConfirmedSubscriptions()
         }
     }
 
@@ -403,6 +581,15 @@ class VoiceCodeClient: ObservableObject {
             // Don't reconnect if reauthentication is required - user must provide new credentials
             if self.requiresReauthentication {
                 print("🔐 [VoiceCodeClient] Skipping reconnection - reauthentication required")
+                self.reconnectionTimer?.cancel()
+                self.reconnectionTimer = nil
+                return
+            }
+
+            // Don't reconnect if the protocol versions don't match — the
+            // backend will reject us on every retry until the app is updated.
+            if self.requiresUpgrade {
+                print("⛔ [VoiceCodeClient] Skipping reconnection - app upgrade required")
                 self.reconnectionTimer?.cancel()
                 self.reconnectionTimer = nil
                 return
@@ -475,10 +662,16 @@ class VoiceCodeClient: ObservableObject {
             case .success(let message):
                 switch message {
                 case .string(let text):
-                    self.handleMessage(text)
+                    // Dispatch to main queue to ensure thread safety for shared state
+                    // (quickPromptHandlers, @Published properties via scheduleUpdate)
+                    DispatchQueue.main.async {
+                        self.handleMessage(text)
+                    }
                 case .data(let data):
                     if let text = String(data: data, encoding: .utf8) {
-                        self.handleMessage(text)
+                        DispatchQueue.main.async {
+                            self.handleMessage(text)
+                        }
                     }
                 @unknown default:
                     break
@@ -505,10 +698,17 @@ class VoiceCodeClient: ObservableObject {
 
                     logger.debug("🔄 VoiceCodeClient updating: isConnected=false (failure)")
                     self.isConnected = false
+                    // Auth state is socket-scoped; clear it so subscribe()'s
+                    // isAuthenticated guard doesn't let calls through during
+                    // the reconnect window (the new socket needs its own
+                    // hello → connect → connected handshake before sends are
+                    // valid). The next `connected` re-asserts it.
+                    self.isAuthenticated = false
+                    // Wire confirmation belonged to this dead socket; demote
+                    // so reconnect re-fires every desired subscribe.
+                    self.demoteConfirmedSubscriptions()
                     self.scheduleUpdate(key: "currentError", value: error.localizedDescription as String?)
-                    self.scheduleUpdate(key: "lockedSessions", value: Set<String>())
                     self.flushPendingUpdates()
-                    print("🔓 [VoiceCodeClient] Cleared WebSocket and locked sessions on connection failure")
                 }
             }
         }
@@ -533,6 +733,17 @@ class VoiceCodeClient: ObservableObject {
             return
         }
 
+        // One concise inbound line per message. Keep total length < ~120 chars
+        // so the iOS log copy buffer (15K chars ≈ 120 lines) covers a useful
+        // window. summarizeIncoming below picks the small set of fields that
+        // matter per type — add to it instead of layering more LogManager
+        // calls inside individual case branches.
+        // Silence pong (every keepalive) and command_output (per-line stream)
+        // so high-frequency traffic doesn't push real signals out of the buffer.
+        if !VoiceCodeClient.wireLogSilenced(type: type) {
+            LogManager.shared.log("← \(VoiceCodeClient.summarizeIncoming(type: type, json: json))", category: "VoiceCodeClient")
+        }
+
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             switch type {
@@ -540,6 +751,19 @@ class VoiceCodeClient: ObservableObject {
                 // Mark as connected when we receive hello from server
                 self.isConnected = true
                 print("📡 [VoiceCodeClient] Received hello from server, connection confirmed")
+
+                // Fail fast if the backend speaks a different wire-protocol version.
+                // A missing or mismatched `version` means we cannot safely send
+                // `subscribe`/decode `session_history` (shape changed at 0.4.0).
+                let serverVersion = json["version"] as? String
+                if serverVersion != VoiceCodeClient.supportedProtocolVersion {
+                    let received = serverVersion ?? "missing"
+                    self.enterUpgradeRequiredState(
+                        received: received,
+                        detail: "Server protocol version \(received) does not match client version \(VoiceCodeClient.supportedProtocolVersion)."
+                    )
+                    return
+                }
 
                 // Check auth_version for compatibility (future-proofing)
                 if let authVersion = json["auth_version"] as? Int {
@@ -571,27 +795,7 @@ class VoiceCodeClient: ObservableObject {
                     self.sendMaxMessageSize(maxSize)
                 }
 
-                // Restore subscriptions after reconnection
-                if !self.activeSubscriptions.isEmpty {
-                    print("🔄 [VoiceCodeClient] Restoring \(self.activeSubscriptions.count) subscription(s) after reconnection")
-                    LogManager.shared.log("Restoring \(self.activeSubscriptions.count) subscription(s) after reconnection", category: "VoiceCodeClient")
-                    for sessionId in self.activeSubscriptions {
-                        // Use subscribe() method to include delta sync support
-                        // Note: activeSubscriptions is not modified since session is already tracked
-                        let lastMessageId = self.getNewestCachedMessageId(sessionId: sessionId)
-                        var message: [String: Any] = [
-                            "type": "subscribe",
-                            "session_id": sessionId
-                        ]
-                        if let lastId = lastMessageId {
-                            message["last_message_id"] = lastId
-                            logger.info("🔄 [VoiceCodeClient] Resubscribing with delta sync, last: \(lastId), session: \(sessionId)")
-                        } else {
-                            logger.info("🔄 [VoiceCodeClient] Resubscribing without delta sync (no cached messages), session: \(sessionId)")
-                        }
-                        self.sendMessage(message)
-                    }
-                }
+                self.restoreSubscriptionsAfterReconnect()
 
                 // Start ping keepalive timer after successful authentication
                 self.startPingTimer()
@@ -622,23 +826,23 @@ class VoiceCodeClient: ObservableObject {
             case "response":
                 scheduleUpdate(key: "isProcessing", value: false)
 
-                // Unlock session when response is received
-                if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
-                    var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-                    updatedSessions.remove(sessionId)
-                    scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                    print("🔓 [VoiceCodeClient] Session unlocked: \(sessionId)")
-                }
-
                 if let success = json["success"] as? Bool, success {
                     // Extract iOS session UUID for routing
                     let iosSessionId = (json["ios_session_id"] as? String) ?? (json["ios-session-id"] as? String) ?? ""
 
                     // Successful response from Claude
                     if let text = json["text"] as? String {
-                        let message = Message(role: .assistant, text: text)
-                        print("📥 [VoiceCodeClient] Response for iOS session: \(iosSessionId)")
-                        self.onMessageReceived?(message, iosSessionId)
+                        // Check for quick prompt handler first
+                        if let handler = self.quickPromptHandlers.removeValue(forKey: iosSessionId) {
+                            print("📥 [VoiceCodeClient] Quick prompt response for: \(iosSessionId)")
+                            DispatchQueue.main.async {
+                                handler(text)
+                            }
+                        } else {
+                            let message = Message(role: .assistant, text: text)
+                            print("📥 [VoiceCodeClient] Response for iOS session: \(iosSessionId)")
+                            self.onMessageReceived?(message, iosSessionId)
+                        }
                     }
 
                     // Check both underscore and hyphen variants (Clojure uses hyphens)
@@ -653,20 +857,44 @@ class VoiceCodeClient: ObservableObject {
                 } else {
                     // Error response
                     let error = json["error"] as? String ?? "Unknown error"
+                    let iosSessionId = (json["ios_session_id"] as? String) ?? (json["ios-session-id"] as? String) ?? ""
+                    if let handler = self.quickPromptHandlers.removeValue(forKey: iosSessionId) {
+                        print("📥 [VoiceCodeClient] Quick prompt error for: \(iosSessionId)")
+                        DispatchQueue.main.async {
+                            handler("Error: \(error)")
+                        }
+                    }
                     scheduleUpdate(key: "currentError", value: error as String?)
                 }
 
             case "error":
                 scheduleUpdate(key: "isProcessing", value: false)
                 let error = json["message"] as? String ?? "Unknown error"
+                let errorCode = json["code"] as? String
+
+                // A protocol-version mismatch is non-recoverable from a reconnect
+                // loop: the backend will reject the same client on every retry.
+                // Route it to the upgrade-required state instead of surfacing as
+                // a generic error and letting the reconnect timer spin.
+                if errorCode == "unsupported_protocol_version" {
+                    let received = (json["received"] as? String) ?? "unknown"
+                    let required = (json["required"] as? String) ?? VoiceCodeClient.supportedProtocolVersion
+                    self.enterUpgradeRequiredState(
+                        received: received,
+                        detail: "Backend requires protocol version \(required); this client speaks \(received). \(error)"
+                    )
+                    return
+                }
+
                 scheduleUpdate(key: "currentError", value: error as String?)
 
-                // Unlock session when error is received
-                if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
-                    var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-                    updatedSessions.remove(sessionId)
-                    scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                    print("🔓 [VoiceCodeClient] Session unlocked after error: \(sessionId)")
+                // Route to quick prompt handler if applicable
+                let errorIosSessionId = (json["ios_session_id"] as? String) ?? (json["ios-session-id"] as? String) ?? ""
+                if let handler = self.quickPromptHandlers.removeValue(forKey: errorIosSessionId) {
+                    print("📥 [VoiceCodeClient] Quick prompt error for: \(errorIosSessionId)")
+                    DispatchQueue.main.async {
+                        handler("Error: \(error)")
+                    }
                 }
 
             case "auth_error":
@@ -684,8 +912,21 @@ class VoiceCodeClient: ObservableObject {
                 // Note: Backend will close connection after auth_error
 
             case "pong":
-                // Pong response to ping
-                break
+                // Pong response to ping. Pings/pongs are FIFO and the
+                // backend echoes one pong per ping, so the running
+                // `pongsReceived` counter pairs 1:1 with `pingsSent`.
+                // Any waiter whose target sequence has been reached is
+                // resumed. See `awaitPongBarrier`.
+                self.pongsReceived += 1
+                var stillPending: [PongWaiter] = []
+                for waiter in self.pongWaiters {
+                    if self.pongsReceived >= waiter.target {
+                        waiter.resumeOnce()
+                    } else {
+                        stillPending.append(waiter)
+                    }
+                }
+                self.pongWaiters = stillPending
 
             case "session_list":
                 // Initial session list received after connection
@@ -708,6 +949,10 @@ class VoiceCodeClient: ObservableObject {
                 // Recent sessions list for display in Recent section
                 if let sessions = json["sessions"] as? [[String: Any]] {
                     print("📋 [VoiceCodeClient] Received recent_sessions with \(sessions.count) sessions")
+                    let parsed = RecentSession.parseRecentSessions(sessions)
+                    DispatchQueue.main.async {
+                        self.parsedRecentSessions = parsed
+                    }
                     self.onRecentSessionsReceived?(sessions)
                 }
 
@@ -717,38 +962,32 @@ class VoiceCodeClient: ObservableObject {
                 self.sessionSyncManager.handleSessionCreated(json)
 
             case "session_history":
-                // Full conversation history (response to subscribe)
-                if let sessionId = json["session_id"] as? String,
-                   let messages = json["messages"] as? [[String: Any]] {
-                    // Parse delta sync metadata fields (default true for backward compatibility)
-                    let isComplete = json["is_complete"] as? Bool ?? true
-                    let oldestMessageId = json["oldest_message_id"] as? String
-                    let newestMessageId = json["newest_message_id"] as? String
+                // Unified delivery envelope for both subscribe replies and
+                // live pushes. Decode into the v0.4.0 typed payload and route
+                // through handleSessionHistoryPayload, which owns cursor math,
+                // gap detection, optimistic reconciliation, and auto-speak.
+                do {
+                    let data = try JSONSerialization.data(withJSONObject: json, options: [])
+                    let decoder = JSONDecoder()
+                    let payload = try decoder.decode(SessionHistoryPayload.self, from: data)
 
-                    if isComplete {
-                        logger.info("📚 [VoiceCodeClient] Received session_history for \(sessionId) with \(messages.count) messages (complete)")
+                    if payload.isComplete {
+                        logger.info("📚 [VoiceCodeClient] session_history \(payload.sessionId) count=\(payload.messages.count) first=\(payload.firstSeq.map { String($0) } ?? "-") last=\(payload.lastSeq.map { String($0) } ?? "-") next=\(payload.nextSeq)")
                     } else {
-                        logger.warning("⚠️ [VoiceCodeClient] Session history incomplete for \(sessionId): budget exhausted before sending all messages. Received \(messages.count) messages.")
+                        logger.warning("⚠️ [VoiceCodeClient] session_history \(payload.sessionId) is_complete=false; \(payload.messages.count) messages, will chain re-subscribe")
                     }
 
-                    if let oldest = oldestMessageId, let newest = newestMessageId {
-                        logger.debug("📚 [VoiceCodeClient] Session history range: oldest=\(oldest), newest=\(newest)")
+                    self.sessionSyncManager.handleSessionHistoryPayload(payload)
+
+                    // Only resume a waiting refresh continuation when decode
+                    // succeeded; otherwise the awaiting caller would proceed
+                    // with stale state. On failure, let the refresh timeout
+                    // fire instead.
+                    if let pending = self.sessionRefreshPending.removeValue(forKey: payload.sessionId) {
+                        pending.resumeOnce()
                     }
-
-                    self.sessionSyncManager.handleSessionHistory(sessionId: sessionId, messages: messages)
-
-                    // Resume any waiting refresh continuation
-                    if let continuation = self.sessionRefreshContinuations.removeValue(forKey: sessionId) {
-                        continuation.resume()
-                    }
-                }
-
-            case "session_updated":
-                // Incremental updates for subscribed session
-                if let sessionId = json["session_id"] as? String,
-                   let messages = json["messages"] as? [[String: Any]] {
-                    print("🔄 [VoiceCodeClient] Received session_updated for \(sessionId) with \(messages.count) messages")
-                    self.sessionSyncManager.handleSessionUpdated(sessionId: sessionId, messages: messages)
+                } catch {
+                    logger.error("❌ [VoiceCodeClient] Failed to decode session_history payload: \(error.localizedDescription)")
                 }
 
             case "session_ready":
@@ -756,34 +995,46 @@ class VoiceCodeClient: ObservableObject {
                 if let sessionId = json["session_id"] as? String {
                     print("✅ [VoiceCodeClient] Received session_ready for \(sessionId)")
 
-                    // Subscribe immediately now that backend has confirmed session exists in index
-                    if !self.activeSubscriptions.contains(sessionId) {
+                    // Only auto-subscribe if this session is still the foreground session.
+                    // If the user navigated away before session_ready arrived, attaching
+                    // would deliver pushes (and trigger TTS) for an off-screen session.
+                    let isStillActive: Bool = UUID(uuidString: sessionId)
+                        .map { ActiveSessionManager.shared.isActive($0) } ?? false
+
+                    if isStillActive {
+                        // Always call subscribe — it is idempotent on a
+                        // .confirmed entry and forces a wire send on a
+                        // .desired one. The prior `!contains` guard suppressed
+                        // recovery whenever the set was poisoned by a pre-auth
+                        // call (tmux-untethered-a83).
                         print("📥 [VoiceCodeClient] Auto-subscribing to new session after session_ready: \(sessionId)")
                         self.subscribe(sessionId: sessionId)
+                    } else {
+                        print("⏭️ [VoiceCodeClient] Skipping auto-subscribe for \(sessionId) — no longer the active session")
                     }
                 }
 
             case "turn_complete":
-                // Backend signals that Claude CLI has finished (turn is complete)
+                // Backend signals that the provider finished its turn.
+                // Optional `aborted:true` indicates the turn was cut short by kill_session
+                // or compaction; treat identically to a normal turn_complete for now.
                 if let sessionId = json["session_id"] as? String {
-                    print("✅ [VoiceCodeClient] Received turn_complete for \(sessionId)")
+                    let aborted = json["aborted"] as? Bool ?? false
+                    print("✅ [VoiceCodeClient] Received turn_complete for \(sessionId) (aborted: \(aborted))")
 
                     // Note: Subscription now happens earlier via session_ready message
-                    // This is kept as fallback for compatibility
-                    if !self.activeSubscriptions.contains(sessionId) {
+                    // This is kept as fallback for compatibility. Same isActive() guard
+                    // as session_ready: if the user has navigated away, attaching here
+                    // would route pushes (and TTS) to an off-screen session.
+                    let isStillActive: Bool = UUID(uuidString: sessionId)
+                        .map { ActiveSessionManager.shared.isActive($0) } ?? false
+
+                    if isStillActive {
+                        // Idempotent — see session_ready handler above.
                         print("📥 [VoiceCodeClient] Auto-subscribing to new session after turn_complete (fallback): \(sessionId)")
                         self.subscribe(sessionId: sessionId)
-                    }
-
-                    let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-                    if currentSessions.contains(sessionId) {
-                        var updatedSessions = currentSessions
-                        updatedSessions.remove(sessionId)
-                        scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (turn complete, remaining locks: \(updatedSessions.count))")
-                        if !updatedSessions.isEmpty {
-                            print("   Still locked: \(Array(updatedSessions))")
-                        }
+                    } else {
+                        print("⏭️ [VoiceCodeClient] Skipping turn_complete fallback subscribe for \(sessionId) — no longer the active session")
                     }
                 }
 
@@ -791,13 +1042,6 @@ class VoiceCodeClient: ObservableObject {
                 // Session compaction completed successfully
                 if let sessionId = json["session_id"] as? String {
                     print("⚡️ [VoiceCodeClient] Received compaction_complete for \(sessionId)")
-                    let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-                    if currentSessions.contains(sessionId) {
-                        var updatedSessions = currentSessions
-                        updatedSessions.remove(sessionId)
-                        scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (compaction complete, remaining locks: \(updatedSessions.count))")
-                    }
                 }
                 self.onCompactionResponse?(json)
 
@@ -805,13 +1049,6 @@ class VoiceCodeClient: ObservableObject {
                 // Session compaction failed
                 if let sessionId = json["session_id"] as? String {
                     print("❌ [VoiceCodeClient] Received compaction_error for \(sessionId)")
-                    let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-                    if currentSessions.contains(sessionId) {
-                        var updatedSessions = currentSessions
-                        updatedSessions.remove(sessionId)
-                        scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (compaction error, remaining locks: \(updatedSessions.count))")
-                    }
                 }
                 self.onCompactionResponse?(json)
 
@@ -845,26 +1082,10 @@ class VoiceCodeClient: ObservableObject {
                     scheduleUpdate(key: "currentError", value: error as String?)
                 }
 
-            case "session_locked":
-                // Session is currently locked (processing a prompt)
-                if let sessionId = json["session_id"] as? String {
-                    print("🔒 [VoiceCodeClient] Session locked: \(sessionId)")
-                    var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-                    updatedSessions.insert(sessionId)
-                    scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                }
-
             case "session_killed":
                 // Session process was terminated
                 if let sessionId = json["session_id"] as? String {
                     print("🛑 [VoiceCodeClient] Session killed: \(sessionId)")
-                    let currentSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-                    if currentSessions.contains(sessionId) {
-                        var updatedSessions = currentSessions
-                        updatedSessions.remove(sessionId)
-                        scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-                        print("🔓 [VoiceCodeClient] Unlocked session: \(sessionId) (killed, remaining locks: \(updatedSessions.count))")
-                    }
                 }
 
             case "available_commands":
@@ -1058,16 +1279,6 @@ class VoiceCodeClient: ObservableObject {
     // MARK: - Send Messages
 
     func sendPrompt(_ text: String, iosSessionId: String, sessionId: String? = nil, workingDirectory: String? = nil, systemPrompt: String? = nil) {
-        // Optimistically lock the session before sending
-        // Unlock will happen when we receive ANY assistant message for this session
-        if let sessionId = sessionId {
-            var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-            updatedSessions.insert(sessionId)
-            scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-            flushPendingUpdates()  // Immediate flush for optimistic locking
-            print("🔒 [VoiceCodeClient] Optimistically locked: \(sessionId) (total locks: \(updatedSessions.count))")
-        }
-
         var message: [String: Any] = [
             "type": "prompt",
             "text": text,
@@ -1095,11 +1306,46 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
-    func setWorkingDirectory(_ path: String) {
-        let message: [String: Any] = [
-            "type": "set_directory",
-            "path": path
+    /// Send a quick prompt from the menu bar, creating a new session.
+    /// The completion handler receives the Claude response text, or an error string prefixed with "Error:".
+    /// Must be called from the main thread (quickPromptHandlers is accessed from main queue in handleMessage).
+    @MainActor
+    func sendQuickPrompt(text: String, directory: String, completion: @escaping (String) -> Void) {
+        guard isConnected else {
+            print("⚠️ [VoiceCodeClient] Quick prompt failed: not connected")
+            completion("Error: Not connected to server")
+            return
+        }
+
+        let quickPromptId = UUID().uuidString.lowercased()
+        let sessionId = UUID().uuidString.lowercased()
+
+        // Register one-shot handler keyed by the ios_session_id we'll send
+        quickPromptHandlers[quickPromptId] = completion
+
+        // Timeout after 120 seconds to prevent leaked handlers
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in
+            if let handler = self?.quickPromptHandlers.removeValue(forKey: quickPromptId) {
+                print("⏰ [VoiceCodeClient] Quick prompt timed out: \(quickPromptId)")
+                handler("Error: Request timed out")
+            }
+        }
+
+        var message: [String: Any] = [
+            "type": "prompt",
+            "text": text,
+            "new_session_id": sessionId,
+            "ios_session_id": quickPromptId,
+            "working_directory": directory,
+            "provider": appSettings?.defaultProvider ?? "claude"
         ]
+
+        // Include system prompt if configured
+        if let systemPrompt = appSettings?.systemPrompt, !systemPrompt.isEmpty {
+            message["system_prompt"] = systemPrompt
+        }
+
+        print("📤 [VoiceCodeClient] Sending quick prompt, session: \(sessionId), tracking: \(quickPromptId), dir: \(directory)")
         sendMessage(message)
     }
 
@@ -1113,30 +1359,255 @@ class VoiceCodeClient: ObservableObject {
     }
 
     func ping() {
+        // All pings — keepalive and barrier alike — bump pingsSent so
+        // the FIFO pong-counter correlation in the "pong" handler stays
+        // honest. See `awaitPongBarrier` for the awaited variant used
+        // by `requestSessionRefresh`.
+        pingsSent += 1
         let message: [String: Any] = ["type": "ping"]
         sendMessage(message)
     }
+
+    /// Send a ping and suspend until its pong arrives, used by
+    /// `requestSessionRefresh` as a response-based barrier between
+    /// `unsubscribe` and `subscribe`. WebSocket FIFO ordering gives us:
+    /// once the backend's pong reaches us, every message we sent before
+    /// the ping has been processed (including the unsubscribe), and any
+    /// session_history pushes for the prior subscription window have
+    /// already been delivered. The next session_history we receive
+    /// after the subsequent subscribe is therefore the subscribe-reply,
+    /// not a leftover live push.
+    ///
+    /// Multiple in-flight pings (e.g., keepalive concurrent with a
+    /// refresh) are correlated by counting: each ping bumps `pingsSent`
+    /// and each pong bumps `pongsReceived`, with `target = pingsSent`
+    /// captured at send time.
+    private func awaitPongBarrier(timeoutSeconds: TimeInterval) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else {
+                    continuation.resume()
+                    return
+                }
+                self.pingsSent += 1
+                let target = self.pingsSent
+                let waiter = PongWaiter(target: target, continuation: continuation)
+                self.pongWaiters.append(waiter)
+                let message: [String: Any] = ["type": "ping"]
+                self.sendMessage(message)
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSeconds) { [weak self] in
+                    // Always resume the waiter so the awaiting Task
+                    // can't hang past the timeout, even if `self` was
+                    // deallocated in the interim. Removal from the
+                    // waiter queue is best-effort cleanup.
+                    if let self = self,
+                       let idx = self.pongWaiters.firstIndex(where: { $0 === waiter }) {
+                        self.pongWaiters.remove(at: idx)
+                    }
+                    waiter.resumeOnce()
+                }
+            }
+        }
+    }
     
-    func subscribe(sessionId: String) {
-        // Track subscription for auto-restore on reconnection
-        activeSubscriptions.insert(sessionId)
+    /// Demote every `.confirmed` entry back to `.desired`. Called whenever
+    /// the current socket goes away — the wire confirmation belongs to that
+    /// socket, so once it's gone we owe a fresh wire `subscribe` on the
+    /// next one. Caller intent (the entry's existence) is preserved.
+    private func demoteConfirmedSubscriptions() {
+        for (sid, phase) in subscriptions where phase == .confirmed {
+            subscriptions[sid] = .desired
+        }
+    }
 
-        // Find the newest message we have cached for this session (for delta sync)
-        let lastMessageId = getNewestCachedMessageId(sessionId: sessionId)
+    /// Re-fires `subscribe()` for every entry currently in `.desired`.
+    /// Called from the `connected` handler; exposed `internal` so tests can
+    /// drive the reconnect path without standing up a full WebSocket.
+    ///
+    /// Correctness relies on `subscribe()` reading its cursor from CoreData —
+    /// no in-memory "missed updates" queue, no disconnect flag. The durably
+    /// persisted seq is the only source of truth.
+    ///
+    /// Sessions the user has marked deleted (CDUserSession.isUserDeleted) are
+    /// filtered out and removed from the subscription map. The deleteSession
+    /// flow in SessionsForDirectoryView already calls `unsubscribe` so this
+    /// filter is defense-in-depth for any path that mutates isUserDeleted
+    /// without going through `unsubscribe`.
+    func restoreSubscriptionsAfterReconnect(context: NSManagedObjectContext? = nil) {
+        guard !subscriptions.isEmpty else { return }
 
-        var message: [String: Any] = [
-            "type": "subscribe",
-            "session_id": sessionId
-        ]
-
-        if let lastId = lastMessageId {
-            message["last_message_id"] = lastId
-            logger.info("📖 [VoiceCodeClient] Subscribing with delta sync, last: \(lastId), session: \(sessionId) (total active: \(self.activeSubscriptions.count))")
-        } else {
-            logger.info("📖 [VoiceCodeClient] Subscribing without delta sync (no cached messages), session: \(sessionId) (total active: \(self.activeSubscriptions.count))")
+        let ctx = context ?? PersistenceController.shared.container.viewContext
+        let allKeys = Array(subscriptions.keys)
+        let toRestore = allKeys.filter { sessionId in
+            guard let uuid = UUID(uuidString: sessionId) else { return true }
+            let request = CDUserSession.fetchUserSession(id: uuid)
+            if let userSession = try? ctx.fetch(request).first, userSession.isUserDeleted {
+                return false
+            }
+            return true
         }
 
+        let dropped = Set(allKeys).subtracting(toRestore)
+        if !dropped.isEmpty {
+            for sessionId in dropped {
+                logger.info("🧹 [VoiceCodeClient] Skipping reconnect-resubscribe for user-deleted session: \(sessionId)")
+                subscriptions[sessionId] = nil
+            }
+        }
+
+        guard !toRestore.isEmpty else { return }
+        print("🔄 [VoiceCodeClient] Restoring \(toRestore.count) subscription(s) after reconnection")
+        LogManager.shared.log("Restoring \(toRestore.count) subscription(s) after reconnection", category: "VoiceCodeClient")
+        for sessionId in toRestore {
+            subscribe(sessionId: sessionId, context: context)
+        }
+    }
+
+    /// Idempotent. Decision table:
+    ///
+    ///   isAuthenticated == false  → record `.desired` (unless already
+    ///                                `.confirmed`, which is a bug elsewhere
+    ///                                we let a disconnect demote correct);
+    ///                                no wire send.
+    ///   isAuthenticated == true,  → no-op; wire `subscribe` already sent
+    ///   entry == .confirmed         on this socket.
+    ///   isAuthenticated == true,  → send wire `subscribe`, transition to
+    ///   entry ∈ {nil, .desired}     `.confirmed`.
+    ///
+    /// The auth gate prevents `auth_error`-and-disconnect for sends in the
+    /// `hello`-but-not-yet-`connected` window. Pre-auth intent is preserved
+    /// in `.desired` so the next `connected` resends it through
+    /// `restoreSubscriptionsAfterReconnect`.
+    func subscribe(sessionId: String, context: NSManagedObjectContext? = nil) {
+        guard isAuthenticated else {
+            if subscriptions[sessionId] != .confirmed {
+                subscriptions[sessionId] = .desired
+            }
+            logger.info("📖 [VoiceCodeClient] Deferring subscribe (not authenticated), session: \(sessionId) (total tracked: \(self.subscriptions.count))")
+            return
+        }
+
+        if subscriptions[sessionId] == .confirmed {
+            return
+        }
+
+        // Ensure the entry is tracked before we log/send so the count is
+        // stable across the rest of the function.
+        if subscriptions[sessionId] == nil {
+            subscriptions[sessionId] = .desired
+        }
+
+        // Delta-sync cursor is the max seq we've durably persisted for this
+        // session. `0` is the wire sentinel meaning "give me everything" and
+        // is what newestCachedSeq returns for fresh or legacy-only sessions.
+        let lastSeq = newestCachedSeq(sessionId: sessionId, context: context)
+
+        let message: [String: Any] = [
+            "type": "subscribe",
+            "session_id": sessionId,
+            "last_seq": lastSeq
+        ]
+
+        let trackedCount = subscriptions.count
+        logger.info("📖 [VoiceCodeClient] Subscribing, last_seq: \(lastSeq), session: \(sessionId) (total tracked: \(trackedCount))")
+
         sendMessage(message)
+        subscriptions[sessionId] = .confirmed
+    }
+
+    /// Highest backend-assigned `seq` cached for the given session.
+    /// Used as the delta-sync cursor in protocol v0.4.0 — iOS sends this as `last_seq`
+    /// on `subscribe` so the backend can stream only `seq > N` messages.
+    /// Optimistic rows carry a deterministic negative seq and are excluded from
+    /// the cursor so they don't poison `last_seq` on the wire.
+    ///
+    /// The cursor is the max of two sources: the highest `seq` on a confirmed
+    /// `CDMessage` for this session, and `CDBackendSession.nextSeq - 1` (the
+    /// server-reported `next_seq` from the most recent payload, persisted on
+    /// the session). The session-level cursor matters when local message
+    /// pruning has dropped rows the server still considers delivered — without
+    /// it, `newestCachedSeq` would fall back to the next-highest surviving
+    /// row (or `0`) and force a redundant resync. See beads
+    /// tmux-untethered-fkz.
+    ///
+    /// In production this fetches via a fresh `newBackgroundContext()` rather
+    /// than `viewContext`. `SessionSyncManager` writes via background contexts;
+    /// their saves post `NSManagedObjectContextDidSave`, and
+    /// `PersistenceController` merges those into `viewContext` from a
+    /// `queue: .main` notification observer. That merge is at best
+    /// queue-deferred — the closure is enqueued onto the main queue rather
+    /// than run inline — so `viewContext` can lag the persistent store
+    /// inside the run-loop turn that posted the notification. If a stale
+    /// read leaks into `subscribe()`, the client sends `last_seq=N` and the
+    /// backend never resends `N+1..latest`. A new background context dodges
+    /// that timing question entirely: it reads through the persistent store
+    /// coordinator, which has already accepted the just-saved background
+    /// write by the time `performAndWait` returns. See beads
+    /// tmux-untethered-igh.
+    ///
+    /// - Parameters:
+    ///   - sessionId: Claude session ID (lowercase UUID string)
+    ///   - context: Optional CoreData context for testing. When provided it
+    ///     is used directly — callers that pass `viewContext` opt out of the
+    ///     stale-merge protection and accept whatever the context currently
+    ///     sees. Production code paths leave this nil.
+    ///   - container: Optional persistent container override for testing.
+    ///     Used only when `context` is nil; the function spins up a fresh
+    ///     `newBackgroundContext()` from this container. Defaults to
+    ///     `PersistenceController.shared.container` in production.
+    /// - Returns: Max backend-assigned `seq` for the session, or `0` if no
+    ///   confirmed rows exist or the ID is invalid. `0` is the documented
+    ///   "start from the beginning" sentinel on the wire.
+    func newestCachedSeq(sessionId: String,
+                         context: NSManagedObjectContext? = nil,
+                         container: NSPersistentContainer? = nil) -> Int64 {
+        guard let sessionUUID = UUID(uuidString: sessionId) else {
+            logger.warning("⚠️ [VoiceCodeClient] Invalid session ID for delta sync: \(sessionId)")
+            return 0
+        }
+
+        let runFetch: (NSManagedObjectContext) -> Int64 = { ctx in
+            let messageRequest = CDMessage.fetchRequest()
+            messageRequest.predicate = NSPredicate(format: "sessionId == %@ AND seq > 0", sessionUUID as CVarArg)
+            messageRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.seq, ascending: false)]
+            messageRequest.fetchLimit = 1
+            let messageMax: Int64
+            do {
+                messageMax = try ctx.fetch(messageRequest).first?.seq ?? 0
+            } catch {
+                logger.error("⚠️ [VoiceCodeClient] Failed to fetch newest seq for delta sync: \(error.localizedDescription)")
+                messageMax = 0
+            }
+
+            // Session-level cursor: the server's last-seen `next_seq` minus
+            // one is the highest seq the server has assigned. `0` is the
+            // sentinel for "never received a payload" — drop it on the
+            // floor so it doesn't poison the cursor as `-1`.
+            let sessionRequest = CDBackendSession.fetchBackendSession(id: sessionUUID)
+            let sessionCursor: Int64
+            do {
+                let storedNextSeq = try ctx.fetch(sessionRequest).first?.nextSeq ?? 0
+                sessionCursor = storedNextSeq > 0 ? storedNextSeq - 1 : 0
+            } catch {
+                logger.error("⚠️ [VoiceCodeClient] Failed to fetch session next_seq for delta sync: \(error.localizedDescription)")
+                sessionCursor = 0
+            }
+
+            return max(messageMax, sessionCursor)
+        }
+
+        if let ctx = context {
+            return runFetch(ctx)
+        }
+
+        let resolvedContainer = container ?? PersistenceController.shared.container
+        let bgContext = resolvedContainer.newBackgroundContext()
+        var result: Int64 = 0
+        bgContext.performAndWait {
+            result = runFetch(bgContext)
+        }
+        return result
     }
 
     /// Get the UUID of the newest cached message for a session
@@ -1145,6 +1616,7 @@ class VoiceCodeClient: ObservableObject {
     ///   - sessionId: Claude session ID (lowercase UUID string)
     ///   - context: Optional CoreData context for testing. Uses PersistenceController.shared.container.viewContext if nil.
     /// - Returns: Lowercase UUID string of newest message, or nil if no messages or error
+    @available(*, deprecated, message: "Use newestCachedSeq(sessionId:context:) — protocol v0.4.0 uses Int64 seq as the cursor")
     func getNewestCachedMessageId(sessionId: String, context: NSManagedObjectContext? = nil) -> String? {
         guard let sessionUUID = UUID(uuidString: sessionId) else {
             logger.warning("⚠️ [VoiceCodeClient] Invalid session ID for delta sync: \(sessionId)")
@@ -1168,14 +1640,23 @@ class VoiceCodeClient: ObservableObject {
     }
     
     func unsubscribe(sessionId: String) {
-        // Remove from active subscriptions
-        activeSubscriptions.remove(sessionId)
+        // Drop both intent and confirmation. Wire send is best-effort —
+        // backend tolerates an `unsubscribe` for a session it doesn't know
+        // about, so we don't gate on auth state.
+        subscriptions[sessionId] = nil
+
+        // Reset the TTS gate cursor so the next subscribe reply re-captures
+        // a fresh boundary from the new `next_seq`. Without this, leaving and
+        // re-entering a session would speak any messages that arrived during
+        // the absence — the opposite of what the user wants. See
+        // tmux-untethered-i2n.
+        sessionSyncManager.clearLiveFromSeq(sessionId: sessionId)
 
         let message: [String: Any] = [
             "type": "unsubscribe",
             "session_id": sessionId
         ]
-        print("📕 [VoiceCodeClient] Unsubscribing from session: \(sessionId) (total active: \(activeSubscriptions.count))")
+        print("📕 [VoiceCodeClient] Unsubscribing from session: \(sessionId) (total tracked: \(subscriptions.count))")
         sendMessage(message)
     }
 
@@ -1220,24 +1701,99 @@ class VoiceCodeClient: ObservableObject {
 
     func requestSessionRefresh(sessionId: String) async {
         // Refresh a specific session by unsubscribing and re-subscribing
-        // This will fetch the latest messages from the backend
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            // Store continuation to resume when session_history is received
-            sessionRefreshContinuations[sessionId] = continuation
+        // (forcing the backend to send a fresh session_history reply).
+        //
+        // The prior implementation used `unsubscribe → 100ms sleep →
+        // subscribe → wait for any session_history`. That handshake had
+        // two failure modes (tmux-untethered-1vn):
+        //
+        //   1. The 100ms gap could not guarantee the backend had
+        //      processed the unsubscribe before the subscribe arrived,
+        //      so a session_history push from the prior subscription
+        //      window could land between the subscribe send and its
+        //      reply, prematurely resuming the awaiting continuation
+        //      with partial/stale data.
+        //   2. Concurrent calls for the same session shared one
+        //      continuation slot, so the latter overwrote the former
+        //      and the original caller hung until the 10s timeout.
+        //
+        // The fix combines a response-based ping/pong barrier (so
+        // `subscribe` is only sent after the backend has demonstrably
+        // processed the unsubscribe — at which point no further pushes
+        // for the prior subscription window can arrive) with a
+        // per-session epoch counter (so a superseding call resumes the
+        // prior continuation immediately and the session_history
+        // handler only resumes the latest epoch's entry).
 
-            print("🔄 [VoiceCodeClient] Requesting session refresh: \(sessionId)")
-            unsubscribe(sessionId: sessionId)
+        // Phase 1: claim a fresh epoch on the main queue and send the
+        // unsubscribe. Done synchronously inside the dispatch so the
+        // epoch bump and the wire send are atomic with respect to
+        // handleMessage and the keepalive ping timer.
+        let epoch: Int = await withCheckedContinuation { (continuation: CheckedContinuation<Int, Never>) in
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else {
+                    continuation.resume(returning: -1)
+                    return
+                }
 
-            // Re-subscribe after a brief delay to ensure clean state
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.subscribe(sessionId: sessionId)
+                if let prior = self.sessionRefreshPending.removeValue(forKey: sessionId) {
+                    prior.resumeOnce()
+                }
+
+                let newEpoch = (self.sessionRefreshEpoch[sessionId] ?? 0) + 1
+                self.sessionRefreshEpoch[sessionId] = newEpoch
+
+                print("🔄 [VoiceCodeClient] Requesting session refresh: \(sessionId) (epoch \(newEpoch))")
+                self.unsubscribe(sessionId: sessionId)
+
+                continuation.resume(returning: newEpoch)
             }
+        }
 
-            // Set a timeout to prevent infinite waiting
-            DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
-                if let cont = self?.sessionRefreshContinuations.removeValue(forKey: sessionId) {
-                    cont.resume()
-                    print("⚠️ [VoiceCodeClient] Session refresh request timed out after 10 seconds for \(sessionId)")
+        guard epoch >= 0 else { return }
+
+        // Phase 2: barrier. The pong proves the backend has finished
+        // processing every message we sent before the ping (notably the
+        // unsubscribe). After this point no leftover session_history
+        // pushes for this session can arrive on our channel.
+        await awaitPongBarrier(timeoutSeconds: 5.0)
+
+        // Phase 3: send subscribe and await the resulting session_history
+        // reply. If a newer refresh has superseded us between phases,
+        // bail out — the newer call owns the wire send and our
+        // continuation has already been resumed in phase 1 of that call.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else {
+                    continuation.resume()
+                    return
+                }
+                guard self.sessionRefreshEpoch[sessionId] == epoch else {
+                    continuation.resume()
+                    return
+                }
+
+                let pending = PendingSessionRefresh(epoch: epoch, continuation: continuation)
+                self.sessionRefreshPending[sessionId] = pending
+                self.subscribe(sessionId: sessionId)
+
+                // Capture `pending` strongly in the timeout. Its
+                // `resumeOnce()` is idempotent, so even if a
+                // session_history or supersede has already resumed and
+                // removed this entry, the timeout's call is a no-op
+                // rather than a double-resume trap. When `self` is nil
+                // by timer-fire time we still resume — the awaiting
+                // Task otherwise hangs past the 10s budget — and we
+                // skip the dictionary cleanup since the dictionary is
+                // gone with self.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
+                    if let self = self,
+                       self.sessionRefreshPending[sessionId] === pending {
+                        self.sessionRefreshPending.removeValue(forKey: sessionId)
+                    }
+                    if pending.resumeOnceIfPending() {
+                        print("⚠️ [VoiceCodeClient] Session refresh request timed out after 10 seconds for \(sessionId) (epoch \(epoch))")
+                    }
                 }
             }
         }
@@ -1305,15 +1861,6 @@ class VoiceCodeClient: ObservableObject {
             throw NSError(domain: "VoiceCodeClient",
                           code: -3,
                           userInfo: [NSLocalizedDescriptionKey: "Compaction already in progress"])
-        }
-
-        // Optimistically lock the session before sending (must be on main thread)
-        await MainActor.run {
-            var updatedSessions = getCurrentValue(for: "lockedSessions", current: self.lockedSessions)
-            updatedSessions.insert(sessionId)
-            scheduleUpdate(key: "lockedSessions", value: updatedSessions)
-            flushPendingUpdates()  // Immediate flush for optimistic locking
-            print("🔒 [VoiceCodeClient] Optimistically locked for compaction: \(sessionId) (total locks: \(updatedSessions.count))")
         }
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -1509,13 +2056,14 @@ class VoiceCodeClient: ObservableObject {
         sendMessage(message)
     }
 
-    func startRecipe(sessionId: String, recipeId: String, workingDirectory: String) {
-        print("📤 [VoiceCodeClient] Starting recipe \(recipeId) for session \(sessionId) in \(workingDirectory)")
+    func startRecipe(sessionId: String, recipeId: String, workingDirectory: String, provider: String) {
+        print("📤 [VoiceCodeClient] Starting recipe \(recipeId) for session \(sessionId) in \(workingDirectory) with provider \(provider)")
         let message: [String: Any] = [
             "type": "start_recipe",
             "session_id": sessionId,
             "recipe_id": recipeId,
-            "working_directory": workingDirectory
+            "working_directory": workingDirectory,
+            "provider": provider
         ]
         sendMessage(message)
     }
@@ -1536,9 +2084,14 @@ class VoiceCodeClient: ObservableObject {
             return
         }
 
-        if let messageType = message["type"] as? String {
-            LogManager.shared.log("Sending message type: \(messageType)", category: "VoiceCodeClient")
+        // One concise outbound line per message. Keep tight — see the matching
+        // comment on the inbound log in handleMessage.
+        let outgoingType = (message["type"] as? String) ?? "?"
+        if !VoiceCodeClient.wireLogSilenced(type: outgoingType) {
+            LogManager.shared.log("→ \(VoiceCodeClient.summarizeOutgoing(message))", category: "VoiceCodeClient")
         }
+
+        onMessageSent?(message)
 
         let message = URLSessionWebSocketTask.Message.string(text)
         webSocket?.send(message) { error in
@@ -1550,6 +2103,101 @@ class VoiceCodeClient: ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - Wire trace helpers
+    //
+    // One terse line per inbound and outbound message. The iOS log-copy
+    // buffer caps around 15K characters, so prefer dense key=value pairs
+    // and short session-id prefixes. Add fields here when a new type
+    // shows up — don't sprinkle ad-hoc LogManager calls in individual
+    // case branches.
+
+    static func summarizeOutgoing(_ message: [String: Any]) -> String {
+        let type = (message["type"] as? String) ?? "?"
+        let extras = wireSummaryFields(type: type, dict: message)
+        return extras.isEmpty ? type : "\(type) \(extras)"
+    }
+
+    /// Types whose volume would dominate the iOS log copy buffer
+    /// (pong fires every keepalive; command_output streams per-line).
+    /// We deliberately do not trace these — diagnose ping health and
+    /// command output flow via OSLog/console, not the LogManager buffer.
+    static func wireLogSilenced(type: String) -> Bool {
+        switch type {
+        case "pong", "ping", "command_output":
+            return true
+        default:
+            return false
+        }
+    }
+
+    static func summarizeIncoming(type: String, json: [String: Any]) -> String {
+        let extras = wireSummaryFields(type: type, dict: json)
+        return extras.isEmpty ? type : "\(type) \(extras)"
+    }
+
+    /// Pick a small, fixed set of fields per type. Keep the total under
+    /// ~80 chars so log lines stay scannable. `dict` is either an outbound
+    /// message dict or a parsed inbound JSON.
+    private static func wireSummaryFields(type: String, dict: [String: Any]) -> String {
+        var parts: [String] = []
+        let shortSess: (String?) -> String? = { s in
+            guard let s = s, !s.isEmpty else { return nil }
+            return "sess=\(s.prefix(8))"
+        }
+        switch type {
+        case "subscribe":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+            if let n = dict["last_seq"] as? Int64 { parts.append("last_seq=\(n)") }
+            else if let n = dict["last_seq"] as? Int { parts.append("last_seq=\(n)") }
+        case "unsubscribe":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+        case "prompt":
+            // Don't reuse `shortSess` (which prefixes "sess=") — for prompt we
+            // want "new=<id>" / "resume=<id>" so the diff between resume and
+            // new is obvious in a glance at the trace.
+            if let s = dict["new_session_id"] as? String, !s.isEmpty { parts.append("new=\(s.prefix(8))") }
+            if let s = dict["resume_session_id"] as? String, !s.isEmpty { parts.append("resume=\(s.prefix(8))") }
+            if let p = dict["provider"] as? String { parts.append("prov=\(p)") }
+            if let t = dict["text"] as? String { parts.append("len=\(t.count)") }
+        case "session_history":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+            if let n = dict["first_seq"] as? Int { parts.append("first=\(n)") }
+            else if let n = dict["first_seq"] as? Int64 { parts.append("first=\(n)") }
+            if let n = dict["last_seq"] as? Int { parts.append("last=\(n)") }
+            else if let n = dict["last_seq"] as? Int64 { parts.append("last=\(n)") }
+            if let n = dict["next_seq"] as? Int { parts.append("next=\(n)") }
+            else if let n = dict["next_seq"] as? Int64 { parts.append("next=\(n)") }
+            if let c = dict["is_complete"] as? Bool { parts.append("complete=\(c)") }
+            if let msgs = dict["messages"] as? [[String: Any]] { parts.append("msgs=\(msgs.count)") }
+            if let gap = dict["gap"] as? [String: Any], let r = gap["reason"] as? String { parts.append("gap=\(r)") }
+        case "turn_complete":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+            if let a = dict["aborted"] as? Bool, a { parts.append("aborted=true") }
+        case "session_created", "session_ready", "session_updated", "session_deleted",
+             "compaction_complete", "compaction_error":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+            if let n = dict["message_count"] as? Int { parts.append("msgs=\(n)") }
+        case "error", "auth_error":
+            if let c = dict["code"] as? String { parts.append("code=\(c)") }
+            if let m = dict["message"] as? String { parts.append("msg=\(m.prefix(40))") }
+        case "hello":
+            if let v = dict["version"] as? String { parts.append("ver=\(v)") }
+        case "connect":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+            if let v = dict["protocol_version"] as? String { parts.append("proto=\(v)") }
+        case "connected":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+        case "session_list", "recent_sessions":
+            if let arr = dict["sessions"] as? [[String: Any]] { parts.append("count=\(arr.count)") }
+        case "available_commands":
+            if let arr = dict["project_commands"] as? [[String: Any]] { parts.append("proj=\(arr.count)") }
+            if let arr = dict["general_commands"] as? [[String: Any]] { parts.append("gen=\(arr.count)") }
+        default:
+            break
+        }
+        return parts.joined(separator: " ")
     }
 
     // MARK: - Resources
@@ -1578,5 +2226,45 @@ class VoiceCodeClient: ObservableObject {
     deinit {
         NotificationCenter.default.removeObserver(self)
         disconnect()
+    }
+}
+
+// MARK: - SessionSyncDelegate
+
+extension VoiceCodeClient: SessionSyncDelegate {
+    /// `SessionSyncManager` hops to the main queue before calling this, so
+    /// the `@Published` write below runs on the main actor.
+    func didDetectPrunedGap(_ sessionId: String, gap: SessionHistoryPayload.Gap) {
+        let key = sessionId.lowercased()
+        logger.info("⚠️ Pruned gap surfaced to UI for \(key)")
+        prunedGaps[key] = gap
+    }
+
+    /// Re-issue a subscribe so the backend resends `seq > fromSeq`. Fires from
+    /// three sites in `SessionSyncManager`: gap detection, `is_complete:false`
+    /// chain, and save-failure recovery. Without this implementation the
+    /// default no-op extension swallows all three, leaving the cursor stuck
+    /// when a push is missed or a save throws.
+    ///
+    /// `subscribe(sessionId:)` reads the cursor from CoreData via
+    /// `newestCachedSeq`, which equals the `fromSeq` we'd send here as long as
+    /// the prior payload was either fully merged (gap/is_complete cases) or
+    /// not merged at all (save-failure case). We rely on that equivalence
+    /// rather than threading `fromSeq` through a second subscribe variant.
+    func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64) {
+        logger.info("🔁 Resubscribe requested for \(sessionId) fromSeq=\(fromSeq)")
+        subscribe(sessionId: sessionId)
+    }
+
+    /// Surface a stalled `is_complete: false` chain to the UI. The sync
+    /// manager has already aborted the chain to prevent an infinite
+    /// resubscribe loop; this records the failure cursor so a banner can
+    /// inform the user that older history past `cursor` is not loading.
+    /// `SessionSyncManager` hops to main before calling, so the
+    /// `@Published` write below runs on the main actor.
+    func sessionSyncDidStallChain(_ sessionId: String, atCursor: Int64) {
+        let key = sessionId.lowercased()
+        logger.error("⛔ is_complete chain stalled for \(key) at cursor \(atCursor)")
+        stalledChains[key] = atCursor
     }
 }

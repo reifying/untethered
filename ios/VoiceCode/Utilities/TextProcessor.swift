@@ -4,6 +4,38 @@
 import Foundation
 
 struct TextProcessor {
+    /// Prepare text for text-to-speech: remove code blocks and split CamelCase
+    /// identifiers into separate words so TTS reads them naturally instead of
+    /// announcing each capital letter.
+    ///
+    /// - Parameter text: The text to process
+    /// - Returns: Text ready for TTS
+    static func prepareForSpeech(from text: String) -> String {
+        splitCamelCase(in: removeCodeBlocks(from: text))
+    }
+
+    /// Split CamelCase / PascalCase identifiers into space-separated words.
+    /// Example: "XMLHttpRequest" → "XML Http Request", "FooBar" → "Foo Bar".
+    /// AVSpeechSynthesizer then reads the result as words rather than
+    /// spelling out each capital letter.
+    ///
+    /// - Parameter text: The text to process
+    /// - Returns: Text with CamelCase boundaries expanded to spaces
+    static func splitCamelCase(in text: String) -> String {
+        var result = text
+        // ACRONYMWord → ACRONYM Word (e.g. "XMLHttp" → "XML Http")
+        if let regex = try? NSRegularExpression(pattern: #"([A-Z]+)([A-Z][a-z])"#, options: []) {
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1 $2")
+        }
+        // lowerUpper → lower Upper (e.g. "FooBar" → "Foo Bar")
+        if let regex = try? NSRegularExpression(pattern: #"([a-z])([A-Z])"#, options: []) {
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1 $2")
+        }
+        return result
+    }
+
     /// Remove code blocks from markdown text for better text-to-speech experience
     /// Removes both fenced code blocks (```...```) and inline code (`...`)
     /// Replaces them with spoken descriptions

@@ -6,6 +6,7 @@
             [clojure.tools.logging :as log]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.java.shell :as shell]
             [clojure.string :as str]
             [voice-code.auth :as auth]
             [voice-code.claude :as claude]
@@ -17,7 +18,10 @@
             [voice-code.recipes :as recipes]
             [voice-code.orchestration :as orch]
             [voice-code.supervisor :as supervisor]
-            [voice-code.env :as env])
+            [voice-code.env :as env]
+            [voice-code.providers :as providers]
+            [voice-code.tmux :as tmux])
+  (:import [java.util.concurrent Executors TimeUnit])
   (:gen-class))
 
 ;; JSON key conversion utilities
@@ -57,7 +61,7 @@
 (defn ensure-config-file
   "Ensure config.edn exists, creating with defaults if needed.
   Only works in development (not when running from JAR).
-  
+
   Accepts optional config-path for testing purposes."
   ([]
    (ensure-config-file "resources/config.edn"))
@@ -71,7 +75,11 @@
                   "          :host \"0.0.0.0\"}\n\n"
                   " :claude {:cli-path \"claude\"\n"
                   "          :default-timeout 86400000}  ; 24 hours in milliseconds\n\n"
-                  " :logging {:level :info}}\n"))))))
+                  " :logging {:level :info}\n\n"
+                  " ;; WebSocket protocol version served to clients and used to gate\n"
+                  " ;; append-only-stream behavior (seq migration, hello version enforcement).\n"
+                  " ;; Flip to :v0.3.0 to roll back to the last_message_id / session_updated paths.\n"
+                  " :message-stream-version :v0.4.0}\n"))))))
 
 (defn load-config
   "Load configuration from resources/config.edn, creating with defaults if needed"
@@ -88,14 +96,92 @@
                 :host "0.0.0.0"}
        :claude {:cli-path "claude"
                 :default-timeout 86400000}
-       :logging {:level :info}})))
+       :logging {:level :info}
+       :message-stream-version :v0.4.0})))
+
+;; Supported values for :message-stream-version. See
+;; @docs/design/append-only-message-stream.md §Risks-Mitigations for the
+;; rollback semantics. :v0.4.0 enables the append-only monotonic-seq path
+;; (post-migration, strict hello enforcement). :v0.3.0 preserves the legacy
+;; last_message_id / session_updated paths for rollback without a redeploy.
+(def supported-message-stream-versions #{:v0.3.0 :v0.4.0})
+
+(def default-message-stream-version :v0.4.0)
+
+(defn coerce-message-stream-version
+  "Coerce a config value to a supported :message-stream-version keyword.
+   Accepts the keyword directly or a string like \"v0.4.0\". Returns
+   default-message-stream-version on nil / unknown input (with a warn log)."
+  [v]
+  (let [k (cond
+            (keyword? v) v
+            (string? v) (keyword (if (str/starts-with? v ":") (subs v 1) v))
+            :else nil)]
+    (if (contains? supported-message-stream-versions k)
+      k
+      (do
+        (when (some? v)
+          (log/warn "Ignoring unknown :message-stream-version; falling back to default"
+                    {:received v :default default-message-stream-version}))
+        default-message-stream-version))))
+
+;; Backend-wide runtime flag. Populated from config.edn at -main startup and
+;; by tests via reset!. Dereferenced by the hello handler (protocol version
+;; string emitted), the future hello-rejection path (T09), and the future
+;; one-shot seq migration (T04).
+(defonce message-stream-version (atom default-message-stream-version))
+
+(defn message-stream-version-string
+  "Human-facing protocol version (e.g. \"0.4.0\") for the given keyword
+   (e.g. :v0.4.0). Used in the hello handler and in rejection error payloads."
+  [v]
+  (str/replace (name v) #"^v" ""))
+
+(defn seq-migration-enabled?
+  "True when the backend should run the one-shot JSONL→seq migration and
+   stamp seq on new messages. Gated on :message-stream-version."
+  ([] (seq-migration-enabled? @message-stream-version))
+  ([v] (= v :v0.4.0)))
+
+(defn hello-enforcement-enabled?
+  "True when the hello handshake should reject clients announcing a protocol
+   version older than :v0.4.0. Gated on :message-stream-version."
+  ([] (hello-enforcement-enabled? @message-stream-version))
+  ([v] (= v :v0.4.0)))
+
+(defn parse-protocol-version
+  "Parse a semver-like wire string (e.g. \"0.3.0\") into [major minor patch]
+   so two announcements can be compared with `compare`. Pre-release / build
+   suffixes (\"-rc1\", \"+build\") are stripped before parsing. Returns nil
+   for anything that doesn't resolve to exactly three numeric parts."
+  [s]
+  (when (string? s)
+    (let [stripped (str/replace s #"[-+].*$" "")
+          parts (str/split stripped #"\.")]
+      (when (= 3 (count parts))
+        (try
+          (mapv #(Integer/parseInt %) parts)
+          (catch NumberFormatException _ nil))))))
+
+(defn client-protocol-too-old?
+  "True only when the client explicitly announced a protocol version below
+   0.4.0 in its hello/connect handshake. A missing or unparseable
+   :protocol-version is treated as 'unknown, not too old' so existing
+   v0.4.0 clients (which do not announce a version) still pass through."
+  [data]
+  (when-let [parsed (parse-protocol-version (:protocol-version data))]
+    (neg? (compare parsed [0 4 0]))))
 
 ;; Ephemeral mapping: WebSocket channel -> client state
 ;; This is just for routing messages during an active connection
 ;; Persistent session data comes from the replication system (filesystem-based)
 
 (defonce connected-clients
-  ;; Track all connected WebSocket clients: channel -> {:deleted-sessions #{} :recent-sessions-limit 5 :max-message-size-kb 200}
+  ;; Track all connected WebSocket clients: 
+  ;; channel -> {:deleted-sessions #{} 
+  ;;             :subscribed-sessions #{}  ; Sessions this client is subscribed to
+  ;;             :recent-sessions-limit 5 
+  ;;             :max-message-size-kb 200}
   (atom {}))
 
 ;; Default max message size in KB (conservative default well below iOS 256KB limit)
@@ -106,50 +192,83 @@
 ;; Messages larger than this are truncated individually, smaller messages are preserved intact
 (def per-message-max-bytes (* 20 1024)) ;; 20KB per message max
 
+(defn- take-prefix-bytes
+  "Return the longest prefix of text whose UTF-8 byte length is <= max-bytes.
+   Stops on character boundaries to avoid splitting multi-byte sequences."
+  [text max-bytes]
+  (if (<= max-bytes 0)
+    ""
+    (loop [chars (seq text)
+           result []
+           bytes 0]
+      (if (empty? chars)
+        (apply str result)
+        (let [ch (first chars)
+              ch-bytes (count (.getBytes (str ch) "UTF-8"))
+              new-bytes (+ bytes ch-bytes)]
+          (if (> new-bytes max-bytes)
+            (apply str result)
+            (recur (rest chars) (conj result ch) new-bytes)))))))
+
+(defn- take-suffix-bytes
+  "Return the longest suffix of text whose UTF-8 byte length is <= max-bytes."
+  [text max-bytes]
+  (if (<= max-bytes 0)
+    ""
+    (loop [chars (reverse (seq text))
+           result []
+           bytes 0]
+      (if (empty? chars)
+        (apply str (reverse result))
+        (let [ch (first chars)
+              ch-bytes (count (.getBytes (str ch) "UTF-8"))
+              new-bytes (+ bytes ch-bytes)]
+          (if (> new-bytes max-bytes)
+            (apply str (reverse result))
+            (recur (rest chars) (conj result ch) new-bytes)))))))
+
 (defn truncate-text-middle
   "Truncate text to fit within max-bytes by keeping first and last portions.
    Inserts a marker showing how much was truncated.
-   Returns the original text if it fits within the limit."
+   Returns the original text if it fits within the limit.
+
+   The assembled string is verified against max-bytes after construction.
+   If it overshoots (e.g. the marker is close to or larger than max-bytes),
+   half-bytes is reduced by the overage and the parts are rebuilt. As a
+   final safety net the result is byte-truncated to max-bytes."
   [text max-bytes]
   (let [text-bytes (.getBytes text "UTF-8")
         text-size (count text-bytes)]
     (if (<= text-size max-bytes)
       text
-      ;; Need to truncate
       (let [marker-template "\n\n... [truncated ~%d KB] ...\n\n"
-            ;; Estimate marker size (will recalculate)
             truncated-kb (int (/ (- text-size max-bytes) 1024))
             marker (format marker-template truncated-kb)
             marker-bytes (count (.getBytes marker "UTF-8"))
-            ;; Available space for content (half for each side)
             available-bytes (- max-bytes marker-bytes)
             half-bytes (int (/ available-bytes 2))
-            ;; We need to be careful with UTF-8 multi-byte characters
-            ;; Take characters until we exceed byte limit
-            first-part (loop [chars (seq text)
-                              result []
-                              bytes 0]
-                         (if (or (empty? chars) (>= bytes half-bytes))
-                           (apply str result)
-                           (let [ch (first chars)
-                                 ch-bytes (count (.getBytes (str ch) "UTF-8"))
-                                 new-bytes (+ bytes ch-bytes)]
-                             (if (> new-bytes half-bytes)
-                               (apply str result)
-                               (recur (rest chars) (conj result ch) new-bytes)))))
-            ;; Take from end
-            last-part (loop [chars (reverse (seq text))
-                             result []
-                             bytes 0]
-                        (if (or (empty? chars) (>= bytes half-bytes))
-                          (apply str (reverse result))
-                          (let [ch (first chars)
-                                ch-bytes (count (.getBytes (str ch) "UTF-8"))
-                                new-bytes (+ bytes ch-bytes)]
-                            (if (> new-bytes half-bytes)
-                              (apply str (reverse result))
-                              (recur (rest chars) (conj result ch) new-bytes)))))]
-        (str first-part marker last-part)))))
+            first-part (take-prefix-bytes text half-bytes)
+            last-part (take-suffix-bytes text half-bytes)
+            assembled (str first-part marker last-part)
+            assembled-bytes (count (.getBytes assembled "UTF-8"))]
+        (cond
+          (<= assembled-bytes max-bytes)
+          assembled
+
+          (>= marker-bytes max-bytes)
+          (take-prefix-bytes assembled max-bytes)
+
+          :else
+          (let [overage (- assembled-bytes max-bytes)
+                shrink (int (Math/ceil (/ overage 2.0)))
+                new-half (max 0 (- half-bytes shrink))
+                first-part' (take-prefix-bytes text new-half)
+                last-part' (take-suffix-bytes text new-half)
+                retry (str first-part' marker last-part')
+                retry-bytes (count (.getBytes retry "UTF-8"))]
+            (if (<= retry-bytes max-bytes)
+              retry
+              (take-prefix-bytes retry max-bytes))))))))
 
 (defn get-client-max-message-size-bytes
   "Get the max message size in bytes for a client channel."
@@ -257,76 +376,159 @@
                          :max-bytes max-total-bytes})
               (mapv #(truncate-message-text % 500) messages))))))))
 
-(defn build-session-history-response
-  "Build session-history response with delta sync and smart truncation.
+(defn pack-within-budget
+  "Walk candidates oldest-first, including each if the running JSON byte
+   estimate stays under max-bytes. Returns {:included vec :complete? bool}.
 
-   Algorithm:
-   1. Find messages newer than last-message-id (or all if not provided/found)
-   2. Start from newest, work backwards
-   3. Add messages until budget exhausted or all messages included
-   4. Truncate only messages exceeding per-message-max-bytes
-   5. Reverse to chronological order
+   - envelope-overhead: bytes reserved for the response envelope around the
+     :messages array (e.g. :type, :session-id, :first-seq, :last-seq,
+     :next-seq, :is-complete, :gap). Callers should measure their actual
+     envelope and pass the result; the 2-arg form falls back to a 300-byte
+     conservative default that covers the v0.4.0 session_history envelope
+     including a populated gap object.
+   - per-message-extra: bytes the caller will :assoc onto each message
+     after packing (e.g. ~52 bytes for the :session-id field added by the
+     subscribe handler and broadcast path before serialization). Reserved
+     per included message so the wire response stays under max-bytes
+     after the caller's post-processing.
+
+   Each candidate contributes its JSON byte count plus 1 (comma) plus
+   per-message-extra. Stops at the first candidate that would push total
+   past max-bytes, returning :complete? false. Exhausting the input
+   returns :complete? true.
+
+   Pure helper: no I/O, no state, no truncation. Individual over-budget
+   messages are handled by the caller (e.g. via truncate-message-text)."
+  ([candidates max-bytes]
+   (pack-within-budget candidates max-bytes 300 0))
+  ([candidates max-bytes envelope-overhead per-message-extra]
+   (loop [remaining candidates
+          included []
+          used envelope-overhead]
+     (if (empty? remaining)
+       {:included included :complete? true}
+       (let [m (first remaining)
+             m-json (generate-json m)
+             m-sz (+ (count (.getBytes ^String m-json "UTF-8"))
+                     1
+                     per-message-extra)]
+         (if (> (+ used m-sz) max-bytes)
+           {:included included :complete? false}
+           (recur (rest remaining) (conj included m) (+ used m-sz))))))))
+
+(defn build-session-history-response
+  "Unified session-history reply for subscribe and live push (protocol v0.4.0).
+
+   Returns exactly one of four shapes, keyed on the relationship between the
+   client's `last-seq` and the server's `min-available-seq` / `next-seq`:
+
+     - Pruned:       client is below `min-available-seq - 1`. Reply carries a
+                     `:gap {:reason \"pruned\"}` and no messages.
+     - Client-ahead: client is above `next-seq - 1`, i.e. claims a seq the
+                     server never assigned. Happens after a backend rollback
+                     that discarded messages the client already saw. Reply
+                     carries a `:gap {:reason \"client_ahead\"}` and a full
+                     resync of `messages` from `min-available-seq` onward so
+                     the client can drop local state and reload.
+     - Caught up:    client is at exactly `next-seq - 1`. Empty `:messages`,
+                     no gap.
+     - Packed:       otherwise, filter messages by `:seq > last-seq` and pack
+                     them with `pack-within-budget`. `:is-complete` is false
+                     when the byte budget truncates the range.
 
    Parameters:
-   - messages: vector of message maps (must have :uuid field)
-   - last-message-id: optional UUID string of the most recent message iOS has
-   - max-total-bytes: maximum bytes for the response JSON
+   - messages:          vector of canonical messages, each carrying `:seq`
+   - last-seq:          highest seq the client already has (0 = fresh)
+   - max-total-bytes:   response size budget for the packed branch
+   - min-available-seq: lowest seq the server still retains
+   - next-seq:          seq the server will assign to the next new message
 
-   Returns map with:
-   - :messages - vector of processed messages in chronological order
-   - :is-complete - true if all requested messages fit
-   - :oldest-message-id - UUID of oldest included message
-   - :newest-message-id - UUID of newest included message"
-  [messages last-message-id max-total-bytes]
-  (if (empty? messages)
-    {:messages []
-     :is-complete true
-     :oldest-message-id nil
-     :newest-message-id nil}
-    (let [;; Find index of last known message
-          last-idx (when last-message-id
-                     (some (fn [[idx msg]]
-                             (when (= (:uuid msg) last-message-id) idx))
-                           (map-indexed vector messages)))
+   Returns {:messages :first-seq :last-seq :next-seq :is-complete :gap}."
+  [messages last-seq max-total-bytes min-available-seq next-seq]
+  (let [pack-and-build
+        (fn [filter-fn gap]
+          ;; Measure the actual session_history envelope bytes (with the gap
+          ;; object baked in) so the wire response stays under
+          ;; max-total-bytes after the caller :assoc's :session-id onto each
+          ;; message. Used by both the packed and client-ahead branches.
+          (let [candidates (filter filter-fn messages)
+                envelope-overhead
+                (count (.getBytes ^String
+                        (generate-json
+                         {:type :session-history
+                          :session-id "00000000-0000-0000-0000-000000000000"
+                          :messages []
+                          :first-seq next-seq
+                          :last-seq next-seq
+                          :next-seq next-seq
+                          :is-complete true
+                          :gap gap})
+                                  "UTF-8"))
+                per-message-extra 52
+                {:keys [included complete?]}
+                (pack-within-budget candidates max-total-bytes
+                                    envelope-overhead per-message-extra)]
+            (if (empty? included)
+              ;; Defensive guard: no candidate fit the byte budget. For the
+              ;; packed branch this would otherwise leave the client unable
+              ;; to advance its cursor, so we report caught-up. For the
+              ;; client-ahead branch we preserve the gap so the client still
+              ;; receives the drop-state signal even if the resync itself is
+              ;; empty (e.g. server has zero messages).
+              (do
+                (when (and (nil? gap) (seq candidates))
+                  (log/warn "build-session-history-response: no candidate fit byte budget; returning caught-up to break resubscribe loop"
+                            {:last-seq last-seq
+                             :max-total-bytes max-total-bytes
+                             :next-seq next-seq
+                             :candidate-count (count candidates)
+                             :first-candidate-seq (:seq (first candidates))}))
+                {:messages []
+                 :first-seq nil
+                 :last-seq nil
+                 :next-seq next-seq
+                 :is-complete true
+                 :gap gap})
+              {:messages (vec included)
+               :first-seq (:seq (first included))
+               :last-seq (:seq (last included))
+               :next-seq next-seq
+               :is-complete complete?
+               :gap gap})))]
+    (cond
+      ;; Pruned: client's cursor is below the server's retained range.
+      (< last-seq (dec min-available-seq))
+      {:messages []
+       :first-seq nil
+       :last-seq nil
+       :next-seq next-seq
+       :is-complete true
+       :gap {:requested-last-seq last-seq
+             :min-available-seq min-available-seq
+             :reason "pruned"}}
 
-          ;; Get messages newer than last known (or all if not found)
-          new-messages (if last-idx
-                         (vec (drop (inc last-idx) messages))
-                         messages)
+      ;; Client ahead: client claims a seq the server never assigned (e.g.
+      ;; after a backend rollback that discarded messages). Return a full
+      ;; resync from min-available-seq so the client can drop local state
+      ;; and reload to the server's truth.
+      (> last-seq (dec next-seq))
+      (pack-and-build (fn [m] (>= (:seq m) min-available-seq))
+                      {:requested-last-seq last-seq
+                       :min-available-seq min-available-seq
+                       :reason "client_ahead"})
 
-          ;; If no new messages after last-message-id, return empty
-          _ (when (and last-idx (empty? new-messages))
-              (log/debug "No new messages since last-message-id"
-                         {:last-message-id last-message-id}))
+      ;; Caught up: client is at exactly next-seq - 1.
+      (= last-seq (dec next-seq))
+      {:messages []
+       :first-seq nil
+       :last-seq nil
+       :next-seq next-seq
+       :is-complete true
+       :gap nil}
 
-          ;; Work backwards from newest, building up result
-          reversed-msgs (reverse new-messages)
-          overhead-estimate 200 ;; JSON structure overhead
-
-          result (loop [remaining reversed-msgs
-                        accumulated []
-                        used-bytes overhead-estimate]
-                   (if (empty? remaining)
-                     {:messages (vec (reverse accumulated))
-                      :is-complete true}
-                     (let [msg (first remaining)
-                           ;; Truncate individual large messages
-                           processed-msg (truncate-message-text msg per-message-max-bytes)
-                           msg-json (generate-json processed-msg)
-                           msg-bytes (count (.getBytes msg-json "UTF-8"))
-                           new-total (+ used-bytes msg-bytes 1)] ;; +1 for comma
-                       (if (> new-total max-total-bytes)
-                         ;; Budget exhausted
-                         {:messages (vec (reverse accumulated))
-                          :is-complete false}
-                         ;; Add message and continue
-                         (recur (rest remaining)
-                                (conj accumulated processed-msg)
-                                new-total)))))]
-
-      (assoc result
-             :oldest-message-id (-> result :messages first :uuid)
-             :newest-message-id (-> result :messages last :uuid)))))
+      ;; Packed range.
+      :else
+      (pack-and-build (fn [m] (> (:seq m) last-seq)) nil))))
 
 (defn truncate-response-text
   "Truncate the :text field of a response message if the total JSON would exceed max size.
@@ -401,6 +603,37 @@
                               :message "Authentication failed"}))
   (http/close channel))
 
+(defn reject-unsupported-protocol-version!
+  "Send the canonical unsupported_protocol_version error payload exactly as
+   required by the v0.4.0 hello contract and close the socket. The payload
+   shape is asserted by tests, so do not reshape it without also updating
+   the iOS client and the protocol docs."
+  [channel received-version]
+  (log/warn "Rejecting client for unsupported protocol version"
+            {:received received-version :required "0.4.0"})
+  (http/send! channel
+              (generate-json
+               {:type "error"
+                :code "unsupported_protocol_version"
+                :required "0.4.0"
+                :received received-version
+                :message "Client is too old; upgrade required"}))
+  (http/close channel))
+
+(defn enforce-protocol-version!
+  "Hello-handshake guard: reject clients announcing a protocol version older
+   than 0.4.0 when enforcement is on (:message-stream-version = :v0.4.0).
+   Returns true when the client may proceed to authentication. Returns false
+   and has already sent the error + closed the socket when rejection fires.
+   A :v0.3.0 message-stream-version disables the guard so rollback keeps
+   legacy clients working."
+  [channel data]
+  (if (and (hello-enforcement-enabled?)
+           (client-protocol-too-old? data))
+    (do (reject-unsupported-protocol-version! channel (:protocol-version data))
+        false)
+    true))
+
 (defn authenticate-connect!
   "Validate API key on connect message and mark channel as authenticated.
    Returns true if authenticated, false otherwise (and sends error + closes channel)."
@@ -434,9 +667,30 @@
       (subs auth-header 7))))
 
 (defn unregister-channel!
-  "Remove WebSocket channel from connected clients"
+  "Remove WebSocket channel from connected clients and clean up subscriptions.
+   Any sessions that are no longer subscribed by any client are unsubscribed globally."
   [channel]
-  (swap! connected-clients dissoc channel))
+  (let [client-info (get @connected-clients channel)
+        client-subscriptions (or (:subscribed-sessions client-info) #{})]
+    ;; Remove the channel first
+    (swap! connected-clients dissoc channel)
+    ;; For each session this client was subscribed to, check if any other client still needs it
+    (when (seq client-subscriptions)
+      (let [remaining-clients @connected-clients
+            ;; Compute all sessions still needed by remaining clients
+            all-remaining-subscriptions (reduce
+                                         (fn [acc [_ info]]
+                                           (into acc (or (:subscribed-sessions info) #{})))
+                                         #{}
+                                         remaining-clients)
+            ;; Sessions to unsubscribe globally
+            orphaned-sessions (clojure.set/difference client-subscriptions all-remaining-subscriptions)]
+        (when (seq orphaned-sessions)
+          (log/info "Cleaning up orphaned subscriptions on disconnect"
+                    {:orphaned-count (count orphaned-sessions)
+                     :session-ids orphaned-sessions})
+          (doseq [session-id orphaned-sessions]
+            (repl/unsubscribe-from-session! session-id)))))))
 
 (defn generate-message-id
   "Generate a UUID v4 for message tracking"
@@ -444,49 +698,87 @@
   (str (java.util.UUID/randomUUID)))
 
 (defn broadcast-to-all-clients!
-  "Broadcast a message to all connected clients"
+  "Broadcast a message to all connected clients.
+
+   On send failure (e.g. dead socket), remove the offending channel from
+   `connected-clients` and unsubscribe it from all sessions via
+   `unregister-channel!`. Without this cleanup the channel would persist
+   as a zombie subscriber, slowing every subsequent broadcast and leaking
+   memory (see beads tmux-untethered-rxr)."
   [message-data]
   (doseq [[channel _client-info] @connected-clients]
     (try
       (http/send! channel (generate-json message-data))
       (catch Exception e
-        (log/warn e "Failed to broadcast to client")))))
+        (log/warn e "Failed to broadcast to client; removing dead channel")
+        (try
+          (unregister-channel! channel)
+          (catch Exception cleanup-e
+            (log/warn cleanup-e "Failed to clean up dead channel after broadcast failure")))))))
 
 (defn send-to-client!
   "Send message to a specific channel if it's connected.
-   Applies truncation for messages with :text or :messages fields if needed."
+   Applies truncation for messages with :text or :messages fields if needed.
+
+   On send failure (e.g. dead socket), remove the channel from
+   `connected-clients` and unsubscribe it from all sessions via
+   `unregister-channel!`. Without this cleanup the channel would persist
+   as a zombie subscriber, slowing every subsequent broadcast and leaking
+   memory (see beads tmux-untethered-rxr)."
   [channel message-data]
   (if (contains? @connected-clients channel)
-    (do
-      (log/info "Sending message to client" {:type (:type message-data)})
-      (let [;; Apply truncation for messages that might have large content
-            max-bytes (get-client-max-message-size-bytes channel)
-            final-data (truncate-response-text message-data max-bytes)
-            json-str (generate-json final-data)]
-        (log/debug "JSON payload" {:size (count json-str)})
-        (try
-          (http/send! channel json-str)
-          (log/info "Message sent successfully" {:type (:type message-data)})
-          (catch Exception e
-            (log/warn e "Failed to send to client")))))
+    (let [;; Apply truncation for messages that might have large content
+          max-bytes (get-client-max-message-size-bytes channel)
+          final-data (truncate-response-text message-data max-bytes)
+          json-str (generate-json final-data)
+          ;; One terse outbound line, with the fields that matter per type.
+          ;; A failure path adds a separate `warn` below; absence of the warn
+          ;; is the implicit "send succeeded."
+          ;; Silence high-frequency types so they don't dominate logs:
+          ;; :pong fires every keepalive, :command-output streams per-line.
+          msg-type (:type message-data)
+          silenced? (contains? #{:pong :command-output} msg-type)
+          summary (cond-> {:bytes (count json-str)}
+                    (:session-id message-data)  (assoc :sess (subs (str (:session-id message-data)) 0 (min 8 (count (str (:session-id message-data))))))
+                    (:first-seq message-data)   (assoc :first (:first-seq message-data))
+                    (:last-seq message-data)    (assoc :last (:last-seq message-data))
+                    (:next-seq message-data)    (assoc :next (:next-seq message-data))
+                    (:is-complete message-data) (assoc :complete? (:is-complete message-data))
+                    (:gap message-data)         (assoc :gap (get-in message-data [:gap :reason]))
+                    (:messages message-data)    (assoc :msgs (count (:messages message-data)))
+                    (:exit-code message-data)   (assoc :exit (:exit-code message-data))
+                    (:code message-data)        (assoc :code (:code message-data)))]
+      (when-not silenced?
+        (log/info (str "→ " msg-type) summary))
+      (try
+        (http/send! channel json-str)
+        (catch Exception e
+          (log/warn e "Failed to send to client; removing dead channel"
+                    {:type msg-type :bytes (count json-str)})
+          (try
+            (unregister-channel! channel)
+            (catch Exception cleanup-e
+              (log/warn cleanup-e "Failed to clean up dead channel after send failure"))))))
     (log/warn "Channel not in connected-clients, skipping send" {:type (:type message-data)})))
 
 (defn send-recent-sessions!
   "Send the recent sessions list to a connected client.
   Uses the new recent_sessions message type (distinct from session-list).
   Converts :last-modified from milliseconds to ISO-8601 string for JSON.
-  Sends session-id, name, working-directory, last-modified."
+  Sends session-id, name, working-directory, last-modified, provider."
   [channel limit]
   (let [sessions (repl/get-recent-sessions limit)
         ;; Convert to format with ISO-8601 timestamp
         ;; Include name field (generated from Claude summary or fallback to dir-timestamp)
+        ;; Include provider field for multi-provider support
         sessions-minimal (mapv
                           (fn [session]
                             {:session-id (:session-id session)
                              :name (:name session)
                              :working-directory (:working-directory session)
                              :last-modified (.format (java.time.format.DateTimeFormatter/ISO_INSTANT)
-                                                     (java.time.Instant/ofEpochMilli (:last-modified session)))})
+                                                     (java.time.Instant/ofEpochMilli (:last-modified session)))
+                             :provider (or (:provider session) :claude)})
                           sessions)]
     (log/info "Sending recent sessions" {:count (count sessions-minimal) :limit limit})
     (send-to-client! channel
@@ -494,14 +786,41 @@
                       :sessions sessions-minimal
                       :limit limit})))
 
-(defn send-session-locked!
-  "Send session_locked message to client indicating session is processing a prompt."
-  [channel session-id]
-  (log/info "Sending session_locked message" {:session-id session-id})
-  (send-to-client! channel
-                   {:type :session-locked
-                    :message "Session is currently processing a prompt. Please wait."
-                    :session-id session-id}))
+(def ^:private general-commands
+  [{:id "git.status"
+    :label "Git Status"
+    :description "Show git working tree status"
+    :type :command}
+   {:id "git.push"
+    :label "Git Push"
+    :description "Push commits to remote repository"
+    :type :command}
+   {:id "git.worktree.list"
+    :label "Git Worktree List"
+    :description "List all git worktrees"
+    :type :command}
+   {:id "bd.ready"
+    :label "Beads Ready"
+    :description "Show tasks ready to work on"
+    :type :command}
+   {:id "bd.list"
+    :label "Beads List"
+    :description "List all beads tasks"
+    :type :command}])
+
+(defn send-available-commands!
+  "Send available_commands to a client. Project commands are parsed from the
+   given working directory's Makefile when provided; otherwise the payload
+   carries only the always-available general commands."
+  [channel working-dir]
+  (let [project-commands (if (str/blank? working-dir)
+                           []
+                           (commands/parse-makefile working-dir))]
+    (send-to-client! channel
+                     {:type :available-commands
+                      :working-directory working-dir
+                      :project-commands project-commands
+                      :general-commands general-commands})))
 
 (defn is-session-deleted-for-client?
   "Check if a client has deleted a session locally"
@@ -530,25 +849,34 @@
 
 (defn start-recipe-for-session
   "Initialize orchestration state for a session.
-   is-new-session? indicates whether this is a brand new session with no Claude history."
-  [session-id recipe-id is-new-session?]
+   is-new-session? indicates whether this is a brand new session with no Claude history.
+   Provider defaults to :claude for backward compatibility."
+  [session-id recipe-id is-new-session? & {:keys [provider]}]
   (if-let [state (orch/create-orchestration-state recipe-id)]
-    (let [state-with-session-flag (assoc state :session-created? (not is-new-session?))]
+    (let [state-with-session-flag (assoc state
+                                         :session-created? (not is-new-session?)
+                                         :provider (or provider :claude))]
       (swap! session-orchestration-state assoc session-id state-with-session-flag)
       (orch/log-orchestration-event "recipe-started" session-id recipe-id
                                     (:current-step state)
-                                    {:is-new-session is-new-session?})
+                                    {:is-new-session is-new-session? :provider (or provider :claude)})
       state-with-session-flag)
     (do
       (log/error "Recipe not found" {:recipe-id recipe-id :session-id session-id})
       nil)))
+
+(declare recipe-turn-callbacks)
 
 (defn exit-recipe-for-session
   "Exit orchestration for a session"
   [session-id reason]
   (when-let [state (get-session-recipe-state session-id)]
     (orch/log-orchestration-event "recipe-exited" session-id (:recipe-id state) (:current-step state) {:reason reason})
-    (swap! session-orchestration-state dissoc session-id)))
+    (swap! session-orchestration-state dissoc session-id))
+  ;; Drop any orphaned turn-complete callback so the atom doesn't leak entries
+  ;; when a recipe exits mid-flight (e.g., tmux window killed externally,
+  ;; restart-new-session handoff).
+  (swap! recipe-turn-callbacks dissoc session-id))
 
 (defn get-next-step-prompt
   "Get the prompt for the next step in an active recipe"
@@ -566,14 +894,6 @@
   [recipe step-name]
   (or (get-in recipe [:steps step-name :model])
       (:model recipe)))
-
-(defn get-step-env
-  "Get env vars for a step. Merges recipe :env with step :env (step wins)."
-  [recipe step-name]
-  (let [recipe-env (:env recipe)
-        step-env (get-in recipe [:steps step-name :env])]
-    (when (or recipe-env step-env)
-      (merge recipe-env step-env))))
 
 (defn get-available-recipes-list
   "Get list of available recipes with metadata for client.
@@ -682,26 +1002,114 @@
                               :error (str "Agent failed to produce valid JSON outcome after retry. " error-msg)})
             {:action :exit :reason "orchestration-error"}))))))
 
+(defonce ^:private recipe-turn-callbacks
+  ;; session-id -> callback fn (one-arg, receives response map).
+  ;; Registered by dispatch-recipe-step-via-tmux! before nudging the tmux pane;
+  ;; drained by on-turn-complete when the filesystem watcher observes the
+  ;; provider's terminal marker.
+  (atom {}))
+
+(defn- last-assistant-message
+  "Read the session's JSONL via the provider's canonical parser and return the
+   last assistant message map (with :uuid and :text). Returns nil if the
+   session has no assistant messages or metadata cannot be located."
+  [session-id]
+  (try
+    (when-let [metadata (repl/get-session-metadata session-id)]
+      (let [provider (:provider metadata)
+            file-path (:file metadata)]
+        (when (and provider file-path)
+          (let [messages (repl/parse-session-messages provider file-path)
+                assistant (filter #(= "assistant" (:role %)) messages)]
+            (last assistant)))))
+    (catch Exception e
+      (log/warn e "Failed to read last assistant message"
+                {:session-id session-id})
+      nil)))
+
+(defn- read-fresh-assistant-text
+  "Return the text of the session's last assistant message only if it is
+   strictly newer than since-uuid (the watermark captured at step dispatch).
+   Returns nil when there is no newer assistant message, so a spurious
+   turn-complete fire (e.g. triggered by a non-assistant JSONL write between
+   dispatch and the provider's actual response) does not hand stale text to
+   the orchestrator. since-uuid may be nil for the first step of a session."
+  [session-id since-uuid]
+  (when-let [msg (last-assistant-message session-id)]
+    (when (or (nil? since-uuid) (not= since-uuid (:uuid msg)))
+      (:text msg))))
+
+(defn dispatch-recipe-step-via-tmux!
+  "Dispatch a recipe step prompt through tmux and register a turn-complete
+   callback. For the first step of a session (session-created? false), starts
+   a new tmux window. For subsequent steps, nudges the live window via
+   tmux/deliver!, which transparently respawns with --resume if the window
+   was evicted. On the deliver! path the provider is inferred from live-windows
+   state, so the :provider argument is only consulted when starting a window.
+
+   The tmux call is serialized against compact_session via
+   repl/compaction-dispatch-lock (see tmux-untethered-22g / tmux-untethered-3eh).
+   If a compaction is in progress for this session when the lock is acquired,
+   the callback fires with {:success false :error ...} and tmux is not invoked;
+   the orchestrator's callback exits the recipe with an error whose text tells
+   the user to retry once compaction completes.
+
+   The callback is stored keyed on session-id and fired by on-turn-complete
+   with {:success true :result <assistant-text> :session-id <id>}. On
+   synchronous dispatch failure the callback fires immediately with
+   {:success false :error ...} and the registration is cleared."
+  [{:keys [provider session-id session-created? prompt-text working-dir]}
+   callback-fn]
+  ;; Capture the "last assistant message" watermark before dispatch so
+  ;; on-turn-complete can distinguish a fresh response from a spurious fire
+  ;; caused by non-assistant JSONL writes (interrupt markers, permission-mode
+  ;; entries, etc.). See tmux-untethered-uqj.
+  (let [since-uuid (:uuid (last-assistant-message session-id))]
+    (swap! recipe-turn-callbacks assoc session-id
+           {:callback callback-fn :since-uuid since-uuid}))
+  (try
+    (locking repl/compaction-dispatch-lock
+      (if (repl/is-compaction-locked? session-id)
+        (do
+          (log/info "Recipe step dispatch aborted: compaction in progress"
+                    {:session-id session-id :provider provider})
+          (swap! recipe-turn-callbacks dissoc session-id)
+          (callback-fn {:success false
+                        :error "Compaction in progress for this session; retry once it completes"}))
+        (if session-created?
+          (tmux/deliver! session-id prompt-text)
+          (tmux/start-window! {:session-uuid session-id
+                               :session-name (:name (repl/get-session-metadata session-id))
+                               :provider provider
+                               :workdir working-dir
+                               :initial-prompt prompt-text
+                               :resume? false}))))
+    nil
+    (catch Throwable e
+      (log/error e "Failed to dispatch recipe step via tmux"
+                 {:session-id session-id :provider provider})
+      (swap! recipe-turn-callbacks dissoc session-id)
+      (callback-fn {:success false
+                    :error (str "tmux dispatch failed: " (.getMessage e))}))))
+
 (declare execute-recipe-step)
 
 (defn execute-recipe-step
   "Execute a single step of a recipe and handle the response.
    This function handles the full orchestration loop:
-   1. Send the step prompt to Claude
+   1. Send the step prompt to the provider (Claude, Copilot, etc.)
    2. Parse the outcome from the response
    3. If next step: update state and recursively continue
    4. If retry: send reminder prompt and try again (once per step)
-   5. If exit: send recipe_exited message and release lock
-   
-   Lock management: The session lock is acquired BEFORE the first call to this function.
-   The lock is only released when the recipe exits (success, error, or guardrail).
-   Recursive calls (:next-step, :retry) keep the lock held.
-   
+   5. If exit: send recipe_exited message
+
+   Provider is read from orchestration state (:provider field), enabling multi-provider support.
+
    Parameters:
    - channel: WebSocket channel to send messages to
    - session-id: Claude session ID
-   - working-dir: Working directory for Claude
-   - orch-state: Current orchestration state
+   - working-dir: Working directory for the provider
+   - orch-state: Current orchestration state (includes :provider field)
    - recipe: Recipe definition
    - prompt-override: Optional prompt to use instead of step prompt (for retries)"
   ([channel session-id working-dir orch-state recipe]
@@ -709,19 +1117,26 @@
   ([channel session-id working-dir orch-state recipe prompt-override]
    (let [step-prompt (or prompt-override (get-next-step-prompt session-id orch-state recipe))
          current-step (:current-step orch-state)
-         session-created? (:session-created? orch-state)]
+         session-created? (:session-created? orch-state)
+         step-model (get-step-model recipe current-step)]
      (if step-prompt
        (do
          (log/info "Executing recipe step"
                    {:session-id session-id
                     :recipe-id (:recipe-id orch-state)
                     :step current-step
-                    :model (get-step-model recipe current-step)
+                    :provider (:provider orch-state)
+                    :model step-model
                     :step-count (:step-count orch-state)
                     :session-created? session-created?
                     :is-retry (some? prompt-override)})
+         (when step-model
+           (log/warn "Recipe step requests model override, which is not honored under tmux invocation"
+                     {:session-id session-id
+                      :recipe-id (:recipe-id orch-state)
+                      :step current-step
+                      :requested-model step-model}))
 
-         ;; Send step transition notification (only for non-retry)
          (when-not prompt-override
            (send-to-client! channel
                             {:type :recipe-step-started
@@ -729,32 +1144,30 @@
                              :step current-step
                              :step-count (:step-count orch-state)}))
 
-         (claude/invoke-claude-async
-          step-prompt
+         (dispatch-recipe-step-via-tmux!
+          {:provider (:provider orch-state)
+           :session-id session-id
+           :session-created? session-created?
+           :prompt-text step-prompt
+           :working-dir working-dir}
           (fn [response]
             (try
               (if (:success response)
                 (let [response-text (:result response)
-                      ;; Get fresh state in case retry count was updated or user exited
                       current-orch-state (get-session-recipe-state session-id)]
-                  ;; Mark session as created after first successful invocation
                   (when (and current-orch-state (not session-created?))
                     (log/info "Marking session as created after first successful invocation"
                               {:session-id session-id})
                     (swap! session-orchestration-state
                            update session-id
                            assoc :session-created? true))
-                  ;; Check if recipe was exited by user while we were waiting for Claude
                   (if (nil? current-orch-state)
                     (do
-                      (log/info "Recipe was exited while waiting for Claude response"
+                      (log/info "Recipe was exited while waiting for provider response"
                                 {:session-id session-id})
-                      ;; Recipe already exited, just release lock and send turn_complete
-                      (repl/release-session-lock! session-id)
                       (send-to-client! channel
                                        {:type :turn-complete
                                         :session-id session-id}))
-                    ;; Process the orchestration response normally
                     (let [result (process-orchestration-response
                                   session-id current-orch-state recipe response-text channel)]
                       (log/info "Recipe step response processed"
@@ -763,70 +1176,56 @@
                                  :action (:action result)
                                  :next-step (:step-name result)
                                  :reason (:reason result)})
-
                       (case (:action result)
                         :next-step
-                        ;; Continue to next step - get updated state and continue loop
-                        ;; Lock remains held for the recursive call
                         (let [updated-orch-state (get-session-recipe-state session-id)
                               updated-recipe (recipes/get-recipe (:recipe-id updated-orch-state))]
                           (if updated-orch-state
-                            ;; Recursively execute the next step (lock stays held)
                             (execute-recipe-step channel session-id working-dir
                                                  updated-orch-state updated-recipe)
-                            ;; State was cleared (user exited), release lock and exit
                             (do
                               (log/warn "Orchestration state missing after step transition"
                                         {:session-id session-id})
-                              (repl/release-session-lock! session-id)
                               (send-to-client! channel
                                                {:type :turn-complete
                                                 :session-id session-id}))))
 
                         :retry
-                        ;; Retry with reminder prompt - lock remains held for the recursive call
                         (let [updated-orch-state (get-session-recipe-state session-id)]
                           (if updated-orch-state
                             (do
                               (log/info "Retrying step with reminder prompt"
                                         {:session-id session-id
                                          :step current-step})
-                              ;; Recursively call with the retry prompt (lock stays held)
                               (execute-recipe-step channel session-id working-dir
                                                    updated-orch-state recipe (:prompt result)))
-                            ;; State was cleared (user exited), release lock and exit
                             (do
                               (log/warn "Orchestration state missing before retry"
                                         {:session-id session-id})
-                              (repl/release-session-lock! session-id)
                               (send-to-client! channel
                                                {:type :turn-complete
                                                 :session-id session-id}))))
 
                         :exit
-                        ;; Recipe finished - release lock and send turn_complete
                         (do
                           (log/info "Recipe exited"
                                     {:session-id session-id
                                      :reason (:reason result)})
-                          (repl/release-session-lock! session-id)
                           (send-to-client! channel
                                            {:type :turn-complete
                                             :session-id session-id}))
 
                         :restart-new-session
-                        ;; Recipe finished, start new recipe in fresh session
-                        ;; Used by implement-and-review to loop after commit
                         (let [new-session-id (str (java.util.UUID/randomUUID))
-                              new-recipe-id (:recipe-id result)]
+                              new-recipe-id (:recipe-id result)
+                              old-provider (:provider orch-state)]
                           (log/info "Recipe restarting with new session"
                                     {:old-session-id session-id
                                      :new-session-id new-session-id
                                      :recipe-id new-recipe-id
+                                     :old-provider old-provider
                                      :working-directory working-dir})
-                          ;; Exit current recipe and release lock
                           (exit-recipe-for-session session-id "restart-new-session")
-                          (repl/release-session-lock! session-id)
                           (send-to-client! channel
                                            {:type :recipe-exited
                                             :session-id session-id
@@ -834,8 +1233,7 @@
                           (send-to-client! channel
                                            {:type :turn-complete
                                             :session-id session-id})
-                          ;; Start new recipe with fresh session
-                          (if-let [new-orch-state (start-recipe-for-session new-session-id new-recipe-id true)]
+                          (if-let [new-orch-state (start-recipe-for-session new-session-id new-recipe-id true :provider old-provider)]
                             (let [new-recipe (recipes/get-recipe new-recipe-id)]
                               (send-to-client! channel
                                                {:type :recipe-started
@@ -844,21 +1242,11 @@
                                                 :session-id new-session-id
                                                 :current-step (:current-step new-orch-state)
                                                 :step-count (:step-count new-orch-state)})
-                              ;; Acquire lock and start new recipe
-                              (if (repl/acquire-session-lock! new-session-id)
-                                (do
-                                  (send-to-client! channel
-                                                   {:type :ack
-                                                    :message "Starting recipe in new session..."})
-                                  (execute-recipe-step channel new-session-id working-dir
-                                                       new-orch-state new-recipe))
-                                (do
-                                  (log/error "Failed to acquire lock for new session"
-                                             {:session-id new-session-id})
-                                  (exit-recipe-for-session new-session-id "lock-failed")
-                                  (send-to-client! channel
-                                                   {:type :error
-                                                    :message "Failed to start new session"}))))
+                              (send-to-client! channel
+                                               {:type :ack
+                                                :message "Starting recipe in new session..."})
+                              (execute-recipe-step channel new-session-id working-dir
+                                                   new-orch-state new-recipe))
                             (do
                               (log/error "Failed to create orchestration state for restart"
                                          {:recipe-id new-recipe-id})
@@ -866,21 +1254,17 @@
                                                {:type :error
                                                 :message (str "Recipe not found: " (name new-recipe-id))}))))
 
-                        ;; Default - unexpected action, release lock and exit
                         (do
                           (log/error "Unexpected orchestration action"
                                      {:action (:action result)})
-                          (repl/release-session-lock! session-id)
                           (send-to-client! channel
                                            {:type :turn-complete
                                             :session-id session-id}))))))
 
-                ;; Claude invocation failed - release lock and exit
                 (do
                   (log/error "Recipe step failed"
                              {:error (:error response) :session-id session-id})
                   (exit-recipe-for-session session-id "error")
-                  (repl/release-session-lock! session-id)
                   (send-to-client! channel
                                    {:type :recipe-exited
                                     :session-id session-id
@@ -891,11 +1275,9 @@
                                     :message (:error response)
                                     :session-id session-id})))
               (catch Exception e
-                ;; Catch any exception to ensure lock is always released
                 (log/error e "Unexpected error in recipe step callback"
                            {:session-id session-id :step current-step})
                 (exit-recipe-for-session session-id "internal-error")
-                (repl/release-session-lock! session-id)
                 (send-to-client! channel
                                  {:type :recipe-exited
                                   :session-id session-id
@@ -904,24 +1286,13 @@
                 (send-to-client! channel
                                  {:type :error
                                   :message (str "Internal error: " (ex-message e))
-                                  :session-id session-id}))))
-          ;; Conditionally use new-session-id or resume-session-id based on session-created?
-          ;; For new sessions (session-created? = false), use :new-session-id (--session-id flag)
-          ;; For existing sessions (session-created? = true), use :resume-session-id (--resume flag)
-          (if session-created? :resume-session-id :new-session-id) session-id
-          :working-directory working-dir
-          :model (get-step-model recipe current-step)
-          :env-vars (get-step-env recipe current-step)
-          :timeout-ms 86400000))
-       ;; No step prompt available - this shouldn't happen in normal operation
-       ;; but we must release the lock if it does
+                                  :session-id session-id}))))))
        (do
          (log/error "No step prompt available for recipe step"
                     {:session-id session-id
                      :recipe-id (:recipe-id orch-state)
                      :step current-step})
          (exit-recipe-for-session session-id "no-prompt")
-         (repl/release-session-lock! session-id)
          (send-to-client! channel
                           {:type :recipe-exited
                            :session-id session-id
@@ -936,7 +1307,15 @@
 ;; Removed duplicate comment here
 
 (defn on-session-created
-  "Called when a new session file is detected"
+  "Called when a new session file is detected.
+
+   The session-created envelope and recent-sessions side-channel fan out to
+   every connected non-deleted client (so any client viewing Projects sees
+   the new row). The session-updated push body, however, must be gated by
+   per-channel :subscribed-sessions — same shape as broadcast-session-history!
+   (tmux-untethered-2yp). Without that gate a connected client that has never
+   subscribed to this session can still receive its messages on the new-session
+   race path, which is the cross-session leak we're closing."
   [session-metadata]
   (let [session-id (:session-id session-metadata)
         client-count (count @connected-clients)
@@ -951,7 +1330,8 @@
                :message-count (:message-count session-metadata)
                :total-clients client-count
                :eligible-clients eligible-count
-               :has-preview (boolean (seq (:preview session-metadata)))})
+               :has-preview (boolean (seq (:preview session-metadata)))
+               :provider (:provider session-metadata)})
 
     ;; Check if this is a pending new session and send session_ready first
     (when-let [pending-channel (get @pending-new-sessions session-id)]
@@ -977,24 +1357,32 @@
                         :working-directory (:working-directory session-metadata)
                         :last-modified (:last-modified session-metadata)
                         :message-count (:message-count session-metadata)
-                        :preview (:preview session-metadata)})
+                        :preview (:preview session-metadata)
+                        :provider (or (:provider session-metadata) :claude)})
 
       ;; Send updated recent sessions list to each client
       (let [limit (get client-info :recent-sessions-limit 5)]
         (send-recent-sessions! channel limit)))
 
-    ;; Also send messages if client is subscribed (handles new session race condition)
+    ;; Also send messages if client is subscribed (handles new session race condition).
+    ;; Gate by per-channel :subscribed-sessions — repl/is-subscribed? is a
+    ;; global session-level flag, not a per-channel filter.
     (when (repl/is-subscribed? session-id)
       (let [file-path (:file session-metadata)
             all-messages (repl/parse-jsonl-file file-path)
-            messages (repl/filter-internal-messages all-messages)]
+            messages (repl/filter-internal-messages all-messages)
+            push-clients (filter (fn [[_ client-info]]
+                                   (contains? (or (:subscribed-sessions client-info) #{})
+                                              session-id))
+                                 eligible-clients)]
         (if (seq messages)
           (do
             (log/info "Sending initial messages for new subscribed session"
                       {:session-id session-id
                        :message-count (count messages)
-                       :client-count eligible-count})
-            (doseq [[channel client-info] eligible-clients]
+                       :eligible-clients eligible-count
+                       :push-clients (count push-clients)})
+            (doseq [[channel _] push-clients]
               (send-to-client! channel
                                {:type :session-updated
                                 :session-id session-id
@@ -1002,34 +1390,112 @@
           (log/debug "No messages to send for new subscribed session"
                      {:session-id session-id}))))))
 
-(defn on-session-updated
-  "Called when a subscribed session has new messages"
+(defn broadcast-session-history!
+  "Flat broadcast of newly-parsed messages as a one-message-window
+   session_history payload (protocol v0.4.0).
+
+   Every eligible subscriber receives the same payload regardless of their
+   own last_seq — the server does NOT tailor per subscriber. Client-side
+   gap detection (`first_seq` vs. `local_last_seq`) is responsible for
+   reconciling missed windows by re-subscribing with the appropriate cursor
+   (see @docs/design/append-only-message-stream.md §Push).
+
+   Push eligibility (session_history / session_updated body): a connected
+   client that has explicitly subscribed to this session AND has not
+   marked it as locally-deleted. The replication watcher's `is-subscribed?`
+   flag is a global session-level set, not a per-channel filter, so
+   without per-channel gating here every connected client would receive
+   every push for any session any client subscribed to. That leak is the
+   root of cross-session TTS bleed (tmux-untethered-2yp): the iOS
+   active-session check is the last line of defense, not the first.
+
+   recent_sessions piggybacks on every push and goes to all connected
+   non-deleted clients regardless of subscription, so a client viewing
+   session B still sees session A move to the top of its Recent list when
+   session A is written. Otherwise the Recent panel would freeze for any
+   activity outside the currently-subscribed sessions.
+
+   Under v0.3.0 rollback, emits the legacy `session_updated` envelope so
+   existing clients keep working without a redeploy. Messages still carry
+   `:seq` (assign-seq! stamps every parse regardless of protocol), which
+   v0.3.0 clients harmlessly ignore."
   [session-id new-messages]
-  (let [client-count (count @connected-clients)
-        eligible-clients (filter (fn [[channel _]]
-                                   (not (is-session-deleted-for-client? channel session-id)))
-                                 @connected-clients)
-        eligible-count (count eligible-clients)]
+  (let [v0-4? (seq-migration-enabled?)
+        not-deleted-clients (filter (fn [[channel _]]
+                                      (not (is-session-deleted-for-client? channel session-id)))
+                                    @connected-clients)
+        push-clients (filter (fn [[_ client-info]]
+                               (contains? (or (:subscribed-sessions client-info) #{})
+                                          session-id))
+                             not-deleted-clients)
+        push-count (count push-clients)]
 
-    (log/info "Session updated callback invoked"
-              {:session-id session-id
-               :new-message-count (count new-messages)
-               :total-clients client-count
-               :eligible-clients eligible-count})
+    (if (zero? push-count)
+      ;; Surface the no-subscriber case at INFO so the symptom is visible
+      ;; from logs alone. tmux-untethered-9o9 was effectively invisible
+      ;; under the prior INFO line because it logged the same way whether
+      ;; the broadcast actually fanned out or got dropped on the floor.
+      (log/info (str "⚠ session-history fan-out skipped — no subscribers")
+                {:session-id session-id
+                 :new-message-count (count new-messages)
+                 :total-clients (count @connected-clients)
+                 :recent-sessions-clients (count not-deleted-clients)
+                 :protocol (if v0-4? :v0.4.0 :v0.3.0)})
+      (log/info "Broadcasting session history"
+                {:session-id session-id
+                 :new-message-count (count new-messages)
+                 :total-clients (count @connected-clients)
+                 :push-clients push-count
+                 :recent-sessions-clients (count not-deleted-clients)
+                 :protocol (if v0-4? :v0.4.0 :v0.3.0)}))
 
-    ;; Send to all clients subscribed to this session (and haven't deleted it)
-    (doseq [[channel client-info] eligible-clients]
-      (log/debug "Sending session-updated to client"
-                 {:session-id session-id
-                  :client-session-id (:session-id client-info)
-                  :new-messages (count new-messages)
-                  :channel-id (str channel)})
-      (send-to-client! channel
-                       {:type :session-updated
-                        :session-id session-id
-                        :messages new-messages})
+    (if v0-4?
+      ;; v0.4.0: flat session_history broadcast. One payload built once,
+      ;; shipped to every eligible subscriber unchanged.
+      (let [msgs-vec (vec new-messages)
+            first-seq (:seq (first msgs-vec))
+            last-seq (:seq (last msgs-vec))
+            ;; (inc last-seq) is atomic with the message vector — assign-seq!
+            ;; advanced :next-seq to (inc last-stamped-seq) when stamping these
+            ;; messages. Reading session-index here would race a concurrent
+            ;; assign-seq! that already pushed the counter past last-seq+1,
+            ;; making the payload look like a multi-seq gap and triggering
+            ;; spurious resubscribes. Metadata read remains as fallback for
+            ;; empty broadcasts where last-seq is nil.
+            next-seq (or (when last-seq (inc last-seq))
+                         (:next-seq (repl/get-session-metadata session-id))
+                         1)
+            wire-messages (mapv #(assoc % :session-id session-id) msgs-vec)
+            payload {:type :session-history
+                     :session-id session-id
+                     :messages wire-messages
+                     :first-seq first-seq
+                     :last-seq last-seq
+                     :next-seq next-seq
+                     :is-complete true
+                     :gap nil}]
+        (doseq [[channel _] push-clients]
+          (log/debug "Broadcasting session-history window to subscriber"
+                     {:session-id session-id
+                      :first-seq first-seq
+                      :last-seq last-seq
+                      :channel-id (str channel)})
+          (send-to-client! channel payload)))
 
-      ;; Send updated recent sessions list to each client
+      ;; v0.3.0 rollback: legacy session_updated envelope.
+      (doseq [[channel _] push-clients]
+        (log/debug "Sending session-updated to client (v0.3.0 rollback)"
+                   {:session-id session-id
+                    :new-messages (count new-messages)
+                    :channel-id (str channel)})
+        (send-to-client! channel
+                         {:type :session-updated
+                          :session-id session-id
+                          :messages new-messages})))
+
+    ;; recent_sessions piggybacks for every connected non-deleted client,
+    ;; not just per-session subscribers — see docstring.
+    (doseq [[channel client-info] not-deleted-clients]
       (let [limit (get client-info :recent-sessions-limit 5)]
         (send-recent-sessions! channel limit)))))
 
@@ -1038,6 +1504,37 @@
   [session-id]
   (log/info "Session deleted from filesystem" {:session-id session-id}))
   ;; This is informational - we don't broadcast deletes since it's just local cleanup
+
+(defn on-turn-complete
+  "Handler for turn-complete events.
+
+   Always broadcasts `{:type :turn-complete :session-id X}` to every connected
+   client subscribed to the session. Additionally, if a recipe step is waiting
+   on this turn, fires its callback with the last assistant message text —
+   but only if the text is strictly newer than the watermark captured at
+   dispatch. Spurious fires (no fresh assistant message) leave the callback
+   registered so a later, legitimate turn-complete can drain it."
+  [session-id]
+  (log/info "Turn-complete callback invoked" {:session-id session-id})
+  (when-let [{:keys [callback since-uuid]} (get @recipe-turn-callbacks session-id)]
+    (let [text (read-fresh-assistant-text session-id since-uuid)]
+      (if (nil? text)
+        (log/info "Turn-complete fire ignored: no fresh assistant message"
+                  {:session-id session-id :since-uuid since-uuid})
+        (do
+          (swap! recipe-turn-callbacks dissoc session-id)
+          (try
+            (callback {:success true :result text :session-id session-id})
+            (catch Throwable e
+              (log/error e "Recipe turn-complete callback failed"
+                         {:session-id session-id})))))))
+  (doseq [[channel client-info] @connected-clients]
+    (let [subscribed (or (:subscribed-sessions client-info) #{})]
+      (when (and (contains? subscribed session-id)
+                 (not (is-session-deleted-for-client? channel session-id)))
+        (send-to-client! channel
+                         {:type :turn-complete
+                          :session-id session-id})))))
 
 ;; Message handling
 (defn handle-message
@@ -1050,8 +1547,30 @@
   [channel msg]
   (try
     (let [data (parse-json msg)
-          msg-type (:type data)]
-      (log/info "=== Received message ===" {:type msg-type :type-class (class msg-type) :type-bytes (mapv int msg-type)})
+          msg-type (:type data)
+          ;; Concise inbound line, mirroring the outbound formatter in
+          ;; `send-to-client!`. Pull the few fields we actually want to
+          ;; trace per type. Add new ones here rather than scattering
+          ;; per-handler log calls.
+          short-sess (when-let [s (:session-id data)]
+                       (subs (str s) 0 (min 8 (count (str s)))))
+          short-new (when-let [s (:new-session-id data)]
+                      (subs (str s) 0 (min 8 (count (str s)))))
+          short-resume (when-let [s (:resume-session-id data)]
+                         (subs (str s) 0 (min 8 (count (str s)))))
+          summary (cond-> {}
+                    short-sess              (assoc :sess short-sess)
+                    short-new               (assoc :new short-new)
+                    short-resume            (assoc :resume short-resume)
+                    (:last-seq data)        (assoc :last_seq (:last-seq data))
+                    (:provider data)        (assoc :prov (:provider data))
+                    (:command-id data)      (assoc :cmd (:command-id data))
+                    (:size-kb data)         (assoc :kb (:size-kb data))
+                    (:text data)            (assoc :len (count (str (:text data))))
+                    (:protocol-version data) (assoc :proto (:protocol-version data)))]
+      ;; Mirror send-to-client!'s silencing — ping fires every keepalive.
+      (when-not (= msg-type "ping")
+        (log/info (str "← " msg-type) summary))
 
       (cond
         ;; Ping is always allowed (health check, no auth required)
@@ -1062,14 +1581,26 @@
 
         ;; Connect requires API key authentication
         (= msg-type "connect")
-        (when (authenticate-connect! channel data)
+        (when (and (enforce-protocol-version! channel data)
+                   (authenticate-connect! channel data))
           ;; Authentication succeeded, proceed with connect logic
           (log/info "Client connected and authenticated")
+
+          ;; Send connected confirmation per STANDARDS.md protocol.
+          ;; iOS only sets isAuthenticated=true on receipt of this message;
+          ;; without it, subscribe() defers forever and session_history
+          ;; pushes never reach the client.
+          (http/send! channel
+                      (generate-json
+                       {:type :connected
+                        :message "Session registered"
+                        :session-id (:session-id data)}))
 
           ;; Register client with initial state (merge to preserve :authenticated flag)
           (let [limit (or (:recent-sessions-limit data) 5)]
             (swap! connected-clients update channel merge
                    {:deleted-sessions #{}
+                    :subscribed-sessions #{}
                     :recent-sessions-limit limit}))
 
           ;; Send session list (limit to 50 most recent, lightweight fields only)
@@ -1082,7 +1613,7 @@
                                      (take 50)
                                      ;; Remove heavy fields to reduce payload size
                                      (mapv #(select-keys % [:session-id :name :working-directory
-                                                            :last-modified :message-count])))
+                                                            :last-modified :message-count :provider])))
                 total-non-empty (count (filter #(pos? (or (:message-count %) 0)) all-sessions))
                 ;; Log any sessions with placeholder working directories
                 placeholder-sessions (filter #(str/starts-with? (or (:working-directory %) "") "[from project:") recent-sessions)]
@@ -1101,36 +1632,13 @@
             (let [limit (or (:recent-sessions-limit data) 5)]
               (send-recent-sessions! channel limit))
             ;; Send available commands (no working directory yet, so no project commands)
-            (send-to-client! channel
-                             {:type :available-commands
-                              :working-directory nil
-                              :project-commands []
-                              :general-commands [{:id "git.status"
-                                                  :label "Git Status"
-                                                  :description "Show git working tree status"
-                                                  :type :command}
-                                                 {:id "git.push"
-                                                  :label "Git Push"
-                                                  :description "Push commits to remote repository"
-                                                  :type :command}
-                                                 {:id "git.worktree.list"
-                                                  :label "Git Worktree List"
-                                                  :description "List all git worktrees"
-                                                  :type :command}
-                                                 {:id "bd.ready"
-                                                  :label "Beads Ready"
-                                                  :description "Show tasks ready to work on"
-                                                  :type :command}
-                                                 {:id "bd.list"
-                                                  :label "Beads List"
-                                                  :description "List all beads tasks"
-                                                  :type :command}]}))
-            ;; Start supervisor for this client connection
-            (try
-              (supervisor/start-supervisor! channel)
-              (log/info "Supervisor started for client")
-              (catch Exception e
-                (log/warn e "Failed to start supervisor (non-fatal)"))))
+            (send-available-commands! channel nil))
+          ;; Start supervisor for this client connection
+          (try
+            (supervisor/start-supervisor! channel)
+            (log/info "Supervisor started for client")
+            (catch Exception e
+              (log/warn e "Failed to start supervisor (non-fatal)"))))
 
         ;; All other message types require prior authentication
         :else
@@ -1143,60 +1651,167 @@
           ;; Authenticated - process remaining message types
           (case msg-type
             "subscribe"
-            ;; Client requests session history with optional delta sync
+            ;; Client requests session history. In v0.4.0 the cursor is an
+            ;; integer `last_seq`; in v0.3.0 (rollback) it is `last_message_id`
+            ;; (UUID of the newest message the client already has).
             (let [session-id (:session-id data)
-                  last-message-id (:last-message-id data)] ;; Delta sync: UUID of newest message iOS has
-              (if-not session-id
+                  last-seq-val (:last-seq data)
+                  last-message-id (:last-message-id data)
+                  v0-4? (seq-migration-enabled?)]
+              (cond
+                (not session-id)
                 (http/send! channel
                             (generate-json
                              {:type :error
                               :message "session_id required in subscribe message"}))
+
+                ;; v0.4.0 rejects the legacy cursor field so a pre-upgrade
+                ;; client that slipped past hello-enforcement is caught here
+                ;; instead of silently receiving wrong data.
+                (and v0-4? (some? last-message-id))
+                (http/send! channel
+                            (generate-json
+                             {:type "error"
+                              :code "unsupported_subscribe_field"
+                              :message (str "last_message_id is not supported in protocol "
+                                            "v0.4.0; use last_seq instead")}))
+
+                ;; Reject anything that isn't a non-negative integer under v0.4.0.
+                ;; nil is allowed (client defaults to 0). A non-nil value must be
+                ;; an integer AND non-negative — any other shape is a client bug.
+                (and v0-4?
+                     (some? last-seq-val)
+                     (or (not (integer? last-seq-val))
+                         (neg? last-seq-val)))
+                (http/send! channel
+                            (generate-json
+                             {:type "error"
+                              :code "invalid_subscribe"
+                              :message "last_seq must be a non-negative integer"}))
+
+                :else
                 (do
                   (log/info "Client subscribing to session"
                             {:session-id session-id
+                             :last-seq last-seq-val
                              :last-message-id last-message-id
-                             :has-delta-sync (some? last-message-id)})
+                             :protocol (if v0-4? :v0.4.0 :v0.3.0)})
 
-                  ;; Subscribe in replication system
+                  ;; Subscribe in replication system (global) and track per-client
                   (repl/subscribe-to-session! session-id)
+                  (swap! connected-clients update-in [channel :subscribed-sessions]
+                         (fnil conj #{}) session-id)
 
-                  ;; Get session metadata
                   (if-let [metadata (repl/get-session-metadata session-id)]
                     (let [file-path (:file metadata)
-                          ;; Get current file size to update position BEFORE reading
+                          provider (:provider metadata :claude)
                           file (io/file file-path)
                           current-size (.length file)
-                          all-messages (repl/parse-jsonl-file file-path)
-                          ;; Filter internal messages (sidechain, summary, system)
+                          all-messages (repl/parse-session-messages provider file-path)
                           filtered (vec (repl/filter-internal-messages all-messages))
-                          ;; Get client's max message size setting
                           max-bytes (get-client-max-message-size-bytes channel)
-                          ;; Use delta sync algorithm for smart truncation
-                          {:keys [messages is-complete oldest-message-id newest-message-id]}
-                          (build-session-history-response filtered last-message-id max-bytes)]
-                      ;; Update file position to current size so incremental parsing starts fresh
-                      ;; This ensures we only get NEW messages after this subscription
+                          ;; Middle-truncate individual messages larger than
+                          ;; per-message-max-bytes — build-session-history-response
+                          ;; is a pure seq/budget packer and would otherwise drop an
+                          ;; oversized entry, leaving the client stuck at
+                          ;; is_complete=false on re-subscribe.
+                          truncated (mapv #(truncate-message-text % per-message-max-bytes) filtered)
+                          ;; Shim: stamp seq from list order until the watcher
+                          ;; pipeline (tmux-untethered-lre/e1r) assigns seq at
+                          ;; parse time. Each message gets `:seq (inc index)`.
+                          stamped (vec (map-indexed (fn [i m] (assoc m :seq (inc i))) truncated))
+                          session-next-seq (inc (count stamped))]
+                      ;; Reset incremental parse cursor so this subscription
+                      ;; starts fresh from the current file position.
                       (repl/reset-file-position! file-path)
                       (swap! repl/file-positions assoc file-path current-size)
-                      (log/info "Sending session history"
-                                {:session-id session-id
-                                 :message-count (count messages)
-                                 :total (count filtered)
-                                 :is-complete is-complete
-                                 :has-delta-sync (some? last-message-id)
-                                 :file-position current-size})
-                      ;; Send session history with new delta sync fields
-                      ;; Note: we bypass send-to-client! truncation since build-session-history-response
-                      ;; already handled truncation with per-message limits
-                      (http/send! channel
-                                  (generate-json
-                                   {:type :session-history
-                                    :session-id session-id
-                                    :messages messages
-                                    :total-count (count filtered)
-                                    :oldest-message-id oldest-message-id
-                                    :newest-message-id newest-message-id
-                                    :is-complete is-complete})))
+                      ;; Refresh project commands for this session's directory.
+                      ;; Without this, available_commands after reconnect only has
+                      ;; general commands (sent at connect time with nil working-dir).
+                      ;; The last subscribed session's directory wins, which mirrors
+                      ;; the prompt-path behavior.
+                      (send-available-commands! channel (:working-directory metadata))
+                      (if v0-4?
+                        ;; v0.4.0 wire: last_seq cursor, per-message seq + session_id,
+                        ;; top-level first_seq / last_seq / next_seq / gap.
+                        (let [client-last-seq (or last-seq-val 0)
+                              {response-msgs :messages
+                               is-complete :is-complete
+                               first-seq :first-seq
+                               last-seq :last-seq
+                               next-seq :next-seq
+                               gap :gap}
+                              (build-session-history-response stamped client-last-seq
+                                                              max-bytes
+                                                              (or (:min-available-seq metadata) 1)
+                                                              session-next-seq)
+                              wire-messages (mapv #(assoc % :session-id session-id) response-msgs)]
+                          (log/info "Sending session history"
+                                    {:session-id session-id
+                                     :protocol :v0.4.0
+                                     :message-count (count wire-messages)
+                                     :client-last-seq client-last-seq
+                                     :first-seq first-seq
+                                     :last-seq last-seq
+                                     :next-seq next-seq
+                                     :gap gap
+                                     :is-complete is-complete
+                                     :file-position current-size})
+                          (http/send! channel
+                                      (generate-json
+                                       {:type :session-history
+                                        :session-id session-id
+                                        :messages wire-messages
+                                        :first-seq first-seq
+                                        :last-seq last-seq
+                                        :next-seq next-seq
+                                        :is-complete is-complete
+                                        :gap gap})))
+                        ;; v0.3.0 (rollback) legacy path: UUID-scan cursor and
+                        ;; oldest_message_id / newest_message_id / total_count
+                        ;; envelope.
+                        (let [client-last-seq (or (when last-message-id
+                                                    (some (fn [m]
+                                                            (when (= (:uuid m) last-message-id)
+                                                              (:seq m)))
+                                                          stamped))
+                                                  0)
+                              {response-msgs :messages
+                               is-complete :is-complete
+                               first-seq :first-seq
+                               last-seq :last-seq}
+                              (build-session-history-response stamped client-last-seq
+                                                              max-bytes
+                                                              (or (:min-available-seq metadata) 1)
+                                                              session-next-seq)
+                              oldest-message-id (when first-seq
+                                                  (some (fn [m]
+                                                          (when (= (:seq m) first-seq)
+                                                            (:uuid m)))
+                                                        stamped))
+                              newest-message-id (when last-seq
+                                                  (some (fn [m]
+                                                          (when (= (:seq m) last-seq)
+                                                            (:uuid m)))
+                                                        stamped))
+                              wire-messages (mapv #(dissoc % :seq) response-msgs)]
+                          (log/info "Sending session history"
+                                    {:session-id session-id
+                                     :protocol :v0.3.0
+                                     :message-count (count wire-messages)
+                                     :total (count filtered)
+                                     :is-complete is-complete
+                                     :has-delta-sync (some? last-message-id)
+                                     :file-position current-size})
+                          (http/send! channel
+                                      (generate-json
+                                       {:type :session-history
+                                        :session-id session-id
+                                        :messages wire-messages
+                                        :total-count (count filtered)
+                                        :oldest-message-id oldest-message-id
+                                        :newest-message-id newest-message-id
+                                        :is-complete is-complete})))))
                     (do
                       (log/warn "Session not found" {:session-id session-id})
                       (http/send! channel
@@ -1209,7 +1824,17 @@
             (let [session-id (:session-id data)]
               (when session-id
                 (log/info "Client unsubscribing from session" {:session-id session-id})
-                (repl/unsubscribe-from-session! session-id)))
+                ;; Remove from this client's subscribed-sessions
+                (swap! connected-clients update-in [channel :subscribed-sessions]
+                       (fnil disj #{}) session-id)
+                ;; Only unsubscribe globally if no other client needs this session
+                (let [other-clients-need-it?
+                      (some (fn [[ch info]]
+                              (and (not= ch channel)
+                                   (contains? (or (:subscribed-sessions info) #{}) session-id)))
+                            @connected-clients)]
+                  (when-not other-clients-need-it?
+                    (repl/unsubscribe-from-session! session-id)))))
 
             "session_deleted"
             ;; Client marks session as deleted locally
@@ -1217,7 +1842,17 @@
               (when session-id
                 (log/info "Client deleted session locally" {:session-id session-id})
                 (mark-session-deleted-for-client! channel session-id)
-                (repl/unsubscribe-from-session! session-id)))
+                ;; Remove from this client's subscribed-sessions
+                (swap! connected-clients update-in [channel :subscribed-sessions]
+                       (fnil disj #{}) session-id)
+                ;; Only unsubscribe globally if no other client needs this session
+                (let [other-clients-need-it?
+                      (some (fn [[ch info]]
+                              (and (not= ch channel)
+                                   (contains? (or (:subscribed-sessions info) #{}) session-id)))
+                            @connected-clients)]
+                  (when-not other-clients-need-it?
+                    (repl/unsubscribe-from-session! session-id)))))
 
             "prompt"
             ;; Updated to use new_session_id vs resume_session_id
@@ -1227,24 +1862,17 @@
                   prompt-text (:text data)
                   ios-working-dir (:working-directory data)
                   system-prompt (:system-prompt data)
-                  _ (log/info "🔍 System prompt received from iOS" {:value system-prompt :has-value? (some? system-prompt)})
-                  ;; Determine actual working directory to use:
-                  ;; - For resumed sessions: Use stored working dir from session metadata (extracted from .jsonl cwd)
-                  ;; - For new sessions: Use iOS-provided dir, with fallback if placeholder
-                  working-dir (if resume-session-id
-                                (let [session-metadata (repl/get-session-metadata resume-session-id)]
-                                  (if session-metadata
-                                    (do
-                                      (log/info "Using stored working directory for resumed session"
-                                                {:session-id resume-session-id
-                                                 :stored-dir (:working-directory session-metadata)
-                                                 :ios-sent-dir ios-working-dir})
-                                      (:working-directory session-metadata))
-                                    (do
-                                      (log/warn "Session not found in metadata, using iOS working dir"
-                                                {:session-id resume-session-id})
-                                      ios-working-dir)))
-                                ;; New session: use iOS dir, apply fallback if placeholder
+                  ;; Extract explicit provider from message (only for new sessions)
+                  explicit-provider-str (:provider data)
+                  _ (log/info "Prompt message received"
+                              {:system-prompt system-prompt
+                               :explicit-provider explicit-provider-str
+                               :new-session new-session-id
+                               :resume-session resume-session-id})
+                  ;; Resolve working directory for new sessions only. Resumed
+                  ;; sessions route through tmux/deliver!, which uses metadata
+                  ;; from the session file rather than a caller-supplied path.
+                  working-dir (when-not resume-session-id
                                 (if (and ios-working-dir (str/starts-with? ios-working-dir "[from project:"))
                                   (let [project-name (second (re-find #"\[from project: ([^\]]+)\]" ios-working-dir))]
                                     (log/info "Converting placeholder to real path for new session"
@@ -1273,24 +1901,75 @@
                              {:type :error
                               :message "Cannot specify both new_session_id and resume_session_id"}))
 
+                ;; Reject prompts for sessions whose JSONL is being rewritten by
+                ;; `claude --compact`. The compaction handler kills the live
+                ;; tmux window before compacting, so without this guard a fresh
+                ;; respawn would write to the JSONL concurrently with compact.
+                (and resume-session-id
+                     (repl/is-compaction-locked? resume-session-id))
+                (do
+                  (log/info "Prompt rejected: compaction in progress"
+                            {:session-id resume-session-id})
+                  (http/send! channel
+                              (generate-json
+                               {:type :error
+                                :session-id resume-session-id
+                                :message "Compaction in progress for this session; retry once it completes"})))
+
+                ;; Validate explicit provider if specified for new session
+                (and new-session-id
+                     explicit-provider-str
+                     (not (contains? providers/known-providers (keyword explicit-provider-str))))
+                (do
+                  (log/warn "Invalid provider specified"
+                            {:provider explicit-provider-str
+                             :valid-providers (mapv name providers/known-providers)})
+                  (http/send! channel
+                              (generate-json
+                               {:type :error
+                                :message (str "Invalid provider: '" explicit-provider-str
+                                              "'. Valid providers: "
+                                              (str/join ", " (mapv name providers/known-providers)))})))
+
                 :else
                 (let [claude-session-id (or resume-session-id new-session-id)
+                      ;; Extract explicit provider only for new sessions
+                      ;; For resumed sessions, provider field is silently ignored
+                      explicit-provider (when (and new-session-id explicit-provider-str)
+                                          (keyword explicit-provider-str))
+                      ;; Get session metadata for resumed sessions
+                      session-metadata (when resume-session-id
+                                         (repl/get-session-metadata resume-session-id))
+                      ;; Resolve provider: explicit > session metadata > smart default
+                      provider (providers/resolve-provider explicit-provider session-metadata)
+                      ;; Validate CLI is available before dispatching to tmux
+                      cli-validation-error (providers/validate-cli-available provider)
                       orch-state (get-session-recipe-state claude-session-id)
                       final-prompt-text (if orch-state
                                           (if-let [recipe (recipes/get-recipe (:recipe-id orch-state))]
                                             (or (get-next-step-prompt claude-session-id orch-state recipe) prompt-text)
                                             prompt-text)
                                           prompt-text)]
-                  ;; Try to acquire lock for this session
-                  (if (repl/acquire-session-lock! claude-session-id)
+                  (if cli-validation-error
+                    (do
+                      (log/warn "CLI not available for provider"
+                                {:provider provider
+                                 :session-id claude-session-id
+                                 :error (:error cli-validation-error)})
+                      (http/send! channel
+                                  (generate-json
+                                   {:type :error
+                                    :message (:error cli-validation-error)
+                                    :session-id claude-session-id})))
                     (do
                       (log/info "Received prompt"
                                 {:text (subs prompt-text 0 (min 50 (count prompt-text)))
                                  :new-session-id new-session-id
                                  :resume-session-id resume-session-id
                                  :working-directory working-dir
-                                 :in-recipe (some? orch-state)
-                                 :session-locked false})
+                                 :provider provider
+                                 :explicit-provider explicit-provider
+                                 :in-recipe (some? orch-state)})
 
                       ;; Send immediate acknowledgment
                       (http/send! channel
@@ -1299,87 +1978,62 @@
                                     :message "Processing prompt..."}))
 
                       ;; For new sessions: register channel so we can send session_ready when file is created
-                      ;; Filesystem watcher will send session_ready once Claude CLI creates the file
+                      ;; Filesystem watcher will send session_ready once the provider creates the file
                       (when new-session-id
                         (log/info "New session detected, registering for session_ready" {:session-id new-session-id})
                         (swap! pending-new-sessions assoc new-session-id channel))
 
-                      ;; Invoke Claude asynchronously
-                      ;; NEW ARCHITECTURE: Don't send response directly
-                      ;; Filesystem watcher will detect changes and send session_updated
-                      (claude/invoke-claude-async
-                       final-prompt-text
-                       (fn [response]
-                         ;; Always release lock when done (success or failure)
-                         (try
-                           ;; Just log completion - let filesystem watcher handle updates
-                           (if (:success response)
-                             (do
-                               (log/info "Prompt completed successfully"
-                                         {:session-id (:session-id response)})
-                               ;; Send turn_complete message so iOS can unlock
-                               (send-to-client! channel
-                                                {:type :turn-complete
-                                                 :session-id claude-session-id}))
-                             (do
-                               (log/error "Prompt failed" {:error (:error response) :session-id claude-session-id})
-                               ;; Still send error responses directly - include session-id so iOS can unlock
-                               (send-to-client! channel
-                                                {:type :error
-                                                 :message (:error response)
-                                                 :session-id claude-session-id})))
-                           (finally
-                             (repl/release-session-lock! claude-session-id))))
-                       :new-session-id new-session-id
-                       :resume-session-id resume-session-id
-                       :working-directory working-dir
-                       :timeout-ms 86400000
-                       :system-prompt system-prompt))
-                    (do
-                      ;; Session is locked, send session_locked message
-                      (log/info "Session locked, rejecting prompt"
-                                {:session-id claude-session-id
-                                 :text (subs prompt-text 0 (min 50 (count prompt-text)))})
-                      (send-session-locked! channel claude-session-id))))))
+                      ;; Send available commands for this session's working directory.
+                      ;; New sessions use the caller-supplied working-dir; resumed
+                      ;; sessions pull it from the session index.
+                      (let [session-workdir (if new-session-id
+                                              working-dir
+                                              (:working-directory session-metadata))]
+                        (send-available-commands! channel session-workdir))
 
-            "set_directory"
-            (let [path (:path data)]
-              (if-not path
-                (http/send! channel
-                            (generate-json
-                             {:type :error
-                              :message "path required in set_directory message"}))
-                (do
-                  (log/info "Working directory set" {:path path})
-                  ;; Send acknowledgment
-                  (send-to-client! channel {:type :ack :message "Directory set"})
-                  ;; Parse Makefile and send available commands
-                  (let [project-commands (commands/parse-makefile path)
-                        general-commands [{:id "git.status"
-                                           :label "Git Status"
-                                           :description "Show git working tree status"
-                                           :type :command}
-                                          {:id "git.push"
-                                           :label "Git Push"
-                                           :description "Push commits to remote repository"
-                                           :type :command}
-                                          {:id "git.worktree.list"
-                                           :label "Git Worktree List"
-                                           :description "List all git worktrees"
-                                           :type :command}
-                                          {:id "bd.ready"
-                                           :label "Beads Ready"
-                                           :description "Show tasks ready to work on"
-                                           :type :command}
-                                          {:id "bd.list"
-                                           :label "Beads List"
-                                           :description "List all beads tasks"
-                                           :type :command}]]
-                    (send-to-client! channel
-                                     {:type :available-commands
-                                      :working-directory path
-                                      :project-commands project-commands
-                                      :general-commands general-commands})))))
+                      ;; Dispatch to tmux. start-window! can block up to the
+                      ;; wait-for-ready timeout (20s by default) for TUI readiness,
+                      ;; so run off-thread to keep the ack fast and avoid blocking
+                      ;; other messages on this channel.
+                      ;;
+                      ;; The dispatch is serialized against compact_session via
+                      ;; repl/compaction-dispatch-lock so a compaction arriving
+                      ;; between this handler's is-compaction-locked? check and
+                      ;; the tmux call cannot cause the provider to be respawned
+                      ;; while `claude --compact` is rewriting the JSONL (see
+                      ;; tmux-untethered-22g). The re-check inside the lock is
+                      ;; the one that actually matters: by holding the lock we
+                      ;; know @compaction-locks cannot flip under us.
+                      (future
+                        (try
+                          (locking repl/compaction-dispatch-lock
+                            (if (repl/is-compaction-locked? claude-session-id)
+                              (do
+                                (log/info "Prompt dispatch aborted: compaction started after ack"
+                                          {:session-id claude-session-id})
+                                (send-to-client! channel
+                                                 {:type :error
+                                                  :session-id claude-session-id
+                                                  :message "Compaction in progress for this session; retry once it completes"}))
+                              (if new-session-id
+                                (tmux/start-window!
+                                 {:session-uuid new-session-id
+                                  :session-name (:name session-metadata)
+                                  :provider provider
+                                  :workdir working-dir
+                                  :initial-prompt final-prompt-text
+                                  :resume? false
+                                  :system-prompt system-prompt})
+                                (tmux/deliver! resume-session-id final-prompt-text))))
+                          (catch Exception e
+                            (log/error e "Failed to dispatch prompt via tmux"
+                                       {:session-id claude-session-id
+                                        :provider provider
+                                        :new-session? (some? new-session-id)})
+                            (send-to-client! channel
+                                             {:type :error
+                                              :message (str "Failed to dispatch prompt: " (.getMessage e))
+                                              :session-id claude-session-id})))))))))
 
             "set_max_message_size"
             (let [size-kb (:size-kb data)]
@@ -1404,40 +2058,74 @@
                             (generate-json
                              {:type :error
                               :message "session_id required in compact_session message"}))
-                ;; New replication-based architecture: session-id IS the claude-session-id
-                ;; Try to acquire lock for this session (from bd2e367)
-                (if (repl/acquire-session-lock! session-id)
-                  (do
-                    (log/info "Compacting session" {:session-id session-id})
-                    ;; Compact asynchronously
-                    (async/go
-                      (try
-                        (let [result (claude/compact-session session-id)]
-                          (if (:success result)
-                            (do
-                              (log/info "Session compaction successful" {:session-id session-id})
-                              (send-to-client! channel
-                                               {:type :compaction-complete
-                                                :session-id session-id}))
-                            (do
-                              (log/error "Session compaction failed" {:session-id session-id :error (:error result)})
-                              (send-to-client! channel
-                                               {:type :compaction-error
+                ;; Acquiring the compaction lock, killing the live tmux window,
+                ;; and clearing it from live-windows must be atomic w.r.t. the
+                ;; prompt-dispatch path — otherwise a prompt's future running
+                ;; between the acquire and the kill could respawn the provider
+                ;; concurrently with `claude --compact` (tmux-untethered-22g).
+                ;; Broadcasting the aborted turn_complete and spawning the
+                ;; async compact call happen after the lock is released.
+                (let [{:keys [acquired? killed-live-window?]}
+                      (locking repl/compaction-dispatch-lock
+                        (if-not (repl/acquire-compaction-lock! session-id)
+                          {:acquired? false}
+                          (let [live-window (get @tmux/live-windows session-id)]
+                            (when live-window
+                              (log/info "Killing live tmux window before compaction"
+                                        {:session-id session-id})
+                              (try
+                                (tmux/kill-window! (:tmux-session live-window) (:tmux-window live-window))
+                                (catch Exception e
+                                  (log/warn e "tmux kill-window failed before compaction; proceeding"
+                                            {:session-id session-id})))
+                              (swap! tmux/live-windows dissoc session-id))
+                            {:acquired? true :killed-live-window? (some? live-window)})))]
+                  (if-not acquired?
+                    (do
+                      (log/info "Compaction already in progress" {:session-id session-id})
+                      (send-to-client! channel
+                                       {:type :compaction-error
+                                        :session-id session-id
+                                        :error "Compaction already in progress"}))
+                    (do
+                      ;; `claude --compact` is a one-shot CLI writing to the JSONL,
+                      ;; so any live tmux window for this session must be killed
+                      ;; first to prevent interleaved writes. Synthesize an aborted
+                      ;; turn_complete for subscribers so their processing indicator
+                      ;; unlocks (the JSONL watcher won't emit a natural marker).
+                      (when killed-live-window?
+                        (doseq [[subscriber-channel client-info] @connected-clients]
+                          (let [subscribed (or (:subscribed-sessions client-info) #{})]
+                            (when (and (contains? subscribed session-id)
+                                       (not (is-session-deleted-for-client? subscriber-channel session-id)))
+                              (send-to-client! subscriber-channel
+                                               {:type :turn-complete
                                                 :session-id session-id
-                                                :error (:error result)}))))
-                        (catch Exception e
-                          (log/error e "Unexpected error during compaction" {:session-id session-id})
-                          (send-to-client! channel
-                                           {:type :compaction-error
-                                            :session-id session-id
-                                            :error (str "Compaction failed: " (ex-message e))}))
-                        (finally
-                          (repl/release-session-lock! session-id)))))
-                  (do
-                    ;; Session is locked, send session_locked message
-                    (log/info "Session locked, rejecting compaction"
-                              {:session-id session-id})
-                    (send-session-locked! channel session-id)))))
+                                                :aborted true})))))
+                      (log/info "Compacting session" {:session-id session-id})
+                      (async/go
+                        (try
+                          (let [result (claude/compact-session session-id)]
+                            (if (:success result)
+                              (do
+                                (log/info "Session compaction successful" {:session-id session-id})
+                                (send-to-client! channel
+                                                 {:type :compaction-complete
+                                                  :session-id session-id}))
+                              (do
+                                (log/error "Session compaction failed" {:session-id session-id :error (:error result)})
+                                (send-to-client! channel
+                                                 {:type :compaction-error
+                                                  :session-id session-id
+                                                  :error (:error result)}))))
+                          (catch Exception e
+                            (log/error e "Unexpected error during compaction" {:session-id session-id})
+                            (send-to-client! channel
+                                             {:type :compaction-error
+                                              :session-id session-id
+                                              :error (str "Compaction failed: " (ex-message e))}))
+                          (finally
+                            (repl/release-compaction-lock! session-id)))))))))
 
             "kill_session"
             (let [session-id (:session-id data)]
@@ -1446,25 +2134,38 @@
                             (generate-json
                              {:type :error
                               :message "session_id required in kill_session message"}))
-                (do
-                  (log/info "Kill session requested" {:session-id session-id})
-                  ;; Attempt to kill the Claude process
-                  (let [result (claude/kill-claude-session session-id)]
-                    (if (:success result)
-                      (do
-                        ;; Release the session lock
-                        (repl/release-session-lock! session-id)
-                        (log/info "Session killed successfully" {:session-id session-id})
-                        (send-to-client! channel
-                                         {:type :session-killed
-                                          :session-id session-id
-                                          :message "Session process terminated"}))
-                      (do
-                        (log/error "Failed to kill session" {:session-id session-id :error (:error result)})
-                        (send-to-client! channel
-                                         {:type :error
-                                          :message (str "Failed to kill session: " (:error result))
-                                          :session-id session-id})))))))
+                ;; Under tmux, provider CLI lifecycle is owned by tmux — we kill the
+                ;; window rather than a tracked Process. The JSONL watcher won't see
+                ;; a turn-complete marker (the process died mid-turn), so we synthesize
+                ;; a turn_complete with aborted:true to unblock the iOS UI.
+                (let [live-window (get @tmux/live-windows session-id)]
+                  (log/info "Kill session requested"
+                            {:session-id session-id
+                             :live-window? (boolean live-window)})
+                  (when live-window
+                    (try
+                      (tmux/kill-window! (:tmux-session live-window) (:tmux-window live-window))
+                      (catch Exception e
+                        (log/warn e "tmux kill-window failed; proceeding with cleanup"
+                                  {:session-id session-id})))
+                    (swap! tmux/live-windows dissoc session-id)
+                    ;; Broadcast aborted turn_complete to every subscriber so their
+                    ;; processing-indicator unlocks even though the JSONL watcher
+                    ;; will never emit a natural terminal marker for this turn.
+                    (doseq [[subscriber-channel client-info] @connected-clients]
+                      (let [subscribed (or (:subscribed-sessions client-info) #{})]
+                        (when (and (contains? subscribed session-id)
+                                   (not (is-session-deleted-for-client? subscriber-channel session-id)))
+                          (send-to-client! subscriber-channel
+                                           {:type :turn-complete
+                                            :session-id session-id
+                                            :aborted true})))))
+                  (send-to-client! channel
+                                   {:type :session-killed
+                                    :session-id session-id
+                                    :message (if live-window
+                                               "Session window killed"
+                                               "No live window for session")}))))
 
             "infer_session_name"
             (let [session-id (:session-id data)
@@ -1776,7 +2477,13 @@
             (let [recipe-id (keyword (:recipe-id data))
                   session-id (:session-id data)
                   working-directory (:working-directory data)
-                  is-new-session? (not (session-exists? session-id))]
+                  is-new-session? (not (session-exists? session-id))
+                   ;; Extract optional provider field (defaults to session's provider or Claude)
+                  message-provider (when-let [p (:provider data)] (keyword p))
+                  provider (or message-provider
+                               (when-not is-new-session?
+                                 (:provider (repl/get-session-metadata session-id)))
+                               :claude)]
               (cond
                 (not session-id)
                 (send-to-client! channel
@@ -1799,7 +2506,7 @@
                                     :session-id session-id}))
 
                 :else
-                (if-let [orch-state (start-recipe-for-session session-id recipe-id is-new-session?)]
+                (if-let [orch-state (start-recipe-for-session session-id recipe-id is-new-session? :provider provider)]
                   (let [recipe (recipes/get-recipe recipe-id)]
                     (log/info "Recipe started" {:recipe-id recipe-id :session-id session-id})
                     (send-to-client! channel
@@ -1819,22 +2526,11 @@
                                  :recipe-id recipe-id
                                  :step (:current-step orch-state)
                                  :working-directory working-dir})
-                      ;; Try to acquire lock and start orchestration loop
-                      (if (repl/acquire-session-lock! session-id)
-                        (do
-                          (send-to-client! channel
-                                           {:type :ack
-                                            :message "Starting recipe..."})
-                          ;; Execute the first step - this will recursively continue
-                          ;; through all steps until recipe exits
-                          (execute-recipe-step channel session-id working-dir
-                                               orch-state recipe))
-                        (do
-                          ;; Session is locked, clean up the recipe state we just created
-                          (log/warn "Session locked, cannot start recipe"
-                                    {:session-id session-id})
-                          (exit-recipe-for-session session-id "session-locked")
-                          (send-session-locked! channel session-id)))))
+                      (send-to-client! channel
+                                       {:type :ack
+                                        :message "Starting recipe..."})
+                      (execute-recipe-step channel session-id working-dir
+                                           orch-state recipe)))
                   (send-to-client! channel
                                    {:type :error
                                     :message (str "Recipe not found: " recipe-id)}))))
@@ -1864,7 +2560,7 @@
                                          (sort-by :last-modified >)
                                          (take 50)
                                          (mapv #(select-keys % [:session-id :name :working-directory
-                                                                :last-modified :message-count])))
+                                                                :last-modified :message-count :provider])))
                     total-non-empty (count (filter #(pos? (or (:message-count %) 0)) all-sessions))]
                 (log/info "Sending refreshed session list" {:count (count recent-sessions) :total total-non-empty})
                 (send-to-client! channel
@@ -1872,35 +2568,7 @@
                                   :sessions recent-sessions
                                   :total-count total-non-empty}))
               ;; Send recent sessions
-              (send-recent-sessions! channel limit)
-              ;; Send available commands for current working directory (if set)
-              (when-let [working-dir (get-in @connected-clients [channel :working-directory])]
-                (let [project-commands (commands/parse-makefile working-dir)
-                      general-commands [{:id "git.status"
-                                         :label "Git Status"
-                                         :description "Show git working tree status"
-                                         :type :command}
-                                        {:id "git.push"
-                                         :label "Git Push"
-                                         :description "Push commits to remote repository"
-                                         :type :command}
-                                        {:id "git.worktree.list"
-                                         :label "Git Worktree List"
-                                         :description "List all git worktrees"
-                                         :type :command}
-                                        {:id "bd.ready"
-                                         :label "Beads Ready"
-                                         :description "Show tasks ready to work on"
-                                         :type :command}
-                                        {:id "bd.list"
-                                         :label "Beads List"
-                                         :description "List all beads tasks"
-                                         :type :command}]]
-                  (send-to-client! channel
-                                   {:type :available-commands
-                                    :working-directory working-dir
-                                    :project-commands project-commands
-                                    :general-commands general-commands}))))
+              (send-recent-sessions! channel limit))
 
             "get_available_recipes"
             (do
@@ -1933,7 +2601,7 @@
                 (do
                   (log/info "Canvas action received" {:callback-id callback-id :action action})
                   (let [result-text (supervisor/handle-canvas-action
-                                    {:callback-id callback-id :action action})]
+                                     {:callback-id callback-id :action action})]
                     ;; If a pending action was found, inject context into next supervisor turn
                     (when result-text
                       (async/go
@@ -2080,7 +2748,7 @@
                       (generate-json
                        {:type :hello
                         :message "Welcome to voice-code backend"
-                        :version "0.2.0"
+                        :version (message-stream-version-string @message-stream-version)
                         :auth-version 1
                         :instructions "Send connect message with api_key"}))
 
@@ -2115,47 +2783,39 @@
          (pr-str {:status "error" :message "text is required"})
          (let [new-session-id (when-not session-id (str (java.util.UUID/randomUUID)))
                claude-session-id (or session-id new-session-id)]
-           ;; Try to acquire lock
-           (if-not (repl/acquire-session-lock! claude-session-id)
-             (pr-str {:status "locked" :session-id claude-session-id
-                       :message "Session is currently processing a prompt"})
-             (do
-               (claude/invoke-claude-async
-                text
-                (fn [response]
-                  (try
-                    (let [client-channel (:client-channel @supervisor/supervisor-state)]
-                      (if (:success response)
-                        (do
-                          (when client-channel
-                            (send-to-client! client-channel
-                                             {:type :turn-complete
-                                              :session-id claude-session-id}))
-                          (supervisor/on-worker-complete
-                           claude-session-id 0
-                           (fn [msg]
-                             (when client-channel
-                               (send-to-client! client-channel msg)))))
-                        (do
-                          (when client-channel
-                            (send-to-client! client-channel
-                                             {:type :error
-                                              :message (:error response)
-                                              :session-id claude-session-id}))
-                          (supervisor/on-worker-complete
-                           claude-session-id 1
-                           (fn [msg]
-                             (when client-channel
-                               (send-to-client! client-channel msg)))))))
-                    (finally
-                      (repl/release-session-lock! claude-session-id))))
-                :new-session-id new-session-id
-                :resume-session-id session-id
-                :working-directory working-dir
-                :timeout-ms 86400000)
-               (pr-str {:status "dispatched"
-                        :session-id claude-session-id
-                        :message "Prompt dispatched to Claude Code session"}))))))))
+           (claude/invoke-claude-async
+            text
+            (fn [response]
+              (let [client-channel (:client-channel @supervisor/supervisor-state)]
+                (if (:success response)
+                  (do
+                    (when client-channel
+                      (send-to-client! client-channel
+                                       {:type :turn-complete
+                                        :session-id claude-session-id}))
+                    (supervisor/on-worker-complete
+                     claude-session-id 0
+                     (fn [msg]
+                       (when client-channel
+                         (send-to-client! client-channel msg)))))
+                  (do
+                    (when client-channel
+                      (send-to-client! client-channel
+                                       {:type :error
+                                        :message (:error response)
+                                        :session-id claude-session-id}))
+                    (supervisor/on-worker-complete
+                     claude-session-id 1
+                     (fn [msg]
+                       (when client-channel
+                         (send-to-client! client-channel msg))))))))
+            :new-session-id new-session-id
+            :resume-session-id session-id
+            :working-directory working-dir
+            :timeout-ms 86400000)
+           (pr-str {:status "dispatched"
+                    :session-id claude-session-id
+                    :message "Prompt dispatched to Claude Code session"}))))))
 
   (supervisor/register-tool-handler!
    "execute_command"
@@ -2203,15 +2863,15 @@
      (let [session-id (:session-id input)]
        (if-not session-id
          (pr-str {:status "error" :message "session_id required"})
-         (if-not (repl/acquire-session-lock! session-id)
-           (pr-str {:status "locked" :message "Session is currently locked"})
+         (if-not (repl/acquire-compaction-lock! session-id)
+           (pr-str {:status "error" :message "Compaction already in progress"})
            (try
              (let [result (claude/compact-session session-id)]
                (if (:success result)
                  (pr-str {:status "compacted" :session-id session-id})
                  (pr-str {:status "error" :message (:error result)})))
              (finally
-               (repl/release-session-lock! session-id))))))))
+               (repl/release-compaction-lock! session-id))))))))
 
   (supervisor/register-tool-handler!
    "run_recipe"
@@ -2227,13 +2887,41 @@
 
   (log/info "Supervisor tool handlers registered"))
 
+(defn check-tmux-available!
+  "Verify tmux is installed and executable. Returns the version string on success.
+   On failure, logs a diagnostic, prints a message, and calls (exit-fn 1).
+   In production the default exit-fn is System/exit, which does not return;
+   callers should not assume the function returns after a failure."
+  ([]
+   (check-tmux-available! #(System/exit %)))
+  ([exit-fn]
+   (let [{:keys [exit out err]} (shell/sh "tmux" "-V")]
+     (if (zero? exit)
+       (str/trim out)
+       (do
+         (log/error "tmux is not available; voice-code requires tmux to run provider CLIs"
+                    {:exit exit :out out :err err})
+         (println "ERROR: tmux not found or not executable. Install tmux and ensure it is on PATH.")
+         (exit-fn 1))))))
+
 (defn -main
   "Start the WebSocket server"
   [& args]
   (let [config (load-config)
         port (get-in config [:server :port] 8080)
         host (get-in config [:server :host] "0.0.0.0")
-        default-dir (get-in config [:claude :default-working-directory])]
+        default-dir (get-in config [:claude :default-working-directory])
+        stream-version (coerce-message-stream-version (:message-stream-version config))
+        _ (reset! message-stream-version stream-version)
+        _ (log/info "Message stream version" {:version stream-version})
+        ;; Daemon thread so the sweeper never prevents JVM exit.
+        ;; Captured here (not inside a nested let) so the shutdown hook can
+        ;; call .shutdown() for a clean drain.
+        sweeper-exec (Executors/newSingleThreadScheduledExecutor
+                      (reify java.util.concurrent.ThreadFactory
+                        (newThread [_ r]
+                          (doto (Thread. r "vc-sweeper")
+                            (.setDaemon true)))))]
 
     ;; Initialize API key authentication
     (log/info "Initializing API key authentication")
@@ -2245,16 +2933,42 @@
     ;; Register supervisor tool handlers
     (register-supervisor-tool-handlers!)
 
+    ;; Verify tmux is available — exit-on-missing (no fallback path)
+    (check-tmux-available!)
+
     ;; Initialize replication system
     (log/info "Initializing session replication system")
     (repl/initialize-index!)
+
+    ;; One-shot seq migration (gated on :message-stream-version = :v0.4.0).
+    ;; Idempotent on subsequent boots — skips sessions whose :next-seq has
+    ;; already been computed.
+    (when (seq-migration-enabled?)
+      (repl/migrate-session-seqs!))
+
+    ;; Rebuild live-windows from any tmux sessions that survived a prior restart
+    (log/info "Scanning for existing tmux windows")
+    (tmux/scan-existing-windows!)
+
+    ;; Schedule the sweeper to kill windows idle > sweeper-max-age-days
+    (let [interval-ms (* tmux/sweeper-interval-minutes 60 1000)]
+      (.scheduleAtFixedRate
+       sweeper-exec
+       (fn []
+         (try (tmux/sweep!)
+              (catch Exception e
+                (log/error e "Sweeper error"))))
+       interval-ms
+       interval-ms
+       TimeUnit/MILLISECONDS))
 
     ;; Start filesystem watcher
     (try
       (repl/start-watcher!
        :on-session-created on-session-created
-       :on-session-updated on-session-updated
-       :on-session-deleted on-session-deleted)
+       :on-session-updated broadcast-session-history!
+       :on-session-deleted on-session-deleted
+       :on-turn-complete on-turn-complete)
       (log/info "Filesystem watcher started successfully")
       (catch Exception e
         (log/error e "Failed to start filesystem watcher")))
@@ -2272,6 +2986,8 @@
        (Runtime/getRuntime)
        (Thread. (fn []
                   (log/info "Shutting down voice-code server gracefully")
+                  ;; Stop sweeper so no new sweep starts after shutdown
+                  (.shutdown sweeper-exec)
                   ;; Stop filesystem watcher
                   (repl/stop-watcher!)
                   ;; Save session index

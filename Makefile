@@ -11,9 +11,9 @@ BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
 .PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
-.PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop
+.PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop recipe-sync tmux-clean
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
-.PHONY: build-mac test-mac test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
+.PHONY: build-mac test-mac test-mac-class test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
 .PHONY: rn-deps rn-watch rn-test rn-test-watch rn-release rn-repl rn-clean
 
@@ -76,8 +76,12 @@ help:
 	@echo "  backend-test-manual-free          - Run all FREE manual tests"
 	@echo "  backend-test-manual-all           - Run ALL manual tests (COSTS MONEY)"
 	@echo ""
+	@echo "Recipe Management:"
+	@echo "  recipe-sync       - Regenerate recipe markdown from recipes.clj (always run before committing recipe changes)"
+	@echo ""
 	@echo "Utility:"
 	@echo "  backend-clean     - Remove backend test artifacts"
+	@echo "  tmux-clean        - Kill all voice-code tmux windows (VC_* env vars); developer reset"
 	@echo "  help              - Show this help message"
 	@echo ""
 	@echo "TestFlight publishing:"
@@ -255,6 +259,30 @@ backend-clean:
 	cd $(BACKEND_DIR) && rm -f server.log
 	cd $(BACKEND_DIR) && rm -f **/test-*.jsonl
 
+# Kill all voice-code tmux windows (developer reset).
+# Enumerates every tmux session, finds windows whose VC_SESSION_UUID_* env var
+# is set, kills those windows, then kills any session whose only surviving
+# window is the _holder placeholder.
+tmux-clean:
+	@echo "Cleaning up voice-code tmux windows..."
+	@tmux list-sessions -F "#{session_name}" 2>/dev/null | while read session; do \
+		tmux show-environment -t "=$$session" 2>/dev/null | grep -q "^VC_SESSION_UUID_" || continue; \
+		tmux list-windows -t "=$$session" -F "#{window_name}" 2>/dev/null | grep -v "^_holder$$" | grep -v "^tile$$" | while read window; do \
+			suffix=$$(echo "$$window" | tr '-' '_'); \
+			if tmux show-environment -t "=$$session" 2>/dev/null | grep -q "^VC_SESSION_UUID_$$suffix="; then \
+				echo "  Killing window: $$session:$$window"; \
+				tmux kill-window -t "=$$session:=$$window" 2>/dev/null || true; \
+			fi; \
+		done; \
+		remaining=$$(tmux list-windows -t "=$$session" -F "#{window_name}" 2>/dev/null | grep -c '.'); \
+		holder_only=$$(tmux list-windows -t "=$$session" -F "#{window_name}" 2>/dev/null | grep -v "^_holder$$" | grep -c '.'); \
+		if [ "$$holder_only" -eq 0 ] && [ "$$remaining" -ge 1 ]; then \
+			echo "  Killing session (only _holder remains): $$session"; \
+			tmux kill-session -t "=$$session" 2>/dev/null || true; \
+		fi; \
+	done
+	@echo "tmux-clean complete"
+
 # Backend server management
 # Note: Uses PID file to track Makefile-started instance (typically port 8080)
 #       Manually started instances (e.g., port 9999 for remote work) are not managed
@@ -380,6 +408,13 @@ build-mac: generate-project
 test-mac: generate-project
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS'"
 
+# Run specific macOS unit test class (usage: make test-mac-class CLASS=MacSettingsViewTests)
+test-mac-class: generate-project
+ifndef CLASS
+	$(error CLASS is required. Usage: make test-mac-class CLASS=MacSettingsViewTests)
+endif
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS' -only-testing:VoiceCodeMacTests/$(CLASS)"
+
 # Run macOS UI tests
 test-mac-ui: generate-project
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS' -only-testing:VoiceCodeMacUITests"
@@ -452,3 +487,11 @@ rn-repl: rn-deps
 # Remove frontend build artifacts
 rn-clean:
 	rm -rf $(FRONTEND_DIR)/app $(FRONTEND_DIR)/out $(FRONTEND_DIR)/.shadow-cljs
+
+# Recipe markdown generation
+# Regenerates all recipe markdown files from the canonical definitions in recipes.clj
+# Run this before committing any changes to recipes.clj to keep docs in sync
+recipe-sync:
+	@echo "Regenerating recipe markdown from recipes.clj..."
+	@cd $(BACKEND_DIR) && clojure -M:main -m voice-code.cli sync ../recipes
+	@echo "✅ Recipe markdown files synced"

@@ -141,7 +141,7 @@
         (let [hello-json (server/generate-json
                           {:type :hello
                            :message "Welcome to voice-code backend"
-                           :version "0.2.0"
+                           :version "0.3.0"
                            :auth-version 1
                            :instructions "Send connect message with api_key"})
               parsed (server/parse-json hello-json)]
@@ -254,11 +254,23 @@
                     server/send-to-client! (fn [_ _] nil)]
         (server/handle-message fake-channel
                                (server/generate-json {:type "connect"
-                                                      :api-key test-api-key}))
+                                                      :api-key test-api-key
+                                                      :session-id "abc123"}))
         ;; Should be authenticated
         (is (server/channel-authenticated? fake-channel))
         ;; Should have sent session-list
         (is (some #(= "session_list" (:type (server/parse-json %))) @sent-messages))
+        ;; Should have sent connected confirmation per STANDARDS.md.
+        ;; iOS sets isAuthenticated=true only on receiving "connected"; without
+        ;; it, subscribe() defers forever and session_history pushes never
+        ;; reach the client.
+        (let [connected-msg (->> @sent-messages
+                                 (map server/parse-json)
+                                 (filter #(= "connected" (:type %)))
+                                 first)]
+          (is connected-msg "Should send connected confirmation")
+          (is (= "Session registered" (:message connected-msg)))
+          (is (= "abc123" (:session-id connected-msg))))
         ;; Clean up
         (swap! server/connected-clients dissoc fake-channel))))
 

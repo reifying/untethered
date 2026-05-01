@@ -79,15 +79,56 @@ class AppSettings: ObservableObject {
         }
     }
 
+    /// Default AI provider for new sessions. Values: "claude", "copilot", "cursor", "opencode"
+    @Published var defaultProvider: String {
+        didSet {
+            UserDefaults.standard.set(defaultProvider, forKey: "defaultProvider")
+        }
+    }
+
+    #if os(macOS)
+    /// Last used working directory for menu bar quick prompt
+    @Published var lastUsedDirectory: String? {
+        didSet {
+            if let dir = lastUsedDirectory {
+                UserDefaults.standard.set(dir, forKey: "lastUsedDirectory")
+                addToRecentDirectories(dir)
+            } else {
+                UserDefaults.standard.removeObject(forKey: "lastUsedDirectory")
+            }
+        }
+    }
+
+    /// Recent working directories for menu bar directory picker
+    @Published var recentDirectories: [String] {
+        didSet {
+            UserDefaults.standard.set(recentDirectories, forKey: "recentDirectories")
+        }
+    }
+
+    /// Add a directory to the recent list (max 10, most recent first)
+    func addToRecentDirectories(_ directory: String) {
+        var dirs = recentDirectories
+        dirs.removeAll { $0 == directory }
+        dirs.insert(directory, at: 0)
+        if dirs.count > 10 {
+            dirs = Array(dirs.prefix(10))
+        }
+        recentDirectories = dirs
+    }
+    #endif
+
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
         let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
         return "ws://\(cleanURL):\(cleanPort)"
     }
 
-    /// Returns true if the server has been configured (non-empty address)
+    /// Returns true if the server has been configured (non-empty address and numeric port)
     var isServerConfigured: Bool {
-        !serverURL.trimmingCharacters(in: .whitespaces).isEmpty
+        let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
+        let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
+        return !cleanURL.isEmpty && Int(cleanPort) != nil
     }
 
     // Cache for voices to avoid blocking main thread
@@ -241,7 +282,8 @@ class AppSettings: ObservableObject {
     init() {
         // Load initial values BEFORE setting up publishers to avoid triggering writes on launch
         self.serverURL = UserDefaults.standard.string(forKey: "serverURL") ?? ""
-        self.serverPort = UserDefaults.standard.string(forKey: "serverPort") ?? "8080"
+        // Default empty (not "8080") so fresh installs don't silently dial a wrong port before the user configures the server.
+        self.serverPort = UserDefaults.standard.string(forKey: "serverPort") ?? ""
 
         // On first launch, default to the first available premium voice
         if let savedVoice = UserDefaults.standard.string(forKey: "selectedVoiceIdentifier") {
@@ -262,6 +304,12 @@ class AppSettings: ObservableObject {
         self.respectSilentMode = UserDefaults.standard.object(forKey: "respectSilentMode") as? Bool ?? true
         self.systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? ""
         self.maxMessageSizeKB = UserDefaults.standard.object(forKey: "maxMessageSizeKB") as? Int ?? 200
+        self.defaultProvider = UserDefaults.standard.string(forKey: "defaultProvider") ?? "claude"
+
+        #if os(macOS)
+        self.lastUsedDirectory = UserDefaults.standard.string(forKey: "lastUsedDirectory")
+        self.recentDirectories = UserDefaults.standard.stringArray(forKey: "recentDirectories") ?? []
+        #endif
 
         // Set up debounced publishers for text fields (serverURL and serverPort)
         // dropFirst() skips the initial value to avoid writing on init

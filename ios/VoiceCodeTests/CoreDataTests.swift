@@ -604,6 +604,121 @@ final class CoreDataTests: XCTestCase {
         wait(for: [expectation], timeout: 2.0)
     }
 
+    // MARK: - seq Attribute & v4 Migration Tests
+
+    func testCDMessageSeqDefaultsToZero() throws {
+        let message = CDMessage(context: context)
+        message.id = UUID()
+        message.sessionId = UUID()
+        message.role = "user"
+        message.text = "Hello"
+        message.timestamp = Date()
+        message.messageStatus = .confirmed
+
+        try context.save()
+        XCTAssertEqual(message.seq, 0, "seq should default to 0 when not set")
+
+        message.seq = 42
+        try context.save()
+        XCTAssertEqual(message.seq, 42)
+    }
+
+    func testCDMessageHasCompoundIndexOnSessionIdAndSeq() throws {
+        let model = persistenceController.container.managedObjectModel
+        let entity = try XCTUnwrap(model.entitiesByName["CDMessage"])
+
+        let bySessionAndSeq = entity.indexes.first { idx in
+            idx.elements.map { $0.propertyName } == ["sessionId", "seq"]
+        }
+        let index = try XCTUnwrap(
+            bySessionAndSeq,
+            "CDMessage should have a (sessionId, seq) compound index"
+        )
+        XCTAssertEqual(index.elements.count, 2)
+        XCTAssertTrue(index.elements[0].isAscending, "sessionId element should be ascending")
+        XCTAssertFalse(index.elements[1].isAscending, "seq element should be descending")
+    }
+
+    func testLightweightMigrationFromV3AddsSeqDefault() throws {
+        let bundle = Bundle(for: PersistenceController.self)
+        let momdURL = try XCTUnwrap(bundle.url(forResource: "VoiceCode", withExtension: "momd"))
+        let v3URL = momdURL.appendingPathComponent("VoiceCode 3.mom")
+        let v3Model = try XCTUnwrap(NSManagedObjectModel(contentsOf: v3URL),
+                                    "Failed to load v3 model from \(v3URL.path)")
+
+        // The CDMessage Swift class declares @NSManaged var seq, which the
+        // v3 entity lacks. Use the generic NSManagedObject class for v3
+        // inserts so the property accessor never runs against a v3 row.
+        for entity in v3Model.entities {
+            entity.managedObjectClassName = "NSManagedObject"
+        }
+
+        let storeURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("CDMessageMigration-\(UUID().uuidString).sqlite")
+        addTeardownBlock {
+            for path in [storeURL.path, storeURL.path + "-wal", storeURL.path + "-shm"] {
+                try? FileManager.default.removeItem(atPath: path)
+            }
+        }
+
+        // 1. Write a row under the v3 schema (no seq column).
+        let v3Coordinator = NSPersistentStoreCoordinator(managedObjectModel: v3Model)
+        _ = try v3Coordinator.addPersistentStore(
+            ofType: NSSQLiteStoreType,
+            configurationName: nil,
+            at: storeURL,
+            options: nil
+        )
+        let v3Context = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
+        v3Context.persistentStoreCoordinator = v3Coordinator
+
+        let messageId = UUID()
+        let sessionId = UUID()
+        let v3Entity = try XCTUnwrap(v3Model.entitiesByName["CDMessage"])
+        let v3Msg = NSManagedObject(entity: v3Entity, insertInto: v3Context)
+        v3Msg.setValue(messageId, forKey: "id")
+        v3Msg.setValue(sessionId, forKey: "sessionId")
+        v3Msg.setValue("user", forKey: "role")
+        v3Msg.setValue("hello", forKey: "text")
+        v3Msg.setValue(Date(), forKey: "timestamp")
+        v3Msg.setValue("confirmed", forKey: "status")
+        try v3Context.save()
+
+        if let store = v3Coordinator.persistentStores.first {
+            try v3Coordinator.remove(store)
+        }
+
+        // 2. Reopen with the current (v4) model and let lightweight migration run.
+        let v4Model = persistenceController.container.managedObjectModel
+        let v4Coordinator = NSPersistentStoreCoordinator(managedObjectModel: v4Model)
+        _ = try v4Coordinator.addPersistentStore(
+            ofType: NSSQLiteStoreType,
+            configurationName: nil,
+            at: storeURL,
+            options: [
+                NSMigratePersistentStoresAutomaticallyOption: true,
+                NSInferMappingModelAutomaticallyOption: true
+            ]
+        )
+        let v4Context = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
+        v4Context.persistentStoreCoordinator = v4Coordinator
+
+        // 3. The legacy row should round-trip with seq defaulting to 0.
+        let req = CDMessage.fetchRequest()
+        req.predicate = NSPredicate(format: "id == %@", messageId as CVarArg)
+        let migrated = try v4Context.fetch(req)
+        XCTAssertEqual(migrated.count, 1, "Pre-migration message should still be present")
+        XCTAssertEqual(migrated.first?.seq, 0, "seq should default to 0 for legacy rows")
+        XCTAssertEqual(migrated.first?.text, "hello")
+        XCTAssertEqual(migrated.first?.sessionId, sessionId)
+
+        // Close the v4 store before the teardown unlinks the file, so SQLite
+        // doesn't log "vnode unlinked while in use" warnings.
+        if let store = v4Coordinator.persistentStores.first {
+            try v4Coordinator.remove(store)
+        }
+    }
+
     // MARK: - Message Pruning Tests
 
     func testPruneOldMessagesDeletesOldest() throws {
@@ -863,5 +978,102 @@ final class CoreDataTests: XCTestCase {
         }
 
         wait(for: [expectation], timeout: 5.0)
+    }
+
+    // MARK: - bySessionAndSeq Index Coverage Tests (tmux-untethered-8rd)
+
+    func testBySessionAndSeqIndexNamedAndOrdered() throws {
+        // Verify the compound fetch index is named `bySessionAndSeq` and
+        // covers `(sessionId ASC, seq DESC)` — the exact key shape that
+        // `VoiceCodeClient.newestCachedSeq` relies on (predicate sessionId,
+        // sort seq DESC, fetchLimit 1). A model edit that drops or renames
+        // the index, or flips seq to ascending, would silently regress the
+        // delta-sync subscribe path to a full-table scan; this test makes
+        // that regression a build failure instead.
+        let model = persistenceController.container.managedObjectModel
+        let entity = try XCTUnwrap(model.entitiesByName["CDMessage"])
+
+        let index = try XCTUnwrap(
+            entity.indexes.first { $0.name == "bySessionAndSeq" },
+            "CDMessage should declare a fetch index named bySessionAndSeq covering newestCachedSeq's predicate+sort"
+        )
+        XCTAssertEqual(
+            index.elements.map { $0.propertyName },
+            ["sessionId", "seq"],
+            "Index must cover sessionId then seq so the WHERE+ORDER BY is fully satisfied by the index"
+        )
+        XCTAssertTrue(index.elements[0].isAscending, "sessionId element should be ascending")
+        XCTAssertFalse(
+            index.elements[1].isAscending,
+            "seq element must be descending — newestCachedSeq sorts seq DESC with fetchLimit 1"
+        )
+    }
+
+    func testMaxCachedSeqFetchOnLargeDatasetReturnsCorrectMax() throws {
+        // Insert 10k+ messages spread across two sessions and confirm the
+        // exact fetch shape used by VoiceCodeClient.newestCachedSeq
+        // (predicate sessionId, sort seq DESC, fetchLimit 1) returns the
+        // correct max for the target session. The bySessionAndSeq compound
+        // index makes this an indexed lookup; a regression that removes the
+        // index would still return the right answer but become a 10k-row
+        // table scan, so we wrap the fetch in a `measure` block to surface
+        // performance regressions in trends.
+        //
+        // The seq values are interleaved so insertion order is the *reverse*
+        // of seq order within each session — guards against a regression
+        // where the fetch accidentally returns the most-recently-inserted
+        // row instead of the highest seq.
+        let targetSession = UUID()
+        let otherSession = UUID()
+        let perSession = 5_001
+        let totalRows = perSession * 2 // 10_002 rows
+
+        for i in 0..<totalRows {
+            let isTarget = (i % 2 == 0)
+            let perSessionIndex = i / 2
+            // Assign seqs so that the FIRST inserted row of each session
+            // carries the highest seq for that session, not the last.
+            // Offset other-session seqs above target so a query that drops
+            // the predicate would return otherSession's max instead.
+            let seqValue: Int64 = isTarget
+                ? Int64(perSession - perSessionIndex)            // 5001..1
+                : Int64(100_000 + perSession - perSessionIndex)  // 105001..100001
+
+            let message = CDMessage(context: context)
+            message.id = UUID()
+            message.sessionId = isTarget ? targetSession : otherSession
+            message.role = "user"
+            message.text = "M\(i)"
+            message.timestamp = Date()
+            message.messageStatus = .confirmed
+            message.seq = seqValue
+        }
+        try context.save()
+
+        let request = CDMessage.fetchRequest()
+        request.predicate = NSPredicate(format: "sessionId == %@", targetSession as CVarArg)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.seq, ascending: false)]
+        request.fetchLimit = 1
+
+        let result = try XCTUnwrap(try context.fetch(request).first,
+                                   "Indexed fetch must return a row for the target session")
+        XCTAssertEqual(
+            result.seq, Int64(perSession),
+            "Indexed fetch must return the highest seq (\(perSession)) for the target session across \(totalRows) rows"
+        )
+        XCTAssertEqual(
+            result.sessionId, targetSession,
+            "Result must scope to the target session — otherSession holds higher seqs (>100k) and would surface here if the predicate were ignored"
+        )
+
+        // Performance probe: with bySessionAndSeq the fetch is an indexed
+        // seek; without it it becomes a 10k-row scan. The measure block
+        // captures latency for trend tracking rather than asserting a
+        // strict bound (CI variance makes hard cutoffs flaky).
+        measure {
+            for _ in 0..<50 {
+                _ = try? context.fetch(request)
+            }
+        }
     }
 }

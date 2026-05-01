@@ -162,9 +162,7 @@ struct CommandOutputDetailView: View {
                     .italic()
                     .padding()
             } else {
-                Text(output.output)
-                    .font(.system(.body, design: .monospaced))
-                    .textSelection(.enabled)
+                SelectableText(text: output.output, isMonospaced: true)
                     .padding(12)
                     .background(Color.secondarySystemBackground)
                     .cornerRadius(8)

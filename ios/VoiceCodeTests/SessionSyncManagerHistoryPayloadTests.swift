@@ -1,0 +1,1250 @@
+// SessionSyncManagerHistoryPayloadTests.swift
+// Unit tests for the unified `SessionSyncManager.handleSessionHistoryPayload`
+// — gap contract + idempotent upsert + is_complete chain (beads tmux-untethered-fh3).
+// Covers AC3, AC4, AC6 of docs/design/append-only-message-stream.md.
+
+import XCTest
+import CoreData
+@testable import VoiceCode
+
+final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
+
+    var persistenceController: PersistenceController!
+    var context: NSManagedObjectContext!
+    var manager: SessionSyncManager!
+    var delegate: RecordingDelegate!
+
+    override func setUpWithError() throws {
+        persistenceController = PersistenceController(inMemory: true)
+        context = persistenceController.container.viewContext
+        manager = SessionSyncManager(persistenceController: persistenceController)
+        delegate = RecordingDelegate()
+        manager.delegate = delegate
+    }
+
+    override func tearDownWithError() throws {
+        delegate = nil
+        manager = nil
+        context = nil
+        persistenceController = nil
+    }
+
+    // MARK: - Test doubles
+
+    /// Records all delegate invocations so tests can assert the exact
+    /// resubscribe / pruned payloads the manager emitted.
+    final class RecordingDelegate: SessionSyncDelegate {
+        struct ResubscribeCall: Equatable {
+            let sessionId: String
+            let fromSeq: Int64
+        }
+
+        struct StallCall: Equatable {
+            let sessionId: String
+            let atCursor: Int64
+        }
+
+        var prunedGaps: [(sessionId: String, gap: SessionHistoryPayload.Gap)] = []
+        var resubscribes: [ResubscribeCall] = []
+        var stalls: [StallCall] = []
+        var onResubscribe: (() -> Void)?
+        var onPruned: (() -> Void)?
+        var onStall: (() -> Void)?
+
+        func didDetectPrunedGap(_ sessionId: String, gap: SessionHistoryPayload.Gap) {
+            prunedGaps.append((sessionId: sessionId, gap: gap))
+            onPruned?()
+        }
+
+        func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64) {
+            resubscribes.append(ResubscribeCall(sessionId: sessionId, fromSeq: fromSeq))
+            onResubscribe?()
+        }
+
+        func sessionSyncDidStallChain(_ sessionId: String, atCursor: Int64) {
+            stalls.append(StallCall(sessionId: sessionId, atCursor: atCursor))
+            onStall?()
+        }
+    }
+
+    // MARK: - Helpers
+
+    private let sessionIdString = "11112222-3333-4444-5555-666666666666"
+    private var sessionUUID: UUID { UUID(uuidString: sessionIdString)! }
+
+    private func wireMessage(seq: Int64,
+                             role: String = "assistant",
+                             text: String? = nil,
+                             uuid: UUID = UUID(),
+                             timestamp: Date = Date()) -> WireMessage {
+        WireMessage(
+            sessionId: sessionIdString,
+            seq: seq,
+            role: role,
+            text: text ?? "msg-\(seq)",
+            uuid: uuid.uuidString.lowercased(),
+            timestamp: timestamp
+        )
+    }
+
+    private func payload(firstSeq: Int64?,
+                         lastSeq: Int64?,
+                         nextSeq: Int64,
+                         isComplete: Bool,
+                         messages: [WireMessage] = [],
+                         gap: SessionHistoryPayload.Gap? = nil,
+                         sessionId: String? = nil) -> SessionHistoryPayload {
+        SessionHistoryPayload(
+            sessionId: sessionId ?? sessionIdString,
+            messages: messages,
+            firstSeq: firstSeq,
+            lastSeq: lastSeq,
+            nextSeq: nextSeq,
+            isComplete: isComplete,
+            gap: gap
+        )
+    }
+
+    /// Seed the store with a session and pre-assigned-seq messages so gap
+    /// detection has a well-defined `local_last_seq`.
+    private func seedSession(seqs: ClosedRange<Int64>) {
+        let session = CDBackendSession(context: context)
+        session.id = sessionUUID
+        session.backendName = "test"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = Int32(seqs.count)
+        session.preview = ""
+        session.provider = "claude"
+
+        for s in seqs {
+            let msg = CDMessage(context: context)
+            msg.id = UUID()
+            msg.sessionId = sessionUUID
+            msg.role = "assistant"
+            msg.text = "seed-\(s)"
+            msg.timestamp = Date(timeIntervalSince1970: Double(s))
+            msg.seq = s
+            msg.messageStatus = .confirmed
+            msg.session = session
+        }
+        try! context.save()
+    }
+
+    private func fetchMessages() -> [CDMessage] {
+        let request = CDMessage.fetchRequest()
+        request.predicate = NSPredicate(format: "sessionId == %@", sessionUUID as CVarArg)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.seq, ascending: true)]
+        context.refreshAllObjects()
+        return (try? context.fetch(request)) ?? []
+    }
+
+    private func waitForHistoryUpdate(expecting sessionId: String = "11112222-3333-4444-5555-666666666666",
+                                      timeout: TimeInterval = 2.0,
+                                      file: StaticString = #file,
+                                      line: UInt = #line) {
+        let exp = expectation(forNotification: .sessionHistoryDidUpdate,
+                              object: nil,
+                              handler: { note in
+            (note.userInfo?["sessionId"] as? String) == sessionId
+        })
+        wait(for: [exp], timeout: timeout)
+    }
+
+    private func drainMainQueue(for interval: TimeInterval = 0.25) {
+        let deadline = Date().addingTimeInterval(interval)
+        while Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+    }
+
+    // MARK: - Three-case gap comparison (AC3)
+
+    func test_contiguous_first_seq_equals_local_plus_one_upserts_and_does_not_resubscribe() {
+        seedSession(seqs: 1...5)
+        XCTAssertEqual(manager.maxCachedSeq(sessionId: sessionUUID, in: context), 5)
+
+        let msgs = [wireMessage(seq: 6), wireMessage(seq: 7)]
+        let p = payload(firstSeq: 6, lastSeq: 7, nextSeq: 8, isComplete: true, messages: msgs)
+
+        manager.handleSessionHistoryPayload(p)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        let all = fetchMessages().map(\.seq)
+        XCTAssertEqual(all, [1, 2, 3, 4, 5, 6, 7], "contiguous window must extend the cache in order")
+        XCTAssertTrue(delegate.resubscribes.isEmpty, "contiguous + complete must NOT trigger a resubscribe")
+        XCTAssertTrue(delegate.prunedGaps.isEmpty, "no pruned gap on a happy-path payload")
+    }
+
+    func test_gap_first_seq_greater_than_local_plus_one_upserts_and_requests_backfill() {
+        seedSession(seqs: 1...5)
+
+        // Client has 1..5; backend pushes 10..12. Seq 6..9 are missing.
+        let msgs = [wireMessage(seq: 10), wireMessage(seq: 11), wireMessage(seq: 12)]
+        let p = payload(firstSeq: 10, lastSeq: 12, nextSeq: 13, isComplete: true, messages: msgs)
+
+        let resubscribed = expectation(description: "delegate resubscribe fires")
+        delegate.onResubscribe = { resubscribed.fulfill() }
+
+        manager.handleSessionHistoryPayload(p)
+        waitForHistoryUpdate()
+        wait(for: [resubscribed], timeout: 2.0)
+
+        let all = fetchMessages().map(\.seq)
+        XCTAssertEqual(all, [1, 2, 3, 4, 5, 10, 11, 12],
+                       "received window must still be upserted even when gap is detected")
+
+        XCTAssertEqual(delegate.resubscribes.count, 1, "exactly one backfill request per detected gap")
+        XCTAssertEqual(delegate.resubscribes.first?.sessionId, sessionIdString)
+        XCTAssertEqual(delegate.resubscribes.first?.fromSeq, 5,
+                       "backfill must ask for seq > local_last_seq (pre-gap)")
+    }
+
+    func test_duplicate_or_reorder_first_seq_le_local_is_idempotent_no_op() {
+        seedSession(seqs: 1...5)
+
+        // Backend re-delivers seqs we already have.
+        let msgs = [wireMessage(seq: 3, text: "rewritten-3"),
+                    wireMessage(seq: 4, text: "rewritten-4")]
+        let p = payload(firstSeq: 3, lastSeq: 4, nextSeq: 6, isComplete: true, messages: msgs)
+
+        manager.handleSessionHistoryPayload(p)
+        // A duplicate payload still triggers sessionHistoryDidUpdate only if
+        // there are new rows — here there are none, so we drain to confirm
+        // nothing was scheduled on main.
+        drainMainQueue(for: 0.4)
+
+        let all = fetchMessages()
+        XCTAssertEqual(all.map(\.seq), [1, 2, 3, 4, 5],
+                       "no new rows appear for duplicate seqs")
+        // Seq 3 and 4 were rewritten in place (idempotent update).
+        XCTAssertEqual(all.first(where: { $0.seq == 3 })?.text, "rewritten-3")
+        XCTAssertEqual(all.first(where: { $0.seq == 4 })?.text, "rewritten-4")
+        XCTAssertEqual(manager.maxCachedSeq(sessionId: sessionUUID, in: context), 5,
+                       "local_last_seq must not regress under duplicate delivery")
+        XCTAssertTrue(delegate.resubscribes.isEmpty, "dup / reorder never triggers a resubscribe")
+    }
+
+    // MARK: - is_complete chain (AC6)
+
+    func test_is_complete_false_triggers_resubscribe_with_advanced_cursor() {
+        seedSession(seqs: 1...5)
+
+        // Server returns seqs 6..10 but budget is exhausted; client should
+        // immediately resubscribe at last_seq = 10.
+        let msgs = (6...10).map { wireMessage(seq: Int64($0)) }
+        let p = payload(firstSeq: 6, lastSeq: 10, nextSeq: 20,
+                        isComplete: false, messages: msgs)
+
+        let resubscribed = expectation(description: "is_complete=false chains")
+        delegate.onResubscribe = { resubscribed.fulfill() }
+
+        manager.handleSessionHistoryPayload(p)
+        wait(for: [resubscribed], timeout: 2.0)
+
+        XCTAssertEqual(delegate.resubscribes.count, 1)
+        XCTAssertEqual(delegate.resubscribes.first?.fromSeq, 10,
+                       "chain cursor must advance to the last-received seq")
+    }
+
+    func test_is_complete_true_does_not_resubscribe() {
+        seedSession(seqs: 1...5)
+        let msgs = [wireMessage(seq: 6)]
+        let p = payload(firstSeq: 6, lastSeq: 6, nextSeq: 7,
+                        isComplete: true, messages: msgs)
+
+        manager.handleSessionHistoryPayload(p)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        XCTAssertTrue(delegate.resubscribes.isEmpty,
+                      "is_complete:true must not trigger any follow-up subscribe")
+    }
+
+    // MARK: - is_complete:false chain stall guard (tmux-untethered-l8t)
+
+    func test_first_is_complete_false_payload_proceeds_with_no_baseline_check() {
+        // Regression guard against an off-by-one where the chain check could
+        // fire on the very first is_complete:false step. With no prior chain
+        // cursor recorded, the first step must always proceed.
+        seedSession(seqs: 1...3)
+
+        let exp = expectation(description: "first chain step fires resubscribe")
+        delegate.onResubscribe = { exp.fulfill() }
+
+        let p = payload(firstSeq: 4, lastSeq: 5, nextSeq: 100,
+                        isComplete: false,
+                        messages: [wireMessage(seq: 4), wireMessage(seq: 5)])
+        manager.handleSessionHistoryPayload(p)
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertEqual(delegate.resubscribes.count, 1,
+                       "first is_complete:false fires the chain step")
+        XCTAssertTrue(delegate.stalls.isEmpty,
+                      "no stall on the very first chain step — there is nothing to compare against")
+    }
+
+    func test_chain_aborts_when_followup_payload_is_empty_with_nil_lastSeq() {
+        // Pathological case the guard exists for: a single message above the
+        // cursor exceeds the per-window byte budget, so the server returns
+        // an empty payload (no first/last seq) with is_complete:false. Pre-fix
+        // this spun the chain at maximum speed; the guard must abort.
+        seedSession(seqs: 1...5)
+
+        let firstResub = expectation(description: "first chain step fires")
+        delegate.onResubscribe = { firstResub.fulfill() }
+
+        let p1 = payload(firstSeq: 6, lastSeq: 10, nextSeq: 100,
+                         isComplete: false,
+                         messages: (6...10).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p1)
+        wait(for: [firstResub], timeout: 2.0)
+        XCTAssertEqual(delegate.resubscribes.last?.fromSeq, 10,
+                       "first chain step asks server to resume from last received seq")
+
+        // Empty follow-up: server can't fit seq 11 in the budget.
+        delegate.onResubscribe = {
+            XCTFail("a stalled chain must NOT fire another resubscribe")
+        }
+        let stalled = expectation(description: "chain stall fires")
+        delegate.onStall = { stalled.fulfill() }
+
+        let p2 = payload(firstSeq: nil, lastSeq: nil, nextSeq: 100,
+                         isComplete: false, messages: [])
+        manager.handleSessionHistoryPayload(p2)
+        wait(for: [stalled], timeout: 2.0)
+        drainMainQueue(for: 0.3)
+
+        XCTAssertEqual(delegate.stalls.count, 1, "stall fires exactly once")
+        XCTAssertEqual(delegate.stalls.first?.sessionId, sessionIdString)
+        XCTAssertEqual(delegate.stalls.first?.atCursor, 10,
+                       "stall reports the unchanged cursor we asked the server to resume from")
+        XCTAssertEqual(delegate.resubscribes.count, 1,
+                       "no second resubscribe — the chain is broken at this cursor")
+    }
+
+    func test_chain_aborts_when_lastSeq_does_not_advance_past_cursor() {
+        // Server returns a payload whose lastSeq equals the cursor we asked
+        // from. That violates the protocol contract (subscribe(last_seq=N)
+        // should return only seqs > N), and even if some malformed payload
+        // got through, the chain must not loop on it.
+        seedSession(seqs: 1...5)
+
+        let firstResub = expectation(description: "first chain step fires")
+        delegate.onResubscribe = { firstResub.fulfill() }
+
+        let p1 = payload(firstSeq: 6, lastSeq: 10, nextSeq: 100,
+                         isComplete: false,
+                         messages: (6...10).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p1)
+        wait(for: [firstResub], timeout: 2.0)
+
+        delegate.onResubscribe = {
+            XCTFail("stalled chain must not fire another resubscribe")
+        }
+        let stalled = expectation(description: "chain stall fires")
+        delegate.onStall = { stalled.fulfill() }
+
+        // lastSeq=10 == prev cursor → no advance.
+        let p2 = payload(firstSeq: nil, lastSeq: 10, nextSeq: 100,
+                         isComplete: false, messages: [])
+        manager.handleSessionHistoryPayload(p2)
+        wait(for: [stalled], timeout: 2.0)
+        drainMainQueue(for: 0.3)
+
+        XCTAssertEqual(delegate.stalls.first?.atCursor, 10)
+        XCTAssertEqual(delegate.resubscribes.count, 1)
+    }
+
+    func test_chain_continues_when_lastSeq_advances() {
+        // Healthy path: each chained payload advances lastSeq; both fire
+        // resubscribe with the bumped cursor and no stall ever fires.
+        seedSession(seqs: 1...5)
+
+        let exp1 = expectation(description: "first chain step")
+        delegate.onResubscribe = { exp1.fulfill() }
+        let p1 = payload(firstSeq: 6, lastSeq: 10, nextSeq: 100,
+                         isComplete: false,
+                         messages: (6...10).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p1)
+        wait(for: [exp1], timeout: 2.0)
+
+        let exp2 = expectation(description: "second chain step")
+        delegate.onResubscribe = { exp2.fulfill() }
+        let p2 = payload(firstSeq: 11, lastSeq: 20, nextSeq: 100,
+                         isComplete: false,
+                         messages: (11...20).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p2)
+        wait(for: [exp2], timeout: 2.0)
+        drainMainQueue(for: 0.2)
+
+        XCTAssertEqual(delegate.resubscribes.count, 2,
+                       "both chain steps fire when the cursor advances")
+        XCTAssertEqual(delegate.resubscribes[0].fromSeq, 10)
+        XCTAssertEqual(delegate.resubscribes[1].fromSeq, 20)
+        XCTAssertTrue(delegate.stalls.isEmpty,
+                      "advancing chain must not trigger stall")
+    }
+
+    func test_is_complete_true_resets_chain_so_next_chain_starts_fresh() {
+        // After a successful is_complete:true, the chain cursor must clear.
+        // A subsequent is_complete:false on the same session is then treated
+        // as a fresh first step, not a continuation — without this clear,
+        // the new chain's first cursor would be compared against the stale
+        // previous chain's cursor and could falsely stall.
+        seedSession(seqs: 1...5)
+
+        let exp1 = expectation(description: "first chain step")
+        delegate.onResubscribe = { exp1.fulfill() }
+        let p1 = payload(firstSeq: 6, lastSeq: 10, nextSeq: 100,
+                         isComplete: false,
+                         messages: (6...10).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p1)
+        wait(for: [exp1], timeout: 2.0)
+
+        // is_complete:true terminates the chain.
+        delegate.onResubscribe = {
+            XCTFail("is_complete:true must not fire any resubscribe")
+        }
+        let p2 = payload(firstSeq: 11, lastSeq: 11, nextSeq: 12,
+                         isComplete: true, messages: [wireMessage(seq: 11)])
+        manager.handleSessionHistoryPayload(p2)
+        waitForHistoryUpdate()
+        drainMainQueue(for: 0.3)
+
+        // Brand-new is_complete:false on the same session — fresh start.
+        // Pick a lastSeq deliberately less than the first chain's cursor (10)
+        // so that, if the cursor weren't cleared, the chain check would
+        // fire stall instead of advancing. With the clear in place, the
+        // chain proceeds and records the new cursor.
+        let exp3 = expectation(description: "fresh chain after reset")
+        delegate.onResubscribe = { exp3.fulfill() }
+        let p3 = payload(firstSeq: 12, lastSeq: 13, nextSeq: 100,
+                         isComplete: false,
+                         messages: (12...13).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p3)
+        wait(for: [exp3], timeout: 2.0)
+
+        XCTAssertEqual(delegate.resubscribes.count, 2,
+                       "p1 + p3 fire; p2 (is_complete:true) does not")
+        XCTAssertEqual(delegate.resubscribes.last?.fromSeq, 13,
+                       "fresh chain advances to the new lastSeq")
+        XCTAssertTrue(delegate.stalls.isEmpty,
+                      "is_complete:true cleared the cursor so the new chain doesn't false-stall")
+    }
+
+    func test_stall_clears_chain_so_next_chain_starts_fresh() {
+        // Recoverability: after a stall, a later payload must be able to
+        // start a fresh chain. Otherwise a one-time hiccup permanently
+        // blocks the session from chaining is_complete:false.
+        seedSession(seqs: 1...5)
+
+        let exp1 = expectation(description: "first chain step")
+        delegate.onResubscribe = { exp1.fulfill() }
+        let p1 = payload(firstSeq: 6, lastSeq: 10, nextSeq: 100,
+                         isComplete: false,
+                         messages: (6...10).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p1)
+        wait(for: [exp1], timeout: 2.0)
+
+        // Stall.
+        let stalled = expectation(description: "stall fires")
+        delegate.onStall = { stalled.fulfill() }
+        let p2 = payload(firstSeq: nil, lastSeq: nil, nextSeq: 100,
+                         isComplete: false, messages: [])
+        manager.handleSessionHistoryPayload(p2)
+        wait(for: [stalled], timeout: 2.0)
+
+        // A new is_complete:false (e.g. user retried, or new state landed)
+        // must be allowed to start a fresh chain rather than being blocked
+        // by the stale stall cursor.
+        let exp3 = expectation(description: "fresh chain after stall")
+        delegate.onResubscribe = { exp3.fulfill() }
+        let p3 = payload(firstSeq: 11, lastSeq: 15, nextSeq: 100,
+                         isComplete: false,
+                         messages: (11...15).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(p3)
+        wait(for: [exp3], timeout: 2.0)
+
+        XCTAssertEqual(delegate.resubscribes.count, 2,
+                       "p1 + p3 fire; p2 stalled and never resubscribes")
+        XCTAssertEqual(delegate.resubscribes.last?.fromSeq, 15)
+        XCTAssertEqual(delegate.stalls.count, 1)
+    }
+
+    func test_chain_cursors_are_tracked_independently_per_session() {
+        // Two sessions chain in parallel — a stall on one must not affect
+        // the other. Without per-session keying, the second session would
+        // inherit the first's cursor and false-stall.
+        seedSession(seqs: 1...3)
+
+        let otherSessionId = "22223333-4444-5555-6666-777777777777"
+        let otherUUID = UUID(uuidString: otherSessionId)!
+        let otherSession = CDBackendSession(context: context)
+        otherSession.id = otherUUID
+        otherSession.backendName = "other"
+        otherSession.workingDirectory = "/tmp/other"
+        otherSession.lastModified = Date()
+        otherSession.messageCount = 0
+        otherSession.preview = ""
+        otherSession.provider = "claude"
+        try! context.save()
+
+        // Session A: chain step
+        let expA1 = expectation(description: "A first chain step")
+        delegate.onResubscribe = { expA1.fulfill() }
+        let pA1 = payload(firstSeq: 4, lastSeq: 8, nextSeq: 100,
+                          isComplete: false,
+                          messages: (4...8).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(pA1)
+        wait(for: [expA1], timeout: 2.0)
+
+        // Session A stalls.
+        let stalledA = expectation(description: "A stalls")
+        delegate.onStall = { stalledA.fulfill() }
+        let pA2 = payload(firstSeq: nil, lastSeq: nil, nextSeq: 100,
+                          isComplete: false, messages: [])
+        manager.handleSessionHistoryPayload(pA2)
+        wait(for: [stalledA], timeout: 2.0)
+
+        // Session B: starts its OWN chain — must not be affected by A's stall.
+        let expB1 = expectation(description: "B first chain step proceeds")
+        delegate.onResubscribe = { expB1.fulfill() }
+        let bMessages: [WireMessage] = (1...3).map {
+            WireMessage(sessionId: otherSessionId,
+                        seq: Int64($0),
+                        role: "assistant",
+                        text: "B-\($0)",
+                        uuid: UUID().uuidString.lowercased(),
+                        timestamp: Date())
+        }
+        let pB1 = payload(firstSeq: 1, lastSeq: 3, nextSeq: 50,
+                          isComplete: false,
+                          messages: bMessages,
+                          sessionId: otherSessionId)
+        manager.handleSessionHistoryPayload(pB1)
+        wait(for: [expB1], timeout: 2.0)
+
+        XCTAssertEqual(delegate.resubscribes.count, 2,
+                       "A's first step + B's first step both fire")
+        XCTAssertEqual(delegate.resubscribes.last?.sessionId, otherSessionId)
+        XCTAssertEqual(delegate.resubscribes.last?.fromSeq, 3)
+        XCTAssertEqual(delegate.stalls.count, 1, "only A stalled")
+        XCTAssertEqual(delegate.stalls.first?.sessionId, sessionIdString)
+    }
+
+    func test_gap_takes_precedence_over_is_complete_false() {
+        // Both conditions met: the payload itself is truncated AND starts
+        // past local_last_seq + 1. The gap backfill must win so we don't
+        // advance past the missing range.
+        seedSession(seqs: 1...5)
+
+        let msgs = [wireMessage(seq: 10), wireMessage(seq: 11)]
+        let p = payload(firstSeq: 10, lastSeq: 11, nextSeq: 100,
+                        isComplete: false, messages: msgs)
+
+        let resubscribed = expectation(description: "gap backfill fires")
+        delegate.onResubscribe = { resubscribed.fulfill() }
+
+        manager.handleSessionHistoryPayload(p)
+        wait(for: [resubscribed], timeout: 2.0)
+
+        XCTAssertEqual(delegate.resubscribes.count, 1,
+                       "only the gap backfill is emitted; is_complete chain is deferred")
+        XCTAssertEqual(delegate.resubscribes.first?.fromSeq, 5,
+                       "backfill cursor points at pre-gap local_last_seq, not payload.last_seq")
+    }
+
+    // MARK: - Upsert idempotency (AC3)
+
+    func test_upsert_same_sessionId_and_seq_updates_in_place() {
+        seedSession(seqs: 1...3)
+
+        let uuid = UUID()
+        let first = wireMessage(seq: 4, text: "v1", uuid: uuid,
+                                timestamp: Date(timeIntervalSince1970: 100))
+        let firstPayload = payload(firstSeq: 4, lastSeq: 4, nextSeq: 5,
+                                   isComplete: true, messages: [first])
+
+        manager.handleSessionHistoryPayload(firstPayload)
+        waitForHistoryUpdate()
+
+        // Redeliver the same seq with updated text — idempotent upsert
+        // means exactly one row survives with the latest content.
+        let second = wireMessage(seq: 4, text: "v2", uuid: uuid,
+                                 timestamp: Date(timeIntervalSince1970: 200))
+        let secondPayload = payload(firstSeq: 4, lastSeq: 4, nextSeq: 5,
+                                    isComplete: true, messages: [second])
+
+        manager.handleSessionHistoryPayload(secondPayload)
+        drainMainQueue(for: 0.5)
+
+        let rowsAtSeq4 = fetchMessages().filter { $0.seq == 4 }
+        XCTAssertEqual(rowsAtSeq4.count, 1,
+                       "(sessionId, seq) key must collapse to one row under double delivery")
+        XCTAssertEqual(rowsAtSeq4.first?.text, "v2",
+                       "update-in-place must apply the latest wire payload")
+        XCTAssertEqual(rowsAtSeq4.first?.id, uuid,
+                       "stable UUID from the wire is preserved across upserts")
+    }
+
+    func test_upsert_double_delivery_overlap_produces_one_row_per_seq() {
+        // Simulates subscribe reply crossing a live push — the same window
+        // is delivered twice. End state: one row per seq in the server's
+        // transcript.
+        seedSession(seqs: 1...2)
+
+        let common = (3...6).map { wireMessage(seq: Int64($0)) }
+        let pA = payload(firstSeq: 3, lastSeq: 6, nextSeq: 7,
+                         isComplete: true, messages: common)
+        let pB = payload(firstSeq: 3, lastSeq: 6, nextSeq: 7,
+                         isComplete: true, messages: common)
+
+        manager.handleSessionHistoryPayload(pA)
+        waitForHistoryUpdate()
+        manager.handleSessionHistoryPayload(pB)
+        drainMainQueue(for: 0.5)
+
+        let seqs = fetchMessages().map(\.seq)
+        XCTAssertEqual(seqs, [1, 2, 3, 4, 5, 6],
+                       "overlapping deliveries still yield contiguous, unique seqs")
+    }
+
+    func test_concurrent_payloads_for_same_session_produce_one_row_per_seq() {
+        // Simulates two payloads landing on the same session at the same time
+        // — e.g. a subscribe reply crossing a live `session_history` push, or
+        // two backfill requests dispatched in quick succession. Each payload
+        // is delivered on its own queue so they execute against independent
+        // background contexts in parallel. End-state contract: exactly one
+        // row per seq (idempotent on (session_id, seq) per AC3 of the
+        // append-only message stream design).
+        //
+        seedSession(seqs: 1...5)
+
+        // Overlapping seq ranges. Each payload carries seqs the other does
+        // NOT, so both reliably post `sessionHistoryDidUpdate` regardless of
+        // which one writes first — letting us wait deterministically for
+        // both background saves to complete via expectedFulfillmentCount.
+        let aMessages = (6...10).map { wireMessage(seq: Int64($0), text: "A-\($0)") }
+        let bMessages = (8...12).map { wireMessage(seq: Int64($0), text: "B-\($0)") }
+        let pA = payload(firstSeq: 6, lastSeq: 10, nextSeq: 13,
+                         isComplete: true, messages: aMessages)
+        let pB = payload(firstSeq: 8, lastSeq: 12, nextSeq: 13,
+                         isComplete: true, messages: bMessages)
+
+        let exp = expectation(forNotification: .sessionHistoryDidUpdate,
+                              object: nil,
+                              handler: { note in
+            (note.userInfo?["sessionId"] as? String) == self.sessionIdString
+        })
+        exp.expectedFulfillmentCount = 2
+        exp.assertForOverFulfill = false
+
+        // Fire both payloads concurrently from separate global queues so
+        // they enter `performBackgroundTask` from different threads.
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.manager.handleSessionHistoryPayload(pA)
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.manager.handleSessionHistoryPayload(pB)
+        }
+
+        wait(for: [exp], timeout: 5.0)
+        drainMainQueue(for: 0.3)
+
+        let seqs = fetchMessages().map(\.seq)
+        XCTAssertEqual(seqs, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+                       "concurrent overlapping payloads must collapse to one row per seq")
+
+        let countsBySeq = Dictionary(seqs.map { ($0, 1) }, uniquingKeysWith: +)
+        for (s, count) in countsBySeq {
+            XCTAssertEqual(count, 1,
+                           "seq \(s) appeared \(count) times — concurrent upsert produced a duplicate row")
+        }
+
+        XCTAssertTrue(delegate.resubscribes.isEmpty,
+                      "happy-path concurrent delivery must not trigger backfill")
+        XCTAssertTrue(delegate.prunedGaps.isEmpty,
+                      "no pruned gap on a happy-path payload")
+    }
+
+    // MARK: - client_ahead gap (full-resync path)
+
+    func test_client_ahead_gap_merges_messages_and_does_not_fire_pruned_delegate() {
+        // `client_ahead` means the client's last_seq > server's next_seq - 1
+        // (e.g. after a backend rollback). The server responds with a full
+        // resync in `messages`; the client merges like any other payload and
+        // must NOT fire the pruned delegate, which is reserved for the
+        // lost-state case.
+        seedSession(seqs: 1...5)
+
+        let msgs = [wireMessage(seq: 1, text: "r-1"),
+                    wireMessage(seq: 2, text: "r-2"),
+                    wireMessage(seq: 3, text: "r-3")]
+        let gap = SessionHistoryPayload.Gap(requestedLastSeq: 99,
+                                            minAvailableSeq: 1,
+                                            reason: "client_ahead")
+        let p = payload(firstSeq: 1, lastSeq: 3, nextSeq: 4,
+                        isComplete: true, messages: msgs, gap: gap)
+
+        manager.handleSessionHistoryPayload(p)
+        // Resync rewrites existing seqs 1..3 in place; no new rows means no
+        // sessionHistoryDidUpdate notification — drain and verify.
+        drainMainQueue(for: 0.5)
+
+        XCTAssertTrue(delegate.prunedGaps.isEmpty,
+                      "client_ahead must NOT surface as a pruned-gap warning")
+        XCTAssertTrue(delegate.resubscribes.isEmpty,
+                      "full resync doesn't require a follow-up subscribe")
+
+        let rows = fetchMessages()
+        XCTAssertEqual(rows.map(\.seq), [1, 2, 3, 4, 5],
+                       "local rows above the resync range are retained; matching seqs update in place")
+        XCTAssertEqual(rows.first(where: { $0.seq == 1 })?.text, "r-1",
+                       "resync content must overwrite the pre-existing row")
+    }
+
+    // MARK: - Pruned gap routing (AC5 regression guard)
+
+    func test_pruned_gap_fires_delegate_and_skips_merge() {
+        seedSession(seqs: 1...3)
+
+        let gap = SessionHistoryPayload.Gap(requestedLastSeq: 3,
+                                            minAvailableSeq: 200,
+                                            reason: "pruned")
+        let p = payload(firstSeq: nil, lastSeq: nil, nextSeq: 210,
+                        isComplete: true, messages: [], gap: gap)
+
+        let fired = expectation(description: "pruned delegate fires")
+        delegate.onPruned = { fired.fulfill() }
+
+        manager.handleSessionHistoryPayload(p)
+        wait(for: [fired], timeout: 1.0)
+
+        XCTAssertEqual(delegate.prunedGaps.count, 1)
+        XCTAssertEqual(delegate.prunedGaps.first?.gap.minAvailableSeq, 200)
+        XCTAssertTrue(delegate.resubscribes.isEmpty,
+                      "pruned must short-circuit — no backfill and no is_complete chain")
+        XCTAssertEqual(fetchMessages().map(\.seq), [1, 2, 3],
+                       "pruned payload must not mutate the store")
+    }
+
+    // MARK: - Consistency guards
+
+    func test_upsert_drops_message_whose_sessionId_disagrees_with_envelope() {
+        // Defensive guard: a wire message whose session_id does not match
+        // the envelope session must be dropped so the (sessionId, session)
+        // pair stays internally consistent.
+        seedSession(seqs: 1...2)
+
+        let badMsg = WireMessage(
+            sessionId: "99999999-9999-9999-9999-999999999999", // not our seed session
+            seq: 3,
+            role: "assistant",
+            text: "mismatched",
+            uuid: UUID().uuidString.lowercased(),
+            timestamp: Date()
+        )
+        let goodMsg = wireMessage(seq: 4, text: "ok")
+        let p = payload(firstSeq: 3, lastSeq: 4, nextSeq: 5,
+                        isComplete: true, messages: [badMsg, goodMsg])
+
+        manager.handleSessionHistoryPayload(p)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        let seqs = fetchMessages().map(\.seq)
+        XCTAssertFalse(seqs.contains(3), "mismatched-session row must be dropped")
+        XCTAssertTrue(seqs.contains(4), "well-formed row on the same payload must still land")
+    }
+
+    // MARK: - Empty cache baseline
+
+    func test_empty_cache_contiguous_from_seq_one() {
+        // Fresh session, first subscribe: local_last_seq == 0, first_seq == 1
+        // counts as contiguous (1 == 0 + 1).
+        let msgs = (1...3).map { wireMessage(seq: Int64($0)) }
+        let p = payload(firstSeq: 1, lastSeq: 3, nextSeq: 4,
+                        isComplete: true, messages: msgs)
+
+        manager.handleSessionHistoryPayload(p)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        XCTAssertEqual(fetchMessages().map(\.seq), [1, 2, 3])
+        XCTAssertTrue(delegate.resubscribes.isEmpty,
+                      "seq=1 on empty cache is contiguous, not a gap")
+    }
+
+    func test_empty_cache_first_seq_greater_than_one_is_a_gap() {
+        // Local is empty (local_last_seq == 0). Receiving first_seq == 5
+        // means seqs 1..4 are missing — the client must backfill.
+        let msgs = [wireMessage(seq: 5), wireMessage(seq: 6)]
+        let p = payload(firstSeq: 5, lastSeq: 6, nextSeq: 7,
+                        isComplete: true, messages: msgs)
+
+        let resubscribed = expectation(description: "empty-cache gap triggers backfill")
+        delegate.onResubscribe = { resubscribed.fulfill() }
+
+        manager.handleSessionHistoryPayload(p)
+        wait(for: [resubscribed], timeout: 2.0)
+
+        XCTAssertEqual(delegate.resubscribes.first?.fromSeq, 0,
+                       "empty cache → backfill from seq 0 (server returns seq > 0)")
+    }
+
+    // MARK: - Optimistic reconciliation (tmux-untethered-41z)
+
+    func test_optimistic_user_message_reconciles_in_place_instead_of_duplicating() {
+        // Seed: session exists, user has an optimistic "sending" row at seq=0
+        // from createOptimisticMessage (the iOS-local prompt they just typed).
+        let session = CDBackendSession(context: context)
+        session.id = sessionUUID
+        session.backendName = "test"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.provider = "claude"
+
+        let optimistic = CDMessage(context: context)
+        let optimisticId = UUID()
+        optimistic.id = optimisticId
+        optimistic.sessionId = sessionUUID
+        optimistic.role = "user"
+        optimistic.text = "hello claude"
+        optimistic.timestamp = Date()
+        optimistic.seq = 0 // unknown — no backend confirmation yet
+        optimistic.messageStatus = .sending
+        optimistic.session = session
+        try! context.save()
+
+        // Backend echoes the same prompt back with a real seq + uuid.
+        let backendUuid = UUID()
+        let echo = WireMessage(
+            sessionId: sessionIdString,
+            seq: 1,
+            role: "user",
+            text: "hello claude",
+            uuid: backendUuid.uuidString.lowercased(),
+            timestamp: Date()
+        )
+        let p = payload(firstSeq: 1, lastSeq: 1, nextSeq: 2,
+                        isComplete: true, messages: [echo])
+
+        manager.handleSessionHistoryPayload(p)
+        // Reconciliation updates an existing row in place (newRows == 0), so
+        // the manager does not post .sessionHistoryDidUpdate — @FetchRequest
+        // picks up the in-place change via context merge. Just drain and check.
+        drainMainQueue(for: 0.5)
+
+        let rows = fetchMessages()
+        XCTAssertEqual(rows.count, 1,
+                       "optimistic row must be upgraded in place — no duplicate bubble")
+        let row = rows.first!
+        XCTAssertEqual(row.seq, 1, "seq must advance to the backend's assigned value")
+        XCTAssertEqual(row.messageStatus, .confirmed, "status must flip to confirmed on echo")
+        XCTAssertEqual(row.id, backendUuid, "id must align with the backend-assigned uuid")
+    }
+
+    /// Reproduction for tmux-untethered-mgp: three optimistic prompts dictated
+    /// rapidly, each persisted via `createOptimisticMessage`, then echoed back
+    /// in one payload. Pre-fix, every optimistic row carried `seq=0`, so the
+    /// fetch-then-update pattern stranded one row per "extra" prompt. The fix
+    /// stamps each optimistic row with a deterministic *negative* seq drawn
+    /// from its UUID, so all three reconcile cleanly. The test drives the
+    /// real `createOptimisticMessage` path so any regression that revives
+    /// the seq=0 default fails here too.
+    func test_three_optimistic_messages_via_createOptimisticMessage_all_reconcile() {
+        let session = CDBackendSession(context: context)
+        session.id = sessionUUID
+        session.backendName = "test"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.provider = "claude"
+        try! context.save()
+
+        let exp1 = expectation(description: "opt1")
+        let exp2 = expectation(description: "opt2")
+        let exp3 = expectation(description: "opt3")
+        manager.createOptimisticMessage(sessionId: sessionUUID, text: "alpha") { _ in exp1.fulfill() }
+        wait(for: [exp1], timeout: 2.0)
+        manager.createOptimisticMessage(sessionId: sessionUUID, text: "beta") { _ in exp2.fulfill() }
+        wait(for: [exp2], timeout: 2.0)
+        manager.createOptimisticMessage(sessionId: sessionUUID, text: "gamma") { _ in exp3.fulfill() }
+        wait(for: [exp3], timeout: 2.0)
+        drainMainQueue(for: 0.3)
+
+        let preRows = fetchMessages()
+        XCTAssertEqual(preRows.count, 3, "all three optimistic rows must persist")
+        XCTAssertTrue(preRows.allSatisfy { $0.seq < 0 },
+                      "every optimistic row must carry a negative seq — not seq=0")
+        XCTAssertEqual(Set(preRows.map(\.seq)).count, 3,
+                       "three optimistic rows must have three distinct seqs (no collision)")
+
+        // Backend echoes all three in one payload with consecutive seqs.
+        let echoes: [WireMessage] = ["alpha", "beta", "gamma"].enumerated().map { (i, text) in
+            WireMessage(
+                sessionId: sessionIdString,
+                seq: Int64(i + 1),
+                role: "user",
+                text: text,
+                uuid: UUID().uuidString.lowercased(),
+                timestamp: Date(timeIntervalSince1970: TimeInterval(100 + i))
+            )
+        }
+        let p = payload(firstSeq: 1, lastSeq: 3, nextSeq: 4, isComplete: true, messages: echoes)
+
+        manager.handleSessionHistoryPayload(p)
+        // All three reconcile in place (newRows == 0), so no
+        // sessionHistoryDidUpdate is posted — drain instead.
+        drainMainQueue(for: 0.5)
+
+        let rows = fetchMessages()
+        XCTAssertEqual(rows.count, 3,
+                       "no orphaned rows — pre-fix, two of the three would have been left at seq=0/sending")
+        XCTAssertTrue(rows.allSatisfy { $0.messageStatus == .confirmed },
+                      "all three must flip to confirmed; pre-fix the second and third stayed in .sending")
+        XCTAssertEqual(rows.map(\.seq).sorted(), [1, 2, 3],
+                       "rows must carry the backend-assigned seqs, no negative seqs left")
+        XCTAssertEqual(rows.first(where: { $0.seq == 1 })?.text, "alpha")
+        XCTAssertEqual(rows.first(where: { $0.seq == 2 })?.text, "beta")
+        XCTAssertEqual(rows.first(where: { $0.seq == 3 })?.text, "gamma")
+        XCTAssertTrue(delegate.resubscribes.isEmpty)
+        XCTAssertTrue(delegate.prunedGaps.isEmpty)
+    }
+
+    /// `maxCachedSeq` is the gap-detection cursor. Optimistic rows carry
+    /// negative seqs and must be excluded from the cursor — otherwise the
+    /// 3-case comparison in `handleSessionHistoryPayload` would treat a
+    /// fresh session with only optimistic rows as "ahead of seq 1" and
+    /// chase phantom backfills.
+    func test_maxCachedSeq_excludes_negative_optimistic_seqs() {
+        let session = CDBackendSession(context: context)
+        session.id = sessionUUID
+        session.backendName = "test"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.provider = "claude"
+
+        // Two optimistic rows with negative seqs — only state on a fresh session.
+        let optimistic1 = CDMessage(context: context)
+        optimistic1.id = UUID()
+        optimistic1.sessionId = sessionUUID
+        optimistic1.role = "user"
+        optimistic1.text = "pending 1"
+        optimistic1.seq = SessionSyncManager.optimisticSeq(for: optimistic1.id)
+        optimistic1.timestamp = Date(timeIntervalSince1970: 100)
+        optimistic1.messageStatus = .sending
+        optimistic1.session = session
+
+        let optimistic2 = CDMessage(context: context)
+        optimistic2.id = UUID()
+        optimistic2.sessionId = sessionUUID
+        optimistic2.role = "user"
+        optimistic2.text = "pending 2"
+        optimistic2.seq = SessionSyncManager.optimisticSeq(for: optimistic2.id)
+        optimistic2.timestamp = Date(timeIntervalSince1970: 200)
+        optimistic2.messageStatus = .sending
+        optimistic2.session = session
+        try! context.save()
+
+        XCTAssertEqual(manager.maxCachedSeq(sessionId: sessionUUID, in: context), 0,
+                       "negative optimistic seqs must clamp the cursor to 0")
+
+        // After a confirmed row arrives, its seq dominates.
+        let confirmed = CDMessage(context: context)
+        confirmed.id = UUID()
+        confirmed.sessionId = sessionUUID
+        confirmed.role = "assistant"
+        confirmed.text = "ack"
+        confirmed.seq = 7
+        confirmed.timestamp = Date(timeIntervalSince1970: 300)
+        confirmed.messageStatus = .confirmed
+        confirmed.session = session
+        try! context.save()
+
+        XCTAssertEqual(manager.maxCachedSeq(sessionId: sessionUUID, in: context), 7,
+                       "confirmed positive seq must dominate over coexisting negative optimistic seqs")
+    }
+
+    func test_two_concurrent_optimistic_messages_both_reconcile_no_seq_zero_orphans() {
+        // Regression for tmux-untethered-2sx: when the user fires two prompts
+        // back-to-back before the backend has assigned either a seq, both
+        // optimistic rows live at the same (sessionId, seq=0) primary key
+        // pair. The echo payload must reconcile each one against its own
+        // optimistic row (matched by text via the optimistic-fallback
+        // predicate) so the (sessionId, seq) collision at seq=0 does not
+        // strand a duplicate bubble or leak a stale seq=0 row.
+        let session = CDBackendSession(context: context)
+        session.id = sessionUUID
+        session.backendName = "test"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.provider = "claude"
+
+        let optimistic1 = CDMessage(context: context)
+        let optimistic1Id = UUID()
+        optimistic1.id = optimistic1Id
+        optimistic1.sessionId = sessionUUID
+        optimistic1.role = "user"
+        optimistic1.text = "first prompt"
+        optimistic1.timestamp = Date(timeIntervalSince1970: 100)
+        optimistic1.seq = 0
+        optimistic1.messageStatus = .sending
+        optimistic1.session = session
+
+        let optimistic2 = CDMessage(context: context)
+        let optimistic2Id = UUID()
+        optimistic2.id = optimistic2Id
+        optimistic2.sessionId = sessionUUID
+        optimistic2.role = "user"
+        optimistic2.text = "second prompt"
+        optimistic2.timestamp = Date(timeIntervalSince1970: 200)
+        optimistic2.seq = 0
+        optimistic2.messageStatus = .sending
+        optimistic2.session = session
+        try! context.save()
+
+        // Sanity: two rows, both at seq=0, both .sending.
+        let preRows = fetchMessages()
+        XCTAssertEqual(preRows.count, 2)
+        XCTAssertEqual(preRows.filter { $0.seq == 0 }.count, 2,
+                       "precondition: both optimistic rows share the seq=0 key")
+
+        // Backend echoes both prompts back with their assigned seqs.
+        let backendUuid1 = UUID()
+        let backendUuid2 = UUID()
+        let echo1 = WireMessage(
+            sessionId: sessionIdString,
+            seq: 1,
+            role: "user",
+            text: "first prompt",
+            uuid: backendUuid1.uuidString.lowercased(),
+            timestamp: Date(timeIntervalSince1970: 101)
+        )
+        let echo2 = WireMessage(
+            sessionId: sessionIdString,
+            seq: 2,
+            role: "user",
+            text: "second prompt",
+            uuid: backendUuid2.uuidString.lowercased(),
+            timestamp: Date(timeIntervalSince1970: 202)
+        )
+        let p = payload(firstSeq: 1, lastSeq: 2, nextSeq: 3,
+                        isComplete: true, messages: [echo1, echo2])
+
+        manager.handleSessionHistoryPayload(p)
+        // Both echoes reconcile in place (newRows == 0), so no
+        // .sessionHistoryDidUpdate is posted — drain instead.
+        drainMainQueue(for: 0.5)
+
+        let rows = fetchMessages()
+        XCTAssertEqual(rows.count, 2,
+                       "two optimistic rows + two echoes must collapse to two rows total — no duplicates")
+        XCTAssertTrue(rows.allSatisfy { $0.seq != 0 },
+                      "no orphaned seq=0 rows may remain after reconciliation")
+        XCTAssertEqual(rows.map(\.seq).sorted(), [1, 2],
+                       "rows must carry backend-assigned seqs, one each")
+        XCTAssertTrue(rows.allSatisfy { $0.messageStatus == .confirmed },
+                      "both reconciled rows must flip to confirmed")
+
+        let row1 = rows.first(where: { $0.seq == 1 })!
+        let row2 = rows.first(where: { $0.seq == 2 })!
+        XCTAssertEqual(row1.text, "first prompt")
+        XCTAssertEqual(row2.text, "second prompt")
+        XCTAssertEqual(row1.id, backendUuid1,
+                       "first echo must align with optimistic1's row, now carrying the backend uuid")
+        XCTAssertEqual(row2.id, backendUuid2,
+                       "second echo must align with optimistic2's row, now carrying the backend uuid")
+        XCTAssertTrue(delegate.resubscribes.isEmpty,
+                      "happy-path concurrent reconciliation must not trigger backfill")
+        XCTAssertTrue(delegate.prunedGaps.isEmpty,
+                      "no pruned gap on a happy-path payload")
+    }
+
+    // MARK: - Background-context merge policy regression
+
+    /// Regression for the silent-drop bug where background saves threw on
+    /// uniqueness-constraint conflicts on `CDMessage.id`. Without
+    /// `NSMergeByPropertyObjectTrumpMergePolicy` on the background context,
+    /// `upsertMessage`'s `message.id = wireUUID` write trips the constraint
+    /// when that UUID already exists in the store — and the early `return`
+    /// in the catch block silently drops the wire message.
+    func test_save_succeeds_when_wire_uuid_collides_with_existing_row_id() {
+        // Pre-seed seqs 1..2 with known ids. The wire payload below uses
+        // seed-2's id, which would otherwise trip the uniqueness constraint
+        // and throw on save.
+        seedSession(seqs: 1...2)
+        let collidingId = fetchMessages().first(where: { $0.seq == 2 })!.id
+
+        let echo = WireMessage(
+            sessionId: sessionIdString,
+            seq: 3,
+            role: "assistant",
+            text: "fresh-3",
+            uuid: collidingId.uuidString.lowercased(),
+            timestamp: Date()
+        )
+        let p = payload(firstSeq: 3, lastSeq: 3, nextSeq: 4,
+                        isComplete: true, messages: [echo])
+
+        manager.handleSessionHistoryPayload(p)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        // Regression contract: the wire row is present (no silent drop) and
+        // no recovery resubscribe fires (which would mean the catch block
+        // ran). The merge policy resolves the contrived id collision by
+        // evicting the older row; we don't pin which one survives.
+        let all = fetchMessages()
+        let wireRow = all.first(where: { $0.seq == 3 })
+        XCTAssertNotNil(wireRow, "wire row must survive — pre-fix save threw and dropped it")
+        XCTAssertEqual(wireRow?.text, "fresh-3")
+        XCTAssertTrue(delegate.resubscribes.isEmpty,
+                      "save success means no recovery resubscribe")
+    }
+
+    /// Production reproducer: the colliding id is reached through the
+    /// `optimistic-fallback` branch of `upsertMessage`, which is what the
+    /// user-visible bug actually exercised. Without the merge-policy fix
+    /// the optimistic row's id reassignment to wireUUID conflicts with a
+    /// pre-existing seeded row that already holds wireUUID.
+    func test_save_succeeds_when_optimistic_fallback_id_reassign_collides() {
+        // Pre-seed seq=1 (the row whose id will be the collision target).
+        seedSession(seqs: 1...1)
+        let collidingId = fetchMessages().first(where: { $0.seq == 1 })!.id
+
+        // Add a pending optimistic user row — same session, role+text+status
+        // matches the optimistic-fallback predicate at upsertMessage:557.
+        let session = (try! context.fetch(CDBackendSession.fetchBackendSession(id: sessionUUID))).first!
+        let optimistic = CDMessage(context: context)
+        optimistic.id = UUID()
+        optimistic.sessionId = sessionUUID
+        optimistic.role = "user"
+        optimistic.text = "hello"
+        optimistic.timestamp = Date(timeIntervalSince1970: 100)
+        optimistic.seq = 0
+        optimistic.messageStatus = .sending
+        optimistic.session = session
+        try! context.save()
+
+        // Backend echoes the user message: new (sessionId, seq) so seqHit is
+        // nil, optimistic predicate matches, and message.id = wireUUID would
+        // collide with the seeded row's id pre-fix.
+        let echo = WireMessage(
+            sessionId: sessionIdString,
+            seq: 2,
+            role: "user",
+            text: "hello",
+            uuid: collidingId.uuidString.lowercased(),
+            timestamp: Date()
+        )
+        let p = payload(firstSeq: 2, lastSeq: 2, nextSeq: 3,
+                        isComplete: true, messages: [echo])
+
+        manager.handleSessionHistoryPayload(p)
+        // Optimistic reconciliation updates a row in place (newRows == 0),
+        // so the manager doesn't post .sessionHistoryDidUpdate. Just drain.
+        drainMainQueue(for: 0.5)
+
+        // Targeted guard: the reconciled user row keeps its existing
+        // (random optimistic) id rather than taking the colliding wireUUID,
+        // so the seeded row also survives. seq, role, text all flip to
+        // backend-assigned values; only the id stays put.
+        let all = fetchMessages()
+        let userRow = all.first(where: { $0.role == "user" && $0.text == "hello" })
+        XCTAssertNotNil(userRow,
+                        "optimistic row must reconcile, not get dropped — pre-fix save threw")
+        XCTAssertEqual(userRow?.seq, 2, "reconciled row must carry backend-assigned seq")
+        XCTAssertEqual(userRow?.messageStatus, .confirmed,
+                       "status must flip to confirmed on echo")
+        XCTAssertNotEqual(userRow?.id, collidingId,
+                          "guard must skip the id reassignment that would collide")
+        XCTAssertNotNil(all.first(where: { $0.seq == 1 }),
+                        "seeded row must survive — guard prevents constraint violation")
+        XCTAssertTrue(delegate.resubscribes.isEmpty,
+                      "save success means no recovery resubscribe")
+    }
+
+    // MARK: - nextSeq persistence (tmux-untethered-fkz)
+
+    private func fetchSession() -> CDBackendSession? {
+        let request = CDBackendSession.fetchBackendSession(id: sessionUUID)
+        context.refreshAllObjects()
+        return (try? context.fetch(request))?.first
+    }
+
+    func test_handleSessionHistoryPayload_persists_nextSeq_on_session() {
+        // Reconnect cursor must survive local message pruning. The fix
+        // stores `next_seq` on the session itself (not derived from messages)
+        // so a pruned cache still resumes at the right cursor. See beads
+        // tmux-untethered-fkz.
+        seedSession(seqs: 1...5)
+        XCTAssertEqual(fetchSession()?.nextSeq, 0,
+                       "fresh session has no recorded next_seq before any payload")
+
+        let p = payload(firstSeq: 6, lastSeq: 7, nextSeq: 8,
+                        isComplete: true,
+                        messages: [wireMessage(seq: 6), wireMessage(seq: 7)])
+        manager.handleSessionHistoryPayload(p)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        XCTAssertEqual(fetchSession()?.nextSeq, 8,
+                       "payload's next_seq must be persisted on CDBackendSession.nextSeq")
+    }
+
+    func test_handleSessionHistoryPayload_nextSeq_never_regresses() {
+        // An out-of-order payload (e.g. a backfill landing after a newer
+        // push) must not pull the persisted cursor backward. Take the max.
+        seedSession(seqs: 1...5)
+
+        // First, a high next_seq from a forward push.
+        let pHigh = payload(firstSeq: 20, lastSeq: 22, nextSeq: 23,
+                            isComplete: true,
+                            messages: [wireMessage(seq: 20),
+                                       wireMessage(seq: 21),
+                                       wireMessage(seq: 22)])
+        manager.handleSessionHistoryPayload(pHigh)
+        waitForHistoryUpdate()
+        drainMainQueue()
+        XCTAssertEqual(fetchSession()?.nextSeq, 23)
+
+        // Then a backfill window with an older next_seq. Must not regress.
+        let pLow = payload(firstSeq: 6, lastSeq: 10, nextSeq: 11,
+                           isComplete: true,
+                           messages: (6...10).map { wireMessage(seq: Int64($0)) })
+        manager.handleSessionHistoryPayload(pLow)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        XCTAssertEqual(fetchSession()?.nextSeq, 23,
+                       "later payload with lower next_seq must not regress the persisted cursor")
+    }
+
+    func test_handleSessionHistoryPayload_persists_nextSeq_even_for_empty_window() {
+        // A `session_history` reply that delivers zero new messages (e.g. a
+        // subscribe answer when the client is already caught up) still
+        // carries a next_seq. The cursor needs to be stored even then —
+        // otherwise local pruning drops the only signal of where the server
+        // is, and reconnect rolls back to 0.
+        seedSession(seqs: 1...5)
+
+        let p = payload(firstSeq: nil, lastSeq: nil, nextSeq: 12,
+                        isComplete: true, messages: [])
+        manager.handleSessionHistoryPayload(p)
+        // Empty window posts no .sessionHistoryDidUpdate — just drain.
+        drainMainQueue(for: 0.5)
+
+        XCTAssertEqual(fetchSession()?.nextSeq, 12,
+                       "empty windows must still persist next_seq for the cursor path")
+    }
+}

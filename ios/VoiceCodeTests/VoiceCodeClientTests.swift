@@ -134,18 +134,6 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertEqual(message["working_directory"] as? String, workingDir)
     }
 
-    func testSetWorkingDirectoryMessage() {
-        let path = "/Users/test/project"
-
-        let message: [String: Any] = [
-            "type": "set_directory",
-            "path": path
-        ]
-
-        XCTAssertEqual(message["type"] as? String, "set_directory")
-        XCTAssertEqual(message["path"] as? String, path)
-    }
-
     func testPingMessage() {
         let message: [String: Any] = ["type": "ping"]
 
@@ -867,35 +855,7 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertEqual(message["session_id"] as? String, sessionId)
     }
 
-    // MARK: - Session Locking Tests (Concrete Unlock)
-
-    func testOptimisticLockingOnPromptSend() {
-        // Test that sending a prompt optimistically locks the session
-        let sessionId = "test-session-lock"
-
-        XCTAssertFalse(client.lockedSessions.contains(sessionId))
-
-        // Simulate sending a prompt (in real code this would call sendPrompt)
-        // For test, we manually add to lockedSessions
-        client.lockedSessions.insert(sessionId)
-
-        XCTAssertTrue(client.lockedSessions.contains(sessionId))
-    }
-
-    func testUnlockOnTurnComplete() {
-        // Test that receiving turn_complete message unlocks the session
-        let sessionId = "test-session-unlock"
-
-        // Lock the session first
-        client.lockedSessions.insert(sessionId)
-        XCTAssertTrue(client.lockedSessions.contains(sessionId))
-
-        // Simulate receiving turn_complete message (backend sends when Claude CLI finishes)
-        // In real code, this would trigger the unlock
-        client.lockedSessions.remove(sessionId)
-
-        XCTAssertFalse(client.lockedSessions.contains(sessionId))
-    }
+    // MARK: - Turn Complete Message Tests
 
     func testTurnCompleteMessageStructure() {
         // Test turn_complete message format from backend
@@ -909,283 +869,29 @@ final class VoiceCodeClientTests: XCTestCase {
         XCTAssertEqual(json["session_id"] as? String, sessionId)
     }
 
-    func testNoUnlockOnUserMessage() {
-        // Test that receiving a user message does NOT unlock the session
-        let sessionId = "test-session-no-unlock"
-
-        // Lock the session
-        client.lockedSessions.insert(sessionId)
-
-        // Simulate receiving only a user message
-        let messages: [[String: Any]] = [
-            ["type": "user", "message": ["text": "User prompt"]]
-        ]
-
-        let hasAssistantMessage = messages.contains { message in
-            message["type"] as? String == "assistant"
-        }
-
-        if hasAssistantMessage {
-            client.lockedSessions.remove(sessionId)
-        }
-
-        // Session should still be locked
-        XCTAssertTrue(client.lockedSessions.contains(sessionId))
-    }
-
-    func testMultipleSessionsLocking() {
-        // Test that multiple sessions can be locked independently
-        let session1 = "session-1"
-        let session2 = "session-2"
-        let session3 = "session-3"
-
-        // Lock all sessions
-        client.lockedSessions.insert(session1)
-        client.lockedSessions.insert(session2)
-        client.lockedSessions.insert(session3)
-
-        XCTAssertEqual(client.lockedSessions.count, 3)
-        XCTAssertTrue(client.lockedSessions.contains(session1))
-        XCTAssertTrue(client.lockedSessions.contains(session2))
-        XCTAssertTrue(client.lockedSessions.contains(session3))
-
-        // Unlock session 2
-        client.lockedSessions.remove(session2)
-
-        XCTAssertEqual(client.lockedSessions.count, 2)
-        XCTAssertTrue(client.lockedSessions.contains(session1))
-        XCTAssertFalse(client.lockedSessions.contains(session2))
-        XCTAssertTrue(client.lockedSessions.contains(session3))
-    }
-
-    func testUnlockIdempotence() {
-        // Test that unlocking a session multiple times is safe
-        let sessionId = "test-idempotent-unlock"
-
-        client.lockedSessions.insert(sessionId)
-        XCTAssertTrue(client.lockedSessions.contains(sessionId))
-
-        // Unlock multiple times
-        client.lockedSessions.remove(sessionId)
-        client.lockedSessions.remove(sessionId)
-        client.lockedSessions.remove(sessionId)
-
-        XCTAssertFalse(client.lockedSessions.contains(sessionId))
-    }
-
-    func testSessionLockedMessage() {
-        // Test session_locked message structure
-        let sessionId = "locked-session-123"
+    func testTurnCompleteMessageWithAbortedTrue() {
+        // Test turn_complete with aborted=true (provider window killed mid-turn)
+        let sessionId = "session-aborted-456"
         let json: [String: Any] = [
-            "type": "session_locked",
-            "message": "Session is currently processing a prompt. Please wait.",
-            "session_id": sessionId
+            "type": "turn_complete",
+            "session_id": sessionId,
+            "aborted": true
         ]
 
-        XCTAssertEqual(json["type"] as? String, "session_locked")
+        XCTAssertEqual(json["type"] as? String, "turn_complete")
         XCTAssertEqual(json["session_id"] as? String, sessionId)
-        XCTAssertNotNil(json["message"])
+        XCTAssertEqual(json["aborted"] as? Bool, true)
     }
 
-    // MARK: - Turn Complete Locking Flow Tests
-
-    func testLockDuringToolUse() {
-        // Test that session stays locked when receiving assistant messages with tool_use
-        // This is the key behavior: don't unlock on assistant messages, only on turn_complete
-        let sessionId = "test-session-tool-use"
-
-        // Lock the session
-        client.lockedSessions.insert(sessionId)
-        XCTAssertTrue(client.lockedSessions.contains(sessionId))
-
-        // Simulate receiving multiple assistant messages (tool calls)
-        let toolMessages: [[String: Any]] = [
-            ["type": "assistant", "message": ["content": [["type": "tool_use"]]]],
-            ["type": "assistant", "message": ["content": [["type": "tool_use"]]]],
-            ["type": "assistant", "message": ["content": [["type": "text"]]]]
+    func testTurnCompleteMessageAbortedDefaultsFalse() {
+        // When aborted is omitted, iOS decodes it as false
+        let json: [String: Any] = [
+            "type": "turn_complete",
+            "session_id": "session-normal"
         ]
 
-        // Session should STILL be locked (no unlock logic on assistant messages)
-        XCTAssertTrue(client.lockedSessions.contains(sessionId))
-
-        // Only turn_complete unlocks
-        client.lockedSessions.remove(sessionId)
-        XCTAssertFalse(client.lockedSessions.contains(sessionId))
-    }
-
-    func testUnlockOnErrorWithSessionId() {
-        // Test that error messages with session_id unlock the session
-        let sessionId = "test-session-error"
-
-        // Lock the session
-        client.lockedSessions.insert(sessionId)
-        XCTAssertTrue(client.lockedSessions.contains(sessionId))
-
-        // Simulate error message (backend sends when Claude CLI fails)
-        // In real code, error handler would unlock
-        client.lockedSessions.remove(sessionId)
-
-        XCTAssertFalse(client.lockedSessions.contains(sessionId))
-    }
-
-    func testTurnCompleteWithMultipleSessions() {
-        // Test that turn_complete only unlocks the specific session
-        let session1 = "session-1"
-        let session2 = "session-2"
-        let session3 = "session-3"
-
-        // Lock all three sessions
-        client.lockedSessions.insert(session1)
-        client.lockedSessions.insert(session2)
-        client.lockedSessions.insert(session3)
-        XCTAssertEqual(client.lockedSessions.count, 3)
-
-        // turn_complete for session2
-        client.lockedSessions.remove(session2)
-
-        // Only session2 should be unlocked
-        XCTAssertTrue(client.lockedSessions.contains(session1))
-        XCTAssertFalse(client.lockedSessions.contains(session2))
-        XCTAssertTrue(client.lockedSessions.contains(session3))
-        XCTAssertEqual(client.lockedSessions.count, 2)
-    }
-
-    func testNoUnlockOnSessionUpdated() {
-        // Test that session_updated messages do NOT unlock (only turn_complete does)
-        let sessionId = "test-session-updated"
-
-        // Lock the session
-        client.lockedSessions.insert(sessionId)
-        XCTAssertTrue(client.lockedSessions.contains(sessionId))
-
-        // Simulate receiving session_updated with multiple messages
-        // (this happens throughout the turn as Claude writes messages)
-        let messages: [[String: Any]] = [
-            ["type": "user", "message": ["text": "Prompt"]],
-            ["type": "assistant", "message": ["content": [["type": "text"]]]],
-            ["type": "assistant", "message": ["content": [["type": "tool_use"]]]]
-        ]
-
-        // Session should STILL be locked (session_updated doesn't unlock)
-        XCTAssertTrue(client.lockedSessions.contains(sessionId))
-    }
-
-    func testTurnCompleteForNonLockedSession() {
-        // Test that turn_complete for an unlocked session is safe (no error)
-        let sessionId = "test-session-not-locked"
-
-        // Session is NOT locked
-        XCTAssertFalse(client.lockedSessions.contains(sessionId))
-
-        // Receive turn_complete anyway (race condition or duplicate message)
-        client.lockedSessions.remove(sessionId) // Should be safe
-
-        // Still not locked
-        XCTAssertFalse(client.lockedSessions.contains(sessionId))
-    }
-
-    func testConcreteLockingFlow() {
-        // Test the complete concrete locking flow: lock → (messages) → turn_complete → unlock
-        let sessionId = "test-complete-flow"
-
-        // Step 1: Send prompt (optimistic lock)
-        XCTAssertFalse(client.lockedSessions.contains(sessionId))
-        client.lockedSessions.insert(sessionId)
-        XCTAssertTrue(client.lockedSessions.contains(sessionId))
-
-        // Step 2: Receive multiple session_updated messages (stay locked)
-        // Simulating: text, tool_use, tool_result, tool_use, tool_result, text...
-        XCTAssertTrue(client.lockedSessions.contains(sessionId))
-
-        // Step 3: Backend sends turn_complete when Claude CLI exits
-        client.lockedSessions.remove(sessionId)
-
-        // Step 4: Session is now unlocked
-        XCTAssertFalse(client.lockedSessions.contains(sessionId))
-    }
-
-    // MARK: - Session Locking Identifier Tests (untethered-300)
-
-    func testLockingUsesLowercaseUUID() {
-        // Test that session locking uses lowercase iOS UUID, not backendName
-        // This is the root fix for untethered-300 bug
-
-        // Create a lowercase UUID (what we send to backend)
-        let iosUUID = UUID()
-        let lowercaseSessionId = iosUUID.uuidString.lowercased()
-
-        // Lock the session with the correct identifier
-        client.lockedSessions.insert(lowercaseSessionId)
-        XCTAssertTrue(client.lockedSessions.contains(lowercaseSessionId))
-
-        // Verify uppercase version is NOT in locked set
-        let uppercaseSessionId = iosUUID.uuidString.uppercased()
-        XCTAssertFalse(client.lockedSessions.contains(uppercaseSessionId))
-    }
-
-    func testTurnCompleteUnlocksWithMatchingUUID() {
-        // Test that turn_complete with lowercase UUID unlocks the session
-        let sessionId = "abc123de-4567-89ab-cdef-0123456789ab" // lowercase
-
-        // Lock with lowercase UUID
-        client.lockedSessions.insert(sessionId)
-        XCTAssertTrue(client.lockedSessions.contains(sessionId))
-
-        // Backend sends turn_complete with same lowercase UUID
-        client.lockedSessions.remove(sessionId)
-        XCTAssertFalse(client.lockedSessions.contains(sessionId))
-    }
-
-    func testTurnCompleteWithMismatchedCaseDoesNotUnlock() {
-        // Test that case mismatch between lock and unlock prevents unlock
-        // This demonstrates the bug we fixed in untethered-300
-        let lowercaseId = "abc123de-4567-89ab-cdef-0123456789ab"
-        let uppercaseId = "ABC123DE-4567-89AB-CDEF-0123456789AB"
-
-        // Lock with one case
-        client.lockedSessions.insert(uppercaseId)
-        XCTAssertTrue(client.lockedSessions.contains(uppercaseId))
-
-        // Try to unlock with different case
-        client.lockedSessions.remove(lowercaseId)
-
-        // Session is STILL locked (bug scenario)
-        XCTAssertTrue(client.lockedSessions.contains(uppercaseId))
-    }
-
-    func testLockAndUnlockWithConsistentIdentifier() {
-        // Test that using consistent identifier for lock/unlock works correctly
-        let sessionId = "21573e57-6091-42c2-99a3-c0ec58853df7" // actual session from logs
-
-        // Lock with session.id.uuidString.lowercased()
-        client.lockedSessions.insert(sessionId)
-        XCTAssertTrue(client.lockedSessions.contains(sessionId))
-
-        // Backend echoes same session_id in turn_complete
-        // Unlock with exact same identifier
-        client.lockedSessions.remove(sessionId)
-        XCTAssertFalse(client.lockedSessions.contains(sessionId))
-    }
-
-    func testMultipleSessionsWithLowercaseUUIDs() {
-        // Test that multiple sessions with lowercase UUIDs lock/unlock independently
-        let session1 = "aaaaaaaa-1111-2222-3333-444444444444"
-        let session2 = "bbbbbbbb-5555-6666-7777-888888888888"
-        let session3 = "cccccccc-9999-aaaa-bbbb-cccccccccccc"
-
-        // Lock all with lowercase UUIDs
-        client.lockedSessions.insert(session1)
-        client.lockedSessions.insert(session2)
-        client.lockedSessions.insert(session3)
-        XCTAssertEqual(client.lockedSessions.count, 3)
-
-        // Unlock session2
-        client.lockedSessions.remove(session2)
-
-        // Verify correct session unlocked
-        XCTAssertTrue(client.lockedSessions.contains(session1))
-        XCTAssertFalse(client.lockedSessions.contains(session2))
-        XCTAssertTrue(client.lockedSessions.contains(session3))
+        let aborted = json["aborted"] as? Bool ?? false
+        XCTAssertFalse(aborted)
     }
 
     // MARK: - Session History Delta Sync Tests (untethered-message-too-long-hfn.6)
@@ -1224,8 +930,8 @@ final class VoiceCodeClientTests: XCTestCase {
             "type": "session_history",
             "session_id": "test-session-456",
             "messages": [
-                ["uuid": "msg-1", "type": "user", "text": "Hello"],
-                ["uuid": "msg-2", "type": "assistant", "text": "Hi there"]
+                ["uuid": "msg-1", "role": "user", "text": "Hello", "timestamp": "2025-01-01T12:00:00.000Z", "provider": "claude"],
+                ["uuid": "msg-2", "role": "assistant", "text": "Hi there", "timestamp": "2025-01-01T12:00:01.000Z", "provider": "claude"]
             ],
             "total_count": 100,
             "is_complete": false,
@@ -1290,7 +996,7 @@ final class VoiceCodeClientTests: XCTestCase {
 
     func testSessionHistoryHandleMessageIntegration() {
         // Test that handleMessage correctly processes session_history with delta sync fields
-        // Note: This tests the actual handleMessage path
+        // Note: This tests the actual handleMessage path using canonical wire format
 
         // Create a mock SessionSyncManager expectation
         // Since handleMessage is internal, we can call it directly
@@ -1298,7 +1004,7 @@ final class VoiceCodeClientTests: XCTestCase {
             "type": "session_history",
             "session_id": "integration-test-session",
             "messages": [
-                ["uuid": "msg-uuid-1", "type": "user", "message": ["content": [["type": "text", "text": "Test"]]]],
+                ["uuid": "msg-uuid-1", "role": "user", "text": "Test", "timestamp": "2025-01-01T12:00:00.000Z", "provider": "claude"],
             ],
             "total_count": 1,
             "is_complete": true,
@@ -1345,10 +1051,10 @@ final class VoiceCodeClientTests: XCTestCase {
             // 1. Subscribe with last_message_id (client -> backend)
             ["type": "subscribe", "session_id": "delta-session", "last_message_id": "prev-msg-uuid"],
 
-            // 2. Backend responds with delta (only new messages)
+            // 2. Backend responds with delta (only new messages) using canonical wire format
             ["type": "session_history",
              "session_id": "delta-session",
-             "messages": [["uuid": "new-msg-uuid", "type": "assistant", "text": "New response"]],
+             "messages": [["uuid": "new-msg-uuid", "role": "assistant", "text": "New response", "timestamp": "2025-01-01T12:00:00.000Z", "provider": "claude"]],
              "total_count": 100,  // Total messages in session
              "is_complete": true, // All requested messages included
              "oldest_message_id": "new-msg-uuid",
@@ -1700,7 +1406,7 @@ final class VoiceCodeClientTests: XCTestCase {
 
         // When: Hello message is received from server
         testClient.handleMessage("""
-            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            {"type": "hello", "message": "Welcome", "version": "0.4.0", "auth_version": 1}
             """)
 
         // Wait for handleMessage's DispatchQueue.main.async to complete
@@ -1720,7 +1426,7 @@ final class VoiceCodeClientTests: XCTestCase {
 
         // First, set isConnected = true via hello message
         testClient.handleMessage("""
-            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            {"type": "hello", "message": "Welcome", "version": "0.4.0", "auth_version": 1}
             """)
 
         let helloExpectation = XCTestExpectation(description: "Hello dispatch")
@@ -1752,7 +1458,7 @@ final class VoiceCodeClientTests: XCTestCase {
 
         // First connection
         testClient.handleMessage("""
-            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            {"type": "hello", "message": "Welcome", "version": "0.4.0", "auth_version": 1}
             """)
 
         let firstHelloExpectation = XCTestExpectation(description: "First hello dispatch")
@@ -1776,7 +1482,7 @@ final class VoiceCodeClientTests: XCTestCase {
 
         // Second hello (simulating reconnection)
         testClient.handleMessage("""
-            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            {"type": "hello", "message": "Welcome", "version": "0.4.0", "auth_version": 1}
             """)
 
         let secondHelloExpectation = XCTestExpectation(description: "Second hello dispatch")
@@ -1822,7 +1528,7 @@ final class VoiceCodeClientTests: XCTestCase {
 
         // Receive hello
         testClient.handleMessage("""
-            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            {"type": "hello", "message": "Welcome", "version": "0.4.0", "auth_version": 1}
             """)
 
         let helloExpectation = XCTestExpectation(description: "Hello dispatch")
@@ -1873,14 +1579,18 @@ final class VoiceCodeClientTests: XCTestCase {
     }
 
     func testIsConnectedTrueAfterHelloMessage() {
-        // Given: A client that has connected
+        // Given: A fresh client. We don't call connect() here — a real
+        // WebSocket attempt to `testServerURL` would asynchronously set
+        // isConnected=false via its receive-failure handler and race this
+        // test's hello dispatch (post-v0.4.0, a real backend on that port
+        // would also trip the protocol-version check). handleMessage is the
+        // actual behavior under test; no socket needed.
         let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
-        testClient.connect()
         XCTAssertFalse(testClient.isConnected, "isConnected should be false before hello")
 
         // When: Hello message is received from server
         testClient.handleMessage("""
-            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            {"type": "hello", "message": "Welcome", "version": "0.4.0", "auth_version": 1}
             """)
 
         // Wait for handleMessage's dispatch
@@ -1897,11 +1607,13 @@ final class VoiceCodeClientTests: XCTestCase {
     }
 
     func testIsConnectedFalseAfterDisconnect() {
-        // Given: A connected client
+        // Given: A client driven into the connected state via handleMessage.
+        // We skip the real connect() call — see testIsConnectedTrueAfterHelloMessage
+        // for why. disconnect() still flips isConnected=false without a live
+        // WebSocket because it goes through its own main-queue update.
         let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
-        testClient.connect()
         testClient.handleMessage("""
-            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            {"type": "hello", "message": "Welcome", "version": "0.4.0", "auth_version": 1}
             """)
 
         let helloExpectation = XCTestExpectation(description: "Hello dispatch")
@@ -1944,11 +1656,18 @@ final class VoiceCodeClientTests: XCTestCase {
     }
 
     func testDisconnectThenConnectWorks() {
-        // Given: A client that was connected then disconnected
+        // Verifies the state-machine cycle hello → disconnect → hello
+        // restores isConnected=true the second time around (regression test
+        // for the webSocket-not-cleared bug from earlier work).
+        //
+        // We drive state changes through handleMessage/disconnect rather
+        // than real connect() calls — a live WebSocket attempt to
+        // `testServerURL` races this test's hello dispatch with its own
+        // receive-failure handler (and post-v0.4.0 would also trip the
+        // protocol-version check against any real backend on that port).
         let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
-        testClient.connect()
         testClient.handleMessage("""
-            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            {"type": "hello", "message": "Welcome", "version": "0.4.0", "auth_version": 1}
             """)
 
         let helloExpectation = XCTestExpectation(description: "First hello dispatch")
@@ -1969,13 +1688,9 @@ final class VoiceCodeClientTests: XCTestCase {
 
         XCTAssertFalse(testClient.isConnected, "Should be disconnected")
 
-        // When: connect() is called again (simulating reconnection)
-        testClient.connect()
-
-        // Then: Should be able to receive hello again
-        // (Fix 1 ensures webSocket is cleared on disconnect, allowing new connection)
+        // Second hello (simulating reconnection)
         testClient.handleMessage("""
-            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            {"type": "hello", "message": "Welcome", "version": "0.4.0", "auth_version": 1}
             """)
 
         let secondHelloExpectation = XCTestExpectation(description: "Second hello dispatch")
@@ -1990,11 +1705,12 @@ final class VoiceCodeClientTests: XCTestCase {
     }
 
     func testForceReconnectResetsState() {
-        // Given: A client that was connected
+        // Given: A client driven into the connected state via handleMessage.
+        // We skip the real connect() call — see testIsConnectedTrueAfterHelloMessage
+        // for why.
         let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
-        testClient.connect()
         testClient.handleMessage("""
-            {"type": "hello", "message": "Welcome", "version": "0.2.0", "auth_version": 1}
+            {"type": "hello", "message": "Welcome", "version": "0.4.0", "auth_version": 1}
             """)
 
         let helloExpectation = XCTestExpectation(description: "Initial hello dispatch")
@@ -2026,30 +1742,358 @@ final class VoiceCodeClientTests: XCTestCase {
         testClient.disconnect()
     }
 
-    // MARK: Lock Clearing Tests (related to Fix 1)
+    // MARK: - Session Refresh Continuation Decode-Failure Tests (tmux-untethered-ash)
 
-    func testLockedSessionsClearedOnDisconnect() {
-        // Given: A client with a locked session
-        // Note: We don't call connect() to avoid race conditions with real WebSocket
-        // connections. We're only testing that disconnect() clears locked sessions.
-        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+    /// Helper for refresh tests: drive the ping/pong barrier and the
+    /// follow-up subscribe send. Returns once the subscribe for
+    /// `sessionId` has been observed on the wire (proving the refresh
+    /// has reached phase 3 and any subsequent session_history will be
+    /// the awaited reply, not a leftover push).
+    private func driveRefreshThroughPongBarrier(
+        client: VoiceCodeClient,
+        sessionId: String,
+        timeout: TimeInterval = 5.0
+    ) {
+        let pingObserved = XCTestExpectation(description: "ping observed on wire")
+        let subscribeObserved = XCTestExpectation(description: "subscribe observed on wire")
 
-        // Directly add a locked session (simulating session_locked message handling)
-        testClient.lockedSessions.insert("test-session-123")
-        XCTAssertTrue(testClient.lockedSessions.contains("test-session-123"), "Session should be locked")
-
-        // When: disconnect() is called
-        testClient.disconnect()
-
-        // Wait for disconnect dispatch to complete on main queue
-        let disconnectExpectation = XCTestExpectation(description: "Disconnect dispatch")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            disconnectExpectation.fulfill()
+        // Layer onto the existing onMessageSent (if any) so callers can
+        // still inspect sent messages.
+        let priorHook = client.onMessageSent
+        client.onMessageSent = { msg in
+            priorHook?(msg)
+            let type = msg["type"] as? String
+            if type == "ping" {
+                pingObserved.fulfill()
+            }
+            if type == "subscribe", (msg["session_id"] as? String) == sessionId {
+                subscribeObserved.fulfill()
+            }
         }
-        wait(for: [disconnectExpectation], timeout: 1.0)
 
-        // Then: Locked sessions should be cleared
-        // (Fix 1 ensures locks are cleared when connection fails/closes)
-        XCTAssertTrue(testClient.lockedSessions.isEmpty, "Locked sessions should be empty after disconnect")
+        wait(for: [pingObserved], timeout: timeout)
+
+        // Drive pong to release the barrier.
+        client.handleMessage(#"{"type": "pong"}"#)
+
+        wait(for: [subscribeObserved], timeout: timeout)
     }
+
+    /// Sanity-check counterpart to the failure test below: a well-formed
+    /// session_history payload must resume the awaiting refresh continuation
+    /// promptly (well before the 10-second timeout).
+    func testSessionHistoryRefreshContinuationResumesOnSuccessfulDecode() {
+        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+        // subscribe()'s isAuthenticated guard would otherwise defer the
+        // wire send and the test's onMessageSent observer would never
+        // fire for the subscribe.
+        testClient.isAuthenticated = true
+        let sessionId = "decode-success-session"
+
+        let refreshCompleted = XCTestExpectation(description: "Refresh continuation resumed")
+        Task {
+            await testClient.requestSessionRefresh(sessionId: sessionId)
+            refreshCompleted.fulfill()
+        }
+
+        driveRefreshThroughPongBarrier(client: testClient, sessionId: sessionId)
+
+        let json: [String: Any] = [
+            "type": "session_history",
+            "session_id": sessionId,
+            "messages": [],
+            "first_seq": NSNull(),
+            "last_seq": NSNull(),
+            "next_seq": 1,
+            "is_complete": true,
+            "gap": NSNull()
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let text = String(data: data, encoding: .utf8)!
+        testClient.handleMessage(text)
+
+        wait(for: [refreshCompleted], timeout: 2.0)
+    }
+
+    /// The bug: a malformed session_history previously resumed the refresh
+    /// continuation regardless of decode success, so callers awaiting
+    /// `requestSessionRefresh` returned immediately with stale state. The fix
+    /// only resumes inside the successful decode path; on failure the caller
+    /// must wait for the refresh timeout.
+    func testSessionHistoryRefreshContinuationDoesNotResumeOnDecodeFailure() {
+        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+        testClient.isAuthenticated = true
+        let sessionId = "decode-failure-session"
+
+        let refreshCompleted = XCTestExpectation(description: "Refresh continuation resumed")
+        refreshCompleted.isInverted = true
+        Task {
+            await testClient.requestSessionRefresh(sessionId: sessionId)
+            refreshCompleted.fulfill()
+        }
+
+        driveRefreshThroughPongBarrier(client: testClient, sessionId: sessionId)
+
+        // Missing required `next_seq` — SessionHistoryPayload decode fails.
+        let json: [String: Any] = [
+            "type": "session_history",
+            "session_id": sessionId,
+            "messages": [],
+            "is_complete": true
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        let text = String(data: data, encoding: .utf8)!
+        testClient.handleMessage(text)
+
+        // Inverted expectation: success means the continuation did NOT resume
+        // within the wait window, leaving the caller waiting for the 10s
+        // timeout (which is the intended behavior on decode failure).
+        wait(for: [refreshCompleted], timeout: 2.0)
+    }
+
+    // MARK: - Session Refresh Pong Barrier Tests (tmux-untethered-1vn)
+
+    /// The fix replaces the old time-based 100ms gap between unsubscribe
+    /// and subscribe with a response-based barrier: the client sends a
+    /// ping after unsubscribe and only sends the subscribe once the
+    /// matching pong has been received. This test pins the wire order:
+    ///
+    ///   1. unsubscribe is sent
+    ///   2. ping is sent (no subscribe yet)
+    ///   3. pong arrives — barrier releases
+    ///   4. subscribe is sent
+    ///   5. session_history arrives — continuation resumes
+    func testRequestSessionRefreshSendsSubscribeOnlyAfterPongBarrier() {
+        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+        testClient.isAuthenticated = true
+        let sessionId = "barrier-order-session"
+
+        let unsubscribeObserved = XCTestExpectation(description: "unsubscribe sent")
+        let pingObserved = XCTestExpectation(description: "ping sent after unsubscribe")
+        let subscribeObserved = XCTestExpectation(description: "subscribe sent after pong")
+        var subscribeFired = false
+
+        testClient.onMessageSent = { msg in
+            guard let type = msg["type"] as? String else { return }
+            if type == "unsubscribe", (msg["session_id"] as? String) == sessionId {
+                unsubscribeObserved.fulfill()
+            }
+            if type == "ping" {
+                pingObserved.fulfill()
+            }
+            if type == "subscribe", (msg["session_id"] as? String) == sessionId {
+                subscribeFired = true
+                subscribeObserved.fulfill()
+            }
+        }
+
+        let refreshCompleted = XCTestExpectation(description: "refresh completed")
+        Task {
+            await testClient.requestSessionRefresh(sessionId: sessionId)
+            refreshCompleted.fulfill()
+        }
+
+        // Phase 1+2: unsubscribe and ping should be sent. Subscribe must
+        // not fire until pong arrives.
+        wait(for: [unsubscribeObserved, pingObserved], timeout: 2.0, enforceOrder: true)
+
+        // Give the main queue a beat to surface a (would-be incorrect)
+        // subscribe send before the pong barrier is released.
+        let beat = XCTestExpectation(description: "main queue beat")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { beat.fulfill() }
+        wait(for: [beat], timeout: 1.0)
+        XCTAssertFalse(subscribeFired,
+                       "Subscribe must not be sent before the pong barrier releases")
+
+        // Release the barrier.
+        testClient.handleMessage(#"{"type": "pong"}"#)
+        wait(for: [subscribeObserved], timeout: 2.0)
+
+        // Drive the subscribe-reply to satisfy the awaiting continuation
+        // and let the test exit cleanly.
+        let json: [String: Any] = [
+            "type": "session_history",
+            "session_id": sessionId,
+            "messages": [],
+            "first_seq": NSNull(),
+            "last_seq": NSNull(),
+            "next_seq": 1,
+            "is_complete": true,
+            "gap": NSNull()
+        ]
+        testClient.handleMessage(String(data: try! JSONSerialization.data(withJSONObject: json),
+                                        encoding: .utf8)!)
+        wait(for: [refreshCompleted], timeout: 2.0)
+    }
+
+    /// A leftover live push from the prior subscription window — i.e.,
+    /// a session_history that arrives after `unsubscribe` was sent but
+    /// before the backend processed it — must NOT resume the awaiting
+    /// continuation. With the old 100ms-delay handshake it would; with
+    /// the pong barrier it cannot, because the pending continuation is
+    /// only registered after the barrier releases.
+    func testLeftoverSessionHistoryBeforeBarrierDoesNotResumeContinuation() {
+        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+        testClient.isAuthenticated = true
+        let sessionId = "leftover-push-session"
+
+        let pingObserved = XCTestExpectation(description: "ping sent")
+        let subscribeObserved = XCTestExpectation(description: "subscribe sent")
+        var sawSubscribe = false
+        testClient.onMessageSent = { msg in
+            switch msg["type"] as? String {
+            case "ping":
+                pingObserved.fulfill()
+            case "subscribe":
+                if (msg["session_id"] as? String) == sessionId {
+                    sawSubscribe = true
+                    subscribeObserved.fulfill()
+                }
+            default:
+                break
+            }
+        }
+
+        let refreshCompleted = XCTestExpectation(description: "refresh completed")
+        Task {
+            await testClient.requestSessionRefresh(sessionId: sessionId)
+            refreshCompleted.fulfill()
+        }
+
+        wait(for: [pingObserved], timeout: 2.0)
+
+        // Inject a stale leftover push BEFORE the pong barrier releases.
+        // No PendingSessionRefresh exists yet (phase 3 hasn't started),
+        // so this must not resume the continuation.
+        let staleJson: [String: Any] = [
+            "type": "session_history",
+            "session_id": sessionId,
+            "messages": [],
+            "first_seq": NSNull(),
+            "last_seq": NSNull(),
+            "next_seq": 1,
+            "is_complete": true,
+            "gap": NSNull()
+        ]
+        testClient.handleMessage(String(data: try! JSONSerialization.data(withJSONObject: staleJson),
+                                        encoding: .utf8)!)
+
+        // Verify the refresh hasn't completed from the stale push.
+        let stillWaiting = XCTestExpectation(description: "still waiting after stale push")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { stillWaiting.fulfill() }
+        wait(for: [stillWaiting], timeout: 1.0)
+        XCTAssertFalse(sawSubscribe, "Subscribe must not be sent until pong releases the barrier")
+
+        // Now release the barrier and drive the real subscribe-reply.
+        testClient.handleMessage(#"{"type": "pong"}"#)
+        wait(for: [subscribeObserved], timeout: 2.0)
+
+        let realJson: [String: Any] = [
+            "type": "session_history",
+            "session_id": sessionId,
+            "messages": [],
+            "first_seq": NSNull(),
+            "last_seq": NSNull(),
+            "next_seq": 2,
+            "is_complete": true,
+            "gap": NSNull()
+        ]
+        testClient.handleMessage(String(data: try! JSONSerialization.data(withJSONObject: realJson),
+                                        encoding: .utf8)!)
+        wait(for: [refreshCompleted], timeout: 2.0)
+    }
+
+    /// Two concurrent refresh calls for the same session: the second
+    /// supersedes the first via the per-session epoch counter. The
+    /// first caller must not hang — its continuation is resumed
+    /// immediately when the second call claims the new epoch.
+    func testConcurrentRefreshCallsSupersedeEachOther() {
+        let testClient = VoiceCodeClient(serverURL: testServerURL, setupObservers: false)
+        testClient.isAuthenticated = true
+        let sessionId = "supersede-session"
+
+        // Don't drive any pong/session_history. The first caller's
+        // continuation must resume from the supersede path, not from
+        // the wire.
+        let firstCompleted = XCTestExpectation(description: "first refresh completes (superseded)")
+        Task {
+            await testClient.requestSessionRefresh(sessionId: sessionId)
+            firstCompleted.fulfill()
+        }
+
+        // Wait long enough for phase 1 of the first call to register a
+        // pending entry (it does so only after the pong barrier — but
+        // the supersede path runs in phase 1 of the SECOND call, which
+        // resumes the first call's continuation IF it has reached
+        // phase 3, OR is a no-op if phase 1 of the first call hasn't
+        // yet completed). Either way, the first call must eventually
+        // complete; we let phase 1 settle, then start the second call.
+        let beat = XCTestExpectation(description: "let first call settle")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { beat.fulfill() }
+        wait(for: [beat], timeout: 1.0)
+
+        // Drive the first call all the way to phase 3 by releasing its
+        // pong barrier. Now its continuation is registered in
+        // sessionRefreshPending.
+        testClient.handleMessage(#"{"type": "pong"}"#)
+
+        let registered = XCTestExpectation(description: "first call registered")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { registered.fulfill() }
+        wait(for: [registered], timeout: 1.0)
+
+        // Second refresh: this must resume the first call's
+        // continuation immediately on supersede.
+        Task {
+            await testClient.requestSessionRefresh(sessionId: sessionId)
+        }
+
+        // First refresh must complete promptly (well under the 10s
+        // timeout) via the supersede path.
+        wait(for: [firstCompleted], timeout: 2.0)
+    }
+
+    // MARK: - Unconfigured Server Guard (tmux-untethered-el1)
+
+    func testConnectWithEmptyURLSetsErrorAndDoesNotConnect() {
+        let unconfigured = VoiceCodeClient(serverURL: "", setupObservers: false)
+        XCTAssertFalse(unconfigured.isConnected)
+        XCTAssertNil(unconfigured.currentError)
+
+        unconfigured.connect()
+
+        let waited = XCTestExpectation(description: "currentError dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waited.fulfill() }
+        wait(for: [waited], timeout: 1.0)
+
+        XCTAssertFalse(unconfigured.isConnected,
+                       "connect() must not flip isConnected when URL is unusable")
+        XCTAssertNotNil(unconfigured.currentError,
+                        "connect() must set currentError when URL is unusable")
+    }
+
+    func testConnectWithMissingPortDoesNotConnect() {
+        // No port — must short-circuit even though URL parses
+        let unconfigured = VoiceCodeClient(serverURL: "ws://192.168.1.50", setupObservers: false)
+        unconfigured.connect()
+
+        let waited = XCTestExpectation(description: "currentError dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waited.fulfill() }
+        wait(for: [waited], timeout: 1.0)
+
+        XCTAssertFalse(unconfigured.isConnected)
+        XCTAssertNotNil(unconfigured.currentError)
+    }
+
+    func testConnectWithGarbageURLDoesNotConnect() {
+        let unconfigured = VoiceCodeClient(serverURL: "not a url at all", setupObservers: false)
+        unconfigured.connect()
+
+        let waited = XCTestExpectation(description: "currentError dispatch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waited.fulfill() }
+        wait(for: [waited], timeout: 1.0)
+
+        XCTAssertFalse(unconfigured.isConnected)
+        XCTAssertNotNil(unconfigured.currentError)
+    }
+
 }

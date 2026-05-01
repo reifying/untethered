@@ -63,6 +63,21 @@ message["session_id"] = session.id.uuidString.lowercased()
 
 The voice-code WebSocket protocol enables persistent sessions across reconnections by mapping iOS session UUIDs to Claude conversation sessions. All messages are JSON-encoded with `snake_case` keys.
 
+### Protocol Version History
+
+- `0.4.0` — Append-only message stream with monotonic per-session `seq`. Breaking changes: `subscribe` uses `last_seq` instead of `last_message_id`; `session_updated` is collapsed into `session_history`. See @docs/design/append-only-message-stream.md. The version the backend serves in `hello` is controlled by the `:message-stream-version` config flag (see below); flipping to `:v0.3.0` reverts the hello version string and gates off the seq migration / hello enforcement path.
+- `0.3.0` — Tmux-untethered provider invocation. Breaking changes: removed `set_directory` (client → backend), removed `session_locked` (backend → client), removed `usage` and `cost` from `response`. Added optional `aborted` field on `turn_complete`. `available_commands` is now pushed on connect and on every session creation/resume rather than in response to `set_directory`.
+- `0.2.0` — Previous protocol (per-session locking, one-shot CLI invocation).
+
+### `:message-stream-version` Config Flag
+
+The backend reads `:message-stream-version` from `backend/resources/config.edn` at startup. Supported values:
+
+- `:v0.4.0` (default for new deploys) — hello emits `"0.4.0"`; the one-shot seq migration and hello-version rejection are enabled.
+- `:v0.3.0` (rollback) — hello emits `"0.3.0"`; seq migration and hello enforcement are bypassed so legacy clients keep working.
+
+Flip the value in `config.edn` and restart the backend (`make backend-restart`) to switch paths; no redeploy or code change is required. The flag is read via `voice-code.server/load-config` and materialized into the `voice-code.server/message-stream-version` atom — tests drive behavior by `reset!`-ing that atom. See @docs/design/append-only-message-stream.md §Risks & Mitigations for the full rollback semantics.
+
 ### Connection Flow
 
 #### 1. Initial Connection / Reconnection
@@ -77,7 +92,7 @@ iOS → Backend: WebSocket connection established
 Backend → iOS: {
   "type": "hello",
   "message": "Welcome to voice-code backend",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "auth_version": 1,
   "instructions": "Send connect message with api_key"
 }
@@ -95,7 +110,8 @@ Backend → iOS: {
 iOS → Backend: {
   "type": "connect",
   "session_id": "<iOS-session-UUID>",
-  "api_key": "untethered-a1b2c3d4e5f678901234567890abcdef"
+  "api_key": "untethered-a1b2c3d4e5f678901234567890abcdef",
+  "protocol_version": "0.4.0"
 }
 ```
 
@@ -103,6 +119,7 @@ iOS → Backend: {
 - `type` (required): Always `"connect"`
 - `session_id` (required): iOS session UUID (lowercase)
 - `api_key` (required): Pre-shared API key for authentication. Must match the key stored on the backend. Format: `untethered-` prefix followed by 32 lowercase hex characters (43 characters total).
+- `protocol_version` (optional): Semver string (e.g. `"0.4.0"`) the client supports. When `:message-stream-version` is `:v0.4.0` and this field is present but below `"0.4.0"`, the backend rejects the connection with `unsupported_protocol_version` (see **Error Handling**). Missing or unparseable values are treated as "unknown, not too old" and pass through so existing v0.4.0 clients (which do not announce a version) keep connecting.
 
 **Connected Confirmation**
 ```json
@@ -142,30 +159,35 @@ iOS → Backend: {
 
 #### Client → Backend
 
-**Prompt Request**
+**Prompt Request (New Session)**
 ```json
 {
   "type": "prompt",
   "text": "<prompt-text>",
-  "session_id": "<claude-session-id>",  // Optional: nil = new session
+  "new_session_id": "<uuid>",            // Required for new sessions
   "working_directory": "<path>",         // Optional: overrides session default
+  "provider": "copilot",                 // Optional: provider for new session (defaults to "claude")
   "system_prompt": "<custom-prompt>"     // Optional: appends to Claude's system prompt
+}
+```
+
+**Prompt Request (Resumed Session)**
+```json
+{
+  "type": "prompt",
+  "text": "<prompt-text>",
+  "resume_session_id": "<uuid>"          // Required for resumed sessions
+  // No provider field - backend uses stored session metadata
 }
 ```
 
 **Fields:**
 - `text` (required): The prompt text to send to Claude
-- `session_id` (optional): Claude session ID to resume, or nil for new session
+- `new_session_id` (optional): UUID for a new session. Mutually exclusive with `resume_session_id`.
+- `resume_session_id` (optional): UUID of existing session to resume. Mutually exclusive with `new_session_id`.
 - `working_directory` (optional): Override session's default working directory
-- `system_prompt` (optional): Custom system prompt to append via `--append-system-prompt`. Empty or whitespace-only values are ignored.
-
-**Set Working Directory**
-```json
-{
-  "type": "set_directory",
-  "path": "<absolute-path>"
-}
-```
+- `provider` (optional): Provider to use for new session. Values: `"claude"`, `"copilot"`. Only valid with `new_session_id`. Silently ignored for resumed sessions. Defaults to `"claude"` if not specified.
+- `system_prompt` (optional): Custom system prompt to append via `--append-system-prompt`. Empty or whitespace-only values are ignored. Only applies to Claude provider.
 
 **Ping**
 ```json
@@ -212,15 +234,19 @@ iOS sends this message after receiving `connected` confirmation and whenever the
 {
   "type": "subscribe",
   "session_id": "<claude-session-id>",
-  "last_message_id": "<uuid-of-newest-message-ios-has>"  // Optional: for delta sync
+  "last_seq": 548
 }
 ```
 
-Subscribes to session history and real-time updates. Supports delta sync for efficient reconnections.
+Subscribes to session history and real-time updates. The backend replies with messages whose `seq > last_seq`, then broadcasts every subsequent new message on the same session as a one-window `session_history` push.
 
 **Fields:**
 - `session_id` (required): Claude session ID to subscribe to
-- `last_message_id` (optional): UUID of the newest message iOS already has. If provided, backend returns only messages newer than this ID. If omitted or not found, backend returns all messages (backward compatible).
+- `last_seq` (optional, default `0`): Highest `seq` the client already has for this session. `0` means "I have nothing; send everything." Must be a non-negative integer.
+
+**Errors:**
+- Non-integer or negative `last_seq` → `{"type":"error","code":"invalid_subscribe","message":"last_seq must be a non-negative integer"}`
+- Including the legacy `last_message_id` field → `{"type":"error","code":"unsupported_subscribe_field","message":"last_message_id is not supported in protocol v0.4.0; use last_seq instead"}`
 
 **Refresh Sessions**
 ```json
@@ -241,7 +267,7 @@ Requests an updated session list without re-authentication. Use this instead of 
 - If not authenticated, backend sends `auth_error` and closes connection
 
 **Response:**
-Backend responds with `session_list` and `recent_sessions` messages (same as after `connect`). If the client has a working directory set, backend also sends `available_commands`.
+Backend responds with `session_list` and `recent_sessions` messages (same as after `connect`). `available_commands` is not re-sent on refresh; it ships on connect and on each session creation/resume.
 
 #### Backend → Client
 
@@ -260,16 +286,7 @@ Backend responds with `session_list` and `recent_sessions` messages (same as aft
   "message_id": "<unique-message-id>",  // For delivery tracking
   "success": true,
   "text": "<claude-response-text>",
-  "session_id": "<claude-session-id>",
-  "usage": {
-    "input_tokens": 123,
-    "output_tokens": 456
-  },
-  "cost": {
-    "input_cost": 0.001,
-    "output_cost": 0.002,
-    "total_cost": 0.003
-  }
+  "session_id": "<claude-session-id>"
 }
 ```
 
@@ -310,26 +327,20 @@ The backend closes the WebSocket connection immediately after sending this messa
 3. iOS should display an authentication error UI prompting user to re-scan QR code or re-enter API key in Settings
 4. iOS should NOT automatically retry connection until user provides new credentials
 
-**Session Locked**
-```json
-{
-  "type": "session_locked",
-  "message": "Session is currently processing a prompt. Please wait.",
-  "session_id": "<claude-session-id>"
-}
-```
-
-Sent when a client attempts to send a prompt to a session that is already processing a prompt. The backend maintains per-session locks to prevent concurrent Claude CLI executions that could fork the session. The client should disable input controls for the locked session until it receives a turn_complete or error message.
-
 **Turn Complete**
 ```json
 {
   "type": "turn_complete",
-  "session_id": "<claude-session-id>"
+  "session_id": "<claude-session-id>",
+  "aborted": true
 }
 ```
 
-Sent when Claude CLI finishes processing a prompt successfully (turn is complete). This is the concrete signal for iOS to unlock the session and re-enable input controls. On failure, only `error` (with `session_id`) is sent, which also triggers unlock.
+Sent when a provider CLI finishes processing a prompt successfully (turn is complete), derived from writes to the provider session JSONL file. This is the concrete signal for iOS to unlock the session and re-enable input controls. On failure, only `error` (with `session_id`) is sent, which also triggers unlock.
+
+**Fields:**
+- `session_id` (required): Provider session ID
+- `aborted` (optional, default `false`, omitted when false): Set to `true` on the synthesized `turn_complete` emitted when the provider window was killed mid-turn (by `kill_session` or compaction). iOS should treat `aborted:true` identically to a normal `turn_complete` for UI-unlock purposes; it is informational so the client may render a distinct badge.
 
 **Pong**
 ```json
@@ -352,34 +363,69 @@ Sent when Claude CLI finishes processing a prompt successfully (turn is complete
 }
 ```
 
-**Session History (Response to Subscribe)**
+**Session History (Subscribe Reply + Live Push)**
+
+`session_history` is the single append-only delivery envelope. It is sent both in direct response to a `subscribe` message and as a flat broadcast to every eligible subscriber whenever the watcher parses new messages for that session. There is no separate `session_updated` type.
+
 ```json
 {
   "type": "session_history",
   "session_id": "<claude-session-id>",
-  "messages": [...],
-  "total_count": 150,
-  "oldest_message_id": "<uuid-of-oldest-returned>",
-  "newest_message_id": "<uuid-of-newest-returned>",
-  "is_complete": true
+  "messages": [
+    {
+      "uuid": "<message-uuid>",
+      "role": "user" | "assistant",
+      "text": "...",
+      "timestamp": "<ISO-8601>",
+      "session_id": "<claude-session-id>",
+      "seq": 549
+    }
+  ],
+  "first_seq": 549,
+  "last_seq": 560,
+  "next_seq": 561,
+  "is_complete": true,
+  "gap": null
 }
 ```
 
-Sent in response to a `subscribe` message. Contains session conversation history.
-
 **Fields:**
 - `session_id` (required): Claude session ID
-- `messages` (required): Array of message objects in chronological order (oldest first)
-- `total_count` (required): Total number of messages in the session (including those not returned)
-- `oldest_message_id` (optional): UUID of the oldest message in the response. Nil if no messages returned.
-- `newest_message_id` (optional): UUID of the newest message in the response. Nil if no messages returned.
-- `is_complete` (required): True if all requested messages were included. False if truncation occurred due to size limits.
+- `messages` (required): Array of canonical messages in ascending `seq` order. Every message carries a `seq` field (1-indexed, monotonic per session, strictly increasing). Each message also carries its own `session_id` for iOS routing.
+- `first_seq` (nullable integer): Smallest `seq` in `messages`. Null when `messages` is empty.
+- `last_seq` (nullable integer): Largest `seq` in `messages`. Null when `messages` is empty.
+- `next_seq` (required integer): The `seq` the server will assign to the next new message. A client is caught up when `next_seq == last_seq + 1` and the server has no newer writes.
+- `is_complete` (required boolean): `true` when every message in the requested range fit in the size budget. `false` means more messages remain after `last_seq`; the client should immediately re-subscribe with `last_seq` set to the returned `last_seq` to fetch the next window.
+- `gap` (nullable object): Present when the server cannot satisfy the requested range. See **Gap Schema** below. `null` on normal replies.
 
-**Delta Sync Behavior:**
-- When `last_message_id` was provided in subscribe request: returns only messages newer than that ID
-- When `last_message_id` was omitted or not found: returns all messages (up to size limit)
-- Large individual messages (>20KB) are truncated with middle truncation to preserve start and end
-- Prioritizes newest messages when size budget is exhausted
+**Live Push Semantics:**
+
+Each new message produced by the watcher emits a one-message-window `session_history` payload with `first_seq == last_seq == messages[0].seq` and `is_complete: true`. The broadcast is flat — every eligible subscriber receives the same payload regardless of their individual `last_seq`. Client-side gap detection (comparing `first_seq` against the client's local `last_seq`) is responsible for reconciling missed windows.
+
+**Client Gap-Detection Contract:**
+- `first_seq == local_last_seq + 1` → contiguous; upsert the window and advance `local_last_seq`.
+- `first_seq > local_last_seq + 1` → a push was missed; upsert the received window *and* immediately re-subscribe with `last_seq = local_last_seq` to backfill. Do not advance `local_last_seq` past the gap until the backfill arrives.
+- `first_seq <= local_last_seq` → duplicate or reorder; upsert is idempotent on `(session_id, seq)` and `local_last_seq` must not regress.
+
+**Budget Truncation:**
+- Large individual messages are middle-truncated to preserve start and end.
+- When the byte budget is exhausted the response sets `is_complete: false`; the client advances its cursor to the returned `last_seq` and re-subscribes to fetch the next window.
+
+**Gap Schema:**
+
+When the backend cannot satisfy a subscribe request, `gap` is populated and `messages` is empty:
+
+```json
+"gap": {
+  "requested_last_seq": 42,
+  "min_available_seq": 200,
+  "reason": "pruned"
+}
+```
+
+`reason` is one of:
+- `"pruned"` — the client's `last_seq` is below `min_available_seq`. The server has lost state the client expected (e.g. a corrupted session recovered with fewer messages). The client should surface this to the user rather than silently merging a partial view.
+- `"client_ahead"` — reserved for the case where the client's `last_seq` is greater than `next_seq - 1` (e.g. after a backend rollback that discarded messages the client had already seen). Clients should be prepared to drop local state and reload on receipt. The current backend does not emit this reason — it collapses an over-ahead cursor into the caught-up empty response with `gap: null`. This branch is deferred per the append-only-message-stream design doc and may be enabled in a later revision.
 
 **Compaction Complete**
 ```json
@@ -403,7 +449,10 @@ Sent when session compaction succeeds.
 Sent when session compaction fails. Common errors:
 - "Session not found: <session-id>"
 - "session_id required in compact_session message"
+- "Compaction already in progress" — a prior `compact_session` for this UUID has not yet completed; wait for `compaction_complete` or a terminating `compaction_error` before retrying.
 - Claude CLI errors
+
+If a tmux window for the session was live when compaction began, the backend kills it before spawning `claude --compact` and synthesizes a `turn_complete {aborted: true}` to every subscriber so processing indicators unlock. The next prompt to the session respawns the provider via `--resume`.
 
 **Recent Sessions**
 ```json
@@ -474,41 +523,29 @@ Session compaction summarizes conversation history to reduce context window usag
 - Sending `prompt` before `connect` → `auth_error` (must authenticate first)
 - Missing `session_id` in `connect` → Error: "session_id required in connect message"
 - Unknown message type → Error: "Unknown message type: <type>"
+- Client announces a `protocol_version` older than `0.4.0` on the `connect` message (when `:message-stream-version` is `:v0.4.0`) → `unsupported_protocol_version` + connection closed:
+
+  ```json
+  {
+    "type": "error",
+    "code": "unsupported_protocol_version",
+    "required": "0.4.0",
+    "received": "<client-version>",
+    "message": "Client is too old; upgrade required"
+  }
+  ```
+
+  Under `:v0.3.0` rollback this guard is disabled so legacy clients keep working.
+- `subscribe` with a non-integer or negative `last_seq` → `invalid_subscribe` (see Subscribe section).
+- `subscribe` carrying the legacy `last_message_id` field → `unsupported_subscribe_field` (see Subscribe section).
 
 **Connection Errors:**
 - WebSocket disconnect → iOS reconnects with same session UUID and re-authenticates with stored API key
 - Backend restart → Sessions restored from disk; iOS must re-authenticate on reconnection
 
-### Session Locking
+### Concurrent Prompts
 
-**Overview:**
-Session locking prevents concurrent prompts from forking the same Claude session. When a session is actively processing a prompt, the backend locks it and rejects additional prompts until the Claude CLI execution completes.
-
-**Behavior:**
-- Backend maintains a set of locked Claude session IDs
-- Lock acquired before invoking Claude CLI
-- Lock released when CLI completes (success or error)
-- Locked sessions reject new prompts with `session_locked` message
-- Per-session locking: users can work with multiple sessions simultaneously
-
-**Frontend Implementation:**
-- iOS tracks `lockedSessions` as a `Set<String>` of Claude session IDs
-- Optimistic locking: session locked when sending prompt (before backend confirms)
-- Input controls disabled for locked sessions (voice and text)
-- Lock status checked per-session (not global)
-- Lock released when `turn_complete` or `error` received
-- Manual unlock available (UI shows "Tap to Unlock" for stuck locks)
-
-**Multi-Session Workflow:**
-Users can switch between sessions while keeping multiple agents busy. Each session has independent lock state, so locking session A doesn't prevent sending prompts to session B.
-
-**Lock Lifecycle:**
-1. User sends prompt → iOS optimistically locks session
-2. Backend attempts lock acquisition
-3. If locked: sends `session_locked` message
-4. If unlocked: acquires lock, invokes Claude CLI
-5. When CLI completes: releases lock, sends `turn_complete`
-6. iOS receives `turn_complete` → unlocks session
+Provider CLIs run inside tmux windows that persist across prompts (and across backend restarts). Concurrent prompts to the same session are delivered as sequential `send-keys` nudges into the live pane; the provider's own input queue orders them. There is no per-session lock and no `session_locked` message. A separate `compaction-locks` atom guards the `compact_session` handler, since `claude --compact` still runs as a one-shot subprocess that would race the live TUI's JSONL writes.
 
 ### Message ID Format
 
@@ -535,7 +572,9 @@ The command execution protocol allows iOS clients to discover, execute, and moni
 
 ##### Available Commands (Backend → Client)
 
-Sent automatically after `connected` and `set-directory` messages. Provides project-specific and general commands for the current working directory.
+Sent automatically at two points:
+1. After `connected` — general commands only (no project commands, since the working directory is unknown).
+2. On session creation or resume (via `prompt` with `new_session_id` or `resume_session_id`) — project commands are populated from the session's working directory.
 
 **Message:**
 ```json

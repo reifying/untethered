@@ -12,6 +12,59 @@ private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "S
 extension Notification.Name {
     /// Posted when session list is updated from backend
     static let sessionListDidUpdate = Notification.Name("sessionListDidUpdate")
+
+    /// Posted when session history is updated (messages added via session_history)
+    /// userInfo contains "sessionId" key with the session UUID string
+    static let sessionHistoryDidUpdate = Notification.Name("sessionHistoryDidUpdate")
+}
+
+// MARK: - Delegate
+
+/// Sink for out-of-band sync events that need a UI response. The UI layer
+/// (typically `VoiceCodeClient`) conforms and surfaces these to the user.
+protocol SessionSyncDelegate: AnyObject {
+    /// Fires when the backend replies with a `session_history` payload whose
+    /// `gap.reason == "pruned"` — the server no longer retains the seq range
+    /// the client asked for. The client is expected to warn the user that
+    /// local state is partial; no automatic merge or reload happens.
+    /// See docs/design/append-only-message-stream.md AC5.
+    func didDetectPrunedGap(_ sessionId: String, gap: SessionHistoryPayload.Gap)
+
+    /// Fires when the sync manager needs the client to send a new `subscribe`
+    /// for the given session starting from `fromSeq`. Two triggers:
+    ///   1. A push arrived with `first_seq > local_last_seq + 1` — a missed
+    ///      window needs backfilling. `fromSeq = local_last_seq` (pre-gap).
+    ///   2. The payload carried `is_complete == false` — the server's budget
+    ///      was exhausted and the next window is ready. `fromSeq` is the
+    ///      latest seq we just received.
+    /// The manager never advances any shared cursor past the gap until the
+    /// client completes this resubscribe; see AC3/AC6 of the design.
+    func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64)
+
+    /// Fires when the manager has aborted a chained `is_complete: false`
+    /// resubscribe loop because the server is not making progress — i.e.
+    /// the most recent payload's `last_seq` did not advance past the
+    /// cursor we asked from. Likeliest cause is a single message whose
+    /// JSON encoding exceeds the per-window byte budget so the server
+    /// can't fit it. `cursor` is the unchanged cursor at which the chain
+    /// stopped; the UI should surface this so the user knows older history
+    /// past this point cannot load automatically. See beads
+    /// tmux-untethered-l8t.
+    func sessionSyncDidStallChain(_ sessionId: String, atCursor: Int64)
+}
+
+extension SessionSyncDelegate {
+    /// Default no-op so existing conformers (VoiceCodeClient shipped before
+    /// tmux-untethered-fh3) compile without modification. Real implementers
+    /// route `fromSeq` into a `subscribe` message on the socket.
+    func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64) {}
+
+    /// Default no-op for backwards compatibility. The default behavior on
+    /// chain stall is to fall silent — the manager has already stopped
+    /// firing resubscribes, so the only consequence of a no-op is the user
+    /// not being told why the conversation stopped loading. Implementers
+    /// that care should surface a banner or warning.
+    func sessionSyncDidStallChain(_ sessionId: String, atCursor: Int64) {}
 }
 
 /// Manages synchronization of session metadata between backend and CoreData
@@ -19,6 +72,65 @@ class SessionSyncManager {
     private let persistenceController: PersistenceController
     private let context: NSManagedObjectContext
     private weak var voiceOutputManager: VoiceOutputManager?
+
+    /// UI-layer sink for pruned-gap and similar events. See `SessionSyncDelegate`.
+    weak var delegate: SessionSyncDelegate?
+
+    /// Sessions for which a pruned-gap payload has been received and not yet
+    /// acknowledged by the user. Keyed by lowercased session UUID. Set
+    /// synchronously when a pruned `session_history` lands so that any
+    /// subsequent payload arriving on the same WebSocket pump tick is
+    /// refused before it reaches the upsert path. Cleared via
+    /// `clearPrunedFlag(sessionId:)` (typically when the user dismisses the
+    /// banner). See AC5 of docs/design/append-only-message-stream.md and
+    /// beads tmux-untethered-8i4: without this guard, a non-gap push
+    /// arriving between the synchronous pruned-detection branch and the
+    /// async delegate dispatch would silently mix stale messages with new
+    /// post-gap ones.
+    ///
+    /// Accessed only on the main queue. The WebSocket pump dispatches
+    /// `handleSessionHistoryPayload` to main, and `clearPrunedFlag` is
+    /// documented as main-only.
+    private(set) var prunedSessions: Set<String> = []
+
+    /// For each session with an in-flight `is_complete: false` chain, the
+    /// cursor we last asked the server to resume from (i.e. the `last_seq`
+    /// passed to the most recent chained subscribe). Keyed by lowercased
+    /// session UUID. A subsequent `is_complete: false` payload whose
+    /// `last_seq` does not advance past this cursor (or is nil) means the
+    /// server cannot make progress for the current cursor — typically a
+    /// single message whose JSON encoding exceeds the per-window byte
+    /// budget. The chain is aborted instead of spinning at maximum speed,
+    /// and the failure is surfaced via `sessionSyncDidStallChain`. See
+    /// beads tmux-untethered-l8t.
+    ///
+    /// Cleared whenever the chain terminates: `is_complete: true`, gap
+    /// (either reason), pruned-gap event, or save-failure recovery — any
+    /// of which kicks off a path that doesn't share the chain's cursor.
+    ///
+    /// Accessed only on the main queue. All reads/writes happen inside the
+    /// `DispatchQueue.main.async` block where the resubscribe is fired.
+    private var incompleteChainCursors: [String: Int64] = [:]
+
+    /// Per-session serial queues that gate concurrent
+    /// `handleSessionHistoryPayload` invocations for the same session.
+    /// Without this, two payloads landing simultaneously (subscribe reply
+    /// crossing a live push, two backfills in quick succession) each spawn
+    /// independent background contexts whose seqHit fetches see stale
+    /// snapshots and both insert duplicate rows for overlapping seqs.
+    /// See beads tmux-untethered-prf. Different sessions still process in
+    /// parallel — only same-session payloads serialize.
+    private var sessionUpsertQueues: [String: DispatchQueue] = [:]
+    private let sessionUpsertQueuesLock = NSLock()
+
+    private func upsertQueue(forSessionId sessionId: String) -> DispatchQueue {
+        sessionUpsertQueuesLock.lock()
+        defer { sessionUpsertQueuesLock.unlock() }
+        if let existing = sessionUpsertQueues[sessionId] { return existing }
+        let q = DispatchQueue(label: "dev.910labs.voice-code.SessionSync.upsert.\(sessionId)")
+        sessionUpsertQueues[sessionId] = q
+        return q
+    }
 
     init(persistenceController: PersistenceController = .shared, voiceOutputManager: VoiceOutputManager? = nil) {
         self.persistenceController = persistenceController
@@ -223,6 +335,19 @@ class SessionSyncManager {
                     try backgroundContext.save()
                     logger.info("⏱️ +\(Int(Date().timeIntervalSince(saveStart) * 1000))ms - saved to CoreData")
                     logger.info("⏱️ handleSessionHistory COMPLETE - total: \(Int(Date().timeIntervalSince(historyStart) * 1000))ms, \(addedCount) new messages, \(prunedCount) pruned")
+
+                    // Post notification on main thread to trigger UI refresh
+                    // This is needed because @FetchRequest may not auto-update when messages are
+                    // added via background context merge (especially after backend reconnection)
+                    if addedCount > 0 {
+                        DispatchQueue.main.async {
+                            NotificationCenter.default.post(
+                                name: .sessionHistoryDidUpdate,
+                                object: nil,
+                                userInfo: ["sessionId": sessionId]
+                            )
+                        }
+                    }
                 } else {
                     logger.info("⏱️ handleSessionHistory COMPLETE - no changes to save")
                 }
@@ -232,8 +357,513 @@ class SessionSyncManager {
         }
     }
     
+    // MARK: - Session History Payload (v0.4.0)
+
+    /// v0.4.0 unified entry point for a decoded `session_history` envelope.
+    /// Used for both initial history replies and real-time pushes; the
+    /// server emits the same shape for both paths.
+    ///
+    /// Implements the gap contract from
+    /// docs/design/append-only-message-stream.md (AC3/AC4/AC5/AC6):
+    ///
+    /// 1. `gap.reason == "pruned"`: surface to delegate and return — server
+    ///    has lost the range the client asked for. (AC5)
+    /// 2. 3-case seq comparison against `local_last_seq = max(seq)` in cache:
+    ///    - `first_seq == local_last_seq + 1` → contiguous. Upsert + advance.
+    ///    - `first_seq  > local_last_seq + 1` → gap. Upsert the received
+    ///       window *and* fire `sessionSyncNeedsResubscribe(fromSeq:
+    ///       local_last_seq)` so the client backfills before advancing. (AC3)
+    ///    - `first_seq <= local_last_seq` → duplicate / reorder. The upsert
+    ///       is idempotent on `(sessionId, seq)`, so it's a no-op or
+    ///       in-place update; `local_last_seq` does not regress. (AC3)
+    /// 3. `is_complete == false` → immediately re-subscribe with the
+    ///    advanced cursor so the next window loads without user action. (AC6)
+    ///
+    /// The `client_ahead` gap reason is handled as a normal merge path (no
+    /// delegate fire) — the server sends a full resync via `messages` in
+    /// that case, and the client upserts it like any other payload.
+    func handleSessionHistoryPayload(_ payload: SessionHistoryPayload) {
+        let prunedKey = payload.sessionId.lowercased()
+
+        // Pruned gap: surface to delegate and stop. Merging anything under a
+        // pruned reply would silently partial-view the user's history.
+        // Mark the session synchronously so any subsequent non-gap payload
+        // that arrives before the async delegate hop runs is refused below.
+        if let gap = payload.gap, gap.reason == "pruned" {
+            logger.warning("⚠️ Pruned gap for \(payload.sessionId): requested_last_seq=\(gap.requestedLastSeq), min_available_seq=\(gap.minAvailableSeq)")
+            prunedSessions.insert(prunedKey)
+            let sessionId = payload.sessionId
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                // Pruned gap means the chain (if any) is moot — the server
+                // can't satisfy our cursor and the next user action runs
+                // through the dismiss flow, not a chain continuation.
+                self.incompleteChainCursors.removeValue(forKey: prunedKey)
+                self.delegate?.didDetectPrunedGap(sessionId, gap: gap)
+            }
+            return
+        }
+
+        // Refuse to merge while the user has unacknowledged pruned-gap state
+        // for this session. The flag is cleared by `clearPrunedFlag` (wired
+        // to the dismiss action). Without this guard a fresh push that lands
+        // between pruned detection and the delegate hop would mix stale and
+        // post-gap messages with no visual break.
+        if prunedSessions.contains(prunedKey) {
+            logger.warning("🚫 Refusing session_history merge for \(payload.sessionId) — pruned-gap flag still set; awaiting user acknowledgment")
+            return
+        }
+
+        guard let sessionUUID = UUID(uuidString: payload.sessionId) else {
+            logger.error("Invalid session ID format in handleSessionHistoryPayload: \(payload.sessionId)")
+            return
+        }
+
+        // Serialize per-session so the seqHit fetch and the insert/save form
+        // a single critical section against the persistent store. Two
+        // payloads on the same session that land concurrently (subscribe
+        // reply crossing a live push, two backfills in quick succession)
+        // would otherwise each fetch against an independent stale background
+        // context and both insert duplicate rows for overlapping seqs. See
+        // beads tmux-untethered-prf. Different sessions keep parallelism via
+        // the per-session keying. The inner `performAndWait` blocks the
+        // serial queue until the save commits, so the next dispatched
+        // payload reads the freshly-saved store.
+        upsertQueue(forSessionId: prunedKey).async { [weak self] in
+            guard let self = self else { return }
+            let backgroundContext = self.persistenceController.container.newBackgroundContext()
+            backgroundContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+            backgroundContext.performAndWait {
+
+            // Snapshot the current contiguous cursor BEFORE mutating — we
+            // need the pre-upsert value to emit a correct backfill request.
+            let localLastSeq = self.maxCachedSeq(sessionId: sessionUUID, in: backgroundContext)
+
+            // 3-case gap decision. Empty windows (no first_seq) never trip a gap.
+            let gapDetected: Bool
+            if let firstSeq = payload.firstSeq, firstSeq > localLastSeq + 1 {
+                logger.warning("📭 Gap for \(payload.sessionId): local_last_seq=\(localLastSeq), first_seq=\(firstSeq); backfilling from \(localLastSeq)")
+                gapDetected = true
+            } else {
+                gapDetected = false
+            }
+
+            let session = self.fetchOrCreateSession(id: sessionUUID, in: backgroundContext)
+            let isActiveSession = ActiveSessionManager.shared.isActive(sessionUUID)
+
+            // TTS gate: capture the boundary between historical and live the
+            // first time we see a payload for this session in the current app
+            // launch. `liveFromSeq` is reset to 0 by PersistenceController on
+            // launch and by `clearLiveFromSeq` on unsubscribe, so a re-entry
+            // re-captures a fresh boundary. See tmux-untethered-i2n.
+            //
+            // Read into a local before the loop so chain replies (the catch-up
+            // window split across multiple is_complete:false re-subscribes)
+            // see the same boundary that was captured on the first reply —
+            // their messages all have seq < liveFromSeq and are correctly
+            // suppressed.
+            if session.liveFromSeq == 0 && payload.nextSeq > 0 {
+                session.liveFromSeq = payload.nextSeq
+            }
+            let liveFromSeq = session.liveFromSeq
+
+            // Idempotent upsert on (sessionId, seq). Safe under double
+            // delivery (push+history overlap, gap-backfill crossing).
+            // Collect assistant message text from newly-inserted rows so we
+            // can fire auto-speak / notifications / priority-queue post-save.
+            // Only assistant messages whose seq is at-or-above `liveFromSeq`
+            // are eligible — anything below was already on the backend when
+            // the user opened the session.
+            var newRows = 0
+            var newAssistantTexts: [String] = []
+            for wireMessage in payload.messages {
+                let inserted = self.upsertMessage(wireMessage, session: session, in: backgroundContext)
+                if inserted {
+                    newRows += 1
+                    if wireMessage.role == "assistant"
+                        && liveFromSeq > 0
+                        && wireMessage.seq >= liveFromSeq {
+                        newAssistantTexts.append(wireMessage.text)
+                    }
+                }
+            }
+
+            // Preview reflects the newest message the client has actually
+            // seen, which is the last element in the ascending payload.
+            if let lastMessage = payload.messages.last {
+                session.preview = String(lastMessage.text.prefix(100))
+            }
+
+            // Persist the server-reported next-seq so reconnect after local
+            // cache pruning still resumes at the right cursor. Take the max
+            // so an out-of-order payload (e.g. a backfill landing after a
+            // newer push) cannot regress the cursor. See beads
+            // tmux-untethered-fkz.
+            if payload.nextSeq > session.nextSeq {
+                session.nextSeq = payload.nextSeq
+            }
+
+            // Background sessions track unread count so the sidebar badge can
+            // flag inbound activity the user hasn't seen. Active sessions do
+            // not — the user is already looking at them.
+            if !isActiveSession && newRows > 0 {
+                session.unreadCount += Int32(newRows)
+            }
+
+            // Auto-add to priority queue when an assistant response lands on a
+            // session the user has opted into. Read the flag before save so
+            // the relationship mutation batches into the same context commit.
+            if !newAssistantTexts.isEmpty
+                && UserDefaults.standard.bool(forKey: "priorityQueueEnabled") {
+                CDBackendSession.addToPriorityQueue(session, context: backgroundContext)
+                logger.info("📌 Auto-added session to priority queue after assistant response: \(payload.sessionId)")
+            }
+
+            // Keep messageCount in sync with actual row count to avoid
+            // drift between the sidebar count and the conversation view.
+            // `session.messages` reflects pending inserts synchronously
+            // because `message.session = session` walks the inverse and
+            // updates the NSSet before save.
+            if let currentMessages = session.messages?.allObjects as? [CDMessage] {
+                session.messageCount = Int32(currentMessages.count)
+            }
+
+            do {
+                if backgroundContext.hasChanges {
+                    try backgroundContext.save()
+                    if newRows > 0 {
+                        let sessionId = payload.sessionId
+                        DispatchQueue.main.async {
+                            NotificationCenter.default.post(
+                                name: .sessionHistoryDidUpdate,
+                                object: nil,
+                                userInfo: ["sessionId": sessionId]
+                            )
+                        }
+                    }
+                }
+            } catch {
+                let nsError = error as NSError
+                logger.error("Failed to save session_history payload: domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) userInfo=\(nsError.userInfo, privacy: .public)")
+                // Don't stay stuck: ask the client to resubscribe from the
+                // pre-payload cursor so the next push attempts a fresh save
+                // instead of permanently leaving local_last_seq stale. Also
+                // drop the chain cursor — recovery is a fresh start, not a
+                // continuation of whatever is_complete chain was active.
+                let sessionId = payload.sessionId
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    self.incompleteChainCursors.removeValue(forKey: sessionId.lowercased())
+                    self.delegate?.sessionSyncNeedsResubscribe(sessionId, fromSeq: localLastSeq)
+                }
+                return
+            }
+
+            // Prune old messages to keep CoreData footprint bounded during
+            // long conversations. Only runs past the retention threshold.
+            if newRows > 0 && CDMessage.needsPruning(sessionId: sessionUUID, in: backgroundContext) {
+                let deletedCount = CDMessage.pruneOldMessages(sessionId: sessionUUID, in: backgroundContext)
+                if deletedCount > 0 {
+                    try? backgroundContext.save()
+                    logger.info("🧹 Pruned \(deletedCount) old messages from session \(payload.sessionId)")
+                }
+            }
+
+            // Side-effect fan-out for new assistant messages. Active sessions
+            // speak; background sessions post a local notification so the
+            // user can surface the response from outside the app.
+            if !newAssistantTexts.isEmpty {
+                if isActiveSession {
+                    let workingDirectory = session.workingDirectory
+                    let voiceManager = self.voiceOutputManager
+                    DispatchQueue.main.async {
+                        // Re-check on main thread: the snapshot above was
+                        // taken before the CoreData save; the user may have
+                        // switched sessions during the async gap. Speaking
+                        // against a stale snapshot would TTS for a session
+                        // they no longer have open.
+                        guard ActiveSessionManager.shared.isActive(sessionUUID) else { return }
+                        guard let voiceManager = voiceManager else { return }
+                        for text in newAssistantTexts {
+                            let processedText = TextProcessor.prepareForSpeech(from: text)
+                            voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory)
+                        }
+                    }
+                } else {
+                    let sessionName = session.displayName(context: backgroundContext)
+                    let workingDirectory = session.workingDirectory
+                    let combinedText = newAssistantTexts.joined(separator: "\n\n")
+                    DispatchQueue.main.async {
+                        Task {
+                            await NotificationManager.shared.postResponseNotification(
+                                text: combinedText,
+                                sessionName: sessionName,
+                                workingDirectory: workingDirectory
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Follow-up subscribes. Gap backfill takes precedence — the gap
+            // window is still open, so chasing `is_complete: false` from this
+            // same payload would advance past it. The gap resubscribe itself
+            // may reply with `is_complete: false`; that subsequent payload
+            // will chain its own window.
+            //
+            // The chain-cursor bookkeeping below guards against an unbounded
+            // is_complete:false loop (beads tmux-untethered-l8t): if the
+            // server keeps returning is_complete:false without advancing
+            // past the cursor we asked from, the chain is aborted and the
+            // failure is surfaced via `sessionSyncDidStallChain`. All
+            // mutation of `incompleteChainCursors` happens on main, where
+            // the resubscribe is already dispatched.
+            let sessionId = payload.sessionId
+            let isComplete = payload.isComplete
+            let receivedLastSeq = payload.lastSeq
+            let preGapCursor = localLastSeq
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                let key = sessionId.lowercased()
+
+                if gapDetected {
+                    // Switching to gap-backfill path — drop any in-flight
+                    // is_complete chain so a later payload doesn't compare
+                    // its lastSeq against a stale cursor from a different
+                    // resubscribe sequence.
+                    self.incompleteChainCursors.removeValue(forKey: key)
+                    self.delegate?.sessionSyncNeedsResubscribe(sessionId, fromSeq: preGapCursor)
+                } else if !isComplete {
+                    // Empty payload with is_complete:false means the server
+                    // could not fit even one message in the byte budget for
+                    // the requested cursor — the pathological case the
+                    // chain guard exists for. Fall back to the pre-payload
+                    // cursor only so logs show the unchanged value;
+                    // advancement is judged from `receivedLastSeq`.
+                    let nextCursor = receivedLastSeq ?? preGapCursor
+                    if let prevAskedCursor = self.incompleteChainCursors[key] {
+                        // Did the server include at least one message above
+                        // where we asked? lastSeq == nil means no messages
+                        // at all, which is non-progress by definition.
+                        let advanced: Bool
+                        if let last = receivedLastSeq {
+                            advanced = last > prevAskedCursor
+                        } else {
+                            advanced = false
+                        }
+                        if !advanced {
+                            logger.error("⛔ Aborting is_complete:false chain for \(sessionId): cursor stalled at \(prevAskedCursor); payload last_seq=\(receivedLastSeq.map(String.init) ?? "nil")")
+                            self.incompleteChainCursors.removeValue(forKey: key)
+                            self.delegate?.sessionSyncDidStallChain(sessionId, atCursor: prevAskedCursor)
+                            return
+                        }
+                    }
+                    self.incompleteChainCursors[key] = nextCursor
+                    self.delegate?.sessionSyncNeedsResubscribe(sessionId, fromSeq: nextCursor)
+                } else {
+                    // is_complete: true → chain (if any) terminated naturally.
+                    self.incompleteChainCursors.removeValue(forKey: key)
+                }
+            }
+            }
+        }
+    }
+
+    /// Clear the pruned-gap flag for a session so subsequent
+    /// `session_history` payloads merge normally. Wired to the dismiss
+    /// action in the UI layer (see `VoiceCodeClient.dismissPrunedGap`).
+    /// Must be called on the main queue.
+    func clearPrunedFlag(sessionId: String) {
+        prunedSessions.remove(sessionId.lowercased())
+    }
+
+    /// Reset the TTS gate cursor for a session so the next subscribe reply
+    /// re-captures `liveFromSeq` from its `nextSeq`. Called from
+    /// `VoiceCodeClient.unsubscribe` so leaving and re-entering a session
+    /// treats messages produced during the absence as historical (the user
+    /// expects voice-out only for content produced after they reopened the
+    /// session). See tmux-untethered-i2n.
+    func clearLiveFromSeq(sessionId: String) {
+        guard let sessionUUID = UUID(uuidString: sessionId) else { return }
+        persistenceController.performBackgroundTask { backgroundContext in
+            let request = CDBackendSession.fetchBackendSession(id: sessionUUID)
+            guard let session = try? backgroundContext.fetch(request).first else { return }
+            if session.liveFromSeq != 0 {
+                session.liveFromSeq = 0
+                try? backgroundContext.save()
+            }
+        }
+    }
+
+    // MARK: - Session History Payload helpers
+
+    /// Returns the largest backend-assigned `seq` stored for this session,
+    /// or 0 if none. Used as the client's `local_last_seq` cursor for gap
+    /// detection. Optimistic rows carry a deterministic negative seq (see
+    /// `optimisticSeq(for:)`) and are excluded from the cursor — the wire
+    /// treats `seq=0` as "send everything", which is the right state when
+    /// only locally-created rows exist.
+    internal func maxCachedSeq(sessionId: UUID, in context: NSManagedObjectContext) -> Int64 {
+        let request = CDMessage.fetchRequest()
+        request.predicate = NSPredicate(format: "sessionId == %@ AND seq > 0", sessionId as CVarArg)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.seq, ascending: false)]
+        request.fetchLimit = 1
+        return (try? context.fetch(request))?.first?.seq ?? 0
+    }
+
+    /// Fetch an existing `CDBackendSession` by id, or create a minimal one so
+    /// incoming messages have a parent relationship. Mirrors the lazy-create
+    /// path in `handleSessionUpdated`.
+    private func fetchOrCreateSession(id sessionUUID: UUID, in context: NSManagedObjectContext) -> CDBackendSession {
+        let request = CDBackendSession.fetchBackendSession(id: sessionUUID)
+        if let existing = try? context.fetch(request).first {
+            return existing
+        }
+        logger.info("Creating new session from history payload: \(sessionUUID.uuidString.lowercased())")
+        let session = CDBackendSession(context: context)
+        session.id = sessionUUID
+        session.backendName = ""
+        session.workingDirectory = ""
+        session.lastModified = Date()
+        session.unreadCount = 0
+        session.isLocallyCreated = false
+        return session
+    }
+
+    /// Idempotent upsert of a `WireMessage`, keyed on `(sessionId, seq)` with
+    /// an optimistic-reconciliation fallback on `(sessionId, role, text,
+    /// status == .sending)`. The fallback upgrades a locally-created
+    /// "sending" row to "confirmed" in place rather than spawning a duplicate
+    /// when the backend echoes a user prompt. See `createOptimisticMessage`.
+    ///
+    /// - Returns: `true` when a new row was inserted, `false` when an
+    ///   existing row was updated in place (or when the wire sessionId was
+    ///   malformed and the row could not be stored).
+    @discardableResult
+    internal func upsertMessage(_ wireMessage: WireMessage, session: CDBackendSession, in context: NSManagedObjectContext) -> Bool {
+        guard let wireSessionUUID = UUID(uuidString: wireMessage.sessionId) else {
+            logger.warning("Invalid wire session ID in upsert: \(wireMessage.sessionId)")
+            return false
+        }
+
+        // Consistency guard: the wire message's session_id must match the
+        // envelope-level session we're merging into. Drop any mismatched rows
+        // so the scalar `sessionId` and the `session` relationship never
+        // disagree. Backend should never emit this, but trust-but-verify.
+        guard wireSessionUUID == session.id else {
+            logger.error("Wire message session \(wireMessage.sessionId) does not match payload session \(session.id.uuidString.lowercased()); dropping")
+            return false
+        }
+
+        let seqRequest = CDMessage.fetchRequest()
+        seqRequest.predicate = NSPredicate(format: "sessionId == %@ AND seq == %lld",
+                                           wireSessionUUID as CVarArg,
+                                           wireMessage.seq)
+        seqRequest.fetchLimit = 1
+
+        let seqHit = (try? context.fetch(seqRequest))?.first
+
+        // Optimistic fallback: no row with this seq yet, but we may already
+        // have a locally-created "sending" row with matching role+text. Upgrade
+        // it in place so the UI reconciles without a duplicate bubble.
+        let optimistic: CDMessage? = {
+            guard seqHit == nil else { return nil }
+            let req = CDMessage.fetchRequest()
+            req.predicate = NSPredicate(format: "sessionId == %@ AND role == %@ AND text == %@ AND status == %@",
+                                        wireSessionUUID as CVarArg,
+                                        wireMessage.role,
+                                        wireMessage.text,
+                                        MessageStatus.sending.rawValue)
+            req.fetchLimit = 1
+            return (try? context.fetch(req))?.first
+        }()
+
+        let existing = seqHit ?? optimistic
+        let message = existing ?? CDMessage(context: context)
+        let isNew = existing == nil
+
+        message.sessionId = wireSessionUUID
+        message.role = wireMessage.role
+        message.text = wireMessage.text
+        message.seq = wireMessage.seq
+        message.timestamp = wireMessage.timestamp
+        message.serverTimestamp = wireMessage.timestamp
+        message.messageStatus = .confirmed
+        message.session = session
+
+        // Keep the backend-assigned UUID aligned with what the wire carries.
+        // On brand-new rows we must set an id (CDMessage requires non-nil);
+        // on updates we overwrite to catch any server-side id rewrites.
+        // For *existing* rows, skip the reassignment when another row already
+        // holds wireUUID — that would trip the (id) uniqueness constraint and
+        // throw on save. The current row keeps its existing id (which is
+        // unique). The merge policy on background contexts is the belt; this
+        // guard is the suspenders that avoids reaching it for the predictable
+        // collision. Brand-new rows have no @NSManaged id yet — read-before-
+        // write is undefined, so we skip the comparison entirely on isNew.
+        if let wireUUID = UUID(uuidString: wireMessage.uuid) {
+            if isNew {
+                message.id = wireUUID
+            } else if message.id != wireUUID && wireUUIDIsUnique(wireUUID, in: context) {
+                message.id = wireUUID
+            }
+        } else if isNew {
+            message.id = UUID()
+        }
+
+        return isNew
+    }
+
+    /// True when no row in `context` already holds `id`. The caller has
+    /// already verified `message.id != id`, so a hit can only be a different
+    /// row — there is no need for a `SELF != %@` clause (which behaves
+    /// unreliably against unsaved-temporary-objectID rows).
+    private func wireUUIDIsUnique(_ id: UUID, in context: NSManagedObjectContext) -> Bool {
+        let req = CDMessage.fetchRequest()
+        req.predicate = NSPredicate(format: "id == %@", id as CVarArg)
+        req.fetchLimit = 1
+        return ((try? context.count(for: req)) ?? 0) == 0
+    }
+
     // MARK: - Optimistic UI
-    
+
+    /// Deterministic negative seq for an optimistic message, derived from its
+    /// UUID. Two optimistic messages with different UUIDs produce different
+    /// seqs, so multiple pending offline rows have unique `(sessionId, seq)`
+    /// pairs instead of all colliding on `seq=0`. Backend-assigned seqs start
+    /// at 1, so a strictly-negative seq is unambiguously "not yet confirmed
+    /// by server" and never matches the seq lookup in `upsertMessage`. See
+    /// beads tmux-untethered-mgp.
+    internal static func optimisticSeq(for id: UUID) -> Int64 {
+        // Squeeze the 128-bit UUID into a 63-bit non-zero magnitude using
+        // the first 8 bytes XORed with the last 8 bytes — preserves entropy
+        // without depending on Swift's hashValue (which is salted per-run
+        // and would defeat determinism across launches).
+        let bytes = id.uuid
+        var hi: UInt64 = 0
+        var lo: UInt64 = 0
+        hi |= UInt64(bytes.0) << 56
+        hi |= UInt64(bytes.1) << 48
+        hi |= UInt64(bytes.2) << 40
+        hi |= UInt64(bytes.3) << 32
+        hi |= UInt64(bytes.4) << 24
+        hi |= UInt64(bytes.5) << 16
+        hi |= UInt64(bytes.6) << 8
+        hi |= UInt64(bytes.7)
+        lo |= UInt64(bytes.8) << 56
+        lo |= UInt64(bytes.9) << 48
+        lo |= UInt64(bytes.10) << 40
+        lo |= UInt64(bytes.11) << 32
+        lo |= UInt64(bytes.12) << 24
+        lo |= UInt64(bytes.13) << 16
+        lo |= UInt64(bytes.14) << 8
+        lo |= UInt64(bytes.15)
+        // Clear the sign bit to keep the magnitude in [0, Int64.max], then
+        // ensure non-zero so the result is strictly negative after negation.
+        let magnitude = Int64((hi ^ lo) & 0x7FFF_FFFF_FFFF_FFFF)
+        return magnitude == 0 ? -1 : -magnitude
+    }
+
     /// Create an optimistic message immediately when user sends a prompt
     /// - Parameters:
     ///   - sessionId: Session UUID
@@ -254,7 +884,7 @@ class SessionSyncManager {
                 logger.warning("Session not found for optimistic message: \(sessionId.uuidString.lowercased())")
                 return
             }
-            
+
             // Create optimistic message
             let message = CDMessage(context: backgroundContext)
             message.id = messageId
@@ -264,8 +894,13 @@ class SessionSyncManager {
             message.timestamp = Date()
             message.messageStatus = .sending
             message.session = session
-            
-            logger.info("📝 Optimistic message prepared: id=\(messageId) sessionId=\(sessionId.uuidString.lowercased()) role=user text_length=\(text.count) status=sending")
+            // Distinct negative seq per optimistic row: prevents two
+            // back-to-back prompts from colliding on the seq=0 default and
+            // stranding the second one when the backend echo arrives. See
+            // beads tmux-untethered-mgp.
+            message.seq = Self.optimisticSeq(for: messageId)
+
+            logger.info("📝 Optimistic message prepared: id=\(messageId) sessionId=\(sessionId.uuidString.lowercased()) role=user text_length=\(text.count) status=sending seq=\(message.seq)")
             
             // Update session metadata optimistically
             session.lastModified = Date()
@@ -472,6 +1107,17 @@ class SessionSyncManager {
                     logger.info("Updated session: \(sessionId)")
                 }
 
+                // Post notification to trigger UI refresh (same pattern as handleSessionHistory)
+                if newMessageCount > 0 {
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(
+                            name: .sessionHistoryDidUpdate,
+                            object: nil,
+                            userInfo: ["sessionId": sessionId]
+                        )
+                    }
+                }
+
                 // Prune old messages if threshold exceeded
                 // This keeps CoreData footprint bounded during long conversations
                 if CDMessage.needsPruning(sessionId: sessionUUID, in: backgroundContext) {
@@ -492,7 +1138,7 @@ class SessionSyncManager {
                     DispatchQueue.main.async {
                         if let voiceManager = voiceManager {
                             for text in assistantMessagesToSpeak {
-                                let processedText = TextProcessor.removeCodeBlocks(from: text)
+                                let processedText = TextProcessor.prepareForSpeech(from: text)
                                 logger.info("🔊 Calling speak() with text length: \(processedText.count)")
                                 voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory)
                             }
@@ -509,198 +1155,22 @@ class SessionSyncManager {
     
     // MARK: - Private Helpers
 
-    /// Format content size in human-readable format
-    /// - Parameter bytes: Size in bytes
-    /// - Returns: Formatted string (e.g., "1.2KB", "345 bytes")
-    private func formatContentSize(_ bytes: Int) -> String {
-        if bytes < 1024 {
-            return "\(bytes) bytes"
-        } else if bytes < 1024 * 1024 {
-            let kb = Double(bytes) / 1024.0
-            return String(format: "%.1fKB", kb)
-        } else {
-            let mb = Double(bytes) / (1024.0 * 1024.0)
-            return String(format: "%.1fMB", mb)
-        }
-    }
-
-    /// Summarize a tool_use content block
-    /// - Parameter block: Content block dictionary
-    /// - Returns: Abbreviated summary string
-    private func summarizeToolUse(_ block: [String: Any]) -> String {
-        guard let toolName = block["name"] as? String else {
-            return "🔧 Tool call"
-        }
-
-        // Get input parameters
-        guard let input = block["input"] as? [String: Any], !input.isEmpty else {
-            return "🔧 \(toolName)"
-        }
-
-        // Format abbreviated parameters
-        var paramSummary: String = ""
-
-        // Common parameter patterns
-        if let path = input["file_path"] as? String ?? input["path"] as? String {
-            let fileName = (path as NSString).lastPathComponent
-            paramSummary = fileName
-        } else if let pattern = input["pattern"] as? String {
-            paramSummary = "pattern \"\(pattern.prefix(30))\(pattern.count > 30 ? "..." : "")\""
-        } else if let command = input["command"] as? String {
-            paramSummary = command.prefix(40) + (command.count > 40 ? "..." : "")
-        } else if let code = input["code"] as? String {
-            paramSummary = code.prefix(40) + (code.count > 40 ? "..." : "")
-        } else {
-            // Generic: show first key-value pair
-            if let firstKey = input.keys.first, let value = input[firstKey] {
-                let valueStr = String(describing: value)
-                paramSummary = "\(firstKey): \(valueStr.prefix(30))\(valueStr.count > 30 ? "..." : "")"
-            }
-        }
-
-        if paramSummary.isEmpty {
-            return "🔧 \(toolName)"
-        } else {
-            return "🔧 \(toolName): \(paramSummary)"
-        }
-    }
-
-    /// Summarize a tool_result content block
-    /// - Parameter block: Content block dictionary
-    /// - Returns: Abbreviated summary string
-    private func summarizeToolResult(_ block: [String: Any]) -> String {
-        // Check for error
-        if let isError = block["is_error"] as? Bool, isError {
-            // Error content can be a string or array of text blocks
-            if let content = block["content"] as? String {
-                // Extract error message (first line or first 60 chars)
-                let errorMessage = content.components(separatedBy: .newlines).first ?? content
-                let truncated = errorMessage.prefix(60)
-                return "✗ Error: \(truncated)\(errorMessage.count > 60 ? "..." : "")"
-            } else if let contentArray = block["content"] as? [[String: Any]] {
-                // Extract text from array content blocks
-                let errorText = extractTextFromContentBlocks(contentArray)
-                let errorMessage = errorText.components(separatedBy: .newlines).first ?? errorText
-                let truncated = errorMessage.prefix(60)
-                return "✗ Error: \(truncated)\(errorMessage.count > 60 ? "..." : "")"
-            } else {
-                return "✗ Error"
-            }
-        }
-
-        // Success - show size
-        if let content = block["content"] as? String {
-            let size = content.utf8.count
-            return "✓ Result (\(formatContentSize(size)))"
-        } else if let contentArray = block["content"] as? [[String: Any]] {
-            // Content is array of text blocks - extract and measure total size
-            let totalText = extractTextFromContentBlocks(contentArray)
-            let size = totalText.utf8.count
-            return "✓ Result (\(formatContentSize(size)))"
-        } else {
-            return "✓ Result"
-        }
-    }
-
-    /// Extract text from an array of content blocks
-    /// - Parameter blocks: Array of content block dictionaries
-    /// - Returns: Combined text from all text blocks
-    private func extractTextFromContentBlocks(_ blocks: [[String: Any]]) -> String {
-        var texts: [String] = []
-        for block in blocks {
-            if let blockType = block["type"] as? String, blockType == "text",
-               let text = block["text"] as? String {
-                texts.append(text)
-            }
-        }
-        return texts.joined(separator: "\n")
-    }
-
-    /// Summarize a thinking content block
-    /// - Parameter block: Content block dictionary
-    /// - Returns: Abbreviated summary string
-    private func summarizeThinking(_ block: [String: Any]) -> String {
-        guard let thinking = block["thinking"] as? String else {
-            return "💭 Thinking..."
-        }
-
-        // Take first ~60 chars and find a good break point
-        let maxLength = 60
-        if thinking.count <= maxLength {
-            return "💭 \(thinking)"
-        }
-
-        let truncated = thinking.prefix(maxLength)
-        // Try to break at a sentence or word boundary
-        if let lastSpace = truncated.lastIndex(of: " ") {
-            let breakPoint = truncated[..<lastSpace]
-            return "💭 \(breakPoint)..."
-        } else {
-            return "💭 \(truncated)..."
-        }
-    }
-
-    /// Extract text from Claude Code message format
-    /// - Parameter messageData: Raw .jsonl message data
-    /// - Returns: Extracted text string, or nil if extraction fails
+    /// Extract text from canonical wire format
+    /// - Parameter messageData: Canonical message from backend
+    /// - Returns: Text content string, or nil if extraction fails
     internal func extractText(from messageData: [String: Any]) -> String? {
-        // Try nested message.content first (user/assistant messages)
-        if let message = messageData["message"] as? [String: Any] {
-            // User messages have simple string content
-            if let content = message["content"] as? String {
-                return content
-            }
-
-            // Assistant messages have array of content blocks
-            if let contentArray = message["content"] as? [[String: Any]] {
-                var summaries: [String] = []
-
-                for block in contentArray {
-                    guard let blockType = block["type"] as? String else { continue }
-
-                    switch blockType {
-                    case "text":
-                        if let text = block["text"] as? String {
-                            summaries.append(text)
-                        }
-                    case "tool_use":
-                        summaries.append(summarizeToolUse(block))
-                    case "tool_result":
-                        summaries.append(summarizeToolResult(block))
-                    case "thinking":
-                        summaries.append(summarizeThinking(block))
-                    default:
-                        // Unknown block type - show placeholder
-                        summaries.append("[\(blockType)]")
-                    }
-                }
-
-                return summaries.isEmpty ? nil : summaries.joined(separator: "\n\n")
-            }
-        }
-
-        // Fall back to top-level content (system messages)
-        if let content = messageData["content"] as? String {
-            return content
-        }
-
-        // Fall back to summary field (summary messages)
-        if let summary = messageData["summary"] as? String {
-            return summary
-        }
-
-        return nil
+        return messageData["text"] as? String
     }
 
-    /// Extract role from Claude Code message format
-    /// - Parameter messageData: Raw .jsonl message data
+    /// Extract role from canonical wire format
+    /// - Parameter messageData: Canonical message from backend
     /// - Returns: Role string ("user" or "assistant"), or nil if extraction fails
     internal func extractRole(from messageData: [String: Any]) -> String? {
-        return messageData["type"] as? String
+        return messageData["role"] as? String
     }
 
-    /// Extract timestamp from Claude Code message format
-    /// - Parameter messageData: Raw .jsonl message data
+    /// Extract timestamp from canonical wire format
+    /// - Parameter messageData: Canonical message from backend
     /// - Returns: Date object, or nil if extraction fails
     internal func extractTimestamp(from messageData: [String: Any]) -> Date? {
         guard let timestampString = messageData["timestamp"] as? String else {
@@ -712,14 +1182,21 @@ class SessionSyncManager {
         return formatter.date(from: timestampString)
     }
 
-    /// Extract message UUID from Claude Code message format
-    /// - Parameter messageData: Raw .jsonl message data
+    /// Extract message UUID from canonical wire format
+    /// - Parameter messageData: Canonical message from backend
     /// - Returns: UUID, or nil if extraction fails
     internal func extractMessageId(from messageData: [String: Any]) -> UUID? {
         guard let uuidString = messageData["uuid"] as? String else {
             return nil
         }
         return UUID(uuidString: uuidString)
+    }
+
+    /// Extract provider from canonical wire format
+    /// - Parameter messageData: Canonical message from backend
+    /// - Returns: Provider string ("claude", "copilot", "cursor", or "opencode"), or nil if extraction fails
+    internal func extractProvider(from messageData: [String: Any]) -> String? {
+        return messageData["provider"] as? String
     }
 
     /// Upsert (update or insert) a session in CoreData
@@ -767,6 +1244,14 @@ class SessionSyncManager {
         
         if let preview = sessionData["preview"] as? String {
             session.preview = preview
+        }
+
+        // Parse provider field (defaults to "claude" for backward compatibility)
+        if let provider = sessionData["provider"] as? String {
+            session.provider = provider
+        } else if existingSession == nil {
+            // Only set default for new sessions; don't override existing
+            session.provider = "claude"
         }
 
         // Clear isLocallyCreated flag since session is now synced from backend

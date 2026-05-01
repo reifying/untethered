@@ -15,6 +15,25 @@
   []
   (str "cmd-" (java.util.UUID/randomUUID)))
 
+(defn validate-command-id
+  "Validate a command-id string. Returns nil if valid, or an error message string if invalid."
+  [command-id]
+  (cond
+    (nil? command-id)
+    "command-id must not be nil"
+
+    (not (string? command-id))
+    (str "command-id must be a string, got: " (type command-id))
+
+    (str/blank? command-id)
+    "command-id must not be blank"
+
+    (= command-id "git.")
+    "invalid command-id: \"git.\" (missing subcommand)"
+
+    (= command-id "bd.")
+    "invalid command-id: \"bd.\" (missing subcommand)"))
+
 (defn resolve-command-id
   "Resolve a command_id to a shell command string.
 
@@ -23,22 +42,28 @@
   - git.worktree.list -> git worktree list
   - bd.ready -> bd ready
   - docker.up -> make docker-up
-  - build -> make build"
+  - build -> make build
+
+  Throws ExceptionInfo if command-id is invalid."
   [command-id]
-  (cond
-    ;; Git commands (supports nested like git.worktree.list)
-    (str/starts-with? command-id "git.")
-    (let [subcommand (subs command-id 4)] ; Remove 'git.' prefix
-      (str "git " (str/replace subcommand "." " ")))
+  (when-let [error (validate-command-id command-id)]
+    (throw (ex-info error {:command-id command-id})))
+  (let [resolved (cond
+                   ;; Git commands (supports nested like git.worktree.list)
+                   (str/starts-with? command-id "git.")
+                   (let [subcommand (subs command-id 4)]
+                     (str "git " (str/replace subcommand "." " ")))
 
-    ;; Beads (bd) commands
-    (str/starts-with? command-id "bd.")
-    (let [subcommand (subs command-id 3)] ; Remove 'bd.' prefix
-      (str "bd " (str/replace subcommand "." " ")))
+                   ;; Beads (bd) commands
+                   (str/starts-with? command-id "bd.")
+                   (let [subcommand (subs command-id 3)]
+                     (str "bd " (str/replace subcommand "." " ")))
 
-    ;; All other commands are Makefile targets
-    :else
-    (str "make " (str/replace command-id "." "-"))))
+                   ;; All other commands are Makefile targets
+                   :else
+                   (str "make " (str/replace command-id "." "-")))]
+    (log/debug "Resolved command-id" command-id "to" resolved)
+    resolved))
 
 (defn spawn-process
   "Spawn a shell command process using ProcessBuilder.

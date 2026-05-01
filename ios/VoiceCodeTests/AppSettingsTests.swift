@@ -35,7 +35,7 @@ final class AppSettingsTests: XCTestCase {
 
     func testDefaultValues() {
         XCTAssertEqual(settings.serverURL, "")
-        XCTAssertEqual(settings.serverPort, "8080")
+        XCTAssertEqual(settings.serverPort, "")
     }
 
     func testLoadSavedValues() {
@@ -641,24 +641,52 @@ final class AppSettingsTests: XCTestCase {
     }
 
     func testIsServerConfiguredWithURL() {
-        // Setting a server URL should make it configured
+        // Setting a server URL plus a numeric port should make it configured
         settings.serverURL = "192.168.1.100"
+        settings.serverPort = "8080"
         XCTAssertTrue(settings.isServerConfigured)
     }
 
     func testIsServerConfiguredWithWhitespaceOnly() {
         // Whitespace-only should not count as configured
         settings.serverURL = "   "
+        settings.serverPort = "8080"
         XCTAssertFalse(settings.isServerConfigured)
     }
 
     func testIsServerConfiguredAfterClearing() {
         // Setting then clearing should return to unconfigured
         settings.serverURL = "192.168.1.100"
+        settings.serverPort = "8080"
         XCTAssertTrue(settings.isServerConfigured)
 
         settings.serverURL = ""
         XCTAssertFalse(settings.isServerConfigured)
+    }
+
+    func testIsServerConfiguredRequiresPort() {
+        // URL alone is not enough — port must be present and numeric
+        settings.serverURL = "192.168.1.100"
+        settings.serverPort = ""
+        XCTAssertFalse(settings.isServerConfigured)
+    }
+
+    func testIsServerConfiguredRejectsNonNumericPort() {
+        settings.serverURL = "192.168.1.100"
+        settings.serverPort = "abc"
+        XCTAssertFalse(settings.isServerConfigured)
+    }
+
+    func testIsServerConfiguredFreshInstall() {
+        // No UserDefaults entries → not configured. Mirrors the fresh-install bug
+        // where AppSettings used to default the port to "8080" and silently dial
+        // a wrong server.
+        let domain = Bundle.main.bundleIdentifier!
+        UserDefaults.standard.removePersistentDomain(forName: domain)
+        UserDefaults.standard.synchronize()
+        let fresh = AppSettings()
+        XCTAssertEqual(fresh.serverPort, "")
+        XCTAssertFalse(fresh.isServerConfigured)
     }
 
     // MARK: - System Prompt Tests

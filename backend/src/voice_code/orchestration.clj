@@ -96,17 +96,34 @@
 
 (defn get-outcome-reminder-prompt
   "Generate a reminder prompt when agent fails to produce JSON outcome.
-   This is sent as a follow-up to give the agent another chance."
+   This is sent as a follow-up to give the agent another chance.
+   The opener is chosen to match the actual error category so the prompt
+   does not contradict itself (e.g. a 'Outcome X not in expected outcomes'
+   error must not be framed as 'did not include a JSON block')."
   [step-name expected-outcomes error-details]
   (let [sorted-outcomes (sort (map name expected-outcomes))
         non-other-outcomes (remove #(= "other" %) sorted-outcomes)
         has-other? (contains? expected-outcomes :other)
         outcome-examples (str/join "\n" (map #(str "{\"outcome\": \"" % "\"}") non-other-outcomes))
         other-example (when has-other?
-                        "{\"outcome\": \"other\", \"otherDescription\": \"<brief description>\"}")]
-    (str "Your previous response did not include the required JSON outcome block. "
+                        "{\"outcome\": \"other\", \"otherDescription\": \"<brief description>\"}")
+        details (or error-details "")
+        opener (cond
+                 (str/starts-with? details "No JSON block")
+                 "Your previous response did not include the required JSON outcome block."
+                 (str/starts-with? details "JSON missing 'outcome'")
+                 "Your previous response's JSON block was missing the 'outcome' field."
+                 (str/starts-with? details "Outcome 'other' requires")
+                 "Your previous 'other' outcome was missing the required 'otherDescription' field."
+                 (str/starts-with? details "Outcome '")
+                 "Your previous response chose an outcome that is not valid for this step."
+                 (str/starts-with? details "JSON parse failed")
+                 "Your previous response's JSON block did not parse."
+                 :else
+                 "Your previous response did not produce a valid JSON outcome block.")]
+    (str opener " "
          "Please respond now with ONLY the JSON outcome on a single line.\n\n"
-         "Error: " error-details "\n\n"
+         "Error: " details "\n\n"
          "Valid responses:\n\n"
          outcome-examples
          (when has-other? (str "\n" other-example))

@@ -25,7 +25,7 @@ final class SessionSyncManagerDeltaSyncTests: XCTestCase {
 
     // MARK: - Helper Methods
 
-    private func createSession(id: UUID, messageCount: Int32 = 0) -> CDBackendSession {
+    private func createSession(id: UUID, messageCount: Int32 = 0, provider: String = "claude") -> CDBackendSession {
         let session = CDBackendSession(context: context)
         session.id = id
         session.backendName = "Test Session"
@@ -33,6 +33,7 @@ final class SessionSyncManagerDeltaSyncTests: XCTestCase {
         session.lastModified = Date()
         session.messageCount = messageCount
         session.preview = ""
+        session.provider = provider
         return session
     }
 
@@ -48,12 +49,14 @@ final class SessionSyncManagerDeltaSyncTests: XCTestCase {
         return message
     }
 
-    private func messageDataDict(id: UUID, role: String = "user", text: String = "Test", timestamp: Date = Date()) -> [String: Any] {
+    /// Create a canonical wire format message dictionary
+    private func messageDataDict(id: UUID, role: String = "user", text: String = "Test", timestamp: Date = Date(), provider: String = "claude") -> [String: Any] {
         return [
             "uuid": id.uuidString.lowercased(),
-            "type": role == "user" ? "human" : "assistant",
-            "message": ["content": [["type": "text", "text": text]]],
-            "timestamp": ISO8601DateFormatter().string(from: timestamp)
+            "role": role,
+            "text": text,
+            "timestamp": ISO8601DateFormatter().string(from: timestamp),
+            "provider": provider
         ]
     }
 
@@ -287,51 +290,55 @@ final class SessionSyncManagerDeltaSyncTests: XCTestCase {
         XCTAssertTrue(true)
     }
 
-    // MARK: - Tool Result Array Content Tests
+    // MARK: - Canonical Wire Format Tests
 
-    func testExtractTextFromUserMessageWithToolResultArrayContent() throws {
-        // This is the new Claude Code format where user messages with tool results
-        // have message.content as an array instead of a string
-
-        // Create message data with tool_result array content format
+    func testExtractRoleFromCanonicalFormat() throws {
+        // Canonical format has role at top level
         let messageData: [String: Any] = [
-            "type": "user",
-            "uuid": UUID().uuidString.lowercased(),
-            "timestamp": ISO8601DateFormatter().string(from: Date()),
-            "message": [
-                "role": "user",
-                "content": [
-                    [
-                        "type": "tool_result",
-                        "tool_use_id": "toolu_test123",
-                        "content": [
-                            ["type": "text", "text": "File contents from tool result"]
-                        ]
-                    ]
-                ]
-            ],
-            "toolUseResult": [
-                ["type": "text", "text": "File contents from tool result"]
-            ]
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "role": "user",
+            "text": "Hello",
+            "timestamp": "2025-01-30T12:34:56.789Z",
+            "provider": "claude"
         ]
 
-        // Test extractText handles the new format
-        let extractedText = sessionSyncManager.extractText(from: messageData)
-
-        XCTAssertNotNil(extractedText, "Should extract text from tool_result array content")
-        XCTAssertTrue(extractedText?.contains("Result") ?? false, "Should contain tool result summary")
+        let role = sessionSyncManager.extractRole(from: messageData)
+        XCTAssertEqual(role, "user")
     }
 
-    func testExtractTextFromUserMessageWithStringContent() throws {
-        // Original format - user messages with simple string content
+    func testExtractRoleAssistant() throws {
         let messageData: [String: Any] = [
-            "type": "user",
-            "uuid": UUID().uuidString.lowercased(),
-            "timestamp": ISO8601DateFormatter().string(from: Date()),
-            "message": [
-                "role": "user",
-                "content": "Say hello"
-            ]
+            "uuid": "550e8400-e29b-41d4-a716-446655440001",
+            "role": "assistant",
+            "text": "Hello! How can I help?",
+            "timestamp": "2025-01-30T12:34:56.789Z",
+            "provider": "claude"
+        ]
+
+        let role = sessionSyncManager.extractRole(from: messageData)
+        XCTAssertEqual(role, "assistant")
+    }
+
+    func testExtractRoleMissingField() throws {
+        // Missing role field should return nil
+        let messageData: [String: Any] = [
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "text": "Hello",
+            "timestamp": "2025-01-30T12:34:56.789Z"
+        ]
+
+        let role = sessionSyncManager.extractRole(from: messageData)
+        XCTAssertNil(role)
+    }
+
+    func testExtractTextFromCanonicalFormat() throws {
+        // Canonical format has text at top level
+        let messageData: [String: Any] = [
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "role": "user",
+            "text": "Say hello",
+            "timestamp": "2025-01-30T12:34:56.789Z",
+            "provider": "claude"
         ]
 
         let extractedText = sessionSyncManager.extractText(from: messageData)
@@ -340,53 +347,219 @@ final class SessionSyncManagerDeltaSyncTests: XCTestCase {
         XCTAssertEqual(extractedText, "Say hello")
     }
 
-    func testExtractTextFromAssistantMessageWithTextBlocks() throws {
-        // Assistant messages have content as array of blocks
+    func testExtractTextWithToolSummary() throws {
+        // Backend provides pre-formatted tool summaries in text field
         let messageData: [String: Any] = [
-            "type": "assistant",
-            "uuid": UUID().uuidString.lowercased(),
-            "timestamp": ISO8601DateFormatter().string(from: Date()),
-            "message": [
-                "role": "assistant",
-                "content": [
-                    ["type": "text", "text": "Hello! How can I help you?"]
-                ]
-            ]
+            "uuid": "550e8400-e29b-41d4-a716-446655440001",
+            "role": "assistant",
+            "text": "Let me read that file.\n\n[Tool: Read file_path=/tmp/test.txt]",
+            "timestamp": "2025-01-30T12:34:56.789Z",
+            "provider": "claude"
         ]
 
         let extractedText = sessionSyncManager.extractText(from: messageData)
 
         XCTAssertNotNil(extractedText)
-        XCTAssertEqual(extractedText, "Hello! How can I help you?")
+        XCTAssertTrue(extractedText?.contains("Let me read that file.") ?? false)
+        XCTAssertTrue(extractedText?.contains("[Tool: Read") ?? false)
     }
 
-    func testExtractTextFromAssistantMessageWithToolUseBlock() throws {
-        // Assistant messages can have tool_use blocks with no text
+    func testExtractTextMissingField() throws {
+        // Missing text field should return nil
         let messageData: [String: Any] = [
-            "type": "assistant",
-            "uuid": UUID().uuidString.lowercased(),
-            "timestamp": ISO8601DateFormatter().string(from: Date()),
-            "message": [
-                "role": "assistant",
-                "content": [
-                    [
-                        "type": "tool_use",
-                        "id": "toolu_test123",
-                        "name": "mcp__clojure-mcp__read_file",
-                        "input": ["path": "/test/path.clj"]
-                    ]
-                ]
-            ]
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "role": "user",
+            "timestamp": "2025-01-30T12:34:56.789Z"
         ]
 
         let extractedText = sessionSyncManager.extractText(from: messageData)
+        XCTAssertNil(extractedText)
+    }
 
-        XCTAssertNotNil(extractedText, "Should extract text summary for tool_use block")
-        XCTAssertTrue(extractedText?.contains("🔧") ?? false, "Should contain tool emoji")
-        XCTAssertTrue(extractedText?.contains("read_file") ?? false, "Should contain tool name")
+    func testExtractProviderClaude() throws {
+        let messageData: [String: Any] = [
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "role": "user",
+            "text": "Hello",
+            "timestamp": "2025-01-30T12:34:56.789Z",
+            "provider": "claude"
+        ]
+
+        let provider = sessionSyncManager.extractProvider(from: messageData)
+        XCTAssertEqual(provider, "claude")
+    }
+
+    func testExtractProviderCopilot() throws {
+        let messageData: [String: Any] = [
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "role": "user",
+            "text": "Hello",
+            "timestamp": "2025-01-30T12:34:56.789Z",
+            "provider": "copilot"
+        ]
+
+        let provider = sessionSyncManager.extractProvider(from: messageData)
+        XCTAssertEqual(provider, "copilot")
+    }
+
+    func testExtractProviderMissingField() throws {
+        // Missing provider field should return nil
+        let messageData: [String: Any] = [
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "role": "user",
+            "text": "Hello",
+            "timestamp": "2025-01-30T12:34:56.789Z"
+        ]
+
+        let provider = sessionSyncManager.extractProvider(from: messageData)
+        XCTAssertNil(provider)
+    }
+
+    func testExtractMessageIdFromCanonicalFormat() throws {
+        let messageData: [String: Any] = [
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "role": "user",
+            "text": "Hello",
+            "timestamp": "2025-01-30T12:34:56.789Z",
+            "provider": "claude"
+        ]
+
+        let messageId = sessionSyncManager.extractMessageId(from: messageData)
+        XCTAssertNotNil(messageId)
+        XCTAssertEqual(messageId?.uuidString.lowercased(), "550e8400-e29b-41d4-a716-446655440000")
     }
 
     // MARK: - Regression Test for Loading Bug
+
+    // MARK: - Provider Field Tests
+
+    func testHandleSessionListWithClaudeProvider() async throws {
+        // Given: A session list with explicit Claude provider
+        let sessionId = UUID()
+        let sessionData: [[String: Any]] = [[
+            "session_id": sessionId.uuidString.lowercased(),
+            "name": "Test Claude Session",
+            "working_directory": "/tmp/test",
+            "last_modified": Date().timeIntervalSince1970 * 1000,
+            "message_count": 5,
+            "provider": "claude"
+        ]]
+
+        // When: Handling session list
+        await sessionSyncManager.handleSessionList(sessionData)
+
+        // Then: Provider should be "claude"
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
+        let sessions = try context.fetch(fetchRequest)
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions.first?.provider, "claude")
+    }
+
+    func testHandleSessionListWithCopilotProvider() async throws {
+        // Given: A session list with Copilot provider
+        let sessionId = UUID()
+        let sessionData: [[String: Any]] = [[
+            "session_id": sessionId.uuidString.lowercased(),
+            "name": "Test Copilot Session",
+            "working_directory": "/tmp/copilot",
+            "last_modified": Date().timeIntervalSince1970 * 1000,
+            "message_count": 3,
+            "provider": "copilot"
+        ]]
+
+        // When: Handling session list
+        await sessionSyncManager.handleSessionList(sessionData)
+
+        // Then: Provider should be "copilot"
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
+        let sessions = try context.fetch(fetchRequest)
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions.first?.provider, "copilot")
+    }
+
+    func testHandleSessionListWithMissingProviderDefaultsToClaude() async throws {
+        // Given: A session list without provider field (backward compatibility)
+        let sessionId = UUID()
+        let sessionData: [[String: Any]] = [[
+            "session_id": sessionId.uuidString.lowercased(),
+            "name": "Legacy Session",
+            "working_directory": "/tmp/legacy",
+            "last_modified": Date().timeIntervalSince1970 * 1000,
+            "message_count": 2
+            // Note: no "provider" field
+        ]]
+
+        // When: Handling session list
+        await sessionSyncManager.handleSessionList(sessionData)
+
+        // Then: Provider should default to "claude"
+        let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
+        let sessions = try context.fetch(fetchRequest)
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions.first?.provider, "claude")
+    }
+
+    func testHandleSessionListWithMixedProviders() async throws {
+        // Given: A session list with multiple providers
+        let claudeId = UUID()
+        let copilotId = UUID()
+        let sessionData: [[String: Any]] = [
+            [
+                "session_id": claudeId.uuidString.lowercased(),
+                "name": "Claude Session",
+                "working_directory": "/tmp/claude",
+                "last_modified": Date().timeIntervalSince1970 * 1000,
+                "message_count": 5,
+                "provider": "claude"
+            ],
+            [
+                "session_id": copilotId.uuidString.lowercased(),
+                "name": "Copilot Session",
+                "working_directory": "/tmp/copilot",
+                "last_modified": Date().timeIntervalSince1970 * 1000,
+                "message_count": 3,
+                "provider": "copilot"
+            ]
+        ]
+
+        // When: Handling session list
+        await sessionSyncManager.handleSessionList(sessionData)
+
+        // Then: Each session should have correct provider
+        let claudeFetch = CDBackendSession.fetchBackendSession(id: claudeId)
+        let claudeSessions = try context.fetch(claudeFetch)
+        XCTAssertEqual(claudeSessions.first?.provider, "claude")
+
+        let copilotFetch = CDBackendSession.fetchBackendSession(id: copilotId)
+        let copilotSessions = try context.fetch(copilotFetch)
+        XCTAssertEqual(copilotSessions.first?.provider, "copilot")
+    }
+
+    func testHandleSessionListDoesNotOverwriteExistingProviderWithNil() async throws {
+        // Given: An existing Copilot session
+        let sessionId = UUID()
+        let existingSession = createSession(id: sessionId, messageCount: 5, provider: "copilot")
+        try context.save()
+
+        // Verify existing session has copilot provider
+        XCTAssertEqual(existingSession.provider, "copilot")
+
+        // When: Handling session list update WITHOUT provider field
+        let sessionData: [[String: Any]] = [[
+            "session_id": sessionId.uuidString.lowercased(),
+            "name": "Updated Session",
+            "working_directory": "/tmp/test",
+            "last_modified": Date().timeIntervalSince1970 * 1000,
+            "message_count": 10
+            // Note: no "provider" field in update
+        ]]
+
+        await sessionSyncManager.handleSessionList(sessionData)
+
+        // Then: Provider should remain "copilot" (not overwritten to default)
+        context.refresh(existingSession, mergeChanges: true)
+        XCTAssertEqual(existingSession.provider, "copilot", "Existing provider should not be overwritten when update has no provider")
+    }
 
     func testDeltaSyncDoesNotDeleteExistingMessagesWhenNoNewMessages() throws {
         // This is the specific bug scenario:
@@ -428,5 +601,81 @@ final class SessionSyncManagerDeltaSyncTests: XCTestCase {
         for cachedId in cachedMessageIds {
             XCTAssertTrue(remainingIds.contains(cachedId), "Message \(cachedId) was incorrectly deleted")
         }
+    }
+
+    // MARK: - UI Refresh Notification Tests
+
+    func testHandleSessionHistoryPostsNotificationWhenNewMessagesAdded() throws {
+        // Given: A session exists
+        let sessionId = UUID()
+        _ = createSession(id: sessionId, messageCount: 0)
+        try context.save()
+
+        // Set up expectation for notification
+        let notificationExpectation = expectation(forNotification: .sessionHistoryDidUpdate, object: nil) { notification in
+            guard let notifiedSessionId = notification.userInfo?["sessionId"] as? String else {
+                return false
+            }
+            return notifiedSessionId == sessionId.uuidString.lowercased()
+        }
+
+        // When: Handling session_history with new messages
+        let newMsgId = UUID()
+        let newMessages: [[String: Any]] = [
+            messageDataDict(id: newMsgId, text: "New message from backend")
+        ]
+
+        sessionSyncManager.handleSessionHistory(sessionId: sessionId.uuidString.lowercased(), messages: newMessages)
+
+        // Then: Notification should be posted
+        wait(for: [notificationExpectation], timeout: 2.0)
+    }
+
+    func testHandleSessionHistoryDoesNotPostNotificationWhenNoNewMessages() throws {
+        // Given: A session with existing messages
+        let sessionId = UUID()
+        let session = createSession(id: sessionId, messageCount: 2)
+
+        let existingMsg1Id = UUID()
+        let existingMsg2Id = UUID()
+        _ = createMessage(id: existingMsg1Id, sessionId: sessionId, session: session, text: "Existing 1")
+        _ = createMessage(id: existingMsg2Id, sessionId: sessionId, session: session, text: "Existing 2")
+        try context.save()
+
+        // Set up expectation that should NOT be fulfilled
+        let notificationExpectation = expectation(forNotification: .sessionHistoryDidUpdate, object: nil, handler: nil)
+        notificationExpectation.isInverted = true  // Should NOT receive notification
+
+        // When: Handling session_history with only duplicate messages
+        let duplicateMessages: [[String: Any]] = [
+            messageDataDict(id: existingMsg1Id, text: "Existing 1"),
+            messageDataDict(id: existingMsg2Id, text: "Existing 2")
+        ]
+
+        sessionSyncManager.handleSessionHistory(sessionId: sessionId.uuidString.lowercased(), messages: duplicateMessages)
+
+        waitForBackgroundTask()
+
+        // Then: No notification should be posted (duplicates skipped, addedCount = 0)
+        wait(for: [notificationExpectation], timeout: 1.0)
+    }
+
+    func testHandleSessionHistoryDoesNotPostNotificationForEmptyMessages() throws {
+        // Given: A session exists
+        let sessionId = UUID()
+        _ = createSession(id: sessionId, messageCount: 0)
+        try context.save()
+
+        // Set up expectation that should NOT be fulfilled
+        let notificationExpectation = expectation(forNotification: .sessionHistoryDidUpdate, object: nil, handler: nil)
+        notificationExpectation.isInverted = true  // Should NOT receive notification
+
+        // When: Handling empty session_history (delta sync with no new messages)
+        sessionSyncManager.handleSessionHistory(sessionId: sessionId.uuidString.lowercased(), messages: [])
+
+        waitForBackgroundTask()
+
+        // Then: No notification should be posted
+        wait(for: [notificationExpectation], timeout: 1.0)
     }
 }

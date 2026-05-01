@@ -18,18 +18,7 @@
             }
         ],
         "stop_reason": null,
-        "stop_sequence": null,
-        "usage": {
-            "input_tokens": 3,
-            "cache_creation_input_tokens": 2465,
-            "cache_read_input_tokens": 12202,
-            "cache_creation": {
-                "ephemeral_5m_input_tokens": 2465,
-                "ephemeral_1h_input_tokens": 0
-            },
-            "output_tokens": 4,
-            "service_tier": "standard"
-        }
+        "stop_sequence": null
     },
     "requestId": "req_011CUE2Ss1sXjbRS6yX4afme",
     "type": "assistant",

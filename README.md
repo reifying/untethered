@@ -123,8 +123,11 @@ make regenerate-key      # Generate new key (invalidates existing)
           :host "0.0.0.0"}
  :claude {:cli-path "claude"
           :default-timeout 86400000}
- :logging {:level :info}}
+ :logging {:level :info}
+ :message-stream-version :v0.4.0}
 ```
+
+`:message-stream-version` gates the append-only message-stream protocol (`:v0.4.0`, default) versus the legacy `last_message_id` / `session_updated` paths (`:v0.3.0`, rollback). Flip the value and restart the backend to switch paths. See [STANDARDS.md](STANDARDS.md#message-stream-version-config-flag) and @docs/design/append-only-message-stream.md.
 
 ### Environment Variables
 

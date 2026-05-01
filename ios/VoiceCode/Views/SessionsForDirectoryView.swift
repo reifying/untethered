@@ -327,10 +327,6 @@ struct SessionsForDirectoryView: View {
                     }
             }
         }
-        .onAppear {
-            // Notify backend of working directory so it can parse Makefile
-            client.setWorkingDirectory(workingDirectory)
-        }
         .swipeToBack()
     }
 

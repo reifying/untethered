@@ -70,7 +70,10 @@ struct ConversationView: View {
     // Compaction feedback state
     @State private var wasRecentlyCompacted: Bool = false
     @State private var compactionTimestamps: [UUID: Date] = [:]
-    
+
+    // Provider selection for new sessions
+    @State private var selectedProvider: String = "claude"
+
     // Auto-scroll state
     @State private var hasPerformedInitialScroll = false
     @State private var autoScrollEnabled = true  // Auto-scroll on by default
@@ -95,22 +98,9 @@ struct ConversationView: View {
         )
     }
 
-    // Check if current session is locked
-    private var isSessionLocked: Bool {
-        let claudeSessionId = session.id.uuidString.lowercased()
-        return client.lockedSessions.contains(claudeSessionId)
-    }
-
     // Active recipe for this session
     private var activeRecipe: ActiveRecipe? {
         client.activeRecipes[session.id.uuidString.lowercased()]
-    }
-
-    // Manual unlock function
-    private func manualUnlock() {
-        let claudeSessionId = session.id.uuidString.lowercased()
-        client.lockedSessions.remove(claudeSessionId)
-        print("🔓 [Manual] User manually unlocked session: \(claudeSessionId)")
     }
 
     // Stable function reference for infer name - prevents closure recreation on each render
@@ -118,10 +108,24 @@ struct ConversationView: View {
         client.requestInferredName(sessionId: session.id.uuidString.lowercased(), messageText: messageText)
     }
 
+    /// Pruned-gap alert for this session, if any. Driven by the
+    /// `SessionSyncDelegate.didDetectPrunedGap` hook in VoiceCodeClient.
+    private var prunedGap: SessionHistoryPayload.Gap? {
+        client.prunedGaps[session.id.uuidString.lowercased()]
+    }
+
     var body: some View {
         let _ = RenderTracker.count(Self.self)
         let _ = RenderLoopDetector.shared.recordRender()
         VStack(spacing: 0) {
+            // Pruned-gap warning — local state is partial. User-driven
+            // (no automatic reload); they may keep browsing or compact/reload.
+            if let gap = prunedGap {
+                PrunedGapBanner(gap: gap) {
+                    client.dismissPrunedGap(sessionId: session.id.uuidString.lowercased())
+                }
+            }
+
             // Messages area
             ZStack(alignment: .bottomTrailing) {
                 if isLoading {
@@ -220,6 +224,19 @@ struct ConversationView: View {
             
             // Input area
             VStack(spacing: 12) {
+                // Provider picker for new sessions (shown only before first prompt)
+                // Use messageCount == 0 to detect new sessions (backendName is always set on creation)
+                if session.messageCount == 0 {
+                    Picker("Provider", selection: $selectedProvider) {
+                        Text("Claude").tag("claude")
+                        Text("Copilot").tag("copilot")
+                        Text("Cursor").tag("cursor")
+                        Text("OpenCode").tag("opencode")
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+                }
+
                 // Mode toggle and connection status
                 HStack {
                     Button(action: { isVoiceMode.toggle() }) {
@@ -262,22 +279,18 @@ struct ConversationView: View {
                 if isVoiceMode {
                     ConversationVoiceInputView(
                         voiceInput: voiceInput,
-                        isDisabled: isSessionLocked,
                         onTranscriptionComplete: { text in
                             sendPromptText(text)
-                        },
-                        onManualUnlock: manualUnlock
+                        }
                     )
                 } else {
                     // Text mode
                     ConversationTextInputView(
                         text: $promptText,
-                        isDisabled: isSessionLocked,
                         onSend: {
                             sendPromptText(promptText)
                             promptText = ""
-                        },
-                        onManualUnlock: manualUnlock
+                        }
                     )
                 }
                 
@@ -305,14 +318,11 @@ struct ConversationView: View {
             #if os(iOS)
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
-                    // Kill session button (only visible when session is locked)
-                    if isSessionLocked {
-                        Button(action: {
-                            showingKillConfirmation = true
-                        }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.red)
-                        }
+                    Button(action: {
+                        showingKillConfirmation = true
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.red)
                     }
 
                     // Recipe button - shows active recipe or opens menu
@@ -370,7 +380,7 @@ struct ConversationView: View {
                                 .foregroundColor(wasRecentlyCompacted ? .green : .primary)
                         }
                     }
-                    .disabled(isCompacting || client.lockedSessions.contains(session.id.uuidString.lowercased()))
+                    .disabled(isCompacting)
 
                     Button(action: {
                         isRefreshingMessages = true
@@ -412,17 +422,15 @@ struct ConversationView: View {
                         .keyboardShortcut(".", modifiers: [.command])
                     }
 
-                    // Kill session button (only visible when session is locked)
-                    if isSessionLocked {
-                        Button(action: {
-                            showingKillConfirmation = true
-                        }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.red)
-                        }
-                        .help("Cancel prompt (Cmd+K)")
-                        .keyboardShortcut("k", modifiers: [.command])
+                    // Kill session button
+                    Button(action: {
+                        showingKillConfirmation = true
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.red)
                     }
+                    .help("Cancel prompt (Cmd+K)")
+                    .keyboardShortcut("k", modifiers: [.command])
 
                     // Recipe button - shows active recipe or opens menu
                     if let active = activeRecipe {
@@ -485,7 +493,7 @@ struct ConversationView: View {
                                 .foregroundColor(wasRecentlyCompacted ? .green : .primary)
                         }
                     }
-                    .disabled(isCompacting || client.lockedSessions.contains(session.id.uuidString.lowercased()))
+                    .disabled(isCompacting)
                     .help("Compact session history")
 
                     Button(action: {
@@ -580,7 +588,7 @@ struct ConversationView: View {
                 .environment(\.managedObjectContext, viewContext)
         }
         .sheet(isPresented: $showingRecipeMenu) {
-            RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased(), workingDirectory: session.workingDirectory)
+            RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased(), workingDirectory: session.workingDirectory, settings: settings)
         }
         .onAppear {
             // Reset scroll flags when view appears (handles navigation back to session)
@@ -607,6 +615,9 @@ struct ConversationView: View {
             } else {
                 wasRecentlyCompacted = false
             }
+
+            // Initialize provider selection from settings default
+            selectedProvider = settings.defaultProvider
         }
         .onChange(of: promptText) { oldValue, newValue in
             // Only save draft if value actually changed (prevents duplicate saves on restoration)
@@ -627,7 +638,19 @@ struct ConversationView: View {
             // This ensures messages are refreshed when navigating back to session
             hasSubscribedThisAppear = false
         }
+        .onReceive(NotificationCenter.default.publisher(for: .sessionHistoryDidUpdate)) { notification in
+            // Refresh view when session_history adds new messages (e.g., after backend reconnection)
+            // This ensures UI updates even when @FetchRequest doesn't auto-refresh
+            if let notificationSessionId = notification.userInfo?["sessionId"] as? String,
+               notificationSessionId == session.id.uuidString.lowercased() {
+                logger.info("📚 [ConversationView] Received sessionHistoryDidUpdate for current session, refreshing context")
+                viewContext.refresh(session, mergeChanges: true)
+            }
+        }
         .swipeToBack()
+        #if os(macOS)
+        .pushToTalk(voiceInput: voiceInput)
+        #endif
     }
     
     private func setupVoiceInput() {
@@ -688,17 +711,22 @@ struct ConversationView: View {
             }
         }
 
-        // Subscribe to the session to load full history
-        // Skip subscribe for new sessions (messageCount == 0) to avoid "session not found" error
-        // The session will be created when the first prompt is sent
-        // Subscribe on every onAppear to ensure fresh messages (no staleness)
-        // Backend sends ALL filtered messages on subscribe (no 20-message limit)
+        // Subscribe unless this is a brand-new locally-created session that
+        // hasn't been pushed to backend yet. The "Session not found" branch
+        // the old `messageCount > 0` gate was avoiding only fires for sessions
+        // the backend has never seen, which is exactly `isLocallyCreated &&
+        // messageCount == 0`. Backend-known sessions can have messageCount=0
+        // locally (recent_sessions hadn't merged into CoreData yet, never
+        // opened, etc.) and the old gate silently dropped them — leaving
+        // backend writes ungated and the iPhone never seeing replies. See
+        // tmux-untethered-9o9.
         let subscribeMs = Int(Date().timeIntervalSince(loadStart) * 1000)
-        if session.messageCount > 0 {
-            logger.info("⏱️ +\(subscribeMs)ms - subscribing to session (messageCount: \(self.session.messageCount))")
+        let skipSubscribe = session.isLocallyCreated && session.messageCount == 0
+        if !skipSubscribe {
+            logger.info("⏱️ +\(subscribeMs)ms - subscribing (messageCount=\(self.session.messageCount), locallyCreated=\(self.session.isLocallyCreated))")
             client.subscribe(sessionId: session.id.uuidString.lowercased())
         } else {
-            logger.info("⏱️ +\(subscribeMs)ms - skipping subscribe (new session)")
+            logger.info("⏱️ +\(subscribeMs)ms - skipping subscribe (locally-created new session, no backend file yet)")
         }
 
         // Fallback timeout to hide loading indicator if messages don't arrive
@@ -746,9 +774,10 @@ struct ConversationView: View {
         // Reset compaction feedback state when user sends a message
         wasRecentlyCompacted = false
 
+        let sessionId = session.id.uuidString.lowercased()
+
         // Clear draft after successful send
-        let sessionID = session.id.uuidString.lowercased()
-        draftManager.clearDraft(sessionID: sessionID)
+        draftManager.clearDraft(sessionID: sessionId)
 
         // Add to queue if enabled
         if settings.queueEnabled {
@@ -757,16 +786,6 @@ struct ConversationView: View {
 
         // Note: Priority queue auto-add now happens in VoiceCodeClient.turn_complete handler
         // This ensures sessions are only added after successful response (no ghost sessions)
-
-        // Optimistically lock the session before sending
-        // Use session.id (iOS UUID) for locking since that's what backend echoes in turn_complete
-        let sessionId = session.id.uuidString.lowercased()
-
-        // Defer lock to avoid SwiftUI update conflicts
-        DispatchQueue.main.async {
-            self.client.lockedSessions.insert(sessionId)
-            print("🔒 [ConversationView] Optimistically locked session: \(sessionId)")
-        }
 
         // Create optimistic message
         client.sessionSyncManager.createOptimisticMessage(sessionId: session.id, text: trimmedText) { messageId in
@@ -787,7 +806,8 @@ struct ConversationView: View {
 
         if isNewSession {
             message["new_session_id"] = sessionId
-            print("📤 [ConversationView] Sending prompt with new_session_id: \(sessionId)")
+            message["provider"] = selectedProvider
+            print("📤 [ConversationView] Sending prompt with new_session_id: \(sessionId), provider: \(selectedProvider)")
             // Note: Subscribe will happen when we receive turn_complete (after backend creates session)
         } else {
             message["resume_session_id"] = sessionId
@@ -1181,9 +1201,7 @@ struct MessageDetailView: View {
     private var messageDetailContent: some View {
         VStack(spacing: 0) {
             ScrollView {
-                Text(message.text)
-                    .font(.body)
-                    .textSelection(.enabled)
+                SelectableText(text: message.text)
                     .padding()
             }
 
@@ -1223,7 +1241,7 @@ struct MessageDetailView: View {
                     if voiceOutput.isSpeaking {
                         voiceOutput.stop()
                     } else {
-                        let processedText = TextProcessor.removeCodeBlocks(from: message.text)
+                        let processedText = TextProcessor.prepareForSpeech(from: message.text)
                         voiceOutput.speak(processedText, workingDirectory: message.session?.workingDirectory)
                     }
                 }) {
@@ -1317,9 +1335,7 @@ struct RenameSessionView: View {
 
 struct ConversationVoiceInputView: View {
     @ObservedObject var voiceInput: VoiceInputManager
-    let isDisabled: Bool
     let onTranscriptionComplete: (String) -> Void
-    let onManualUnlock: () -> Void
 
     var body: some View {
         VStack {
@@ -1350,22 +1366,18 @@ struct ConversationVoiceInputView: View {
                 }
             } else {
                 Button(action: {
-                    if isDisabled {
-                        onManualUnlock()
-                    } else {
-                        voiceInput.startRecording()
-                    }
+                    voiceInput.startRecording()
                 }) {
                     VStack {
                         Image(systemName: "mic")
                             .font(.system(size: 40))
-                            .foregroundColor(isDisabled ? .gray : .blue)
-                        Text(isDisabled ? "Tap to Unlock" : "Tap to Speak")
+                            .foregroundColor(.blue)
+                        Text("Tap to Speak")
                             .font(.caption)
-                            .foregroundColor(isDisabled ? .gray : .primary)
+                            .foregroundColor(.primary)
                     }
                     .frame(width: 100, height: 100)
-                    .background((isDisabled ? Color.gray : Color.blue).opacity(0.1))
+                    .background(Color.blue.opacity(0.1))
                     .cornerRadius(50)
                 }
             }
@@ -1384,23 +1396,14 @@ struct ConversationVoiceInputView: View {
 
 struct ConversationTextInputView: View {
     @Binding var text: String
-    let isDisabled: Bool
     let onSend: () -> Void
-    let onManualUnlock: () -> Void
 
     var body: some View {
         let _ = RenderLoopDetector.shared.recordRender()
         HStack {
-            TextField(isDisabled ? "Session locked - tap to unlock" : "Type your message...", text: $text, axis: .vertical)
+            TextField("Type your message...", text: $text, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...5)
-                .disabled(isDisabled)
-                .opacity(isDisabled ? 0.5 : 1.0)
-                .onTapGesture {
-                    if isDisabled {
-                        onManualUnlock()
-                    }
-                }
                 #if os(macOS)
                 .onKeyPress(.return, phases: .down) { press in
                     // Shift+Return inserts newline (let default behavior handle it)
@@ -1408,7 +1411,7 @@ struct ConversationTextInputView: View {
                         return .ignored
                     }
                     // Return sends the prompt
-                    if !text.isEmpty && !isDisabled {
+                    if !text.isEmpty {
                         onSend()
                         return .handled
                     }
@@ -1417,18 +1420,60 @@ struct ConversationTextInputView: View {
                 #endif
 
             Button(action: {
-                if isDisabled {
-                    onManualUnlock()
-                } else {
-                    onSend()
-                }
+                onSend()
             }) {
-                Image(systemName: isDisabled ? "lock.fill" : "arrow.up.circle.fill")
+                Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 32))
-                    .foregroundColor(isDisabled ? .orange : (text.isEmpty ? .gray : .blue))
+                    .foregroundColor(text.isEmpty ? .gray : .blue)
             }
-            .disabled(text.isEmpty && !isDisabled)
+            .disabled(text.isEmpty)
         }
         .padding(.horizontal)
+    }
+}
+
+/// Warning banner shown when the backend reports a pruned gap for the session
+/// currently on screen. Informational only — the user decides how to respond
+/// (dismiss and keep browsing, or trigger a reload elsewhere in the app).
+struct PrunedGapBanner: View {
+    let gap: SessionHistoryPayload.Gap
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Earlier messages unavailable")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Text("The server no longer has the earlier part of this conversation. Local history for this session may be incomplete.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss warning")
+            .accessibilityIdentifier("prunedGapBannerDismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.orange.opacity(0.12))
+        .overlay(
+            Rectangle()
+                .frame(height: 1)
+                .foregroundColor(Color.orange.opacity(0.4)),
+            alignment: .bottom
+        )
+        .accessibilityIdentifier("prunedGapBanner")
     }
 }
