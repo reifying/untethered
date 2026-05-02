@@ -484,13 +484,13 @@ Example: 'Add implementation tasks for user authentication (epic-abc123)'"
   {:prompt "Implement the current task from beads.
 
 ## Prerequisites
-1. Run `bd ready --limit 1 -t task` and `bd show <task-id>` to see the task details
+1. Run `bd ready --limit 1 --exclude-type epic` and `bd show <task-id>` to see the task details
 2. Read the design document referenced in the task
 3. Review relevant code standards (@STANDARDS.md, @CLAUDE.md)
 4. Familiarize yourself with the codebase context
 
 ## No Tasks Available
-If `bd ready --limit 1 -t task` indicates there are no tasks ready for implementation, select the `no-tasks` outcome. This is a normal situation—the recipe will exit gracefully.
+If `bd ready --limit 1 --exclude-type epic` indicates there are no tasks ready for implementation, select the `no-tasks` outcome. This is a normal situation—the recipe will exit gracefully.
 
 ## Implementation Requirements
 - Follow the technical approach specified in the task
