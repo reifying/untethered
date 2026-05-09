@@ -482,8 +482,14 @@
 
 (defn deliver!
   "Public entry point for both initial and follow-up prompts.
-   Nudges the existing window if live, otherwise respawns with --resume."
+   Nudges the existing window if live, otherwise respawns with --resume.
+   If nudge fails (stale live-windows entry after external eviction), evicts
+   the entry and falls through to respawn-and-deliver! so the prompt is not
+   silently dropped."
   [session-uuid prompt-text]
   (if-let [{:keys [tmux-session tmux-window]} (get @live-windows session-uuid)]
-    (nudge! tmux-session tmux-window prompt-text)
+    (let [result (nudge! tmux-session tmux-window prompt-text)]
+      (when (= :failed result)
+        (swap! live-windows dissoc session-uuid)
+        (respawn-and-deliver! session-uuid prompt-text)))
     (respawn-and-deliver! session-uuid prompt-text)))

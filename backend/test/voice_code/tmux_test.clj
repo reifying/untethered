@@ -1016,7 +1016,6 @@
                        :provider :claude
                        :workdir "/tmp"}})
         (tmux/deliver! uuid "follow-up prompt"))
-      ;; literal send-keys with the prompt text
       (is (some #(some #{"follow-up prompt"} %) @send-keys-calls)
           "expected nudge to be called on existing window")))
 
@@ -1065,6 +1064,38 @@
                                    :name "Session"})]
           (tmux/deliver! uuid "prompt text")))
       (is (some? @new-window-args))
-      ;; working directory should appear in the new-window -c argument
       (is (some #(= "/tmp/special-dir" %) @new-window-args)
-          "expected working directory from metadata to be used in new-window"))))
+          "expected working directory from metadata to be used in new-window")))
+
+  (testing "stale live-windows entry: nudge failure triggers eviction and respawn"
+    (let [uuid "stale-uuid-0000-0000-0000-000000000000"
+          new-window-args (atom nil)
+          invoker (fn [& args]
+                    (when (some #{"new-window"} args)
+                      (reset! new-window-args (vec args)))
+                    (cond
+                      ;; send-keys to the dead window all fail
+                      (some #{"send-keys"} args) {:exit 1 :out "" :err "can't find window"}
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      (some #{"list-windows"} args) {:exit 0 :out "_holder\n" :err ""}
+                      (some #{"show-environment"} args) {:exit 0 :out "" :err ""}
+                      (some #{"capture-pane"} args) {:exit 0 :out "bypass permissions" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows
+                {uuid {:tmux-session "dead-session"
+                       :tmux-window "dead-window"
+                       :provider :claude
+                       :workdir "/tmp/stale"}})
+        (with-redefs [voice-code.providers/cli-path (constantly "/usr/bin/claude")
+                      voice-code.providers/session-metadata
+                      (constantly {:provider :claude
+                                   :working-directory "/tmp/stale"
+                                   :name "Stale Session"})]
+          (tmux/deliver! uuid "recover me")))
+      (is (not= "dead-window" (:tmux-window (get @tmux/live-windows uuid)))
+          "stale window name must be replaced after nudge failure and respawn")
+      (is (some? @new-window-args)
+          "respawn must be attempted after nudge failure")
+      (is (some #(clojure.string/includes? (str %) "--resume") @new-window-args)
+          "respawn must use --resume"))))
