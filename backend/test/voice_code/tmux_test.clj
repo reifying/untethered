@@ -160,6 +160,89 @@
 (def ^:private resume-dialog-pane
   "This session is 4d old and 118.8k tokens.\n\n❯ 1. Resume from summary (recommended)\n  2. Resume full session as-is\n  3. Don't ask me again")
 
+(def ^:private trust-dialog-pane
+  "Accessing workspace:\n\n /Users/travisbrown\n\n Quick safety check: Is this a project you created or one you trust?\n\n ❯ 1. Yes, I trust this folder\n   2. No, exit\n\n Enter to confirm · Esc to cancel")
+
+(deftest wait-for-ready-dismisses-claude-trust-dialog
+  (testing "dismisses the trust-folder dialog with Enter, then reaches ready"
+    (let [call-log (atom [])
+          state (atom :dialog)
+          invoker (fn [& args]
+                    (swap! call-log conj (vec args))
+                    (cond
+                      (some #{"capture-pane"} args)
+                      (case @state
+                        :dialog {:exit 0 :out trust-dialog-pane :err ""}
+                        :loading {:exit 0 :out "Loading..." :err ""}
+                        :ready {:exit 0 :out "> prompt\n? for shortcuts · bypass permissions" :err ""})
+                      (and (some #{"send-keys"} args) (some #{"Enter"} args))
+                      (do (reset! state :ready) {:exit 0 :out "" :err ""})
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :ready (tmux/wait-for-ready "sess" "win" :claude
+                                           :timeout-ms 3000 :poll-ms 1))))
+      (let [send-keys-calls (filter #(some #{"send-keys"} %) @call-log)
+            enters (filter #(some #{"Enter"} %) send-keys-calls)
+            literal-3 (filter #(and (some #{"-l"} %) (some #{"3"} %)) send-keys-calls)]
+        (is (= 1 (count enters)) "exactly one Enter should be sent")
+        (is (= 0 (count literal-3)) "must not send literal '3' for trust dialog"))))
+
+  (testing "does NOT dismiss trust dialog for non-claude providers"
+    (let [dismissed? (atom false)
+          invoker (fn [& args]
+                    (cond
+                      (some #{"capture-pane"} args)
+                      {:exit 0 :out trust-dialog-pane :err ""}
+                      (and (some #{"send-keys"} args) (some #{"Enter"} args))
+                      (do (reset! dismissed? true) {:exit 0 :out "" :err ""})
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :timeout (tmux/wait-for-ready "sess" "win" :copilot
+                                             :timeout-ms 50 :poll-ms 1))))
+      (is (false? @dismissed?) "copilot must never send Enter for claude's trust dialog")))
+
+  (testing "trust dialog is dismissed at most once even if it persists"
+    (let [enter-calls (atom 0)
+          invoker (fn [& args]
+                    (cond
+                      (some #{"capture-pane"} args)
+                      {:exit 0 :out trust-dialog-pane :err ""}
+                      (and (some #{"send-keys"} args) (some #{"Enter"} args))
+                      (do (swap! enter-calls inc) {:exit 0 :out "" :err ""})
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :timeout (tmux/wait-for-ready "sess" "win" :claude
+                                             :timeout-ms 50 :poll-ms 1))))
+      (is (= 1 @enter-calls) "must only dismiss once even if dialog text persists")))
+
+  (testing "handles trust dialog followed by resume dialog in sequence"
+    (let [call-log (atom [])
+          state (atom :trust)
+          invoker (fn [& args]
+                    (swap! call-log conj (vec args))
+                    (cond
+                      (some #{"capture-pane"} args)
+                      (case @state
+                        :trust {:exit 0 :out trust-dialog-pane :err ""}
+                        :resume {:exit 0 :out resume-dialog-pane :err ""}
+                        :ready {:exit 0 :out "bypass permissions" :err ""})
+                      (and (some #{"send-keys"} args) (some #{"Enter"} args)
+                           (not (some #{"-l"} args)))
+                      (do (when (= @state :trust) (reset! state :resume))
+                          {:exit 0 :out "" :err ""})
+                      (and (some #{"send-keys"} args) (some #{"-l"} args) (some #{"3"} args))
+                      (do (reset! state :ready) {:exit 0 :out "" :err ""})
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :ready (tmux/wait-for-ready "sess" "win" :claude
+                                           :timeout-ms 3000 :poll-ms 1))))
+      (let [send-keys-calls (filter #(some #{"send-keys"} %) @call-log)
+            literal-3 (filter #(and (some #{"-l"} %) (some #{"3"} %)) send-keys-calls)
+            enters (filter #(and (some #{"Enter"} %) (not (some #{"-l"} %))) send-keys-calls)]
+        (is (= 1 (count literal-3)) "resume dialog dismissed with literal 3")
+        ;; Resume dismissal sends "-l 3" then a bare Enter; trust dismissal sends one bare Enter
+        (is (= 2 (count enters)) "both dialogs each contribute one bare Enter")))))
+
 (deftest wait-for-ready-dismisses-claude-resume-dialog
   (testing "dismisses the --resume dialog with 3+Enter, then reaches ready"
     (let [call-log (atom [])
