@@ -626,11 +626,13 @@ class MockVoiceOutputManager: VoiceOutputManager {
     var speakWasCalled = false
     var lastSpokenText: String?
     var lastWorkingDirectory: String?
+    var lastSessionId: UUID?
 
-    override func speak(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false, workingDirectory: String? = nil) {
+    override func speak(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false, workingDirectory: String? = nil, sessionId: UUID? = nil) {
         speakWasCalled = true
         lastSpokenText = text
         lastWorkingDirectory = workingDirectory
-        print("🎤 [MockVoiceOutput] speak() called with text: \(text), workingDirectory: \(workingDirectory ?? "nil")")
+        lastSessionId = sessionId
+        print("🎤 [MockVoiceOutput] speak() called with text: \(text), workingDirectory: \(workingDirectory ?? "nil"), sessionId: \(sessionId?.uuidString.lowercased() ?? "nil")")
     }
 }

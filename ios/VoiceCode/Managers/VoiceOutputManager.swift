@@ -5,8 +5,21 @@ import Foundation
 import AVFoundation
 import Combine
 import os.log
+import ObjectiveC.runtime
 
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "VoiceOutput")
+
+// Per-utterance session tag, attached via associated objects. Lets the
+// AVSpeechSynthesizerDelegate callbacks identify which session an utterance
+// was enqueued for without subclassing AVSpeechUtterance.
+private var avSpeechUtteranceSessionIdKey: UInt8 = 0
+
+extension AVSpeechUtterance {
+    var voiceCodeSessionId: UUID? {
+        get { objc_getAssociatedObject(self, &avSpeechUtteranceSessionIdKey) as? UUID }
+        set { objc_setAssociatedObject(self, &avSpeechUtteranceSessionIdKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
+    }
+}
 
 class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     @Published var isSpeaking = false
@@ -28,6 +41,17 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     private weak var appSettings: AppSettings?
     var onSpeechComplete: (() -> Void)?
 
+    // Session UUID of the utterance currently held by the synthesizer, or nil
+    // when idle / when the active utterance has no session affinity (voice
+    // preview, notification "read aloud" action). Updated synchronously in
+    // speakWithVoice (so a focus change racing the speak call still observes
+    // the new tag) and cleared from didCancel/didFinish only when the
+    // finishing utterance's tag matches — that match-and-clear protects
+    // against the line-148 self-preempt race where didCancel for an old
+    // utterance can fire after the next speak has already updated the tag.
+    private(set) var inFlightSessionId: UUID?
+    private var activeSessionCancellable: AnyCancellable?
+
     // Set when stop(completion:) is called while the synthesizer is mid-utterance.
     // Fired from didCancel/didFinish (or a safety-timeout) so the audio session is
     // fully released before the caller — typically VoiceInputManager — reconfigures
@@ -46,7 +70,8 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     private var keepAliveTimer: Timer?
     #endif
 
-    init(appSettings: AppSettings? = nil) {
+    init(appSettings: AppSettings? = nil,
+         activeSession: ActiveSessionManager = .shared) {
         self.appSettings = appSettings
         #if os(macOS)
         self.isMuted = UserDefaults.standard.bool(forKey: "voiceOutputMuted")
@@ -56,6 +81,34 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         #if os(iOS)
         setupSilencePlayer()
         #endif
+
+        // Cancel any in-flight TTS when the user switches focus to a different
+        // session (or back to the home screen). Skip when there is no
+        // session-tagged utterance playing (e.g. voice preview from Settings).
+        activeSessionCancellable = activeSession.$activeSessionId
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] activeId in
+                self?.handleActiveSessionChange(activeId)
+            }
+    }
+
+    private func handleActiveSessionChange(_ activeId: UUID?) {
+        let inFlightStr = inFlightSessionId?.uuidString.lowercased() ?? "nil"
+        let activeStr = activeId?.uuidString.lowercased() ?? "nil"
+        logger.info("🎯 handleActiveSessionChange: inFlight=\(inFlightStr, privacy: .public) active=\(activeStr, privacy: .public)")
+        // Only cancel on transitions to a DIFFERENT non-nil session. Ignoring
+        // nil transitions avoids false positives from SwiftUI firing
+        // onDisappear during transient view rebuilds (sheet presentation,
+        // partial swipe-back gestures, etc.) — those would otherwise kill
+        // TTS for the session the user is still looking at. AC2 ("navigate
+        // to home stops TTS") is sacrificed for now in favor of AC1
+        // ("navigate to a different session stops TTS"); a follow-up can
+        // restore home-stops behavior once we have a more reliable
+        // "user is no longer in any session" signal.
+        guard let newActive = activeId else { return }
+        guard let inFlight = inFlightSessionId, inFlight != newActive else { return }
+        logger.info("🔇 STOPPING TTS — in-flight \(inFlight.uuidString.lowercased(), privacy: .public) != active \(activeStr, privacy: .public)")
+        synthesizer.stopSpeaking(at: .immediate)
     }
 
     // MARK: - iOS Background Playback Support
@@ -124,9 +177,12 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     ///   - rate: Speech rate (default: 0.5)
     ///   - respectSilentMode: Whether to respect silent mode setting (default: false for manual actions)
     ///   - workingDirectory: Optional working directory for voice rotation when "All Premium Voices" is selected
-    func speak(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false, workingDirectory: String? = nil) {
+    ///   - sessionId: Originating session UUID. Pass nil for non-session speech (voice preview,
+    ///     notification action). When non-nil, the utterance will be auto-cancelled if the active
+    ///     session changes before it finishes.
+    func speak(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false, workingDirectory: String? = nil, sessionId: UUID? = nil) {
         let voiceIdentifier = appSettings?.resolveVoiceIdentifier(forWorkingDirectory: workingDirectory)
-        speakWithVoice(text, rate: rate, voiceIdentifier: voiceIdentifier, respectSilentMode: respectSilentMode)
+        speakWithVoice(text, rate: rate, voiceIdentifier: voiceIdentifier, respectSilentMode: respectSilentMode, sessionId: sessionId)
     }
 
     /// Speak text with a specific voice identifier (for special cases like voice preview)
@@ -135,7 +191,9 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     ///   - rate: Speech rate (default: 0.5)
     ///   - voiceIdentifier: Optional voice identifier to use instead of user's configured voice
     ///   - respectSilentMode: Whether to respect the silent mode setting (default: false for manual actions)
-    func speakWithVoice(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil, respectSilentMode: Bool = false) {
+    ///   - sessionId: Originating session UUID for auto-cancellation on focus change. Nil for
+    ///     non-session speech.
+    func speakWithVoice(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil, respectSilentMode: Bool = false, sessionId: UUID? = nil) {
         #if os(macOS)
         // When muted, silently ignore all speech requests
         if isMuted {
@@ -175,8 +233,9 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         #endif
         // macOS: No audio session management needed, AVSpeechSynthesizer works directly
 
-        // Create utterance
+        // Create utterance and tag with originating session for didFinish/didCancel matching
         let utterance = AVSpeechUtterance(string: text)
+        utterance.voiceCodeSessionId = sessionId
 
         // Select voice based on identifier, or use default
         if let identifier = voiceIdentifier,
@@ -210,8 +269,14 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         utterance.pitchMultiplier = 1.0
         utterance.volume = 1.0
 
+        // Set in-flight tag synchronously so a focus change racing this call
+        // observes the new session, not the previous utterance's session.
+        // didCancel for any preempted prior utterance will compare against
+        // this new value and skip clearing it.
+        inFlightSessionId = sessionId
+
         // Speak
-        logger.info("🔊 Invoking synthesizer.speak() with text length: \(text.count), voice: \(utterance.voice?.name ?? "system default", privacy: .public)")
+        logger.info("🔊 Invoking synthesizer.speak() with text length: \(text.count), voice: \(utterance.voice?.name ?? "system default", privacy: .public), sessionId: \(sessionId?.uuidString.lowercased() ?? "nil", privacy: .public)")
         synthesizer.speak(utterance)
 
         DispatchQueue.main.async {
@@ -306,8 +371,10 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         }
         #endif
 
+        let finishedSessionId = utterance.voiceCodeSessionId
         DispatchQueue.main.async {
             self.isSpeaking = false
+            self.clearInFlightIfMatches(finishedSessionId)
             self.onSpeechComplete?()
             self.firePendingStopCompletion()
         }
@@ -320,9 +387,21 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         stopKeepAliveTimer()
         #endif
 
+        let cancelledSessionId = utterance.voiceCodeSessionId
         DispatchQueue.main.async {
             self.isSpeaking = false
+            self.clearInFlightIfMatches(cancelledSessionId)
             self.firePendingStopCompletion()
+        }
+    }
+
+    /// Clear inFlightSessionId iff it still matches the utterance that just
+    /// ended. Skipping the clear when it doesn't match preserves the
+    /// already-updated tag set by a follow-up `speakWithVoice` call (the
+    /// line-148 self-preempt race).
+    private func clearInFlightIfMatches(_ utteranceSessionId: UUID?) {
+        if inFlightSessionId == utteranceSessionId {
+            inFlightSessionId = nil
         }
     }
 

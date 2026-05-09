@@ -586,7 +586,7 @@ class SessionSyncManager {
                         guard let voiceManager = voiceManager else { return }
                         for text in newAssistantTexts {
                             let processedText = TextProcessor.prepareForSpeech(from: text)
-                            voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory)
+                            voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory, sessionId: sessionUUID)
                         }
                     }
                 } else {
@@ -1140,7 +1140,7 @@ class SessionSyncManager {
                             for text in assistantMessagesToSpeak {
                                 let processedText = TextProcessor.prepareForSpeech(from: text)
                                 logger.info("🔊 Calling speak() with text length: \(processedText.count)")
-                                voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory)
+                                voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory, sessionId: sessionUUID)
                             }
                         } else {
                             logger.warning("⚠️ voiceOutputManager is nil, cannot speak messages")

@@ -124,6 +124,13 @@
    session as-is', 'Don't ask me again'."
   "Resume from summary")
 
+(def ^:private claude-trust-dialog-needle
+  "Substring present in the Claude Code 'trust this folder?' safety prompt
+   shown when opening a working directory that has not been previously trusted.
+   Dialog lists: 'Yes, I trust this folder' / 'No, exit'. Dismissed by
+   sending Enter (confirms the pre-selected option 1)."
+  "Yes, I trust this folder")
+
 (defn- shell-single-quote
   "Wrap s in single quotes, escaping embedded single quotes. Safe for arbitrary
    user text interpolated into a POSIX shell command string."
@@ -233,9 +240,11 @@
 
 (defn wait-for-ready
   "Poll capture-pane until the provider-specific readiness string appears.
-   For :claude, if the `--resume` confirmation dialog is visible, dismiss it
-   with '3' + Enter ('Don't ask me again') once and reset the deadline so the
-   CLI has a fresh budget to actually load the session and reach the TUI.
+   For :claude, two blocking dialogs are dismissed automatically:
+   - 'trust this folder?' prompt: sent Enter (accepts pre-selected option 1).
+   - '--resume' confirmation dialog: sent '3' + Enter ('Don't ask me again').
+   Each dialog is dismissed at most once; the deadline is reset after a
+   dismissal so the CLI has a fresh budget to reach the TUI.
    Returns :ready on success, :timeout on deadline.
 
    Default timeout is 20s: Claude cold-starts (MCP config resolution, first
@@ -247,14 +256,25 @@
   (let [ready? (readiness-predicate provider)
         target (format "=%s:=%s.0" tmux-session window)]
     (loop [deadline (+ (System/currentTimeMillis) timeout-ms)
-           dismissed? false]
+           dismissed-resume? false
+           dismissed-trust? false]
       (let [{:keys [out exit]} (sh "tmux" "capture-pane" "-t" target "-p")]
         (cond
           (and (zero? exit) (ready? out)) :ready
 
           (and (zero? exit)
                (= provider :claude)
-               (not dismissed?)
+               (not dismissed-trust?)
+               (str/includes? (or out "") claude-trust-dialog-needle))
+          (do (log/info "Dismissing claude trust-folder dialog"
+                        {:tmux-session tmux-session :window window})
+              (sh "tmux" "send-keys" "-t" target "Enter")
+              (Thread/sleep poll-ms)
+              (recur (+ (System/currentTimeMillis) timeout-ms) dismissed-resume? true))
+
+          (and (zero? exit)
+               (= provider :claude)
+               (not dismissed-resume?)
                (str/includes? (or out "") claude-resume-dialog-needle))
           (do (log/info "Dismissing claude --resume confirmation dialog"
                         {:tmux-session tmux-session :window window})
@@ -262,14 +282,14 @@
               (Thread/sleep 100)
               (sh "tmux" "send-keys" "-t" target "Enter")
               (Thread/sleep poll-ms)
-              (recur (+ (System/currentTimeMillis) timeout-ms) true))
+              (recur (+ (System/currentTimeMillis) timeout-ms) true dismissed-trust?))
 
           (>= (System/currentTimeMillis) deadline)
           (do (log/warn "wait-for-ready timed out; pane contents follow"
                         {:tmux-session tmux-session :window window :provider provider
                          :pane-contents (or out "")})
               :timeout)
-          :else (do (Thread/sleep poll-ms) (recur deadline dismissed?)))))))
+          :else (do (Thread/sleep poll-ms) (recur deadline dismissed-resume? dismissed-trust?)))))))
 
 (defn nudge!
   "Deliver a message to a running tmux window using the tmux-agent pattern:
@@ -462,8 +482,14 @@
 
 (defn deliver!
   "Public entry point for both initial and follow-up prompts.
-   Nudges the existing window if live, otherwise respawns with --resume."
+   Nudges the existing window if live, otherwise respawns with --resume.
+   If nudge fails (stale live-windows entry after external eviction), evicts
+   the entry and falls through to respawn-and-deliver! so the prompt is not
+   silently dropped."
   [session-uuid prompt-text]
   (if-let [{:keys [tmux-session tmux-window]} (get @live-windows session-uuid)]
-    (nudge! tmux-session tmux-window prompt-text)
+    (let [result (nudge! tmux-session tmux-window prompt-text)]
+      (when (= :failed result)
+        (swap! live-windows dissoc session-uuid)
+        (respawn-and-deliver! session-uuid prompt-text)))
     (respawn-and-deliver! session-uuid prompt-text)))
