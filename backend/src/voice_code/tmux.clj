@@ -292,15 +292,13 @@
           :else (do (Thread/sleep poll-ms) (recur deadline dismissed-resume? dismissed-trust?)))))))
 
 (defn nudge!
-  "Deliver a message to a running tmux window using the tmux-agent pattern:
-   literal send-keys, 500 ms debounce, Escape (exits vim INSERT), Enter with
-   3 retries. Returns :ok on success, :failed on exhaustion (logged at WARN)."
+  "Deliver a message to a running tmux window: literal send-keys, 500 ms
+   debounce, then Enter with 3 retries. Returns :ok on success, :failed on
+   exhaustion (logged at WARN)."
   [tmux-session window message]
   (let [target (format "=%s:=%s.0" tmux-session window)]
     (sh "tmux" "send-keys" "-t" target "-l" message)
     (Thread/sleep 500)
-    (sh "tmux" "send-keys" "-t" target "Escape")
-    (Thread/sleep 100)
     (loop [attempts 3]
       (if (zero? attempts)
         (do (log/warn "Nudge Enter delivery failed after 3 attempts"

@@ -501,7 +501,7 @@
 ;; ============================================================================
 
 (deftest nudge-test
-  (testing "succeeds on first try: send-keys(-l), send-keys(Escape), send-keys(Enter) all exit 0"
+  (testing "succeeds on first try: send literal text then Enter"
     (let [calls (atom [])
           invoker (fn [& args]
                     (swap! calls conj (vec args))
@@ -509,28 +509,24 @@
       (binding [tmux/*tmux-invoker* invoker]
         (is (= :ok (tmux/nudge! "my-session" "my-window" "hello"))))
       (let [recorded @calls]
-        ;; literal send-keys with -l flag
         (is (some #(and (= "tmux" (first %))
                         (= "send-keys" (second %))
-                        (some #{"hello"} %)) recorded))
-        ;; Escape keystroke
+                        (some #{"hello"} %)) recorded)
+            "literal text must be sent with -l")
         (is (some #(and (= "tmux" (first %))
                         (= "send-keys" (second %))
-                        (some #{"Escape"} %)) recorded))
-        ;; Enter keystroke
-        (is (some #(and (= "tmux" (first %))
-                        (= "send-keys" (second %))
-                        (some #{"Enter"} %)) recorded)))))
+                        (some #{"Enter"} %)) recorded)
+            "Enter must be sent")
+        (is (not (some #(some #{"Escape"} %) recorded))
+            "Escape must not be sent"))))
 
   (testing "retries Enter up to 3 times on failure, then returns :failed"
     (let [calls (atom [])
-          ;; Every send-keys call fails
           invoker (fn [& args]
                     (swap! calls conj (vec args))
                     {:exit 1 :out "" :err ""})]
       (binding [tmux/*tmux-invoker* invoker]
         (is (= :failed (tmux/nudge! "my-session" "my-window" "hello"))))
-      ;; Exactly 3 Enter attempts were made (all failed)
       (let [enter-calls (filter #(some #{"Enter"} %) @calls)]
         (is (= 3 (count enter-calls))))))
 
