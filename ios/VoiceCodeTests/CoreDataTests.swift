@@ -719,6 +719,396 @@ final class CoreDataTests: XCTestCase {
         }
     }
 
+    // MARK: - v6 → v7 Offset Protocol Migration Tests
+
+    func testCDBackendSessionLastOffsetMergedDefaultsToZero() throws {
+        let session = CDBackendSession(context: context)
+        session.id = UUID()
+        session.backendName = "default-offset-test"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.isLocallyCreated = false
+
+        try context.save()
+
+        XCTAssertEqual(session.lastOffsetMerged, 0, "lastOffsetMerged should default to 0")
+        XCTAssertEqual(session.liveFromOffset, 0, "liveFromOffset should default to 0")
+        XCTAssertNil(session.lastFileSignature, "lastFileSignature should default to nil")
+    }
+
+    func testCDMessageOffsetDefaultsToZero() throws {
+        let message = CDMessage(context: context)
+        message.id = UUID()
+        message.sessionId = UUID()
+        message.role = "user"
+        message.text = "Hello"
+        message.timestamp = Date()
+        message.messageStatus = .confirmed
+
+        try context.save()
+        XCTAssertEqual(message.offset, 0, "offset should default to 0 when not set")
+
+        message.offset = 99
+        try context.save()
+        XCTAssertEqual(message.offset, 99)
+    }
+
+    func testCDMessageHasCompoundIndexOnSessionIdAndOffset() throws {
+        // §6 R1 requires a (sessionId, offset) compound index for both the
+        // purgeMessagesAtOrAbove predicate AND the (sessionId, offset) upsert
+        // path used by handleSessionHistoryPayload. A regression that drops
+        // or renames this index would turn both into table scans.
+        let model = persistenceController.container.managedObjectModel
+        let entity = try XCTUnwrap(model.entitiesByName["CDMessage"])
+
+        let bySessionAndOffset = entity.indexes.first { idx in
+            idx.elements.map { $0.propertyName } == ["sessionId", "offset"]
+        }
+        let index = try XCTUnwrap(
+            bySessionAndOffset,
+            "CDMessage should have a (sessionId, offset) compound index"
+        )
+        XCTAssertEqual(index.elements.count, 2)
+        XCTAssertTrue(index.elements[0].isAscending, "sessionId element should be ascending")
+        XCTAssertFalse(index.elements[1].isAscending, "offset element should be descending")
+    }
+
+    /// Open a fresh on-disk store using the v6 model, write rows with the
+    /// supplied seq values, then reopen with the current model so lightweight
+    /// migration runs. Returns the v7 viewContext + store URL so callers can
+    /// inspect results and also exercise the post-migration backfill.
+    private func migrateV6Store(
+        backendSessions: [(id: UUID, nextSeq: Int64, liveFromSeq: Int64)],
+        messages: [(id: UUID, sessionId: UUID, seq: Int64)]
+    ) throws -> (context: NSManagedObjectContext, coordinator: NSPersistentStoreCoordinator, storeURL: URL) {
+        let bundle = Bundle(for: PersistenceController.self)
+        let momdURL = try XCTUnwrap(bundle.url(forResource: "VoiceCode", withExtension: "momd"))
+        let v6URL = momdURL.appendingPathComponent("VoiceCode 6.mom")
+        let v6Model = try XCTUnwrap(NSManagedObjectModel(contentsOf: v6URL),
+                                    "Failed to load v6 model from \(v6URL.path)")
+
+        // The Swift class declares attributes that don't exist in v6 (e.g.
+        // lastOffsetMerged), so use the generic NSManagedObject class for
+        // v6 inserts to keep the v7 @NSManaged accessors from running.
+        for entity in v6Model.entities {
+            entity.managedObjectClassName = "NSManagedObject"
+        }
+
+        let storeURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("V6ToV7Migration-\(UUID().uuidString).sqlite")
+        addTeardownBlock {
+            for path in [storeURL.path, storeURL.path + "-wal", storeURL.path + "-shm"] {
+                try? FileManager.default.removeItem(atPath: path)
+            }
+        }
+
+        // 1. Write rows under v6.
+        let v6Coordinator = NSPersistentStoreCoordinator(managedObjectModel: v6Model)
+        _ = try v6Coordinator.addPersistentStore(
+            ofType: NSSQLiteStoreType,
+            configurationName: nil,
+            at: storeURL,
+            options: nil
+        )
+        let v6Context = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
+        v6Context.persistentStoreCoordinator = v6Coordinator
+
+        let v6SessionEntity = try XCTUnwrap(v6Model.entitiesByName["CDBackendSession"])
+        let v6MessageEntity = try XCTUnwrap(v6Model.entitiesByName["CDMessage"])
+
+        for spec in backendSessions {
+            let s = NSManagedObject(entity: v6SessionEntity, insertInto: v6Context)
+            s.setValue(spec.id, forKey: "id")
+            s.setValue("session-\(spec.id.uuidString.prefix(4))", forKey: "backendName")
+            s.setValue("/test", forKey: "workingDirectory")
+            s.setValue(Date(), forKey: "lastModified")
+            s.setValue(Int32(0), forKey: "messageCount")
+            s.setValue("", forKey: "preview")
+            s.setValue("claude", forKey: "provider")
+            s.setValue(spec.nextSeq, forKey: "nextSeq")
+            s.setValue(spec.liveFromSeq, forKey: "liveFromSeq")
+        }
+        for spec in messages {
+            let m = NSManagedObject(entity: v6MessageEntity, insertInto: v6Context)
+            m.setValue(spec.id, forKey: "id")
+            m.setValue(spec.sessionId, forKey: "sessionId")
+            m.setValue("user", forKey: "role")
+            m.setValue("msg \(spec.seq)", forKey: "text")
+            m.setValue(Date(), forKey: "timestamp")
+            m.setValue("confirmed", forKey: "status")
+            m.setValue(spec.seq, forKey: "seq")
+        }
+        try v6Context.save()
+
+        if let store = v6Coordinator.persistentStores.first {
+            try v6Coordinator.remove(store)
+        }
+
+        // 2. Reopen with the current (v7) model and let lightweight migration run.
+        let v7Model = persistenceController.container.managedObjectModel
+        let v7Coordinator = NSPersistentStoreCoordinator(managedObjectModel: v7Model)
+        _ = try v7Coordinator.addPersistentStore(
+            ofType: NSSQLiteStoreType,
+            configurationName: nil,
+            at: storeURL,
+            options: [
+                NSMigratePersistentStoresAutomaticallyOption: true,
+                NSInferMappingModelAutomaticallyOption: true
+            ]
+        )
+        let v7Context = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
+        v7Context.persistentStoreCoordinator = v7Coordinator
+        return (v7Context, v7Coordinator, storeURL)
+    }
+
+    func testLightweightMigrationFromV6PreservesRowsAndDefaultsNewFields() throws {
+        let s0 = UUID() // nextSeq=0 (never received) → lastOffsetMerged=0 post-backfill
+        let s1 = UUID() // nextSeq=1 → lastOffsetMerged=0 post-backfill (first row)
+        let s50 = UUID() // nextSeq=50 → lastOffsetMerged=49 post-backfill
+        let m100 = UUID()
+
+        let (context, coordinator, _) = try migrateV6Store(
+            backendSessions: [
+                (id: s0, nextSeq: 0, liveFromSeq: 0),
+                (id: s1, nextSeq: 1, liveFromSeq: 0),
+                (id: s50, nextSeq: 50, liveFromSeq: 5)
+            ],
+            messages: [
+                (id: m100, sessionId: s50, seq: 100)
+            ]
+        )
+        defer {
+            if let store = coordinator.persistentStores.first {
+                try? coordinator.remove(store)
+            }
+        }
+
+        // Right after lightweight migration, new fields are at defaults and
+        // legacy fields are preserved verbatim.
+        let allSessions = try context.fetch(CDBackendSession.fetchRequest())
+        XCTAssertEqual(allSessions.count, 3, "All v6 sessions should survive migration")
+        let allMessages = try context.fetch(CDMessage.fetchRequest())
+        XCTAssertEqual(allMessages.count, 1, "All v6 messages should survive migration")
+
+        for session in allSessions {
+            XCTAssertEqual(session.lastOffsetMerged, 0, "lastOffsetMerged defaults to 0 post-migration (pre-backfill)")
+            XCTAssertEqual(session.liveFromOffset, 0, "liveFromOffset defaults to 0 post-migration (pre-backfill)")
+            XCTAssertNil(session.lastFileSignature, "lastFileSignature defaults to nil post-migration")
+        }
+        for message in allMessages {
+            XCTAssertEqual(message.offset, 0, "offset defaults to 0 post-migration (pre-backfill)")
+        }
+
+        // Legacy fields are still readable for rollback.
+        let s50Fetch = CDBackendSession.fetchBackendSession(id: s50)
+        let s50Row = try XCTUnwrap(context.fetch(s50Fetch).first)
+        XCTAssertEqual(s50Row.nextSeq, 50, "nextSeq must remain readable post-migration for v0.4.0 rollback")
+        XCTAssertEqual(s50Row.liveFromSeq, 5)
+
+        let mFetch = CDMessage.fetchMessage(id: m100)
+        let mRow = try XCTUnwrap(context.fetch(mFetch).first)
+        XCTAssertEqual(mRow.seq, 100, "seq must remain readable post-migration for v0.4.0 rollback")
+    }
+
+    func testV6ToV7BackfillSeedsOffsetFieldsFromSeqFields() throws {
+        let sNever = UUID()
+        let sFirst = UUID()
+        let sFifty = UUID()
+        let mLow = UUID()
+        let mHigh = UUID()
+
+        let (v7Context, coordinator, _) = try migrateV6Store(
+            backendSessions: [
+                (id: sNever, nextSeq: 0, liveFromSeq: 0),
+                (id: sFirst, nextSeq: 1, liveFromSeq: 1),
+                (id: sFifty, nextSeq: 50, liveFromSeq: 5)
+            ],
+            messages: [
+                (id: mLow, sessionId: sFifty, seq: 1),
+                (id: mHigh, sessionId: sFifty, seq: 100)
+            ]
+        )
+        defer {
+            if let store = coordinator.persistentStores.first {
+                try? coordinator.remove(store)
+            }
+        }
+
+        let (sessionsUpdated, messagesUpdated) = try PersistenceController.backfillV6ToV7Offsets(in: v7Context)
+        try v7Context.save()
+
+        XCTAssertEqual(sessionsUpdated, 2, "Two of three sessions had non-zero seq fields requiring backfill")
+        XCTAssertEqual(messagesUpdated, 2, "Both messages had seq > 0 and offset == 0")
+
+        v7Context.refreshAllObjects()
+
+        let neverRow = try XCTUnwrap(try v7Context.fetch(CDBackendSession.fetchBackendSession(id: sNever)).first)
+        XCTAssertEqual(neverRow.lastOffsetMerged, 0, "nextSeq=0 → lastOffsetMerged=0 (clamp)")
+        XCTAssertEqual(neverRow.liveFromOffset, 0, "liveFromSeq=0 → liveFromOffset=0 (clamp)")
+
+        let firstRow = try XCTUnwrap(try v7Context.fetch(CDBackendSession.fetchBackendSession(id: sFirst)).first)
+        XCTAssertEqual(firstRow.lastOffsetMerged, 0, "nextSeq=1 → lastOffsetMerged=0")
+        XCTAssertEqual(firstRow.liveFromOffset, 0, "liveFromSeq=1 → liveFromOffset=0")
+
+        let fiftyRow = try XCTUnwrap(try v7Context.fetch(CDBackendSession.fetchBackendSession(id: sFifty)).first)
+        XCTAssertEqual(fiftyRow.lastOffsetMerged, 49, "nextSeq=50 → lastOffsetMerged=49")
+        XCTAssertEqual(fiftyRow.liveFromOffset, 4, "liveFromSeq=5 → liveFromOffset=4")
+        XCTAssertNil(fiftyRow.lastFileSignature, "lastFileSignature stays nil; server populates on first reply")
+
+        let lowRow = try XCTUnwrap(try v7Context.fetch(CDMessage.fetchMessage(id: mLow)).first)
+        XCTAssertEqual(lowRow.offset, 0, "seq=1 → offset=0")
+        let highRow = try XCTUnwrap(try v7Context.fetch(CDMessage.fetchMessage(id: mHigh)).first)
+        XCTAssertEqual(highRow.offset, 99, "seq=100 → offset=99")
+    }
+
+    func testV6ToV7BackfillSkipsRowsWithExistingOffset() throws {
+        // Idempotency-by-value at the row level: when a row already has
+        // lastOffsetMerged > 0 (e.g. v0.5.0 has written it), the backfill
+        // must not re-derive from nextSeq. (The flag-level guard is tested
+        // separately below.)
+        let preExisting = CDBackendSession(context: context)
+        preExisting.id = UUID()
+        preExisting.backendName = "pre-existing"
+        preExisting.workingDirectory = "/test"
+        preExisting.lastModified = Date()
+        preExisting.messageCount = 0
+        preExisting.preview = ""
+        preExisting.isLocallyCreated = false
+        preExisting.nextSeq = 999 // would compute to 998 if backfill misfires
+        preExisting.lastOffsetMerged = 5 // already set by v0.5.0
+        try context.save()
+
+        let (sessionsUpdated, _) = try PersistenceController.backfillV6ToV7Offsets(in: context)
+        try context.save()
+
+        XCTAssertEqual(sessionsUpdated, 0, "Row with existing offset must not be touched")
+        XCTAssertEqual(preExisting.lastOffsetMerged, 5,
+                       "Existing v0.5.0 lastOffsetMerged must survive backfill")
+    }
+
+    func testV6ToV7BackfillSentinelGuardsAgainstReRun() throws {
+        // The flag-based guard protects file_replaced recovery: v0.5.0 may
+        // legitimately write lastOffsetMerged=0 while nextSeq > 0 lingers
+        // from the v6 era. A value-based guard alone would re-derive
+        // lastOffsetMerged = nextSeq - 1 on the next launch and resurrect
+        // stale offsets.
+        let session = CDBackendSession(context: context)
+        session.id = UUID()
+        session.backendName = "sentinel-test"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.isLocallyCreated = false
+        session.nextSeq = 42
+        session.lastOffsetMerged = 0
+        try context.save()
+
+        let defaults = UserDefaults(suiteName: "VoiceCodeTests-\(UUID().uuidString)")!
+        defaults.set(true, forKey: PersistenceController.v6ToV7BackfillCompleteKey)
+
+        // The public entry point should early-return without modifying anything.
+        persistenceController.backfillV6ToV7OffsetsIfNeeded(userDefaults: defaults)
+
+        let waitExp = expectation(description: "no-op backfill returns")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { waitExp.fulfill() }
+        wait(for: [waitExp], timeout: 1.0)
+
+        context.refreshAllObjects()
+        XCTAssertEqual(session.lastOffsetMerged, 0,
+                       "Backfill must respect the sentinel — file_replaced's 0 must not be clobbered to nextSeq-1")
+    }
+
+    func testResetThenBackfillLeavesLiveFromOffsetZeroAndSeedsLastOffsetMerged() throws {
+        // Chained-order invariant: when reset runs before backfill (as in
+        // PersistenceController.init), the backfill's `liveFromSeq > 0` guard
+        // is false (reset cleared it), so liveFromOffset stays at 0 — even
+        // though backfilling in isolation would write max(0, liveFromSeq - 1).
+        // lastOffsetMerged is not reset, so backfill still seeds it from
+        // nextSeq. Regression test for the race fix: backfill must observe
+        // the post-reset store.
+        let s = UUID()
+        let (context, coordinator, _) = try migrateV6Store(
+            backendSessions: [(id: s, nextSeq: 50, liveFromSeq: 5)],
+            messages: []
+        )
+        defer {
+            if let store = coordinator.persistentStores.first {
+                try? coordinator.remove(store)
+            }
+        }
+
+        // Step 1: reset (NSBatchUpdateRequest, store-level).
+        let batchUpdate = NSBatchUpdateRequest(entityName: "CDBackendSession")
+        batchUpdate.propertiesToUpdate = [
+            "liveFromSeq": Int64(0),
+            "liveFromOffset": Int64(0)
+        ]
+        batchUpdate.resultType = .updatedObjectsCountResultType
+        _ = try context.execute(batchUpdate)
+        context.refreshAllObjects()
+
+        // Step 2: backfill against the post-reset store.
+        let (sessionsUpdated, _) = try PersistenceController.backfillV6ToV7Offsets(in: context)
+        try context.save()
+
+        let row = try XCTUnwrap(try context.fetch(CDBackendSession.fetchBackendSession(id: s)).first)
+        XCTAssertEqual(row.liveFromOffset, 0,
+                       "After reset+backfill, liveFromOffset stays 0 (reset cleared liveFromSeq, so backfill's guard is false)")
+        XCTAssertEqual(row.lastOffsetMerged, 49,
+                       "After reset+backfill, lastOffsetMerged is seeded from nextSeq (reset does not touch nextSeq)")
+        XCTAssertEqual(sessionsUpdated, 1, "Only lastOffsetMerged was seeded, but the row still counts as updated")
+    }
+
+    func testTTSGateResetBatchUpdateClearsLiveFromOffsetAndLiveFromSeq() throws {
+        // The on-launch batch reset is what makes the v6→v7 migration mapping
+        // for liveFromOffset safe: the migrated value (max(0, liveFromSeq-1))
+        // is overwritten back to 0 before the first reply lands so the
+        // payload.nextOffset > 0 gate re-captures the boundary.
+        //
+        // The reset uses NSBatchUpdateRequest which writes straight to the
+        // store, so this test runs against an on-disk SQLite via the v6→v7
+        // migration helper and observes the post-update state with a fresh
+        // fetch (refreshing objects since batch updates bypass the context).
+        let s = UUID()
+        let (context, coordinator, _) = try migrateV6Store(
+            backendSessions: [(id: s, nextSeq: 17, liveFromSeq: 17)],
+            messages: []
+        )
+        defer {
+            if let store = coordinator.persistentStores.first {
+                try? coordinator.remove(store)
+            }
+        }
+
+        // Set up the pre-reset state: liveFromSeq survives from v6, and we
+        // seed liveFromOffset so we can prove the batch update zeros both.
+        let preReset = try XCTUnwrap(try context.fetch(CDBackendSession.fetchBackendSession(id: s)).first)
+        preReset.liveFromOffset = 16
+        try context.save()
+        XCTAssertEqual(preReset.liveFromSeq, 17, "v6 liveFromSeq should survive migration")
+        XCTAssertEqual(preReset.liveFromOffset, 16, "test seeded liveFromOffset for reset to clear")
+
+        // Drive the same NSBatchUpdateRequest the production reset issues.
+        let batchUpdate = NSBatchUpdateRequest(entityName: "CDBackendSession")
+        batchUpdate.propertiesToUpdate = [
+            "liveFromSeq": Int64(0),
+            "liveFromOffset": Int64(0)
+        ]
+        batchUpdate.resultType = .updatedObjectsCountResultType
+        let result = try context.execute(batchUpdate) as? NSBatchUpdateResult
+        XCTAssertEqual(result?.result as? Int, 1, "Batch update should report one row updated")
+
+        // Batch updates bypass the context cache — refresh before re-asserting.
+        context.refreshAllObjects()
+        let postReset = try XCTUnwrap(try context.fetch(CDBackendSession.fetchBackendSession(id: s)).first)
+        XCTAssertEqual(postReset.liveFromSeq, 0, "Reset must clear liveFromSeq")
+        XCTAssertEqual(postReset.liveFromOffset, 0, "Reset must clear liveFromOffset")
+        XCTAssertEqual(postReset.nextSeq, 17, "Reset must NOT touch nextSeq (only TTS gate cursors)")
+    }
+
     // MARK: - Message Pruning Tests
 
     func testPruneOldMessagesDeletesOldest() throws {

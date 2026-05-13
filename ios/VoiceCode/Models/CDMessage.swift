@@ -24,7 +24,17 @@ public class CDMessage: NSManagedObject {
     /// Monotonic per-session sequence number assigned by the backend. 0 means
     /// "unknown" — applies to legacy rows from before the v4 migration and to
     /// optimistic rows created locally before the server has assigned a seq.
+    ///
+    /// **Deprecated under protocol v0.5.0** — replaced by `offset`. Kept for
+    /// rollback (§6 R5); the v0.4.0 dispatch path still reads it.
     @NSManaged public var seq: Int64
+
+    /// v0.5.0 line-offset assigned by the backend: 0-based JSONL line index
+    /// for confirmed rows. `0` for the first JSONL line and also for
+    /// optimistic rows that don't yet have a server-assigned offset (the
+    /// `(sessionId, offset)` upsert path resolves the ambiguity using the
+    /// row's `id`). Replaces `seq` under the v0.5.0 wire protocol.
+    @NSManaged public var offset: Int64
     
     /// Typed status accessor
     var messageStatus: MessageStatus {

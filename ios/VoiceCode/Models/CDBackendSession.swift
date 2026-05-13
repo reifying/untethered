@@ -21,6 +21,10 @@ public class CDBackendSession: NSManagedObject {
     /// Persisted on the session (not on messages) so the resubscribe cursor
     /// survives local message pruning. `0` is the sentinel for "never
     /// received a payload"; real values from the wire start at `1`.
+    ///
+    /// **Deprecated under protocol v0.5.0** — replaced by `lastOffsetMerged`.
+    /// Kept for one App Store cycle so a v0.4.0 rollback can read the cursor
+    /// it wrote (§6 R5). The v0.5.0 dispatch path ignores this field.
     @NSManaged public var nextSeq: Int64
 
     /// TTS gate cursor: the `seq` at-or-above which assistant messages are
@@ -32,7 +36,38 @@ public class CDBackendSession: NSManagedObject {
     /// `0` is the sentinel for "no boundary captured yet — suppress all TTS".
     /// Reset to `0` on app launch (PersistenceController) and on `unsubscribe`
     /// so a fresh open re-captures the boundary.
+    ///
+    /// **Deprecated under protocol v0.5.0** — replaced by `liveFromOffset`.
+    /// Kept for rollback (§6 R5).
     @NSManaged public var liveFromSeq: Int64
+
+    /// v0.5.0 offset-protocol cursor: the highest line-offset successfully
+    /// merged from a `session_history` reply for this session. The next
+    /// subscribe sends `from_offset = lastOffsetMerged + 1`. `0` is the
+    /// sentinel for "fresh subscribe from start" — the server's
+    /// `read-from-offset` reads from line 0 in that case. Replaces
+    /// `nextSeq` under the v0.5.0 wire protocol (Kafka-style offset model;
+    /// see voice-code-sync-kafka-redesign-2026-05-10.md).
+    @NSManaged public var lastOffsetMerged: Int64
+
+    /// v0.5.0 TTS gate cursor: assistant messages with `offset >= liveFromOffset`
+    /// are considered live and may be spoken; messages below are historical.
+    /// Captured from the FIRST `session_history` reply's `nextOffset` after
+    /// subscribe in each app-session, gated on `payload.nextOffset > 0`.
+    /// `0` is the sentinel for "no boundary captured yet — suppress all TTS".
+    /// Reset to `0` on app launch by `PersistenceController` so a fresh open
+    /// re-captures the boundary. Replaces `liveFromSeq` under v0.5.0.
+    @NSManaged public var liveFromOffset: Int64
+
+    /// v0.5.0 file-replacement detector: the server's most recent
+    /// `(file-length, first-line-uuid)` signature for this session, encoded
+    /// as `"{length}:{uuid}"`. Sent back to the server on subscribe as
+    /// `file_signature_seen`; if the server's current signature differs, it
+    /// replies with `file_replaced: true` and the client purges all cached
+    /// messages and resubscribes from offset 0 (§6 R2). `nil` means "first
+    /// subscribe, no check needed" — the server treats absent-signature as
+    /// no-op.
+    @NSManaged public var lastFileSignature: String?
 
     /// Provider identifier (e.g., "claude", "copilot")
     /// Defaults to "claude" for backward compatibility
