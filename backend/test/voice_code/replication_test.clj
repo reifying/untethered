@@ -2332,6 +2332,226 @@
       (reset! repl/line-counts {}))))
 
 ;; ============================================================================
+;; read-from-offset Tests (tmux-untethered-398.4)
+;; ============================================================================
+
+(declare create-opencode-test-storage)
+
+(deftest test-read-from-offset-claude-full-read
+  (testing "from-offset=0 limit=10 against 7-line file → 7 messages, next-offset=7, EOF"
+    (let [lines (mapv #(claude-jsonl {:type "user"
+                                      :text (str "m-" %)
+                                      :uuid (str "u-" %)})
+                      (range 7))
+          file (create-test-jsonl-file "rfo-7-line.jsonl" lines)
+          r (repl/read-from-offset :claude (.getAbsolutePath file) 0 10)]
+      (is (= 7 (count (:messages r))))
+      (is (= 7 (:next-offset r)))
+      (is (true? (:end-of-file? r)))
+      (is (= [0 1 2 3 4 5 6] (mapv :offset (:messages r)))
+          "All survivors carry their raw-line index as :offset"))))
+
+(deftest test-read-from-offset-claude-partial-read
+  (testing "from-offset=0 limit=5 against 7-line file → 5 messages, next-offset=5, not EOF"
+    (let [lines (mapv #(claude-jsonl {:type "user"
+                                      :text (str "m-" %)
+                                      :uuid (str "u-" %)})
+                      (range 7))
+          file (create-test-jsonl-file "rfo-7-line-partial.jsonl" lines)
+          r (repl/read-from-offset :claude (.getAbsolutePath file) 0 5)]
+      (is (= 5 (count (:messages r))))
+      (is (= 5 (:next-offset r)))
+      (is (false? (:end-of-file? r))
+          "Did not reach end of file; more raw lines remain")
+      (is (= [0 1 2 3 4] (mapv :offset (:messages r)))))))
+
+(deftest test-read-from-offset-claude-at-end
+  (testing "from-offset=7 limit=10 against 7-line file → 0 messages, next-offset=7, EOF"
+    (let [lines (mapv #(claude-jsonl {:type "user"
+                                      :text (str "m-" %)
+                                      :uuid (str "u-" %)})
+                      (range 7))
+          file (create-test-jsonl-file "rfo-7-line-eof.jsonl" lines)
+          r (repl/read-from-offset :claude (.getAbsolutePath file) 7 10)]
+      (is (= 0 (count (:messages r))))
+      (is (= 7 (:next-offset r))
+          "next-offset unchanged when client is exactly at end")
+      (is (true? (:end-of-file? r))))))
+
+(deftest test-read-from-offset-claude-client-ahead-clamp
+  ;; Regression: a client cursor past total-lines (rollback / backend data
+  ;; loss) must receive next-offset = total-lines so it can detect
+  ;; `next-offset < from-offset` and reset to 0. Without the clamp the
+  ;; client would silently sit ahead of the server forever.
+  (testing "from-offset=100 limit=10 against 7-line file → 0 messages, next-offset=7 (clamped to total-lines)"
+    (let [lines (mapv #(claude-jsonl {:type "user"
+                                      :text (str "m-" %)
+                                      :uuid (str "u-" %)})
+                      (range 7))
+          file (create-test-jsonl-file "rfo-client-ahead.jsonl" lines)
+          r (repl/read-from-offset :claude (.getAbsolutePath file) 100 10)]
+      (is (= 0 (count (:messages r))))
+      (is (= 7 (:next-offset r))
+          "Client-ahead clamp: next-offset = total-lines (7), NOT from-offset (100)")
+      (is (< (:next-offset r) 100)
+          "Client must observe next-offset < from-offset and reset")
+      (is (true? (:end-of-file? r))))))
+
+(deftest test-read-from-offset-claude-raw-line-offset-stamping
+  ;; The C-N5 regression: offsets are raw-line indices, NOT post-filter
+  ;; indices. A 10-line file with sidechain entries at raw indices 2 and
+  ;; 5 must yield 8 survivors with non-contiguous offsets [0,1,3,4,6,7,8,9].
+  ;; Design doc §3.1 (paragraph "Why offsets are safe to use as identifiers")
+  ;; — stable across filter evolution.
+  (testing "Raw-line offset stamping: filtered lines advance i but do not survive"
+    (let [lines (mapv (fn [i]
+                        (claude-jsonl {:type "user"
+                                       :text (str "m-" i)
+                                       :uuid (str "u-" i)
+                                       :sidechain? (#{2 5} i)}))
+                      (range 10))
+          file (create-test-jsonl-file "rfo-non-contig-offsets.jsonl" lines)
+          r (repl/read-from-offset :claude (.getAbsolutePath file) 0 100)]
+      (is (= 8 (count (:messages r)))
+          "Eight survivors (sidechain at raw lines 2 and 5 dropped)")
+      (is (= [0 1 3 4 6 7 8 9] (mapv :offset (:messages r)))
+          "Offsets are raw-line indices and are non-contiguous across filtered lines")
+      (is (= 10 (:next-offset r))
+          "next-offset = from-offset + count of raw lines consumed (NOT survivor count)")
+      (is (true? (:end-of-file? r))))))
+
+(deftest test-read-from-offset-claude-partial-tail-holdback
+  ;; If the file ends without a terminating \n, the trailing partial line
+  ;; is held back by parse-jsonl-raw-lines-safe; read-from-offset must
+  ;; surface that as end-of-file? false even when end-idx >= total-lines.
+  (testing "Partial tail (no terminating \\n) excludes the last line and reports end-of-file? false"
+    (let [complete (mapv #(claude-jsonl {:type "user"
+                                         :text (str "m-" %)
+                                         :uuid (str "u-" %)})
+                         (range 3))
+          file (io/file test-dir "rfo-partial-tail.jsonl")]
+      (io/make-parents file)
+      (spit file (str (str/join "\n" complete) "\n"
+                      "{\"type\":\"user\",\"text\":\"partia"))
+      (let [r (repl/read-from-offset :claude (.getAbsolutePath file) 0 100)]
+        (is (= 3 (count (:messages r)))
+            "Only the three newline-terminated lines are returned")
+        (is (= [0 1 2] (mapv :offset (:messages r))))
+        (is (= 3 (:next-offset r)))
+        (is (false? (:end-of-file? r))
+            "Held-back partial tail keeps end-of-file? false even though slice consumed all complete lines")))))
+
+(deftest test-read-from-offset-claude-empty-file
+  (testing "Empty file: returns empty messages, next-offset = from-offset (clamped to 0), EOF"
+    (let [file (io/file test-dir "rfo-empty.jsonl")]
+      (io/make-parents file)
+      (spit file "")
+      (let [r (repl/read-from-offset :claude (.getAbsolutePath file) 0 10)]
+        (is (= 0 (count (:messages r))))
+        (is (= 0 (:next-offset r)))
+        (is (true? (:end-of-file? r))))
+      (let [r (repl/read-from-offset :claude (.getAbsolutePath file) 5 10)]
+        (is (= 0 (count (:messages r))))
+        (is (= 0 (:next-offset r))
+            "Empty file + non-zero from-offset triggers clamp to 0")
+        (is (true? (:end-of-file? r)))))))
+
+(deftest test-read-from-offset-claude-middle-slice
+  (testing "Slicing from the middle: from-offset=3 limit=2 against 7-line file → 2 messages with offsets [3,4]"
+    (let [lines (mapv #(claude-jsonl {:type "user"
+                                      :text (str "m-" %)
+                                      :uuid (str "u-" %)})
+                      (range 7))
+          file (create-test-jsonl-file "rfo-middle.jsonl" lines)
+          r (repl/read-from-offset :claude (.getAbsolutePath file) 3 2)]
+      (is (= 2 (count (:messages r))))
+      (is (= [3 4] (mapv :offset (:messages r))))
+      (is (= 5 (:next-offset r)))
+      (is (false? (:end-of-file? r))))))
+
+(deftest test-read-from-offset-copilot-jsonl-path
+  (testing ":copilot provider takes the JSONL branch and stamps raw-line offsets"
+    (let [events [{:type "user.message"
+                   :timestamp "2026-05-14T00:00:00Z"
+                   :data {:content "hi copilot" :messageId "co-u-1"}}
+                  {:type "noise.event"
+                   :timestamp "2026-05-14T00:00:00.5Z"
+                   :data {:content "filtered"}}
+                  {:type "assistant.message"
+                   :timestamp "2026-05-14T00:00:01Z"
+                   :data {:content "hello from copilot" :messageId "co-a-1"}}]
+          lines (mapv #(json/generate-string %) events)
+          file (create-test-jsonl-file "rfo-copilot.jsonl" lines)
+          r (repl/read-from-offset :copilot (.getAbsolutePath file) 0 10)]
+      (is (= 2 (count (:messages r)))
+          "noise.event is dropped by providers/parse-message :copilot")
+      (is (= [0 2] (mapv :offset (:messages r)))
+          "Surviving messages carry their RAW line offset, not post-filter index")
+      (is (= ["co-u-1" "co-a-1"] (mapv :uuid (:messages r))))
+      (is (= 3 (:next-offset r)))
+      (is (true? (:end-of-file? r))))))
+
+(deftest test-read-from-offset-cursor-empty-stub
+  (testing "Cursor provider returns empty/EOF stub regardless of arguments"
+    (let [r1 (repl/read-from-offset :cursor "/anywhere" 0 10)
+          r2 (repl/read-from-offset :cursor "/nonexistent" 999 100)]
+      (is (= {:messages [] :next-offset 0 :end-of-file? true} r1))
+      (is (= {:messages [] :next-offset 999 :end-of-file? true} r2)
+          "Cursor preserves from-offset on next-offset — no clamp because the read is a no-op"))))
+
+(deftest test-read-from-offset-opencode-directory-slice
+  ;; OpenCode uses the filename-sorted message-file list as its offset
+  ;; index. read-from-offset must reuse opencode-sorted-message-files (the
+  ;; helper lifted from parse-opencode-messages) rather than re-walking
+  ;; the directory — see the 2026-05-12 gap-fix note in the task.
+  (testing "OpenCode: slice the filename-sorted message-file list at from-offset"
+    (let [base-dir (io/file test-dir "rfo-opencode")
+          session-id "ses_rfo_test"
+          session-file (create-opencode-test-storage
+                        base-dir session-id "RFO Session" "/test/rfo"
+                        [{:msg-id "msg_001" :role "user" :text "hello-0"}
+                         {:msg-id "msg_002" :role "assistant" :text "hello-1"}
+                         {:msg-id "msg_003" :role "user" :text "hello-2"}
+                         {:msg-id "msg_004" :role "assistant" :text "hello-3"}])]
+      (with-redefs [repl/opencode-storage-base
+                    (fn [] (io/file base-dir "storage"))]
+        ;; Full read
+        (let [r (repl/read-from-offset :opencode (.getAbsolutePath session-file) 0 10)]
+          (is (= 4 (count (:messages r)))
+              "All four message files canonicalized")
+          (is (= [0 1 2 3] (mapv :offset (:messages r)))
+              "Offsets = position in filename-sorted list")
+          (is (= 4 (:next-offset r)))
+          (is (true? (:end-of-file? r))))
+        ;; Partial slice from the middle
+        (let [r (repl/read-from-offset :opencode (.getAbsolutePath session-file) 1 2)]
+          (is (= 2 (count (:messages r))))
+          (is (= [1 2] (mapv :offset (:messages r)))
+              "Stamped with absolute position-in-list, not survivor index within the slice")
+          (is (= 3 (:next-offset r)))
+          (is (false? (:end-of-file? r))))
+        ;; Client-ahead clamp
+        (let [r (repl/read-from-offset :opencode (.getAbsolutePath session-file) 100 10)]
+          (is (= 0 (count (:messages r))))
+          (is (= 4 (:next-offset r))
+              "OpenCode honors the same client-ahead clamp as JSONL providers")
+          (is (true? (:end-of-file? r))))
+        ;; At-end read
+        (let [r (repl/read-from-offset :opencode (.getAbsolutePath session-file) 4 10)]
+          (is (= 0 (count (:messages r))))
+          (is (= 4 (:next-offset r)))
+          (is (true? (:end-of-file? r))))))))
+
+(deftest test-read-from-offset-opencode-missing-session
+  (testing "OpenCode: missing session file returns empty/EOF stub"
+    (let [missing-path (str test-dir "/rfo-opencode-missing/ses_none.json")
+          r (repl/read-from-offset :opencode missing-path 0 10)]
+      (is (= 0 (count (:messages r))))
+      (is (= 0 (:next-offset r))
+          "Missing → total=0; from-offset=0 stays at 0")
+      (is (true? (:end-of-file? r))))))
+
+;; ============================================================================
 ;; Metrics Instrumentation Tests
 ;; ============================================================================
 

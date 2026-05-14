@@ -1049,27 +1049,61 @@
            (apply str))
       "")))
 
+(defn- opencode-sorted-message-files
+  "Return filename-sorted `.json` message files for an OpenCode session.
+  `file-path` points to the session info JSON file (`ses_<id>.json`).
+
+  Returns `[]` when the session file is missing, malformed, or its
+  messages directory does not exist; parse failures of the session JSON
+  itself are logged at WARN so the silent-on-error path stays
+  observable. Shared by `parse-opencode-messages` (legacy whole-session
+  reader) and `read-from-offset` (v0.5.0 subscribe path) so both consult
+  the same canonical filename-sorted ordering and the v0.5.0 `:offset =
+  position-in-list` semantic stays aligned with the v0.4.0 read path
+  during the dual-protocol rollback window."
+  [file-path]
+  (let [session-file (io/file file-path)]
+    (if (.exists session-file)
+      (let [info (try (json/parse-string (slurp session-file) true)
+                      (catch Exception e
+                        (log/warn e "Failed to read OpenCode session file"
+                                  {:file (.getPath session-file)})
+                        nil))
+            session-id (:id info)
+            messages-dir (when session-id
+                           (io/file (opencode-storage-base) "message" session-id))]
+        (if (and messages-dir (.exists messages-dir))
+          (->> (.listFiles messages-dir)
+               (filter #(str/ends-with? (.getName %) ".json"))
+               (sort-by #(.getName %))
+               vec)
+          []))
+      [])))
+
+(defn- parse-opencode-message-file
+  "Parse a single OpenCode message file and return the canonical message
+  (or nil if reading/parsing fails or the canonical pipeline drops it).
+
+  Reads `msg-file` as JSON, concatenates its text parts via
+  `assemble-opencode-message-text`, then runs the assembled record through
+  `providers/parse-message :opencode`. Shared by `parse-opencode-messages`
+  and the `:opencode` branch of `read-from-offset` so the per-message
+  pipeline stays in one place."
+  [msg-file]
+  (try
+    (let [msg (json/parse-string (slurp msg-file) true)
+          text (assemble-opencode-message-text (:id msg))
+          enriched (assoc msg :assembled-text text)]
+      (providers/parse-message :opencode enriched))
+    (catch Exception _ nil)))
+
 (defn- parse-opencode-messages
   "Parse messages from an OpenCode session.
    file-path points to the session info JSON file (ses_<id>.json)."
   [file-path]
-  (let [session-file (io/file file-path)
-        info (json/parse-string (slurp session-file) true)
-        session-id (:id info)
-        messages-dir (io/file (opencode-storage-base) "message" session-id)]
-    (if (.exists messages-dir)
-      (->> (.listFiles messages-dir)
-           (filter #(str/ends-with? (.getName %) ".json"))
-           (sort-by #(.getName %))
-           (keep (fn [msg-file]
-                   (try
-                     (let [msg (json/parse-string (slurp msg-file) true)
-                           text (assemble-opencode-message-text (:id msg))
-                           enriched (assoc msg :assembled-text text)]
-                       (providers/parse-message :opencode enriched))
-                     (catch Exception _ nil))))
-           vec)
-      [])))
+  (->> (opencode-sorted-message-files file-path)
+       (keep parse-opencode-message-file)
+       vec))
 
 (defn parse-session-messages
   "Parse messages from a session file, using the appropriate provider parser.
@@ -1526,6 +1560,113 @@
               (assoc canon :offset (+ pre-line-count i))))))
        (filter some?)
        vec))
+
+(defn read-from-offset
+  "Return canonical messages from `file-path` starting at raw line-offset
+  `from-offset` (0-based, inclusive), consuming up to `line-limit` raw
+  lines. Returns `{:messages [...] :next-offset Int :end-of-file? Bool}`.
+
+  This is the load-bearing pure function on the v0.5.0 subscribe path —
+  it replaces `parse-session-messages → assign-seq!` for the subscribe
+  handler and the backfill branch of `push-to-subscribers!`. See design
+  doc §3.1.
+
+  Per-provider behavior:
+
+  - `:claude` / `:copilot` — Calls `parse-jsonl-raw-lines-safe` to get
+    the file's complete (newline-terminated) raw lines plus a
+    `:held-back?` flag for any torn trailing tail. Slices raw lines
+    `[from-offset, from-offset + line-limit)` (clamped to the line
+    count), then maps each raw line through `parse-jsonl-line` →
+    `providers/parse-message provider`. Survivors are stamped with
+    `:offset = (+ from-offset i)` where `i` is the **raw-line** index
+    within the slice, NOT the post-filter index. Filtered-out lines
+    (parse-jsonl-line returns nil OR providers/parse-message returns nil
+    — sidechain/summary/system) still advance `i`, so survivors carry
+    non-contiguous offsets that match each message's true raw-line
+    position. The single `when-let` chain is the only filter pass —
+    there is no inline sidechain/summary/system re-check because that
+    would duplicate `providers/parse-message :claude`'s drop set
+    (providers.clj:265-280).
+
+  - `:opencode` — Slices the filename-sorted message-file list at
+    `from-offset` via `opencode-sorted-message-files`. Each slot is read
+    + assembled + canonicalized through the same pipeline as
+    `parse-opencode-messages`; survivors are stamped with `:offset =
+    position-in-list`. No line-based hold-back applies.
+
+  - `:cursor` — Returns `{:messages [] :next-offset from-offset
+    :end-of-file? true}` unconditionally. Cursor sessions are
+    SQLite-backed and never produce `session_history` payloads with
+    messages.
+
+  Client-ahead clamp: if `from-offset > total-lines` (e.g. the client
+  has a cursor past the server's view after a backend data loss or
+  rollback), `:next-offset` is reported as `total-lines` (NOT
+  `from-offset`). The client detects `next-offset < from-offset` and
+  resets to 0 (design doc §3.1). Without the clamp the client would
+  silently sit ahead of the server forever.
+
+  `:end-of-file?` is true iff `end-idx >= total-lines` AND no torn tail
+  was held back. A held-back partial line signals \"there are more
+  bytes on disk; ask again later.\" `:cursor` always reports
+  `end-of-file? true`.
+
+  Pure with respect to atom state: reads from disk but does not mutate
+  `file-positions`, `line-counts`, `session-index`, etc."
+  [provider file-path from-offset line-limit]
+  (case provider
+    :cursor
+    {:messages [] :next-offset from-offset :end-of-file? true}
+
+    :opencode
+    (let [msg-files (opencode-sorted-message-files file-path)
+          total (count msg-files)
+          start (min from-offset total)
+          end-idx (min total (+ from-offset line-limit))
+          slice (subvec msg-files start end-idx)
+          with-offsets
+          (->> slice
+               (map-indexed
+                (fn [i msg-file]
+                  (when-let [canon (parse-opencode-message-file msg-file)]
+                    (assoc canon :offset (+ from-offset i)))))
+               (filter some?)
+               vec)
+          next-offset (if (> from-offset total)
+                        total
+                        (+ from-offset (count slice)))]
+      {:messages with-offsets
+       :next-offset next-offset
+       :end-of-file? (>= end-idx total)})
+
+    ;; :claude, :copilot — JSONL providers share this branch. Adding a
+    ;; new JSONL provider requires both a `case` clause (or accepting
+    ;; this default) and a `providers/parse-message` defmethod; the
+    ;; multimethod has no :default, so unknown dispatch values throw
+    ;; rather than silently returning nil.
+    (let [{:keys [lines held-back?]} (parse-jsonl-raw-lines-safe file-path)
+          total-lines (count lines)
+          start (min from-offset total-lines)
+          end-idx (min total-lines (+ from-offset line-limit))
+          slice (subvec lines start end-idx)
+          with-offsets
+          (->> slice
+               (map-indexed
+                (fn [i raw-str]
+                  (when-let [parsed (parse-jsonl-line raw-str)]
+                    (when-let [canon (providers/parse-message provider parsed)]
+                      (assoc canon :offset (+ from-offset i))))))
+               (filter some?)
+               vec)
+          reached-eof? (and (>= end-idx total-lines)
+                            (not held-back?))
+          next-offset (if (> from-offset total-lines)
+                        total-lines
+                        (+ from-offset (count slice)))]
+      {:messages with-offsets
+       :next-offset next-offset
+       :end-of-file? reached-eof?})))
 
 (defn reset-file-position!
   "Reset tracked file position (for testing or when file is replaced)"
