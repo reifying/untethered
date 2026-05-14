@@ -1329,6 +1329,129 @@
       (log/error e "Failed to parse .jsonl file incrementally" {:file file-path})
       {:messages [] :new-pos (get @file-positions file-path 0)})))
 
+(defn parse-jsonl-incremental-with-raw
+  "Sibling of `parse-jsonl-incremental` for the v0.5.0 push pipeline.
+
+  Mirrors the byte-level cursor advance, newline hold-back, and shrink-recovery
+  semantics of `parse-jsonl-incremental` byte-for-byte through `complete-vec`,
+  but returns the vector of raw line strings (newline-stripped) instead of
+  parsed canonical messages. The raw vec is the input shape `stamp-offsets`
+  consumes to assign each line its file offset (raw-line index from the start
+  of the file).
+
+  Return shape: `{:raw-lines vec :new-pos n}`.
+
+  - `:raw-lines` — vector of newline-stripped line strings that became
+    newline-terminated this tick, in file order. Empty when the file has no
+    new complete lines.
+  - `:new-pos` — same byte-position semantics as `parse-jsonl-incremental`:
+    the cursor only advances past bytes that belong to a complete (newline-
+    terminated) line. Trailing partial bytes (including mid-character UTF-8
+    fragments) are held back and retried on the next tick.
+
+  File-shrink recovery (mirrors `parse-jsonl-incremental` lines ~1255-1267):
+  if the on-disk file is smaller than the tracked position, the cursor is
+  reset to 0 and the entire current file is re-read into `:raw-lines`. The
+  watcher pairs this with `reset-line-count!` so `line-counts[file-path]` is
+  zeroed within the same tick before the tick-update swap rebuilds the count.
+
+  Does NOT update `file-positions`; callers persist `:new-pos` themselves.
+  Does NOT update `line-counts`; that swap is the caller's responsibility per
+  design doc §3.4 point 3a (paired with the `file-positions` advance so the
+  byte and line cursors stay in lockstep within a tick).
+
+  Emits the `:jsonl-lines-total` counter when any complete lines were seen,
+  matching `parse-jsonl-incremental`'s observability. Parse failures are not
+  emitted here — parsing happens in `stamp-offsets`.
+
+  On error, returns `{:raw-lines [] :new-pos last-pos}`."
+  [file-path]
+  (try
+    (let [file (io/file file-path)
+          tracked-pos (get @file-positions file-path 0)
+          initial-size (file-length-bytes file)
+          shrunk? (< initial-size tracked-pos)
+          last-pos (if shrunk? 0 tracked-pos)]
+      (when shrunk?
+        (log/warn "JSONL file shrank below tracked cursor; resetting to 0 (with-raw)"
+                  {:file file-path
+                   :tracked-pos tracked-pos
+                   :current-size initial-size}))
+      (if (<= initial-size last-pos)
+        {:raw-lines [] :new-pos last-pos}
+        (with-open [raf (RandomAccessFile. file "r")]
+          (.seek raf last-pos)
+          ;; Re-read length AFTER seek to capture bytes that landed in the
+          ;; TOCTOU window between `file-length-bytes` and now — same fix as
+          ;; parse-jsonl-incremental (tmux-untethered-ubc).
+          (let [current-size (.length raf)
+                read-len (- current-size last-pos)]
+            (if (not (pos? read-len))
+              ;; File shrunk between the initial probe and `raf.length` — bail
+              ;; without advancing the cursor; the next tick will detect the
+              ;; shrink via the existing reset-to-0 path.
+              {:raw-lines [] :new-pos last-pos}
+              (let [buf (byte-array read-len)
+                    _ (.readFully raf buf)
+                    buf-len (alength buf)
+                    ;; Find the last \n byte in raw bytes. -1 if none.
+                    ;; Avoids decoding the (possibly mid-character) tail.
+                    last-nl-idx (loop [i (dec buf-len)]
+                                  (cond
+                                    (< i 0) -1
+                                    (= (byte \newline) (aget buf i)) i
+                                    :else (recur (dec i))))
+                    complete-byte-len (inc last-nl-idx)
+                    trailing-bytes (- buf-len complete-byte-len)
+                    complete-text (if (pos? complete-byte-len)
+                                    (String. buf 0 complete-byte-len "UTF-8")
+                                    "")
+                    lines (str/split complete-text #"\n" -1)
+                    complete (butlast lines)
+                    complete-vec (vec complete)
+                    total-lines (count complete-vec)
+                    new-pos (- current-size trailing-bytes)]
+                (when (pos? total-lines)
+                  (emit-metric! :counter :jsonl-lines-total
+                                {:file file-path :count total-lines}))
+                {:raw-lines complete-vec :new-pos new-pos}))))))
+    (catch Exception e
+      (log/error e "Failed to parse .jsonl file incrementally (with-raw)"
+                 {:file file-path})
+      {:raw-lines [] :new-pos (get @file-positions file-path 0)})))
+
+(defn stamp-offsets
+  "Map each raw line in `complete-vec` through `parse-jsonl-line` then
+  `(providers/parse-message provider ...)`, stamping the surviving canonical
+  messages with `:offset = (+ pre-line-count i)` where `i` is the **raw-line**
+  index within `complete-vec` (NOT the survivor index).
+
+  Filtered-out lines (parse-jsonl-line returns nil OR providers/parse-message
+  returns nil — sidechain/summary/system/non-message records) still advance
+  `i`, so survivors carry non-contiguous offsets that match each message's
+  true position in the source file. This preserves the v0.5.0 invariant that
+  offset = raw-line index even when the file mixes user/assistant messages
+  with internal records.
+
+  Returns `[]` when every raw line is filtered out. The watcher still calls
+  `push-to-subscribers!` with the empty snapshot, `snapshot-from-offset =
+  pre-line-count`, and `file-end-line-count = (+ pre-line-count (count
+  complete-vec))` so caught-up subscribers receive `next-offset = file-end-
+  line-count` with `end-of-file? = true` (design doc §3.4 point 2).
+
+  This is the v0.5.0 watcher-side replacement for `assign-seq!` — offsets are
+  derived deterministically from the file's raw-line index plus a per-tick
+  `pre-line-count` snapshot, not drawn from a persisted counter."
+  [provider complete-vec pre-line-count]
+  (->> complete-vec
+       (map-indexed
+        (fn [i raw-str]
+          (when-let [parsed (parse-jsonl-line raw-str)]
+            (when-let [canon (providers/parse-message provider parsed)]
+              (assoc canon :offset (+ pre-line-count i))))))
+       (filter some?)
+       vec))
+
 (defn reset-file-position!
   "Reset tracked file position (for testing or when file is replaced)"
   [file-path]

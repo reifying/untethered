@@ -1866,6 +1866,312 @@
             "Post-shrink tick rebuilds the count from the truncated file")))))
 
 ;; ============================================================================
+;; parse-jsonl-incremental-with-raw + stamp-offsets Tests (tmux-untethered-398.5)
+;; ============================================================================
+
+(deftest test-parse-jsonl-incremental-with-raw-matches-byte-position
+  (testing "with-raw returns the same :new-pos as parse-jsonl-incremental on identical input"
+    (let [lines [(claude-jsonl {:type "user" :text "one" :uuid "u-1"})
+                 (claude-jsonl {:type "assistant" :text "two" :uuid "u-2"})
+                 (claude-jsonl {:type "user" :text "three" :uuid "u-3"})]
+          file (create-test-jsonl-file "raw-bytepos.jsonl" lines)
+          fp (.getAbsolutePath file)]
+      (repl/reset-file-position! fp)
+      (let [base (repl/parse-jsonl-incremental fp)]
+        (repl/reset-file-position! fp)
+        (let [raw (repl/parse-jsonl-incremental-with-raw fp)]
+          (is (= (:new-pos base) (:new-pos raw))
+              "Byte cursor is identical between sibling readers"))))))
+
+(deftest test-parse-jsonl-incremental-with-raw-returns-newline-stripped-strings
+  (testing ":raw-lines contains newline-stripped strings for the lines advanced this tick"
+    (let [lines [(claude-jsonl {:type "user" :text "first" :uuid "u-1"})
+                 (claude-jsonl {:type "assistant" :text "second" :uuid "u-2"})]
+          file (create-test-jsonl-file "raw-content.jsonl" lines)
+          fp (.getAbsolutePath file)]
+      (repl/reset-file-position! fp)
+      (let [{:keys [raw-lines new-pos]} (repl/parse-jsonl-incremental-with-raw fp)]
+        (is (= 2 (count raw-lines)) "Both newline-terminated lines returned")
+        (is (= lines raw-lines)
+            "Lines are returned with the trailing \\n stripped (matches the JSONL line strings exactly)")
+        (is (every? #(not (str/includes? % "\n")) raw-lines)
+            "No raw-line carries a literal \\n (newline is the separator, not part of content)")
+        (is (= (.length file) new-pos)
+            "Cursor advances to EOF when every line is newline-terminated")))))
+
+(deftest test-parse-jsonl-incremental-with-raw-holds-back-partial-trailing-line
+  (testing "Trailing partial line is held back; cursor only advances past complete newlines"
+    (let [file (io/file test-dir "raw-partial.jsonl")
+          fp (.getAbsolutePath file)
+          complete (claude-jsonl {:type "user" :text "complete" :uuid "u-c"})
+          partial-bytes "{\"role\":\"assistant\",\"text\":\"part"]
+      (io/make-parents file)
+      (spit file (str complete "\n" partial-bytes))
+      (repl/reset-file-position! fp)
+      (let [file-len (.length file)
+            {:keys [raw-lines new-pos]} (repl/parse-jsonl-incremental-with-raw fp)]
+        (is (= 1 (count raw-lines))
+            "Only the newline-terminated line is in :raw-lines")
+        (is (= complete (first raw-lines)))
+        (is (< new-pos file-len)
+            "Cursor stops before the partial trailing line")
+        (is (= (count (.getBytes (str complete "\n") "UTF-8")) new-pos)
+            "Cursor lands exactly at the byte after the last \\n"))
+      (repl/reset-file-position! fp))))
+
+(deftest test-parse-jsonl-incremental-with-raw-shrink-recovery-emits-full-snapshot
+  (testing "On shrink, cursor resets to 0 and :raw-lines is the full current file"
+    (let [file (io/file test-dir "raw-shrink.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (repl/reset-file-position! fp)
+
+      ;; 1. Seed with 3 lines and advance the cursor to EOF.
+      (spit file (str (claude-jsonl {:type "user" :text "old-1" :uuid "u-old-1"}) "\n"
+                      (claude-jsonl {:type "user" :text "old-2" :uuid "u-old-2"}) "\n"
+                      (claude-jsonl {:type "user" :text "old-3" :uuid "u-old-3"}) "\n"))
+      (let [{:keys [new-pos]} (repl/parse-jsonl-incremental-with-raw fp)]
+        (swap! repl/file-positions assoc fp new-pos)
+        (is (pos? new-pos)))
+
+      ;; 2. Truncate-and-rewrite below the tracked cursor.
+      (.delete file)
+      (let [new-content (str (claude-jsonl {:type "assistant" :text "new-1" :uuid "u-new-1"}) "\n")]
+        (spit file new-content)
+        (let [tracked (get @repl/file-positions fp)
+              shrunk-len (.length file)]
+          (is (< shrunk-len tracked)
+              "Test precondition: new file is smaller than the tracked cursor"))
+
+        ;; 3. Re-parse — sibling reader resets to 0 and emits the full snapshot.
+        (let [{:keys [raw-lines new-pos]} (repl/parse-jsonl-incremental-with-raw fp)]
+          (is (= 1 (count raw-lines))
+              "Post-shrink: cursor reset to 0, full current file is in :raw-lines")
+          (is (str/includes? (first raw-lines) "u-new-1")
+              "Snapshot contains the post-shrink content")
+          (is (not-any? #(str/includes? % "u-old") raw-lines)
+              "Pre-shrink content (physically deleted) does not reappear")
+          (is (= (.length file) new-pos)
+              "Cursor advances to current EOF, not the stale tracked position")))
+
+      (repl/reset-file-position! fp))))
+
+(deftest test-parse-jsonl-incremental-with-raw-empty-file-and-no-new-bytes
+  (testing "Empty file or no new bytes returns empty :raw-lines and unchanged cursor"
+    (let [file (io/file test-dir "raw-empty.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file "")
+      (repl/reset-file-position! fp)
+      (let [r (repl/parse-jsonl-incremental-with-raw fp)]
+        (is (= [] (:raw-lines r))
+            "Empty file yields empty :raw-lines vec")
+        (is (zero? (:new-pos r)))))
+
+    (testing "Second call after EOF: still empty, cursor unchanged"
+      (let [file (io/file test-dir "raw-empty-tick2.jsonl")
+            fp (.getAbsolutePath file)
+            line (claude-jsonl {:type "user" :text "only" :uuid "u-only"})]
+        (io/make-parents file)
+        (spit file (str line "\n"))
+        (repl/reset-file-position! fp)
+        (let [{:keys [new-pos]} (repl/parse-jsonl-incremental-with-raw fp)]
+          (swap! repl/file-positions assoc fp new-pos))
+        ;; No new bytes since last call.
+        (let [{:keys [raw-lines new-pos]} (repl/parse-jsonl-incremental-with-raw fp)]
+          (is (= [] raw-lines))
+          (is (= (.length file) new-pos)
+              "Cursor stays at EOF when there is nothing new"))
+        (repl/reset-file-position! fp)))))
+
+(deftest test-stamp-offsets-survivors-carry-non-contiguous-offsets
+  (testing "stamp-offsets stamps surviving messages with raw-line indices, NOT survivor indices"
+    (let [;; Mix of survivors and lines that providers/parse-message :claude
+          ;; will drop: sidechain (line 1), summary (line 3), system (line 4).
+          ;; Survivors are at raw indices 0, 2, 5.
+          raw [(claude-jsonl {:type "user" :text "msg-0" :uuid "u-0"})
+               (claude-jsonl {:type "user" :text "side"  :uuid "u-side"
+                              :sidechain? true})
+               (claude-jsonl {:type "assistant" :text "msg-2" :uuid "u-2"})
+               (json/generate-string {:type "summary"
+                                      :uuid "u-sum"
+                                      :timestamp "2026-04-19T00:00:00Z"
+                                      :message {:role "system" :content "drop"}})
+               (json/generate-string {:type "system"
+                                      :uuid "u-sys"
+                                      :timestamp "2026-04-19T00:00:00Z"
+                                      :message {:role "system" :content "drop"}})
+               (claude-jsonl {:type "user" :text "msg-5" :uuid "u-5"})]
+          stamped (repl/stamp-offsets :claude raw 100)]
+      (is (= 3 (count stamped))
+          "Three survivors out of six raw lines")
+      (is (= ["u-0" "u-2" "u-5"] (mapv :uuid stamped))
+          "Survivors are the user/assistant non-sidechain raw lines, in file order")
+      (is (= [100 102 105] (mapv :offset stamped))
+          "Offsets are raw-line indices (0, 2, 5) shifted by pre-line-count (100); filtered lines still advance i")
+      (is (every? #(= :claude (:provider %)) stamped)
+          "Provider tag preserved on canonical messages"))))
+
+(deftest test-stamp-offsets-empty-input-and-all-filtered
+  (testing "Empty complete-vec returns []"
+    (is (= [] (repl/stamp-offsets :claude [] 0)))
+    (is (= [] (repl/stamp-offsets :claude [] 4218))
+        "pre-line-count value is irrelevant when there's nothing to stamp"))
+
+  (testing "All-filtered tick: every raw line drops, returns [] without exception"
+    (let [raw [(claude-jsonl {:type "user" :text "side" :uuid "u-1" :sidechain? true})
+               (json/generate-string {:type "summary"
+                                      :uuid "u-2"
+                                      :timestamp "2026-04-19T00:00:00Z"
+                                      :message {:role "system" :content "x"}})
+               (json/generate-string {:type "system"
+                                      :uuid "u-3"
+                                      :timestamp "2026-04-19T00:00:00Z"
+                                      :message {:role "system" :content "x"}})]
+          stamped (repl/stamp-offsets :claude raw 50)]
+      (is (= [] stamped)
+          "Returns [] when every raw line is filtered out")
+      (is (vector? stamped)
+          "Return type is a vector (not a lazy seq), even on the all-filtered path")
+      ;; End-to-end derivation of (snapshot-from-offset, file-end-line-count)
+      ;; from an all-filtered snapshot is exercised in
+      ;; test-watcher-pipeline-empty-snapshot-shape.
+      )))
+
+(deftest test-stamp-offsets-handles-malformed-json-as-filtered
+  (testing "Lines that fail JSON parse are filtered out and still advance the raw index"
+    (let [raw [(claude-jsonl {:type "user" :text "good" :uuid "u-0"})
+               "this is not valid json"
+               ""
+               (claude-jsonl {:type "assistant" :text "good-2" :uuid "u-3"})]
+          stamped (repl/stamp-offsets :claude raw 0)]
+      (is (= ["u-0" "u-3"] (mapv :uuid stamped)))
+      (is (= [0 3] (mapv :offset stamped))
+          "Malformed and blank lines still advance the raw-line index"))))
+
+(deftest test-stamp-offsets-pre-line-count-zero-baseline
+  (testing "pre-line-count of 0 makes offsets equal to raw-line indices"
+    (let [raw [(claude-jsonl {:type "user" :text "a" :uuid "u-0"})
+               (claude-jsonl {:type "assistant" :text "b" :uuid "u-1"})
+               (claude-jsonl {:type "user" :text "c" :uuid "u-2"})]
+          stamped (repl/stamp-offsets :claude raw 0)]
+      (is (= [0 1 2] (mapv :offset stamped))
+          "When pre-line-count = 0, offsets are exactly the raw-line indices"))))
+
+(deftest test-watcher-pipeline-produces-push-input-shape
+  ;; Integration-style test: chains parse-jsonl-incremental-with-raw +
+  ;; stamp-offsets the way the v0.5.0 watcher tee will (T10 wires this into
+  ;; handle-file-modified), and asserts the produced (snapshot,
+  ;; snapshot-from-offset, file-end-line-count) shape matches what
+  ;; push-to-subscribers! consumes per design doc §3.4.
+  (testing "Watcher tee shape: chain reader + stamp-offsets, derive push inputs"
+    (let [file (io/file test-dir "watcher-tee.jsonl")
+          fp (.getAbsolutePath file)
+          tick1-lines [(claude-jsonl {:type "user" :text "u-msg-1" :uuid "u-1"})
+                       (claude-jsonl {:type "user" :text "side"   :uuid "u-side"
+                                      :sidechain? true})
+                       (claude-jsonl {:type "assistant" :text "a-msg-1" :uuid "u-2"})]]
+      (io/make-parents file)
+      ;; Seed initial file content with some pre-existing lines so the
+      ;; watcher's pre-line-count is non-zero (matches the realistic case
+      ;; where populate-line-counts! seeded the count at boot).
+      (spit file (str (claude-jsonl {:type "user" :text "history" :uuid "u-h"}) "\n"))
+      (repl/reset-file-position! fp)
+      (reset! repl/line-counts {})
+
+      ;; Bootstrap: lazy-init the line-counts atom for this previously-unseen
+      ;; file (matches the watcher's first-firing path on a new session).
+      (repl/ensure-line-count-initialized! fp)
+      (let [pre-line-count-tick0 (get @repl/line-counts fp)]
+        (is (= 1 pre-line-count-tick0)
+            "Bootstrap seeded the count to 1 (the historical pre-existing line)"))
+
+      ;; Advance file-positions past the historical content so tick1 only
+      ;; sees the newly-appended lines (matches handle-file-created's seed).
+      (swap! repl/file-positions assoc fp (.length file))
+
+      ;; Now the watcher tick: append the tick1 batch.
+      (spit file (str (str/join "\n" tick1-lines) "\n") :append true)
+
+      ;; The v0.5.0 watcher tee, in order:
+      ;;   1. Snapshot pre-line-count BEFORE the tick-update swap.
+      ;;   2. Run parse-jsonl-incremental-with-raw to get raw-lines + new-pos.
+      ;;   3. Run stamp-offsets to produce the canonical snapshot.
+      ;;   4. Compute file-end-line-count from the snapshotted pre-count and
+      ;;      the count of raw-lines this tick.
+      ;;   5. Persist file-positions advance + line-counts tick-update swap.
+      (let [pre-line-count (get @repl/line-counts fp)
+            {:keys [raw-lines new-pos]} (repl/parse-jsonl-incremental-with-raw fp)
+            snapshot (repl/stamp-offsets :claude raw-lines pre-line-count)
+            snapshot-from-offset pre-line-count
+            file-end-line-count (+ pre-line-count (count raw-lines))]
+
+        (is (= 3 (count raw-lines))
+            "Tick1 reader returns all three new newline-terminated lines (sidechain included as raw)")
+        (is (= 2 (count snapshot))
+            "Stamp drops the sidechain; survivors are user + assistant")
+        (is (= ["u-1" "u-2"] (mapv :uuid snapshot))
+            "Survivors in file order")
+        ;; Pre-line-count is 1 (one historical line). Survivors are at
+        ;; raw indices 0 and 2 within the tick (the sidechain at index 1
+        ;; is dropped but still advances i). So offsets are 1 and 3.
+        (is (= [1 3] (mapv :offset snapshot))
+            "Offsets = pre-line-count + raw-line index; sidechain at index 1 advances i but does not survive")
+        (is (= 1 snapshot-from-offset)
+            "snapshot-from-offset = pre-line-count (= 1 here)")
+        (is (= 4 file-end-line-count)
+            "file-end-line-count = pre-line-count + (count raw-lines) = 1 + 3 = 4")
+
+        ;; Verify the tick-update swap produces the expected new line-counts
+        ;; entry — this is what the watcher does after a successful tick.
+        (swap! repl/file-positions assoc fp new-pos)
+        (swap! repl/line-counts update fp (fnil + 0) (count raw-lines))
+        (is (= 4 (get @repl/line-counts fp))
+            "After the tick-update swap, line-counts matches file-end-line-count"))
+
+      (repl/reset-file-position! fp)
+      (reset! repl/line-counts {}))))
+
+(deftest test-watcher-pipeline-empty-snapshot-shape
+  ;; Edge case: tick where every raw line is filtered out. The snapshot is
+  ;; [] but the watcher still pushes — caught-up subscribers see end-of-file?
+  ;; true with next-offset = file-end-line-count (design doc §3.4 point 2).
+  (testing "All-filtered tick still produces a usable (snapshot-from-offset, file-end-line-count) pair"
+    (let [file (io/file test-dir "watcher-tee-empty.jsonl")
+          fp (.getAbsolutePath file)
+          ;; Three lines that all drop in providers/parse-message :claude:
+          ;; one sidechain, one summary, one system.
+          lines [(claude-jsonl {:type "user" :text "side" :uuid "u-1" :sidechain? true})
+                 (json/generate-string {:type "summary"
+                                        :uuid "u-2"
+                                        :timestamp "2026-04-19T00:00:00Z"
+                                        :message {:role "system" :content "x"}})
+                 (json/generate-string {:type "system"
+                                        :uuid "u-3"
+                                        :timestamp "2026-04-19T00:00:00Z"
+                                        :message {:role "system" :content "x"}})]]
+      (io/make-parents file)
+      (spit file (str (str/join "\n" lines) "\n"))
+      (repl/reset-file-position! fp)
+      (reset! repl/line-counts {})
+      (swap! repl/line-counts assoc fp 10)
+
+      (let [pre-line-count (get @repl/line-counts fp)
+            {:keys [raw-lines]} (repl/parse-jsonl-incremental-with-raw fp)
+            snapshot (repl/stamp-offsets :claude raw-lines pre-line-count)
+            snapshot-from-offset pre-line-count
+            file-end-line-count (+ pre-line-count (count raw-lines))]
+        (is (= 3 (count raw-lines))
+            "Reader still returns all three raw lines — filtering happens downstream")
+        (is (= [] snapshot)
+            "Stamp drops everything; snapshot is empty")
+        (is (= 10 snapshot-from-offset))
+        (is (= 13 file-end-line-count)
+            "file-end-line-count advances to pre-count + raw-line count, even with no survivors. A subscriber at offset 10 should receive end-of-file? true with next-offset=13."))
+      (repl/reset-file-position! fp)
+      (reset! repl/line-counts {}))))
+
+;; ============================================================================
 ;; Metrics Instrumentation Tests
 ;; ============================================================================
 
