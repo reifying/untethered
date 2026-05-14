@@ -1984,6 +1984,166 @@
               "Cursor stays at EOF when there is nothing new"))
         (repl/reset-file-position! fp)))))
 
+(deftest test-parse-jsonl-raw-lines-safe-seven-full-lines
+  (testing "Seven newline-terminated lines: all returned, no holdback"
+    (let [lines (mapv #(claude-jsonl {:type "user"
+                                      :text (str "line-" %)
+                                      :uuid (str "u-" %)})
+                      (range 7))
+          file (create-test-jsonl-file "raw-safe-seven-full.jsonl" lines)
+          {:keys [lines held-back?]} (repl/parse-jsonl-raw-lines-safe
+                                      (.getAbsolutePath file))]
+      (is (= 7 (count lines)))
+      (is (= false held-back?))
+      (is (every? #(not (str/includes? % "\n")) lines)
+          "Lines are newline-stripped — the \\n is the separator, not part of content"))))
+
+(deftest test-parse-jsonl-raw-lines-safe-seven-full-plus-partial
+  (testing "Seven complete lines plus a trailing partial line: 7 lines, held-back? true"
+    (let [complete (mapv #(claude-jsonl {:type "user"
+                                         :text (str "line-" %)
+                                         :uuid (str "u-" %)})
+                         (range 7))
+          file (io/file test-dir "raw-safe-seven-plus-partial.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file (str (str/join "\n" complete) "\n"
+                      "{\"role\":\"assistant\",\"text\":\"partia"))
+      (let [{:keys [lines held-back?]} (repl/parse-jsonl-raw-lines-safe fp)]
+        (is (= 7 (count lines))
+            "Only the newline-terminated lines appear in :lines")
+        (is (= true held-back?)
+            "Trailing partial bytes raise :held-back?")
+        (is (= complete lines)
+            "The seven complete lines match the original strings byte-for-byte")))))
+
+(deftest test-parse-jsonl-raw-lines-safe-empty-file
+  (testing "Empty file: empty lines, no holdback"
+    (let [file (io/file test-dir "raw-safe-empty.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file "")
+      (let [r (repl/parse-jsonl-raw-lines-safe fp)]
+        (is (= {:lines [] :held-back? false} r))))))
+
+(deftest test-parse-jsonl-raw-lines-safe-partial-only
+  (testing "File with only a partial line (no \\n anywhere): lines empty, held-back? true"
+    (let [file (io/file test-dir "raw-safe-partial-only.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file "{\"role\":\"user\",\"uuid\":\"a")
+      (let [{:keys [lines held-back?]} (repl/parse-jsonl-raw-lines-safe fp)]
+        (is (= [] lines))
+        (is (= true held-back?))))))
+
+(deftest test-parse-jsonl-raw-lines-safe-multibyte-utf8-round-trip
+  (testing "UTF-8 multi-byte content (emoji, CJK) round-trips without corruption"
+    (let [file (io/file test-dir "raw-safe-utf8.jsonl")
+          fp (.getAbsolutePath file)
+          ;; Mix 4-byte emoji, 3-byte CJK, and 2-byte accented chars across lines.
+          line-1 (claude-jsonl {:type "user" :text "rocket 🚀 launch"
+                                :uuid "u-emoji"})
+          line-2 (claude-jsonl {:type "user" :text "汉字 中文 日本語"
+                                :uuid "u-cjk"})
+          line-3 (claude-jsonl {:type "user" :text "café naïve résumé"
+                                :uuid "u-accent"})]
+      (io/make-parents file)
+      (spit file (str line-1 "\n" line-2 "\n" line-3 "\n"))
+      (let [{:keys [lines held-back?]} (repl/parse-jsonl-raw-lines-safe fp)
+            on-disk-bytes (.length file)
+            roundtrip-bytes (alength (.getBytes (str (str/join "\n" lines) "\n")
+                                                "UTF-8"))]
+        (is (= 3 (count lines)))
+        (is (= false held-back?))
+        (is (= [line-1 line-2 line-3] lines)
+            "All three multi-byte lines round-trip byte-for-byte")
+        (is (= on-disk-bytes roundtrip-bytes)
+            "Reconstructed UTF-8 bytes match on-disk size — no replacement chars introduced")
+        (let [parsed (mapv #(json/parse-string % true) lines)]
+          (is (= ["rocket 🚀 launch" "汉字 中文 日本語" "café naïve résumé"]
+                 (mapv #(get-in % [:message :content]) parsed))
+              "Multi-byte content decodes from JSON without corruption"))))))
+
+(deftest test-parse-jsonl-raw-lines-safe-utf8-mid-character-tail-held-back
+  ;; Regression mirror of tmux-untethered-e1a: if the file ends with a
+  ;; truncated multi-byte UTF-8 sequence, those bytes must stay in the
+  ;; held-back tail rather than being mangled into U+FFFD. The byte-level
+  ;; newline scan happens before decoding, so the partial-emoji prefix
+  ;; never gets decoded.
+  ;;
+  ;; This test truncates INSIDE the 4-byte emoji sequence (not just inside
+  ;; the line) — the partial tail's only byte is byte 1 of a 4-byte UTF-8
+  ;; sequence. Decoding the whole buffer first would turn that lone byte
+  ;; into 3 bytes of U+FFFD; the byte-scan-first invariant prevents that.
+  (testing "Truncated multi-byte UTF-8 tail held back, complete lines decode cleanly"
+    (let [file (io/file test-dir "raw-safe-utf8-mid-char.jsonl")
+          fp (.getAbsolutePath file)
+          line-1 (claude-jsonl {:type "user" :text "hello" :uuid "u-1"})
+          line-2 (claude-jsonl {:type "user" :text "🚀" :uuid "u-2"})
+          line-2-bytes (.getBytes ^String line-2 "UTF-8")
+          emoji-bytes (.getBytes "🚀" "UTF-8")
+          ;; Locate the emoji's 4-byte sequence inside line-2's bytes.
+          emoji-start (loop [i 0]
+                        (cond
+                          (> (+ i 4) (alength line-2-bytes)) -1
+                          (and (= (aget line-2-bytes i) (aget emoji-bytes 0))
+                               (= (aget line-2-bytes (+ i 1)) (aget emoji-bytes 1))
+                               (= (aget line-2-bytes (+ i 2)) (aget emoji-bytes 2))
+                               (= (aget line-2-bytes (+ i 3)) (aget emoji-bytes 3)))
+                          i
+                          :else (recur (inc i))))
+          line-1-with-nl (.getBytes (str line-1 "\n") "UTF-8")
+          ;; Take exactly 1 byte of the 4-byte emoji — worst case for
+          ;; U+FFFD substitution if decoding happened before the newline
+          ;; scan.
+          partial-len (inc emoji-start)
+          buf (byte-array (concat line-1-with-nl
+                                  (take partial-len line-2-bytes)))]
+      (is (>= emoji-start 0)
+          "Test setup: emoji must be located in the encoded line-2")
+      (io/make-parents file)
+      (with-open [out (io/output-stream file)]
+        (.write out buf))
+      (let [{:keys [lines held-back?]} (repl/parse-jsonl-raw-lines-safe fp)]
+        (is (= 1 (count lines))
+            "Only line-1 (which is fully newline-terminated) is returned")
+        (is (= line-1 (first lines))
+            "Line-1 string is unchanged — no UTF-8 replacement chars introduced")
+        (is (= true held-back?)
+            "Truncated emoji bytes are held back")
+        (is (not (str/includes? (first lines) "�"))
+            "Returned line must not contain U+FFFD (replacement char)")
+        ;; Held-back byte count must equal the partial emoji prefix. If
+        ;; decoding had happened before the newline scan, the lone 0xF0
+        ;; would have become 3 bytes of EF BF BD and the accounting would
+        ;; be off — this assertion is the regression bite.
+        (let [on-disk (.length file)
+              reconstructed-bytes (alength (.getBytes (str (first lines) "\n")
+                                                      "UTF-8"))
+              held-back-bytes (- on-disk reconstructed-bytes)]
+          (is (= partial-len held-back-bytes)
+              (str "Held-back tail must be exactly the " partial-len
+                   " bytes of the truncated emoji prefix — not 3 bytes "
+                   "of EF BF BD (which is what would land here if the "
+                   "byte scan happened after decoding).")))))))
+
+(deftest test-parse-jsonl-raw-lines-safe-missing-file-returns-empty
+  ;; Locks in the error-swallow contract: a missing/unreadable file does
+  ;; not throw; it returns the same shape as a clean empty file. This is
+  ;; indistinguishable from a truly-empty file at the return-value level —
+  ;; callers (e.g. `read-from-offset`) must detect file-missing separately
+  ;; if they need to distinguish "file deleted/replaced mid-subscribe"
+  ;; from "file is settled and empty."
+  (testing "Missing file: returns {:lines [] :held-back? false} without throwing"
+    (let [file (io/file test-dir "raw-safe-nonexistent.jsonl")
+          fp (.getAbsolutePath file)]
+      (when (.exists file) (.delete file))
+      (is (not (.exists file))
+          "Test precondition: file must not exist")
+      (let [r (repl/parse-jsonl-raw-lines-safe fp)]
+        (is (= {:lines [] :held-back? false} r)
+            "Missing file collapses to the same return shape as a clean empty file")))))
+
 (deftest test-stamp-offsets-survivors-carry-non-contiguous-offsets
   (testing "stamp-offsets stamps surviving messages with raw-line indices, NOT survivor indices"
     (let [;; Mix of survivors and lines that providers/parse-message :claude

@@ -1420,6 +1420,81 @@
                  {:file file-path})
       {:raw-lines [] :new-pos (get @file-positions file-path 0)})))
 
+(defn parse-jsonl-raw-lines-safe
+  "Whole-file JSONL reader with newline-terminator hold-back.
+
+  Sibling of `parse-jsonl-incremental-with-raw`: same byte-level rules for
+  what counts as a complete line, but reads the entire file in one pass
+  rather than tracking an incremental cursor. Used by `read-from-offset`
+  on the subscribe-time backfill path — see §3.1 of the v0.5.0 design.
+
+  Implementation: a single `RandomAccessFile.readFully` so the slice is
+  stable for the rest of the call. The byte buffer is then scanned
+  backwards for the last `\\n`; the prefix that ends at that byte is
+  decoded as UTF-8 and split into newline-stripped strings. Bytes past
+  the last `\\n` are held back so callers never serve a torn tail.
+
+  The newline scan happens on raw bytes BEFORE decoding so a file that
+  ends mid-character (e.g. a 4-byte UTF-8 emoji whose bytes straddle the
+  write boundary) keeps the truncated bytes in the held-back tail rather
+  than collapsing them into a U+FFFD replacement — same fix as
+  `parse-jsonl-incremental` (tmux-untethered-e1a).
+
+  Returns `{:lines vec :held-back? bool}`:
+  - `:lines` — vector of newline-stripped line strings in file order.
+    Lines may legitimately be empty strings (a stray `\\n` in the file).
+  - `:held-back? true` iff one or more bytes exist past the last `\\n`
+    in the file (a partial/torn tail).
+
+  Edge cases:
+  - Empty file → `{:lines [] :held-back? false}`.
+  - File with only a partial first line (no `\\n` anywhere) →
+    `{:lines [] :held-back? true}`.
+
+  Does NOT update `file-positions` or `line-counts`; this is a pure
+  whole-file read used by the subscribe path, not the watcher tick.
+
+  On error, returns `{:lines [] :held-back? false}`."
+  [file-path]
+  (try
+    (with-open [raf (RandomAccessFile. (io/file file-path) "r")]
+      (let [;; Single `.length` sizes both the buffer and the read. Bytes
+            ;; appended between this read and `readFully` are deferred to a
+            ;; later subscribe / watcher tick. Acceptable for the subscribe
+            ;; backfill path: there is no cursor to advance, so a "missed"
+            ;; tail just means the next subscribe sees more data
+            ;; (design doc §10). Differs from `parse-jsonl-incremental`,
+            ;; which re-reads `.length` after seek to avoid a TOCTOU window
+            ;; (tmux-untethered-ubc) because it needs to advance a cursor.
+            size (.length raf)
+            buf (byte-array size)
+            _ (.readFully raf buf)
+            buf-len (alength buf)
+            ;; Find the last \n byte in raw bytes. -1 if none.
+            last-nl-idx (loop [i (dec buf-len)]
+                          (cond
+                            (< i 0) -1
+                            (= (byte \newline) (aget buf i)) i
+                            :else (recur (dec i))))
+            complete-byte-len (inc last-nl-idx)
+            held-back? (< complete-byte-len buf-len)
+            ;; Decode only the newline-terminated prefix. The byte at
+            ;; last-nl-idx is `\n` (ASCII), so the slice ends at a valid
+            ;; UTF-8 character boundary.
+            complete-text (if (pos? complete-byte-len)
+                            (String. buf 0 complete-byte-len "UTF-8")
+                            "")
+            ;; split with -1 keeps the trailing "" left by the final \n;
+            ;; butlast drops that empty slot.
+            lines (if (pos? complete-byte-len)
+                    (vec (butlast (str/split complete-text #"\n" -1)))
+                    [])]
+        {:lines lines :held-back? held-back?}))
+    (catch Exception e
+      (log/error e "Failed to read JSONL file with hold-back"
+                 {:file file-path})
+      {:lines [] :held-back? false})))
+
 (defn stamp-offsets
   "Map each raw line in `complete-vec` through `parse-jsonl-line` then
   `(providers/parse-message provider ...)`, stamping the surviving canonical
