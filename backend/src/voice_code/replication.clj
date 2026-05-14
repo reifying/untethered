@@ -1081,6 +1081,101 @@
            (filter some?)
            (vec)))))
 
+(def ^:private file-signature-sentinel-uuid
+  "Sentinel UUID used when the first JSONL line lacks a parsable UUID
+  (e.g. summary-only sessions, empty files). Keeps the `\"{length}:{uuid}\"`
+  shape of `compute-file-signature` well-formed."
+  "00000000-0000-0000-0000-000000000000")
+
+(defn- read-first-jsonl-line
+  "Return the first newline-terminated line of `f`, or nil if the file is
+  empty, unreadable, or has no `\\n` yet (a torn write in progress).
+
+  Mirrors the newline hold-back rule used by `parse-jsonl-incremental`:
+  returning the partial content of an unterminated final line could
+  briefly yield a non-sentinel UUID for a valid-JSON partial write and
+  spuriously trip the §6 R2 mismatch path during the writer's flush
+  window.
+
+  Reads byte-by-byte (no buffering) since the first line is small and we
+  only need to find the first `\\n` — UTF-8-safe because `\\n` is 0x0A
+  and never appears as a continuation byte."
+  [^java.io.File f]
+  (when (.exists f)
+    (try
+      (with-open [is (java.io.FileInputStream. f)]
+        (let [baos (java.io.ByteArrayOutputStream.)
+              terminated? (loop []
+                            (let [b (.read is)]
+                              (cond
+                                (= b -1) false
+                                (= b 10) true
+                                :else (do (.write baos b) (recur)))))]
+          (when terminated?
+            (.toString baos "UTF-8"))))
+      (catch Exception _ nil))))
+
+(defn- jsonl-first-line-uuid
+  "Extract `:uuid` from the first JSONL line of `f`. Returns the sentinel
+  UUID if the line is missing, malformed, or lacks a UUID field — that
+  keeps the signature shape stable for summary-only and empty files."
+  [^java.io.File f]
+  (or (when-let [line (read-first-jsonl-line f)]
+        (try
+          (:uuid (json/parse-string line true))
+          (catch Exception _ nil)))
+      file-signature-sentinel-uuid))
+
+(defn compute-file-signature
+  "Pure helper for §6 R2 `file_signature` — `\"{file-length}:{first-line-uuid}\"`.
+
+  The signature is constant for the lifetime of an append-only session file
+  and changes on any in-place prefix rewrite (compact, restore-from-backup,
+  third-party `sed -i`). It is the trigger the iOS client uses to purge and
+  re-subscribe from offset 0 (see the design doc, §6 R2).
+
+  Per-provider behavior:
+   - `:claude` / `:copilot` — `file-path` points to a JSONL file. Signature
+     is `(File.length(), first-line-uuid)`; empty / unreadable files yield
+     `\"0:00000000-0000-0000-0000-000000000000\"`.
+   - `:opencode` — `file-path` points to the session info JSON
+     (`<storage>/session/<hash>/ses_<id>.json`). The directory analog is
+     `(message-file-count, first-message-filename)` over
+     `<storage>/message/<session-id>/`. Empty / missing dir → `\"0:\"`.
+   - `:cursor` — returns nil; Cursor sessions never carry signatures.
+   - Any other provider — returns nil.
+
+  Pure with respect to atom state: reads from disk but does not mutate
+  `file-positions`, `session-index`, etc."
+  [provider file-path]
+  (case provider
+    (:claude :copilot)
+    (when file-path
+      (let [f (io/file file-path)]
+        (str (.length f) ":" (jsonl-first-line-uuid f))))
+
+    :opencode
+    (when file-path
+      (let [session-file (io/file file-path)
+            info (when (.exists session-file)
+                   (try (json/parse-string (slurp session-file) true)
+                        (catch Exception _ nil)))
+            session-id (:id info)
+            msgs-dir (when session-id
+                       (io/file (opencode-storage-base) "message" session-id))
+            msg-files (when (and msgs-dir (.exists msgs-dir) (.isDirectory msgs-dir))
+                        (->> (.listFiles msgs-dir)
+                             (filter (fn [^java.io.File child]
+                                       (str/ends-with? (.getName child) ".json")))
+                             (sort-by (fn [^java.io.File child] (.getName child)))))
+            cnt (count msg-files)
+            first-name (when (seq msg-files) (.getName ^java.io.File (first msg-files)))]
+        (str cnt ":" (or first-name ""))))
+
+    :cursor nil
+
+    nil))
+
 (defn- file-length-bytes
   "Indirection over `java.io.File/length` so tests can stage a TOCTOU race by
   redefining this var to return a stale size while appending bytes underneath.

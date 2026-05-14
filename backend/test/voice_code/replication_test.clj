@@ -472,6 +472,88 @@
       (is (= "test message" (:text (first parsed))))
       (is (= :claude (:provider (first parsed)))))))
 
+(def ^:private file-signature-sentinel
+  "00000000-0000-0000-0000-000000000000")
+
+(deftest test-compute-file-signature-claude-known-fixture
+  (testing "Claude JSONL produces deterministic '{length}:{first-line-uuid}' and is stable across re-reads"
+    (let [uuid "01234567-89ab-cdef-0123-456789abcdef"
+          line (claude-jsonl {:type "user" :text "hello" :uuid uuid})
+          file (create-test-jsonl-file "fsig-known.jsonl" [line])
+          expected (str (.length file) ":" uuid)
+          sig1 (repl/compute-file-signature :claude (.getAbsolutePath file))
+          sig2 (repl/compute-file-signature :claude (.getAbsolutePath file))]
+      (is (= expected sig1))
+      (is (= sig1 sig2) "signature is stable across re-reads"))))
+
+(deftest test-compute-file-signature-append-preserves-first-line-uuid
+  (testing "Appending a line changes the length component but preserves the first-line UUID"
+    (let [uuid1 "11111111-1111-1111-1111-111111111111"
+          uuid2 "22222222-2222-2222-2222-222222222222"
+          line1 (claude-jsonl {:type "user" :text "first" :uuid uuid1})
+          line2 (claude-jsonl {:type "assistant" :text "second" :uuid uuid2})
+          file (create-test-jsonl-file "fsig-append.jsonl" [line1])
+          before (repl/compute-file-signature :claude (.getAbsolutePath file))]
+      (spit file (str line2 "\n") :append true)
+      (let [after (repl/compute-file-signature :claude (.getAbsolutePath file))
+            [len-before uuid-before] (str/split before #":" 2)
+            [len-after uuid-after] (str/split after #":" 2)]
+        (is (= uuid1 uuid-before))
+        (is (= uuid-before uuid-after) "first-line UUID is preserved across append")
+        (is (not= len-before len-after) "length component changes")))))
+
+(deftest test-compute-file-signature-prefix-rewrite-changes-uuid
+  (testing "In-place prefix rewrite changes the first-line-uuid component (R2 trigger)"
+    (let [uuid1 "11111111-1111-1111-1111-111111111111"
+          uuid2 "22222222-2222-2222-2222-222222222222"
+          line1 (claude-jsonl {:type "user" :text "before" :uuid uuid1})
+          line2 (claude-jsonl {:type "user" :text "after" :uuid uuid2})
+          file (create-test-jsonl-file "fsig-rewrite.jsonl" [line1])
+          before (repl/compute-file-signature :claude (.getAbsolutePath file))]
+      (spit file (str line2 "\n"))
+      (let [after (repl/compute-file-signature :claude (.getAbsolutePath file))]
+        (is (not= before after) "signature changes after prefix rewrite")
+        (is (str/ends-with? before (str ":" uuid1)))
+        (is (str/ends-with? after (str ":" uuid2)))))))
+
+(deftest test-compute-file-signature-empty-file-returns-sentinel
+  (testing "Empty Claude file → '0:<sentinel-uuid>'"
+    (let [file (create-test-jsonl-file "fsig-empty.jsonl" [])]
+      (is (= "0:00000000-0000-0000-0000-000000000000"
+             (repl/compute-file-signature :claude (.getAbsolutePath file))))))
+  (testing "Empty Copilot events.jsonl → '0:<sentinel-uuid>'"
+    (let [file (create-test-jsonl-file "fsig-empty-copilot.jsonl" [])]
+      (is (= "0:00000000-0000-0000-0000-000000000000"
+             (repl/compute-file-signature :copilot (.getAbsolutePath file)))))))
+
+(deftest test-compute-file-signature-summary-only-uses-sentinel
+  (testing "First line lacking :uuid (e.g. Claude summary entry) yields sentinel UUID component"
+    (let [summary-line (json/generate-string {:type "summary" :summary "title"})
+          file (create-test-jsonl-file "fsig-summary.jsonl" [summary-line])
+          sig (repl/compute-file-signature :claude (.getAbsolutePath file))]
+      (is (str/ends-with? sig (str ":" file-signature-sentinel))
+          "sentinel UUID used when first line has no :uuid"))))
+
+(deftest test-compute-file-signature-copilot-jsonl
+  (testing "Copilot JSONL is treated like Claude: length + first-line uuid"
+    (let [uuid "33333333-3333-3333-3333-333333333333"
+          line (json/generate-string {:type "user" :uuid uuid
+                                      :timestamp "2026-04-19T00:00:00Z"
+                                      :message {:role "user" :content "hi"}})
+          file (create-test-jsonl-file "fsig-copilot.jsonl" [line])
+          sig (repl/compute-file-signature :copilot (.getAbsolutePath file))]
+      (is (= (str (.length file) ":" uuid) sig)))))
+
+(deftest test-compute-file-signature-cursor-returns-nil
+  (testing ":cursor provider never carries a signature"
+    (let [file (create-test-jsonl-file "fsig-cursor.jsonl" ["irrelevant"])]
+      (is (nil? (repl/compute-file-signature :cursor (.getAbsolutePath file))))
+      (is (nil? (repl/compute-file-signature :cursor nil))))))
+
+(deftest test-compute-file-signature-unknown-provider-returns-nil
+  (testing "Unknown providers return nil rather than throwing"
+    (is (nil? (repl/compute-file-signature :unknown "/tmp/whatever")))))
+
 (deftest test-parse-jsonl-incremental
   (testing "Parse only new lines from file"
     (let [initial-messages ["{\"role\":\"user\",\"text\":\"msg1\"}"]
@@ -3647,6 +3729,39 @@
       (let [build-fn @#'repl/build-opencode-sessions-index
             index (build-fn)]
         (is (= 0 (count index)))))))
+
+(deftest test-compute-file-signature-opencode-directory
+  (testing "OpenCode signature is '(file-count):(first-filename)' over the messages dir"
+    (let [base-dir (io/file test-dir "fsig-opencode")
+          session-id "ses_sigtest1"
+          session-file (create-opencode-test-storage
+                        base-dir session-id "Sig Test" "/proj"
+                        [{:msg-id "msg_001" :role "user" :text "a"}
+                         {:msg-id "msg_002" :role "assistant" :text "b"}
+                         {:msg-id "msg_003" :role "user" :text "c"}])]
+      (with-redefs [repl/opencode-storage-base (fn [] (io/file base-dir "storage"))]
+        (let [sig (repl/compute-file-signature :opencode (.getAbsolutePath session-file))]
+          (is (= "3:msg_001.json" sig))))))
+
+  (testing "OpenCode signature is stable across re-reads"
+    (let [base-dir (io/file test-dir "fsig-opencode-stable")
+          session-id "ses_sigtest2"
+          session-file (create-opencode-test-storage
+                        base-dir session-id "Stable" "/proj"
+                        [{:msg-id "msg_a" :role "user" :text "x"}])]
+      (with-redefs [repl/opencode-storage-base (fn [] (io/file base-dir "storage"))]
+        (let [sig1 (repl/compute-file-signature :opencode (.getAbsolutePath session-file))
+              sig2 (repl/compute-file-signature :opencode (.getAbsolutePath session-file))]
+          (is (= sig1 sig2))
+          (is (= "1:msg_a.json" sig1))))))
+
+  (testing "OpenCode with no message dir → '0:'"
+    (let [base-dir (io/file test-dir "fsig-opencode-nomsg")
+          session-id "ses_nomsg"
+          session-file (create-opencode-test-storage
+                        base-dir session-id "Empty" "/proj" [])]
+      (with-redefs [repl/opencode-storage-base (fn [] (io/file base-dir "storage"))]
+        (is (= "0:" (repl/compute-file-signature :opencode (.getAbsolutePath session-file))))))))
 
 (deftest test-build-index-with-all-four-providers
   (testing "build-index! discovers sessions from all four providers"
