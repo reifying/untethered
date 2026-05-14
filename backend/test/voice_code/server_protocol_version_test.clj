@@ -1,10 +1,22 @@
 (ns voice-code.server-protocol-version-test
-  "Tests for the hello handshake protocol-version guard (AC7 in the
-   append-only-message-stream design). The backend must reject clients
-   announcing `protocol_version < 0.4.0` with the exact error envelope
-   required by the iOS client, and the check must be gated on the
-   :message-stream-version config flag so flipping to :v0.3.0 disables
-   it cleanly."
+  "Tests for protocol-version handshake behavior.
+
+   Two related concerns share this file:
+
+   1. Hello-handshake reject guard (AC7 in the append-only-message-stream
+      design). The backend must reject clients announcing
+      `protocol_version < 0.4.0` with the exact error envelope required
+      by the iOS client, and the check must be gated on the
+      :message-stream-version config flag so flipping to :v0.3.0 disables
+      it cleanly.
+
+   2. Per-channel `:negotiated-protocol-version` selection on connect
+      (§3.2 of voice-code-sync-kafka-redesign-2026-05-10.md). The connect
+      handler computes `min(client-version, server-max-protocol-version)`
+      and surfaces the result on the channel state AND on the wire
+      (`negotiated_protocol_version` field on the :connected reply), so a
+      `VC_OFFSET_PROTOCOL=0` silent downgrade leaves the iOS client
+      aware of which wire shape to use."
   (:require [clojure.test :refer :all]
             [voice-code.server :as server]))
 
@@ -27,7 +39,15 @@
     (try (f)
          (finally (reset! server/message-stream-version original)))))
 
-(use-fixtures :each with-test-api-key with-stream-version-atom)
+(defn- with-server-max-atom
+  "Restore the :server-max-protocol-version atom after every test; tests
+   reset it to drive the cap (e.g. `VC_OFFSET_PROTOCOL=0` style downgrade)."
+  [f]
+  (let [original @server/server-max-protocol-version]
+    (try (f)
+         (finally (reset! server/server-max-protocol-version original)))))
+
+(use-fixtures :each with-test-api-key with-stream-version-atom with-server-max-atom)
 
 ;; ---------------------------------------------------------------------------
 ;; parse-protocol-version
@@ -284,3 +304,208 @@
                     @sent)
           "no unsupported_protocol_version envelope should be emitted")
       (swap! server/connected-clients dissoc fake-channel))))
+
+;; ---------------------------------------------------------------------------
+;; v0.5.0 per-channel negotiation (§3.2 of voice-code-sync-kafka-redesign).
+
+(deftest negotiate-channel-protocol-version-test
+  (testing "omitted/unparseable client version falls back to floor"
+    (is (= :v0.4.0 (server/negotiate-channel-protocol-version nil :v0.4.0 :v0.5.0)))
+    (is (= :v0.4.0 (server/negotiate-channel-protocol-version "" :v0.4.0 :v0.5.0)))
+    (is (= :v0.4.0 (server/negotiate-channel-protocol-version "garbage" :v0.4.0 :v0.5.0)))
+    ;; Rollback to v0.3.0 floor — omitted version follows the floor down.
+    (is (= :v0.3.0 (server/negotiate-channel-protocol-version nil :v0.3.0 :v0.5.0))))
+
+  (testing "client at/below server-max is honored exactly"
+    (is (= :v0.4.0 (server/negotiate-channel-protocol-version "0.4.0" :v0.4.0 :v0.5.0)))
+    (is (= :v0.5.0 (server/negotiate-channel-protocol-version "0.5.0" :v0.4.0 :v0.5.0))))
+
+  (testing "client above server-max is capped at server-max (no rejection)"
+    ;; A future v0.6.0 client against a v0.5.0-capped server must still
+    ;; negotiate down rather than get rejected, mirroring the
+    ;; VC_OFFSET_PROTOCOL=0 silent-downgrade design.
+    (is (= :v0.5.0 (server/negotiate-channel-protocol-version "0.6.0" :v0.4.0 :v0.5.0)))
+    (is (= :v0.4.0 (server/negotiate-channel-protocol-version "1.2.3" :v0.4.0 :v0.4.0))))
+
+  (testing "VC_OFFSET_PROTOCOL=0 style cap of :v0.4.0 silently downgrades v0.5.0 clients"
+    (is (= :v0.4.0 (server/negotiate-channel-protocol-version "0.5.0" :v0.4.0 :v0.4.0))))
+
+  (testing "lax-mode v0.3.0 client falls through to :v0.3.0 (enforce-protocol-version! lets it past)"
+    (is (= :v0.3.0 (server/negotiate-channel-protocol-version "0.3.0" :v0.3.0 :v0.5.0))))
+
+  (testing "unsupported parseable triples fall back to floor as a safety net"
+    ;; A "0.2.0" client that slipped past lax-mode enforcement maps to
+    ;; nothing in protocol-version-keyword-by-vec; the function must not
+    ;; return nil — it falls back to floor so downstream dispatch never
+    ;; sees an unknown keyword.
+    (is (= :v0.4.0 (server/negotiate-channel-protocol-version "0.2.0" :v0.4.0 :v0.5.0))))
+
+  (testing "zero-arg form reads the live atoms"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/server-max-protocol-version :v0.5.0)
+    (is (= :v0.5.0 (server/negotiate-channel-protocol-version "0.5.0")))
+    (is (= :v0.4.0 (server/negotiate-channel-protocol-version "0.4.0")))
+    (is (= :v0.4.0 (server/negotiate-channel-protocol-version nil)))
+    (reset! server/server-max-protocol-version :v0.4.0)
+    (is (= :v0.4.0 (server/negotiate-channel-protocol-version "0.5.0"))
+        "lowering the cap to v0.4.0 silently downgrades a v0.5.0 client")))
+
+(deftest channel-protocol-test
+  (testing "returns the persisted :negotiated-protocol-version for a channel"
+    (let [fake-channel (Object.)]
+      (try
+        (swap! server/connected-clients assoc fake-channel
+               {:negotiated-protocol-version :v0.5.0})
+        (is (= :v0.5.0 (server/channel-protocol fake-channel)))
+        (swap! server/connected-clients assoc-in
+               [fake-channel :negotiated-protocol-version] :v0.4.0)
+        (is (= :v0.4.0 (server/channel-protocol fake-channel)))
+        (finally
+          (swap! server/connected-clients dissoc fake-channel)))))
+
+  (testing "returns nil for an unknown channel (no handshake yet)"
+    (is (nil? (server/channel-protocol (Object.))))))
+
+(defn- run-connect
+  "Run handle-message with a connect frame, stubbing every downstream
+   side-effect the handler triggers so the test stays isolated. Returns
+   {:sent [..]} (in receive order)."
+  [fake-channel msg]
+  (let [sent (atom [])
+        closed (atom false)]
+    (with-redefs [org.httpkit.server/send! (fn [_ m] (swap! sent conj m))
+                  org.httpkit.server/close (fn [_] (reset! closed true))
+                  voice-code.replication/get-all-sessions (constantly [])
+                  server/send-recent-sessions! (fn [_ _] nil)
+                  server/send-available-commands! (fn [_ _] nil)
+                  voice-code.supervisor/start-supervisor! (fn [_] nil)]
+      (server/handle-message fake-channel msg))
+    {:sent @sent :closed? @closed}))
+
+(defn- connected-frame
+  "Pluck the :connected frame from a captured send sequence. Returns the
+   parsed map, or nil if none was emitted."
+  [sent]
+  (some (fn [m]
+          (let [p (server/parse-json m)]
+            (when (= "connected" (:type p)) p)))
+        sent))
+
+(deftest connect-handler-stores-negotiated-protocol-version-on-channel
+  (testing "client announcing 0.5.0 against the default :v0.5.0 cap → channel gets :v0.5.0"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/server-max-protocol-version :v0.5.0)
+    (let [fake-channel (Object.)]
+      (try
+        (run-connect fake-channel
+                     (server/generate-json {:type "connect"
+                                            :api-key test-api-key
+                                            :protocol-version "0.5.0"}))
+        (is (= :v0.5.0 (server/channel-protocol fake-channel)))
+        (finally
+          (swap! server/connected-clients dissoc fake-channel)))))
+
+  (testing "client announcing 0.4.0 against the default :v0.5.0 cap → channel gets :v0.4.0"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/server-max-protocol-version :v0.5.0)
+    (let [fake-channel (Object.)]
+      (try
+        (run-connect fake-channel
+                     (server/generate-json {:type "connect"
+                                            :api-key test-api-key
+                                            :protocol-version "0.4.0"}))
+        (is (= :v0.4.0 (server/channel-protocol fake-channel)))
+        (finally
+          (swap! server/connected-clients dissoc fake-channel)))))
+
+  (testing "client omits protocol_version → channel gets the floor (:v0.4.0)"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/server-max-protocol-version :v0.5.0)
+    (let [fake-channel (Object.)]
+      (try
+        (run-connect fake-channel
+                     (server/generate-json {:type "connect"
+                                            :api-key test-api-key}))
+        (is (= :v0.4.0 (server/channel-protocol fake-channel)))
+        (finally
+          (swap! server/connected-clients dissoc fake-channel))))))
+
+(deftest connect-handler-emits-negotiated-protocol-version-on-wire
+  (testing "connected reply carries negotiated_protocol_version matching channel state"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/server-max-protocol-version :v0.5.0)
+    (let [fake-channel (Object.)]
+      (try
+        (let [{:keys [sent]} (run-connect fake-channel
+                                          (server/generate-json
+                                           {:type "connect"
+                                            :api-key test-api-key
+                                            :protocol-version "0.5.0"}))
+              frame (connected-frame sent)]
+          (is (some? frame) "a :connected frame must be emitted")
+          (is (= "0.5.0" (:negotiated-protocol-version frame))
+              "wire value is the string form, not the keyword")
+          (is (= :v0.5.0 (server/channel-protocol fake-channel))
+              "wire value matches the per-channel persisted value"))
+        (finally
+          (swap! server/connected-clients dissoc fake-channel)))))
+
+  (testing "VC_OFFSET_PROTOCOL=0 cap → v0.5.0 client is silently downgraded; reply says 0.4.0"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/server-max-protocol-version :v0.4.0)
+    (let [fake-channel (Object.)]
+      (try
+        (let [{:keys [sent closed?]}
+              (run-connect fake-channel
+                           (server/generate-json {:type "connect"
+                                                  :api-key test-api-key
+                                                  :protocol-version "0.5.0"}))
+              frame (connected-frame sent)]
+          (is (false? closed?) "the socket must not be closed on silent downgrade")
+          (is (= "0.4.0" (:negotiated-protocol-version frame))
+              "the downgrade is announced via negotiated_protocol_version, not a reject")
+          (is (= :v0.4.0 (server/channel-protocol fake-channel))))
+        (finally
+          (swap! server/connected-clients dissoc fake-channel))))))
+
+(deftest hello-reply-advertises-server-max-protocol-version
+  (testing "hello version comes from the cap, not the floor"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/server-max-protocol-version :v0.5.0)
+    (is (= "0.5.0" (server/message-stream-version-string @server/server-max-protocol-version))
+        "sanity: cap atom produces the 0.5.0 string the hello handler emits"))
+
+  (testing "rollback cap (VC_OFFSET_PROTOCOL=0) lowers the advertised version to 0.4.0"
+    (reset! server/server-max-protocol-version :v0.4.0)
+    (is (= "0.4.0" (server/message-stream-version-string @server/server-max-protocol-version)))))
+
+(deftest two-channels-different-versions-each-get-their-own-negotiation
+  ;; Half of AC1: per-channel state is genuinely per-channel, not a shared
+  ;; global flip. Open two channels in the same server boot with different
+  ;; announced versions and assert both the stored value and the wire reply
+  ;; differ per channel.
+  (testing "v0.4.0 and v0.5.0 channels coexist with their own negotiated values"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/server-max-protocol-version :v0.5.0)
+    (let [ch-a (Object.)
+          ch-b (Object.)]
+      (try
+        (let [{sent-a :sent}
+              (run-connect ch-a (server/generate-json
+                                 {:type "connect"
+                                  :api-key test-api-key
+                                  :protocol-version "0.4.0"}))
+              {sent-b :sent}
+              (run-connect ch-b (server/generate-json
+                                 {:type "connect"
+                                  :api-key test-api-key
+                                  :protocol-version "0.5.0"}))
+              frame-a (connected-frame sent-a)
+              frame-b (connected-frame sent-b)]
+          (is (= :v0.4.0 (server/channel-protocol ch-a)))
+          (is (= :v0.5.0 (server/channel-protocol ch-b)))
+          (is (= "0.4.0" (:negotiated-protocol-version frame-a)))
+          (is (= "0.5.0" (:negotiated-protocol-version frame-b))))
+        (finally
+          (swap! server/connected-clients dissoc ch-a)
+          (swap! server/connected-clients dissoc ch-b))))))

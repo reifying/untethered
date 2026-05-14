@@ -102,13 +102,15 @@
     (let [config (server/load-config)]
       (is (= :v0.4.0 (:message-stream-version config)))))
 
-  (testing "coerce-message-stream-version accepts both supported values"
+  (testing "coerce-message-stream-version accepts all supported values"
     (is (= :v0.4.0 (server/coerce-message-stream-version :v0.4.0)))
-    (is (= :v0.3.0 (server/coerce-message-stream-version :v0.3.0))))
+    (is (= :v0.3.0 (server/coerce-message-stream-version :v0.3.0)))
+    (is (= :v0.5.0 (server/coerce-message-stream-version :v0.5.0))))
 
   (testing "coerce-message-stream-version accepts string forms (env-var friendly)"
     (is (= :v0.4.0 (server/coerce-message-stream-version "v0.4.0")))
-    (is (= :v0.3.0 (server/coerce-message-stream-version ":v0.3.0"))))
+    (is (= :v0.3.0 (server/coerce-message-stream-version ":v0.3.0")))
+    (is (= :v0.5.0 (server/coerce-message-stream-version "v0.5.0"))))
 
   (testing "coerce-message-stream-version falls back to default on unknown / nil"
     (is (= server/default-message-stream-version
@@ -120,12 +122,15 @@
 
   (testing "message-stream-version-string strips the :v prefix"
     (is (= "0.4.0" (server/message-stream-version-string :v0.4.0)))
-    (is (= "0.3.0" (server/message-stream-version-string :v0.3.0))))
+    (is (= "0.3.0" (server/message-stream-version-string :v0.3.0)))
+    (is (= "0.5.0" (server/message-stream-version-string :v0.5.0))))
 
-  (testing "gate predicates only fire on :v0.4.0"
+  (testing "gate predicates fire on every seq-stamped floor (:v0.4.0 and :v0.5.0)"
     (is (true?  (server/seq-migration-enabled?     :v0.4.0)))
+    (is (true?  (server/seq-migration-enabled?     :v0.5.0)))
     (is (false? (server/seq-migration-enabled?     :v0.3.0)))
     (is (true?  (server/hello-enforcement-enabled? :v0.4.0)))
+    (is (true?  (server/hello-enforcement-enabled? :v0.5.0)))
     (is (false? (server/hello-enforcement-enabled? :v0.3.0)))))
 
 (deftest test-load-config-with-v0-3-0-rollback
@@ -602,8 +607,11 @@
     (let [original @server/message-stream-version]
       (try
         (reset! server/message-stream-version :v0.3.0)
-        (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5}
-                                          :ch2 {:deleted-sessions #{} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5}})
+        ;; v0.5.0 dispatch is per-channel via :negotiated-protocol-version,
+        ;; so the floor atom alone no longer routes the rollback envelope;
+        ;; the channel itself carries the version.
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5 :negotiated-protocol-version :v0.3.0}
+                                          :ch2 {:deleted-sessions #{} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5 :negotiated-protocol-version :v0.3.0}})
         (let [sent-messages (atom [])]
           (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                    (swap! sent-messages conj {:channel channel :msg msg}))]
@@ -816,13 +824,18 @@
     (let [original @server/message-stream-version]
       (try
         (reset! server/message-stream-version :v0.3.0)
+        ;; Per-channel dispatch: each rollback channel carries its negotiated
+        ;; protocol explicitly so broadcast routes session_updated, not
+        ;; session_history.
         (reset! server/connected-clients
                 {:ch-a {:deleted-sessions #{}
                         :subscribed-sessions #{"session-A"}
-                        :recent-sessions-limit 5}
+                        :recent-sessions-limit 5
+                        :negotiated-protocol-version :v0.3.0}
                  :ch-b {:deleted-sessions #{}
                         :subscribed-sessions #{"session-B"}
-                        :recent-sessions-limit 5}})
+                        :recent-sessions-limit 5
+                        :negotiated-protocol-version :v0.3.0}})
         (let [sent-messages (atom [])]
           (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                    (swap! sent-messages conj {:channel channel :msg msg}))]
@@ -2359,7 +2372,13 @@
   (testing "Subscribe under :v0.3.0 config keeps the legacy last_message_id + total_count wire"
     (reset! server/message-stream-version :v0.3.0)
     (reset! server/api-key test-api-key)
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
+    ;; Per-channel dispatch (§3.2): the channel must carry the negotiated
+    ;; v0.3.0 protocol explicitly; the message-stream-version floor by
+    ;; itself no longer routes the rollback path.
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}
+                                                :max-message-size-kb 100
+                                                :authenticated true
+                                                :negotiated-protocol-version :v0.3.0}})
     (let [sent-messages (atom [])
           canonical-messages [{:uuid "uuid-a" :role "user" :text "first" :timestamp "2026-01-30T12:00:00Z" :provider :claude}
                               {:uuid "uuid-b" :role "assistant" :text "second" :timestamp "2026-01-30T12:00:05Z" :provider :claude}

@@ -104,9 +104,20 @@
 ;; rollback semantics. :v0.4.0 enables the append-only monotonic-seq path
 ;; (post-migration, strict hello enforcement). :v0.3.0 preserves the legacy
 ;; last_message_id / session_updated paths for rollback without a redeploy.
-(def supported-message-stream-versions #{:v0.3.0 :v0.4.0})
+;; :v0.5.0 introduces the Kafka-style offset protocol layered on the same
+;; seq-stamping infrastructure (see voice-code-sync-kafka-redesign-2026-05-10.md §3.2).
+(def supported-message-stream-versions #{:v0.3.0 :v0.4.0 :v0.5.0})
 
 (def default-message-stream-version :v0.4.0)
+
+;; Cap on the per-channel protocol negotiation ladder (§3.2). The
+;; `:message-stream-version` atom is the floor (lowest accepted protocol;
+;; also the default for clients that omit `protocol_version`); this atom is
+;; the ceiling. `min(client-version, server-max-protocol-version)` chooses
+;; the per-channel value. `VC_OFFSET_PROTOCOL=0` (handled in T8) lowers this
+;; cap to :v0.4.0 for an emergency global downgrade without rejecting v0.5.0
+;; clients — they are silently negotiated down instead.
+(def default-server-max-protocol-version :v0.5.0)
 
 (defn coerce-message-stream-version
   "Coerce a config value to a supported :message-stream-version keyword.
@@ -131,6 +142,12 @@
 ;; one-shot seq migration (T04).
 (defonce message-stream-version (atom default-message-stream-version))
 
+;; Server-side cap on negotiated protocol version. Set by tests via reset!
+;; and by T8 (`VC_OFFSET_PROTOCOL=0` rollback) to :v0.4.0 to silently
+;; downgrade v0.5.0 clients. Read by `negotiate-channel-protocol-version`
+;; and the hello handler (the advertised "preferred" version).
+(defonce server-max-protocol-version (atom default-server-max-protocol-version))
+
 (defn message-stream-version-string
   "Human-facing protocol version (e.g. \"0.4.0\") for the given keyword
    (e.g. :v0.4.0). Used in the hello handler and in rejection error payloads."
@@ -139,15 +156,20 @@
 
 (defn seq-migration-enabled?
   "True when the backend should run the one-shot JSONL→seq migration and
-   stamp seq on new messages. Gated on :message-stream-version."
+   stamp seq on new messages. Gated on :message-stream-version (the floor).
+   Fires for any non-rollback floor (v0.4.0+) because v0.5.0 reuses the
+   same seq-stamping infrastructure as offsets (offset = seq - 1)."
   ([] (seq-migration-enabled? @message-stream-version))
-  ([v] (= v :v0.4.0)))
+  ([v] (contains? #{:v0.4.0 :v0.5.0} v)))
 
 (defn hello-enforcement-enabled?
   "True when the hello handshake should reject clients announcing a protocol
-   version older than :v0.4.0. Gated on :message-stream-version."
+   version older than :v0.4.0. Gated on :message-stream-version (the floor).
+   The 0.4.0 cutoff is unchanged at v0.5.0 — the cap (server-max-protocol-version)
+   governs the upper bound via negotiate-channel-protocol-version, not this
+   guard."
   ([] (hello-enforcement-enabled? @message-stream-version))
-  ([v] (= v :v0.4.0)))
+  ([v] (contains? #{:v0.4.0 :v0.5.0} v)))
 
 (defn parse-protocol-version
   "Parse a semver-like wire string (e.g. \"0.3.0\") into [major minor patch]
@@ -172,17 +194,73 @@
   (when-let [parsed (parse-protocol-version (:protocol-version data))]
     (neg? (compare parsed [0 4 0]))))
 
+(def ^:private protocol-version-keyword-by-vec
+  "Lookup from a parse-protocol-version vector to the supported
+   :message-stream-version keyword. Used by
+   negotiate-channel-protocol-version to round-trip a wire string into
+   the canonical keyword (or nil for unrecognized triples)."
+  {[0 3 0] :v0.3.0
+   [0 4 0] :v0.4.0
+   [0 5 0] :v0.5.0})
+
+(defn negotiate-channel-protocol-version
+  "Compute the per-channel negotiated protocol version. Implements the
+   §3.2 ladder of voice-code-sync-kafka-redesign-2026-05-10:
+     1. Client omits or announces an unparseable version → floor.
+     2. Client announces a parseable version → min(client, server-max),
+        capped at server-max for any client value strictly above it (so a
+        future-version client like \"0.6.0\" announced against today's
+        :v0.5.0 cap negotiates down to :v0.5.0 instead of being rejected).
+        If min(client, server-max) doesn't map to a supported keyword
+        (e.g. a client announcing \"0.2.0\" that slips past lax-mode
+        enforcement) the result falls back to floor as a safety net.
+   The below-floor reject for clients announcing < 0.4.0 in enforce mode
+   is handled upstream by enforce-protocol-version! and does not reach
+   this function."
+  ([client-version-string]
+   (negotiate-channel-protocol-version client-version-string
+                                       @message-stream-version
+                                       @server-max-protocol-version))
+  ([client-version-string floor server-max]
+   (let [parsed (parse-protocol-version client-version-string)]
+     (if (nil? parsed)
+       floor
+       (let [server-max-vec (parse-protocol-version
+                             (message-stream-version-string server-max))
+             effective-vec (if (neg? (compare parsed server-max-vec))
+                             parsed
+                             server-max-vec)]
+         (or (protocol-version-keyword-by-vec effective-vec) floor))))))
+
 ;; Ephemeral mapping: WebSocket channel -> client state
 ;; This is just for routing messages during an active connection
 ;; Persistent session data comes from the replication system (filesystem-based)
 
 (defonce connected-clients
-  ;; Track all connected WebSocket clients: 
-  ;; channel -> {:deleted-sessions #{} 
+  ;; Track all connected WebSocket clients:
+  ;; channel -> {:deleted-sessions #{}
   ;;             :subscribed-sessions #{}  ; Sessions this client is subscribed to
-  ;;             :recent-sessions-limit 5 
-  ;;             :max-message-size-kb 200}
+  ;;             :recent-sessions-limit 5
+  ;;             :max-message-size-kb 200
+  ;;             :negotiated-protocol-version :v0.4.0 | :v0.5.0 | :v0.3.0}
   (atom {}))
+
+(defn channel-protocol
+  "Negotiated protocol version for the given channel, or nil if the channel
+   has not completed the connect handshake. Set by the connect handler
+   immediately after enforce-protocol-version! returns true. This is the
+   per-connection replacement for the global (seq-migration-enabled?) gate;
+   every per-channel code path that used to dispatch on the atom dispatches
+   on this value instead.
+
+   Call-site convention: nil falls through to the v0.4.0+ branch. Both the
+   subscribe handler and broadcast-session-history! test specifically for
+   `= :v0.3.0`, so a channel that bypassed the connect handshake (e.g.
+   fabricated in a unit / loopback test) takes the seq-stamped path. The
+   legacy v0.3.0 rollback path requires :negotiated-protocol-version :v0.3.0
+   to be explicitly set on the channel."
+  [channel]
+  (get-in @connected-clients [channel :negotiated-protocol-version]))
 
 ;; Default max message size in KB (conservative default well below iOS 256KB limit)
 ;; Lower default ensures older clients without set_max_message_size still work
@@ -1418,17 +1496,22 @@
    Under v0.3.0 rollback, emits the legacy `session_updated` envelope so
    existing clients keep working without a redeploy. Messages still carry
    `:seq` (assign-seq! stamps every parse regardless of protocol), which
-   v0.3.0 clients harmlessly ignore."
+   v0.3.0 clients harmlessly ignore.
+
+   With per-channel protocol negotiation (§3.2), the dispatch is now per
+   subscriber: each channel routes on (channel-protocol channel) rather
+   than the global atom. v0.5.0 channels currently take the same v0.4.0
+   session_history branch until T10 ships the tailored fan-out."
   [session-id new-messages]
-  (let [v0-4? (seq-migration-enabled?)
-        not-deleted-clients (filter (fn [[channel _]]
+  (let [not-deleted-clients (filter (fn [[channel _]]
                                       (not (is-session-deleted-for-client? channel session-id)))
                                     @connected-clients)
         push-clients (filter (fn [[_ client-info]]
                                (contains? (or (:subscribed-sessions client-info) #{})
                                           session-id))
                              not-deleted-clients)
-        push-count (count push-clients)]
+        push-count (count push-clients)
+        protocols (mapv (fn [[ch _]] (channel-protocol ch)) push-clients)]
 
     (if (zero? push-count)
       ;; Surface the no-subscriber case at INFO so the symptom is visible
@@ -1440,58 +1523,56 @@
                  :new-message-count (count new-messages)
                  :total-clients (count @connected-clients)
                  :recent-sessions-clients (count not-deleted-clients)
-                 :protocol (if v0-4? :v0.4.0 :v0.3.0)})
+                 :subscriber-protocols (frequencies protocols)})
       (log/info "Broadcasting session history"
                 {:session-id session-id
                  :new-message-count (count new-messages)
                  :total-clients (count @connected-clients)
                  :push-clients push-count
                  :recent-sessions-clients (count not-deleted-clients)
-                 :protocol (if v0-4? :v0.4.0 :v0.3.0)}))
+                 :subscriber-protocols (frequencies protocols)}))
 
-    (if v0-4?
-      ;; v0.4.0: flat session_history broadcast. One payload built once,
-      ;; shipped to every eligible subscriber unchanged.
-      (let [msgs-vec (vec new-messages)
-            first-seq (:seq (first msgs-vec))
-            last-seq (:seq (last msgs-vec))
-            ;; (inc last-seq) is atomic with the message vector — assign-seq!
-            ;; advanced :next-seq to (inc last-stamped-seq) when stamping these
-            ;; messages. Reading session-index here would race a concurrent
-            ;; assign-seq! that already pushed the counter past last-seq+1,
-            ;; making the payload look like a multi-seq gap and triggering
-            ;; spurious resubscribes. Metadata read remains as fallback for
-            ;; empty broadcasts where last-seq is nil.
-            next-seq (or (when last-seq (inc last-seq))
-                         (:next-seq (repl/get-session-metadata session-id))
-                         1)
-            wire-messages (mapv #(assoc % :session-id session-id) msgs-vec)
-            payload {:type :session-history
-                     :session-id session-id
-                     :messages wire-messages
-                     :first-seq first-seq
-                     :last-seq last-seq
-                     :next-seq next-seq
-                     :is-complete true
-                     :gap nil}]
-        (doseq [[channel _] push-clients]
-          (log/debug "Broadcasting session-history window to subscriber"
-                     {:session-id session-id
-                      :first-seq first-seq
-                      :last-seq last-seq
-                      :channel-id (str channel)})
-          (send-to-client! channel payload)))
-
-      ;; v0.3.0 rollback: legacy session_updated envelope.
+    ;; v0.4.0/v0.5.0 payload — built once, shared across all seq-stamped
+    ;; subscribers. assign-seq!'s (inc last-stamped-seq) is atomic with the
+    ;; message vector, so reading session-index here would race a concurrent
+    ;; assign-seq! that already pushed the counter past last-seq+1, making
+    ;; the payload look like a multi-seq gap and triggering spurious
+    ;; resubscribes. Metadata read remains as fallback for empty broadcasts
+    ;; where last-seq is nil.
+    (let [msgs-vec (vec new-messages)
+          first-seq (:seq (first msgs-vec))
+          last-seq (:seq (last msgs-vec))
+          next-seq (or (when last-seq (inc last-seq))
+                       (:next-seq (repl/get-session-metadata session-id))
+                       1)
+          wire-messages (mapv #(assoc % :session-id session-id) msgs-vec)
+          v0-4-plus-payload {:type :session-history
+                             :session-id session-id
+                             :messages wire-messages
+                             :first-seq first-seq
+                             :last-seq last-seq
+                             :next-seq next-seq
+                             :is-complete true
+                             :gap nil}]
       (doseq [[channel _] push-clients]
-        (log/debug "Sending session-updated to client (v0.3.0 rollback)"
-                   {:session-id session-id
-                    :new-messages (count new-messages)
-                    :channel-id (str channel)})
-        (send-to-client! channel
-                         {:type :session-updated
-                          :session-id session-id
-                          :messages new-messages})))
+        (if (= :v0.3.0 (channel-protocol channel))
+          (do
+            (log/debug "Sending session-updated to client (v0.3.0 rollback)"
+                       {:session-id session-id
+                        :new-messages (count new-messages)
+                        :channel-id (str channel)})
+            (send-to-client! channel
+                             {:type :session-updated
+                              :session-id session-id
+                              :messages new-messages}))
+          (do
+            (log/debug "Broadcasting session-history window to subscriber"
+                       {:session-id session-id
+                        :first-seq first-seq
+                        :last-seq last-seq
+                        :channel-id (str channel)
+                        :protocol (channel-protocol channel)})
+            (send-to-client! channel v0-4-plus-payload)))))
 
     ;; recent_sessions piggybacks for every connected non-deleted client,
     ;; not just per-session subscribers — see docstring.
@@ -1584,24 +1665,45 @@
         (when (and (enforce-protocol-version! channel data)
                    (authenticate-connect! channel data))
           ;; Authentication succeeded, proceed with connect logic
-          (log/info "Client connected and authenticated")
+          ;; Compute the per-channel negotiated protocol version per §3.2 of
+          ;; voice-code-sync-kafka-redesign-2026-05-10.md. The result is
+          ;; recorded on connected-clients[channel] and surfaced to the
+          ;; client in the :connected reply so the client knows which wire
+          ;; shape to send on subscribe; without this, a VC_OFFSET_PROTOCOL=0
+          ;; silent downgrade (T8) would leave iOS sending the v0.5.0 shape
+          ;; against a v0.4.0-only server arm.
+          (let [negotiated-version (negotiate-channel-protocol-version
+                                    (:protocol-version data))
+                negotiated-version-str (message-stream-version-string negotiated-version)
+                limit (or (:recent-sessions-limit data) 5)]
+            (log/info "Client connected and authenticated"
+                      {:client-protocol-version (:protocol-version data)
+                       :negotiated-protocol-version negotiated-version
+                       :floor @message-stream-version
+                       :server-max @server-max-protocol-version})
 
-          ;; Send connected confirmation per STANDARDS.md protocol.
-          ;; iOS only sets isAuthenticated=true on receipt of this message;
-          ;; without it, subscribe() defers forever and session_history
-          ;; pushes never reach the client.
-          (http/send! channel
-                      (generate-json
-                       {:type :connected
-                        :message "Session registered"
-                        :session-id (:session-id data)}))
-
-          ;; Register client with initial state (merge to preserve :authenticated flag)
-          (let [limit (or (:recent-sessions-limit data) 5)]
+            ;; Register the negotiated version on the channel BEFORE sending
+            ;; the :connected reply so any downstream code that reads
+            ;; (channel-protocol channel) sees a populated value.
             (swap! connected-clients update channel merge
                    {:deleted-sessions #{}
                     :subscribed-sessions #{}
-                    :recent-sessions-limit limit}))
+                    :recent-sessions-limit limit
+                    :negotiated-protocol-version negotiated-version})
+
+            ;; Send connected confirmation per STANDARDS.md protocol.
+            ;; iOS only sets isAuthenticated=true on receipt of this message;
+            ;; without it, subscribe() defers forever and session_history
+            ;; pushes never reach the client. The negotiated_protocol_version
+            ;; field (option (i) from §3.2 of the redesign — extend the
+            ;; existing connect-success reply, not a new frame) tells iOS
+            ;; which wire shape to use for subscribe and session_history.
+            (http/send! channel
+                        (generate-json
+                         {:type :connected
+                          :message "Session registered"
+                          :session-id (:session-id data)
+                          :negotiated-protocol-version negotiated-version-str})))
 
           ;; Send session list (limit to 50 most recent, lightweight fields only)
           (let [all-sessions (repl/get-all-sessions)
@@ -1654,10 +1756,13 @@
             ;; Client requests session history. In v0.4.0 the cursor is an
             ;; integer `last_seq`; in v0.3.0 (rollback) it is `last_message_id`
             ;; (UUID of the newest message the client already has).
+            ;; Dispatch on the per-channel :negotiated-protocol-version set by
+            ;; the connect handler; v0.5.0 channels currently take the same
+            ;; "v0-4?" branch until T9 ships the offset-cursor wire shape.
             (let [session-id (:session-id data)
                   last-seq-val (:last-seq data)
                   last-message-id (:last-message-id data)
-                  v0-4? (seq-migration-enabled?)]
+                  v0-4? (not= :v0.3.0 (channel-protocol channel))]
               (cond
                 (not session-id)
                 (http/send! channel
@@ -2743,12 +2848,17 @@
         (do
           (log/info "WebSocket connection established" {:remote-addr (:remote-addr request)})
 
-          ;; Send hello message with auth_version
+          ;; Send hello message with auth_version. The advertised :version is
+          ;; the server's *preferred* (max-cap) protocol version per §3.2 of
+          ;; voice-code-sync-kafka-redesign-2026-05-10.md — the client may
+          ;; still negotiate lower via connect.protocol_version, and the
+          ;; resulting per-channel value is echoed back in the :connected
+          ;; reply (negotiated_protocol_version).
           (http/send! channel
                       (generate-json
                        {:type :hello
                         :message "Welcome to voice-code backend"
-                        :version (message-stream-version-string @message-stream-version)
+                        :version (message-stream-version-string @server-max-protocol-version)
                         :auth-version 1
                         :instructions "Send connect message with api_key"}))
 
@@ -2940,9 +3050,17 @@
     (log/info "Initializing session replication system")
     (repl/initialize-index!)
 
-    ;; One-shot seq migration (gated on :message-stream-version = :v0.4.0).
+    ;; One-shot seq migration (gated on :message-stream-version floor —
+    ;; fires for :v0.4.0 and :v0.5.0; skipped on :v0.3.0 rollback).
     ;; Idempotent on subsequent boots — skips sessions whose :next-seq has
     ;; already been computed.
+    ;;
+    ;; NOTE: this call site intentionally STAYS on the global atom rather
+    ;; than (channel-protocol channel). It runs inside start-replication-system!
+    ;; before any client has connected, so there is no channel to dispatch on.
+    ;; The §3.2 per-channel migration applies only to per-connection sites
+    ;; (subscribe handler, push fan-out); the startup migration is a
+    ;; whole-server pre-flight that backfills :next-seq for the v0.4.0+ arms.
     (when (seq-migration-enabled?)
       (repl/migrate-session-seqs!))
 
