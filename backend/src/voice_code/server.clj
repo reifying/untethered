@@ -3096,6 +3096,14 @@
     (when (seq-migration-enabled?)
       (repl/migrate-session-seqs!))
 
+    ;; v0.5.0 offset protocol: seed `line-counts` from on-disk JSONL files so
+    ;; the watcher's stamp-offsets tick has a `pre-line-count` for each session
+    ;; from the very first firing. Runs unconditionally — the atom is populated
+    ;; whether or not any client negotiates the v0.5.0 push path; the data is
+    ;; cheap to maintain and unused under v0.4.0 rollback. Idempotent on
+    ;; subsequent boots (overwrites with the current on-disk count).
+    (repl/populate-line-counts!)
+
     ;; Rebuild live-windows from any tmux sessions that survived a prior restart
     (log/info "Scanning for existing tmux windows")
     (tmux/scan-existing-windows!)

@@ -94,6 +94,7 @@
         (reset! repl/turn-complete-seen {})
         (reset! repl/copilot-last-tool-requests {})
         (reset! repl/file-positions {})
+        (reset! repl/line-counts {})
         (f)
         (cleanup-test-dir)
         (finally
@@ -1660,6 +1661,209 @@
             "Cursor :file is not a byte-cursor watch path; do not pollute file-positions")
         (is (not (contains? @repl/file-positions opencode-path))
             "OpenCode :file is not a byte-cursor watch path; do not pollute file-positions")))))
+
+;; ============================================================================
+;; line-counts Tests (tmux-untethered-398.2)
+;; ============================================================================
+
+(defn- line-counts-claude-session!
+  "Create a Claude .jsonl fixture file in test-dir and a matching
+   session-index entry (no :next-seq movement — just metadata + file).
+   `messages` is a vector of text strings; each becomes a user message."
+  [session-id messages & {:keys [provider message-count]
+                          :or {provider :claude}}]
+  (let [filename (str session-id ".jsonl")
+        lines (mapv (fn [t] (claude-jsonl {:type "user" :text t})) messages)
+        file (create-test-jsonl-file filename lines)
+        file-path (.getAbsolutePath file)]
+    (swap! repl/session-index assoc session-id
+           {:session-id session-id
+            :file file-path
+            :name "LC Test Session"
+            :provider provider
+            :message-count (or message-count (count messages))
+            :next-seq 1
+            :min-available-seq 1})
+    [session-id file-path]))
+
+(deftest test-count-complete-lines-counts-only-newline-terminated
+  (testing "count-complete-lines counts only newline-terminated lines (mirrors holdback)"
+    (let [file (io/file test-dir "lc-terminator.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file "a\nbb\nccc\n")
+      (is (= 3 (repl/count-complete-lines fp))
+          "Three newline-terminated lines counted")
+      (spit file "a\nbb\nccc\nno-trailing-newline")
+      (is (= 3 (repl/count-complete-lines fp))
+          "Trailing partial line (no \\n) is excluded — holdback rule")
+      (spit file "")
+      (is (zero? (repl/count-complete-lines fp))
+          "Empty file is zero lines")
+      (is (zero? (repl/count-complete-lines (str test-dir "/never-existed.jsonl")))
+          "Missing file resolves to 0 without throwing"))))
+
+(deftest test-count-complete-lines-handles-multibyte-utf8
+  (testing "count-complete-lines is byte-scan based, so UTF-8 multi-byte content does not skew the count"
+    (let [file (io/file test-dir "lc-utf8.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      ;; Three lines, each containing a 4-byte emoji
+      (spit file "🎉\n🚀\n💥\n")
+      (is (= 3 (repl/count-complete-lines fp))
+          "Multi-byte UTF-8 lines counted by byte newline, not codepoint"))))
+
+(deftest test-populate-line-counts-seeds-atom-from-index
+  (testing "populate-line-counts! seeds line-counts for every :claude session in the index"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (let [[_ p-a] (line-counts-claude-session! "lc-a" ["one" "two" "three"])
+            [_ p-b] (line-counts-claude-session! "lc-b" ["only"])
+            [_ p-c] (line-counts-claude-session! "lc-c" [])
+            result (repl/populate-line-counts!)]
+        (is (= 3 (:populated result)))
+        (is (= 0 (:errors result)))
+        (is (= 3 (get @repl/line-counts p-a))
+            "Three-message session seeded to 3")
+        (is (= 1 (get @repl/line-counts p-b))
+            "One-message session seeded to 1")
+        (is (= 0 (get @repl/line-counts p-c))
+            "Empty session seeded to 0")))))
+
+(deftest test-populate-line-counts-skips-non-byte-cursor-providers
+  (testing "populate-line-counts! skips :cursor and :opencode sessions (non-JSONL :file)"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (let [cursor-store (create-test-jsonl-file "lc-cursor-store.db" [])
+            cursor-path (.getAbsolutePath cursor-store)
+            opencode-store (create-test-jsonl-file "lc-opencode-info.json" [])
+            opencode-path (.getAbsolutePath opencode-store)]
+        (swap! repl/session-index assoc "lc-cursor"
+               {:session-id "lc-cursor"
+                :file cursor-path
+                :provider :cursor
+                :message-count 1
+                :next-seq 1
+                :min-available-seq 1})
+        (swap! repl/session-index assoc "lc-opencode"
+               {:session-id "lc-opencode"
+                :file opencode-path
+                :provider :opencode
+                :message-count 1
+                :next-seq 1
+                :min-available-seq 1})
+        (let [result (repl/populate-line-counts!)]
+          (is (= 2 (:skipped result))
+              "Both non-byte-cursor sessions skipped")
+          (is (= 0 (:populated result)))
+          (is (not (contains? @repl/line-counts cursor-path))
+              "Cursor :file not in line-counts")
+          (is (not (contains? @repl/line-counts opencode-path))
+              "OpenCode :file not in line-counts"))))))
+
+(deftest test-populate-line-counts-handles-missing-file
+  (testing "populate-line-counts! skips sessions whose :file does not exist"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (swap! repl/session-index assoc "lc-ghost"
+             {:session-id "lc-ghost"
+              :file "/nonexistent/path/never-here.jsonl"
+              :provider :claude
+              :message-count 0
+              :next-seq 1
+              :min-available-seq 1})
+      (let [result (repl/populate-line-counts!)]
+        (is (= 1 (:skipped result)))
+        (is (= 0 (:populated result)))
+        (is (= 0 (:errors result)))
+        (is (not (contains? @repl/line-counts "/nonexistent/path/never-here.jsonl")))))))
+
+(deftest test-populate-line-counts-handles-trailing-partial-line
+  (testing "populate-line-counts! only counts newline-terminated lines (holdback rule)"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (let [[_ fp] (line-counts-claude-session! "lc-partial" ["a" "b"])
+            ;; Append a partial trailing line (no \n) to simulate a mid-write tick boundary
+            f (io/file fp)
+            base (slurp f)]
+        (spit f (str base "{\"partial\":"))
+        (repl/populate-line-counts!)
+        (is (= 2 (get @repl/line-counts fp))
+            "Trailing partial line excluded from the seeded count")))))
+
+(deftest test-ensure-line-count-initialized-seeds-on-first-call
+  (testing "ensure-line-count-initialized! seeds the atom for a previously-unseen file"
+    (let [file (io/file test-dir "lc-lazy.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file "x\ny\nz\nw\n")
+      (is (not (contains? @repl/line-counts fp))
+          "Precondition: no entry for this file")
+      (let [seeded (repl/ensure-line-count-initialized! fp)]
+        (is (= 4 seeded) "Returns the seeded count on bootstrap")
+        (is (= 4 (get @repl/line-counts fp))
+            "Atom seeded to 4 (four complete lines)")))))
+
+(deftest test-ensure-line-count-initialized-is-noop-when-already-set
+  (testing "ensure-line-count-initialized! does nothing if the entry already exists"
+    (let [file (io/file test-dir "lc-already-set.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file "a\nb\nc\n")
+      ;; Pre-seed with a different value to prove we don't overwrite.
+      (swap! repl/line-counts assoc fp 999)
+      (let [result (repl/ensure-line-count-initialized! fp)]
+        (is (nil? result) "Returns nil when entry already present")
+        (is (= 999 (get @repl/line-counts fp))
+            "Pre-existing value preserved — no re-count")))))
+
+(deftest test-line-counts-tick-update-accumulates-across-ticks
+  (testing "Repeated swap! advances line-counts by the per-tick delta"
+    (let [fp "/tmp/lc-tick.jsonl"]
+      (swap! repl/line-counts assoc fp 0)
+      ;; Simulate two consecutive watcher ticks, each emitting a vector of lines
+      ;; (the watcher will do this inline after parse-jsonl-incremental-with-raw):
+      (swap! repl/line-counts update fp (fnil + 0) 3)
+      (is (= 3 (get @repl/line-counts fp))
+          "First tick advances by 3")
+      (swap! repl/line-counts update fp (fnil + 0) 2)
+      (is (= 5 (get @repl/line-counts fp))
+          "Second tick accumulates to 5"))))
+
+(deftest test-reset-line-count-zeros-the-entry
+  (testing "reset-line-count! sets the entry to 0 (shrink-recovery branch)"
+    (let [fp "/tmp/lc-shrink.jsonl"]
+      (swap! repl/line-counts assoc fp 42)
+      (repl/reset-line-count! fp)
+      (is (= 0 (get @repl/line-counts fp))
+          "Entry reset to 0, not removed"))))
+
+(deftest test-line-counts-shrink-recovery-then-tick-rebuilds-count
+  (testing "After shrink reset, the next watcher tick's swap rebuilds the count from 0"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (let [[_ fp] (line-counts-claude-session! "lc-shrink-rebuild" ["a" "b" "c" "d" "e"])]
+        (repl/populate-line-counts!)
+        (is (= 5 (get @repl/line-counts fp))
+            "Initial count seeded to 5")
+        ;; Simulate the shrink-recovery branch: parse-jsonl-incremental
+        ;; observed file-shrink, the watcher resets line-counts to 0, then
+        ;; the same tick re-parses the truncated file from byte 0 and emits
+        ;; its current line count as the tick delta. T5 wires this; here we
+        ;; exercise the building-block contract (reset-line-count! + tick
+        ;; update swap) directly.
+        (let [truncated (str (claude-jsonl {:type "user" :text "x"}) "\n"
+                             (claude-jsonl {:type "user" :text "y"}) "\n")]
+          (spit (io/file fp) truncated))
+        (repl/reset-line-count! fp)
+        (is (= 0 (get @repl/line-counts fp))
+            "Shrink reset zeroes the entry (keeps it present, not dissoc'd)")
+        ;; Simulate the same-tick re-parse: parse-jsonl-incremental yields a
+        ;; complete-vec of 2 lines, and the watcher's tick-update swap adds
+        ;; that delta to the just-zeroed entry.
+        (swap! repl/line-counts update fp (fnil + 0) 2)
+        (is (= 2 (get @repl/line-counts fp))
+            "Post-shrink tick rebuilds the count from the truncated file")))))
 
 ;; ============================================================================
 ;; Metrics Instrumentation Tests

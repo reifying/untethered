@@ -966,6 +966,29 @@
   ;; Track last-read byte position for each file path
   (atom {}))
 
+(defonce line-counts
+  ;; Running raw-line count per file path. Sibling of `file-positions`:
+  ;; file-positions tracks byte offsets, line-counts tracks the number of
+  ;; newline-terminated lines that have been emitted from each watched file.
+  ;;
+  ;; Lifecycle (v0.5.0 push path — design doc §3.4 point 3a):
+  ;;   - Seeded at boot by `populate-line-counts!` over `session-index`.
+  ;;   - Lazy-initialized via `ensure-line-count-initialized!` for files
+  ;;     that appear between boots (new session created after the startup
+  ;;     walk).
+  ;;   - Advanced after each successful watcher tick by `(swap! line-counts
+  ;;     update file-path (fnil + 0) (count complete-vec))`, paired with the
+  ;;     `file-positions` advance so the byte and line cursors stay in lock-
+  ;;     step within a tick.
+  ;;   - Reset to 0 by `reset-line-count!` when the shrink-recovery branch
+  ;;     of `parse-jsonl-incremental` fires (file rewritten in place by
+  ;;     `claude --compact`).
+  ;;
+  ;; The watcher's `stamp-offsets` step reads this to compute the
+  ;; `pre-line-count` for each tick — the deterministic offset stamp that
+  ;; replaces the persisted `:next-seq` counter in v0.5.0.
+  (atom {}))
+
 (defn filter-internal-messages
   "Filter out internal Claude Code messages.
   Removes:
@@ -1310,6 +1333,119 @@
   "Reset tracked file position (for testing or when file is replaced)"
   [file-path]
   (swap! file-positions dissoc file-path))
+
+(defn count-complete-lines
+  "Count newline-terminated lines in `file-path` via a raw byte scan.
+
+  Mirrors `parse-jsonl-incremental`'s holdback rule: a trailing line without a
+  closing `\\n` is NOT counted (so the result is stable across mid-write tick
+  boundaries — counting then reading again will produce a consistent
+  pre-line-count for the next tick).
+
+  Returns 0 if the file is missing or unreadable; logs an error on I/O failure."
+  [file-path]
+  (try
+    (let [file (io/file file-path)]
+      (if (.exists file)
+        (with-open [raf (RandomAccessFile. file "r")]
+          (let [size (.length raf)
+                buf-size (int (* 64 1024))
+                buf (byte-array buf-size)
+                nl (byte \newline)]
+            (loop [pos 0 acc 0]
+              (if (>= pos size)
+                acc
+                (let [remaining (- size pos)
+                      read-n (int (min buf-size remaining))
+                      _ (.readFully raf buf 0 read-n)
+                      cnt (loop [i 0 c 0]
+                            (if (< i read-n)
+                              (recur (inc i) (if (= (aget buf i) nl) (inc c) c))
+                              c))]
+                  (recur (+ pos read-n) (+ acc cnt)))))))
+        0))
+    (catch Exception e
+      (log/error e "count-complete-lines failed" {:file file-path})
+      0)))
+
+(defn populate-line-counts!
+  "Startup walk: for every byte-cursor session in `@session-index` (i.e.
+  `:claude` / `:copilot`), open the on-disk file once, count its newline-
+  terminated lines, and seed `line-counts[file-path]`.
+
+  Bounded by index size; runs once per boot. Idempotent on the seeded values
+  themselves — re-running overwrites with the current on-disk count, which
+  matches the live tick's running total only if no live appends happened
+  between calls. The startup-only contract avoids that race.
+
+  Non-byte-cursor providers (`:cursor`, `:opencode`) are skipped — their
+  `:file` may not be a JSONL stream (e.g. SQLite store, multi-file part dir).
+
+  Returns a summary: `{:populated N :skipped N :errors N :elapsed-ms F}`."
+  []
+  (let [start-ns (System/nanoTime)
+        sessions @session-index
+        summary (atom {:populated 0 :skipped 0 :errors 0})]
+    (log/info "Starting populate-line-counts! startup walk"
+              {:session-count (count sessions)})
+    (doseq [[session-id entry] sessions]
+      (try
+        (let [provider (or (:provider entry) :claude)
+              file-path (:file entry)
+              file (when file-path (io/file file-path))
+              file-exists? (and file (.exists file))]
+          (cond
+            (not (contains? #{:claude :copilot} provider))
+            (swap! summary update :skipped inc)
+
+            (not file-exists?)
+            (swap! summary update :skipped inc)
+
+            :else
+            (let [n (count-complete-lines file-path)]
+              (swap! line-counts assoc file-path n)
+              (swap! summary update :populated inc))))
+        (catch Exception e
+          (log/error e "populate-line-counts! failed for session"
+                     {:session-id session-id})
+          (swap! summary update :errors inc))))
+    (let [elapsed-ms (/ (double (- (System/nanoTime) start-ns)) 1e6)
+          result (assoc @summary :elapsed-ms elapsed-ms)]
+      (log/info "populate-line-counts! complete" result)
+      result)))
+
+(defn ensure-line-count-initialized!
+  "Lazy bootstrap for the watcher: if `line-counts` has no entry for
+  `file-path` yet (the file was created after the startup walk), count its
+  existing complete lines once and seed the atom. Returns the seeded count
+  when bootstrap fired, or `nil` when an entry was already present.
+
+  The watcher's first firing on a previously-unseen file calls this, then
+  treats the seeded count as the `pre-line-count` for the upcoming tick.
+
+  Threading: the get/swap pair is not atomic — two callers racing on the same
+  unseeded `file-path` could both bootstrap. Safe under the watcher's existing
+  per-file serialization (the FS event loop dispatches one tick per file at a
+  time)."
+  [file-path]
+  (let [sentinel ::unset
+        current (get @line-counts file-path sentinel)]
+    (when (identical? sentinel current)
+      (let [n (count-complete-lines file-path)]
+        (swap! line-counts assoc file-path n)
+        n))))
+
+(defn reset-line-count!
+  "Reset the tracked line count for `file-path` to 0. Called by the watcher's
+  shrink-recovery branch when `parse-jsonl-incremental` resets the byte cursor
+  to 0 (file rewritten in place by `claude --compact`).
+
+  Note the asymmetry with `reset-file-position!`, which `dissoc`s the entry:
+  here the entry is left present-and-zero so subsequent tick updates
+  accumulate from a known floor instead of going through the lazy-init path
+  on every shrink."
+  [file-path]
+  (swap! line-counts assoc file-path 0))
 
 (defn assign-seq!
   "Stamp a strictly increasing `:seq` on each message in `parsed-messages`,
