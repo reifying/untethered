@@ -117,11 +117,11 @@ final class VoiceCodeClientProtocolNegotiationTests: XCTestCase {
         XCTAssertNil(msg?["from_offset"], "Pre-ack subscribe must NOT carry v0.5.0 `from_offset`")
     }
 
-    /// Post-ack guard: even after the channel is negotiated to v0.5.0, the
-    /// subscribe wire shape stays on v0.4.0 in T6. The shape switch lands in
-    /// tmux-untethered-398.12; this test catches an accidental flip if T7's
-    /// negotiation rollout brings the subscribe shape with it.
-    func testSubscribeAfterAckStillUsesV040WireShape() {
+    /// Post-ack: after the channel is negotiated to v0.5.0, the subscribe
+    /// wire shape switches to `from_offset` (and optionally
+    /// `file_signature_seen` when one is cached). Shipped in
+    /// tmux-untethered-398.12. The v0.4.0 `last_seq` field must not appear.
+    func testSubscribeAfterAckUsesV050WireShape() {
         client.applyNegotiatedProtocolVersion(from: [
             "negotiated_protocol_version": "0.5.0"
         ])
@@ -136,10 +136,59 @@ final class VoiceCodeClientProtocolNegotiationTests: XCTestCase {
         let subscribes = sent.filter { ($0["type"] as? String) == "subscribe" }
         XCTAssertEqual(subscribes.count, 1)
         let msg = subscribes.first
-        XCTAssertNotNil(msg?["last_seq"],
-                        "Post-ack subscribe must still carry v0.4.0 `last_seq` in T6")
-        XCTAssertNil(msg?["from_offset"],
-                     "T6 must NOT emit v0.5.0 `from_offset` — that ships in .12")
+        XCTAssertNotNil(msg?["from_offset"],
+                        "Post-ack subscribe must carry v0.5.0 `from_offset`")
+        XCTAssertNil(msg?["last_seq"],
+                     "Post-ack subscribe must NOT carry v0.4.0 `last_seq` after .12")
+        // No cached file signature for a fresh session: the optional field
+        // is omitted entirely (server treats absence as "client has nothing
+        // to verify against").
+        XCTAssertNil(msg?["file_signature_seen"],
+                     "Fresh session has no cached signature — field must be omitted")
+    }
+
+    /// Value guard (not just presence): a v0.5.0 subscribe after recovery
+    /// must serialize the persisted `lastOffsetMerged` as the `from_offset`
+    /// number and the persisted `lastFileSignature` as the
+    /// `file_signature_seen` string. Catches field-name drift or accidental
+    /// hardcoding to 0 / nil on the wire.
+    func testSubscribeV050SerializesPersistedCursorAndSignature() {
+        let sessionUUID = UUID()
+        let sid = sessionUUID.uuidString.lowercased()
+
+        let session = CDBackendSession(context: context)
+        session.id = sessionUUID
+        session.backendName = "test"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.provider = "claude"
+        session.lastOffsetMerged = 42
+        session.liveFromOffset = 7
+        session.lastFileSignature = "1024:deadbeef"
+        try? context.save()
+
+        client.applyNegotiatedProtocolVersion(from: [
+            "negotiated_protocol_version": "0.5.0"
+        ])
+        var sent: [[String: Any]] = []
+        client.onMessageSent = { sent.append($0) }
+        client.isAuthenticated = true
+
+        client.subscribe(sessionId: sid, context: context)
+
+        let subscribes = sent.filter { ($0["type"] as? String) == "subscribe" }
+        XCTAssertEqual(subscribes.count, 1)
+        let msg = subscribes.first
+
+        let fromOffset = (msg?["from_offset"] as? Int64)
+            ?? Int64(msg?["from_offset"] as? Int ?? -1)
+        XCTAssertEqual(fromOffset, 42,
+                       "from_offset must equal the persisted lastOffsetMerged")
+        XCTAssertEqual(msg?["file_signature_seen"] as? String, "1024:deadbeef",
+                       "file_signature_seen must equal the persisted lastFileSignature")
+        XCTAssertEqual(msg?["session_id"] as? String, sid)
     }
 
     // MARK: - session_history dispatch routing

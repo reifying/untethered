@@ -1506,22 +1506,103 @@ class VoiceCodeClient: ObservableObject {
             subscriptions[sessionId] = .desired
         }
 
-        // Delta-sync cursor is the max seq we've durably persisted for this
-        // session. `0` is the wire sentinel meaning "give me everything" and
-        // is what newestCachedSeq returns for fresh or legacy-only sessions.
-        let lastSeq = newestCachedSeq(sessionId: sessionId, context: context)
-
-        let message: [String: Any] = [
-            "type": "subscribe",
-            "session_id": sessionId,
-            "last_seq": lastSeq
-        ]
-
+        // Branch on the channel's negotiated protocol version. Until the
+        // connect-ack lands we speak v0.4.0 (the safe default), so a
+        // subscribe issued in the pre-ack window serializes the legacy
+        // shape against a v0.4.0-only server.
         let trackedCount = subscriptions.count
-        logger.info("📖 [VoiceCodeClient] Subscribing, last_seq: \(lastSeq), session: \(sessionId) (total tracked: \(trackedCount))")
+        let message: [String: Any]
+        switch negotiatedProtocolVersion {
+        case .v0_4_0:
+            let lastSeq = newestCachedSeq(sessionId: sessionId, context: context)
+            message = [
+                "type": "subscribe",
+                "session_id": sessionId,
+                "last_seq": lastSeq
+            ]
+            logger.info("📖 [VoiceCodeClient] Subscribing v0.4.0, last_seq: \(lastSeq), session: \(sessionId) (total tracked: \(trackedCount))")
+        case .v0_5_0:
+            let fromOffset = lastOffsetMerged(sessionId: sessionId, context: context)
+            let signature = lastFileSignature(sessionId: sessionId, context: context)
+            var v5Message: [String: Any] = [
+                "type": "subscribe",
+                "session_id": sessionId,
+                "from_offset": fromOffset
+            ]
+            if let sig = signature {
+                v5Message["file_signature_seen"] = sig
+            }
+            message = v5Message
+            logger.info("📖 [VoiceCodeClient] Subscribing v0.5.0, from_offset: \(fromOffset), file_signature_seen: \(signature ?? "<nil>", privacy: .public), session: \(sessionId) (total tracked: \(trackedCount))")
+        }
 
         sendMessage(message)
         subscriptions[sessionId] = .confirmed
+    }
+
+    /// v0.5.0 cursor read: the highest line-offset durably merged from
+    /// session_history for `sessionId`, or `0` if no row exists (fresh
+    /// subscribe). Mirrors `newestCachedSeq`'s background-context pattern
+    /// so a recently-committed background save is observed by the time the
+    /// next outbound subscribe serializes.
+    func lastOffsetMerged(sessionId: String,
+                          context: NSManagedObjectContext? = nil,
+                          container: NSPersistentContainer? = nil) -> Int64 {
+        guard let sessionUUID = UUID(uuidString: sessionId) else {
+            logger.warning("⚠️ [VoiceCodeClient] Invalid session ID for v5 cursor read: \(sessionId)")
+            return 0
+        }
+
+        let runFetch: (NSManagedObjectContext) -> Int64 = { ctx in
+            let request = CDBackendSession.fetchBackendSession(id: sessionUUID)
+            do {
+                return try ctx.fetch(request).first?.lastOffsetMerged ?? 0
+            } catch {
+                logger.error("⚠️ [VoiceCodeClient] Failed to fetch lastOffsetMerged: \(error.localizedDescription)")
+                return 0
+            }
+        }
+
+        if let ctx = context {
+            return runFetch(ctx)
+        }
+
+        let resolvedContainer = container ?? PersistenceController.shared.container
+        let bgContext = resolvedContainer.newBackgroundContext()
+        var result: Int64 = 0
+        bgContext.performAndWait {
+            result = runFetch(bgContext)
+        }
+        return result
+    }
+
+    /// v0.5.0: the last `file_signature` the client received and persisted
+    /// for `sessionId`. Sent back on subscribe as `file_signature_seen`
+    /// so the server can detect a file replacement (compaction, restore-
+    /// from-backup, in-place rewrite) and trigger the R2 recovery path
+    /// (§6 R2). `nil` means "first subscribe, no check requested" — the
+    /// server treats absent signature as no-op.
+    func lastFileSignature(sessionId: String,
+                           context: NSManagedObjectContext? = nil,
+                           container: NSPersistentContainer? = nil) -> String? {
+        guard let sessionUUID = UUID(uuidString: sessionId) else { return nil }
+
+        let runFetch: (NSManagedObjectContext) -> String? = { ctx in
+            let request = CDBackendSession.fetchBackendSession(id: sessionUUID)
+            return (try? ctx.fetch(request).first?.lastFileSignature) ?? nil
+        }
+
+        if let ctx = context {
+            return runFetch(ctx)
+        }
+
+        let resolvedContainer = container ?? PersistenceController.shared.container
+        let bgContext = resolvedContainer.newBackgroundContext()
+        var result: String?
+        bgContext.performAndWait {
+            result = runFetch(bgContext)
+        }
+        return result
     }
 
     /// Highest backend-assigned `seq` cached for the given session.
@@ -1911,9 +1992,7 @@ class VoiceCodeClient: ObservableObject {
             do {
                 let payload = try decoder.decode(SessionHistoryPayloadV5.self, from: data)
                 logger.info("📚 [VoiceCodeClient] session_history v5 \(payload.sessionId) count=\(payload.messages.count) next_offset=\(payload.nextOffset) eof=\(payload.endOfFile) replaced=\(payload.fileReplaced ?? false) signature=\(payload.fileSignature ?? "-")")
-                // Resume any pending refresh continuation so awaiting callers
-                // don't hang under v0.5.0; full v5 sync-manager wiring lands
-                // in tmux-untethered-398.12.
+                self.sessionSyncManager.handleSessionHistoryPayload(payload)
                 if let pending = self.sessionRefreshPending.removeValue(forKey: payload.sessionId) {
                     pending.resumeOnce()
                 }
@@ -2351,5 +2430,20 @@ extension VoiceCodeClient: SessionSyncDelegate {
         let key = sessionId.lowercased()
         logger.error("⛔ is_complete chain stalled for \(key) at cursor \(atCursor)")
         stalledChains[key] = atCursor
+    }
+
+    /// v0.5.0 R2 recovery: the sync manager has purged the session's
+    /// cached messages, persisted the new `lastFileSignature`, and zeroed
+    /// `lastOffsetMerged` / `liveFromOffset`. We just need to re-issue a
+    /// subscribe; the cursor it reads is the just-persisted `0`, and the
+    /// signature it sends is the just-persisted new value. Drop any
+    /// confirmed state so `subscribe` actually emits the wire send.
+    func sessionSyncRequestsResubscribeFromZero(_ sessionId: UUID) {
+        let sid = sessionId.uuidString.lowercased()
+        logger.info("🔁 [VoiceCodeClient] file_replaced re-subscribe requested for \(sid)")
+        if subscriptions[sid] == .confirmed {
+            subscriptions[sid] = .desired
+        }
+        subscribe(sessionId: sid)
     }
 }

@@ -51,6 +51,17 @@ protocol SessionSyncDelegate: AnyObject {
     /// past this point cannot load automatically. See beads
     /// tmux-untethered-l8t.
     func sessionSyncDidStallChain(_ sessionId: String, atCursor: Int64)
+
+    /// v0.5.0: fires after a `file_replaced: true` recovery has purged the
+    /// session's cached messages and reset its cursors. The client must
+    /// re-subscribe so the server resends from offset 0 with the new
+    /// signature. The implementation typically calls `subscribe(sessionId:)`
+    /// directly — the freshly-persisted `lastOffsetMerged=0` and
+    /// `lastFileSignature=<new>` are the inputs to the next outbound
+    /// `subscribe`. ORDERING: the manager dispatches this AFTER `ctx.save()`
+    /// has committed the purge, so the next subscribe reads the post-purge
+    /// state. See voice-code-sync-kafka-redesign-2026-05-10.md §3.3, §6 R2.
+    func sessionSyncRequestsResubscribeFromZero(_ sessionId: UUID)
 }
 
 extension SessionSyncDelegate {
@@ -65,6 +76,11 @@ extension SessionSyncDelegate {
     /// not being told why the conversation stopped loading. Implementers
     /// that care should surface a banner or warning.
     func sessionSyncDidStallChain(_ sessionId: String, atCursor: Int64) {}
+
+    /// Default no-op for v0.4.0 conformers. v0.5.0 implementers should call
+    /// `subscribe(sessionId:)` so the freshly-persisted post-purge cursors
+    /// (`lastOffsetMerged=0`, new `lastFileSignature`) drive the next round.
+    func sessionSyncRequestsResubscribeFromZero(_ sessionId: UUID) {}
 }
 
 /// Manages synchronization of session metadata between backend and CoreData
@@ -667,6 +683,317 @@ class SessionSyncManager {
             }
             }
         }
+    }
+
+    // MARK: - Session History Payload (v0.5.0)
+
+    /// v0.5.0 entry point for a decoded `session_history` envelope. Routed
+    /// from `VoiceCodeClient.handleSessionHistoryFrame` when the channel is
+    /// negotiated to `.v0_5_0`. The semantics collapse the v0.4.0 gap-and-
+    /// chain logic to: optional `file_replaced` recovery → optional
+    /// "I-was-ahead" reset → TTS-boundary capture (gated on `nextOffset > 0`)
+    /// → idempotent `(sessionId, offset)` upsert → cursor advance.
+    ///
+    /// See voice-code-sync-kafka-redesign-2026-05-10.md §3.3 (handler) and
+    /// §3.5 / §6 R2 (file_replaced recovery and purge semantics).
+    func handleSessionHistoryPayload(_ payload: SessionHistoryPayloadV5) {
+        guard let sessionUUID = UUID(uuidString: payload.sessionId) else {
+            logger.error("Invalid session ID in v5 handleSessionHistoryPayload: \(payload.sessionId)")
+            return
+        }
+
+        // Serialize per-session against the same queue the v0.4.0 path uses
+        // so a v4-then-v5 (or simultaneous) delivery for the same session
+        // never overlaps. Keyed on lowercased UUID like v0.4.0.
+        upsertQueue(forSessionId: payload.sessionId.lowercased()).async { [weak self] in
+            guard let self = self else { return }
+            let ctx = self.persistenceController.container.newBackgroundContext()
+            ctx.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+            ctx.performAndWait {
+                let session = self.fetchOrCreateSession(id: sessionUUID, in: ctx)
+
+                // R2 file-replaced recovery — the server's signature has
+                // changed since we last subscribed (compaction, in-place
+                // rewrite, restore-from-backup). Purge every cached row,
+                // zero both cursors, persist the new signature, save, then
+                // re-subscribe from offset 0. Order is load-bearing: the
+                // save MUST land before the re-subscribe dispatch, or the
+                // next subscribe re-sends the stale signature and the
+                // server replies `file_replaced: true` again, looping.
+                if payload.fileReplaced == true {
+                    logger.warning("🧹 file_replaced for \(payload.sessionId): purging cache and re-subscribing from offset 0 (new signature=\(payload.fileSignature ?? "<nil>"))")
+                    session.lastOffsetMerged = 0
+                    session.liveFromOffset = 0
+                    // Server contract says R2 always carries a fresh
+                    // signature; if it's missing, hold the cached value
+                    // rather than clobbering to nil so the next subscribe
+                    // can still send `file_signature_seen` and trigger a
+                    // second R2 if the underlying file is genuinely replaced.
+                    if let sig = payload.fileSignature {
+                        session.lastFileSignature = sig
+                    }
+                    self.purgeMessagesAtOrAbove(offset: 0, session: session, in: ctx)
+                    session.messageCount = 0
+                    do {
+                        try ctx.save()
+                    } catch {
+                        logger.error("Failed to save file_replaced recovery for \(payload.sessionId): \(error.localizedDescription)")
+                        return
+                    }
+                    DispatchQueue.main.async { [weak self] in
+                        self?.delegate?.sessionSyncRequestsResubscribeFromZero(sessionUUID)
+                    }
+                    return
+                }
+
+                // Always-persist the latest file signature on non-mismatch
+                // replies so the next subscribe carries the freshest seen
+                // value. Server emits `file_signature` on every v0.5.0
+                // reply (push and history alike).
+                if let sig = payload.fileSignature {
+                    session.lastFileSignature = sig
+                }
+
+                // "I was ahead; reset" — server's `next_offset` is strictly
+                // less than the cursor we hold. Happens after backend data
+                // loss / rollback that lost the JSONL tail. Purge any rows
+                // past the new watermark and let the upsert below refill
+                // anything the reply carries.
+                if payload.nextOffset < session.lastOffsetMerged {
+                    logger.warning("🔁 Reset cursor for \(payload.sessionId): had=\(session.lastOffsetMerged), server next_offset=\(payload.nextOffset)")
+                    session.lastOffsetMerged = payload.nextOffset
+                    self.purgeMessagesAtOrAbove(offset: payload.nextOffset, session: session, in: ctx)
+                }
+
+                // TTS boundary — capture on the first *non-empty* reply this
+                // launch. The `nextOffset > 0` guard prevents an empty
+                // caught-up reply from pinning `liveFromOffset=0`, which
+                // would re-speak historical messages on subsequent payloads
+                // (regression guard for tmux-untethered-i2n).
+                if session.liveFromOffset == 0 && payload.nextOffset > 0 {
+                    session.liveFromOffset = payload.nextOffset
+                }
+                let liveFromOffset = session.liveFromOffset
+
+                // Idempotent upsert keyed on `(sessionId, offset)`. Only
+                // newly-inserted assistant rows at or above the captured
+                // boundary are eligible for TTS.
+                var newRows = 0
+                var newAssistantTexts: [String] = []
+                for wireMessage in payload.messages {
+                    let inserted = self.upsertMessage(wireMessage, session: session, in: ctx)
+                    if inserted {
+                        newRows += 1
+                        if wireMessage.role == "assistant"
+                            && liveFromOffset > 0
+                            && wireMessage.offset >= liveFromOffset {
+                            newAssistantTexts.append(wireMessage.text)
+                        }
+                    }
+                }
+
+                // Advance the cursor. `max` absorbs out-of-order delivery
+                // (a push and history reply for the same session crossing
+                // on the wire would otherwise let the older `next_offset`
+                // regress the cursor).
+                if payload.nextOffset > session.lastOffsetMerged {
+                    session.lastOffsetMerged = payload.nextOffset
+                }
+
+                if let lastMessage = payload.messages.last {
+                    session.preview = String(lastMessage.text.prefix(100))
+                }
+
+                // Count via a direct CDMessage fetch rather than the
+                // inverse relationship: `NSBatchDeleteRequest` in
+                // `purgeMessagesAtOrAbove` bypasses inverse-relationship
+                // maintenance, so `session.messages?.allObjects` can hold
+                // stale references to now-deleted MOs after an
+                // "I was ahead; reset" partial purge. A count fetch reads
+                // from the persistent store, which the merge has already
+                // updated.
+                let countRequest = CDMessage.fetchRequest()
+                countRequest.predicate = NSPredicate(format: "sessionId == %@",
+                                                     sessionUUID as CVarArg)
+                let liveCount = (try? ctx.count(for: countRequest)) ?? 0
+                session.messageCount = Int32(liveCount)
+
+                let isActiveSession = ActiveSessionManager.shared.isActive(sessionUUID)
+                if !isActiveSession && newRows > 0 {
+                    session.unreadCount += Int32(newRows)
+                }
+
+                if !newAssistantTexts.isEmpty
+                    && UserDefaults.standard.bool(forKey: "priorityQueueEnabled") {
+                    CDBackendSession.addToPriorityQueue(session, context: ctx)
+                    logger.info("📌 Auto-added session to priority queue after assistant response: \(payload.sessionId)")
+                }
+
+                do {
+                    if ctx.hasChanges {
+                        try ctx.save()
+                        if newRows > 0 {
+                            let sessionIdString = payload.sessionId
+                            DispatchQueue.main.async {
+                                NotificationCenter.default.post(
+                                    name: .sessionHistoryDidUpdate,
+                                    object: nil,
+                                    userInfo: ["sessionId": sessionIdString]
+                                )
+                            }
+                        }
+                    }
+                } catch {
+                    let nsError = error as NSError
+                    logger.error("Failed to save v5 session_history payload: domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) userInfo=\(nsError.userInfo, privacy: .public)")
+                    return
+                }
+
+                if newRows > 0 && CDMessage.needsPruning(sessionId: sessionUUID, in: ctx) {
+                    let deletedCount = CDMessage.pruneOldMessages(sessionId: sessionUUID, in: ctx)
+                    if deletedCount > 0 {
+                        try? ctx.save()
+                        logger.info("🧹 Pruned \(deletedCount) old messages from session \(payload.sessionId)")
+                    }
+                }
+
+                if !newAssistantTexts.isEmpty {
+                    if isActiveSession {
+                        let workingDirectory = session.workingDirectory
+                        let voiceManager = self.voiceOutputManager
+                        DispatchQueue.main.async {
+                            guard ActiveSessionManager.shared.isActive(sessionUUID) else { return }
+                            guard let voiceManager = voiceManager else { return }
+                            for text in newAssistantTexts {
+                                let processedText = TextProcessor.prepareForSpeech(from: text)
+                                voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory, sessionId: sessionUUID)
+                            }
+                        }
+                    } else {
+                        let sessionName = session.displayName(context: ctx)
+                        let workingDirectory = session.workingDirectory
+                        let combinedText = newAssistantTexts.joined(separator: "\n\n")
+                        DispatchQueue.main.async {
+                            Task {
+                                await NotificationManager.shared.postResponseNotification(
+                                    text: combinedText,
+                                    sessionName: sessionName,
+                                    workingDirectory: workingDirectory
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Delete every `CDMessage` belonging to `session` whose `offset >=
+    /// offset`. Used in two places: the "I-was-ahead" reset (partial purge
+    /// of rows past the server's watermark) and `file_replaced` recovery
+    /// (full purge with `offset = 0`).
+    ///
+    /// Caller responsibility:
+    ///   - Set `session.lastOffsetMerged = offset` BEFORE calling so a
+    ///     concurrent reader doesn't observe deleted rows referenced by an
+    ///     advanced cursor.
+    ///   - Set `session.liveFromOffset = 0` on a full purge (`offset == 0`);
+    ///     a partial purge leaves it alone — the TTS boundary is "what was
+    ///     historical at app launch," not "what's still in the local DB."
+    ///   - Recompute `session.messageCount` AFTER the delete; CoreData does
+    ///     not auto-update the denormalized count for batch deletes.
+    ///
+    /// Implementation note: uses `NSBatchDeleteRequest` for predicate
+    /// performance on large purges, then merges the deletion into the
+    /// supplied context (and the main viewContext) so any `@FetchRequest`
+    /// observers see the rows disappear immediately.
+    func purgeMessagesAtOrAbove(offset: Int64,
+                                session: CDBackendSession,
+                                in ctx: NSManagedObjectContext) {
+        let fetch = NSFetchRequest<NSFetchRequestResult>(entityName: "CDMessage")
+        fetch.predicate = NSPredicate(format: "sessionId == %@ AND offset >= %lld",
+                                      session.id as CVarArg, offset)
+        let delete = NSBatchDeleteRequest(fetchRequest: fetch)
+        delete.resultType = .resultTypeObjectIDs
+
+        do {
+            let result = try ctx.execute(delete) as? NSBatchDeleteResult
+            if let deletedIDs = result?.result as? [NSManagedObjectID], !deletedIDs.isEmpty {
+                let changes: [AnyHashable: Any] = [NSDeletedObjectsKey: deletedIDs]
+                NSManagedObjectContext.mergeChanges(fromRemoteContextSave: changes,
+                                                   into: [ctx, persistenceController.container.viewContext])
+                logger.info("🧹 Purged \(deletedIDs.count) messages at-or-above offset \(offset) for session \(session.id.uuidString.lowercased())")
+            }
+        } catch {
+            logger.error("purgeMessagesAtOrAbove failed for session \(session.id.uuidString.lowercased()) offset=\(offset): \(error.localizedDescription)")
+        }
+    }
+
+    /// Idempotent upsert of a `WireMessageV5`, keyed on `(sessionId, offset)`
+    /// with an optimistic-reconciliation fallback on
+    /// `(sessionId, role, text, status == .sending)`. Sibling of the v0.4.0
+    /// `upsertMessage(_ wireMessage: WireMessage, …)` — the two share the
+    /// optimistic-fallback contract so reconnecting under either protocol
+    /// upgrades a "sending" row in place rather than spawning a duplicate.
+    @discardableResult
+    internal func upsertMessage(_ wireMessage: WireMessageV5, session: CDBackendSession, in context: NSManagedObjectContext) -> Bool {
+        guard let wireSessionUUID = UUID(uuidString: wireMessage.sessionId) else {
+            logger.warning("Invalid wire session ID in v5 upsert: \(wireMessage.sessionId)")
+            return false
+        }
+
+        guard wireSessionUUID == session.id else {
+            logger.error("v5 wire message session \(wireMessage.sessionId) does not match payload session \(session.id.uuidString.lowercased()); dropping")
+            return false
+        }
+
+        let offsetRequest = CDMessage.fetchRequest()
+        offsetRequest.predicate = NSPredicate(format: "sessionId == %@ AND offset == %lld",
+                                              wireSessionUUID as CVarArg,
+                                              wireMessage.offset)
+        offsetRequest.fetchLimit = 1
+
+        let offsetHit = (try? context.fetch(offsetRequest))?.first
+
+        // Optimistic fallback: a locally-created "sending" row with matching
+        // role+text can be upgraded in place when its server-assigned offset
+        // first lands. Identical contract to the v0.4.0 path.
+        let optimistic: CDMessage? = {
+            guard offsetHit == nil else { return nil }
+            let req = CDMessage.fetchRequest()
+            req.predicate = NSPredicate(format: "sessionId == %@ AND role == %@ AND text == %@ AND status == %@",
+                                        wireSessionUUID as CVarArg,
+                                        wireMessage.role,
+                                        wireMessage.text,
+                                        MessageStatus.sending.rawValue)
+            req.fetchLimit = 1
+            return (try? context.fetch(req))?.first
+        }()
+
+        let existing = offsetHit ?? optimistic
+        let message = existing ?? CDMessage(context: context)
+        let isNew = existing == nil
+
+        message.sessionId = wireSessionUUID
+        message.role = wireMessage.role
+        message.text = wireMessage.text
+        message.offset = wireMessage.offset
+        message.timestamp = wireMessage.timestamp
+        message.serverTimestamp = wireMessage.timestamp
+        message.messageStatus = .confirmed
+        message.session = session
+
+        if let wireUUID = UUID(uuidString: wireMessage.uuid) {
+            if isNew {
+                message.id = wireUUID
+            } else if message.id != wireUUID && wireUUIDIsUnique(wireUUID, in: context) {
+                message.id = wireUUID
+            }
+        } else if isNew {
+            message.id = UUID()
+        }
+
+        return isNew
     }
 
     /// Clear the pruned-gap flag for a session so subsequent
