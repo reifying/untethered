@@ -509,3 +509,148 @@
         (finally
           (swap! server/connected-clients dissoc ch-a)
           (swap! server/connected-clients dissoc ch-b))))))
+
+;; ---------------------------------------------------------------------------
+;; VC_OFFSET_PROTOCOL=0 server-side rollback ceiling (§6 R5).
+;;
+;; The env var is read exactly once at -main via apply-startup-server-max!,
+;; not per connection — operators must `make backend-restart` to flip it.
+;; These tests pin the *function-level* behavior (the env-var → atom
+;; transition) and then verify the negotiation outcomes that flow from it.
+;; Live-handler tests above already cover the per-channel mechanics with the
+;; atom reset directly, so we don't duplicate those here.
+
+(defn- with-env-var
+  "Run body with *read-env-var* rebound to a constant for the given name.
+   Other names fall through to the real env."
+  [name value body-fn]
+  (let [real-getenv server/*read-env-var*]
+    (binding [server/*read-env-var* (fn [n] (if (= n name) value (real-getenv n)))]
+      (body-fn))))
+
+(deftest compute-startup-server-max-test
+  (testing "VC_OFFSET_PROTOCOL unset leaves the cap at :v0.5.0"
+    (with-env-var "VC_OFFSET_PROTOCOL" nil
+      #(is (= :v0.5.0 (server/compute-startup-server-max)))))
+
+  (testing "VC_OFFSET_PROTOCOL=\"0\" pulls the cap down to :v0.4.0"
+    (with-env-var "VC_OFFSET_PROTOCOL" "0"
+      #(is (= :v0.4.0 (server/compute-startup-server-max)))))
+
+  (testing "any other value (including \"1\", empty, garbage) leaves the cap at default"
+    ;; Important: the rollback is keyed on the exact string \"0\", not
+    ;; truthiness, so an operator who sets VC_OFFSET_PROTOCOL=1 expecting
+    ;; \"protocol on\" doesn't accidentally trigger the downgrade.
+    (with-env-var "VC_OFFSET_PROTOCOL" "1"
+      #(is (= :v0.5.0 (server/compute-startup-server-max))))
+    (with-env-var "VC_OFFSET_PROTOCOL" ""
+      #(is (= :v0.5.0 (server/compute-startup-server-max))))
+    (with-env-var "VC_OFFSET_PROTOCOL" "true"
+      #(is (= :v0.5.0 (server/compute-startup-server-max))))
+    (with-env-var "VC_OFFSET_PROTOCOL" "0.4.0"
+      #(is (= :v0.5.0 (server/compute-startup-server-max))))))
+
+(deftest apply-startup-server-max!-resets-atom-and-returns-ceiling
+  (testing "unset env: atom stays at :v0.5.0 and the call returns :v0.5.0"
+    (reset! server/server-max-protocol-version :v0.5.0)
+    (with-env-var "VC_OFFSET_PROTOCOL" nil
+      #(do
+         (is (= :v0.5.0 (server/apply-startup-server-max!)))
+         (is (= :v0.5.0 @server/server-max-protocol-version)))))
+
+  (testing "VC_OFFSET_PROTOCOL=0: atom is reset to :v0.4.0 and the call returns :v0.4.0"
+    ;; Start the atom at :v0.5.0 to prove the call actively pulls it down.
+    (reset! server/server-max-protocol-version :v0.5.0)
+    (with-env-var "VC_OFFSET_PROTOCOL" "0"
+      #(do
+         (is (= :v0.4.0 (server/apply-startup-server-max!)))
+         (is (= :v0.4.0 @server/server-max-protocol-version))))))
+
+(deftest apply-startup-server-max!-logs-warn-banner-when-rollback-active
+  ;; Operator-visible artifact required by the task: a warn-level startup
+  ;; banner so a routine logs review can confirm the rollback took effect.
+  ;; We capture clojure.tools.logging output via a thread-local appender.
+  (testing "VC_OFFSET_PROTOCOL=0 emits a warn-level banner mentioning the var name and :v0.4.0"
+    (let [captured (atom [])]
+      (with-redefs [clojure.tools.logging/log*
+                    (fn [_logger level _throwable message]
+                      (swap! captured conj {:level level :message (str message)}))]
+        (with-env-var "VC_OFFSET_PROTOCOL" "0"
+          #(server/apply-startup-server-max!)))
+      (let [warns (filter #(= :warn (:level %)) @captured)]
+        (is (seq warns) "at least one warn-level log line is emitted")
+        (is (some #(re-find #"VC_OFFSET_PROTOCOL=0" (:message %)) warns)
+            "banner mentions the env var name so it's grep-able in logs")
+        (is (some #(re-find #":v0.4.0" (:message %)) warns)
+            "banner mentions the new ceiling so operators see what changed"))))
+
+  (testing "VC_OFFSET_PROTOCOL unset emits no warn banner about the rollback ceiling"
+    (let [captured (atom [])]
+      (with-redefs [clojure.tools.logging/log*
+                    (fn [_logger level _throwable message]
+                      (swap! captured conj {:level level :message (str message)}))]
+        (with-env-var "VC_OFFSET_PROTOCOL" nil
+          #(server/apply-startup-server-max!)))
+      (is (not-any? #(and (= :warn (:level %))
+                          (re-find #"VC_OFFSET_PROTOCOL" (:message %)))
+                    @captured)
+          "no rollback banner should fire in the steady state"))))
+
+(deftest vc-offset-protocol-0-silently-downgrades-v0.5.0-client
+  ;; End-to-end pin of the full transition (env → atom → negotiation outcome).
+  ;; This is the requirement that AC1's rollback half hangs off of: a v0.5.0
+  ;; iOS client connecting after `VC_OFFSET_PROTOCOL=0 make backend-restart`
+  ;; must NOT be rejected — it must be silently negotiated down to :v0.4.0.
+  (testing "VC_OFFSET_PROTOCOL=0 → v0.5.0 client negotiates :v0.4.0 (no error)"
+    (reset! server/message-stream-version :v0.4.0)
+    (with-env-var "VC_OFFSET_PROTOCOL" "0"
+      (fn []
+        (server/apply-startup-server-max!)
+        (is (= :v0.4.0 @server/server-max-protocol-version))
+        (is (= :v0.4.0 (server/negotiate-channel-protocol-version "0.5.0")))))))
+
+(deftest vc-offset-protocol-unset-leaves-v0.5.0-client-untouched
+  (testing "no env var → v0.5.0 client negotiates :v0.5.0"
+    (reset! server/message-stream-version :v0.4.0)
+    (with-env-var "VC_OFFSET_PROTOCOL" nil
+      (fn []
+        (server/apply-startup-server-max!)
+        (is (= :v0.5.0 @server/server-max-protocol-version))
+        (is (= :v0.5.0 (server/negotiate-channel-protocol-version "0.5.0")))))))
+
+(deftest vc-offset-protocol-0-leaves-v0.4.0-client-unchanged
+  ;; Steady-state preservation: clients already on :v0.4.0 must keep
+  ;; negotiating :v0.4.0 after the rollback flip. Re-negotiating *up* is
+  ;; the failure mode we're guarding against here.
+  (testing "VC_OFFSET_PROTOCOL=0 + v0.4.0 client → still :v0.4.0"
+    (reset! server/message-stream-version :v0.4.0)
+    (with-env-var "VC_OFFSET_PROTOCOL" "0"
+      (fn []
+        (server/apply-startup-server-max!)
+        (is (= :v0.4.0 (server/negotiate-channel-protocol-version "0.4.0")))))))
+
+(deftest vc-offset-protocol-0-does-not-move-the-floor
+  ;; Task requirement: the env var is a ceiling, NOT a floor. A pre-0.4.0
+  ;; client (e.g. an old build announcing "0.3.0") must still be rejected
+  ;; by enforce-protocol-version! when the floor is :v0.4.0, regardless of
+  ;; whether VC_OFFSET_PROTOCOL=0 is set. Rejecting these clients is the
+  ;; pre-existing behavior of enforce-protocol-version!; the rollback flag
+  ;; must not weaken it.
+  (testing "VC_OFFSET_PROTOCOL=0 + 0.3.0 client at :v0.4.0 floor → still rejected"
+    (reset! server/message-stream-version :v0.4.0)
+    (with-env-var "VC_OFFSET_PROTOCOL" "0"
+      (fn []
+        (server/apply-startup-server-max!)
+        (let [fake-channel (Object.)
+              result (atom nil)
+              {:keys [sent closed?]}
+              (capture-send-and-close
+               #(reset! result
+                        (server/enforce-protocol-version!
+                         fake-channel {:protocol-version "0.3.0"})))]
+          (is (false? @result) "below-floor client must still be rejected")
+          (is closed? "below-floor client's socket must still be closed")
+          (is (= 1 (count sent)) "one rejection envelope is written")
+          (let [payload (server/parse-json (first sent))]
+            (is (= "unsupported_protocol_version" (:code payload)))
+            (is (= "0.4.0" (:required payload)))))))))

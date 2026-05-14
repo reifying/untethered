@@ -148,6 +148,36 @@
 ;; and the hello handler (the advertised "preferred" version).
 (defonce server-max-protocol-version (atom default-server-max-protocol-version))
 
+(def ^:dynamic *read-env-var*
+  "Reads an environment variable by name. Extracted so tests can rebind it
+   without calling System/getenv directly (static Java, not with-redefsable)."
+  (fn [name] (System/getenv name)))
+
+(defn compute-startup-server-max
+  "Resolve the startup ceiling for the per-channel negotiation ladder. When
+   `VC_OFFSET_PROTOCOL` is exactly the string \"0\", return :v0.4.0 — the
+   emergency rollback cap that silently downgrades v0.5.0 clients (§6 R5 of
+   voice-code-sync-kafka-redesign-2026-05-10). Any other value (including
+   unset, empty, \"1\", or arbitrary strings) leaves the cap at
+   default-server-max-protocol-version. Reads the env var via *read-env-var*
+   so tests can rebind without touching the JVM environment."
+  []
+  (if (= "0" (*read-env-var* "VC_OFFSET_PROTOCOL"))
+    :v0.4.0
+    default-server-max-protocol-version))
+
+(defn apply-startup-server-max!
+  "Reset! server-max-protocol-version from VC_OFFSET_PROTOCOL and log a
+   warn-level banner when the rollback ceiling is active so operators can
+   confirm via routine log review that the downgrade took effect. Called
+   exactly once from -main; not re-read per connection."
+  []
+  (let [ceiling (compute-startup-server-max)]
+    (reset! server-max-protocol-version ceiling)
+    (when (= :v0.4.0 ceiling)
+      (log/warn "VC_OFFSET_PROTOCOL=0 set; negotiation ceiling pulled to :v0.4.0"))
+    ceiling))
+
 (defn message-stream-version-string
   "Human-facing protocol version (e.g. \"0.4.0\") for the given keyword
    (e.g. :v0.4.0). Used in the hello handler and in rejection error payloads."
@@ -3024,6 +3054,8 @@
         stream-version (coerce-message-stream-version (:message-stream-version config))
         _ (reset! message-stream-version stream-version)
         _ (log/info "Message stream version" {:version stream-version})
+        startup-cap (apply-startup-server-max!)
+        _ (log/info "Negotiation ceiling" {:server-max startup-cap})
         ;; Daemon thread so the sweeper never prevents JVM exit.
         ;; Captured here (not inside a nested let) so the shutdown hook can
         ;; call .shutdown() for a clean drain.
