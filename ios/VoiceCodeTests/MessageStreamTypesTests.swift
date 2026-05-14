@@ -452,4 +452,292 @@ final class MessageStreamTypesTests: XCTestCase {
         let decoded = try JSONDecoder().decode(SessionHistoryPayload.self, from: data)
         XCTAssertEqual(decoded, original)
     }
+
+    // MARK: - v0.5.0: WireMessageV5
+
+    func test_wireMessageV5_decodesSnakeCaseKeys() throws {
+        let json = """
+        {
+          "session_id": "36895c49-1111-2222-3333-444444444444",
+          "offset": 549,
+          "role": "assistant",
+          "text": "hello",
+          "uuid": "8b4472f6-aaaa-bbbb-cccc-dddddddddddd",
+          "timestamp": "2026-04-20T18:12:59.123Z"
+        }
+        """.data(using: .utf8)!
+
+        let msg = try JSONDecoder().decode(WireMessageV5.self, from: json)
+
+        XCTAssertEqual(msg.sessionId, "36895c49-1111-2222-3333-444444444444")
+        XCTAssertEqual(msg.offset, 549)
+        XCTAssertEqual(msg.role, "assistant")
+        XCTAssertEqual(msg.text, "hello")
+        XCTAssertEqual(msg.uuid, "8b4472f6-aaaa-bbbb-cccc-dddddddddddd")
+    }
+
+    func test_wireMessageV5_encodesSnakeCaseKeysAndOffset() throws {
+        let msg = WireMessageV5(
+            sessionId: "s",
+            offset: 549,
+            role: "assistant",
+            text: "hello",
+            uuid: "u",
+            timestamp: Date(timeIntervalSince1970: 1_745_172_779.123)
+        )
+
+        let data = try JSONEncoder().encode(msg)
+        let dict = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(dict["session_id"] as? String, "s")
+        XCTAssertEqual(dict["offset"] as? Int64, 549)
+        XCTAssertEqual(dict["role"] as? String, "assistant")
+        XCTAssertEqual(dict["text"] as? String, "hello")
+        XCTAssertEqual(dict["uuid"] as? String, "u")
+        XCTAssertNotNil(dict["timestamp"] as? String)
+        // Must NOT carry the v0.4.0 `seq` key on the wire.
+        XCTAssertNil(dict["seq"])
+        XCTAssertNil(dict["sessionId"])
+    }
+
+    func test_wireMessageV5_roundTrip_preservesAllFields() throws {
+        let original = WireMessageV5(
+            sessionId: "36895c49-1111-2222-3333-444444444444",
+            offset: 12345,
+            role: "user",
+            text: "round trip",
+            uuid: "8b4472f6-aaaa-bbbb-cccc-dddddddddddd",
+            timestamp: Date(timeIntervalSince1970: 1_745_172_779.456)
+        )
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(WireMessageV5.self, from: data)
+
+        XCTAssertEqual(decoded.sessionId, original.sessionId)
+        XCTAssertEqual(decoded.offset, original.offset)
+        XCTAssertEqual(decoded.role, original.role)
+        XCTAssertEqual(decoded.text, original.text)
+        XCTAssertEqual(decoded.uuid, original.uuid)
+        XCTAssertEqual(decoded.timestamp.timeIntervalSince1970,
+                       original.timestamp.timeIntervalSince1970,
+                       accuracy: 0.001)
+    }
+
+    func test_wireMessageV5_acceptsNonFractionalTimestamp() throws {
+        let json = """
+        {
+          "session_id": "s",
+          "offset": 1,
+          "role": "user",
+          "text": "t",
+          "uuid": "u",
+          "timestamp": "2026-04-20T18:12:59Z"
+        }
+        """.data(using: .utf8)!
+
+        let msg = try JSONDecoder().decode(WireMessageV5.self, from: json)
+        XCTAssertEqual(msg.offset, 1)
+        XCTAssertNotNil(msg.timestamp)
+    }
+
+    func test_wireMessageV5_invalidTimestamp_throwsDecodingError() {
+        let json = """
+        {
+          "session_id": "s",
+          "offset": 1,
+          "role": "user",
+          "text": "t",
+          "uuid": "u",
+          "timestamp": "not-a-date"
+        }
+        """.data(using: .utf8)!
+
+        XCTAssertThrowsError(try JSONDecoder().decode(WireMessageV5.self, from: json)) { error in
+            guard case DecodingError.dataCorrupted = error else {
+                XCTFail("expected DecodingError.dataCorrupted, got \(error)")
+                return
+            }
+        }
+    }
+
+    // MARK: - v0.5.0: SessionHistoryPayloadV5
+
+    func test_sessionHistoryPayloadV5_decodesFullEnvelopeIncludingFileSignature() throws {
+        let json = """
+        {
+          "type": "session_history",
+          "session_id": "36895c49-1111-2222-3333-444444444444",
+          "messages": [
+            {
+              "session_id": "36895c49-1111-2222-3333-444444444444",
+              "offset": 0,
+              "role": "user",
+              "text": "m0",
+              "uuid": "u0",
+              "timestamp": "2026-04-20T18:12:59Z"
+            },
+            {
+              "session_id": "36895c49-1111-2222-3333-444444444444",
+              "offset": 1,
+              "role": "assistant",
+              "text": "m1",
+              "uuid": "u1",
+              "timestamp": "2026-04-20T18:13:00Z"
+            }
+          ],
+          "next_offset": 2,
+          "end_of_file": true,
+          "file_signature": "4823891:01234567-89ab-cdef-0123-456789abcdef"
+        }
+        """.data(using: .utf8)!
+
+        let payload = try JSONDecoder().decode(SessionHistoryPayloadV5.self, from: json)
+        XCTAssertEqual(payload.sessionId, "36895c49-1111-2222-3333-444444444444")
+        XCTAssertEqual(payload.messages.count, 2)
+        XCTAssertEqual(payload.messages[0].offset, 0)
+        XCTAssertEqual(payload.messages[1].offset, 1)
+        XCTAssertEqual(payload.nextOffset, 2)
+        XCTAssertTrue(payload.endOfFile)
+        XCTAssertNil(payload.fileReplaced)
+        XCTAssertEqual(payload.fileSignature, "4823891:01234567-89ab-cdef-0123-456789abcdef")
+    }
+
+    func test_sessionHistoryPayloadV5_fileReplacedRecoveryShape() throws {
+        let json = """
+        {
+          "session_id": "s",
+          "messages": [],
+          "next_offset": 0,
+          "end_of_file": true,
+          "file_replaced": true,
+          "file_signature": "9999:0a"
+        }
+        """.data(using: .utf8)!
+
+        let payload = try JSONDecoder().decode(SessionHistoryPayloadV5.self, from: json)
+        XCTAssertEqual(payload.fileReplaced, true)
+        XCTAssertEqual(payload.nextOffset, 0)
+        XCTAssertTrue(payload.endOfFile)
+        XCTAssertEqual(payload.fileSignature, "9999:0a")
+    }
+
+    func test_sessionHistoryPayloadV5_missingOptionalFieldsDecodeAsNil() throws {
+        let json = """
+        {
+          "session_id": "s",
+          "messages": [],
+          "next_offset": 12,
+          "end_of_file": false
+        }
+        """.data(using: .utf8)!
+
+        let payload = try JSONDecoder().decode(SessionHistoryPayloadV5.self, from: json)
+        XCTAssertNil(payload.fileReplaced)
+        XCTAssertNil(payload.fileSignature)
+        XCTAssertEqual(payload.nextOffset, 12)
+        XCTAssertFalse(payload.endOfFile)
+    }
+
+    func test_sessionHistoryPayloadV5_oneMalformedMessage_doesNotDropBatch() throws {
+        let json = """
+        {
+          "session_id": "s",
+          "messages": [
+            {
+              "session_id": "s",
+              "offset": 100,
+              "role": "user",
+              "text": "good-1",
+              "uuid": "u1",
+              "timestamp": "2026-04-20T18:12:59Z"
+            },
+            {
+              "session_id": "s",
+              "role": "assistant",
+              "text": "bad — missing offset",
+              "uuid": "u2",
+              "timestamp": "2026-04-20T18:13:00Z"
+            },
+            {
+              "session_id": "s",
+              "offset": 102,
+              "role": "assistant",
+              "text": "good-2",
+              "uuid": "u3",
+              "timestamp": "2026-04-20T18:13:01Z"
+            }
+          ],
+          "next_offset": 103,
+          "end_of_file": true
+        }
+        """.data(using: .utf8)!
+
+        let payload = try JSONDecoder().decode(SessionHistoryPayloadV5.self, from: json)
+
+        XCTAssertEqual(payload.messages.count, 2,
+                       "Both well-formed messages must survive a malformed sibling")
+        XCTAssertEqual(payload.messages[0].offset, 100)
+        XCTAssertEqual(payload.messages[0].text, "good-1")
+        XCTAssertEqual(payload.messages[1].offset, 102)
+        XCTAssertEqual(payload.messages[1].text, "good-2")
+        XCTAssertEqual(payload.nextOffset, 103)
+    }
+
+    func test_sessionHistoryPayloadV5_offsetWrongType_skipsOnlyThatMessage() throws {
+        let json = """
+        {
+          "session_id": "s",
+          "messages": [
+            {
+              "session_id": "s",
+              "offset": "not-an-int",
+              "role": "user",
+              "text": "bad",
+              "uuid": "u1",
+              "timestamp": "2026-04-20T18:12:59Z"
+            },
+            {
+              "session_id": "s",
+              "offset": 200,
+              "role": "assistant",
+              "text": "good",
+              "uuid": "u2",
+              "timestamp": "2026-04-20T18:13:00Z"
+            }
+          ],
+          "next_offset": 201,
+          "end_of_file": true
+        }
+        """.data(using: .utf8)!
+
+        let payload = try JSONDecoder().decode(SessionHistoryPayloadV5.self, from: json)
+
+        XCTAssertEqual(payload.messages.count, 1)
+        XCTAssertEqual(payload.messages.first?.offset, 200)
+        XCTAssertEqual(payload.messages.first?.text, "good")
+    }
+
+    func test_sessionHistoryPayloadV5_roundTrip_preservesAllFields() throws {
+        let msg = WireMessageV5(
+            sessionId: "s",
+            offset: 10,
+            role: "assistant",
+            text: "t",
+            uuid: "u",
+            timestamp: Date(timeIntervalSince1970: 1_745_172_779.5)
+        )
+        let original = SessionHistoryPayloadV5(
+            sessionId: "s",
+            messages: [msg],
+            nextOffset: 11,
+            endOfFile: false,
+            fileReplaced: nil,
+            fileSignature: "100:abc"
+        )
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(SessionHistoryPayloadV5.self, from: data)
+        XCTAssertEqual(decoded, original)
+    }
+
 }

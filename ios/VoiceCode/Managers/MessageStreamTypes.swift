@@ -1,6 +1,11 @@
 // MessageStreamTypes.swift
-// Decoded wire-format types for the append-only message stream (protocol v0.4.0).
-// See docs/design/append-only-message-stream.md.
+// Decoded wire-format types for the append-only message stream.
+// v0.4.0 types: WireMessage, SessionHistoryPayload, LenientWireMessage.
+// v0.5.0 sibling types: WireMessageV5, SessionHistoryPayloadV5, LenientWireMessageV5.
+// Both versions coexist during the dual-protocol rollback window; routing by
+// negotiated protocol version lives in VoiceCodeClient.
+// See docs/design/append-only-message-stream.md and
+// /Users/travisbrown/assist/notes/voice-code-sync-kafka-redesign-2026-05-10.md §3.5.
 
 import Foundation
 import os.log
@@ -168,6 +173,162 @@ private struct LenientWireMessage: Decodable {
     init(from decoder: Decoder) throws {
         do {
             value = try WireMessage(from: decoder)
+            failureReason = nil
+        } catch {
+            value = nil
+            failureReason = String(describing: error)
+        }
+    }
+}
+
+// MARK: - v0.5.0 sibling types (offset protocol)
+//
+// These mirror the v0.4.0 types above with the field rename `seq` → `offset`
+// and an envelope shape that drops `firstSeq`/`lastSeq`/`gap` and adds
+// `fileReplaced`/`fileSignature`. The v0.4.0 structs above are untouched so
+// both protocols decode cleanly during the dual-protocol rollback window.
+
+/// v0.5.0 wire shape. Identical to `WireMessage` except `seq: Int64`
+/// (JSON key `"seq"`) is replaced by `offset: Int64` (JSON key `"offset"`).
+/// The custom timestamp decode/encode mirrors `WireMessage`'s line-for-line
+/// so the ISO-8601 contract is preserved on both protocols.
+struct WireMessageV5: Codable, Equatable {
+    let sessionId: String
+    let offset: Int64
+    let role: String
+    let text: String
+    let uuid: String
+    let timestamp: Date
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case offset
+        case role
+        case text
+        case uuid
+        case timestamp
+    }
+
+    init(sessionId: String, offset: Int64, role: String, text: String, uuid: String, timestamp: Date) {
+        self.sessionId = sessionId
+        self.offset = offset
+        self.role = role
+        self.text = text
+        self.uuid = uuid
+        self.timestamp = timestamp
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+        offset = try container.decode(Int64.self, forKey: .offset)
+        role = try container.decode(String.self, forKey: .role)
+        text = try container.decode(String.self, forKey: .text)
+        uuid = try container.decode(String.self, forKey: .uuid)
+
+        let timestampString = try container.decode(String.self, forKey: .timestamp)
+        guard let date = MessageStreamDateFormat.parse(timestampString) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .timestamp,
+                in: container,
+                debugDescription: "Invalid ISO-8601 timestamp: \(timestampString)"
+            )
+        }
+        timestamp = date
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sessionId, forKey: .sessionId)
+        try container.encode(offset, forKey: .offset)
+        try container.encode(role, forKey: .role)
+        try container.encode(text, forKey: .text)
+        try container.encode(uuid, forKey: .uuid)
+        try container.encode(MessageStreamDateFormat.format(timestamp), forKey: .timestamp)
+    }
+}
+
+/// v0.5.0 reply shape. Sibling of `SessionHistoryPayload` (v0.4.0), kept
+/// separate so both wire formats decode cleanly during the dual-protocol
+/// rollback. Drops `first_seq`/`last_seq`/`gap`, adds `file_replaced`/
+/// `file_signature` (server signals the R2 recovery path via these).
+struct SessionHistoryPayloadV5: Codable, Equatable {
+    let sessionId: String
+    let messages: [WireMessageV5]
+    let nextOffset: Int64
+    let endOfFile: Bool
+    let fileReplaced: Bool?
+    let fileSignature: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case messages
+        case nextOffset = "next_offset"
+        case endOfFile = "end_of_file"
+        case fileReplaced = "file_replaced"
+        case fileSignature = "file_signature"
+    }
+
+    init(sessionId: String,
+         messages: [WireMessageV5],
+         nextOffset: Int64,
+         endOfFile: Bool,
+         fileReplaced: Bool?,
+         fileSignature: String?) {
+        self.sessionId = sessionId
+        self.messages = messages
+        self.nextOffset = nextOffset
+        self.endOfFile = endOfFile
+        self.fileReplaced = fileReplaced
+        self.fileSignature = fileSignature
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+
+        // Decode messages leniently: a single malformed entry skips just that
+        // message rather than dropping the whole batch (mirrors v0.4.0).
+        var messagesContainer = try container.nestedUnkeyedContainer(forKey: .messages)
+        var decoded: [WireMessageV5] = []
+        var skipCount = 0
+        var firstFailureReason: String?
+        while !messagesContainer.isAtEnd {
+            let wrapper = try messagesContainer.decode(LenientWireMessageV5.self)
+            if let msg = wrapper.value {
+                decoded.append(msg)
+            } else {
+                skipCount += 1
+                if firstFailureReason == nil {
+                    firstFailureReason = wrapper.failureReason
+                }
+            }
+        }
+        messages = decoded
+
+        nextOffset = try container.decode(Int64.self, forKey: .nextOffset)
+        endOfFile = try container.decode(Bool.self, forKey: .endOfFile)
+        fileReplaced = try container.decodeIfPresent(Bool.self, forKey: .fileReplaced)
+        fileSignature = try container.decodeIfPresent(String.self, forKey: .fileSignature)
+
+        if skipCount > 0 {
+            let sid = sessionId
+            let reason = firstFailureReason ?? "unknown"
+            logger.warning("session_history v5 for \(sid, privacy: .public): skipped \(skipCount, privacy: .public) malformed message(s); first reason: \(reason, privacy: .public)")
+        }
+    }
+}
+
+/// v0.5.0 analog of `LenientWireMessage`. Wraps `WireMessageV5` decode in a
+/// non-throwing facade so an unkeyed container can advance past a malformed
+/// element instead of aborting the whole array.
+private struct LenientWireMessageV5: Decodable {
+    let value: WireMessageV5?
+    let failureReason: String?
+
+    init(from decoder: Decoder) throws {
+        do {
+            value = try WireMessageV5(from: decoder)
             failureReason = nil
         } catch {
             value = nil
