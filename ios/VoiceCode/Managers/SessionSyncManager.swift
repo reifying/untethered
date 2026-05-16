@@ -515,7 +515,7 @@ class SessionSyncManager {
             // so an out-of-order payload (e.g. a backfill landing after a
             // newer push) cannot regress the cursor. See beads
             // tmux-untethered-fkz.
-            if payload.nextSeq > session.nextSeq {
+            if payload.isComplete && payload.nextSeq > session.nextSeq {
                 session.nextSeq = payload.nextSeq
             }
 
