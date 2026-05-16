@@ -2667,6 +2667,141 @@
         (is (empty? failures)
             "The partial tail must NOT be counted as a parse failure")))))
 
+(deftest test-handle-file-modified-emits-parse-failures-counter
+  (testing "Watcher tick emits :jsonl-parse-failures for non-blank garbage lines"
+    ;; Regression for an observability regression introduced when the
+    ;; watcher switched from `parse-with-retry` → `parse-jsonl-incremental`
+    ;; (which emitted the counter) to `parse-jsonl-incremental-with-raw`
+    ;; (which doesn't). The counter must be re-emitted from inside
+    ;; handle-file-modified instead.
+    (let [session-id "550e8400-e29b-41d4-a716-446655440aaa"
+          ;; 1 valid + 1 garbage + 1 valid + blank — only the garbage counts.
+          messages [(claude-jsonl {:type "user" :text "valid-1"})
+                    "this-is-not-json-at-all"
+                    (claude-jsonl {:type "assistant" :text "valid-2"})
+                    ""]
+          file (create-test-jsonl-file (str session-id ".jsonl") messages)
+          file-path (.getAbsolutePath file)]
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :message-count 0
+              :last-modified (.lastModified file)
+              :ios-notified true})
+      (reset! repl/watcher-state
+              {:running false :watch-service nil :watch-thread nil
+               :subscribed-sessions #{session-id}
+               :event-queue (atom {}) :debounce-ms 0
+               :retry-delay-ms 0 :max-retries 1
+               :on-session-created nil
+               :on-session-updated nil
+               :on-session-updated-v5 nil
+               :on-session-deleted nil :on-turn-complete nil})
+      (swap! repl/file-positions assoc file-path 0)
+      (swap! repl/line-counts dissoc file-path)
+      (let [captured (with-captured-metrics
+                       #(repl/handle-file-modified file))
+            failures (filter (fn [[mt mn _]]
+                               (and (= :counter mt) (= :jsonl-parse-failures mn)))
+                             captured)]
+        (is (= 1 (count failures))
+            "Exactly one :jsonl-parse-failures emission (the garbage line)")
+        (let [[_ _ data] (first failures)]
+          (is (= 1 (:count data)) "One non-blank line failed to parse")
+          (is (= file-path (:file data)))))
+      (repl/reset-file-position! file-path)
+      (swap! repl/session-index dissoc session-id))))
+
+(deftest test-handle-file-modified-no-parse-failures-when-clean
+  (testing "Watcher tick skips :jsonl-parse-failures emission when all lines parse"
+    (let [session-id "550e8400-e29b-41d4-a716-446655440bbb"
+          messages [(claude-jsonl {:type "user" :text "valid-1"})
+                    (claude-jsonl {:type "assistant" :text "valid-2"})]
+          file (create-test-jsonl-file (str session-id ".jsonl") messages)
+          file-path (.getAbsolutePath file)]
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :message-count 0
+              :last-modified (.lastModified file)
+              :ios-notified true})
+      (reset! repl/watcher-state
+              {:running false :watch-service nil :watch-thread nil
+               :subscribed-sessions #{session-id}
+               :event-queue (atom {}) :debounce-ms 0
+               :retry-delay-ms 0 :max-retries 1
+               :on-session-created nil
+               :on-session-updated nil
+               :on-session-updated-v5 nil
+               :on-session-deleted nil :on-turn-complete nil})
+      (swap! repl/file-positions assoc file-path 0)
+      (swap! repl/line-counts dissoc file-path)
+      (let [captured (with-captured-metrics
+                       #(repl/handle-file-modified file))]
+        (is (empty? (filter (fn [[_ mn _]] (= :jsonl-parse-failures mn))
+                            captured))
+            "No failure counter when every non-blank line parses"))
+      (repl/reset-file-position! file-path)
+      (swap! repl/session-index dissoc session-id))))
+
+(deftest test-handle-file-modified-bootstrap-preserves-nonzero-file-positions
+  (testing "Bootstrap branch (line-counts missing, file-positions advanced) seeds
+            line-counts from file count and DOES NOT clobber file-positions —
+            so already-broadcast lines aren't re-emitted"
+    ;; Regression for the pass-1 Fix 1 that reset both cursors to 0 — it
+    ;; caused parse to re-read from byte 0 and double-emit seqs in
+    ;; append_only_loopback_test. Pins the contract: when byte-pos > 0
+    ;; (the production startup invariant where migrate-session-seqs!
+    ;; seeded file-positions to file-length), the bootstrap path must
+    ;; seed line-counts without clobbering file-positions, so the
+    ;; upcoming parse reads NO already-processed bytes and the v0.4.0
+    ;; broadcast callback is NOT invoked with stale content.
+    (let [session-id "550e8400-e29b-41d4-a716-446655440ccc"
+          seed-messages [(claude-jsonl {:type "user" :text "seed-1"})
+                         (claude-jsonl {:type "assistant" :text "seed-2"})
+                         (claude-jsonl {:type "user" :text "seed-3"})]
+          file (create-test-jsonl-file (str session-id ".jsonl") seed-messages)
+          file-path (.getAbsolutePath file)
+          seed-length (.length file)
+          v4-calls (atom [])
+          v5-calls (atom [])]
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :message-count 3
+              :last-modified (.lastModified file)
+              :ios-notified true
+              :next-seq 4
+              :min-available-seq 1})
+      (reset! repl/watcher-state
+              {:running false :watch-service nil :watch-thread nil
+               :subscribed-sessions #{session-id}
+               :event-queue (atom {}) :debounce-ms 0
+               :retry-delay-ms 0 :max-retries 1
+               :on-session-created nil
+               :on-session-updated (fn [sid msgs]
+                                     (swap! v4-calls conj {:sid sid :count (count msgs)}))
+               :on-session-updated-v5 (fn [& args]
+                                        (swap! v5-calls conj args))
+               :on-session-deleted nil :on-turn-complete nil})
+      ;; Production-like setup: file-positions seeded to file-length,
+      ;; line-counts NOT seeded. Mirrors what migrate-session-seqs! +
+      ;; missing populate-line-counts! would leave behind.
+      (swap! repl/file-positions assoc file-path seed-length)
+      (swap! repl/line-counts dissoc file-path)
+      ;; No append — the file is unchanged since file-positions was set.
+      ;; A correct bootstrap parses zero bytes and fires no callbacks.
+      ;; A buggy bootstrap (the pass-1 reset-to-0) would re-parse all
+      ;; 3 seed lines and invoke the broadcast callback.
+      (repl/handle-file-modified file)
+      (is (= seed-length (get @repl/file-positions file-path))
+          "file-positions preserved at seed-length (NOT reset to 0)")
+      (is (= 3 (get @repl/line-counts file-path))
+          "line-counts seeded to the file's current line count")
+      (is (empty? @v4-calls)
+          "v0.4.0 broadcast NOT invoked: parse from file-length yields no new lines")
+      (is (empty? @v5-calls)
+          "v0.5.0 push NOT invoked: raw-line-count is 0")
+      (repl/reset-file-position! file-path)
+      (swap! repl/session-index dissoc session-id))))
+
 (deftest test-save-index-emits-duration-histogram-on-success
   (testing "Emits :session-index-save-duration-ms with value and session-count"
     (let [tmp (doto (File/createTempFile "si-success" ".edn") (.deleteOnExit))]

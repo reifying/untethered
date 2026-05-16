@@ -2026,6 +2026,7 @@
          :max-retries 3
          :on-session-created nil ;; Callback: (fn [session-metadata])
          :on-session-updated nil ;; Callback: (fn [session-id new-messages])
+         :on-session-updated-v5 nil ;; v0.5.0 fan-out: (fn [session-id provider file-path snapshot snapshot-from-offset file-end-line-count current-sig])
          :on-session-deleted nil ;; Callback: (fn [session-id])
          :on-turn-complete nil ;; Callback: (fn [session-id])
          :opencode-part-msg-dirs #{}})) ;; Set of watched opencode part message dirs
@@ -2310,8 +2311,28 @@
             (swap! session-index assoc session-id metadata)
             (save-index! @session-index)
 
-            ;; Initialize file position to current size so we only parse NEW messages
-            (swap! file-positions assoc file-path file-size)
+            ;; Initialize byte AND line cursors to the current file state so
+            ;; the first `handle-file-modified` tick captures a consistent
+            ;; pre-line-count for v0.5.0 offset stamping. Without seeding
+            ;; line-counts here, the lazy materialization at modify-time
+            ;; counts the post-append file and shifts offsets by
+            ;; raw-line-count on the first delivered payload.
+            ;;
+            ;; Order: count lines FIRST, then read length. If a writer
+            ;; appends a line L between the two reads, `seed-size` may
+            ;; include L's bytes while `seed-lines` does not. The next
+            ;; handle-file-modified tick reads from `seed-size`, skips L
+            ;; (already past it in bytes), and line-counts permanently
+            ;; under-counts the file by 1. The inverse order (length first,
+            ;; count second) would over-count and stamp duplicate offsets;
+            ;; under-counting is the lesser of the two evils (the dropped
+            ;; line is recoverable via a §6 R2 resync on the next subscribe).
+            ;; Eliminating the window entirely requires counting lines up to
+            ;; an exact byte position, which no current helper provides.
+            (let [seed-lines (count-complete-lines file-path)
+                  seed-size (.length file)]
+              (swap! line-counts assoc file-path seed-lines)
+              (swap! file-positions assoc file-path seed-size))
 
             ;; Only notify iOS if we have real messages
             (if (pos? message-count)
@@ -2342,7 +2363,35 @@
         (log/error e "Failed to handle file creation" {:file (.getPath file)})))))
 
 (defn handle-file-modified
-  "Handle ENTRY_MODIFY event for a .jsonl file."
+  "Handle ENTRY_MODIFY event for a .jsonl file.
+
+  Watcher tee (design doc §3.4): a single raw-line read feeds two fan-out
+  branches.
+
+  - v0.4.0/v0.3.0 broadcast — derives canonical messages via the legacy
+    pipeline (`parse-jsonl-line` → `providers/parse-message :claude` →
+    `assign-seq!` → human-prompt filter) and invokes `:on-session-updated`.
+    `broadcast-session-history!` is the wired callback and remains
+    UNTOUCHED.
+  - v0.5.0 push — stamps offsets onto the raw lines via `stamp-offsets`
+    using `pre-line-count` captured BEFORE parse, computes
+    `current-sig` ONCE per tick via `compute-file-signature`, and invokes
+    `:on-session-updated-v5` (wired to `push-to-subscribers!`). The
+    signature is computed once at the watcher level and threaded through
+    to every subscriber so we don't recompute per-channel.
+
+  Shrink recovery (`claude --compact` rewrites the file in place): if
+  current file size is below the tracked byte cursor, BOTH `file-positions`
+  and `line-counts` are reset to 0 BEFORE `pre-line-count` is captured,
+  so `stamp-offsets` stamps the rewritten content with origin 0 instead of
+  the stale pre-compact line count. The §6 R2 `file_signature` mismatch
+  triggers an iOS resync on the next subscribe; this fix ensures the
+  watcher tick that observes the shrink also delivers wire-correct offsets.
+
+  `file-positions` and `line-counts` are advanced atomically as a pair
+  immediately after `parse-jsonl-incremental-with-raw` returns, before
+  the per-protocol dispatch, so the byte and raw-line cursors stay in
+  lockstep within a tick (§3.4 point 3a)."
   [file]
   (when (and (str/ends-with? (.getName file) ".jsonl")
              (not (is-inference-session? file)))
@@ -2354,13 +2403,104 @@
         ;; Debounce
         (when (debounce-event session-id)
           (try
-            ;; Parse new messages with retry
-            (let [new-messages (parse-with-retry (.getAbsolutePath file) (:max-retries @watcher-state))
-                  ;; Filter internal messages (sidechain, summary, system)
-                  filtered-messages (filter-internal-messages new-messages)]
+            (let [file-path (.getAbsolutePath file)
+                  ;; Bootstrap safety net: `line-counts` is normally seeded
+                  ;; by handle-file-created and populate-line-counts!. This
+                  ;; branch fires when neither has run for this file (e.g.
+                  ;; the watcher races ahead of the startup walk, or a test
+                  ;; dissoc'd the entry). Derive `line-counts` from
+                  ;; `file-positions` so the two cursors stay in lockstep:
+                  ;;   - byte-pos = 0 → line-counts = 0. Parse reads from
+                  ;;     byte 0 and stamps offsets at [0, N), correct.
+                  ;;   - byte-pos > 0 → assume byte-pos = file-length (the
+                  ;;     production startup invariant set by
+                  ;;     migrate-session-seqs! + populate-line-counts!).
+                  ;;     line-counts := count-complete-lines, then parse
+                  ;;     reads bytes [byte-pos, current-length) and stamps
+                  ;;     from that count. Caveat: if byte-pos is genuinely
+                  ;;     mid-file (no known production path produces this),
+                  ;;     count-complete-lines over-counts and offsets inflate
+                  ;;     by (full-file-count − true-count-at-byte-pos). No
+                  ;;     callers today exercise that state.
+                  ;; NEVER clobber a non-zero file-positions: doing so would
+                  ;; cause parse to re-read already-broadcast lines from
+                  ;; byte 0 and double-emit (the pass-1 regression that
+                  ;; broke append_only_loopback_test).
+                  _ (when-not (contains? @line-counts file-path)
+                      (let [byte-pos (get @file-positions file-path 0)
+                            seed-lines (if (zero? byte-pos) 0 (count-complete-lines file-path))]
+                        (log/warn "v0.5.0: line-counts missing for file; seeding from file-positions"
+                                  {:file file-path :byte-pos byte-pos :seed-lines seed-lines})
+                        (swap! line-counts assoc file-path seed-lines)))
+                  ;; Shrink-recovery pre-check: if the file is now smaller than
+                  ;; the tracked byte cursor (compact / sed -i / truncate-and-
+                  ;; rewrite), reset BOTH cursors to 0 so the upcoming parse
+                  ;; reads the entire current file with offsets starting at 0.
+                  ;; This matches the contract in
+                  ;; `parse-jsonl-incremental-with-raw`'s docstring and prevents
+                  ;; stamping rewritten content with inflated pre-shrink origins.
+                  tracked-pos (get @file-positions file-path 0)
+                  current-size (.length file)
+                  shrunk? (< current-size tracked-pos)
+                  _ (when shrunk?
+                      (log/warn "JSONL file shrank; resetting v0.5.0 line cursor"
+                                {:file file-path
+                                 :tracked-pos tracked-pos
+                                 :current-size current-size})
+                      (swap! file-positions assoc file-path 0)
+                      (reset-line-count! file-path))
+                  pre-line-count (get @line-counts file-path 0)
+                  {:keys [raw-lines new-pos]} (parse-jsonl-incremental-with-raw file-path)
+                  raw-line-count (count raw-lines)
+                  ;; Persist byte and line cursors in lockstep per §3.4 point 3a.
+                  _ (swap! file-positions assoc file-path new-pos)
+                  _ (swap! line-counts update file-path (fnil + 0) raw-line-count)
+                  file-end-line-count (+ pre-line-count raw-line-count)
+                  ;; Parse each raw line once; both `parsed-jsonl` (drops
+                  ;; nils) and the parse-failure counter (counts non-blank
+                  ;; rejections) consume from the single nil-tolerant vec.
+                  ;; Restoring `:jsonl-parse-failures` here re-establishes
+                  ;; the observability the legacy `parse-jsonl-incremental`
+                  ;; pipeline provided. Blank lines are expected background
+                  ;; noise and are not counted.
+                  parsed-with-nils (mapv parse-jsonl-line raw-lines)
+                  parsed-jsonl (into [] (filter some?) parsed-with-nils)
+                  parse-failures (loop [i 0 f 0]
+                                   (if (< i raw-line-count)
+                                     (recur (inc i)
+                                            (if (and (nil? (nth parsed-with-nils i))
+                                                     (not (str/blank? (nth raw-lines i))))
+                                              (inc f)
+                                              f))
+                                     f))
+                  _ (when (pos? parse-failures)
+                      (emit-metric! :counter :jsonl-parse-failures
+                                    {:file file-path :count parse-failures}))
+                  filtered-messages (filter-internal-messages parsed-jsonl)]
 
               ;; Check for Claude turn-complete from raw messages (before filtering)
-              (check-claude-turn-complete! session-id new-messages)
+              (check-claude-turn-complete! session-id parsed-jsonl)
+
+              ;; v0.5.0 dispatch: fire whenever new raw lines landed, regardless
+              ;; of whether the filtered-messages branch emits a broadcast.
+              ;; Caught-up v0.5.0 subscribers still need their offsets/sigs
+              ;; refreshed even when every raw line was internal-filtered.
+              ;; `stamp-offsets` and `compute-file-signature` are gated INSIDE
+              ;; this `when` so we don't spend disk-read + parse cycles on
+              ;; ticks where no v0.5.0 callback is wired (v0.4.0-only deploys).
+              ;;
+              ;; The callback is bound ONCE here (single deref of watcher-state).
+              ;; Reading `@watcher-state` again in the body would NPE if
+              ;; `stop-watcher!` cleared `:on-session-updated-v5` between the
+              ;; predicate and the call. Provider is hardcoded :claude because
+              ;; this handler is wired only for the Claude .jsonl watcher;
+              ;; Copilot/OpenCode have their own modify handlers.
+              (when-let [cb-v5 (when (pos? raw-line-count)
+                                 (:on-session-updated-v5 @watcher-state))]
+                (let [snapshot (stamp-offsets :claude raw-lines pre-line-count)
+                      current-sig (compute-file-signature :claude file-path)]
+                  (cb-v5 session-id :claude file-path snapshot pre-line-count
+                         file-end-line-count current-sig)))
 
               (when (seq filtered-messages)
                 (let [;; Pair each raw filtered message with its canonical form,
@@ -2453,7 +2593,9 @@
 
                     ;; Send updates to subscribed clients (regardless of ios-notified flag).
                     ;; Canonical wire format with :seq already stamped; human prompts
-                    ;; already filtered above.
+                    ;; already filtered above. v0.5.0 channels are already excluded by
+                    ;; broadcast-session-history! itself; this branch carries the
+                    ;; v0.4.0/v0.3.0 fan-out.
                     (when (is-subscribed? session-id)
                       (log/info "Sending update to subscribed iOS client"
                                 {:session-id session-id
@@ -3223,7 +3365,7 @@
   - :on-session-updated (fn [session-id new-messages])
   - :on-session-deleted (fn [session-id])
   - :on-turn-complete (fn [session-id])"
-  [& {:keys [on-session-created on-session-updated on-session-deleted on-turn-complete]}]
+  [& {:keys [on-session-created on-session-updated on-session-updated-v5 on-session-deleted on-turn-complete]}]
   (when (:running @watcher-state)
     (log/warn "Watcher already running")
     (throw (ex-info "Watcher already running" {})))
@@ -3290,6 +3432,7 @@
                :running true
                :on-session-created on-session-created
                :on-session-updated on-session-updated
+               :on-session-updated-v5 on-session-updated-v5
                :on-session-deleted on-session-deleted
                :on-turn-complete on-turn-complete)
 
@@ -3350,6 +3493,7 @@
            :opencode-part-msg-dirs #{}
            :on-session-created nil
            :on-session-updated nil
+           :on-session-updated-v5 nil
            :on-session-deleted nil
            :on-turn-complete nil)
     ;; Cancel any pending Cursor stability checks

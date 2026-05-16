@@ -1530,16 +1530,26 @@
 
    With per-channel protocol negotiation (§3.2), the dispatch is now per
    subscriber: each channel routes on (channel-protocol channel) rather
-   than the global atom. v0.5.0 channels currently take the same v0.4.0
-   session_history branch until T10 ships the tailored fan-out."
+   than the global atom. v0.5.0 channels are EXCLUDED from this fan-out
+   (see the filter below); they receive their tailored per-subscriber
+   payload from `push-to-subscribers!` instead. Including a v0.5.0
+   channel here would double-deliver each tick AND emit the v0.4.0 wire
+   shape (`:first-seq`/`:last-seq`) which the v0.5.0 decoder rejects."
   [session-id new-messages]
   (let [not-deleted-clients (filter (fn [[channel _]]
                                       (not (is-session-deleted-for-client? channel session-id)))
                                     @connected-clients)
-        push-clients (filter (fn [[_ client-info]]
-                               (contains? (or (:subscribed-sessions client-info) #{})
-                                          session-id))
-                             not-deleted-clients)
+        push-clients (->> not-deleted-clients
+                          (filter (fn [[_ client-info]]
+                                    (contains? (or (:subscribed-sessions client-info) #{})
+                                               session-id)))
+                          ;; Exclude v0.5.0 channels — they receive their per-
+                          ;; subscriber tailored payload from `push-to-subscribers!`
+                          ;; (T10). Sending both would double-deliver each tick;
+                          ;; the v0.4.0 wire shape (with :first-seq/:last-seq) is
+                          ;; also incompatible with the v0.5.0 decoder.
+                          (filter (fn [[channel _]]
+                                    (not= :v0.5.0 (channel-protocol channel)))))
         push-count (count push-clients)
         protocols (mapv (fn [[ch _]] (channel-protocol ch)) push-clients)]
 
@@ -1610,6 +1620,208 @@
       (let [limit (get client-info :recent-sessions-limit 5)]
         (send-recent-sessions! channel limit)))))
 
+(defn truncate-budget
+  "Pack `messages` (vector of canonical messages) within `max-bytes` and
+   return just the included prefix vector. Wraps `pack-within-budget`'s
+   richer return shape; the v0.5.0 push path derives `:end-of-file` from
+   the file's total line count, not from `:complete?`, so the budget
+   signal is discarded.
+
+   Before packing, each message is middle-truncated to
+   `per-message-max-bytes`. Without this, a single message whose `:text`
+   exceeds `max-bytes` would cause `pack-within-budget` to return an
+   empty prefix — the v0.5.0 callers then echo `next-offset =
+   client-offset` and stall the client until the file signature changes.
+   Mirrors the `truncate-message-text` pass the v0.4.0 path runs before
+   `build-session-history-response`.
+
+   Known limitation: `truncate-message-text` only truncates text content
+   (`:text`, `:content`, `:message.content`, `:toolUseResult`). A
+   message dominated by structural fields (e.g. dozens of tool-call
+   envelopes) can still exceed `max-bytes` after truncation. The fast-
+   path callers will return `next-offset = client-offset` in that case
+   and the client stalls until either the file signature changes
+   (forcing a §6 R2 resync) or the client manually advances its cursor.
+   Callers should not assume a non-empty input always yields a non-empty
+   packed result.
+
+   Overhead constants match the v0.5.0 wire payload:
+   - envelope (256 bytes): covers `{:type :session-id :next-offset
+     :end-of-file :file-signature}` + `:messages` array brackets. The
+     realistic wire form (camelCase keys, 36-char session UUID, 64-byte
+     signature) totals ~210 bytes; 256 gives margin for protocol
+     version growth.
+   - per-message-extra (52 bytes): the `:session-id` field that
+     `push-to-subscribers!` `assoc`s onto each message AFTER packing."
+  [messages max-bytes]
+  (let [truncated (mapv #(truncate-message-text % per-message-max-bytes) messages)]
+    (:included (pack-within-budget truncated max-bytes 256 52))))
+
+(defn estimate-line-limit
+  "Conservative raw-line count derived from `max-bytes`. Bounds the parse
+   work `read-from-offset` performs on the backfill path before
+   `truncate-budget` applies the precise wire-size cap.
+
+   The 512-byte-per-line assumption is intentionally low for typical
+   Claude sessions (short text messages, tool-call envelopes) so the
+   limit produces a generous slice; `truncate-budget` will pack within
+   `max-bytes` regardless. Floors at 1 so a tiny `max-bytes` still
+   advances at least one line."
+  [max-bytes]
+  (max 1 (int (/ max-bytes 512))))
+
+(defn- v0-5-0-subscriber?
+  "Predicate: `[channel client-info]` for `session-id` belongs to the
+   v0.5.0 fan-out (authenticated, subscribed, not-deleted-for-client,
+   negotiated v0.5.0). Shared by `subscribers-for` and tests.
+
+   Uses the destructured `client-info` for the deletion check instead of
+   `is-session-deleted-for-client?` (which re-reads `@connected-clients`)
+   to keep the per-tick fan-out to a single atom read."
+  [session-id [_channel client-info]]
+  (and (:authenticated client-info)
+       (contains? (or (:subscribed-sessions client-info) #{}) session-id)
+       (not (contains? (:deleted-sessions client-info) session-id))
+       (= :v0.5.0 (:negotiated-protocol-version client-info))))
+
+(defn subscribers-for
+  "Seq of `[channel client-info]` pairs eligible for v0.5.0 push fan-out
+   on `session-id`. Mirrors `broadcast-session-history!`'s filter chain
+   with the per-channel protocol gate added — v0.4.0/v0.3.0 channels are
+   excluded because they continue to receive from
+   `broadcast-session-history!`."
+  [session-id]
+  (->> @connected-clients
+       (filter #(v0-5-0-subscriber? session-id %))))
+
+(defn push-to-subscribers!
+  "v0.5.0 tailored fan-out invoked by the watcher pipeline after a tick.
+
+   Inputs:
+   - `snapshot`               — vector of canonical messages produced by
+                                `stamp-offsets`, each carrying `:offset`
+                                (raw-line index in the source file).
+                                Empty when every raw line in the tick was
+                                filtered out — the empty-snapshot guard
+                                below still pushes to caught-up
+                                subscribers so they observe the cursor
+                                advancing past the filtered tail.
+   - `snapshot-from-offset`   — `:offset` of `snapshot[0]` (or, when
+                                `snapshot` is empty, the line count
+                                before this tick's appended lines).
+                                `nil` only on the bootstrap edge cases
+                                covered by the backfill branch.
+   - `file-end-line-count`    — total raw-line count of the file AFTER
+                                this tick. The pass-2 EOF check compares
+                                the packed watermark against this value,
+                                NOT against `(count snapshot)`, because
+                                the snapshot is a partial view.
+   - `current-sig`            — `compute-file-signature` evaluated ONCE
+                                per tick by the caller and threaded
+                                through. Stamped on every emitted
+                                payload so iOS keeps `lastFileSignature`
+                                fresh between subscribes (§6 R2).
+
+   Per-subscriber dispatch:
+     - Fast path (`client-offset >= snapshot-from-offset`): slice the
+       snapshot in memory and pack within `max-bytes`. No disk I/O.
+     - Backfill path: subscriber is behind `snapshot-from-offset` (flaky
+       network, paused app); fall back to `read-from-offset` for the
+       gap.
+
+   Client-ahead clamp: when `client-offset > file-end-line-count` (e.g.
+   the iOS client survived a backend rollback and holds a cursor past
+   the server's view), the fast path produces `sliced = []` and
+   `next-offset = file-end-line-count`, which is LESS than the
+   subscriber's previous offset. iOS detects `next_offset <
+   previous_offset` and resets to 0 (design doc §3.1) — matching the
+   `read-from-offset` clamp behavior.
+
+   Idempotency: concurrent push and subscribe writes to
+   `[:session-offsets session-id]` resolve via `assoc-in`'s last-write-
+   wins; the `(sessionId, offset)` upsert on the iOS side absorbs any
+   duplicate delivery, so neither winner corrupts state."
+  [session-id provider file-path snapshot snapshot-from-offset file-end-line-count current-sig]
+  (doseq [[channel client-info] (subscribers-for session-id)]
+    (let [client-offset (get-in client-info [:session-offsets session-id] 0)
+          max-bytes (get-client-max-message-size-bytes channel)
+          fast-path? (and snapshot-from-offset
+                          (>= client-offset snapshot-from-offset))
+          {:keys [messages next-offset end-of-file?]}
+          (if fast-path?
+            (let [sliced (vec (drop-while #(< (:offset %) client-offset) snapshot))
+                  budget (truncate-budget sliced max-bytes)
+                  next-offset (cond
+                                (seq budget)
+                                (inc (:offset (peek budget)))
+                                ;; Sliced is empty — either the subscriber is
+                                ;; caught up to (or past) the snapshot tail, or
+                                ;; the snapshot itself was empty because every
+                                ;; raw line this tick was filtered out. In both
+                                ;; cases advance the cursor past the filtered
+                                ;; tail so the subscriber catches up to the
+                                ;; file's true line count.
+                                (empty? sliced)
+                                file-end-line-count
+                                ;; Sliced non-empty but byte-budget exhausted
+                                ;; before fitting the first message — don't
+                                ;; advance, the next push retries from the same
+                                ;; offset.
+                                :else
+                                client-offset)]
+              {:messages budget
+               :next-offset next-offset
+               ;; Pass-2 EOF fix: compares packed watermark against the file's
+               ;; total line count, not against `(count snapshot)`. A snapshot
+               ;; can be a partial view (watcher debounces multiple appends
+               ;; between ticks) so equality with snapshot length is the
+               ;; weaker, incorrect condition.
+               :end-of-file? (and (= (count budget) (count sliced))
+                                  (= next-offset file-end-line-count))})
+            (let [limit (estimate-line-limit max-bytes)
+                  raw (repl/read-from-offset provider file-path client-offset limit)
+                  raw-msgs (:messages raw)
+                  budget (truncate-budget raw-msgs max-bytes)
+                  next-offset (cond
+                                (seq budget)
+                                (inc (:offset (peek budget)))
+                                (empty? raw-msgs)
+                                (:next-offset raw)
+                                :else
+                                client-offset)]
+              {:messages budget
+               :next-offset next-offset
+               :end-of-file? (and (= (count budget) (count raw-msgs))
+                                  (boolean (:end-of-file? raw)))}))
+          last-sig (get-in client-info [:last-emitted-sigs session-id])
+          sig-changed? (not= current-sig last-sig)]
+      ;; Emit when there's something to convey: new messages, OR the file
+      ;; signature changed (rare: e.g. the tick observed a length advance
+      ;; with all lines filtered out — caught-up subscribers still need
+      ;; the refreshed sig and an advanced cursor).
+      (when (or (seq messages) sig-changed?)
+        (let [wire-msgs (mapv #(assoc % :session-id session-id) messages)]
+          (send-to-client! channel
+                           {:type :session-history
+                            :session-id session-id
+                            :messages wire-msgs
+                            :next-offset next-offset
+                            :end-of-file end-of-file?
+                            :file-signature current-sig})
+          ;; Last-write-wins update, but ONLY when the channel still
+          ;; exists. `send-to-client!` calls `unregister-channel!` on
+          ;; socket failure (server.clj:867), which dissociates the
+          ;; channel; without the contains? guard, `assoc-in` on a
+          ;; missing key would re-insert a partial `{channel {:session-
+          ;; offsets {...} :last-emitted-sigs {...}}}` ghost entry that
+          ;; leaks until process restart.
+          (swap! connected-clients
+                 (fn [m]
+                   (cond-> m
+                     (contains? m channel)
+                     (-> (assoc-in [channel :session-offsets session-id] next-offset)
+                         (assoc-in [channel :last-emitted-sigs session-id] current-sig))))))))))
+
 (defn on-session-deleted
   "Called when a session file is deleted from filesystem"
   [session-id]
@@ -1646,6 +1858,283 @@
         (send-to-client! channel
                          {:type :turn-complete
                           :session-id session-id})))))
+
+(defn- handle-subscribe-v0-4-0
+  "Legacy subscribe handler covering v0.4.0 (last_seq cursor) and v0.3.0
+   (last_message_id cursor). Body lifted verbatim from the pre-T9 inline
+   `(case msg-type \"subscribe\" ...)` branch so the rollback window keeps
+   bit-for-bit compatible behavior for non-v0.5.0 channels."
+  [channel data]
+  (let [session-id (:session-id data)
+        last-seq-val (:last-seq data)
+        last-message-id (:last-message-id data)
+        v0-4? (not= :v0.3.0 (channel-protocol channel))]
+    (cond
+      (not session-id)
+      (http/send! channel
+                  (generate-json
+                   {:type :error
+                    :message "session_id required in subscribe message"}))
+
+      (and v0-4? (some? last-message-id))
+      (http/send! channel
+                  (generate-json
+                   {:type "error"
+                    :code "unsupported_subscribe_field"
+                    :message (str "last_message_id is not supported in protocol "
+                                  "v0.4.0; use last_seq instead")}))
+
+      (and v0-4?
+           (some? last-seq-val)
+           (or (not (integer? last-seq-val))
+               (neg? last-seq-val)))
+      (http/send! channel
+                  (generate-json
+                   {:type "error"
+                    :code "invalid_subscribe"
+                    :message "last_seq must be a non-negative integer"}))
+
+      :else
+      (do
+        (log/info "Client subscribing to session"
+                  {:session-id session-id
+                   :last-seq last-seq-val
+                   :last-message-id last-message-id
+                   :protocol (if v0-4? :v0.4.0 :v0.3.0)})
+
+        (repl/subscribe-to-session! session-id)
+        (swap! connected-clients update-in [channel :subscribed-sessions]
+               (fnil conj #{}) session-id)
+
+        (if-let [metadata (repl/get-session-metadata session-id)]
+          (let [file-path (:file metadata)
+                provider (:provider metadata :claude)
+                file (io/file file-path)
+                current-size (.length file)
+                all-messages (repl/parse-session-messages provider file-path)
+                filtered (vec (repl/filter-internal-messages all-messages))
+                max-bytes (get-client-max-message-size-bytes channel)
+                truncated (mapv #(truncate-message-text % per-message-max-bytes) filtered)
+                stamped (vec (map-indexed (fn [i m] (assoc m :seq (inc i))) truncated))
+                session-next-seq (inc (count stamped))]
+            (repl/reset-file-position! file-path)
+            (swap! repl/file-positions assoc file-path current-size)
+            (send-available-commands! channel (:working-directory metadata))
+            (if v0-4?
+              (let [client-last-seq (or last-seq-val 0)
+                    {response-msgs :messages
+                     is-complete :is-complete
+                     first-seq :first-seq
+                     last-seq :last-seq
+                     next-seq :next-seq
+                     gap :gap}
+                    (build-session-history-response stamped client-last-seq
+                                                    max-bytes
+                                                    (or (:min-available-seq metadata) 1)
+                                                    session-next-seq)
+                    wire-messages (mapv #(assoc % :session-id session-id) response-msgs)]
+                (log/info "Sending session history"
+                          {:session-id session-id
+                           :protocol :v0.4.0
+                           :message-count (count wire-messages)
+                           :client-last-seq client-last-seq
+                           :first-seq first-seq
+                           :last-seq last-seq
+                           :next-seq next-seq
+                           :gap gap
+                           :is-complete is-complete
+                           :file-position current-size})
+                (http/send! channel
+                            (generate-json
+                             {:type :session-history
+                              :session-id session-id
+                              :messages wire-messages
+                              :first-seq first-seq
+                              :last-seq last-seq
+                              :next-seq next-seq
+                              :is-complete is-complete
+                              :gap gap})))
+              (let [client-last-seq (or (when last-message-id
+                                          (some (fn [m]
+                                                  (when (= (:uuid m) last-message-id)
+                                                    (:seq m)))
+                                                stamped))
+                                        0)
+                    {response-msgs :messages
+                     is-complete :is-complete
+                     first-seq :first-seq
+                     last-seq :last-seq}
+                    (build-session-history-response stamped client-last-seq
+                                                    max-bytes
+                                                    (or (:min-available-seq metadata) 1)
+                                                    session-next-seq)
+                    oldest-message-id (when first-seq
+                                        (some (fn [m]
+                                                (when (= (:seq m) first-seq)
+                                                  (:uuid m)))
+                                              stamped))
+                    newest-message-id (when last-seq
+                                        (some (fn [m]
+                                                (when (= (:seq m) last-seq)
+                                                  (:uuid m)))
+                                              stamped))
+                    wire-messages (mapv #(dissoc % :seq) response-msgs)]
+                (log/info "Sending session history"
+                          {:session-id session-id
+                           :protocol :v0.3.0
+                           :message-count (count wire-messages)
+                           :total (count filtered)
+                           :is-complete is-complete
+                           :has-delta-sync (some? last-message-id)
+                           :file-position current-size})
+                (http/send! channel
+                            (generate-json
+                             {:type :session-history
+                              :session-id session-id
+                              :messages wire-messages
+                              :total-count (count filtered)
+                              :oldest-message-id oldest-message-id
+                              :newest-message-id newest-message-id
+                              :is-complete is-complete})))))
+          (do
+            (log/warn "Session not found" {:session-id session-id})
+            (http/send! channel
+                        (generate-json
+                         {:type :error
+                          :message (str "Session not found: " session-id)}))))))))
+
+(defn- handle-subscribe-v0-5-0
+  "v0.5.0 subscribe handler — Kafka-style offset protocol (design §3.3).
+
+   Reads `:session-id`, `:from-offset` (defaults to 0), and optional
+   `:file-signature-seen` from `data`. On signature mismatch with the
+   live file, emits the §6 R2 `file_replaced: true` recovery envelope,
+   resets `[:session-offsets session-id]` to 0, and emits the
+   `:replication.file-replaced` counter. Otherwise reads from disk via
+   `read-from-offset`, packs within the channel's max-bytes budget, and
+   seeds `[:session-offsets session-id]` to `next-offset` so
+   `push-to-subscribers!` can tailor subsequent live pushes from there.
+
+   `:last-emitted-sigs` is also seeded on both branches so a follow-up
+   tick without new content doesn't trigger a duplicate sig-only emit.
+
+   `:file-signature-seen`, when present, must be a string — the server
+   produces it as `\"{length}:{first-line-uuid}\"`. A non-string value
+   would always mismatch via `not=` and trigger an unwarranted R2 reset
+   (with a `:replication.file-replaced` counter bump), so the input is
+   rejected up front with `invalid_subscribe`."
+  [channel data]
+  (let [session-id (:session-id data)
+        from-offset (or (:from-offset data) 0)
+        sig-seen (:file-signature-seen data)]
+    (cond
+      (not session-id)
+      (http/send! channel
+                  (generate-json
+                   {:type :error
+                    :message "session_id required in subscribe message"}))
+
+      (or (not (integer? from-offset)) (neg? from-offset))
+      (http/send! channel
+                  (generate-json
+                   {:type "error"
+                    :code "invalid_subscribe"
+                    :message "from_offset must be a non-negative integer"}))
+
+      (and (some? sig-seen) (not (string? sig-seen)))
+      (http/send! channel
+                  (generate-json
+                   {:type "error"
+                    :code "invalid_subscribe"
+                    :message "file_signature_seen must be a string when provided"}))
+
+      :else
+      (do
+        (log/info "Client subscribing to session"
+                  {:session-id session-id
+                   :from-offset from-offset
+                   :file-signature-seen sig-seen
+                   :protocol :v0.5.0})
+        (repl/subscribe-to-session! session-id)
+        (swap! connected-clients update-in [channel :subscribed-sessions]
+               (fnil conj #{}) session-id)
+        (if-let [metadata (repl/get-session-metadata session-id)]
+          (let [provider (:provider metadata :claude)
+                file-path (:file metadata)
+                current-sig (repl/compute-file-signature provider file-path)
+                sig-mismatch? (and sig-seen (not= sig-seen current-sig))]
+            (send-available-commands! channel (:working-directory metadata))
+            (if sig-mismatch?
+              (do
+                (repl/emit-metric! :counter :replication.file-replaced
+                                   {:session-id session-id})
+                (log/info "Sending session history"
+                          {:session-id session-id
+                           :protocol :v0.5.0
+                           :file-replaced true
+                           :file-signature-seen sig-seen
+                           :file-signature current-sig})
+                (send-to-client! channel
+                                 {:type :session-history
+                                  :session-id session-id
+                                  :messages []
+                                  :next-offset 0
+                                  :end-of-file true
+                                  :file-replaced true
+                                  :file-signature current-sig})
+                ;; Guard against `send-to-client!` having dropped the channel
+                ;; on send failure (server.clj:867) — without contains?,
+                ;; assoc-in would re-insert a ghost entry that leaks forever.
+                (swap! connected-clients
+                       (fn [m]
+                         (cond-> m
+                           (contains? m channel)
+                           (-> (assoc-in [channel :session-offsets session-id] 0)
+                               (assoc-in [channel :last-emitted-sigs session-id] current-sig))))))
+              (let [max-bytes (get-client-max-message-size-bytes channel)
+                    limit (estimate-line-limit max-bytes)
+                    {:keys [messages next-offset end-of-file?]}
+                    (repl/read-from-offset provider file-path from-offset limit)
+                    budgeted (truncate-budget messages max-bytes)
+                    wire-msgs (mapv #(assoc % :session-id session-id) budgeted)
+                    packed-next-offset (cond
+                                         (= (count budgeted) (count messages))
+                                         next-offset
+                                         (seq budgeted)
+                                         (inc (:offset (peek budgeted)))
+                                         :else
+                                         from-offset)
+                    packed-eof? (and (= (count budgeted) (count messages))
+                                     (boolean end-of-file?))]
+                (log/info "Sending session history"
+                          {:session-id session-id
+                           :protocol :v0.5.0
+                           :message-count (count wire-msgs)
+                           :from-offset from-offset
+                           :next-offset packed-next-offset
+                           :end-of-file packed-eof?
+                           :file-signature current-sig})
+                (send-to-client! channel
+                                 {:type :session-history
+                                  :session-id session-id
+                                  :messages wire-msgs
+                                  :next-offset packed-next-offset
+                                  :end-of-file packed-eof?
+                                  :file-signature current-sig})
+                ;; See R2 branch above: guard against the channel having
+                ;; been dropped by send-to-client! on socket failure.
+                (swap! connected-clients
+                       (fn [m]
+                         (cond-> m
+                           (contains? m channel)
+                           (-> (assoc-in [channel :session-offsets session-id] packed-next-offset)
+                               (assoc-in [channel :last-emitted-sigs session-id] current-sig))))))))
+          (do
+            (log/warn "Session not found" {:session-id session-id})
+            (http/send! channel
+                        (generate-json
+                         {:type :error
+                          :message (str "Session not found: " session-id)}))))))))
 
 ;; Message handling
 (defn handle-message
@@ -1783,176 +2272,13 @@
           ;; Authenticated - process remaining message types
           (case msg-type
             "subscribe"
-            ;; Client requests session history. In v0.4.0 the cursor is an
-            ;; integer `last_seq`; in v0.3.0 (rollback) it is `last_message_id`
-            ;; (UUID of the newest message the client already has).
-            ;; Dispatch on the per-channel :negotiated-protocol-version set by
-            ;; the connect handler; v0.5.0 channels currently take the same
-            ;; "v0-4?" branch until T9 ships the offset-cursor wire shape.
-            (let [session-id (:session-id data)
-                  last-seq-val (:last-seq data)
-                  last-message-id (:last-message-id data)
-                  v0-4? (not= :v0.3.0 (channel-protocol channel))]
-              (cond
-                (not session-id)
-                (http/send! channel
-                            (generate-json
-                             {:type :error
-                              :message "session_id required in subscribe message"}))
-
-                ;; v0.4.0 rejects the legacy cursor field so a pre-upgrade
-                ;; client that slipped past hello-enforcement is caught here
-                ;; instead of silently receiving wrong data.
-                (and v0-4? (some? last-message-id))
-                (http/send! channel
-                            (generate-json
-                             {:type "error"
-                              :code "unsupported_subscribe_field"
-                              :message (str "last_message_id is not supported in protocol "
-                                            "v0.4.0; use last_seq instead")}))
-
-                ;; Reject anything that isn't a non-negative integer under v0.4.0.
-                ;; nil is allowed (client defaults to 0). A non-nil value must be
-                ;; an integer AND non-negative — any other shape is a client bug.
-                (and v0-4?
-                     (some? last-seq-val)
-                     (or (not (integer? last-seq-val))
-                         (neg? last-seq-val)))
-                (http/send! channel
-                            (generate-json
-                             {:type "error"
-                              :code "invalid_subscribe"
-                              :message "last_seq must be a non-negative integer"}))
-
-                :else
-                (do
-                  (log/info "Client subscribing to session"
-                            {:session-id session-id
-                             :last-seq last-seq-val
-                             :last-message-id last-message-id
-                             :protocol (if v0-4? :v0.4.0 :v0.3.0)})
-
-                  ;; Subscribe in replication system (global) and track per-client
-                  (repl/subscribe-to-session! session-id)
-                  (swap! connected-clients update-in [channel :subscribed-sessions]
-                         (fnil conj #{}) session-id)
-
-                  (if-let [metadata (repl/get-session-metadata session-id)]
-                    (let [file-path (:file metadata)
-                          provider (:provider metadata :claude)
-                          file (io/file file-path)
-                          current-size (.length file)
-                          all-messages (repl/parse-session-messages provider file-path)
-                          filtered (vec (repl/filter-internal-messages all-messages))
-                          max-bytes (get-client-max-message-size-bytes channel)
-                          ;; Middle-truncate individual messages larger than
-                          ;; per-message-max-bytes — build-session-history-response
-                          ;; is a pure seq/budget packer and would otherwise drop an
-                          ;; oversized entry, leaving the client stuck at
-                          ;; is_complete=false on re-subscribe.
-                          truncated (mapv #(truncate-message-text % per-message-max-bytes) filtered)
-                          ;; Shim: stamp seq from list order until the watcher
-                          ;; pipeline (tmux-untethered-lre/e1r) assigns seq at
-                          ;; parse time. Each message gets `:seq (inc index)`.
-                          stamped (vec (map-indexed (fn [i m] (assoc m :seq (inc i))) truncated))
-                          session-next-seq (inc (count stamped))]
-                      ;; Reset incremental parse cursor so this subscription
-                      ;; starts fresh from the current file position.
-                      (repl/reset-file-position! file-path)
-                      (swap! repl/file-positions assoc file-path current-size)
-                      ;; Refresh project commands for this session's directory.
-                      ;; Without this, available_commands after reconnect only has
-                      ;; general commands (sent at connect time with nil working-dir).
-                      ;; The last subscribed session's directory wins, which mirrors
-                      ;; the prompt-path behavior.
-                      (send-available-commands! channel (:working-directory metadata))
-                      (if v0-4?
-                        ;; v0.4.0 wire: last_seq cursor, per-message seq + session_id,
-                        ;; top-level first_seq / last_seq / next_seq / gap.
-                        (let [client-last-seq (or last-seq-val 0)
-                              {response-msgs :messages
-                               is-complete :is-complete
-                               first-seq :first-seq
-                               last-seq :last-seq
-                               next-seq :next-seq
-                               gap :gap}
-                              (build-session-history-response stamped client-last-seq
-                                                              max-bytes
-                                                              (or (:min-available-seq metadata) 1)
-                                                              session-next-seq)
-                              wire-messages (mapv #(assoc % :session-id session-id) response-msgs)]
-                          (log/info "Sending session history"
-                                    {:session-id session-id
-                                     :protocol :v0.4.0
-                                     :message-count (count wire-messages)
-                                     :client-last-seq client-last-seq
-                                     :first-seq first-seq
-                                     :last-seq last-seq
-                                     :next-seq next-seq
-                                     :gap gap
-                                     :is-complete is-complete
-                                     :file-position current-size})
-                          (http/send! channel
-                                      (generate-json
-                                       {:type :session-history
-                                        :session-id session-id
-                                        :messages wire-messages
-                                        :first-seq first-seq
-                                        :last-seq last-seq
-                                        :next-seq next-seq
-                                        :is-complete is-complete
-                                        :gap gap})))
-                        ;; v0.3.0 (rollback) legacy path: UUID-scan cursor and
-                        ;; oldest_message_id / newest_message_id / total_count
-                        ;; envelope.
-                        (let [client-last-seq (or (when last-message-id
-                                                    (some (fn [m]
-                                                            (when (= (:uuid m) last-message-id)
-                                                              (:seq m)))
-                                                          stamped))
-                                                  0)
-                              {response-msgs :messages
-                               is-complete :is-complete
-                               first-seq :first-seq
-                               last-seq :last-seq}
-                              (build-session-history-response stamped client-last-seq
-                                                              max-bytes
-                                                              (or (:min-available-seq metadata) 1)
-                                                              session-next-seq)
-                              oldest-message-id (when first-seq
-                                                  (some (fn [m]
-                                                          (when (= (:seq m) first-seq)
-                                                            (:uuid m)))
-                                                        stamped))
-                              newest-message-id (when last-seq
-                                                  (some (fn [m]
-                                                          (when (= (:seq m) last-seq)
-                                                            (:uuid m)))
-                                                        stamped))
-                              wire-messages (mapv #(dissoc % :seq) response-msgs)]
-                          (log/info "Sending session history"
-                                    {:session-id session-id
-                                     :protocol :v0.3.0
-                                     :message-count (count wire-messages)
-                                     :total (count filtered)
-                                     :is-complete is-complete
-                                     :has-delta-sync (some? last-message-id)
-                                     :file-position current-size})
-                          (http/send! channel
-                                      (generate-json
-                                       {:type :session-history
-                                        :session-id session-id
-                                        :messages wire-messages
-                                        :total-count (count filtered)
-                                        :oldest-message-id oldest-message-id
-                                        :newest-message-id newest-message-id
-                                        :is-complete is-complete})))))
-                    (do
-                      (log/warn "Session not found" {:session-id session-id})
-                      (http/send! channel
-                                  (generate-json
-                                   {:type :error
-                                    :message (str "Session not found: " session-id)})))))))
+            ;; Per-channel protocol dispatch (§3.2 / T9). v0.5.0 channels
+            ;; run the Kafka-style offset handler; v0.4.0 and v0.3.0
+            ;; channels (and any pre-handshake channel with a nil
+            ;; negotiated version) take the legacy seq-based handler.
+            (case (channel-protocol channel)
+              :v0.5.0 (handle-subscribe-v0-5-0 channel data)
+              (handle-subscribe-v0-4-0 channel data))
 
             "unsubscribe"
             ;; Client stops watching a session
@@ -3125,6 +3451,7 @@
       (repl/start-watcher!
        :on-session-created on-session-created
        :on-session-updated broadcast-session-history!
+       :on-session-updated-v5 push-to-subscribers!
        :on-session-deleted on-session-deleted
        :on-turn-complete on-turn-complete)
       (log/info "Filesystem watcher started successfully")
