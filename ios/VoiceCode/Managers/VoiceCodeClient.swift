@@ -14,12 +14,30 @@ import os.log
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "VoiceCodeClient")
 
 class VoiceCodeClient: ObservableObject {
-    /// Wire-protocol version this client speaks. The backend echoes a version
-    /// string in its `hello` message; anything other than this is treated as
-    /// an incompatible peer and transitions the client into upgrade-required
-    /// state (same visible result as receiving an `unsupported_protocol_version`
-    /// error from the backend).
-    static let supportedProtocolVersion = "0.4.0"
+    /// Maximum wire-protocol version this client can speak. Sent as
+    /// `protocol_version` in the `connect` message so the server can negotiate
+    /// `min(client, server-max)` and echo it back as `negotiated_protocol_version`.
+    static let supportedProtocolVersion = "0.5.0"
+
+    /// Minimum server version this client will accept in the `hello` handshake.
+    /// Servers advertising a version below this floor are rejected; servers at
+    /// or above it negotiate the actual channel version via `connect` / `connected`.
+    static let minimumServerProtocolVersion = "0.4.0"
+
+    /// Parse a semver string ("0.4.0") to an Int triple for comparison.
+    private static func parseVersionTuple(_ s: String) -> (Int, Int, Int)? {
+        let parts = s.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        return (parts[0], parts[1], parts[2])
+    }
+
+    /// True when `versionString` is parseable and >= `minimumServerProtocolVersion`.
+    static func isAcceptableServerVersion(_ versionString: String?) -> Bool {
+        guard let s = versionString,
+              let v = parseVersionTuple(s),
+              let floor = parseVersionTuple(minimumServerProtocolVersion) else { return false }
+        return v >= floor
+    }
 
     /// Negotiated wire-protocol version for the current channel. Mirrors the
     /// server-side `:negotiated-protocol-version` field on `connected-clients[channel]`
@@ -768,15 +786,18 @@ class VoiceCodeClient: ObservableObject {
                 self.isConnected = true
                 print("📡 [VoiceCodeClient] Received hello from server, connection confirmed")
 
-                // Fail fast if the backend speaks a different wire-protocol version.
-                // A missing or mismatched `version` means we cannot safely send
-                // `subscribe`/decode `session_history` (shape changed at 0.4.0).
+                // Reject servers whose announced version is below the minimum floor.
+                // `hello.version` is the server's *max-cap* (preferred ceiling), not a
+                // strict match requirement — the actual channel version is negotiated via
+                // `connect.protocol_version` / `connected.negotiated_protocol_version`.
+                // A server at or above the floor may still negotiate down to v0.4.0 if
+                // the client announces a lower max in the connect message.
                 let serverVersion = json["version"] as? String
-                if serverVersion != VoiceCodeClient.supportedProtocolVersion {
+                if !VoiceCodeClient.isAcceptableServerVersion(serverVersion) {
                     let received = serverVersion ?? "missing"
                     self.enterUpgradeRequiredState(
                         received: received,
-                        detail: "Server protocol version \(received) does not match client version \(VoiceCodeClient.supportedProtocolVersion)."
+                        detail: "Server protocol version \(received) is too old; minimum supported is \(VoiceCodeClient.minimumServerProtocolVersion)."
                     )
                     return
                 }
@@ -1909,7 +1930,8 @@ class VoiceCodeClient: ObservableObject {
         // Backend will send session list regardless
         var message: [String: Any] = [
             "type": "connect",
-            "api_key": key  // Include API key for authentication
+            "api_key": key,
+            "protocol_version": VoiceCodeClient.supportedProtocolVersion
         ]
 
         if let sessionId = sessionId {
