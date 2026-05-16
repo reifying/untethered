@@ -2,6 +2,7 @@
 // Unit tests for VoiceCodeClient
 
 import XCTest
+import Combine
 #if os(iOS)
 @testable import VoiceCode
 #else
@@ -1721,23 +1722,26 @@ final class VoiceCodeClientTests: XCTestCase {
 
         XCTAssertTrue(testClient.isConnected, "Precondition: should be connected")
 
+        // Observe isConnected going false via Combine before calling forceReconnect.
+        // disconnect() dispatches isConnected=false async on main; the @Published
+        // publisher fires in that same delivery, giving a deterministic signal instead
+        // of a fixed sleep that may race on a loaded test machine.
+        let disconnectedExpectation = XCTestExpectation(description: "isConnected becomes false")
+        var disconnectCancellable: AnyCancellable? = testClient.$isConnected
+            .filter { !$0 }
+            .first()
+            .sink { _ in disconnectedExpectation.fulfill() }
+
         // When: forceReconnect() is called
         testClient.forceReconnect()
 
-        // Wait for forceReconnect dispatch to complete
-        let forceReconnectExpectation = XCTestExpectation(description: "ForceReconnect dispatch")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            forceReconnectExpectation.fulfill()
-        }
-        wait(for: [forceReconnectExpectation], timeout: 1.0)
+        wait(for: [disconnectedExpectation], timeout: 3.0)
+        disconnectCancellable = nil
 
-        // Then: isConnected should be false immediately after forceReconnect
-        // (forceReconnect calls disconnect which clears the connected state)
+        // Then: isConnected should be false
+        // Note: without a real server the new WebSocket will fail rather than
+        // receive another hello, so isConnected stays false after the disconnect.
         XCTAssertFalse(testClient.isConnected, "isConnected should be false after forceReconnect")
-
-        // Note: In a real scenario with a server, receiving "hello" would set isConnected=true again.
-        // We can't test that here without a real server because the WebSocket failure handler
-        // would race with our manual handleMessage call. The behavior is verified in integration tests.
 
         testClient.disconnect()
     }

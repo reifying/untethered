@@ -27,7 +27,15 @@
 
 (deftest test-load-config
   (testing "Configuration loading from resources"
-    (let [config (server/load-config)]
+    (let [tmp (java.io.File/createTempFile "test-config" ".edn")
+          _ (spit tmp (str "{:server {:port 8080 :host \"0.0.0.0\"}"
+                           " :claude {:cli-path \"claude\" :default-timeout 86400000}"
+                           " :logging {:level :info}"
+                           " :message-stream-version :v0.4.0}"))
+          config (with-redefs [clojure.java.io/resource (constantly (.toURL tmp))
+                               server/ensure-config-file (fn ([] nil) ([_] nil))]
+                   (server/load-config))]
+      (.delete tmp)
       (is (map? config))
       (is (contains? config :server))
       (is (= 8080 (get-in config [:server :port]))))))
@@ -126,11 +134,11 @@
     (is (= "0.5.0" (server/message-stream-version-string :v0.5.0))))
 
   (testing "gate predicates fire on every seq-stamped floor (:v0.4.0 and :v0.5.0)"
-    (is (true?  (server/seq-migration-enabled?     :v0.4.0)))
-    (is (true?  (server/seq-migration-enabled?     :v0.5.0)))
-    (is (false? (server/seq-migration-enabled?     :v0.3.0)))
-    (is (true?  (server/hello-enforcement-enabled? :v0.4.0)))
-    (is (true?  (server/hello-enforcement-enabled? :v0.5.0)))
+    (is (true? (server/seq-migration-enabled? :v0.4.0)))
+    (is (true? (server/seq-migration-enabled? :v0.5.0)))
+    (is (false? (server/seq-migration-enabled? :v0.3.0)))
+    (is (true? (server/hello-enforcement-enabled? :v0.4.0)))
+    (is (true? (server/hello-enforcement-enabled? :v0.5.0)))
     (is (false? (server/hello-enforcement-enabled? :v0.3.0)))))
 
 (deftest test-load-config-with-v0-3-0-rollback
@@ -168,14 +176,14 @@
         ;; hello emission path (generate-json + kebab→snake + atom read).
         (reset! server/message-stream-version :v0.4.0)
         (let [json-str (hello-payload)
-              parsed   (json/parse-string json-str)]
+              parsed (json/parse-string json-str)]
           (is (= "0.4.0" (get parsed "version")))
           (is (str/includes? json-str "\"version\":\"0.4.0\"")))
 
         ;; Rollback path — flipping to :v0.3.0 must revert the emitted wire bytes.
         (reset! server/message-stream-version :v0.3.0)
         (let [json-str (hello-payload)
-              parsed   (json/parse-string json-str)]
+              parsed (json/parse-string json-str)]
           (is (= "0.3.0" (get parsed "version"))
               "Rollback flag must produce the legacy v0.3.0 hello version string")
           (is (str/includes? json-str "\"version\":\"0.3.0\"")))
@@ -553,7 +561,7 @@
                     "gap is nil for normal push windows")
                 ;; No stale session_updated envelope in v0.4.0 output
                 (is (nil? (first (filter #(= "session_updated"
-                                              (:type (json/parse-string (:msg %) true)))
+                                             (:type (json/parse-string (:msg %) true)))
                                          ch2-msgs)))))
 
               ;; Verify recent_sessions still piggybacks on the push
@@ -597,7 +605,7 @@
               (is (some? b))
               (is (= a b)
                   "ch-a and ch-b receive byte-identical session_history payloads")
-              (is (= 9  (:first_seq a)))
+              (is (= 9 (:first_seq a)))
               (is (= 10 (:last_seq a)))
               (is (= 11 (:next_seq a))))))
         (finally
@@ -681,7 +689,7 @@
 
             (let [ch1-msgs (filter #(= :ch1 (:channel %)) @sent-messages)
                   history-msg (first (filter #(= "session_history"
-                                                  (:type (json/parse-string (:msg %) true)))
+                                                 (:type (json/parse-string (:msg %) true)))
                                              ch1-msgs))
                   msg (json/parse-string (:msg history-msg) true)]
               (is (some? history-msg))
@@ -902,18 +910,18 @@
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [dispatched (promise)]
       (with-redefs [tmux/start-window! (fn [opts] (deliver dispatched opts))
-                    tmux/deliver!      (fn [& _]
-                                         (deliver dispatched :unexpected-deliver-call))
+                    tmux/deliver! (fn [& _]
+                                    (deliver dispatched :unexpected-deliver-call))
                     org.httpkit.server/send! (fn [_ _] nil)]
         (server/handle-message :test-ch
                                "{\"type\":\"prompt\",\"text\":\"hello\",\"new_session_id\":\"new-123\",\"working_directory\":\"/tmp\"}")
         (let [args (await-dispatch dispatched)]
           (is (map? args) "expected start-window! to be called with an options map")
           (is (= "new-123" (:session-uuid args)))
-          (is (= "hello"   (:initial-prompt args)))
-          (is (= :claude   (:provider args)))
-          (is (= "/tmp"    (:workdir args)))
-          (is (false?      (:resume? args))))))
+          (is (= "hello" (:initial-prompt args)))
+          (is (= :claude (:provider args)))
+          (is (= "/tmp" (:workdir args)))
+          (is (false? (:resume? args))))))
     (reset! server/api-key nil)))
 
 (deftest test-prompt-resume-session-dispatches-to-deliver!
@@ -921,8 +929,8 @@
     (reset! server/api-key test-api-key)
     (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
     (let [dispatched (promise)]
-      (with-redefs [tmux/deliver!     (fn [uuid text]
-                                        (deliver dispatched {:uuid uuid :text text}))
+      (with-redefs [tmux/deliver! (fn [uuid text]
+                                    (deliver dispatched {:uuid uuid :text text}))
                     tmux/start-window! (fn [& _]
                                          (deliver dispatched :unexpected-start-window-call))
                     voice-code.replication/get-session-metadata
@@ -933,7 +941,7 @@
         (let [args (await-dispatch dispatched)]
           (is (map? args) "expected deliver! to be called with uuid and text")
           (is (= "resume-456" (:uuid args)))
-          (is (= "continue"   (:text args))))))
+          (is (= "continue" (:text args))))))
     (reset! server/api-key nil)))
 
 (deftest test-prompt-provider-extraction-for-new-session
@@ -985,7 +993,7 @@
                                "{\"type\":\"prompt\",\"text\":\"continue\",\"resume_session_id\":\"resume-123\",\"provider\":\"claude\"}")
         (let [args (await-dispatch dispatched)]
           (is (= "resume-123" (:uuid args)))
-          (is (= "continue"   (:text args))))))
+          (is (= "continue" (:text args))))))
     (reset! server/api-key nil)))
 
 (deftest test-prompt-system-prompt-forwarded-to-start-window!
@@ -1022,7 +1030,7 @@
     (let [sent-messages (atom [])
           tmux-invoked (atom false)]
       (with-redefs [tmux/start-window! (fn [& _] (reset! tmux-invoked true))
-                    tmux/deliver!      (fn [& _] (reset! tmux-invoked true))
+                    tmux/deliver! (fn [& _] (reset! tmux-invoked true))
                     org.httpkit.server/send!
                     (fn [_ch msg]
                       (swap! sent-messages conj (json/parse-string msg true)))]
@@ -1213,7 +1221,11 @@
           (.countDown compaction-holding)
           @compact-worker))
       ;; After compaction releases, a follow-up prompt should dispatch cleanly.
-      (Thread/sleep 100)
+      ;; The async/go block's send-to-client! may call the real send! on :test-ch
+      ;; (a keyword) after the outer with-redefs restores it, triggering dead-channel
+      ;; cleanup that removes :test-ch from connected-clients. Re-register it.
+      (Thread/sleep 500)
+      (reset! server/connected-clients {:test-ch {:authenticated true :deleted-sessions #{}}})
       (swap! tmux/live-windows assoc session-id
              {:tmux-session "s" :tmux-window "w"})
       (let [follow-up-dispatched (promise)]
@@ -1804,6 +1816,7 @@
           mock-channel :test-ch]
       ;; Setup: start recipe for session
       (reset! server/session-orchestration-state {})
+      (reset! server/connected-clients {:test-ch {:authenticated true :deleted-sessions #{}}})
       (server/start-recipe-for-session session-id :implement-and-review false)
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
@@ -1828,6 +1841,7 @@
           mock-channel :test-ch]
       ;; Setup: start recipe at code-review step
       (reset! server/session-orchestration-state {})
+      (reset! server/connected-clients {:test-ch {:authenticated true :deleted-sessions #{}}})
       (server/start-recipe-for-session session-id :implement-and-review false)
       ;; Manually set to code-review step
       (swap! server/session-orchestration-state assoc-in [session-id :current-step] :code-review)
@@ -1854,6 +1868,7 @@
           mock-channel :test-ch]
       ;; Setup
       (reset! server/session-orchestration-state {})
+      (reset! server/connected-clients {:test-ch {:authenticated true :deleted-sessions #{}}})
       (server/start-recipe-for-session session-id :implement-and-review false)
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
