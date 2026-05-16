@@ -125,19 +125,35 @@ class PersistenceController {
         // Set merge policy to prefer property-level changes
         container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
 
-        // Reset CDBackendSession.liveFromSeq across all sessions on app launch.
-        // liveFromSeq is the TTS gate cursor — anything below it is treated
-        // as historical (do not speak). Persisted only so it survives the
-        // is_complete:false re-subscribe chain within a single app session;
-        // it must not leak across app launches or the first subscribe reply
-        // after relaunch would misclassify messages as live and read aloud
-        // hours-old transcripts. See tmux-untethered-i2n.
+        // Reset CDBackendSession.liveFromSeq + liveFromOffset across all
+        // sessions on app launch. Both are TTS gate cursors — anything below
+        // is treated as historical (do not speak). Persisted only so they
+        // survive the is_complete:false / paginated subscribe chain within a
+        // single app session; they must not leak across app launches or the
+        // first subscribe reply after relaunch would misclassify messages as
+        // live and read aloud hours-old transcripts.
+        //
+        // The `liveFromOffset = 0` reset is also load-bearing for the v6→v7
+        // migration: the migration seeds `liveFromOffset = max(0, liveFromSeq
+        // - 1)` so the field is non-negative on every row, but the value
+        // would otherwise re-anchor the TTS boundary at a stale historical
+        // point. The reset overwrites it back to 0 before the first v0.5.0
+        // reply lands; `handleSessionHistoryPayload`'s `payload.nextOffset > 0`
+        // gate then re-captures the boundary from the first non-empty reply.
+        // See tmux-untethered-i2n (liveFromSeq) and §6 R1 (liveFromOffset).
         if !inMemory {
-            resetLiveFromSeqOnAllSessions()
+            // Chain reset → backfill so the backfill's fetch sees the
+            // post-reset store (liveFromSeq=0, liveFromOffset=0). Running
+            // them concurrently raced: backfill could fetch liveFromSeq=5
+            // before the reset committed, then write a stale liveFromOffset
+            // that survives until the first session_history reply.
+            resetTTSGateCursorsOnAllSessions { [weak self] in
+                self?.backfillV6ToV7OffsetsIfNeeded()
+            }
         }
     }
 
-    private func resetLiveFromSeqOnAllSessions() {
+    private func resetTTSGateCursorsOnAllSessions(then continuation: (() -> Void)? = nil) {
         let context = container.newBackgroundContext()
         context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
         context.perform {
@@ -145,20 +161,33 @@ class PersistenceController {
             // straight to the store — much cheaper than fetching every row
             // when the user has hundreds of sessions.
             let batchUpdate = NSBatchUpdateRequest(entityName: "CDBackendSession")
-            batchUpdate.propertiesToUpdate = ["liveFromSeq": Int64(0)]
+            batchUpdate.propertiesToUpdate = [
+                "liveFromSeq": Int64(0),
+                "liveFromOffset": Int64(0)
+            ]
             batchUpdate.resultType = .updatedObjectsCountResultType
             do {
                 let result = try context.execute(batchUpdate) as? NSBatchUpdateResult
                 if let count = result?.result as? Int, count > 0 {
-                    logger.info("Reset liveFromSeq on \(count) sessions for fresh app launch")
+                    logger.info("Reset TTS gate cursors (liveFromSeq, liveFromOffset) on \(count) sessions for fresh app launch")
                 }
             } catch {
                 // Non-fatal: TTS gate falls back to "suppress all" behavior
-                // until each session captures liveFromSeq from its first
+                // until each session captures the cursors from its first
                 // post-launch reply, which is correct (just slightly more
                 // aggressive than intended).
-                logger.error("Failed to reset liveFromSeq: \(error.localizedDescription)")
+                logger.error("Failed to reset TTS gate cursors: \(error.localizedDescription)")
             }
+            // Run continuation inside the same perform block so it observes
+            // the batch update's effects on the store. Fires on the catch
+            // path too: in practice a store corrupt enough to fail this
+            // single-statement batch update will also fail the backfill's
+            // fetch, and we'd rather attempt `lastOffsetMerged` seeding (to
+            // avoid a full-history refetch next launch) than skip it. The
+            // worst-case "reset fails, backfill succeeds" path leaves
+            // `liveFromOffset` non-zero until the first reply re-captures
+            // it — which is acceptable per the catch-block contract above.
+            continuation?()
         }
 
         // CRITICAL: Ensure all CoreData merge notifications arrive on main queue
@@ -187,6 +216,92 @@ class PersistenceController {
                 container.viewContext.mergeChanges(fromContextDidSave: notification)
             }
         }
+    }
+
+    /// UserDefaults key marking the one-shot v6→v7 backfill as complete.
+    /// Once set, the backfill never runs again — the v0.5.0 dispatch path
+    /// owns `lastOffsetMerged`/`offset` from that point forward.
+    static let v6ToV7BackfillCompleteKey = "VoiceCode.v6ToV7BackfillComplete"
+
+    /// One-shot backfill that seeds the v0.5.0 offset fields from the v0.4.0
+    /// seq fields. Lightweight migration adds the new columns with defaults
+    /// (0/nil); without this backfill, every migrated session would subscribe
+    /// `from_offset=0` and refetch full history (§6 R1).
+    ///
+    /// Mapping (§6 R1):
+    ///   `CDBackendSession.lastOffsetMerged = max(0, nextSeq - 1)`
+    ///   `CDBackendSession.liveFromOffset   = max(0, liveFromSeq - 1)`
+    ///   `CDMessage.offset                  = max(0, seq - 1)`
+    ///
+    /// The `max(0, …)` clamp matters: `nextSeq == 0` means "never received a
+    /// reply" (CoreData zero-init), and a bare `nextSeq - 1` would write -1
+    /// which is illegal under v0.5.0 (offsets are non-negative). Clamping
+    /// maps "never received" → "fresh subscribe from start" → server reads
+    /// from offset 0, which is what we want.
+    ///
+    /// Gated by a UserDefaults sentinel so it runs exactly once per install.
+    /// Idempotency-by-flag (rather than by value) protects against the
+    /// edge case where v0.5.0 deliberately writes `lastOffsetMerged = 0` on
+    /// a `file_replaced` recovery while `nextSeq > 0` lingers from before —
+    /// a value-based guard would clobber the legitimate `0`.
+    func backfillV6ToV7OffsetsIfNeeded(userDefaults: UserDefaults = .standard) {
+        guard !userDefaults.bool(forKey: Self.v6ToV7BackfillCompleteKey) else {
+            return
+        }
+        let context = container.newBackgroundContext()
+        context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        context.perform {
+            do {
+                let (sessions, messages) = try Self.backfillV6ToV7Offsets(in: context)
+                if context.hasChanges {
+                    try context.save()
+                }
+                userDefaults.set(true, forKey: Self.v6ToV7BackfillCompleteKey)
+                logger.info("v6→v7 backfill complete: updated \(sessions) sessions and \(messages) messages")
+            } catch {
+                // Leave the sentinel unset so the backfill retries next launch
+                // — better an extra pass than a permanently-zero cursor that
+                // would refetch every session's full history. Covers both
+                // fetch failures (would otherwise silently mark complete) and
+                // save failures.
+                logger.error("v6→v7 backfill failed (will retry next launch): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Pure per-context backfill: maps `nextSeq → lastOffsetMerged`,
+    /// `liveFromSeq → liveFromOffset`, `seq → offset` using the
+    /// `max(0, oldField - 1)` rule. Static so tests can drive it against any
+    /// context without spinning up a controller. Returns counts of rows
+    /// updated for logging. Throws on fetch failure so the caller can leave
+    /// the sentinel unset and retry next launch.
+    @discardableResult
+    static func backfillV6ToV7Offsets(in context: NSManagedObjectContext) throws -> (sessions: Int, messages: Int) {
+        var updatedSessions = 0
+        let sessionRequest = NSFetchRequest<CDBackendSession>(entityName: "CDBackendSession")
+        let sessions = try context.fetch(sessionRequest)
+        for session in sessions {
+            var changed = false
+            if session.lastOffsetMerged == 0 && session.nextSeq > 0 {
+                session.lastOffsetMerged = max(0, session.nextSeq - 1)
+                changed = true
+            }
+            if session.liveFromOffset == 0 && session.liveFromSeq > 0 {
+                session.liveFromOffset = max(0, session.liveFromSeq - 1)
+                changed = true
+            }
+            if changed { updatedSessions += 1 }
+        }
+
+        let messageRequest = NSFetchRequest<CDMessage>(entityName: "CDMessage")
+        // Only the rows that actually need updating — saves a write on every
+        // pre-seq legacy row that has seq=0 already.
+        messageRequest.predicate = NSPredicate(format: "offset == 0 AND seq > 0")
+        let messages = try context.fetch(messageRequest)
+        for message in messages {
+            message.offset = max(0, message.seq - 1)
+        }
+        return (updatedSessions, messages.count)
     }
 
     /// Save the view context if there are changes

@@ -68,7 +68,7 @@
           orch-state {:recipe-id :implement-and-review :current-step :implement}
           prompt (server/get-next-step-prompt "test-session" orch-state recipe)]
       (is (string? prompt))
-      (is (str/includes? prompt "Run `bd ready --limit 1 -t task` and `bd show <task-id>` to see the task details"))
+      (is (str/includes? prompt "Run `bd ready --limit 1 --exclude-type epic` and `bd show <task-id>` to see the task details"))
       (is (str/includes? prompt "outcome"))
       (is (str/includes? prompt "complete"))))
 

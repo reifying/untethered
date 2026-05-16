@@ -14,12 +14,42 @@ import os.log
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "VoiceCodeClient")
 
 class VoiceCodeClient: ObservableObject {
-    /// Wire-protocol version this client speaks. The backend echoes a version
-    /// string in its `hello` message; anything other than this is treated as
-    /// an incompatible peer and transitions the client into upgrade-required
-    /// state (same visible result as receiving an `unsupported_protocol_version`
-    /// error from the backend).
-    static let supportedProtocolVersion = "0.4.0"
+    /// Maximum wire-protocol version this client can speak. Sent as
+    /// `protocol_version` in the `connect` message so the server can negotiate
+    /// `min(client, server-max)` and echo it back as `negotiated_protocol_version`.
+    static let supportedProtocolVersion = "0.5.0"
+
+    /// Minimum server version this client will accept in the `hello` handshake.
+    /// Servers advertising a version below this floor are rejected; servers at
+    /// or above it negotiate the actual channel version via `connect` / `connected`.
+    static let minimumServerProtocolVersion = "0.4.0"
+
+    /// Parse a semver string ("0.4.0") to an Int triple for comparison.
+    private static func parseVersionTuple(_ s: String) -> (Int, Int, Int)? {
+        let parts = s.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        return (parts[0], parts[1], parts[2])
+    }
+
+    /// True when `versionString` is parseable and >= `minimumServerProtocolVersion`.
+    static func isAcceptableServerVersion(_ versionString: String?) -> Bool {
+        guard let s = versionString,
+              let v = parseVersionTuple(s),
+              let floor = parseVersionTuple(minimumServerProtocolVersion) else { return false }
+        return v >= floor
+    }
+
+    /// Negotiated wire-protocol version for the current channel. Mirrors the
+    /// server-side `:negotiated-protocol-version` field on `connected-clients[channel]`
+    /// (see backend §3.2). Starts at `.v0_4_0` so any subscribe issued before the
+    /// server's connect-ack lands serializes the v0.4.0 wire shape (safe default).
+    /// Updated when the connect-success/`connect_ack` reply arrives with
+    /// `negotiated_protocol_version`. Reset to the default on disconnect.
+    enum ProtocolVersion: String {
+        case v0_4_0 = "0.4.0"
+        case v0_5_0 = "0.5.0"
+    }
+    private(set) var negotiatedProtocolVersion: ProtocolVersion = .v0_4_0
 
     @Published var isConnected = false
     @Published var currentError: String?
@@ -521,6 +551,10 @@ class VoiceCodeClient: ObservableObject {
             // Wire confirmation belonged to the dead socket; demote so the
             // next reconnect re-fires every desired subscribe.
             self.demoteConfirmedSubscriptions()
+            // Negotiation belongs to the dead socket; reset to the safe
+            // default so any pre-ack subscribe on the next socket sends the
+            // v0.4.0 wire shape until the new ack arrives.
+            self.negotiatedProtocolVersion = .v0_4_0
         }
     }
 
@@ -752,15 +786,18 @@ class VoiceCodeClient: ObservableObject {
                 self.isConnected = true
                 print("📡 [VoiceCodeClient] Received hello from server, connection confirmed")
 
-                // Fail fast if the backend speaks a different wire-protocol version.
-                // A missing or mismatched `version` means we cannot safely send
-                // `subscribe`/decode `session_history` (shape changed at 0.4.0).
+                // Reject servers whose announced version is below the minimum floor.
+                // `hello.version` is the server's *max-cap* (preferred ceiling), not a
+                // strict match requirement — the actual channel version is negotiated via
+                // `connect.protocol_version` / `connected.negotiated_protocol_version`.
+                // A server at or above the floor may still negotiate down to v0.4.0 if
+                // the client announces a lower max in the connect message.
                 let serverVersion = json["version"] as? String
-                if serverVersion != VoiceCodeClient.supportedProtocolVersion {
+                if !VoiceCodeClient.isAcceptableServerVersion(serverVersion) {
                     let received = serverVersion ?? "missing"
                     self.enterUpgradeRequiredState(
                         received: received,
-                        detail: "Server protocol version \(received) does not match client version \(VoiceCodeClient.supportedProtocolVersion)."
+                        detail: "Server protocol version \(received) is too old; minimum supported is \(VoiceCodeClient.minimumServerProtocolVersion)."
                     )
                     return
                 }
@@ -790,6 +827,10 @@ class VoiceCodeClient: ObservableObject {
                     LogManager.shared.log("Backend confirmed session: \(sessionId)", category: "VoiceCodeClient")
                 }
 
+                // T7 may extend this reply with `negotiated_protocol_version`,
+                // OR may emit a separate `connect_ack` frame; accept both.
+                self.applyNegotiatedProtocolVersion(from: json)
+
                 // Send max message size setting to backend
                 if let maxSize = self.appSettings?.maxMessageSizeKB {
                     self.sendMaxMessageSize(maxSize)
@@ -799,6 +840,12 @@ class VoiceCodeClient: ObservableObject {
 
                 // Start ping keepalive timer after successful authentication
                 self.startPingTimer()
+
+            case "connect_ack":
+                // Dedicated negotiated-version reply (T7 option ii). The server
+                // may emit this in addition to or instead of putting the field
+                // on `connected`; either shape is acceptable.
+                self.applyNegotiatedProtocolVersion(from: json)
 
             case "replay":
                 // Replayed message from undelivered queue
@@ -963,32 +1010,14 @@ class VoiceCodeClient: ObservableObject {
 
             case "session_history":
                 // Unified delivery envelope for both subscribe replies and
-                // live pushes. Decode into the v0.4.0 typed payload and route
-                // through handleSessionHistoryPayload, which owns cursor math,
-                // gap detection, optimistic reconciliation, and auto-speak.
-                do {
-                    let data = try JSONSerialization.data(withJSONObject: json, options: [])
-                    let decoder = JSONDecoder()
-                    let payload = try decoder.decode(SessionHistoryPayload.self, from: data)
-
-                    if payload.isComplete {
-                        logger.info("📚 [VoiceCodeClient] session_history \(payload.sessionId) count=\(payload.messages.count) first=\(payload.firstSeq.map { String($0) } ?? "-") last=\(payload.lastSeq.map { String($0) } ?? "-") next=\(payload.nextSeq)")
-                    } else {
-                        logger.warning("⚠️ [VoiceCodeClient] session_history \(payload.sessionId) is_complete=false; \(payload.messages.count) messages, will chain re-subscribe")
-                    }
-
-                    self.sessionSyncManager.handleSessionHistoryPayload(payload)
-
-                    // Only resume a waiting refresh continuation when decode
-                    // succeeded; otherwise the awaiting caller would proceed
-                    // with stale state. On failure, let the refresh timeout
-                    // fire instead.
-                    if let pending = self.sessionRefreshPending.removeValue(forKey: payload.sessionId) {
-                        pending.resumeOnce()
-                    }
-                } catch {
-                    logger.error("❌ [VoiceCodeClient] Failed to decode session_history payload: \(error.localizedDescription)")
-                }
+                // live pushes. Decode according to the channel's negotiated
+                // protocol version (set by the connect-ack); v0.4.0 routes
+                // through `handleSessionHistoryPayload` (cursor math, gap
+                // detection, auto-speak), v0.5.0 decodes into the sibling
+                // type. The v0.5.0 sync-manager entry point is wired up in
+                // tmux-untethered-398.12; for now the v5 branch decodes and
+                // logs without dispatch.
+                self.handleSessionHistoryFrame(json: json)
 
             case "session_ready":
                 // Backend signals that new session is in index and ready for subscription
@@ -1498,22 +1527,103 @@ class VoiceCodeClient: ObservableObject {
             subscriptions[sessionId] = .desired
         }
 
-        // Delta-sync cursor is the max seq we've durably persisted for this
-        // session. `0` is the wire sentinel meaning "give me everything" and
-        // is what newestCachedSeq returns for fresh or legacy-only sessions.
-        let lastSeq = newestCachedSeq(sessionId: sessionId, context: context)
-
-        let message: [String: Any] = [
-            "type": "subscribe",
-            "session_id": sessionId,
-            "last_seq": lastSeq
-        ]
-
+        // Branch on the channel's negotiated protocol version. Until the
+        // connect-ack lands we speak v0.4.0 (the safe default), so a
+        // subscribe issued in the pre-ack window serializes the legacy
+        // shape against a v0.4.0-only server.
         let trackedCount = subscriptions.count
-        logger.info("📖 [VoiceCodeClient] Subscribing, last_seq: \(lastSeq), session: \(sessionId) (total tracked: \(trackedCount))")
+        let message: [String: Any]
+        switch negotiatedProtocolVersion {
+        case .v0_4_0:
+            let lastSeq = newestCachedSeq(sessionId: sessionId, context: context)
+            message = [
+                "type": "subscribe",
+                "session_id": sessionId,
+                "last_seq": lastSeq
+            ]
+            logger.info("📖 [VoiceCodeClient] Subscribing v0.4.0, last_seq: \(lastSeq), session: \(sessionId) (total tracked: \(trackedCount))")
+        case .v0_5_0:
+            let fromOffset = lastOffsetMerged(sessionId: sessionId, context: context)
+            let signature = lastFileSignature(sessionId: sessionId, context: context)
+            var v5Message: [String: Any] = [
+                "type": "subscribe",
+                "session_id": sessionId,
+                "from_offset": fromOffset
+            ]
+            if let sig = signature {
+                v5Message["file_signature_seen"] = sig
+            }
+            message = v5Message
+            logger.info("📖 [VoiceCodeClient] Subscribing v0.5.0, from_offset: \(fromOffset), file_signature_seen: \(signature ?? "<nil>", privacy: .public), session: \(sessionId) (total tracked: \(trackedCount))")
+        }
 
         sendMessage(message)
         subscriptions[sessionId] = .confirmed
+    }
+
+    /// v0.5.0 cursor read: the highest line-offset durably merged from
+    /// session_history for `sessionId`, or `0` if no row exists (fresh
+    /// subscribe). Mirrors `newestCachedSeq`'s background-context pattern
+    /// so a recently-committed background save is observed by the time the
+    /// next outbound subscribe serializes.
+    func lastOffsetMerged(sessionId: String,
+                          context: NSManagedObjectContext? = nil,
+                          container: NSPersistentContainer? = nil) -> Int64 {
+        guard let sessionUUID = UUID(uuidString: sessionId) else {
+            logger.warning("⚠️ [VoiceCodeClient] Invalid session ID for v5 cursor read: \(sessionId)")
+            return 0
+        }
+
+        let runFetch: (NSManagedObjectContext) -> Int64 = { ctx in
+            let request = CDBackendSession.fetchBackendSession(id: sessionUUID)
+            do {
+                return try ctx.fetch(request).first?.lastOffsetMerged ?? 0
+            } catch {
+                logger.error("⚠️ [VoiceCodeClient] Failed to fetch lastOffsetMerged: \(error.localizedDescription)")
+                return 0
+            }
+        }
+
+        if let ctx = context {
+            return runFetch(ctx)
+        }
+
+        let resolvedContainer = container ?? PersistenceController.shared.container
+        let bgContext = resolvedContainer.newBackgroundContext()
+        var result: Int64 = 0
+        bgContext.performAndWait {
+            result = runFetch(bgContext)
+        }
+        return result
+    }
+
+    /// v0.5.0: the last `file_signature` the client received and persisted
+    /// for `sessionId`. Sent back on subscribe as `file_signature_seen`
+    /// so the server can detect a file replacement (compaction, restore-
+    /// from-backup, in-place rewrite) and trigger the R2 recovery path
+    /// (§6 R2). `nil` means "first subscribe, no check requested" — the
+    /// server treats absent signature as no-op.
+    func lastFileSignature(sessionId: String,
+                           context: NSManagedObjectContext? = nil,
+                           container: NSPersistentContainer? = nil) -> String? {
+        guard let sessionUUID = UUID(uuidString: sessionId) else { return nil }
+
+        let runFetch: (NSManagedObjectContext) -> String? = { ctx in
+            let request = CDBackendSession.fetchBackendSession(id: sessionUUID)
+            return (try? ctx.fetch(request).first?.lastFileSignature) ?? nil
+        }
+
+        if let ctx = context {
+            return runFetch(ctx)
+        }
+
+        let resolvedContainer = container ?? PersistenceController.shared.container
+        let bgContext = resolvedContainer.newBackgroundContext()
+        var result: String?
+        bgContext.performAndWait {
+            result = runFetch(bgContext)
+        }
+        return result
     }
 
     /// Highest backend-assigned `seq` cached for the given session.
@@ -1820,7 +1930,8 @@ class VoiceCodeClient: ObservableObject {
         // Backend will send session list regardless
         var message: [String: Any] = [
             "type": "connect",
-            "api_key": key  // Include API key for authentication
+            "api_key": key,
+            "protocol_version": VoiceCodeClient.supportedProtocolVersion
         ]
 
         if let sessionId = sessionId {
@@ -1838,6 +1949,81 @@ class VoiceCodeClient: ObservableObject {
 
         print("📤 [VoiceCodeClient] Sending connect with API key")
         sendMessage(message)
+    }
+
+    /// Read `negotiated_protocol_version` from a connect-success / connect_ack
+    /// frame and update the per-channel state. Unknown / missing values keep
+    /// the existing value (which is `.v0_4_0` immediately after socket setup,
+    /// per the disconnect reset). Test seam: `internal` so unit tests can
+    /// drive it without a live socket.
+    func applyNegotiatedProtocolVersion(from json: [String: Any]) {
+        guard let raw = json["negotiated_protocol_version"] as? String else {
+            // Server didn't include the field — pre-T7 server, or a frame that
+            // doesn't carry negotiation info. Leave state at the current value.
+            return
+        }
+        guard let version = ProtocolVersion(rawValue: raw) else {
+            logger.warning("⚠️ [VoiceCodeClient] Ignoring unknown negotiated_protocol_version: \(raw, privacy: .public)")
+            return
+        }
+        if version != self.negotiatedProtocolVersion {
+            logger.info("🔀 [VoiceCodeClient] Negotiated protocol version: \(version.rawValue, privacy: .public)")
+            LogManager.shared.log("Negotiated protocol version: \(version.rawValue)", category: "VoiceCodeClient")
+        }
+        self.negotiatedProtocolVersion = version
+    }
+
+    /// Decode and dispatch an inbound `session_history` frame according to the
+    /// channel's negotiated protocol version. Lifted from the message-type
+    /// switch so the dispatch is unit-testable without a socket. The v0.5.0
+    /// branch decodes and logs but does not yet route to a sync-manager
+    /// entry point — that wiring lands in tmux-untethered-398.12. Returns
+    /// `true` on successful decode/dispatch, `false` on any failure (errors
+    /// are logged internally — the WebSocket read loop has no actionable
+    /// response, so the return value is purely a test observable).
+    @discardableResult
+    func handleSessionHistoryFrame(json: [String: Any]) -> Bool {
+        let data: Data
+        do {
+            data = try JSONSerialization.data(withJSONObject: json, options: [])
+        } catch {
+            logger.error("❌ [VoiceCodeClient] Failed to serialize session_history JSON: \(error.localizedDescription)")
+            return false
+        }
+        let decoder = JSONDecoder()
+
+        switch self.negotiatedProtocolVersion {
+        case .v0_4_0:
+            do {
+                let payload = try decoder.decode(SessionHistoryPayload.self, from: data)
+                if payload.isComplete {
+                    logger.info("📚 [VoiceCodeClient] session_history \(payload.sessionId) count=\(payload.messages.count) first=\(payload.firstSeq.map { String($0) } ?? "-") last=\(payload.lastSeq.map { String($0) } ?? "-") next=\(payload.nextSeq)")
+                } else {
+                    logger.warning("⚠️ [VoiceCodeClient] session_history \(payload.sessionId) is_complete=false; \(payload.messages.count) messages, will chain re-subscribe")
+                }
+                self.sessionSyncManager.handleSessionHistoryPayload(payload)
+                if let pending = self.sessionRefreshPending.removeValue(forKey: payload.sessionId) {
+                    pending.resumeOnce()
+                }
+                return true
+            } catch {
+                logger.error("❌ [VoiceCodeClient] Failed to decode v0.4.0 session_history payload: \(error.localizedDescription)")
+                return false
+            }
+        case .v0_5_0:
+            do {
+                let payload = try decoder.decode(SessionHistoryPayloadV5.self, from: data)
+                logger.info("📚 [VoiceCodeClient] session_history v5 \(payload.sessionId) count=\(payload.messages.count) next_offset=\(payload.nextOffset) eof=\(payload.endOfFile) replaced=\(payload.fileReplaced ?? false) signature=\(payload.fileSignature ?? "-")")
+                self.sessionSyncManager.handleSessionHistoryPayload(payload)
+                if let pending = self.sessionRefreshPending.removeValue(forKey: payload.sessionId) {
+                    pending.resumeOnce()
+                }
+                return true
+            } catch {
+                logger.error("❌ [VoiceCodeClient] Failed to decode v0.5.0 session_history payload: \(error.localizedDescription)")
+                return false
+            }
+        }
     }
 
     private func sendMessageAck(_ messageId: String) {
@@ -2266,5 +2452,20 @@ extension VoiceCodeClient: SessionSyncDelegate {
         let key = sessionId.lowercased()
         logger.error("⛔ is_complete chain stalled for \(key) at cursor \(atCursor)")
         stalledChains[key] = atCursor
+    }
+
+    /// v0.5.0 R2 recovery: the sync manager has purged the session's
+    /// cached messages, persisted the new `lastFileSignature`, and zeroed
+    /// `lastOffsetMerged` / `liveFromOffset`. We just need to re-issue a
+    /// subscribe; the cursor it reads is the just-persisted `0`, and the
+    /// signature it sends is the just-persisted new value. Drop any
+    /// confirmed state so `subscribe` actually emits the wire send.
+    func sessionSyncRequestsResubscribeFromZero(_ sessionId: UUID) {
+        let sid = sessionId.uuidString.lowercased()
+        logger.info("🔁 [VoiceCodeClient] file_replaced re-subscribe requested for \(sid)")
+        if subscriptions[sid] == .confirmed {
+            subscriptions[sid] = .desired
+        }
+        subscribe(sessionId: sid)
     }
 }

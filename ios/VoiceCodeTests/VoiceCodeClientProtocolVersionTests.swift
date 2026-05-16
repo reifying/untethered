@@ -146,14 +146,14 @@ final class VoiceCodeClientProtocolVersionTests: XCTestCase {
 
     // MARK: - hello.version handshake
 
-    /// AC7 (client half) — a `hello` with the matching version proceeds
-    /// normally: the client marks itself connected and does NOT flip into
-    /// upgrade-required state.
+    /// AC7 (client half) — a `hello` announcing the client's own max version
+    /// proceeds normally: the client marks itself connected and does NOT flip
+    /// into upgrade-required state.
     func testHelloWithMatchingVersionProceeds() {
         let hello: [String: Any] = [
             "type": "hello",
             "message": "Welcome",
-            "version": VoiceCodeClient.supportedProtocolVersion,
+            "version": VoiceCodeClient.supportedProtocolVersion,  // "0.5.0"
             "auth_version": 1,
             "instructions": "Send connect"
         ]
@@ -164,6 +164,28 @@ final class VoiceCodeClientProtocolVersionTests: XCTestCase {
 
         XCTAssertTrue(client.isConnected)
         XCTAssertFalse(client.requiresUpgrade)
+        XCTAssertNil(client.upgradeRequiredMessage)
+    }
+
+    /// A v0.4.0 server (hello.version = "0.4.0") must also proceed — backward
+    /// compatibility. The client can negotiate down to v0.4.0 via the connect /
+    /// connected exchange; the hello floor check should not block it.
+    func testHelloWithV040VersionProceeds() {
+        let hello: [String: Any] = [
+            "type": "hello",
+            "message": "Welcome",
+            "version": VoiceCodeClient.minimumServerProtocolVersion,  // "0.4.0"
+            "auth_version": 1,
+            "instructions": "Send connect"
+        ]
+        let json = String(data: try! JSONSerialization.data(withJSONObject: hello),
+                          encoding: .utf8)!
+        client.handleMessage(json)
+        drainMainQueue()
+
+        XCTAssertTrue(client.isConnected)
+        XCTAssertFalse(client.requiresUpgrade,
+                       "v0.4.0 server hello must not trigger upgrade-required")
         XCTAssertNil(client.upgradeRequiredMessage)
     }
 
@@ -212,6 +234,42 @@ final class VoiceCodeClientProtocolVersionTests: XCTestCase {
 
         XCTAssertTrue(client.requiresUpgrade)
         XCTAssertNotNil(client.upgradeRequiredMessage)
+    }
+
+    // MARK: - connect message protocol_version field
+
+    /// The connect payload must include `protocol_version` so the server can
+    /// negotiate min(client, server-max) and echo it in `negotiated_protocol_version`.
+    /// Without this field the server falls back to its floor (v0.4.0) even
+    /// when the client can speak v0.5.0.
+    func testSendConnectMessageIncludesProtocolVersion() throws {
+        // Store a dummy API key so sendConnectMessage doesn't abort early.
+        try KeychainManager.shared.saveAPIKey("test-key-protocol-version-test")
+
+        var sent: [[String: Any]] = []
+        client.onMessageSent = { sent.append($0) }
+
+        // Trigger the full hello → connect flow.
+        let hello: [String: Any] = [
+            "type": "hello",
+            "version": VoiceCodeClient.supportedProtocolVersion,
+            "auth_version": 1,
+            "message": "Welcome"
+        ]
+        let helloJson = String(data: try! JSONSerialization.data(withJSONObject: hello),
+                               encoding: .utf8)!
+        client.handleMessage(helloJson)
+        drainMainQueue()
+
+        let connects = sent.filter { ($0["type"] as? String) == "connect" }
+        XCTAssertEqual(connects.count, 1, "Expected exactly one connect message")
+        let connectPayload = connects[0]
+        XCTAssertEqual(connectPayload["protocol_version"] as? String,
+                       VoiceCodeClient.supportedProtocolVersion,
+                       "connect must include protocol_version matching client max")
+
+        // Clean up — don't leave a dummy key in the shared keychain.
+        try? KeychainManager.shared.deleteAPIKey()
     }
 
     // MARK: - unsupported_protocol_version error

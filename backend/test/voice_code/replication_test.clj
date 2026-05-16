@@ -94,6 +94,7 @@
         (reset! repl/turn-complete-seen {})
         (reset! repl/copilot-last-tool-requests {})
         (reset! repl/file-positions {})
+        (reset! repl/line-counts {})
         (f)
         (cleanup-test-dir)
         (finally
@@ -471,6 +472,88 @@
       (is (= 1 (count parsed)))
       (is (= "test message" (:text (first parsed))))
       (is (= :claude (:provider (first parsed)))))))
+
+(def ^:private file-signature-sentinel
+  "00000000-0000-0000-0000-000000000000")
+
+(deftest test-compute-file-signature-claude-known-fixture
+  (testing "Claude JSONL produces deterministic '{length}:{first-line-uuid}' and is stable across re-reads"
+    (let [uuid "01234567-89ab-cdef-0123-456789abcdef"
+          line (claude-jsonl {:type "user" :text "hello" :uuid uuid})
+          file (create-test-jsonl-file "fsig-known.jsonl" [line])
+          expected (str (.length file) ":" uuid)
+          sig1 (repl/compute-file-signature :claude (.getAbsolutePath file))
+          sig2 (repl/compute-file-signature :claude (.getAbsolutePath file))]
+      (is (= expected sig1))
+      (is (= sig1 sig2) "signature is stable across re-reads"))))
+
+(deftest test-compute-file-signature-append-preserves-first-line-uuid
+  (testing "Appending a line changes the length component but preserves the first-line UUID"
+    (let [uuid1 "11111111-1111-1111-1111-111111111111"
+          uuid2 "22222222-2222-2222-2222-222222222222"
+          line1 (claude-jsonl {:type "user" :text "first" :uuid uuid1})
+          line2 (claude-jsonl {:type "assistant" :text "second" :uuid uuid2})
+          file (create-test-jsonl-file "fsig-append.jsonl" [line1])
+          before (repl/compute-file-signature :claude (.getAbsolutePath file))]
+      (spit file (str line2 "\n") :append true)
+      (let [after (repl/compute-file-signature :claude (.getAbsolutePath file))
+            [len-before uuid-before] (str/split before #":" 2)
+            [len-after uuid-after] (str/split after #":" 2)]
+        (is (= uuid1 uuid-before))
+        (is (= uuid-before uuid-after) "first-line UUID is preserved across append")
+        (is (not= len-before len-after) "length component changes")))))
+
+(deftest test-compute-file-signature-prefix-rewrite-changes-uuid
+  (testing "In-place prefix rewrite changes the first-line-uuid component (R2 trigger)"
+    (let [uuid1 "11111111-1111-1111-1111-111111111111"
+          uuid2 "22222222-2222-2222-2222-222222222222"
+          line1 (claude-jsonl {:type "user" :text "before" :uuid uuid1})
+          line2 (claude-jsonl {:type "user" :text "after" :uuid uuid2})
+          file (create-test-jsonl-file "fsig-rewrite.jsonl" [line1])
+          before (repl/compute-file-signature :claude (.getAbsolutePath file))]
+      (spit file (str line2 "\n"))
+      (let [after (repl/compute-file-signature :claude (.getAbsolutePath file))]
+        (is (not= before after) "signature changes after prefix rewrite")
+        (is (str/ends-with? before (str ":" uuid1)))
+        (is (str/ends-with? after (str ":" uuid2)))))))
+
+(deftest test-compute-file-signature-empty-file-returns-sentinel
+  (testing "Empty Claude file → '0:<sentinel-uuid>'"
+    (let [file (create-test-jsonl-file "fsig-empty.jsonl" [])]
+      (is (= "0:00000000-0000-0000-0000-000000000000"
+             (repl/compute-file-signature :claude (.getAbsolutePath file))))))
+  (testing "Empty Copilot events.jsonl → '0:<sentinel-uuid>'"
+    (let [file (create-test-jsonl-file "fsig-empty-copilot.jsonl" [])]
+      (is (= "0:00000000-0000-0000-0000-000000000000"
+             (repl/compute-file-signature :copilot (.getAbsolutePath file)))))))
+
+(deftest test-compute-file-signature-summary-only-uses-sentinel
+  (testing "First line lacking :uuid (e.g. Claude summary entry) yields sentinel UUID component"
+    (let [summary-line (json/generate-string {:type "summary" :summary "title"})
+          file (create-test-jsonl-file "fsig-summary.jsonl" [summary-line])
+          sig (repl/compute-file-signature :claude (.getAbsolutePath file))]
+      (is (str/ends-with? sig (str ":" file-signature-sentinel))
+          "sentinel UUID used when first line has no :uuid"))))
+
+(deftest test-compute-file-signature-copilot-jsonl
+  (testing "Copilot JSONL is treated like Claude: length + first-line uuid"
+    (let [uuid "33333333-3333-3333-3333-333333333333"
+          line (json/generate-string {:type "user" :uuid uuid
+                                      :timestamp "2026-04-19T00:00:00Z"
+                                      :message {:role "user" :content "hi"}})
+          file (create-test-jsonl-file "fsig-copilot.jsonl" [line])
+          sig (repl/compute-file-signature :copilot (.getAbsolutePath file))]
+      (is (= (str (.length file) ":" uuid) sig)))))
+
+(deftest test-compute-file-signature-cursor-returns-nil
+  (testing ":cursor provider never carries a signature"
+    (let [file (create-test-jsonl-file "fsig-cursor.jsonl" ["irrelevant"])]
+      (is (nil? (repl/compute-file-signature :cursor (.getAbsolutePath file))))
+      (is (nil? (repl/compute-file-signature :cursor nil))))))
+
+(deftest test-compute-file-signature-unknown-provider-returns-nil
+  (testing "Unknown providers return nil rather than throwing"
+    (is (nil? (repl/compute-file-signature :unknown "/tmp/whatever")))))
 
 (deftest test-parse-jsonl-incremental
   (testing "Parse only new lines from file"
@@ -1580,6 +1663,895 @@
             "OpenCode :file is not a byte-cursor watch path; do not pollute file-positions")))))
 
 ;; ============================================================================
+;; line-counts Tests (tmux-untethered-398.2)
+;; ============================================================================
+
+(defn- line-counts-claude-session!
+  "Create a Claude .jsonl fixture file in test-dir and a matching
+   session-index entry (no :next-seq movement — just metadata + file).
+   `messages` is a vector of text strings; each becomes a user message."
+  [session-id messages & {:keys [provider message-count]
+                          :or {provider :claude}}]
+  (let [filename (str session-id ".jsonl")
+        lines (mapv (fn [t] (claude-jsonl {:type "user" :text t})) messages)
+        file (create-test-jsonl-file filename lines)
+        file-path (.getAbsolutePath file)]
+    (swap! repl/session-index assoc session-id
+           {:session-id session-id
+            :file file-path
+            :name "LC Test Session"
+            :provider provider
+            :message-count (or message-count (count messages))
+            :next-seq 1
+            :min-available-seq 1})
+    [session-id file-path]))
+
+(deftest test-count-complete-lines-counts-only-newline-terminated
+  (testing "count-complete-lines counts only newline-terminated lines (mirrors holdback)"
+    (let [file (io/file test-dir "lc-terminator.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file "a\nbb\nccc\n")
+      (is (= 3 (repl/count-complete-lines fp))
+          "Three newline-terminated lines counted")
+      (spit file "a\nbb\nccc\nno-trailing-newline")
+      (is (= 3 (repl/count-complete-lines fp))
+          "Trailing partial line (no \\n) is excluded — holdback rule")
+      (spit file "")
+      (is (zero? (repl/count-complete-lines fp))
+          "Empty file is zero lines")
+      (is (zero? (repl/count-complete-lines (str test-dir "/never-existed.jsonl")))
+          "Missing file resolves to 0 without throwing"))))
+
+(deftest test-count-complete-lines-handles-multibyte-utf8
+  (testing "count-complete-lines is byte-scan based, so UTF-8 multi-byte content does not skew the count"
+    (let [file (io/file test-dir "lc-utf8.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      ;; Three lines, each containing a 4-byte emoji
+      (spit file "🎉\n🚀\n💥\n")
+      (is (= 3 (repl/count-complete-lines fp))
+          "Multi-byte UTF-8 lines counted by byte newline, not codepoint"))))
+
+(deftest test-populate-line-counts-seeds-atom-from-index
+  (testing "populate-line-counts! seeds line-counts for every :claude session in the index"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (let [[_ p-a] (line-counts-claude-session! "lc-a" ["one" "two" "three"])
+            [_ p-b] (line-counts-claude-session! "lc-b" ["only"])
+            [_ p-c] (line-counts-claude-session! "lc-c" [])
+            result (repl/populate-line-counts!)]
+        (is (= 3 (:populated result)))
+        (is (= 0 (:errors result)))
+        (is (= 3 (get @repl/line-counts p-a))
+            "Three-message session seeded to 3")
+        (is (= 1 (get @repl/line-counts p-b))
+            "One-message session seeded to 1")
+        (is (= 0 (get @repl/line-counts p-c))
+            "Empty session seeded to 0")))))
+
+(deftest test-populate-line-counts-skips-non-byte-cursor-providers
+  (testing "populate-line-counts! skips :cursor and :opencode sessions (non-JSONL :file)"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (let [cursor-store (create-test-jsonl-file "lc-cursor-store.db" [])
+            cursor-path (.getAbsolutePath cursor-store)
+            opencode-store (create-test-jsonl-file "lc-opencode-info.json" [])
+            opencode-path (.getAbsolutePath opencode-store)]
+        (swap! repl/session-index assoc "lc-cursor"
+               {:session-id "lc-cursor"
+                :file cursor-path
+                :provider :cursor
+                :message-count 1
+                :next-seq 1
+                :min-available-seq 1})
+        (swap! repl/session-index assoc "lc-opencode"
+               {:session-id "lc-opencode"
+                :file opencode-path
+                :provider :opencode
+                :message-count 1
+                :next-seq 1
+                :min-available-seq 1})
+        (let [result (repl/populate-line-counts!)]
+          (is (= 2 (:skipped result))
+              "Both non-byte-cursor sessions skipped")
+          (is (= 0 (:populated result)))
+          (is (not (contains? @repl/line-counts cursor-path))
+              "Cursor :file not in line-counts")
+          (is (not (contains? @repl/line-counts opencode-path))
+              "OpenCode :file not in line-counts"))))))
+
+(deftest test-populate-line-counts-handles-missing-file
+  (testing "populate-line-counts! skips sessions whose :file does not exist"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (swap! repl/session-index assoc "lc-ghost"
+             {:session-id "lc-ghost"
+              :file "/nonexistent/path/never-here.jsonl"
+              :provider :claude
+              :message-count 0
+              :next-seq 1
+              :min-available-seq 1})
+      (let [result (repl/populate-line-counts!)]
+        (is (= 1 (:skipped result)))
+        (is (= 0 (:populated result)))
+        (is (= 0 (:errors result)))
+        (is (not (contains? @repl/line-counts "/nonexistent/path/never-here.jsonl")))))))
+
+(deftest test-populate-line-counts-handles-trailing-partial-line
+  (testing "populate-line-counts! only counts newline-terminated lines (holdback rule)"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (let [[_ fp] (line-counts-claude-session! "lc-partial" ["a" "b"])
+            ;; Append a partial trailing line (no \n) to simulate a mid-write tick boundary
+            f (io/file fp)
+            base (slurp f)]
+        (spit f (str base "{\"partial\":"))
+        (repl/populate-line-counts!)
+        (is (= 2 (get @repl/line-counts fp))
+            "Trailing partial line excluded from the seeded count")))))
+
+(deftest test-ensure-line-count-initialized-seeds-on-first-call
+  (testing "ensure-line-count-initialized! seeds the atom for a previously-unseen file"
+    (let [file (io/file test-dir "lc-lazy.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file "x\ny\nz\nw\n")
+      (is (not (contains? @repl/line-counts fp))
+          "Precondition: no entry for this file")
+      (let [seeded (repl/ensure-line-count-initialized! fp)]
+        (is (= 4 seeded) "Returns the seeded count on bootstrap")
+        (is (= 4 (get @repl/line-counts fp))
+            "Atom seeded to 4 (four complete lines)")))))
+
+(deftest test-ensure-line-count-initialized-is-noop-when-already-set
+  (testing "ensure-line-count-initialized! does nothing if the entry already exists"
+    (let [file (io/file test-dir "lc-already-set.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file "a\nb\nc\n")
+      ;; Pre-seed with a different value to prove we don't overwrite.
+      (swap! repl/line-counts assoc fp 999)
+      (let [result (repl/ensure-line-count-initialized! fp)]
+        (is (nil? result) "Returns nil when entry already present")
+        (is (= 999 (get @repl/line-counts fp))
+            "Pre-existing value preserved — no re-count")))))
+
+(deftest test-line-counts-tick-update-accumulates-across-ticks
+  (testing "Repeated swap! advances line-counts by the per-tick delta"
+    (let [fp "/tmp/lc-tick.jsonl"]
+      (swap! repl/line-counts assoc fp 0)
+      ;; Simulate two consecutive watcher ticks, each emitting a vector of lines
+      ;; (the watcher will do this inline after parse-jsonl-incremental-with-raw):
+      (swap! repl/line-counts update fp (fnil + 0) 3)
+      (is (= 3 (get @repl/line-counts fp))
+          "First tick advances by 3")
+      (swap! repl/line-counts update fp (fnil + 0) 2)
+      (is (= 5 (get @repl/line-counts fp))
+          "Second tick accumulates to 5"))))
+
+(deftest test-reset-line-count-zeros-the-entry
+  (testing "reset-line-count! sets the entry to 0 (shrink-recovery branch)"
+    (let [fp "/tmp/lc-shrink.jsonl"]
+      (swap! repl/line-counts assoc fp 42)
+      (repl/reset-line-count! fp)
+      (is (= 0 (get @repl/line-counts fp))
+          "Entry reset to 0, not removed"))))
+
+(deftest test-line-counts-shrink-recovery-then-tick-rebuilds-count
+  (testing "After shrink reset, the next watcher tick's swap rebuilds the count from 0"
+    (reset! repl/session-index {})
+    (with-redefs [repl/save-index! (fn [_] nil)]
+      (let [[_ fp] (line-counts-claude-session! "lc-shrink-rebuild" ["a" "b" "c" "d" "e"])]
+        (repl/populate-line-counts!)
+        (is (= 5 (get @repl/line-counts fp))
+            "Initial count seeded to 5")
+        ;; Simulate the shrink-recovery branch: parse-jsonl-incremental
+        ;; observed file-shrink, the watcher resets line-counts to 0, then
+        ;; the same tick re-parses the truncated file from byte 0 and emits
+        ;; its current line count as the tick delta. T5 wires this; here we
+        ;; exercise the building-block contract (reset-line-count! + tick
+        ;; update swap) directly.
+        (let [truncated (str (claude-jsonl {:type "user" :text "x"}) "\n"
+                             (claude-jsonl {:type "user" :text "y"}) "\n")]
+          (spit (io/file fp) truncated))
+        (repl/reset-line-count! fp)
+        (is (= 0 (get @repl/line-counts fp))
+            "Shrink reset zeroes the entry (keeps it present, not dissoc'd)")
+        ;; Simulate the same-tick re-parse: parse-jsonl-incremental yields a
+        ;; complete-vec of 2 lines, and the watcher's tick-update swap adds
+        ;; that delta to the just-zeroed entry.
+        (swap! repl/line-counts update fp (fnil + 0) 2)
+        (is (= 2 (get @repl/line-counts fp))
+            "Post-shrink tick rebuilds the count from the truncated file")))))
+
+;; ============================================================================
+;; parse-jsonl-incremental-with-raw + stamp-offsets Tests (tmux-untethered-398.5)
+;; ============================================================================
+
+(deftest test-parse-jsonl-incremental-with-raw-matches-byte-position
+  (testing "with-raw returns the same :new-pos as parse-jsonl-incremental on identical input"
+    (let [lines [(claude-jsonl {:type "user" :text "one" :uuid "u-1"})
+                 (claude-jsonl {:type "assistant" :text "two" :uuid "u-2"})
+                 (claude-jsonl {:type "user" :text "three" :uuid "u-3"})]
+          file (create-test-jsonl-file "raw-bytepos.jsonl" lines)
+          fp (.getAbsolutePath file)]
+      (repl/reset-file-position! fp)
+      (let [base (repl/parse-jsonl-incremental fp)]
+        (repl/reset-file-position! fp)
+        (let [raw (repl/parse-jsonl-incremental-with-raw fp)]
+          (is (= (:new-pos base) (:new-pos raw))
+              "Byte cursor is identical between sibling readers"))))))
+
+(deftest test-parse-jsonl-incremental-with-raw-returns-newline-stripped-strings
+  (testing ":raw-lines contains newline-stripped strings for the lines advanced this tick"
+    (let [lines [(claude-jsonl {:type "user" :text "first" :uuid "u-1"})
+                 (claude-jsonl {:type "assistant" :text "second" :uuid "u-2"})]
+          file (create-test-jsonl-file "raw-content.jsonl" lines)
+          fp (.getAbsolutePath file)]
+      (repl/reset-file-position! fp)
+      (let [{:keys [raw-lines new-pos]} (repl/parse-jsonl-incremental-with-raw fp)]
+        (is (= 2 (count raw-lines)) "Both newline-terminated lines returned")
+        (is (= lines raw-lines)
+            "Lines are returned with the trailing \\n stripped (matches the JSONL line strings exactly)")
+        (is (every? #(not (str/includes? % "\n")) raw-lines)
+            "No raw-line carries a literal \\n (newline is the separator, not part of content)")
+        (is (= (.length file) new-pos)
+            "Cursor advances to EOF when every line is newline-terminated")))))
+
+(deftest test-parse-jsonl-incremental-with-raw-holds-back-partial-trailing-line
+  (testing "Trailing partial line is held back; cursor only advances past complete newlines"
+    (let [file (io/file test-dir "raw-partial.jsonl")
+          fp (.getAbsolutePath file)
+          complete (claude-jsonl {:type "user" :text "complete" :uuid "u-c"})
+          partial-bytes "{\"role\":\"assistant\",\"text\":\"part"]
+      (io/make-parents file)
+      (spit file (str complete "\n" partial-bytes))
+      (repl/reset-file-position! fp)
+      (let [file-len (.length file)
+            {:keys [raw-lines new-pos]} (repl/parse-jsonl-incremental-with-raw fp)]
+        (is (= 1 (count raw-lines))
+            "Only the newline-terminated line is in :raw-lines")
+        (is (= complete (first raw-lines)))
+        (is (< new-pos file-len)
+            "Cursor stops before the partial trailing line")
+        (is (= (count (.getBytes (str complete "\n") "UTF-8")) new-pos)
+            "Cursor lands exactly at the byte after the last \\n"))
+      (repl/reset-file-position! fp))))
+
+(deftest test-parse-jsonl-incremental-with-raw-shrink-recovery-emits-full-snapshot
+  (testing "On shrink, cursor resets to 0 and :raw-lines is the full current file"
+    (let [file (io/file test-dir "raw-shrink.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (repl/reset-file-position! fp)
+
+      ;; 1. Seed with 3 lines and advance the cursor to EOF.
+      (spit file (str (claude-jsonl {:type "user" :text "old-1" :uuid "u-old-1"}) "\n"
+                      (claude-jsonl {:type "user" :text "old-2" :uuid "u-old-2"}) "\n"
+                      (claude-jsonl {:type "user" :text "old-3" :uuid "u-old-3"}) "\n"))
+      (let [{:keys [new-pos]} (repl/parse-jsonl-incremental-with-raw fp)]
+        (swap! repl/file-positions assoc fp new-pos)
+        (is (pos? new-pos)))
+
+      ;; 2. Truncate-and-rewrite below the tracked cursor.
+      (.delete file)
+      (let [new-content (str (claude-jsonl {:type "assistant" :text "new-1" :uuid "u-new-1"}) "\n")]
+        (spit file new-content)
+        (let [tracked (get @repl/file-positions fp)
+              shrunk-len (.length file)]
+          (is (< shrunk-len tracked)
+              "Test precondition: new file is smaller than the tracked cursor"))
+
+        ;; 3. Re-parse — sibling reader resets to 0 and emits the full snapshot.
+        (let [{:keys [raw-lines new-pos]} (repl/parse-jsonl-incremental-with-raw fp)]
+          (is (= 1 (count raw-lines))
+              "Post-shrink: cursor reset to 0, full current file is in :raw-lines")
+          (is (str/includes? (first raw-lines) "u-new-1")
+              "Snapshot contains the post-shrink content")
+          (is (not-any? #(str/includes? % "u-old") raw-lines)
+              "Pre-shrink content (physically deleted) does not reappear")
+          (is (= (.length file) new-pos)
+              "Cursor advances to current EOF, not the stale tracked position")))
+
+      (repl/reset-file-position! fp))))
+
+(deftest test-parse-jsonl-incremental-with-raw-empty-file-and-no-new-bytes
+  (testing "Empty file or no new bytes returns empty :raw-lines and unchanged cursor"
+    (let [file (io/file test-dir "raw-empty.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file "")
+      (repl/reset-file-position! fp)
+      (let [r (repl/parse-jsonl-incremental-with-raw fp)]
+        (is (= [] (:raw-lines r))
+            "Empty file yields empty :raw-lines vec")
+        (is (zero? (:new-pos r)))))
+
+    (testing "Second call after EOF: still empty, cursor unchanged"
+      (let [file (io/file test-dir "raw-empty-tick2.jsonl")
+            fp (.getAbsolutePath file)
+            line (claude-jsonl {:type "user" :text "only" :uuid "u-only"})]
+        (io/make-parents file)
+        (spit file (str line "\n"))
+        (repl/reset-file-position! fp)
+        (let [{:keys [new-pos]} (repl/parse-jsonl-incremental-with-raw fp)]
+          (swap! repl/file-positions assoc fp new-pos))
+        ;; No new bytes since last call.
+        (let [{:keys [raw-lines new-pos]} (repl/parse-jsonl-incremental-with-raw fp)]
+          (is (= [] raw-lines))
+          (is (= (.length file) new-pos)
+              "Cursor stays at EOF when there is nothing new"))
+        (repl/reset-file-position! fp)))))
+
+(deftest test-parse-jsonl-raw-lines-safe-seven-full-lines
+  (testing "Seven newline-terminated lines: all returned, no holdback"
+    (let [lines (mapv #(claude-jsonl {:type "user"
+                                      :text (str "line-" %)
+                                      :uuid (str "u-" %)})
+                      (range 7))
+          file (create-test-jsonl-file "raw-safe-seven-full.jsonl" lines)
+          {:keys [lines held-back?]} (repl/parse-jsonl-raw-lines-safe
+                                      (.getAbsolutePath file))]
+      (is (= 7 (count lines)))
+      (is (= false held-back?))
+      (is (every? #(not (str/includes? % "\n")) lines)
+          "Lines are newline-stripped — the \\n is the separator, not part of content"))))
+
+(deftest test-parse-jsonl-raw-lines-safe-seven-full-plus-partial
+  (testing "Seven complete lines plus a trailing partial line: 7 lines, held-back? true"
+    (let [complete (mapv #(claude-jsonl {:type "user"
+                                         :text (str "line-" %)
+                                         :uuid (str "u-" %)})
+                         (range 7))
+          file (io/file test-dir "raw-safe-seven-plus-partial.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file (str (str/join "\n" complete) "\n"
+                      "{\"role\":\"assistant\",\"text\":\"partia"))
+      (let [{:keys [lines held-back?]} (repl/parse-jsonl-raw-lines-safe fp)]
+        (is (= 7 (count lines))
+            "Only the newline-terminated lines appear in :lines")
+        (is (= true held-back?)
+            "Trailing partial bytes raise :held-back?")
+        (is (= complete lines)
+            "The seven complete lines match the original strings byte-for-byte")))))
+
+(deftest test-parse-jsonl-raw-lines-safe-empty-file
+  (testing "Empty file: empty lines, no holdback"
+    (let [file (io/file test-dir "raw-safe-empty.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file "")
+      (let [r (repl/parse-jsonl-raw-lines-safe fp)]
+        (is (= {:lines [] :held-back? false} r))))))
+
+(deftest test-parse-jsonl-raw-lines-safe-partial-only
+  (testing "File with only a partial line (no \\n anywhere): lines empty, held-back? true"
+    (let [file (io/file test-dir "raw-safe-partial-only.jsonl")
+          fp (.getAbsolutePath file)]
+      (io/make-parents file)
+      (spit file "{\"role\":\"user\",\"uuid\":\"a")
+      (let [{:keys [lines held-back?]} (repl/parse-jsonl-raw-lines-safe fp)]
+        (is (= [] lines))
+        (is (= true held-back?))))))
+
+(deftest test-parse-jsonl-raw-lines-safe-multibyte-utf8-round-trip
+  (testing "UTF-8 multi-byte content (emoji, CJK) round-trips without corruption"
+    (let [file (io/file test-dir "raw-safe-utf8.jsonl")
+          fp (.getAbsolutePath file)
+          ;; Mix 4-byte emoji, 3-byte CJK, and 2-byte accented chars across lines.
+          line-1 (claude-jsonl {:type "user" :text "rocket 🚀 launch"
+                                :uuid "u-emoji"})
+          line-2 (claude-jsonl {:type "user" :text "汉字 中文 日本語"
+                                :uuid "u-cjk"})
+          line-3 (claude-jsonl {:type "user" :text "café naïve résumé"
+                                :uuid "u-accent"})]
+      (io/make-parents file)
+      (spit file (str line-1 "\n" line-2 "\n" line-3 "\n"))
+      (let [{:keys [lines held-back?]} (repl/parse-jsonl-raw-lines-safe fp)
+            on-disk-bytes (.length file)
+            roundtrip-bytes (alength (.getBytes (str (str/join "\n" lines) "\n")
+                                                "UTF-8"))]
+        (is (= 3 (count lines)))
+        (is (= false held-back?))
+        (is (= [line-1 line-2 line-3] lines)
+            "All three multi-byte lines round-trip byte-for-byte")
+        (is (= on-disk-bytes roundtrip-bytes)
+            "Reconstructed UTF-8 bytes match on-disk size — no replacement chars introduced")
+        (let [parsed (mapv #(json/parse-string % true) lines)]
+          (is (= ["rocket 🚀 launch" "汉字 中文 日本語" "café naïve résumé"]
+                 (mapv #(get-in % [:message :content]) parsed))
+              "Multi-byte content decodes from JSON without corruption"))))))
+
+(deftest test-parse-jsonl-raw-lines-safe-utf8-mid-character-tail-held-back
+  ;; Regression mirror of tmux-untethered-e1a: if the file ends with a
+  ;; truncated multi-byte UTF-8 sequence, those bytes must stay in the
+  ;; held-back tail rather than being mangled into U+FFFD. The byte-level
+  ;; newline scan happens before decoding, so the partial-emoji prefix
+  ;; never gets decoded.
+  ;;
+  ;; This test truncates INSIDE the 4-byte emoji sequence (not just inside
+  ;; the line) — the partial tail's only byte is byte 1 of a 4-byte UTF-8
+  ;; sequence. Decoding the whole buffer first would turn that lone byte
+  ;; into 3 bytes of U+FFFD; the byte-scan-first invariant prevents that.
+  (testing "Truncated multi-byte UTF-8 tail held back, complete lines decode cleanly"
+    (let [file (io/file test-dir "raw-safe-utf8-mid-char.jsonl")
+          fp (.getAbsolutePath file)
+          line-1 (claude-jsonl {:type "user" :text "hello" :uuid "u-1"})
+          line-2 (claude-jsonl {:type "user" :text "🚀" :uuid "u-2"})
+          line-2-bytes (.getBytes ^String line-2 "UTF-8")
+          emoji-bytes (.getBytes "🚀" "UTF-8")
+          ;; Locate the emoji's 4-byte sequence inside line-2's bytes.
+          emoji-start (loop [i 0]
+                        (cond
+                          (> (+ i 4) (alength line-2-bytes)) -1
+                          (and (= (aget line-2-bytes i) (aget emoji-bytes 0))
+                               (= (aget line-2-bytes (+ i 1)) (aget emoji-bytes 1))
+                               (= (aget line-2-bytes (+ i 2)) (aget emoji-bytes 2))
+                               (= (aget line-2-bytes (+ i 3)) (aget emoji-bytes 3)))
+                          i
+                          :else (recur (inc i))))
+          line-1-with-nl (.getBytes (str line-1 "\n") "UTF-8")
+          ;; Take exactly 1 byte of the 4-byte emoji — worst case for
+          ;; U+FFFD substitution if decoding happened before the newline
+          ;; scan.
+          partial-len (inc emoji-start)
+          buf (byte-array (concat line-1-with-nl
+                                  (take partial-len line-2-bytes)))]
+      (is (>= emoji-start 0)
+          "Test setup: emoji must be located in the encoded line-2")
+      (io/make-parents file)
+      (with-open [out (io/output-stream file)]
+        (.write out buf))
+      (let [{:keys [lines held-back?]} (repl/parse-jsonl-raw-lines-safe fp)]
+        (is (= 1 (count lines))
+            "Only line-1 (which is fully newline-terminated) is returned")
+        (is (= line-1 (first lines))
+            "Line-1 string is unchanged — no UTF-8 replacement chars introduced")
+        (is (= true held-back?)
+            "Truncated emoji bytes are held back")
+        (is (not (str/includes? (first lines) "�"))
+            "Returned line must not contain U+FFFD (replacement char)")
+        ;; Held-back byte count must equal the partial emoji prefix. If
+        ;; decoding had happened before the newline scan, the lone 0xF0
+        ;; would have become 3 bytes of EF BF BD and the accounting would
+        ;; be off — this assertion is the regression bite.
+        (let [on-disk (.length file)
+              reconstructed-bytes (alength (.getBytes (str (first lines) "\n")
+                                                      "UTF-8"))
+              held-back-bytes (- on-disk reconstructed-bytes)]
+          (is (= partial-len held-back-bytes)
+              (str "Held-back tail must be exactly the " partial-len
+                   " bytes of the truncated emoji prefix — not 3 bytes "
+                   "of EF BF BD (which is what would land here if the "
+                   "byte scan happened after decoding).")))))))
+
+(deftest test-parse-jsonl-raw-lines-safe-missing-file-returns-empty
+  ;; Locks in the error-swallow contract: a missing/unreadable file does
+  ;; not throw; it returns the same shape as a clean empty file. This is
+  ;; indistinguishable from a truly-empty file at the return-value level —
+  ;; callers (e.g. `read-from-offset`) must detect file-missing separately
+  ;; if they need to distinguish "file deleted/replaced mid-subscribe"
+  ;; from "file is settled and empty."
+  (testing "Missing file: returns {:lines [] :held-back? false} without throwing"
+    (let [file (io/file test-dir "raw-safe-nonexistent.jsonl")
+          fp (.getAbsolutePath file)]
+      (when (.exists file) (.delete file))
+      (is (not (.exists file))
+          "Test precondition: file must not exist")
+      (let [r (repl/parse-jsonl-raw-lines-safe fp)]
+        (is (= {:lines [] :held-back? false} r)
+            "Missing file collapses to the same return shape as a clean empty file")))))
+
+(deftest test-stamp-offsets-survivors-carry-non-contiguous-offsets
+  (testing "stamp-offsets stamps surviving messages with raw-line indices, NOT survivor indices"
+    (let [;; Mix of survivors and lines that providers/parse-message :claude
+          ;; will drop: sidechain (line 1), summary (line 3), system (line 4).
+          ;; Survivors are at raw indices 0, 2, 5.
+          raw [(claude-jsonl {:type "user" :text "msg-0" :uuid "u-0"})
+               (claude-jsonl {:type "user" :text "side"  :uuid "u-side"
+                              :sidechain? true})
+               (claude-jsonl {:type "assistant" :text "msg-2" :uuid "u-2"})
+               (json/generate-string {:type "summary"
+                                      :uuid "u-sum"
+                                      :timestamp "2026-04-19T00:00:00Z"
+                                      :message {:role "system" :content "drop"}})
+               (json/generate-string {:type "system"
+                                      :uuid "u-sys"
+                                      :timestamp "2026-04-19T00:00:00Z"
+                                      :message {:role "system" :content "drop"}})
+               (claude-jsonl {:type "user" :text "msg-5" :uuid "u-5"})]
+          stamped (repl/stamp-offsets :claude raw 100)]
+      (is (= 3 (count stamped))
+          "Three survivors out of six raw lines")
+      (is (= ["u-0" "u-2" "u-5"] (mapv :uuid stamped))
+          "Survivors are the user/assistant non-sidechain raw lines, in file order")
+      (is (= [100 102 105] (mapv :offset stamped))
+          "Offsets are raw-line indices (0, 2, 5) shifted by pre-line-count (100); filtered lines still advance i")
+      (is (every? #(= :claude (:provider %)) stamped)
+          "Provider tag preserved on canonical messages"))))
+
+(deftest test-stamp-offsets-empty-input-and-all-filtered
+  (testing "Empty complete-vec returns []"
+    (is (= [] (repl/stamp-offsets :claude [] 0)))
+    (is (= [] (repl/stamp-offsets :claude [] 4218))
+        "pre-line-count value is irrelevant when there's nothing to stamp"))
+
+  (testing "All-filtered tick: every raw line drops, returns [] without exception"
+    (let [raw [(claude-jsonl {:type "user" :text "side" :uuid "u-1" :sidechain? true})
+               (json/generate-string {:type "summary"
+                                      :uuid "u-2"
+                                      :timestamp "2026-04-19T00:00:00Z"
+                                      :message {:role "system" :content "x"}})
+               (json/generate-string {:type "system"
+                                      :uuid "u-3"
+                                      :timestamp "2026-04-19T00:00:00Z"
+                                      :message {:role "system" :content "x"}})]
+          stamped (repl/stamp-offsets :claude raw 50)]
+      (is (= [] stamped)
+          "Returns [] when every raw line is filtered out")
+      (is (vector? stamped)
+          "Return type is a vector (not a lazy seq), even on the all-filtered path")
+      ;; End-to-end derivation of (snapshot-from-offset, file-end-line-count)
+      ;; from an all-filtered snapshot is exercised in
+      ;; test-watcher-pipeline-empty-snapshot-shape.
+      )))
+
+(deftest test-stamp-offsets-handles-malformed-json-as-filtered
+  (testing "Lines that fail JSON parse are filtered out and still advance the raw index"
+    (let [raw [(claude-jsonl {:type "user" :text "good" :uuid "u-0"})
+               "this is not valid json"
+               ""
+               (claude-jsonl {:type "assistant" :text "good-2" :uuid "u-3"})]
+          stamped (repl/stamp-offsets :claude raw 0)]
+      (is (= ["u-0" "u-3"] (mapv :uuid stamped)))
+      (is (= [0 3] (mapv :offset stamped))
+          "Malformed and blank lines still advance the raw-line index"))))
+
+(deftest test-stamp-offsets-pre-line-count-zero-baseline
+  (testing "pre-line-count of 0 makes offsets equal to raw-line indices"
+    (let [raw [(claude-jsonl {:type "user" :text "a" :uuid "u-0"})
+               (claude-jsonl {:type "assistant" :text "b" :uuid "u-1"})
+               (claude-jsonl {:type "user" :text "c" :uuid "u-2"})]
+          stamped (repl/stamp-offsets :claude raw 0)]
+      (is (= [0 1 2] (mapv :offset stamped))
+          "When pre-line-count = 0, offsets are exactly the raw-line indices"))))
+
+(deftest test-watcher-pipeline-produces-push-input-shape
+  ;; Integration-style test: chains parse-jsonl-incremental-with-raw +
+  ;; stamp-offsets the way the v0.5.0 watcher tee will (T10 wires this into
+  ;; handle-file-modified), and asserts the produced (snapshot,
+  ;; snapshot-from-offset, file-end-line-count) shape matches what
+  ;; push-to-subscribers! consumes per design doc §3.4.
+  (testing "Watcher tee shape: chain reader + stamp-offsets, derive push inputs"
+    (let [file (io/file test-dir "watcher-tee.jsonl")
+          fp (.getAbsolutePath file)
+          tick1-lines [(claude-jsonl {:type "user" :text "u-msg-1" :uuid "u-1"})
+                       (claude-jsonl {:type "user" :text "side"   :uuid "u-side"
+                                      :sidechain? true})
+                       (claude-jsonl {:type "assistant" :text "a-msg-1" :uuid "u-2"})]]
+      (io/make-parents file)
+      ;; Seed initial file content with some pre-existing lines so the
+      ;; watcher's pre-line-count is non-zero (matches the realistic case
+      ;; where populate-line-counts! seeded the count at boot).
+      (spit file (str (claude-jsonl {:type "user" :text "history" :uuid "u-h"}) "\n"))
+      (repl/reset-file-position! fp)
+      (reset! repl/line-counts {})
+
+      ;; Bootstrap: lazy-init the line-counts atom for this previously-unseen
+      ;; file (matches the watcher's first-firing path on a new session).
+      (repl/ensure-line-count-initialized! fp)
+      (let [pre-line-count-tick0 (get @repl/line-counts fp)]
+        (is (= 1 pre-line-count-tick0)
+            "Bootstrap seeded the count to 1 (the historical pre-existing line)"))
+
+      ;; Advance file-positions past the historical content so tick1 only
+      ;; sees the newly-appended lines (matches handle-file-created's seed).
+      (swap! repl/file-positions assoc fp (.length file))
+
+      ;; Now the watcher tick: append the tick1 batch.
+      (spit file (str (str/join "\n" tick1-lines) "\n") :append true)
+
+      ;; The v0.5.0 watcher tee, in order:
+      ;;   1. Snapshot pre-line-count BEFORE the tick-update swap.
+      ;;   2. Run parse-jsonl-incremental-with-raw to get raw-lines + new-pos.
+      ;;   3. Run stamp-offsets to produce the canonical snapshot.
+      ;;   4. Compute file-end-line-count from the snapshotted pre-count and
+      ;;      the count of raw-lines this tick.
+      ;;   5. Persist file-positions advance + line-counts tick-update swap.
+      (let [pre-line-count (get @repl/line-counts fp)
+            {:keys [raw-lines new-pos]} (repl/parse-jsonl-incremental-with-raw fp)
+            snapshot (repl/stamp-offsets :claude raw-lines pre-line-count)
+            snapshot-from-offset pre-line-count
+            file-end-line-count (+ pre-line-count (count raw-lines))]
+
+        (is (= 3 (count raw-lines))
+            "Tick1 reader returns all three new newline-terminated lines (sidechain included as raw)")
+        (is (= 2 (count snapshot))
+            "Stamp drops the sidechain; survivors are user + assistant")
+        (is (= ["u-1" "u-2"] (mapv :uuid snapshot))
+            "Survivors in file order")
+        ;; Pre-line-count is 1 (one historical line). Survivors are at
+        ;; raw indices 0 and 2 within the tick (the sidechain at index 1
+        ;; is dropped but still advances i). So offsets are 1 and 3.
+        (is (= [1 3] (mapv :offset snapshot))
+            "Offsets = pre-line-count + raw-line index; sidechain at index 1 advances i but does not survive")
+        (is (= 1 snapshot-from-offset)
+            "snapshot-from-offset = pre-line-count (= 1 here)")
+        (is (= 4 file-end-line-count)
+            "file-end-line-count = pre-line-count + (count raw-lines) = 1 + 3 = 4")
+
+        ;; Verify the tick-update swap produces the expected new line-counts
+        ;; entry — this is what the watcher does after a successful tick.
+        (swap! repl/file-positions assoc fp new-pos)
+        (swap! repl/line-counts update fp (fnil + 0) (count raw-lines))
+        (is (= 4 (get @repl/line-counts fp))
+            "After the tick-update swap, line-counts matches file-end-line-count"))
+
+      (repl/reset-file-position! fp)
+      (reset! repl/line-counts {}))))
+
+(deftest test-watcher-pipeline-empty-snapshot-shape
+  ;; Edge case: tick where every raw line is filtered out. The snapshot is
+  ;; [] but the watcher still pushes — caught-up subscribers see end-of-file?
+  ;; true with next-offset = file-end-line-count (design doc §3.4 point 2).
+  (testing "All-filtered tick still produces a usable (snapshot-from-offset, file-end-line-count) pair"
+    (let [file (io/file test-dir "watcher-tee-empty.jsonl")
+          fp (.getAbsolutePath file)
+          ;; Three lines that all drop in providers/parse-message :claude:
+          ;; one sidechain, one summary, one system.
+          lines [(claude-jsonl {:type "user" :text "side" :uuid "u-1" :sidechain? true})
+                 (json/generate-string {:type "summary"
+                                        :uuid "u-2"
+                                        :timestamp "2026-04-19T00:00:00Z"
+                                        :message {:role "system" :content "x"}})
+                 (json/generate-string {:type "system"
+                                        :uuid "u-3"
+                                        :timestamp "2026-04-19T00:00:00Z"
+                                        :message {:role "system" :content "x"}})]]
+      (io/make-parents file)
+      (spit file (str (str/join "\n" lines) "\n"))
+      (repl/reset-file-position! fp)
+      (reset! repl/line-counts {})
+      (swap! repl/line-counts assoc fp 10)
+
+      (let [pre-line-count (get @repl/line-counts fp)
+            {:keys [raw-lines]} (repl/parse-jsonl-incremental-with-raw fp)
+            snapshot (repl/stamp-offsets :claude raw-lines pre-line-count)
+            snapshot-from-offset pre-line-count
+            file-end-line-count (+ pre-line-count (count raw-lines))]
+        (is (= 3 (count raw-lines))
+            "Reader still returns all three raw lines — filtering happens downstream")
+        (is (= [] snapshot)
+            "Stamp drops everything; snapshot is empty")
+        (is (= 10 snapshot-from-offset))
+        (is (= 13 file-end-line-count)
+            "file-end-line-count advances to pre-count + raw-line count, even with no survivors. A subscriber at offset 10 should receive end-of-file? true with next-offset=13."))
+      (repl/reset-file-position! fp)
+      (reset! repl/line-counts {}))))
+
+;; ============================================================================
+;; read-from-offset Tests (tmux-untethered-398.4)
+;; ============================================================================
+
+(declare create-opencode-test-storage)
+
+(deftest test-read-from-offset-claude-full-read
+  (testing "from-offset=0 limit=10 against 7-line file → 7 messages, next-offset=7, EOF"
+    (let [lines (mapv #(claude-jsonl {:type "user"
+                                      :text (str "m-" %)
+                                      :uuid (str "u-" %)})
+                      (range 7))
+          file (create-test-jsonl-file "rfo-7-line.jsonl" lines)
+          r (repl/read-from-offset :claude (.getAbsolutePath file) 0 10)]
+      (is (= 7 (count (:messages r))))
+      (is (= 7 (:next-offset r)))
+      (is (true? (:end-of-file? r)))
+      (is (= [0 1 2 3 4 5 6] (mapv :offset (:messages r)))
+          "All survivors carry their raw-line index as :offset"))))
+
+(deftest test-read-from-offset-claude-partial-read
+  (testing "from-offset=0 limit=5 against 7-line file → 5 messages, next-offset=5, not EOF"
+    (let [lines (mapv #(claude-jsonl {:type "user"
+                                      :text (str "m-" %)
+                                      :uuid (str "u-" %)})
+                      (range 7))
+          file (create-test-jsonl-file "rfo-7-line-partial.jsonl" lines)
+          r (repl/read-from-offset :claude (.getAbsolutePath file) 0 5)]
+      (is (= 5 (count (:messages r))))
+      (is (= 5 (:next-offset r)))
+      (is (false? (:end-of-file? r))
+          "Did not reach end of file; more raw lines remain")
+      (is (= [0 1 2 3 4] (mapv :offset (:messages r)))))))
+
+(deftest test-read-from-offset-claude-at-end
+  (testing "from-offset=7 limit=10 against 7-line file → 0 messages, next-offset=7, EOF"
+    (let [lines (mapv #(claude-jsonl {:type "user"
+                                      :text (str "m-" %)
+                                      :uuid (str "u-" %)})
+                      (range 7))
+          file (create-test-jsonl-file "rfo-7-line-eof.jsonl" lines)
+          r (repl/read-from-offset :claude (.getAbsolutePath file) 7 10)]
+      (is (= 0 (count (:messages r))))
+      (is (= 7 (:next-offset r))
+          "next-offset unchanged when client is exactly at end")
+      (is (true? (:end-of-file? r))))))
+
+(deftest test-read-from-offset-claude-client-ahead-clamp
+  ;; Regression: a client cursor past total-lines (rollback / backend data
+  ;; loss) must receive next-offset = total-lines so it can detect
+  ;; `next-offset < from-offset` and reset to 0. Without the clamp the
+  ;; client would silently sit ahead of the server forever.
+  (testing "from-offset=100 limit=10 against 7-line file → 0 messages, next-offset=7 (clamped to total-lines)"
+    (let [lines (mapv #(claude-jsonl {:type "user"
+                                      :text (str "m-" %)
+                                      :uuid (str "u-" %)})
+                      (range 7))
+          file (create-test-jsonl-file "rfo-client-ahead.jsonl" lines)
+          r (repl/read-from-offset :claude (.getAbsolutePath file) 100 10)]
+      (is (= 0 (count (:messages r))))
+      (is (= 7 (:next-offset r))
+          "Client-ahead clamp: next-offset = total-lines (7), NOT from-offset (100)")
+      (is (< (:next-offset r) 100)
+          "Client must observe next-offset < from-offset and reset")
+      (is (true? (:end-of-file? r))))))
+
+(deftest test-read-from-offset-claude-raw-line-offset-stamping
+  ;; The C-N5 regression: offsets are raw-line indices, NOT post-filter
+  ;; indices. A 10-line file with sidechain entries at raw indices 2 and
+  ;; 5 must yield 8 survivors with non-contiguous offsets [0,1,3,4,6,7,8,9].
+  ;; Design doc §3.1 (paragraph "Why offsets are safe to use as identifiers")
+  ;; — stable across filter evolution.
+  (testing "Raw-line offset stamping: filtered lines advance i but do not survive"
+    (let [lines (mapv (fn [i]
+                        (claude-jsonl {:type "user"
+                                       :text (str "m-" i)
+                                       :uuid (str "u-" i)
+                                       :sidechain? (#{2 5} i)}))
+                      (range 10))
+          file (create-test-jsonl-file "rfo-non-contig-offsets.jsonl" lines)
+          r (repl/read-from-offset :claude (.getAbsolutePath file) 0 100)]
+      (is (= 8 (count (:messages r)))
+          "Eight survivors (sidechain at raw lines 2 and 5 dropped)")
+      (is (= [0 1 3 4 6 7 8 9] (mapv :offset (:messages r)))
+          "Offsets are raw-line indices and are non-contiguous across filtered lines")
+      (is (= 10 (:next-offset r))
+          "next-offset = from-offset + count of raw lines consumed (NOT survivor count)")
+      (is (true? (:end-of-file? r))))))
+
+(deftest test-read-from-offset-claude-partial-tail-holdback
+  ;; If the file ends without a terminating \n, the trailing partial line
+  ;; is held back by parse-jsonl-raw-lines-safe; read-from-offset must
+  ;; surface that as end-of-file? false even when end-idx >= total-lines.
+  (testing "Partial tail (no terminating \\n) excludes the last line and reports end-of-file? false"
+    (let [complete (mapv #(claude-jsonl {:type "user"
+                                         :text (str "m-" %)
+                                         :uuid (str "u-" %)})
+                         (range 3))
+          file (io/file test-dir "rfo-partial-tail.jsonl")]
+      (io/make-parents file)
+      (spit file (str (str/join "\n" complete) "\n"
+                      "{\"type\":\"user\",\"text\":\"partia"))
+      (let [r (repl/read-from-offset :claude (.getAbsolutePath file) 0 100)]
+        (is (= 3 (count (:messages r)))
+            "Only the three newline-terminated lines are returned")
+        (is (= [0 1 2] (mapv :offset (:messages r))))
+        (is (= 3 (:next-offset r)))
+        (is (false? (:end-of-file? r))
+            "Held-back partial tail keeps end-of-file? false even though slice consumed all complete lines")))))
+
+(deftest test-read-from-offset-claude-empty-file
+  (testing "Empty file: returns empty messages, next-offset = from-offset (clamped to 0), EOF"
+    (let [file (io/file test-dir "rfo-empty.jsonl")]
+      (io/make-parents file)
+      (spit file "")
+      (let [r (repl/read-from-offset :claude (.getAbsolutePath file) 0 10)]
+        (is (= 0 (count (:messages r))))
+        (is (= 0 (:next-offset r)))
+        (is (true? (:end-of-file? r))))
+      (let [r (repl/read-from-offset :claude (.getAbsolutePath file) 5 10)]
+        (is (= 0 (count (:messages r))))
+        (is (= 0 (:next-offset r))
+            "Empty file + non-zero from-offset triggers clamp to 0")
+        (is (true? (:end-of-file? r)))))))
+
+(deftest test-read-from-offset-claude-middle-slice
+  (testing "Slicing from the middle: from-offset=3 limit=2 against 7-line file → 2 messages with offsets [3,4]"
+    (let [lines (mapv #(claude-jsonl {:type "user"
+                                      :text (str "m-" %)
+                                      :uuid (str "u-" %)})
+                      (range 7))
+          file (create-test-jsonl-file "rfo-middle.jsonl" lines)
+          r (repl/read-from-offset :claude (.getAbsolutePath file) 3 2)]
+      (is (= 2 (count (:messages r))))
+      (is (= [3 4] (mapv :offset (:messages r))))
+      (is (= 5 (:next-offset r)))
+      (is (false? (:end-of-file? r))))))
+
+(deftest test-read-from-offset-copilot-jsonl-path
+  (testing ":copilot provider takes the JSONL branch and stamps raw-line offsets"
+    (let [events [{:type "user.message"
+                   :timestamp "2026-05-14T00:00:00Z"
+                   :data {:content "hi copilot" :messageId "co-u-1"}}
+                  {:type "noise.event"
+                   :timestamp "2026-05-14T00:00:00.5Z"
+                   :data {:content "filtered"}}
+                  {:type "assistant.message"
+                   :timestamp "2026-05-14T00:00:01Z"
+                   :data {:content "hello from copilot" :messageId "co-a-1"}}]
+          lines (mapv #(json/generate-string %) events)
+          file (create-test-jsonl-file "rfo-copilot.jsonl" lines)
+          r (repl/read-from-offset :copilot (.getAbsolutePath file) 0 10)]
+      (is (= 2 (count (:messages r)))
+          "noise.event is dropped by providers/parse-message :copilot")
+      (is (= [0 2] (mapv :offset (:messages r)))
+          "Surviving messages carry their RAW line offset, not post-filter index")
+      (is (= ["co-u-1" "co-a-1"] (mapv :uuid (:messages r))))
+      (is (= 3 (:next-offset r)))
+      (is (true? (:end-of-file? r))))))
+
+(deftest test-read-from-offset-cursor-empty-stub
+  (testing "Cursor provider returns empty/EOF stub regardless of arguments"
+    (let [r1 (repl/read-from-offset :cursor "/anywhere" 0 10)
+          r2 (repl/read-from-offset :cursor "/nonexistent" 999 100)]
+      (is (= {:messages [] :next-offset 0 :end-of-file? true} r1))
+      (is (= {:messages [] :next-offset 999 :end-of-file? true} r2)
+          "Cursor preserves from-offset on next-offset — no clamp because the read is a no-op"))))
+
+(deftest test-read-from-offset-opencode-directory-slice
+  ;; OpenCode uses the filename-sorted message-file list as its offset
+  ;; index. read-from-offset must reuse opencode-sorted-message-files (the
+  ;; helper lifted from parse-opencode-messages) rather than re-walking
+  ;; the directory — see the 2026-05-12 gap-fix note in the task.
+  (testing "OpenCode: slice the filename-sorted message-file list at from-offset"
+    (let [base-dir (io/file test-dir "rfo-opencode")
+          session-id "ses_rfo_test"
+          session-file (create-opencode-test-storage
+                        base-dir session-id "RFO Session" "/test/rfo"
+                        [{:msg-id "msg_001" :role "user" :text "hello-0"}
+                         {:msg-id "msg_002" :role "assistant" :text "hello-1"}
+                         {:msg-id "msg_003" :role "user" :text "hello-2"}
+                         {:msg-id "msg_004" :role "assistant" :text "hello-3"}])]
+      (with-redefs [repl/opencode-storage-base
+                    (fn [] (io/file base-dir "storage"))]
+        ;; Full read
+        (let [r (repl/read-from-offset :opencode (.getAbsolutePath session-file) 0 10)]
+          (is (= 4 (count (:messages r)))
+              "All four message files canonicalized")
+          (is (= [0 1 2 3] (mapv :offset (:messages r)))
+              "Offsets = position in filename-sorted list")
+          (is (= 4 (:next-offset r)))
+          (is (true? (:end-of-file? r))))
+        ;; Partial slice from the middle
+        (let [r (repl/read-from-offset :opencode (.getAbsolutePath session-file) 1 2)]
+          (is (= 2 (count (:messages r))))
+          (is (= [1 2] (mapv :offset (:messages r)))
+              "Stamped with absolute position-in-list, not survivor index within the slice")
+          (is (= 3 (:next-offset r)))
+          (is (false? (:end-of-file? r))))
+        ;; Client-ahead clamp
+        (let [r (repl/read-from-offset :opencode (.getAbsolutePath session-file) 100 10)]
+          (is (= 0 (count (:messages r))))
+          (is (= 4 (:next-offset r))
+              "OpenCode honors the same client-ahead clamp as JSONL providers")
+          (is (true? (:end-of-file? r))))
+        ;; At-end read
+        (let [r (repl/read-from-offset :opencode (.getAbsolutePath session-file) 4 10)]
+          (is (= 0 (count (:messages r))))
+          (is (= 4 (:next-offset r)))
+          (is (true? (:end-of-file? r))))))))
+
+(deftest test-read-from-offset-opencode-missing-session
+  (testing "OpenCode: missing session file returns empty/EOF stub"
+    (let [missing-path (str test-dir "/rfo-opencode-missing/ses_none.json")
+          r (repl/read-from-offset :opencode missing-path 0 10)]
+      (is (= 0 (count (:messages r))))
+      (is (= 0 (:next-offset r))
+          "Missing → total=0; from-offset=0 stays at 0")
+      (is (true? (:end-of-file? r))))))
+
+;; ============================================================================
 ;; Metrics Instrumentation Tests
 ;; ============================================================================
 
@@ -1694,6 +2666,141 @@
             "Only the complete line counts; the unterminated tail is held back")
         (is (empty? failures)
             "The partial tail must NOT be counted as a parse failure")))))
+
+(deftest test-handle-file-modified-emits-parse-failures-counter
+  (testing "Watcher tick emits :jsonl-parse-failures for non-blank garbage lines"
+    ;; Regression for an observability regression introduced when the
+    ;; watcher switched from `parse-with-retry` → `parse-jsonl-incremental`
+    ;; (which emitted the counter) to `parse-jsonl-incremental-with-raw`
+    ;; (which doesn't). The counter must be re-emitted from inside
+    ;; handle-file-modified instead.
+    (let [session-id "550e8400-e29b-41d4-a716-446655440aaa"
+          ;; 1 valid + 1 garbage + 1 valid + blank — only the garbage counts.
+          messages [(claude-jsonl {:type "user" :text "valid-1"})
+                    "this-is-not-json-at-all"
+                    (claude-jsonl {:type "assistant" :text "valid-2"})
+                    ""]
+          file (create-test-jsonl-file (str session-id ".jsonl") messages)
+          file-path (.getAbsolutePath file)]
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :message-count 0
+              :last-modified (.lastModified file)
+              :ios-notified true})
+      (reset! repl/watcher-state
+              {:running false :watch-service nil :watch-thread nil
+               :subscribed-sessions #{session-id}
+               :event-queue (atom {}) :debounce-ms 0
+               :retry-delay-ms 0 :max-retries 1
+               :on-session-created nil
+               :on-session-updated nil
+               :on-session-updated-v5 nil
+               :on-session-deleted nil :on-turn-complete nil})
+      (swap! repl/file-positions assoc file-path 0)
+      (swap! repl/line-counts dissoc file-path)
+      (let [captured (with-captured-metrics
+                       #(repl/handle-file-modified file))
+            failures (filter (fn [[mt mn _]]
+                               (and (= :counter mt) (= :jsonl-parse-failures mn)))
+                             captured)]
+        (is (= 1 (count failures))
+            "Exactly one :jsonl-parse-failures emission (the garbage line)")
+        (let [[_ _ data] (first failures)]
+          (is (= 1 (:count data)) "One non-blank line failed to parse")
+          (is (= file-path (:file data)))))
+      (repl/reset-file-position! file-path)
+      (swap! repl/session-index dissoc session-id))))
+
+(deftest test-handle-file-modified-no-parse-failures-when-clean
+  (testing "Watcher tick skips :jsonl-parse-failures emission when all lines parse"
+    (let [session-id "550e8400-e29b-41d4-a716-446655440bbb"
+          messages [(claude-jsonl {:type "user" :text "valid-1"})
+                    (claude-jsonl {:type "assistant" :text "valid-2"})]
+          file (create-test-jsonl-file (str session-id ".jsonl") messages)
+          file-path (.getAbsolutePath file)]
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :message-count 0
+              :last-modified (.lastModified file)
+              :ios-notified true})
+      (reset! repl/watcher-state
+              {:running false :watch-service nil :watch-thread nil
+               :subscribed-sessions #{session-id}
+               :event-queue (atom {}) :debounce-ms 0
+               :retry-delay-ms 0 :max-retries 1
+               :on-session-created nil
+               :on-session-updated nil
+               :on-session-updated-v5 nil
+               :on-session-deleted nil :on-turn-complete nil})
+      (swap! repl/file-positions assoc file-path 0)
+      (swap! repl/line-counts dissoc file-path)
+      (let [captured (with-captured-metrics
+                       #(repl/handle-file-modified file))]
+        (is (empty? (filter (fn [[_ mn _]] (= :jsonl-parse-failures mn))
+                            captured))
+            "No failure counter when every non-blank line parses"))
+      (repl/reset-file-position! file-path)
+      (swap! repl/session-index dissoc session-id))))
+
+(deftest test-handle-file-modified-bootstrap-preserves-nonzero-file-positions
+  (testing "Bootstrap branch (line-counts missing, file-positions advanced) seeds
+            line-counts from file count and DOES NOT clobber file-positions —
+            so already-broadcast lines aren't re-emitted"
+    ;; Regression for the pass-1 Fix 1 that reset both cursors to 0 — it
+    ;; caused parse to re-read from byte 0 and double-emit seqs in
+    ;; append_only_loopback_test. Pins the contract: when byte-pos > 0
+    ;; (the production startup invariant where migrate-session-seqs!
+    ;; seeded file-positions to file-length), the bootstrap path must
+    ;; seed line-counts without clobbering file-positions, so the
+    ;; upcoming parse reads NO already-processed bytes and the v0.4.0
+    ;; broadcast callback is NOT invoked with stale content.
+    (let [session-id "550e8400-e29b-41d4-a716-446655440ccc"
+          seed-messages [(claude-jsonl {:type "user" :text "seed-1"})
+                         (claude-jsonl {:type "assistant" :text "seed-2"})
+                         (claude-jsonl {:type "user" :text "seed-3"})]
+          file (create-test-jsonl-file (str session-id ".jsonl") seed-messages)
+          file-path (.getAbsolutePath file)
+          seed-length (.length file)
+          v4-calls (atom [])
+          v5-calls (atom [])]
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :message-count 3
+              :last-modified (.lastModified file)
+              :ios-notified true
+              :next-seq 4
+              :min-available-seq 1})
+      (reset! repl/watcher-state
+              {:running false :watch-service nil :watch-thread nil
+               :subscribed-sessions #{session-id}
+               :event-queue (atom {}) :debounce-ms 0
+               :retry-delay-ms 0 :max-retries 1
+               :on-session-created nil
+               :on-session-updated (fn [sid msgs]
+                                     (swap! v4-calls conj {:sid sid :count (count msgs)}))
+               :on-session-updated-v5 (fn [& args]
+                                        (swap! v5-calls conj args))
+               :on-session-deleted nil :on-turn-complete nil})
+      ;; Production-like setup: file-positions seeded to file-length,
+      ;; line-counts NOT seeded. Mirrors what migrate-session-seqs! +
+      ;; missing populate-line-counts! would leave behind.
+      (swap! repl/file-positions assoc file-path seed-length)
+      (swap! repl/line-counts dissoc file-path)
+      ;; No append — the file is unchanged since file-positions was set.
+      ;; A correct bootstrap parses zero bytes and fires no callbacks.
+      ;; A buggy bootstrap (the pass-1 reset-to-0) would re-parse all
+      ;; 3 seed lines and invoke the broadcast callback.
+      (repl/handle-file-modified file)
+      (is (= seed-length (get @repl/file-positions file-path))
+          "file-positions preserved at seed-length (NOT reset to 0)")
+      (is (= 3 (get @repl/line-counts file-path))
+          "line-counts seeded to the file's current line count")
+      (is (empty? @v4-calls)
+          "v0.4.0 broadcast NOT invoked: parse from file-length yields no new lines")
+      (is (empty? @v5-calls)
+          "v0.5.0 push NOT invoked: raw-line-count is 0")
+      (repl/reset-file-position! file-path)
+      (swap! repl/session-index dissoc session-id))))
 
 (deftest test-save-index-emits-duration-histogram-on-success
   (testing "Emits :session-index-save-duration-ms with value and session-count"
@@ -3647,6 +4754,39 @@
       (let [build-fn @#'repl/build-opencode-sessions-index
             index (build-fn)]
         (is (= 0 (count index)))))))
+
+(deftest test-compute-file-signature-opencode-directory
+  (testing "OpenCode signature is '(file-count):(first-filename)' over the messages dir"
+    (let [base-dir (io/file test-dir "fsig-opencode")
+          session-id "ses_sigtest1"
+          session-file (create-opencode-test-storage
+                        base-dir session-id "Sig Test" "/proj"
+                        [{:msg-id "msg_001" :role "user" :text "a"}
+                         {:msg-id "msg_002" :role "assistant" :text "b"}
+                         {:msg-id "msg_003" :role "user" :text "c"}])]
+      (with-redefs [repl/opencode-storage-base (fn [] (io/file base-dir "storage"))]
+        (let [sig (repl/compute-file-signature :opencode (.getAbsolutePath session-file))]
+          (is (= "3:msg_001.json" sig))))))
+
+  (testing "OpenCode signature is stable across re-reads"
+    (let [base-dir (io/file test-dir "fsig-opencode-stable")
+          session-id "ses_sigtest2"
+          session-file (create-opencode-test-storage
+                        base-dir session-id "Stable" "/proj"
+                        [{:msg-id "msg_a" :role "user" :text "x"}])]
+      (with-redefs [repl/opencode-storage-base (fn [] (io/file base-dir "storage"))]
+        (let [sig1 (repl/compute-file-signature :opencode (.getAbsolutePath session-file))
+              sig2 (repl/compute-file-signature :opencode (.getAbsolutePath session-file))]
+          (is (= sig1 sig2))
+          (is (= "1:msg_a.json" sig1))))))
+
+  (testing "OpenCode with no message dir → '0:'"
+    (let [base-dir (io/file test-dir "fsig-opencode-nomsg")
+          session-id "ses_nomsg"
+          session-file (create-opencode-test-storage
+                        base-dir session-id "Empty" "/proj" [])]
+      (with-redefs [repl/opencode-storage-base (fn [] (io/file base-dir "storage"))]
+        (is (= "0:" (repl/compute-file-signature :opencode (.getAbsolutePath session-file))))))))
 
 (deftest test-build-index-with-all-four-providers
   (testing "build-index! discovers sessions from all four providers"

@@ -102,13 +102,15 @@
     (let [config (server/load-config)]
       (is (= :v0.4.0 (:message-stream-version config)))))
 
-  (testing "coerce-message-stream-version accepts both supported values"
+  (testing "coerce-message-stream-version accepts all supported values"
     (is (= :v0.4.0 (server/coerce-message-stream-version :v0.4.0)))
-    (is (= :v0.3.0 (server/coerce-message-stream-version :v0.3.0))))
+    (is (= :v0.3.0 (server/coerce-message-stream-version :v0.3.0)))
+    (is (= :v0.5.0 (server/coerce-message-stream-version :v0.5.0))))
 
   (testing "coerce-message-stream-version accepts string forms (env-var friendly)"
     (is (= :v0.4.0 (server/coerce-message-stream-version "v0.4.0")))
-    (is (= :v0.3.0 (server/coerce-message-stream-version ":v0.3.0"))))
+    (is (= :v0.3.0 (server/coerce-message-stream-version ":v0.3.0")))
+    (is (= :v0.5.0 (server/coerce-message-stream-version "v0.5.0"))))
 
   (testing "coerce-message-stream-version falls back to default on unknown / nil"
     (is (= server/default-message-stream-version
@@ -120,12 +122,15 @@
 
   (testing "message-stream-version-string strips the :v prefix"
     (is (= "0.4.0" (server/message-stream-version-string :v0.4.0)))
-    (is (= "0.3.0" (server/message-stream-version-string :v0.3.0))))
+    (is (= "0.3.0" (server/message-stream-version-string :v0.3.0)))
+    (is (= "0.5.0" (server/message-stream-version-string :v0.5.0))))
 
-  (testing "gate predicates only fire on :v0.4.0"
+  (testing "gate predicates fire on every seq-stamped floor (:v0.4.0 and :v0.5.0)"
     (is (true?  (server/seq-migration-enabled?     :v0.4.0)))
+    (is (true?  (server/seq-migration-enabled?     :v0.5.0)))
     (is (false? (server/seq-migration-enabled?     :v0.3.0)))
     (is (true?  (server/hello-enforcement-enabled? :v0.4.0)))
+    (is (true?  (server/hello-enforcement-enabled? :v0.5.0)))
     (is (false? (server/hello-enforcement-enabled? :v0.3.0)))))
 
 (deftest test-load-config-with-v0-3-0-rollback
@@ -602,8 +607,11 @@
     (let [original @server/message-stream-version]
       (try
         (reset! server/message-stream-version :v0.3.0)
-        (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5}
-                                          :ch2 {:deleted-sessions #{} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5}})
+        ;; v0.5.0 dispatch is per-channel via :negotiated-protocol-version,
+        ;; so the floor atom alone no longer routes the rollback envelope;
+        ;; the channel itself carries the version.
+        (reset! server/connected-clients {:ch1 {:deleted-sessions #{"session-1"} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5 :negotiated-protocol-version :v0.3.0}
+                                          :ch2 {:deleted-sessions #{} :subscribed-sessions #{"session-1"} :recent-sessions-limit 5 :negotiated-protocol-version :v0.3.0}})
         (let [sent-messages (atom [])]
           (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                    (swap! sent-messages conj {:channel channel :msg msg}))]
@@ -816,13 +824,18 @@
     (let [original @server/message-stream-version]
       (try
         (reset! server/message-stream-version :v0.3.0)
+        ;; Per-channel dispatch: each rollback channel carries its negotiated
+        ;; protocol explicitly so broadcast routes session_updated, not
+        ;; session_history.
         (reset! server/connected-clients
                 {:ch-a {:deleted-sessions #{}
                         :subscribed-sessions #{"session-A"}
-                        :recent-sessions-limit 5}
+                        :recent-sessions-limit 5
+                        :negotiated-protocol-version :v0.3.0}
                  :ch-b {:deleted-sessions #{}
                         :subscribed-sessions #{"session-B"}
-                        :recent-sessions-limit 5}})
+                        :recent-sessions-limit 5
+                        :negotiated-protocol-version :v0.3.0}})
         (let [sent-messages (atom [])]
           (with-redefs [org.httpkit.server/send! (fn [channel msg]
                                                    (swap! sent-messages conj {:channel channel :msg msg}))]
@@ -2359,7 +2372,13 @@
   (testing "Subscribe under :v0.3.0 config keeps the legacy last_message_id + total_count wire"
     (reset! server/message-stream-version :v0.3.0)
     (reset! server/api-key test-api-key)
-    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :max-message-size-kb 100 :authenticated true}})
+    ;; Per-channel dispatch (§3.2): the channel must carry the negotiated
+    ;; v0.3.0 protocol explicitly; the message-stream-version floor by
+    ;; itself no longer routes the rollback path.
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{}
+                                                :max-message-size-kb 100
+                                                :authenticated true
+                                                :negotiated-protocol-version :v0.3.0}})
     (let [sent-messages (atom [])
           canonical-messages [{:uuid "uuid-a" :role "user" :text "first" :timestamp "2026-01-30T12:00:00Z" :provider :claude}
                               {:uuid "uuid-b" :role "assistant" :text "second" :timestamp "2026-01-30T12:00:05Z" :provider :claude}
@@ -3093,3 +3112,967 @@
       (let [exit-calls (atom 0)]
         (server/check-tmux-available! #(swap! exit-calls inc))
         (is (zero? @exit-calls))))))
+
+;; ============================================================================
+;; v0.5.0 push-to-subscribers! tailored fan-out (tmux-untethered-398.10)
+;; ============================================================================
+
+(defn- v5-stub-client
+  "Build a connected-clients entry for a v0.5.0 subscriber."
+  [{:keys [session-id offset deleted? authenticated? subscribed? protocol max-kb last-sig]
+    :or {authenticated? true subscribed? true protocol :v0.5.0 max-kb 100}}]
+  (cond-> {:authenticated authenticated?
+           :subscribed-sessions (if subscribed? #{session-id} #{})
+           :negotiated-protocol-version protocol
+           :max-message-size-kb max-kb
+           :session-offsets (when offset {session-id offset})
+           :deleted-sessions (if deleted? #{session-id} #{})}
+    last-sig (assoc :last-emitted-sigs {session-id last-sig})))
+
+(defn- parse-sent
+  "Filter the captured send! log down to a single channel's session_history
+   payloads, parsed as Clojure data with kebab-case keys."
+  [sent-messages channel]
+  (->> @sent-messages
+       (filter #(= channel (:channel %)))
+       (map #(json/parse-string (:msg %) true))
+       (filter #(= "session_history" (:type %)))
+       vec))
+
+(deftest test-truncate-budget
+  (testing "Empty messages yields empty included vec"
+    (is (= [] (server/truncate-budget [] 10000))))
+  (testing "All messages fit within budget"
+    (let [msgs [{:uuid "a" :text "hello"} {:uuid "b" :text "world"}]]
+      (is (= msgs (server/truncate-budget msgs 10000)))))
+  (testing "Over-budget tail is dropped, in-order prefix preserved"
+    (let [msgs (vec (for [i (range 10)]
+                      {:uuid (str "u-" i) :text (apply str (repeat 100 "x"))}))
+          packed (server/truncate-budget msgs 500)]
+      (is (pos? (count packed)))
+      (is (< (count packed) (count msgs)))
+      (is (= (mapv :uuid (take (count packed) msgs))
+             (mapv :uuid packed))))))
+
+(deftest test-truncate-budget-middle-truncates-giant-message
+  (testing "Single message larger than max-bytes is middle-truncated, NOT dropped"
+    (let [giant-text (apply str (repeat (* 50 1024) "g"))
+          msgs [{:uuid "u-big" :role "assistant" :text giant-text :offset 0}
+                {:uuid "u-small" :role "user" :text "small" :offset 1}]
+          packed (server/truncate-budget msgs (* 100 1024))]
+      (is (pos? (count packed)) "First message MUST survive packing (middle-truncated)")
+      (is (= "u-big" (-> packed first :uuid))
+          "Original ordering preserved — giant first message stays first")
+      (let [packed-text (:text (first packed))
+            packed-bytes (count (.getBytes (str packed-text) "UTF-8"))]
+        (is (< packed-bytes (count (.getBytes giant-text "UTF-8")))
+            "Giant text was middle-truncated to fit per-message budget")
+        (is (str/includes? (str packed-text) "[truncated")
+            "Middle-truncate sentinel present in packed text")))))
+
+(deftest test-estimate-line-limit
+  (testing "Floors at 1 even for tiny max-bytes"
+    (is (= 1 (server/estimate-line-limit 0)))
+    (is (= 1 (server/estimate-line-limit 100))))
+  (testing "Scales linearly with max-bytes (512 bytes/line)"
+    (is (= 200 (server/estimate-line-limit (* 200 512))))
+    (is (= 1024 (server/estimate-line-limit (* 1024 512))))))
+
+(deftest test-subscribers-for
+  (let [sess "session-sub"]
+    (testing "Excludes unauthenticated, unsubscribed, deleted, and non-v0.5.0 channels"
+      (reset! server/connected-clients
+              {:ok (v5-stub-client {:session-id sess :offset 0})
+               :no-auth (v5-stub-client {:session-id sess :offset 0 :authenticated? false})
+               :no-sub (v5-stub-client {:session-id sess :offset 0 :subscribed? false})
+               :deleted (v5-stub-client {:session-id sess :offset 0 :deleted? true})
+               :v0-4-0 (v5-stub-client {:session-id sess :offset 0 :protocol :v0.4.0})
+               :v0-3-0 (v5-stub-client {:session-id sess :offset 0 :protocol :v0.3.0})})
+      (is (= #{:ok} (->> (server/subscribers-for sess) (map first) set))))))
+
+(deftest test-push-to-subscribers-fast-path-at-snapshot-boundary
+  (testing "Client at snapshot-from-offset receives whole snapshot, EOF + file_signature"
+    (let [sess "session-eof"
+          sig "120:11111111-1111-1111-1111-111111111111"
+          snapshot [{:role "user" :text "u" :uuid "u-1" :offset 5}
+                    {:role "assistant" :text "a" :uuid "u-2" :offset 6}]
+          sent (atom [])]
+      (reset! server/connected-clients
+              {:ch1 (v5-stub-client {:session-id sess :offset 5})})
+      (with-redefs [org.httpkit.server/send! (fn [ch m] (swap! sent conj {:channel ch :msg m}))]
+        (server/push-to-subscribers! sess :claude "/fake.jsonl"
+                                     snapshot 5 7 sig)
+        (let [[msg] (parse-sent sent :ch1)]
+          (is (some? msg) "subscriber received a session_history reply")
+          (is (= "session_history" (:type msg)))
+          (is (= 2 (count (:messages msg))) "Whole snapshot delivered")
+          (is (= 7 (:next_offset msg)) "next_offset advances past snapshot")
+          (is (true? (:end_of_file msg)) "EOF when next-offset = file-end-line-count")
+          (is (= sig (:file_signature msg)) "file_signature present on every reply")
+          (is (not (contains? msg :is_complete))
+              "v0.5.0 reply MUST NOT carry is_complete (AC4)"))
+        (is (= 7 (get-in @server/connected-clients [:ch1 :session-offsets sess]))
+            "connected-clients :session-offsets advanced to next-offset")
+        (is (= sig (get-in @server/connected-clients [:ch1 :last-emitted-sigs sess]))
+            "last-emitted-sigs tracks current-sig")))))
+
+(deftest test-push-to-subscribers-fast-path-inside-snapshot
+  (testing "Client strictly inside snapshot receives only the tail-slice"
+    (let [sess "session-inside"
+          sig "200:22222222-2222-2222-2222-222222222222"
+          snapshot [{:role "user" :text "u" :uuid "u-10" :offset 10}
+                    {:role "assistant" :text "a" :uuid "u-11" :offset 11}
+                    {:role "user" :text "v" :uuid "u-12" :offset 12}]
+          sent (atom [])]
+      (reset! server/connected-clients
+              {:ch1 (v5-stub-client {:session-id sess :offset 12})})
+      (with-redefs [org.httpkit.server/send! (fn [ch m] (swap! sent conj {:channel ch :msg m}))]
+        (server/push-to-subscribers! sess :claude "/fake.jsonl"
+                                     snapshot 10 13 sig)
+        (let [[msg] (parse-sent sent :ch1)]
+          (is (= 1 (count (:messages msg))) "Only the tail slice from offset 12")
+          (is (= "u-12" (-> msg :messages first :uuid)))
+          (is (= 13 (:next_offset msg)))
+          (is (true? (:end_of_file msg)))
+          (is (= sig (:file_signature msg))))))))
+
+(deftest test-push-to-subscribers-backfill-path
+  (testing "Client behind snapshot-from-offset falls into read-from-offset"
+    (let [sess "session-backfill"
+          sig "300:33333333-3333-3333-3333-333333333333"
+          ;; Subscriber's offset 2 is BEHIND snapshot-from-offset 10 → backfill.
+          read-args (atom nil)
+          fake-read {:messages [{:role "user" :text "old" :uuid "u-2" :offset 2}
+                                {:role "assistant" :text "old2" :uuid "u-3" :offset 3}]
+                     :next-offset 4
+                     :end-of-file? false}
+          sent (atom [])]
+      (reset! server/connected-clients
+              {:ch1 (v5-stub-client {:session-id sess :offset 2})})
+      (with-redefs [org.httpkit.server/send! (fn [ch m] (swap! sent conj {:channel ch :msg m}))
+                    repl/read-from-offset (fn [provider path from-off limit]
+                                            (reset! read-args
+                                                    {:provider provider :path path
+                                                     :from from-off :limit limit})
+                                            fake-read)]
+        (server/push-to-subscribers! sess :claude "/fake.jsonl"
+                                     [] 10 10 sig)
+        (let [[msg] (parse-sent sent :ch1)]
+          (is (= 2 (count (:messages msg))))
+          (is (= 4 (:next_offset msg)) "next_offset = inc(:offset peek budget)")
+          (is (false? (:end_of_file msg)) "Not EOF until disk read says so")
+          (is (= sig (:file_signature msg))))
+        (is (= :claude (:provider @read-args)))
+        (is (= 2 (:from @read-args)))
+        (is (pos? (:limit @read-args)))))))
+
+(deftest test-push-to-subscribers-two-subscribers-different-offsets
+  (testing "Each subscriber gets a correctly-tailored slice in a single tick"
+    (let [sess "session-multi"
+          sig "400:44444444-4444-4444-4444-444444444444"
+          snapshot [{:role "user" :text "a" :uuid "u-20" :offset 20}
+                    {:role "assistant" :text "b" :uuid "u-21" :offset 21}
+                    {:role "user" :text "c" :uuid "u-22" :offset 22}]
+          sent (atom [])]
+      (reset! server/connected-clients
+              {:ch1 (v5-stub-client {:session-id sess :offset 20})
+               :ch2 (v5-stub-client {:session-id sess :offset 22})})
+      (with-redefs [org.httpkit.server/send! (fn [ch m] (swap! sent conj {:channel ch :msg m}))]
+        (server/push-to-subscribers! sess :claude "/fake.jsonl"
+                                     snapshot 20 23 sig)
+        (let [[m1] (parse-sent sent :ch1)
+              [m2] (parse-sent sent :ch2)]
+          (is (= 3 (count (:messages m1))) "ch1 at snapshot start gets all three")
+          (is (= 1 (count (:messages m2))) "ch2 at offset 22 gets only the tail")
+          (is (= 23 (:next_offset m1)))
+          (is (= 23 (:next_offset m2)))
+          (is (true? (:end_of_file m1)))
+          (is (true? (:end_of_file m2))))))))
+
+(deftest test-push-to-subscribers-pass-2-eof-fix
+  (testing "Snapshot is a partial view (file-end-line-count > snapshot end) → EOF is false"
+    ;; The pass-1 EOF bug compared next-offset against (count snapshot); this
+    ;; regression locks in the comparison against file-end-line-count.
+    (let [sess "session-partial"
+          sig "500:55555555-5555-5555-5555-555555555555"
+          snapshot [{:role "user" :text "a" :uuid "u-30" :offset 30}
+                    {:role "assistant" :text "b" :uuid "u-31" :offset 31}]
+          sent (atom [])]
+      (reset! server/connected-clients
+              {:ch1 (v5-stub-client {:session-id sess :offset 30})})
+      (with-redefs [org.httpkit.server/send! (fn [ch m] (swap! sent conj {:channel ch :msg m}))]
+        ;; snapshot spans offsets [30..32) but the file actually has 50 lines.
+        (server/push-to-subscribers! sess :claude "/fake.jsonl"
+                                     snapshot 30 50 sig)
+        (let [[msg] (parse-sent sent :ch1)]
+          (is (= 2 (count (:messages msg))))
+          (is (= 32 (:next_offset msg)) "next_offset still advances past snapshot")
+          (is (false? (:end_of_file msg))
+              "EOF must be false when next-offset < file-end-line-count"))))))
+
+(deftest test-push-to-subscribers-empty-snapshot-caught-up
+  (testing "Empty snapshot + caught-up subscriber gets zero-msg EOF reply with sig"
+    (let [sess "session-empty-snap"
+          sig "600:66666666-6666-6666-6666-666666666666"
+          sent (atom [])]
+      (reset! server/connected-clients
+              {:ch1 (v5-stub-client {:session-id sess :offset 5})})
+      (with-redefs [org.httpkit.server/send! (fn [ch m] (swap! sent conj {:channel ch :msg m}))]
+        ;; All raw lines were filtered out this tick; pre-line-count = 5,
+        ;; file-end-line-count = 8 (3 lines appended, all internal-filtered).
+        (server/push-to-subscribers! sess :claude "/fake.jsonl"
+                                     [] 5 8 sig)
+        (let [[msg] (parse-sent sent :ch1)]
+          (is (some? msg))
+          (is (= 0 (count (:messages msg))) "Zero-message reply")
+          (is (= 8 (:next_offset msg)) "Cursor advances past the filtered tail")
+          (is (true? (:end_of_file msg)))
+          (is (= sig (:file_signature msg))))))))
+
+(deftest test-push-to-subscribers-client-ahead-clamp
+  (testing "client-offset > file-end-line-count → next-offset clamped to file-end-line-count (iOS §3.1 reset signal)"
+    ;; Locks in the docstring contract for the post-rollback case: the iOS
+    ;; client holds an offset past the server's view (e.g. backend rolled
+    ;; back / replayed). Fast-path slices to empty, next-offset = file-end-
+    ;; line-count which is LESS than the subscriber's previous offset. iOS
+    ;; detects next_offset < previous_offset and resets to 0.
+    (let [sess "session-ahead"
+          sig "1200:cccccccc-cccc-cccc-cccc-cccccccccccc"
+          snapshot [{:role "user" :text "a" :uuid "u-80" :offset 80}
+                    {:role "assistant" :text "b" :uuid "u-81" :offset 81}]
+          sent (atom [])]
+      (reset! server/connected-clients
+              {:ch1 (v5-stub-client {:session-id sess :offset 999})})
+      (with-redefs [org.httpkit.server/send! (fn [ch m] (swap! sent conj {:channel ch :msg m}))]
+        (server/push-to-subscribers! sess :claude "/fake.jsonl"
+                                     snapshot 80 82 sig)
+        (let [[msg] (parse-sent sent :ch1)]
+          (is (some? msg) "reply emitted (sig refresh) even when client is ahead")
+          (is (= 0 (count (:messages msg))) "no messages — sliced is empty")
+          (is (= 82 (:next_offset msg))
+              "next_offset clamped to file-end-line-count (LESS than client-offset 999)")
+          (is (true? (:end_of_file msg)) "EOF when next-offset = file-end-line-count")
+          (is (= sig (:file_signature msg))))
+        (is (= 82 (get-in @server/connected-clients [:ch1 :session-offsets sess]))
+            ":session-offsets persisted at clamped next-offset, NOT the prior client-offset")))))
+
+(deftest test-push-to-subscribers-excludes-v0-4-0
+  (testing "v0.4.0 subscriber on same session is NOT included (AC2 regression)"
+    (let [sess "session-mixed"
+          sig "700:77777777-7777-7777-7777-777777777777"
+          snapshot [{:role "user" :text "a" :uuid "u-40" :offset 40}]
+          sent (atom [])]
+      (reset! server/connected-clients
+              {:v5 (v5-stub-client {:session-id sess :offset 40})
+               :v4 (v5-stub-client {:session-id sess :offset 40 :protocol :v0.4.0})})
+      (with-redefs [org.httpkit.server/send! (fn [ch m] (swap! sent conj {:channel ch :msg m}))]
+        (server/push-to-subscribers! sess :claude "/fake.jsonl"
+                                     snapshot 40 41 sig)
+        (is (= 1 (count (parse-sent sent :v5))) "v0.5.0 channel receives")
+        (is (= 0 (count (parse-sent sent :v4)))
+            "v0.4.0 channel must NOT receive a v0.5.0 push payload")))))
+
+(deftest test-push-to-subscribers-signature-refresh-without-new-messages
+  (testing "Caught-up subscriber whose last-sig differs from current-sig still receives sig refresh"
+    (let [sess "session-sig-refresh"
+          sig "800:88888888-8888-8888-8888-888888888888"
+          old-sig "799:77777777-7777-7777-7777-777777777777"
+          sent (atom [])]
+      ;; Subscriber is at file-end and snapshot is empty, but the file's
+      ;; signature changed (e.g. tick observed a length advance with all
+      ;; lines internal-filtered AND first-line uuid stayed but length grew).
+      (reset! server/connected-clients
+              {:ch1 (v5-stub-client {:session-id sess :offset 10 :last-sig old-sig})})
+      (with-redefs [org.httpkit.server/send! (fn [ch m] (swap! sent conj {:channel ch :msg m}))]
+        (server/push-to-subscribers! sess :claude "/fake.jsonl"
+                                     [] 10 10 sig)
+        (let [[msg] (parse-sent sent :ch1)]
+          (is (some? msg) "Reply emitted because sig changed")
+          (is (= 0 (count (:messages msg))))
+          (is (= sig (:file_signature msg))))))))
+
+(deftest test-push-to-subscribers-no-is-complete-field
+  (testing "v0.5.0 push reply NEVER carries is_complete (AC4 regression)"
+    (let [sess "session-no-complete"
+          sig "900:99999999-9999-9999-9999-999999999999"
+          snapshot [{:role "user" :text "x" :uuid "u-50" :offset 50}]
+          sent (atom [])]
+      (reset! server/connected-clients
+              {:ch1 (v5-stub-client {:session-id sess :offset 50})})
+      (with-redefs [org.httpkit.server/send! (fn [ch m] (swap! sent conj {:channel ch :msg m}))]
+        (server/push-to-subscribers! sess :claude "/fake.jsonl"
+                                     snapshot 50 51 sig)
+        (let [[msg] (parse-sent sent :ch1)]
+          (is (some? msg))
+          (is (not (contains? msg :is_complete))
+              "Wire payload MUST NOT include is_complete on v0.5.0 push"))))))
+
+(deftest test-push-to-subscribers-fast-path-budget-exhausted-no-advance
+  (testing "Sliced non-empty but byte-budget exhausts before first message → no offset advance"
+    ;; Reproduces the fast-path `:else` branch: the budget cannot fit the
+    ;; first sliced message even after middle-truncation, so `next-offset`
+    ;; stays equal to `client-offset` and the client retries from the same
+    ;; position on the next tick. Forces the budget exhaustion by zeroing
+    ;; the per-channel `:max-message-size-kb`, which makes max-bytes 0 and
+    ;; rejects any candidate in `pack-within-budget`.
+    (let [sess "session-budget-out"
+          sig "1000:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+          snapshot [{:role "user" :text "x" :uuid "u-stall" :offset 60}]
+          sent (atom [])]
+      (reset! server/connected-clients
+              {:ch1 (assoc (v5-stub-client {:session-id sess :offset 60})
+                           :max-message-size-kb 0)})
+      (with-redefs [org.httpkit.server/send! (fn [ch m] (swap! sent conj {:channel ch :msg m}))]
+        (server/push-to-subscribers! sess :claude "/fake.jsonl"
+                                     snapshot 60 61 sig)
+        (let [[msg] (parse-sent sent :ch1)]
+          (is (some? msg)
+              "Reply still emitted because sig changed for fresh subscriber")
+          (is (= 0 (count (:messages msg)))
+              "Budget exhausted → zero messages packed")
+          (is (= 60 (:next_offset msg))
+              "next_offset MUST stay at client-offset (no advance) — client retries")
+          (is (false? (:end_of_file msg))
+              "EOF must be false when budget-exhausted and sliced is non-empty")
+          (is (= sig (:file_signature msg))))
+        (is (= 60 (get-in @server/connected-clients [:ch1 :session-offsets sess]))
+            ":session-offsets persisted at client-offset, NOT advanced past stalled message")))))
+
+(deftest test-push-to-subscribers-no-ghost-entry-after-channel-drop
+  (testing "Channel dropped during send-to-client! → swap! does NOT re-insert a ghost entry"
+    ;; Memory-leak race fix: simulates `send-to-client!` cleaning up the
+    ;; channel on socket failure (via unregister-channel!) by dissociating
+    ;; the channel inside the redefed send. Without the `contains?` guard
+    ;; in the post-send swap, `assoc-in [channel ...]` would re-insert a
+    ;; partial entry `{channel {:session-offsets {...} :last-emitted-sigs
+    ;; {...}}}` that leaks forever.
+    (let [sess "session-ghost"
+          sig "1100:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+          snapshot [{:role "user" :text "y" :uuid "u-ghost" :offset 70}]]
+      (reset! server/connected-clients
+              {:ch1 (v5-stub-client {:session-id sess :offset 70})})
+      (with-redefs [org.httpkit.server/send!
+                    (fn [ch _m]
+                      (swap! server/connected-clients dissoc ch))]
+        (server/push-to-subscribers! sess :claude "/fake.jsonl"
+                                     snapshot 70 71 sig))
+      (is (not (contains? @server/connected-clients :ch1))
+          "Dropped channel must NOT be re-inserted by the post-send swap!")
+      (is (= {} @server/connected-clients)
+          "connected-clients map remains empty after the dropped channel"))))
+
+(deftest test-watcher-tee-push-round-trip
+  (testing "Append → watcher tick → push-to-subscribers! delivers from offset"
+    ;; Integration: drive the v0.5.0 callback through the real watcher hook
+    ;; in `repl/handle-file-modified`. The watcher computes current-sig once
+    ;; per tick and threads it to every subscriber.
+    (let [tmp-dir (str (System/getProperty "java.io.tmpdir") "/voice-code-push-it/"
+                       (System/currentTimeMillis))
+          project-dir (io/file tmp-dir "proj")
+          _ (.mkdirs project-dir)
+          session-id "10000000-0000-0000-0000-000000000abc"
+          jsonl-file (io/file project-dir (str session-id ".jsonl"))
+          raw-line (fn [uuid role text]
+                     (json/generate-string
+                      {:type role :uuid uuid :sessionId session-id
+                       :timestamp "2026-05-14T00:00:00.000Z"
+                       :message {:role role :content text}}))
+          sent (atom [])
+          old-positions @repl/file-positions
+          old-line-counts @repl/line-counts
+          old-index @repl/session-index
+          old-watcher @repl/watcher-state
+          old-clients @server/connected-clients]
+      (try
+        (spit jsonl-file (str (raw-line "u-int-1" "user" "hello") "\n"))
+        ;; Seed session-index so handle-file-modified processes the event.
+        (swap! repl/session-index assoc session-id
+               {:session-id session-id
+                :file-path (.getAbsolutePath jsonl-file)
+                :message-count 0
+                :ios-notified true
+                :next-seq 1
+                :min-available-seq 1})
+        (swap! repl/file-positions assoc (.getAbsolutePath jsonl-file)
+               (.length jsonl-file))
+        (swap! repl/line-counts assoc (.getAbsolutePath jsonl-file) 1)
+        ;; v0.5.0 subscriber sitting at the pre-tick line count.
+        (reset! server/connected-clients
+                {:ch1 (v5-stub-client {:session-id session-id :offset 1})})
+        ;; Append a new line so the watcher has something to read.
+        (spit jsonl-file (str (raw-line "u-int-2" "assistant" "world") "\n")
+              :append true)
+        ;; Wire the v0.5.0 callback the way server-init does.
+        (reset! repl/watcher-state
+                {:watch-service nil :watch-thread nil :running false
+                 :watch-keys {} :subscribed-sessions #{session-id}
+                 :event-queue (atom {}) :debounce-ms 0
+                 :retry-delay-ms 0 :max-retries 1
+                 :on-session-created nil
+                 :on-session-updated nil
+                 :on-session-updated-v5 server/push-to-subscribers!
+                 :on-session-deleted nil :on-turn-complete nil})
+        (with-redefs [org.httpkit.server/send! (fn [ch m] (swap! sent conj {:channel ch :msg m}))]
+          (repl/handle-file-modified jsonl-file))
+        (let [[msg] (parse-sent sent :ch1)]
+          (is (some? msg) "Watcher fan-out drove a session_history reply")
+          (is (= "session_history" (:type msg)))
+          (is (= 1 (count (:messages msg))))
+          (is (= "u-int-2" (-> msg :messages first :uuid)))
+          (is (= 2 (:next_offset msg)))
+          (is (true? (:end_of_file msg)))
+          (is (some? (:file_signature msg))
+              "Watcher-computed current-sig threaded onto wire payload")
+          (is (not (contains? msg :is_complete))
+              "Watcher-driven v0.5.0 reply never carries is_complete"))
+        (finally
+          (reset! repl/file-positions old-positions)
+          (reset! repl/line-counts old-line-counts)
+          (reset! repl/session-index old-index)
+          (reset! repl/watcher-state old-watcher)
+          (reset! server/connected-clients old-clients)
+          ;; Recursive delete: post-order walk so children are removed
+          ;; before parents (java.io.File/delete refuses non-empty dirs).
+          (try
+            (doseq [f (reverse (file-seq (io/file tmp-dir)))]
+              (.delete f))
+            (catch Exception _)))))))
+
+(deftest test-watcher-tee-shrink-recovery
+  (testing "After file shrink (compact), v0.5.0 offsets restart at 0"
+    ;; Pass-1 bug: stale `line-counts` survived a shrink, so the rewritten
+    ;; content was stamped with inflated pre-shrink origins. This test locks
+    ;; in the shrink-recovery reset in `handle-file-modified`.
+    (let [tmp-dir (str (System/getProperty "java.io.tmpdir") "/voice-code-shrink-it/"
+                       (System/currentTimeMillis))
+          project-dir (io/file tmp-dir "proj")
+          _ (.mkdirs project-dir)
+          session-id "20000000-0000-0000-0000-000000000abc"
+          jsonl-file (io/file project-dir (str session-id ".jsonl"))
+          raw-line (fn [uuid role text]
+                     (json/generate-string
+                      {:type role :uuid uuid :sessionId session-id
+                       :timestamp "2026-05-14T00:00:00.000Z"
+                       :message {:role role :content text}}))
+          sent (atom [])
+          old-positions @repl/file-positions
+          old-line-counts @repl/line-counts
+          old-index @repl/session-index
+          old-watcher @repl/watcher-state
+          old-clients @server/connected-clients]
+      (try
+        ;; Pre-compact state: 5 lines on disk; tracked cursors agree.
+        (spit jsonl-file (apply str (for [i (range 5)]
+                                      (str (raw-line (str "u-pre-" i) "assistant"
+                                                     (str "old-" i)) "\n"))))
+        (swap! repl/session-index assoc session-id
+               {:session-id session-id
+                :file-path (.getAbsolutePath jsonl-file)
+                :message-count 5
+                :ios-notified true
+                :next-seq 1
+                :min-available-seq 1})
+        (swap! repl/file-positions assoc (.getAbsolutePath jsonl-file)
+               (.length jsonl-file))
+        (swap! repl/line-counts assoc (.getAbsolutePath jsonl-file) 5)
+        ;; Subscriber at offset 0 (about to backfill, but fast-path applies
+        ;; since after shrink reset, pre-line-count = 0 too).
+        (reset! server/connected-clients
+                {:ch1 (v5-stub-client {:session-id session-id :offset 0})})
+        ;; Compact: rewrite file with 2 different lines (smaller in bytes).
+        (spit jsonl-file (apply str (for [i (range 2)]
+                                      (str (raw-line (str "u-post-" i) "assistant"
+                                                     (str "new-" i)) "\n"))))
+        (reset! repl/watcher-state
+                {:watch-service nil :watch-thread nil :running false
+                 :watch-keys {} :subscribed-sessions #{session-id}
+                 :event-queue (atom {}) :debounce-ms 0
+                 :retry-delay-ms 0 :max-retries 1
+                 :on-session-created nil
+                 :on-session-updated nil
+                 :on-session-updated-v5 server/push-to-subscribers!
+                 :on-session-deleted nil :on-turn-complete nil})
+        (with-redefs [org.httpkit.server/send! (fn [ch m] (swap! sent conj {:channel ch :msg m}))]
+          (repl/handle-file-modified jsonl-file))
+        (let [[msg] (parse-sent sent :ch1)]
+          (is (some? msg) "Push fired on shrink-recovery tick")
+          (is (= 2 (count (:messages msg))) "Both rewritten lines delivered")
+          (is (= 0 (-> msg :messages first :offset))
+              "First rewritten line stamped with offset 0, not pre-shrink count")
+          (is (= 1 (-> msg :messages second :offset))
+              "Second rewritten line stamped with offset 1")
+          (is (= 2 (:next_offset msg))
+              "next_offset = 2 (rewritten file's line count), not 5+2=7")
+          (is (true? (:end_of_file msg))))
+        ;; Verify atom state was correctly reset and rebuilt.
+        (is (= 2 (get @repl/line-counts (.getAbsolutePath jsonl-file)))
+            "line-counts rebuilt to post-shrink count, not accumulated")
+        (is (= (.length jsonl-file)
+               (get @repl/file-positions (.getAbsolutePath jsonl-file)))
+            "file-positions reset and re-advanced to post-shrink EOF")
+        (finally
+          (reset! repl/file-positions old-positions)
+          (reset! repl/line-counts old-line-counts)
+          (reset! repl/session-index old-index)
+          (reset! repl/watcher-state old-watcher)
+          (reset! server/connected-clients old-clients)
+          ;; Recursive delete: post-order walk so children are removed
+          ;; before parents (java.io.File/delete refuses non-empty dirs).
+          (try
+            (doseq [f (reverse (file-seq (io/file tmp-dir)))]
+              (.delete f))
+            (catch Exception _)))))))
+
+(deftest test-watcher-tee-first-modify-after-create
+  (testing "First handle-file-modified after handle-file-created stamps correct offsets"
+    ;; Pass-1 bug: handle-file-created only seeded file-positions, leaving
+    ;; line-counts unset. The first modify tick then materialized line-counts
+    ;; via `count-complete-lines` (which counts the post-append file),
+    ;; shifting new-line offsets by raw-line-count. This test locks in the
+    ;; companion line-counts seed in handle-file-created.
+    (let [tmp-dir (str (System/getProperty "java.io.tmpdir") "/voice-code-create-it/"
+                       (System/currentTimeMillis))
+          project-dir (io/file tmp-dir "proj")
+          _ (.mkdirs project-dir)
+          session-id "30000000-0000-0000-0000-000000000abc"
+          jsonl-file (io/file project-dir (str session-id ".jsonl"))
+          file-path (.getAbsolutePath jsonl-file)
+          raw-line (fn [uuid role text]
+                     (json/generate-string
+                      {:type role :uuid uuid :sessionId session-id
+                       :timestamp "2026-05-14T00:00:00.000Z"
+                       :message {:role role :content text}}))
+          sent (atom [])
+          old-positions @repl/file-positions
+          old-line-counts @repl/line-counts
+          old-index @repl/session-index
+          old-watcher @repl/watcher-state
+          old-clients @server/connected-clients]
+      (try
+        ;; Seed file with 3 lines, then "create" the session.
+        (spit jsonl-file (apply str (for [i (range 3)]
+                                      (str (raw-line (str "u-init-" i) "assistant"
+                                                     (str "init-" i)) "\n"))))
+        (reset! repl/watcher-state
+                {:watch-service nil :watch-thread nil :running false
+                 :watch-keys {} :subscribed-sessions #{session-id}
+                 :event-queue (atom {}) :debounce-ms 0
+                 :retry-delay-ms 0 :max-retries 1
+                 :on-session-created (fn [_] nil)
+                 :on-session-updated nil
+                 :on-session-updated-v5 server/push-to-subscribers!
+                 :on-session-deleted nil :on-turn-complete nil})
+        ;; Drive handle-file-created — it seeds file-positions AND (post-fix)
+        ;; line-counts.
+        (repl/handle-file-created jsonl-file)
+        (is (= 3 (get @repl/line-counts file-path))
+            "handle-file-created seeded line-counts to creation-time count")
+        (is (= (.length jsonl-file) (get @repl/file-positions file-path))
+            "handle-file-created seeded file-positions to creation-time size")
+        ;; Subscriber at offset 3 (caught up after subscribe-time backfill).
+        (reset! server/connected-clients
+                {:ch1 (v5-stub-client {:session-id session-id :offset 3})})
+        ;; Append two new lines.
+        (spit jsonl-file (str (raw-line "u-new-0" "assistant" "new0") "\n")
+              :append true)
+        (spit jsonl-file (str (raw-line "u-new-1" "assistant" "new1") "\n")
+              :append true)
+        (with-redefs [org.httpkit.server/send! (fn [ch m] (swap! sent conj {:channel ch :msg m}))]
+          (repl/handle-file-modified jsonl-file))
+        (let [[msg] (parse-sent sent :ch1)]
+          (is (some? msg) "Push fired on first modify after create")
+          (is (= 2 (count (:messages msg))) "Both appended lines delivered")
+          (is (= 3 (-> msg :messages first :offset))
+              "First appended line stamped with offset 3 (creation-time count)")
+          (is (= 4 (-> msg :messages second :offset))
+              "Second appended line stamped with offset 4")
+          (is (= 5 (:next_offset msg))
+              "next_offset = 5 (not 5+pre-fix-shift)")
+          (is (true? (:end_of_file msg))))
+        (is (= 5 (get @repl/line-counts file-path))
+            "line-counts advanced to true post-append count (3+2)")
+        (finally
+          (reset! repl/file-positions old-positions)
+          (reset! repl/line-counts old-line-counts)
+          (reset! repl/session-index old-index)
+          (reset! repl/watcher-state old-watcher)
+          (reset! server/connected-clients old-clients)
+          ;; Recursive delete: post-order walk so children are removed
+          ;; before parents (java.io.File/delete refuses non-empty dirs).
+          (try
+            (doseq [f (reverse (file-seq (io/file tmp-dir)))]
+              (.delete f))
+            (catch Exception _)))))))
+
+;; ============================================================================
+;; v0.5.0 subscribe handler (tmux-untethered-398.9)
+;; ============================================================================
+
+(defn- v5-channel-state
+  "Connected-clients entry for a v0.5.0 channel that has completed the
+   connect handshake but is not yet subscribed to anything."
+  []
+  {:authenticated true
+   :subscribed-sessions #{}
+   :deleted-sessions #{}
+   :max-message-size-kb 100
+   :negotiated-protocol-version :v0.5.0})
+
+(deftest test-subscribe-v0-5-0-fresh-with-from-offset
+  (testing "Fresh v0.5.0 subscribe with from_offset=3 → next_offset/end_of_file/file_signature populated, per-message :session-id + :offset, :session-offsets seeded"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:ch1 (v5-channel-state)})
+    (let [session-id "sess-fresh"
+          sig "1024:abcdef00-1111-2222-3333-444444444444"
+          read-args (atom nil)
+          fake-read {:messages [{:role "user" :text "hi" :uuid "u-3" :offset 3}
+                                {:role "assistant" :text "yo" :uuid "u-4" :offset 4}]
+                     :next-offset 5
+                     :end-of-file? true}
+          sent (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg] (swap! sent conj (json/parse-string msg true)))
+                    repl/subscribe-to-session! (fn [_] nil)
+                    repl/get-session-metadata
+                    (fn [sid] {:session-id sid :file "/tmp/f.jsonl" :provider :claude
+                               :working-directory nil})
+                    repl/compute-file-signature (fn [_ _] sig)
+                    repl/read-from-offset
+                    (fn [prov path from-off limit]
+                      (reset! read-args
+                              {:provider prov :path path :from from-off :limit limit})
+                      fake-read)
+                    repl/emit-metric! (fn [& _] nil)
+                    voice-code.commands/parse-makefile (fn [_] [])]
+        (server/handle-message
+         :ch1
+         (json/generate-string {:type "subscribe" :session_id session-id :from_offset 3}))
+        (let [history (first (filter #(= "session_history" (:type %)) @sent))]
+          (is (some? history) "session_history reply sent")
+          (is (= session-id (:session_id history)))
+          (is (= 2 (count (:messages history))) "Both fake messages delivered")
+          (is (= 5 (:next_offset history)) "next_offset matches reader output")
+          (is (true? (:end_of_file history)) "end_of_file mirrors reader")
+          (is (= sig (:file_signature history)) "file_signature stamped on reply")
+          (is (not (contains? history :file_replaced))
+              "matching/absent signature does NOT set file_replaced")
+          (is (not (contains? history :is_complete))
+              "v0.5.0 reply MUST NOT carry is_complete (AC4)")
+          (is (= [3 4] (mapv :offset (:messages history)))
+              "Per-message :offset preserved from reader output")
+          (is (every? #(= session-id (:session_id %)) (:messages history))
+              "Every wire message tagged with :session-id"))
+        (is (= {:provider :claude :path "/tmp/f.jsonl" :from 3
+                :limit (server/estimate-line-limit (* 100 1024))}
+               @read-args)
+            "read-from-offset called with provider, file-path, from-offset, derived limit")
+        (is (= 5 (get-in @server/connected-clients [:ch1 :session-offsets session-id]))
+            ":session-offsets seeded to reader's next-offset")
+        (is (= sig (get-in @server/connected-clients [:ch1 :last-emitted-sigs session-id]))
+            ":last-emitted-sigs seeded to current-sig")))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {})))
+
+(deftest test-subscribe-v0-5-0-rejects-invalid-from-offset
+  (testing "Negative from_offset returns invalid_subscribe error"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:ch1 (v5-channel-state)})
+    (let [sent (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg] (swap! sent conj (json/parse-string msg true)))]
+        (server/handle-message
+         :ch1
+         (json/generate-string {:type "subscribe" :session_id "s" :from_offset -1}))
+        (is (= 1 (count @sent)))
+        (let [resp (first @sent)]
+          (is (= "error" (:type resp)))
+          (is (= "invalid_subscribe" (:code resp)))
+          (is (str/includes? (:message resp) "from_offset")))))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {}))
+  (testing "Non-integer from_offset returns invalid_subscribe error"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:ch1 (v5-channel-state)})
+    (let [sent (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg] (swap! sent conj (json/parse-string msg true)))]
+        (server/handle-message
+         :ch1
+         (json/generate-string {:type "subscribe" :session_id "s" :from_offset "not-a-number"}))
+        (is (= 1 (count @sent)))
+        (let [resp (first @sent)]
+          (is (= "error" (:type resp)))
+          (is (= "invalid_subscribe" (:code resp))))))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {})))
+
+(deftest test-subscribe-v0-5-0-rejects-non-string-file-signature-seen
+  (testing "Non-string file_signature_seen returns invalid_subscribe error"
+    ;; Without this guard, an integer or boolean sig-seen would always
+    ;; mismatch via `not=` against the computed string sig, triggering an
+    ;; unwarranted R2 reset and `:replication.file-replaced` counter bump.
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:ch1 (v5-channel-state)})
+    (let [sent (atom [])
+          metric-calls (atom 0)]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg] (swap! sent conj (json/parse-string msg true)))
+                    repl/emit-metric! (fn [& _] (swap! metric-calls inc))]
+        (server/handle-message
+         :ch1
+         (json/generate-string {:type "subscribe" :session_id "s" :from_offset 0
+                                :file_signature_seen 42}))
+        (is (= 1 (count @sent)))
+        (let [resp (first @sent)]
+          (is (= "error" (:type resp)))
+          (is (= "invalid_subscribe" (:code resp)))
+          (is (str/includes? (:message resp) "file_signature_seen")))
+        (is (zero? @metric-calls)
+            "Validation rejects BEFORE the R2 path runs; no metric bump")))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {}))
+  (testing "nil file_signature_seen (omitted) is allowed"
+    ;; Regression guard: the validation only fires when sig-seen is present
+    ;; AND non-string. An omitted field must still take the normal path.
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:ch1 (v5-channel-state)})
+    (let [sent (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg] (swap! sent conj (json/parse-string msg true)))
+                    repl/subscribe-to-session! (fn [_] nil)
+                    repl/get-session-metadata
+                    (fn [sid] {:session-id sid :file "/tmp/f.jsonl" :provider :claude
+                               :working-directory nil})
+                    repl/compute-file-signature (fn [_ _] "1:00000000-0000-0000-0000-000000000000")
+                    repl/read-from-offset
+                    (fn [& _] {:messages [] :next-offset 0 :end-of-file? true})
+                    repl/emit-metric! (fn [& _] nil)
+                    voice-code.commands/parse-makefile (fn [_] [])]
+        (server/handle-message
+         :ch1
+         (json/generate-string {:type "subscribe" :session_id "s" :from_offset 0}))
+        (let [history (first (filter #(= "session_history" (:type %)) @sent))]
+          (is (some? history) "Omitted file_signature_seen → normal session_history reply")
+          (is (not (contains? history :file_replaced))
+              "Absent sig-seen does NOT trigger file_replaced"))))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {})))
+
+(deftest test-subscribe-v0-5-0-missing-session-id
+  (testing "subscribe without session_id returns 'session_id required' error"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:ch1 (v5-channel-state)})
+    (let [sent (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg] (swap! sent conj (json/parse-string msg true)))]
+        (server/handle-message
+         :ch1
+         (json/generate-string {:type "subscribe" :from_offset 0}))
+        (is (= 1 (count @sent)))
+        (let [resp (first @sent)]
+          (is (= "error" (:type resp)))
+          (is (str/includes? (:message resp) "session_id required")))))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {})))
+
+(deftest test-subscribe-v0-5-0-session-not-found
+  (testing "Unknown session_id returns 'Session not found' error"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:ch1 (v5-channel-state)})
+    (let [sent (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg] (swap! sent conj (json/parse-string msg true)))
+                    repl/subscribe-to-session! (fn [_] nil)
+                    repl/get-session-metadata (fn [_] nil)]
+        (server/handle-message
+         :ch1
+         (json/generate-string {:type "subscribe" :session_id "missing" :from_offset 0}))
+        (let [errors (filter #(= "error" (:type %)) @sent)]
+          (is (= 1 (count errors)))
+          (is (str/includes? (:message (first errors)) "Session not found")))))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {})))
+
+(deftest test-subscribe-v0-5-0-signature-mismatch-emits-r2
+  (testing "subscribe with file_signature_seen != current → R2 envelope + metric + offset reset"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients
+            {:ch1 (assoc (v5-channel-state)
+                         :session-offsets {"sess-stale" 42}
+                         :last-emitted-sigs {"sess-stale" "stale-sig"})})
+    (let [session-id "sess-stale"
+          current-sig "999:99999999-9999-9999-9999-999999999999"
+          stale-sig "10:11111111-1111-1111-1111-111111111111"
+          read-calls (atom 0)
+          metric-calls (atom [])
+          sent (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg] (swap! sent conj (json/parse-string msg true)))
+                    repl/subscribe-to-session! (fn [_] nil)
+                    repl/get-session-metadata
+                    (fn [sid] {:session-id sid :file "/tmp/f.jsonl" :provider :claude
+                               :working-directory nil})
+                    repl/compute-file-signature (fn [_ _] current-sig)
+                    repl/read-from-offset
+                    (fn [& _] (swap! read-calls inc) {:messages [] :next-offset 0 :end-of-file? true})
+                    repl/emit-metric!
+                    (fn [kind metric-name labels]
+                      (swap! metric-calls conj {:kind kind :name metric-name :labels labels}))
+                    voice-code.commands/parse-makefile (fn [_] [])]
+        (server/handle-message
+         :ch1
+         (json/generate-string {:type "subscribe"
+                                :session_id session-id
+                                :from_offset 42
+                                :file_signature_seen stale-sig}))
+        (let [history (first (filter #(= "session_history" (:type %)) @sent))]
+          (is (some? history) "R2 envelope sent")
+          (is (= [] (:messages history)) "messages empty on R2")
+          (is (= 0 (:next_offset history)) "next_offset reset to 0")
+          (is (true? (:end_of_file history)) "end_of_file true on R2")
+          (is (true? (:file_replaced history)) "file_replaced flag set")
+          (is (= current-sig (:file_signature history))
+              "new file_signature stamped (so client persists fresh value before re-subscribe)"))
+        (is (= 0 @read-calls) "read-from-offset NOT called on R2 mismatch")
+        (is (= [{:kind :counter
+                 :name :replication.file-replaced
+                 :labels {:session-id session-id}}]
+               @metric-calls)
+            ":replication.file-replaced counter emitted exactly once")
+        (is (= 0 (get-in @server/connected-clients [:ch1 :session-offsets session-id]))
+            ":session-offsets reset to 0 (so next push from offset 0)")
+        (is (= current-sig (get-in @server/connected-clients [:ch1 :last-emitted-sigs session-id]))
+            ":last-emitted-sigs refreshed to current-sig")))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {})))
+
+(deftest test-subscribe-v0-5-0-matching-signature-no-file-replaced
+  (testing "Matching file_signature_seen → normal slice with no file_replaced"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:ch1 (v5-channel-state)})
+    (let [session-id "sess-match"
+          sig "200:22222222-2222-2222-2222-222222222222"
+          sent (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg] (swap! sent conj (json/parse-string msg true)))
+                    repl/subscribe-to-session! (fn [_] nil)
+                    repl/get-session-metadata
+                    (fn [sid] {:session-id sid :file "/tmp/f.jsonl" :provider :claude
+                               :working-directory nil})
+                    repl/compute-file-signature (fn [_ _] sig)
+                    repl/read-from-offset
+                    (fn [& _] {:messages [{:role "user" :text "x" :uuid "u-0" :offset 0}]
+                               :next-offset 1
+                               :end-of-file? true})
+                    repl/emit-metric! (fn [& _] nil)
+                    voice-code.commands/parse-makefile (fn [_] [])]
+        (server/handle-message
+         :ch1
+         (json/generate-string {:type "subscribe"
+                                :session_id session-id
+                                :from_offset 0
+                                :file_signature_seen sig}))
+        (let [history (first (filter #(= "session_history" (:type %)) @sent))]
+          (is (some? history) "session_history reply sent")
+          (is (= 1 (count (:messages history))))
+          (is (not (contains? history :file_replaced))
+              "matching signature → no file_replaced field on reply")
+          (is (= sig (:file_signature history))
+              "file_signature still stamped on every reply")
+          (is (not (contains? history :is_complete))
+              "no is_complete field (AC4)"))))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {})))
+
+(deftest test-subscribe-v0-4-0-channel-uses-legacy-handler
+  (testing "v0.4.0 channel routes to handle-subscribe-v0-4-0 (regression guard)"
+    (reset! server/message-stream-version :v0.4.0)
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients
+            {:ch1 {:authenticated true
+                   :deleted-sessions #{}
+                   :max-message-size-kb 100
+                   :negotiated-protocol-version :v0.4.0}})
+    (let [sent (atom [])
+          canonical (vec (for [i (range 3)]
+                           {:uuid (str "u-" i) :role "user"
+                            :text (str "m" i) :provider :claude
+                            :timestamp "2026-01-30T12:00:00Z"}))]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg] (swap! sent conj (json/parse-string msg true)))
+                    repl/subscribe-to-session! (fn [_] nil)
+                    repl/get-session-metadata
+                    (fn [sid] {:session-id sid :file "/tmp/f.jsonl" :provider :claude
+                               :message-count 3})
+                    repl/parse-session-messages (fn [_ _] canonical)
+                    repl/filter-internal-messages identity
+                    repl/reset-file-position! (fn [_] nil)
+                    repl/file-positions (atom {})
+                    clojure.java.io/file (fn [p] (proxy [java.io.File] [p]
+                                                   (length [] 1000)
+                                                   (exists [] true)))
+                    voice-code.commands/parse-makefile (fn [_] [])]
+        (server/handle-message
+         :ch1
+         (json/generate-string {:type "subscribe" :session_id "sess-legacy"}))
+        (let [history (first (filter #(= "session_history" (:type %)) @sent))]
+          (is (some? history) "v0.4.0 legacy reply sent")
+          (is (contains? history :is_complete)
+              "v0.4.0 reply carries :is_complete (legacy shape, not v0.5.0)")
+          (is (contains? history :next_seq)
+              "v0.4.0 reply carries :next_seq")
+          (is (not (contains? history :next_offset))
+              "v0.4.0 reply has NO :next_offset (that's v0.5.0)")
+          (is (not (contains? history :file_signature))
+              "v0.4.0 reply has NO :file_signature (that's v0.5.0)"))))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {})))
+
+(deftest test-subscribe-v0-5-0-no-is-complete-field
+  (testing "AC4: NO is_complete field on any v0.5.0 reply (fresh, R2, matching-sig)"
+    (reset! server/api-key test-api-key)
+    (let [sig "1:00000000-0000-0000-0000-000000000000"
+          stale-sig "0:99999999-9999-9999-9999-999999999999"
+          sent (atom [])]
+      (with-redefs [org.httpkit.server/send!
+                    (fn [_ch msg] (swap! sent conj (json/parse-string msg true)))
+                    repl/subscribe-to-session! (fn [_] nil)
+                    repl/get-session-metadata
+                    (fn [sid] {:session-id sid :file "/tmp/f.jsonl" :provider :claude
+                               :working-directory nil})
+                    repl/compute-file-signature (fn [_ _] sig)
+                    repl/read-from-offset
+                    (fn [& _] {:messages [] :next-offset 0 :end-of-file? true})
+                    repl/emit-metric! (fn [& _] nil)
+                    voice-code.commands/parse-makefile (fn [_] [])]
+        ;; Fresh subscribe (no sig-seen)
+        (reset! server/connected-clients {:ch1 (v5-channel-state)})
+        (reset! sent [])
+        (server/handle-message
+         :ch1
+         (json/generate-string {:type "subscribe" :session_id "s" :from_offset 0}))
+        (let [history (first (filter #(= "session_history" (:type %)) @sent))]
+          (is (not (contains? history :is_complete))
+              "fresh subscribe reply has no :is_complete"))
+        ;; R2 mismatch
+        (reset! server/connected-clients {:ch1 (v5-channel-state)})
+        (reset! sent [])
+        (server/handle-message
+         :ch1
+         (json/generate-string {:type "subscribe" :session_id "s" :from_offset 0
+                                :file_signature_seen stale-sig}))
+        (let [history (first (filter #(= "session_history" (:type %)) @sent))]
+          (is (not (contains? history :is_complete))
+              "R2 reply has no :is_complete"))
+        ;; Matching-sig
+        (reset! server/connected-clients {:ch1 (v5-channel-state)})
+        (reset! sent [])
+        (server/handle-message
+         :ch1
+         (json/generate-string {:type "subscribe" :session_id "s" :from_offset 0
+                                :file_signature_seen sig}))
+        (let [history (first (filter #(= "session_history" (:type %)) @sent))]
+          (is (not (contains? history :is_complete))
+              "matching-sig reply has no :is_complete"))))
+    (reset! server/api-key nil)
+    (reset! server/connected-clients {})))
