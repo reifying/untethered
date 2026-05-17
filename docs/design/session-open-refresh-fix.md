@@ -146,9 +146,6 @@ subscribe.
     hasSubscribedThisAppear = false
     client.refreshSubscription(sessionId: session.id.uuidString.lowercased())
     // Restore so the next foreground return also triggers a refresh.
-    // The temporary false above prevents loadSessionIfNeeded from double-
-    // subscribing if onAppear happens to fire between the false assignment
-    // and here — client.subscribe() is a no-op for .confirmed sessions anyway.
     hasSubscribedThisAppear = true
 }
 ```
@@ -193,17 +190,11 @@ The view renders the "No messages yet" branch until the re-subscribe delivers fr
         logger.info("⏱️ Messages arrived (\(newCount)), hiding loading indicator")
         isLoading = false
     }
-    // Re-enable loading indicator when a file_replaced purge empties the
-    // local cache while we're subscribed. Without this, the gap between the
-    // purge and the auto-resubscribe's session_history reply shows
-    // "No messages yet" instead of a spinner.
+    // Show spinner during file_replaced recovery: N→0 purge while subscribed.
     if !isLoading && newCount == 0 && oldCount > 0 && hasSubscribedThisAppear {
         logger.info("⏱️ Messages purged (\(oldCount) → 0) while subscribed, showing loading indicator")
         isLoading = true
-        // Schedule a fallback timeout to clear the spinner if the auto-resubscribe
-        // fails to deliver messages. This mirrors the timeout in loadSessionIfNeeded()
-        // but must be scheduled here because isLoading is set after that function
-        // has already executed, so its own timeout block was never enqueued.
+        // Fallback: loadSessionIfNeeded's timeout won't clear this later isLoading=true.
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
             if self.isLoading {
                 logger.info("⏱️ Purge-recovery loading indicator hidden (5s timeout fallback)")
@@ -345,10 +336,15 @@ Acceptance is verified by:
    it does not send an unsubscribe wire message (contrast with `requestSessionRefresh`,
    the toolbar button, which does send an unsubscribe+pong barrier before resubscribing).
 
-2. **`file_replaced` recovery — Fix 2.** With a session that has 50+ cached rows,
-   force a `file_replaced` response (by restarting the backend with a fresh session
-   file). Verify the view shows a spinner (not "No messages yet") between the purge
-   and the delivery of fresh messages.
+2. **`file_replaced` recovery — Fix 2.** With a session that has 50+ cached rows, trigger
+   the `file_replaced` path by deleting or replacing the session's JSONL file on disk while
+   the backend is running (e.g. `rm ~/.voice-code/sessions/<session-id>.jsonl`), then sending
+   a new message so the backend re-creates it. The backend detects the changed file signature
+   on the next write and returns `session_history` with `fileReplaced: true` and zero
+   messages. Confirm the trigger fired by checking the backend log for
+   `"file-replaced"` or by inspecting the `fileReplaced` field in the `session_history`
+   WebSocket frame via the VoiceCodeClient wire-log. Verify the view shows a spinner
+   (not "No messages yet") between the purge and the delivery of fresh messages.
 
 3. **navigate-away-and-back remains unaffected — Fix 1 regression.** Navigate Session
    A → Session B → back to Session A. Verify exactly one subscribe for Session A on
@@ -426,8 +422,10 @@ func testScenePhaseRefreshRestoresFlagForNextCycle() {
 3. Opening a session that has 50+ cached rows and whose JSONL file is replaced shows a
    spinner (not "No messages yet") during the gap between the local cache purge and the
    re-subscribe's `session_history` delivery.
-4. The existing `testScenePhaseDoesNotRefreshUnsubscribedSession` test passes without
-   modification (the guard for off-screen sessions is unchanged).
+4. All existing `ScenePhaseSubscriptionGuardTests` that are not explicitly updated pass
+   without modification: `testScenePhaseDoesNotRefreshUnsubscribedSession` (off-screen
+   guard unchanged) and `testScenePhaseNonActiveTransitionsAreIgnored` (phase-pair guard
+   unchanged).
 5. `testScenePhaseRefreshesActiveSession` is updated to assert `XCTAssertTrue(flagAfter)`
    (not `XCTAssertFalse`) and passes: first foreground return still fires a refresh
    and the flag is now `true` afterwards.
