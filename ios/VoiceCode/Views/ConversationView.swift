@@ -655,6 +655,7 @@ struct ConversationView: View {
         .onChange(of: scenePhase) { oldPhase, newPhase in
             guard newPhase == .active, oldPhase != .active else { return }
             guard !(session.isLocallyCreated && session.messageCount == 0) else { return }
+            guard hasSubscribedThisAppear else { return }
             hasSubscribedThisAppear = false
             client.refreshSubscription(sessionId: session.id.uuidString.lowercased())
         }
