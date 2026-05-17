@@ -647,6 +647,26 @@ struct ConversationView: View {
                 viewContext.refresh(session, mergeChanges: true)
             }
         }
+        // iOS foreground return: onDisappear does NOT fire when the app is
+        // backgrounded, so hasSubscribedThisAppear stays true and blocks the
+        // re-subscribe that onAppear would otherwise issue. Drive it here
+        // instead via scenePhase so messages accumulated in the background
+        // are fetched without the user having to hit refresh.
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            guard newPhase == .active, oldPhase != .active else { return }
+            guard !(session.isLocallyCreated && session.messageCount == 0) else { return }
+            hasSubscribedThisAppear = false
+            client.refreshSubscription(sessionId: session.id.uuidString.lowercased())
+        }
+        // macOS NavigationSplitView session switch: SwiftUI reuses the same
+        // ConversationView instance when the user clicks a different sidebar
+        // entry — onDisappear/onAppear do NOT fire, so hasSubscribedThisAppear
+        // stays true and the new session never gets subscribed.
+        .onChange(of: session.id) { oldId, newId in
+            client.unsubscribe(sessionId: oldId.uuidString.lowercased())
+            hasSubscribedThisAppear = false
+            loadSessionIfNeeded()
+        }
         .swipeToBack()
         #if os(macOS)
         .pushToTalk(voiceInput: voiceInput)
