@@ -513,9 +513,12 @@ no subscribe is in flight and no `session_history` will arrive).
 **Likelihood:** Extremely low. CoreData does not delete rows due to disk pressure;
 only explicit `backgroundContext.save()` calls modify the store.
 
-**Mitigation:** The 5-second loading-indicator timeout fallback already in
-`loadSessionIfNeeded()` clears `isLoading` if no messages arrive. The spinner resolves
-without user action.
+**Mitigation:** Fix 2's inline `DispatchQueue.main.asyncAfter(deadline: .now() + 5.0)`
+clears `isLoading` if no messages arrive. `loadSessionIfNeeded()`'s own 5-second timeout
+is not a fallback here — it is only enqueued when `isLoading = true` at the time that
+function executes, which does not happen for cached-message sessions (the function sets
+`isLoading = false` and skips its `if isLoading` gate). The spinner resolves without user
+action via Fix 2's timeout.
 
 **Detection:** Log `"⏱️ Messages purged … while subscribed, showing loading indicator"`
 (the new branch's log line). If this appears without a subsequent
