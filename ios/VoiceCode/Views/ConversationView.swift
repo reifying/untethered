@@ -188,6 +188,23 @@ struct ConversationView: View {
                                 isLoading = false
                             }
 
+                            // Show spinner instead of "No messages yet" when a file_replaced purge
+                            // empties the local cache while we are subscribed. Without this the
+                            // ~300 ms gap before the auto-resubscribe delivers fresh messages shows
+                            // "No messages yet". The timeout fallback clears isLoading if the
+                            // resubscribe never arrives (mirrors loadSessionIfNeeded's timeout, which
+                            // was already scheduled before this isLoading=true transition happened).
+                            if !isLoading && newCount == 0 && oldCount > 0 && hasSubscribedThisAppear {
+                                logger.info("⏱️ Messages purged (\(oldCount) → 0) while subscribed, showing loading indicator")
+                                isLoading = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                                    if self.isLoading {
+                                        logger.info("⏱️ Purge-recovery loading indicator hidden (5s timeout fallback)")
+                                        self.isLoading = false
+                                    }
+                                }
+                            }
+
                             // Auto-scroll to new messages if enabled
                             guard newCount > oldCount else { return }
 
@@ -658,6 +675,8 @@ struct ConversationView: View {
             guard hasSubscribedThisAppear else { return }
             hasSubscribedThisAppear = false
             client.refreshSubscription(sessionId: session.id.uuidString.lowercased())
+            // Restore so the next foreground return also triggers a refresh.
+            hasSubscribedThisAppear = true
         }
         // macOS NavigationSplitView session switch: SwiftUI reuses the same
         // ConversationView instance when the user clicks a different sidebar

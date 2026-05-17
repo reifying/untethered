@@ -52,6 +52,7 @@ final class ScenePhaseSubscriptionGuardTests: XCTestCase {
         guard flag else { return flag }
         flag = false
         client.refreshSubscription(sessionId: sessionId)
+        flag = true  // Fix 1: restore so next foreground return also refreshes
         return flag
     }
 
@@ -79,8 +80,33 @@ final class ScenePhaseSubscriptionGuardTests: XCTestCase {
         XCTAssertTrue(client.refreshSubscriptionCalled,
             "refreshSubscription must fire for the view that was visible at background time")
         XCTAssertEqual(client.lastRefreshedSessionId, "session-b")
-        XCTAssertFalse(flagAfter,
-            "hasSubscribedThisAppear must be reset to false for the next foreground cycle")
+        XCTAssertTrue(flagAfter,
+            "hasSubscribedThisAppear must be restored to true so subsequent foreground returns also refresh")
+    }
+
+    func testScenePhaseRefreshRestoresFlagForNextCycle() {
+        // First foreground return — refresh fires and flag is restored to true.
+        let flagAfterFirst = simulate(
+            newPhase: .active, oldPhase: .inactive,
+            hasSubscribedThisAppear: true,
+            sessionId: "session-a", client: client
+        )
+        XCTAssertTrue(client.refreshSubscriptionCalled,
+            "refresh must fire on 1st foreground return")
+        XCTAssertTrue(flagAfterFirst,
+            "flag must be restored to true so the 2nd foreground return also refreshes")
+
+        // Second foreground return — guard must pass again (regression: before Fix 1 it blocked).
+        client.refreshSubscriptionCalled = false
+        let flagAfterSecond = simulate(
+            newPhase: .active, oldPhase: .inactive,
+            hasSubscribedThisAppear: flagAfterFirst,
+            sessionId: "session-a", client: client
+        )
+        XCTAssertTrue(client.refreshSubscriptionCalled,
+            "refresh must also fire on 2nd foreground return (was blocked before Fix 1)")
+        XCTAssertTrue(flagAfterSecond,
+            "flag must remain true after 2nd foreground return")
     }
 
     func testScenePhaseNonActiveTransitionsAreIgnored() {
