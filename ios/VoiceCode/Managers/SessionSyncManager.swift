@@ -1022,6 +1022,23 @@ class SessionSyncManager {
         }
     }
 
+    /// v0.5.0 equivalent of `clearLiveFromSeq`. Zeroes `liveFromOffset` so
+    /// the next `session_history` reply re-captures the boundary from its
+    /// `next_offset`. Without this, backfill messages that arrive after a
+    /// navigate-away / navigate-back have offsets above the stale boundary
+    /// and are incorrectly spoken as live.
+    func clearLiveFromOffset(sessionId: String) {
+        guard let sessionUUID = UUID(uuidString: sessionId) else { return }
+        persistenceController.performBackgroundTask { backgroundContext in
+            let request = CDBackendSession.fetchBackendSession(id: sessionUUID)
+            guard let session = try? backgroundContext.fetch(request).first else { return }
+            if session.liveFromOffset != 0 {
+                session.liveFromOffset = 0
+                try? backgroundContext.save()
+            }
+        }
+    }
+
     // MARK: - Session History Payload helpers
 
     /// Returns the largest backend-assigned `seq` stored for this session,
