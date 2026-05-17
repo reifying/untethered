@@ -716,21 +716,6 @@ struct ConversationView: View {
         let clearedUnreadMs = Int(Date().timeIntervalSince(loadStart) * 1000)
         logger.info("⏱️ +\(clearedUnreadMs)ms - cleared unread count")
 
-        // Prune old messages on background context before loading
-        // iOS only needs recent messages; backend retains full history
-        let sessionId = session.id
-        PersistenceController.shared.performBackgroundTask { backgroundContext in
-            let pruneStart = Date()
-            let deletedCount = CDMessage.pruneOldMessages(sessionId: sessionId, in: backgroundContext)
-            let pruneMs = Int(Date().timeIntervalSince(pruneStart) * 1000)
-            if deletedCount > 0 {
-                try? backgroundContext.save()
-                logger.info("⏱️ Pruned \(deletedCount) messages in \(pruneMs)ms")
-            } else {
-                logger.info("⏱️ No pruning needed (\(pruneMs)ms)")
-            }
-        }
-
         // Subscribe unless this is a brand-new locally-created session that
         // hasn't been pushed to backend yet. The "Session not found" branch
         // the old `messageCount > 0` gate was avoiding only fires for sessions
