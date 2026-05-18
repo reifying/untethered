@@ -188,6 +188,23 @@ struct ConversationView: View {
                                 isLoading = false
                             }
 
+                            // Show spinner instead of "No messages yet" when a file_replaced purge
+                            // empties the local cache while we are subscribed. Without this the
+                            // ~300 ms gap before the auto-resubscribe delivers fresh messages shows
+                            // "No messages yet". The timeout fallback clears isLoading if the
+                            // resubscribe never arrives (mirrors loadSessionIfNeeded's timeout, which
+                            // was already scheduled before this isLoading=true transition happened).
+                            if !isLoading && newCount == 0 && oldCount > 0 && hasSubscribedThisAppear {
+                                logger.info("⏱️ Messages purged (\(oldCount) → 0) while subscribed, showing loading indicator")
+                                isLoading = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                                    if self.isLoading {
+                                        logger.info("⏱️ Purge-recovery loading indicator hidden (5s timeout fallback)")
+                                        self.isLoading = false
+                                    }
+                                }
+                            }
+
                             // Auto-scroll to new messages if enabled
                             guard newCount > oldCount else { return }
 
@@ -647,6 +664,29 @@ struct ConversationView: View {
                 viewContext.refresh(session, mergeChanges: true)
             }
         }
+        // iOS foreground return: onDisappear does NOT fire when the app is
+        // backgrounded, so hasSubscribedThisAppear stays true and blocks the
+        // re-subscribe that onAppear would otherwise issue. Drive it here
+        // instead via scenePhase so messages accumulated in the background
+        // are fetched without the user having to hit refresh.
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            guard newPhase == .active, oldPhase != .active else { return }
+            guard !(session.isLocallyCreated && session.messageCount == 0) else { return }
+            guard hasSubscribedThisAppear else { return }
+            hasSubscribedThisAppear = false
+            client.refreshSubscription(sessionId: session.id.uuidString.lowercased())
+            // Restore so the next foreground return also triggers a refresh.
+            hasSubscribedThisAppear = true
+        }
+        // macOS NavigationSplitView session switch: SwiftUI reuses the same
+        // ConversationView instance when the user clicks a different sidebar
+        // entry — onDisappear/onAppear do NOT fire, so hasSubscribedThisAppear
+        // stays true and the new session never gets subscribed.
+        .onChange(of: session.id) { oldId, newId in
+            client.unsubscribe(sessionId: oldId.uuidString.lowercased())
+            hasSubscribedThisAppear = false
+            loadSessionIfNeeded()
+        }
         .swipeToBack()
         #if os(macOS)
         .pushToTalk(voiceInput: voiceInput)
@@ -695,21 +735,6 @@ struct ConversationView: View {
         try? viewContext.save()
         let clearedUnreadMs = Int(Date().timeIntervalSince(loadStart) * 1000)
         logger.info("⏱️ +\(clearedUnreadMs)ms - cleared unread count")
-
-        // Prune old messages on background context before loading
-        // iOS only needs recent messages; backend retains full history
-        let sessionId = session.id
-        PersistenceController.shared.performBackgroundTask { backgroundContext in
-            let pruneStart = Date()
-            let deletedCount = CDMessage.pruneOldMessages(sessionId: sessionId, in: backgroundContext)
-            let pruneMs = Int(Date().timeIntervalSince(pruneStart) * 1000)
-            if deletedCount > 0 {
-                try? backgroundContext.save()
-                logger.info("⏱️ Pruned \(deletedCount) messages in \(pruneMs)ms")
-            } else {
-                logger.info("⏱️ No pruning needed (\(pruneMs)ms)")
-            }
-        }
 
         // Subscribe unless this is a brand-new locally-created session that
         // hasn't been pushed to backend yet. The "Session not found" branch

@@ -341,4 +341,79 @@ final class VoiceCodeClientProtocolVersionTests: XCTestCase {
         XCTAssertFalse(client.isConnected,
                        "upgrade-required transition must drop the WebSocket flag")
     }
+
+    // MARK: - refreshSubscription
+
+    /// `refreshSubscription` on a `.confirmed` subscription demotes to
+    /// `.desired`, allowing `subscribe` to re-send the wire message and pick
+    /// up any new messages accumulated since the last subscribe.
+    func testRefreshSubscriptionOnConfirmedDemotesAndResubscribes() {
+        let sessionId = UUID().uuidString.lowercased()
+        client.isAuthenticated = true
+
+        var sent: [[String: Any]] = []
+        client.onMessageSent = { sent.append($0) }
+
+        // Seed a .confirmed subscription via the normal path.
+        client.subscribe(sessionId: sessionId)
+        let firstSend = sent.filter { ($0["type"] as? String) == "subscribe" }
+        XCTAssertEqual(firstSend.count, 1, "First subscribe must send a wire message")
+
+        // Calling subscribe() again while .confirmed is a no-op (dedup guard).
+        client.subscribe(sessionId: sessionId)
+        XCTAssertEqual(sent.filter { ($0["type"] as? String) == "subscribe" }.count, 1,
+                       "Second subscribe() call while .confirmed must be a no-op")
+
+        // refreshSubscription demotes back to .desired, so the next subscribe fires.
+        client.refreshSubscription(sessionId: sessionId)
+        XCTAssertEqual(sent.filter { ($0["type"] as? String) == "subscribe" }.count, 2,
+                       "refreshSubscription must send a second wire subscribe")
+        // After the refresh, the entry must be .confirmed again.
+        XCTAssertEqual(client.subscriptionsForTesting[sessionId], .confirmed)
+    }
+
+    /// `refreshSubscription` on a session that has never been subscribed is
+    /// equivalent to a plain `subscribe` — it should track the entry and send
+    /// one wire message.
+    func testRefreshSubscriptionOnUnknownSessionBehavesLikeSubscribe() {
+        let sessionId = UUID().uuidString.lowercased()
+        client.isAuthenticated = true
+
+        var sent: [[String: Any]] = []
+        client.onMessageSent = { sent.append($0) }
+
+        client.refreshSubscription(sessionId: sessionId)
+
+        let subs = sent.filter { ($0["type"] as? String) == "subscribe" }
+        XCTAssertEqual(subs.count, 1, "refreshSubscription on unknown session must send one wire subscribe")
+        XCTAssertEqual(client.subscriptionsForTesting[sessionId], .confirmed)
+    }
+
+    /// `refreshSubscription` while not yet authenticated demotes .confirmed to
+    /// .desired (so the pending intent is preserved) but does not send a wire
+    /// message — the subscribe will fire from `restoreSubscriptionsAfterReconnect`
+    /// once the handshake completes.
+    func testRefreshSubscriptionWhileNotAuthenticatedDoesNotSendWire() {
+        let sessionId = UUID().uuidString.lowercased()
+
+        // Simulate a previously-confirmed subscription by marking it directly
+        // via the testing accessor — in production the app might be mid-reconnect.
+        client.isAuthenticated = true
+        var sent: [[String: Any]] = []
+        client.onMessageSent = { sent.append($0) }
+        client.subscribe(sessionId: sessionId)
+        XCTAssertEqual(client.subscriptionsForTesting[sessionId], .confirmed)
+
+        // Now drop auth to simulate the reconnect window.
+        client.isAuthenticated = false
+        sent.removeAll()
+
+        client.refreshSubscription(sessionId: sessionId)
+
+        // The entry must be back to .desired (not .confirmed).
+        XCTAssertEqual(client.subscriptionsForTesting[sessionId], .desired)
+        // No wire message should have gone out.
+        XCTAssertTrue(sent.filter { ($0["type"] as? String) == "subscribe" }.isEmpty,
+                      "refreshSubscription must not send a wire subscribe when not authenticated")
+    }
 }
