@@ -111,7 +111,12 @@ extension CDMessage {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
         // Sort ascending for chronological display (oldest first, newest at bottom)
-        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: true)]
+        // Secondary sort by offset breaks timestamp ties for v0.5.0 messages (v0.4.0 messages
+        // all have offset=0, so this is a no-op for them)
+        request.sortDescriptors = [
+            NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: true),
+            NSSortDescriptor(keyPath: \CDMessage.offset, ascending: true)
+        ]
 
         // Ensure all properties are loaded to prevent faulting during view updates
         // This prevents CoreData from deallocating objects mid-update
@@ -177,7 +182,10 @@ extension CDMessage {
         // Fetch the oldest messages to delete
         let deleteRequest = fetchRequest()
         deleteRequest.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
-        deleteRequest.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: true)]
+        deleteRequest.sortDescriptors = [
+            NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: true),
+            NSSortDescriptor(keyPath: \CDMessage.offset, ascending: true)
+        ]
         deleteRequest.fetchLimit = deleteCount
 
         guard let messagesToDelete = try? context.fetch(deleteRequest) else {

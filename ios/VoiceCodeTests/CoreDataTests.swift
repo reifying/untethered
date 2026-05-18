@@ -1466,4 +1466,65 @@ final class CoreDataTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - fetchMessages Secondary Sort Tests
+
+    func testFetchMessagesBreaksTiesWithOffset() throws {
+        // v0.5.0 messages may arrive in a burst with the same timestamp.
+        // fetchMessages must break ties by offset so messages appear in
+        // JSONL line order, not an arbitrary CoreData-internal order.
+        let sessionId = UUID()
+        let sharedTimestamp = Date()
+
+        // Insert three v0.5.0 messages with identical timestamps but different offsets.
+        let offsets: [Int64] = [10, 30, 20]
+        for (i, off) in offsets.enumerated() {
+            let msg = CDMessage(context: context)
+            msg.id = UUID()
+            msg.sessionId = sessionId
+            msg.role = "assistant"
+            msg.text = "offset-\(off)"
+            msg.timestamp = sharedTimestamp
+            msg.offset = off
+            msg.seq = 0
+            msg.messageStatus = .confirmed
+            _ = i
+        }
+
+        try context.save()
+
+        let fetched = try context.fetch(CDMessage.fetchMessages(sessionId: sessionId))
+        XCTAssertEqual(fetched.count, 3)
+        XCTAssertEqual(fetched[0].offset, 10)
+        XCTAssertEqual(fetched[1].offset, 20)
+        XCTAssertEqual(fetched[2].offset, 30)
+    }
+
+    func testFetchMessagesOffsetTiebreakerIsNoopForV4Messages() throws {
+        // v0.4.0 messages all have offset=0 (default). The secondary offset
+        // sort must not disturb the primary timestamp ordering.
+        let sessionId = UUID()
+        let base = Date()
+
+        for i in 0..<4 {
+            let msg = CDMessage(context: context)
+            msg.id = UUID()
+            msg.sessionId = sessionId
+            msg.role = "user"
+            msg.text = "seq-\(i)"
+            msg.timestamp = base.addingTimeInterval(TimeInterval(i))
+            msg.offset = 0  // v0.4.0 default
+            msg.seq = Int64(i)
+            msg.messageStatus = .confirmed
+        }
+
+        try context.save()
+
+        let fetched = try context.fetch(CDMessage.fetchMessages(sessionId: sessionId))
+        XCTAssertEqual(fetched.count, 4)
+        // Primary timestamp sort must still hold
+        for i in 0..<4 {
+            XCTAssertEqual(fetched[i].text, "seq-\(i)")
+        }
+    }
 }
