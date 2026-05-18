@@ -148,6 +148,32 @@ final class VoiceCodeClientSubscriptionStateTests: XCTestCase {
         XCTAssertEqual(client.subscriptionsForTesting[sid], .confirmed)
     }
 
+    // MARK: - SessionSyncDelegate: sessionSyncNeedsResubscribe (tmux-untethered-sgn)
+
+    /// THE REGRESSION: `sessionSyncNeedsResubscribe` was calling `subscribe()`
+    /// (idempotent no-op on .confirmed) instead of `refreshSubscription()`
+    /// (which demotes then re-sends). Large sessions whose history spans
+    /// multiple byte-budget windows silently truncated because the chain-step
+    /// wire message was never sent.
+    func testSessionSyncNeedsResubscribeSendsWireWhenAlreadyConfirmed() {
+        let sid = UUID().uuidString.lowercased()
+        client.isAuthenticated = true
+        client.subscribe(sessionId: sid, context: context)
+        XCTAssertEqual(client.subscriptionsForTesting[sid], .confirmed)
+
+        var sent: [[String: Any]] = []
+        client.onMessageSent = { sent.append($0) }
+
+        client.sessionSyncNeedsResubscribe(sid, fromSeq: 42)
+
+        let subs = sent.filter { ($0["type"] as? String) == "subscribe" }
+        XCTAssertEqual(subs.count, 1,
+                       "sessionSyncNeedsResubscribe must send a new wire subscribe even when already .confirmed")
+        XCTAssertEqual(subs.first?["session_id"] as? String, sid)
+        XCTAssertEqual(client.subscriptionsForTesting[sid], .confirmed,
+                       "subscription must be re-confirmed after the chain-step send")
+    }
+
     // MARK: - unsubscribe
 
     /// `unsubscribe()` removes the entry entirely (intent and confirmation

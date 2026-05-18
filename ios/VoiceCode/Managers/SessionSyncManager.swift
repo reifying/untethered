@@ -128,6 +128,12 @@ class SessionSyncManager {
     /// `DispatchQueue.main.async` block where the resubscribe is fired.
     private var incompleteChainCursors: [String: Int64] = [:]
 
+    /// v0.5.0 sibling of `incompleteChainCursors`. Tracks the `next_offset`
+    /// cursor we last asked the server to start from so we can detect a
+    /// stalled `end_of_file:false` chain (server repeatedly returning the
+    /// same `next_offset` without advancing). Accessed only on the main queue.
+    private var incompleteChainCursorsV5: [String: Int64] = [:]
+
     /// Per-session serial queues that gate concurrent
     /// `handleSessionHistoryPayload` invocations for the same session.
     /// Without this, two payloads landing simultaneously (subscribe reply
@@ -740,8 +746,14 @@ class SessionSyncManager {
                         logger.error("Failed to save file_replaced recovery for \(payload.sessionId): \(error.localizedDescription)")
                         return
                     }
+                    let sessionId = payload.sessionId
                     DispatchQueue.main.async { [weak self] in
-                        self?.delegate?.sessionSyncRequestsResubscribeFromZero(sessionUUID)
+                        guard let self = self else { return }
+                        // Clear any in-flight end_of_file chain — the purge
+                        // replaces the file, so the prior chain's cursor is
+                        // meaningless for the incoming fresh subscribe.
+                        self.incompleteChainCursorsV5.removeValue(forKey: sessionId.lowercased())
+                        self.delegate?.sessionSyncRequestsResubscribeFromZero(sessionUUID)
                     }
                     return
                 }
@@ -854,6 +866,35 @@ class SessionSyncManager {
                     if deletedCount > 0 {
                         try? ctx.save()
                         logger.info("🧹 Pruned \(deletedCount) old messages from session \(payload.sessionId)")
+                    }
+                }
+
+                // Follow-up subscribe when the server's byte budget was
+                // exhausted (end_of_file:false). Mirrors v0.4.0's
+                // is_complete:false chain: re-subscribe with the advanced
+                // nextOffset so the next window loads without user action.
+                // Stall guard: if next_offset has not advanced past the
+                // cursor from the previous chain step, abort to prevent an
+                // unbounded loop (same logic as v0.4.0's
+                // incompleteChainCursors / sessionSyncDidStallChain).
+                let sessionId = payload.sessionId
+                let nextOffset = payload.nextOffset
+                let endOfFile = payload.endOfFile
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    let key = sessionId.lowercased()
+                    if !endOfFile {
+                        if let prevCursor = self.incompleteChainCursorsV5[key],
+                           nextOffset <= prevCursor {
+                            logger.error("⛔ Aborting end_of_file:false chain for \(sessionId): cursor stalled at \(prevCursor); payload next_offset=\(nextOffset)")
+                            self.incompleteChainCursorsV5.removeValue(forKey: key)
+                            self.delegate?.sessionSyncDidStallChain(sessionId, atCursor: prevCursor)
+                            return
+                        }
+                        self.incompleteChainCursorsV5[key] = nextOffset
+                        self.delegate?.sessionSyncNeedsResubscribe(sessionId, fromSeq: nextOffset)
+                    } else {
+                        self.incompleteChainCursorsV5.removeValue(forKey: key)
                     }
                 }
 

@@ -36,9 +36,23 @@ final class SessionSyncManagerOffsetPayloadTests: XCTestCase {
         var resubscribesFromZero: [UUID] = []
         var onResubscribeFromZero: (() -> Void)?
 
+        var resubscribes: [(String, Int64)] = []
+        var onNeedsResubscribe: (() -> Void)?
+
+        var stallEvents: [(String, Int64)] = []
+        var onStallChain: (() -> Void)?
+
         func didDetectPrunedGap(_ sessionId: String, gap: SessionHistoryPayload.Gap) {}
-        func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64) {}
-        func sessionSyncDidStallChain(_ sessionId: String, atCursor: Int64) {}
+
+        func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64) {
+            resubscribes.append((sessionId, fromSeq))
+            onNeedsResubscribe?()
+        }
+
+        func sessionSyncDidStallChain(_ sessionId: String, atCursor: Int64) {
+            stallEvents.append((sessionId, atCursor))
+            onStallChain?()
+        }
 
         func sessionSyncRequestsResubscribeFromZero(_ sessionId: UUID) {
             resubscribesFromZero.append(sessionId)
@@ -338,6 +352,61 @@ final class SessionSyncManagerOffsetPayloadTests: XCTestCase {
 
         XCTAssertEqual(fetchMessages().count, 0,
                        "offset=0 purge must delete every row in the session")
+    }
+
+    // MARK: - end_of_file:false chaining (tmux-untethered-sgn)
+
+    /// AC: end_of_file:false fires sessionSyncNeedsResubscribe so the client
+    /// chains the next window automatically. Verifies v0.5.0 parity with
+    /// v0.4.0's is_complete:false path.
+    func test_endOfFile_false_fires_sessionSyncNeedsResubscribe() {
+        seedSession(lastOffsetMerged: 0, liveFromOffset: 0)
+
+        let exp = expectation(description: "sessionSyncNeedsResubscribe fires")
+        delegate.onNeedsResubscribe = { exp.fulfill() }
+
+        let p = payload(messages: [wire(offset: 0)], nextOffset: 1, endOfFile: false)
+        manager.handleSessionHistoryPayload(p)
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertEqual(delegate.resubscribes.count, 1)
+        XCTAssertEqual(delegate.resubscribes.first?.0, sessionIdString)
+        XCTAssertEqual(delegate.resubscribes.first?.1, 1,
+                       "fromSeq passed to delegate must equal payload.nextOffset")
+        XCTAssertTrue(delegate.stallEvents.isEmpty)
+    }
+
+    /// AC: stall guard — if next_offset doesn't advance between two
+    /// consecutive end_of_file:false payloads the chain is aborted via
+    /// sessionSyncDidStallChain and no further resubscribe is fired.
+    func test_endOfFile_false_stall_guard_aborts_chain_when_cursor_stalls() {
+        seedSession(lastOffsetMerged: 0, liveFromOffset: 0)
+
+        let exp1 = expectation(description: "first resubscribe fires")
+        delegate.onNeedsResubscribe = { exp1.fulfill() }
+
+        let p1 = payload(messages: [wire(offset: 0)], nextOffset: 1, endOfFile: false)
+        manager.handleSessionHistoryPayload(p1)
+        wait(for: [exp1], timeout: 2.0)
+
+        XCTAssertEqual(delegate.resubscribes.count, 1)
+        XCTAssertTrue(delegate.stallEvents.isEmpty)
+
+        // Second payload with the same next_offset=1 → stall detected.
+        let exp2 = expectation(description: "stall fires")
+        delegate.onNeedsResubscribe = nil
+        delegate.onStallChain = { exp2.fulfill() }
+
+        let p2 = payload(messages: [], nextOffset: 1, endOfFile: false)
+        manager.handleSessionHistoryPayload(p2)
+        wait(for: [exp2], timeout: 2.0)
+        drainMainQueue()
+
+        XCTAssertEqual(delegate.resubscribes.count, 1, "no new resubscribe after stall abort")
+        XCTAssertEqual(delegate.stallEvents.count, 1)
+        XCTAssertEqual(delegate.stallEvents.first?.0, sessionIdString)
+        XCTAssertEqual(delegate.stallEvents.first?.1, 1,
+                       "stall cursor must equal the stuck next_offset")
     }
 
     // MARK: - TTS extraction gate

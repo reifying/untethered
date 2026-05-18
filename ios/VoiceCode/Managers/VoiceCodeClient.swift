@@ -2437,20 +2437,24 @@ extension VoiceCodeClient: SessionSyncDelegate {
         prunedGaps[key] = gap
     }
 
-    /// Re-issue a subscribe so the backend resends `seq > fromSeq`. Fires from
-    /// three sites in `SessionSyncManager`: gap detection, `is_complete:false`
-    /// chain, and save-failure recovery. Without this implementation the
-    /// default no-op extension swallows all three, leaving the cursor stuck
-    /// when a push is missed or a save throws.
+    /// Re-issue a subscribe so the backend resends content past the current
+    /// cursor. Fires from three sites in `SessionSyncManager`: gap detection,
+    /// `is_complete:false` / `end_of_file:false` chain, and save-failure
+    /// recovery. Without this implementation the default no-op extension
+    /// swallows all three, leaving the cursor stuck when a push is missed or
+    /// a save throws.
     ///
-    /// `subscribe(sessionId:)` reads the cursor from CoreData via
-    /// `newestCachedSeq`, which equals the `fromSeq` we'd send here as long as
-    /// the prior payload was either fully merged (gap/is_complete cases) or
-    /// not merged at all (save-failure case). We rely on that equivalence
-    /// rather than threading `fromSeq` through a second subscribe variant.
+    /// Uses `refreshSubscription` rather than `subscribe` so that a chain
+    /// step sends a fresh wire message even when the subscription is already
+    /// `.confirmed`. `subscribe` is idempotent on `.confirmed` (by design, to
+    /// keep the wire trace clean for duplicate UI calls); that idempotency
+    /// is the wrong behavior here — the chain MUST re-send. The cursor the
+    /// new subscribe carries is read from CoreData (`newestCachedSeq` /
+    /// `lastOffsetMerged`), which the upsert path has already advanced to the
+    /// correct next position before this delegate fires.
     func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64) {
         logger.info("🔁 Resubscribe requested for \(sessionId) fromSeq=\(fromSeq)")
-        subscribe(sessionId: sessionId)
+        refreshSubscription(sessionId: sessionId)
     }
 
     /// Surface a stalled `is_complete: false` chain to the UI. The sync
