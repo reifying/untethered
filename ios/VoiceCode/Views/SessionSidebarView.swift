@@ -176,6 +176,15 @@ struct SessionSidebarView: View {
             logger.info("🔄 Session list updated, refreshing sidebar")
             loadSessions()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .sessionHistoryDidUpdate)) { _ in
+            // Recompute sorted lists so Recent order and folder unread badges
+            // reflect the updated lastModified / unreadCount written by the
+            // session_history handler. Individual SessionSidebarRow instances
+            // update their own content via @ObservedObject, but SessionSidebarView
+            // itself does not re-render on CDBackendSession property changes —
+            // only a loadSessions() call recomputes the cached sort order.
+            loadSessions()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .sidebarCreateNewSession)) { _ in
             newWorkingDirectory = defaultWorkingDirectory
             showingNewSession = true

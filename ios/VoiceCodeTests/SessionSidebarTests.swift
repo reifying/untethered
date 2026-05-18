@@ -88,6 +88,54 @@ class SessionSidebarTests: XCTestCase {
         XCTAssertTrue(result.isEmpty)
     }
 
+    func testRecentSessionsReordersAfterLastModifiedUpdate() throws {
+        // Validates that loadSessions() (called on sessionHistoryDidUpdate) re-sorts
+        // correctly: a session that was last should move to first after its lastModified
+        // is updated by session_history writes.
+        let olderDate = Date(timeIntervalSinceNow: -1000)
+        let newerDate = Date(timeIntervalSinceNow: -500)
+
+        let a = createSession(backendName: "A", workingDirectory: "/projects/a", lastModified: olderDate)
+        let b = createSession(backendName: "B", workingDirectory: "/projects/b", lastModified: newerDate)
+        try context.save()
+
+        // Initial order: B is first (more recent)
+        let initial = SessionSidebarView.computeRecentSessions(from: [a, b])
+        XCTAssertEqual(initial[0].backendName, "B")
+        XCTAssertEqual(initial[1].backendName, "A")
+
+        // Simulate session_history writing a newer lastModified for A (new message arrived)
+        a.lastModified = Date(timeIntervalSinceNow: 0)
+        try context.save()
+
+        // After re-fetch (simulating loadSessions() called on sessionHistoryDidUpdate), A should be first
+        let updated = SessionSidebarView.computeRecentSessions(from: [a, b])
+        XCTAssertEqual(updated[0].backendName, "A")
+        XCTAssertEqual(updated[1].backendName, "B")
+    }
+
+    func testDirectoryUnreadCountReflectsLatestValues() throws {
+        // Validates that computeSessionsByDirectory produces groups whose
+        // unreadCount sums are correct after session_history increments them —
+        // confirming that loadSessions() on sessionHistoryDidUpdate gives the
+        // sidebar the data it needs to render accurate folder badges.
+        let s1 = createSession(backendName: "S1", workingDirectory: "/projects/app", unreadCount: 0)
+        let s2 = createSession(backendName: "S2", workingDirectory: "/projects/app", unreadCount: 0)
+        try context.save()
+
+        let beforeUpdate = SessionSidebarView.computeSessionsByDirectory(from: [s1, s2])
+        let totalBefore = beforeUpdate[0].sessions.reduce(0) { $0 + Int($1.unreadCount) }
+        XCTAssertEqual(totalBefore, 0)
+
+        // Simulate session_history incrementing unread count for s1
+        s1.unreadCount = 3
+        try context.save()
+
+        let afterUpdate = SessionSidebarView.computeSessionsByDirectory(from: [s1, s2])
+        let totalAfter = afterUpdate[0].sessions.reduce(0) { $0 + Int($1.unreadCount) }
+        XCTAssertEqual(totalAfter, 3)
+    }
+
     func testRecentSessionsFewerThanTen() throws {
         let sessions = [
             createSession(backendName: "A", workingDirectory: "/a"),

@@ -1021,9 +1021,7 @@ class VoiceCodeClient: ObservableObject {
                 // protocol version (set by the connect-ack); v0.4.0 routes
                 // through `handleSessionHistoryPayload` (cursor math, gap
                 // detection, auto-speak), v0.5.0 decodes into the sibling
-                // type. The v0.5.0 sync-manager entry point is wired up in
-                // tmux-untethered-398.12; for now the v5 branch decodes and
-                // logs without dispatch.
+                // type and dispatches to `sessionSyncManager`.
                 self.handleSessionHistoryFrame(json: json)
 
             case "session_ready":
@@ -1982,9 +1980,8 @@ class VoiceCodeClient: ObservableObject {
 
     /// Decode and dispatch an inbound `session_history` frame according to the
     /// channel's negotiated protocol version. Lifted from the message-type
-    /// switch so the dispatch is unit-testable without a socket. The v0.5.0
-    /// branch decodes and logs but does not yet route to a sync-manager
-    /// entry point — that wiring lands in tmux-untethered-398.12. Returns
+    /// switch so the dispatch is unit-testable without a socket. Both v0.4.0
+    /// and v0.5.0 branches decode and dispatch to `sessionSyncManager`. Returns
     /// `true` on successful decode/dispatch, `false` on any failure (errors
     /// are logged internally — the WebSocket read loop has no actionable
     /// response, so the return value is purely a test observable).
