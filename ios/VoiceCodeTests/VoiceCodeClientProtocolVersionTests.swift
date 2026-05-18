@@ -416,4 +416,47 @@ final class VoiceCodeClientProtocolVersionTests: XCTestCase {
         XCTAssertTrue(sent.filter { ($0["type"] as? String) == "subscribe" }.isEmpty,
                       "refreshSubscription must not send a wire subscribe when not authenticated")
     }
+
+    // MARK: - File upload error suppression (tmux-untethered-mxu)
+
+    /// File upload errors must NOT surface as a `currentError` banner. The
+    /// intended behaviour (per the dead second case handler that was removed)
+    /// is to log the failure and let ResourcesManager's timeout handle it.
+    /// Regresses the duplicate `case "error":` dead-code bug where the second
+    /// handler was unreachable and the first handler unconditionally set
+    /// `currentError`.
+    func testFileUploadErrorDoesNotSetCurrentError() {
+        let msg: [String: Any] = [
+            "type": "error",
+            "message": "Failed to upload file: foo.png (size 1234 bytes)"
+        ]
+        let json = String(data: try! JSONSerialization.data(withJSONObject: msg),
+                          encoding: .utf8)!
+
+        client.handleMessage(json)
+        drainMainQueue()
+
+        XCTAssertNil(client.currentError,
+                     "file upload errors must not set currentError — banner should not appear")
+    }
+
+    /// Non-upload errors must still set `currentError` so the banner appears.
+    func testGenericErrorSetsCurrentError() {
+        let msg: [String: Any] = [
+            "type": "error",
+            "message": "Something went wrong on the server"
+        ]
+        let json = String(data: try! JSONSerialization.data(withJSONObject: msg),
+                          encoding: .utf8)!
+
+        client.handleMessage(json)
+
+        // scheduleUpdate debounces at 100ms; wait 200ms to ensure it has fired.
+        let exp = XCTestExpectation(description: "debounce fires")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { exp.fulfill() }
+        wait(for: [exp], timeout: 1.0)
+
+        XCTAssertEqual(client.currentError, "Something went wrong on the server",
+                       "non-upload errors must set currentError so the UI shows a banner")
+    }
 }

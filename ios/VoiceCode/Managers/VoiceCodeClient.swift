@@ -933,6 +933,13 @@ class VoiceCodeClient: ObservableObject {
                     return
                 }
 
+                // File upload errors are handled silently; ResourcesManager will timeout instead.
+                if error.contains("Failed to upload file") {
+                    print("❌ [VoiceCodeClient] File upload failed: \(error)")
+                    LogManager.shared.log("File upload failed: \(error)", category: "VoiceCodeClient")
+                    return
+                }
+
                 scheduleUpdate(key: "currentError", value: error as String?)
 
                 // Route to quick prompt handler if applicable
@@ -1287,17 +1294,6 @@ class VoiceCodeClient: ObservableObject {
                 var updatedRecipes = getCurrentValue(for: "activeRecipes", current: self.activeRecipes)
                 updatedRecipes.removeValue(forKey: sessionId)
                 scheduleUpdate(key: "activeRecipes", value: updatedRecipes)
-
-            case "error":
-                // Check if this is a file upload error
-                if let message = json["message"] as? String,
-                   message.contains("Failed to upload file") {
-                    // Extract filename from error message if possible
-                    print("❌ [VoiceCodeClient] File upload failed: \(message)")
-                    LogManager.shared.log("File upload failed: \(message)", category: "VoiceCodeClient")
-                    // For now, we can't reliably extract filename from error message
-                    // ResourcesManager will timeout instead
-                }
 
             default:
                 print("Unknown message type: \(type)")

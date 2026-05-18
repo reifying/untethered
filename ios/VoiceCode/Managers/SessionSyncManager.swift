@@ -586,6 +586,7 @@ class SessionSyncManager {
             if newRows > 0 && CDMessage.needsPruning(sessionId: sessionUUID, in: backgroundContext) {
                 let deletedCount = CDMessage.pruneOldMessages(sessionId: sessionUUID, in: backgroundContext)
                 if deletedCount > 0 {
+                    session.messageCount -= Int32(deletedCount)
                     try? backgroundContext.save()
                     logger.info("🧹 Pruned \(deletedCount) old messages from session \(payload.sessionId)")
                 }
@@ -864,6 +865,7 @@ class SessionSyncManager {
                 if newRows > 0 && CDMessage.needsPruning(sessionId: sessionUUID, in: ctx) {
                     let deletedCount = CDMessage.pruneOldMessages(sessionId: sessionUUID, in: ctx)
                     if deletedCount > 0 {
+                        session.messageCount -= Int32(deletedCount)
                         try? ctx.save()
                         logger.info("🧹 Pruned \(deletedCount) old messages from session \(payload.sessionId)")
                     }
@@ -1508,6 +1510,7 @@ class SessionSyncManager {
                 if CDMessage.needsPruning(sessionId: sessionUUID, in: backgroundContext) {
                     let deletedCount = CDMessage.pruneOldMessages(sessionId: sessionUUID, in: backgroundContext)
                     if deletedCount > 0 {
+                        session.messageCount -= Int32(deletedCount)
                         try? backgroundContext.save()
                         logger.info("🧹 Pruned \(deletedCount) old messages from session \(sessionId)")
                     }

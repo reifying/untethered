@@ -271,7 +271,7 @@ final class MacOSDesktopTests: XCTestCase {
         session.isLocallyCreated = true
 
         // Verify SessionSidebarRow still compiles with density modifiers applied
-        let row = SessionSidebarRow(session: session, isLocked: false)
+        let row = SessionSidebarRow(session: session)
         XCTAssertNotNil(row)
     }
 

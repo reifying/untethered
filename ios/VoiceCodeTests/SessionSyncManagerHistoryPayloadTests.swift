@@ -1247,4 +1247,32 @@ final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
         XCTAssertEqual(fetchSession()?.nextSeq, 12,
                        "empty windows must still persist next_seq for the cursor path")
     }
+
+    // MARK: - messageCount after pruning (tmux-untethered-jdg)
+
+    /// When a payload pushes the cached message count past the pruning
+    /// threshold, `session.messageCount` must reflect the post-prune row
+    /// count, not the pre-prune inflated value. Regresses the bug where
+    /// `session.messageCount` was set before pruning and never updated after.
+    func test_messageCount_reflects_post_prune_count_after_v40_payload() {
+        // Seed 60 messages — one short of the pruning threshold (maxMessages=50 + threshold=10).
+        let seqRange: ClosedRange<Int64> = 1...60
+        seedSession(seqs: seqRange)
+
+        // One new message tips the count to 61, triggering pruning.
+        let newMsg = wireMessage(seq: 61)
+        let p = payload(firstSeq: 61, lastSeq: 61, nextSeq: 62,
+                        isComplete: true, messages: [newMsg])
+
+        manager.handleSessionHistoryPayload(p)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        let session = fetchSession()
+        let rowCount = fetchMessages().count
+        XCTAssertEqual(rowCount, CDMessage.maxMessagesPerSession,
+                       "pruner must keep exactly maxMessagesPerSession rows")
+        XCTAssertEqual(session?.messageCount, Int32(CDMessage.maxMessagesPerSession),
+                       "messageCount must match post-prune row count, not the pre-prune value")
+    }
 }

@@ -20,22 +20,18 @@ final class MacOSDesktopUXTests: XCTestCase {
         struct TestWrapper: View {
             @Binding var text: String
             let onSend: () -> Void
-            let onManualUnlock: () -> Void
 
             var body: some View {
                 ConversationTextInputView(
                     text: $text,
-                    isDisabled: false,
-                    onSend: onSend,
-                    onManualUnlock: onManualUnlock
+                    onSend: onSend
                 )
             }
         }
 
         let wrapper = TestWrapper(
             text: .constant("Test message"),
-            onSend: {},
-            onManualUnlock: {}
+            onSend: {}
         )
 
         XCTAssertNotNil(wrapper)
@@ -49,9 +45,7 @@ final class MacOSDesktopUXTests: XCTestCase {
             var body: some View {
                 ConversationTextInputView(
                     text: $text,
-                    isDisabled: false,
-                    onSend: {},
-                    onManualUnlock: {}
+                    onSend: {}
                 )
             }
         }
@@ -61,16 +55,14 @@ final class MacOSDesktopUXTests: XCTestCase {
     }
 
     func testConversationTextInputViewCompilesInDisabledState() {
-        // Verify the view compiles when isDisabled is true.
+        // Verify the view compiles with the current parameter set (isDisabled was removed).
         struct TestWrapper: View {
             @Binding var text: String
 
             var body: some View {
                 ConversationTextInputView(
                     text: $text,
-                    isDisabled: true,
-                    onSend: {},
-                    onManualUnlock: {}
+                    onSend: {}
                 )
             }
         }

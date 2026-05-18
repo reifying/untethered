@@ -437,4 +437,30 @@ final class SessionSyncManagerOffsetPayloadTests: XCTestCase {
         XCTAssertEqual(fetchSession()?.liveFromOffset, 1)
         XCTAssertEqual(fetchSession()?.lastOffsetMerged, 1)
     }
+
+    // MARK: - messageCount after pruning (tmux-untethered-jdg)
+
+    /// v0.5.0 variant of the messageCount-after-pruning fix: session.messageCount
+    /// must be decremented by the number of pruned rows so SessionsView shows the
+    /// correct count, not a stale inflated value.
+    func test_messageCount_reflects_post_prune_count_after_v50_payload() {
+        // Seed 60 messages at offsets 0..59 — one short of the pruning threshold.
+        seedSession(lastOffsetMerged: 59, liveFromOffset: 0, offsets: 0...59)
+
+        // One new message at offset 60 tips count to 61, triggering pruning.
+        let p = payload(messages: [wire(offset: 60)],
+                        nextOffset: 61,
+                        endOfFile: true)
+
+        manager.handleSessionHistoryPayload(p)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        let session = fetchSession()
+        let rowCount = fetchMessages().count
+        XCTAssertEqual(rowCount, CDMessage.maxMessagesPerSession,
+                       "pruner must keep exactly maxMessagesPerSession rows")
+        XCTAssertEqual(session?.messageCount, Int32(CDMessage.maxMessagesPerSession),
+                       "messageCount must match post-prune row count, not the pre-prune value")
+    }
 }
