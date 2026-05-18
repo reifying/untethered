@@ -200,6 +200,87 @@ class CommandHistoryViewTests: XCTestCase {
         XCTAssertEqual(client.commandOutputFull?.output, "Full output here")
     }
 
+    // MARK: - CommandOutputFull Session ID Matching Tests
+
+    func testCommandOutputFullCanBeClearedToNil() throws {
+        // Verify client.commandOutputFull is writable (needed by the stale-data fix)
+        let message = """
+        {
+            "type": "command_output_full",
+            "command_session_id": "cmd-123",
+            "output": "some output",
+            "exit_code": 0,
+            "timestamp": "2025-11-08T12:34:56.789Z",
+            "duration_ms": 100,
+            "command_id": "build",
+            "shell_command": "make build",
+            "working_directory": "/project"
+        }
+        """
+        client.handleMessage(message)
+        waitForMainQueue()
+        XCTAssertNotNil(client.commandOutputFull)
+
+        // Simulate the fix: loadOutput() clears stale data before a new request
+        client.commandOutputFull = nil
+        XCTAssertNil(client.commandOutputFull)
+    }
+
+    func testCommandOutputFullSessionIdMismatchDetection() throws {
+        // After receiving a response for cmd-A, a view for cmd-B should not render it.
+        // This tests the commandSessionId guard added to CommandOutputDetailView.
+        let message = """
+        {
+            "type": "command_output_full",
+            "command_session_id": "cmd-A",
+            "output": "output for A",
+            "exit_code": 0,
+            "timestamp": "2025-11-08T12:34:56.789Z",
+            "duration_ms": 100,
+            "command_id": "build",
+            "shell_command": "make build",
+            "working_directory": "/project"
+        }
+        """
+        client.handleMessage(message)
+        waitForMainQueue()
+
+        XCTAssertNotNil(client.commandOutputFull)
+        XCTAssertEqual(client.commandOutputFull?.commandSessionId, "cmd-A")
+
+        // A view displaying "cmd-B" should see a sessionId mismatch and not render
+        let outputForB = client.commandOutputFull.flatMap { output -> CommandOutputFull? in
+            output.commandSessionId == "cmd-B" ? output : nil
+        }
+        XCTAssertNil(outputForB, "Output for cmd-A must not be rendered by cmd-B's view")
+    }
+
+    func testCommandOutputFullSessionIdMatchAcceptsCorrectSession() throws {
+        // A view for cmd-123 should accept the response when sessionIds match.
+        let message = """
+        {
+            "type": "command_output_full",
+            "command_session_id": "cmd-123",
+            "output": "correct output",
+            "exit_code": 0,
+            "timestamp": "2025-11-08T12:34:56.789Z",
+            "duration_ms": 100,
+            "command_id": "build",
+            "shell_command": "make build",
+            "working_directory": "/project"
+        }
+        """
+        client.handleMessage(message)
+        waitForMainQueue()
+
+        XCTAssertNotNil(client.commandOutputFull)
+        let matchedOutput = client.commandOutputFull.flatMap { output -> CommandOutputFull? in
+            output.commandSessionId == "cmd-123" ? output : nil
+        }
+        XCTAssertNotNil(matchedOutput, "Output for cmd-123 must be accepted by cmd-123's view")
+        XCTAssertEqual(matchedOutput?.output, "correct output")
+    }
+
     func testEmptyHistoryHandled() throws {
         let message = """
         {

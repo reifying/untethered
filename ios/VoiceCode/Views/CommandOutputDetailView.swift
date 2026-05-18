@@ -29,7 +29,7 @@ struct CommandOutputDetailView: View {
                     ProgressView("Loading output...")
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding()
-                } else if let output = client.commandOutputFull {
+                } else if let output = client.commandOutputFull, output.commandSessionId == session.commandSessionId {
                     outputSection(output)
                 } else {
                     Text("Failed to load output")
@@ -77,6 +77,11 @@ struct CommandOutputDetailView: View {
         #endif
         .onAppear {
             loadOutput()
+        }
+        .onChange(of: client.commandOutputFull) { _, output in
+            if let output = output, output.commandSessionId == session.commandSessionId {
+                isLoading = false
+            }
         }
         .swipeToBack()
     }
@@ -172,10 +177,14 @@ struct CommandOutputDetailView: View {
 
     private func loadOutput() {
         isLoading = true
+        // Clear any stale output from a previous request before sending the new one,
+        // so the view never shows a different command's output while waiting.
+        client.commandOutputFull = nil
         client.getCommandOutput(commandSessionId: session.commandSessionId)
-        
-        // Wait a bit for response (simple approach for MVP)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        // Fallback: hide spinner after 5s if the server never responds.
+        // The onChange handler above sets isLoading=false as soon as the
+        // matching response arrives, so this only fires on timeout.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
             isLoading = false
         }
     }
