@@ -1188,7 +1188,7 @@ struct CDMessageView: View {
                 // Users can tap "View Full" button to access full text and actions
                 Text(message.displayText)
                     .font(.body)
-                    .lineLimit(20)  // Hard limit to prevent excessive layout calculations
+                    .lineLimit(nil)  // displayText is already bounded; no limit needed
 
                 // Show expand button for truncated messages OR for quick actions
                 Button(action: { showFullMessage = true }) {

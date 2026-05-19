@@ -109,6 +109,26 @@ struct SelectableTextView_iOS: UIViewRepresentable {
 #endif
 
 #if os(macOS)
+/// NSTextView subclass that reports its full word-wrapped height as intrinsic content size,
+/// so SwiftUI ScrollView gives it the room it needs. Mirrors the iOS WrappingTextView fix.
+private final class WrappingNSTextView: NSTextView {
+    override var intrinsicContentSize: NSSize {
+        guard let layoutManager = layoutManager, let textContainer = textContainer else {
+            return super.intrinsicContentSize
+        }
+        let width = bounds.width > 0 ? bounds.width : 500
+        textContainer.size = NSSize(width: width, height: .greatestFiniteMagnitude)
+        layoutManager.ensureLayout(for: textContainer)
+        let usedHeight = layoutManager.usedRect(for: textContainer).height
+        return NSSize(width: NSView.noIntrinsicMetric, height: ceil(usedHeight))
+    }
+
+    override func layout() {
+        super.layout()
+        invalidateIntrinsicContentSize()
+    }
+}
+
 struct SelectableTextView_macOS: NSViewRepresentable {
     let text: String
     let isMonospaced: Bool
@@ -119,7 +139,7 @@ struct SelectableTextView_macOS: NSViewRepresentable {
         // Bare NSTextView (no NSScrollView wrapper) — the enclosing SwiftUI ScrollView
         // handles scrolling. Wrapping in NSScrollView causes nested-scrolling issues
         // and a fixed intrinsicContentSize that doesn't grow with the message.
-        let textView = NSTextView()
+        let textView = WrappingNSTextView()
         textView.isEditable = false
         textView.isSelectable = true
         textView.backgroundColor = .clear
@@ -131,7 +151,7 @@ struct SelectableTextView_macOS: NSViewRepresentable {
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.containerSize = NSSize(
-            width: 0,
+            width: CGFloat.greatestFiniteMagnitude,
             height: CGFloat.greatestFiniteMagnitude
         )
         return textView
