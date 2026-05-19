@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VC_PROJECT_DIR="${VC_PROJECT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+VC_PROJECT_DIR="${VC_PROJECT_DIR:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}"
 VC_BACKEND_DIR="$VC_PROJECT_DIR/backend"
 
 # Implementer-mode prefix: prepend to prompt when workdir is ~/assist
