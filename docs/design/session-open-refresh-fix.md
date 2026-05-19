@@ -212,12 +212,27 @@ is already `false` (no in-progress spinner from a prior path), the list went to 
 (`hasSubscribedThisAppear = true`). The only production call site that produces this
 transition is `purgeMessagesAtOrAbove(offset: 0)` in the `file_replaced` handler.
 
-The loading indicator is cleared either when the re-subscribe delivers messages
-(existing `isLoading && newCount > 0` branch) or by the explicit 5-second timeout
-scheduled inline. The timeout is necessary because `loadSessionIfNeeded()` schedules
-its own 5-second fallback only when `isLoading = true` at the time that function
-executes — this `onChange` fires later, so that earlier timeout block was never
-enqueued for this particular `isLoading = true` transition.
+**How the spinner clears:** Once `isLoading = true`, the ZStack renders the spinner
+branch and the `List` leaves the view hierarchy. The `if isLoading && newCount > 0`
+branch inside the List's inner `onChange` therefore **cannot fire** — SwiftUI does not
+call `onChange` on views that are not in the hierarchy. The spinner is cleared by the
+outer `onChange(of: messages.count)` attached to the VStack (added in commit `3274de4f`,
+tmux-untethered-cho), which fires regardless of which ZStack branch is rendering:
+
+```swift
+// Outer onChange on VStack — fires even when isLoading=true and the List is off-screen.
+.onChange(of: messages.count) { _, newCount in
+    if isLoading && newCount > 0 {
+        isLoading = false
+    }
+}
+```
+
+The 5-second inline timeout is a final fallback in case the outer `onChange` fails to
+fire (e.g., the auto-resubscribe never delivers messages). `loadSessionIfNeeded()`'s
+own 5-second fallback does not cover this case because that function only enqueues its
+timeout when `isLoading = true` at call time, which does not happen for sessions that
+already have cached messages.
 
 ---
 
