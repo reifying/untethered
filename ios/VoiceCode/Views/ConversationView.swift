@@ -114,6 +114,14 @@ struct ConversationView: View {
         client.prunedGaps[session.id.uuidString.lowercased()]
     }
 
+    /// Stalled chain cursor for this session, if any. Set when SessionSyncManager
+    /// aborts an `is_complete:false` (v0.4.0) or `end_of_file:false` (v0.5.0)
+    /// chain because the server's cursor is not advancing — typically a single
+    /// message whose JSON encoding exceeds the per-window byte budget.
+    private var stalledChainCursor: Int64? {
+        client.stalledChains[session.id.uuidString.lowercased()]
+    }
+
     var body: some View {
         let _ = RenderTracker.count(Self.self)
         let _ = RenderLoopDetector.shared.recordRender()
@@ -123,6 +131,15 @@ struct ConversationView: View {
             if let gap = prunedGap {
                 PrunedGapBanner(gap: gap) {
                     client.dismissPrunedGap(sessionId: session.id.uuidString.lowercased())
+                }
+            }
+
+            // Stalled chain warning — history loading stopped because the server
+            // could not advance past a single oversized message. Older history
+            // above the cursor is unavailable in this session.
+            if let cursor = stalledChainCursor {
+                StalledChainBanner(cursor: cursor) {
+                    client.dismissStalledChain(sessionId: session.id.uuidString.lowercased())
                 }
             }
 
@@ -1454,6 +1471,54 @@ struct ConversationTextInputView: View {
             .disabled(text.isEmpty)
         }
         .padding(.horizontal)
+    }
+}
+
+/// Warning banner shown when an `is_complete:false` / `end_of_file:false`
+/// resubscribe chain stalls — the server's cursor is not advancing, typically
+/// because a single message exceeds the per-window byte budget. The chain has
+/// been aborted; older history above `cursor` is not loading automatically.
+/// Informational only — the user may dismiss or manually trigger a reload.
+struct StalledChainBanner: View {
+    let cursor: Int64
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.yellow)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Some earlier messages could not load")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Text("A message in this conversation is too large to load automatically. Older history may be incomplete.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss warning")
+            .accessibilityIdentifier("stalledChainBannerDismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.yellow.opacity(0.12))
+        .overlay(
+            Rectangle()
+                .frame(height: 1)
+                .foregroundColor(Color.yellow.opacity(0.4)),
+            alignment: .bottom
+        )
+        .accessibilityIdentifier("stalledChainBanner")
     }
 }
 
