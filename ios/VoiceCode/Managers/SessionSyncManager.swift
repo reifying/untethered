@@ -1286,8 +1286,15 @@ class SessionSyncManager {
             // stranding the second one when the backend echo arrives. See
             // beads tmux-untethered-mgp.
             message.seq = Self.optimisticSeq(for: messageId)
+            // v0.5.0: mirror the negative sentinel into `offset` so that the
+            // (sessionId, offset) lookup in upsertMessage(_:WireMessageV5) never
+            // matches an optimistic row. Without this, any confirmed message at
+            // offset=0 (the first JSONL line) would collide with every optimistic
+            // row (whose @NSManaged offset defaults to 0), potentially overwriting
+            // a pending prompt with historical content. See beads tmux-untethered-mqo.
+            message.offset = Self.optimisticSeq(for: messageId)
 
-            logger.info("📝 Optimistic message prepared: id=\(messageId) sessionId=\(sessionId.uuidString.lowercased()) role=user text_length=\(text.count) status=sending seq=\(message.seq)")
+            logger.info("📝 Optimistic message prepared: id=\(messageId) sessionId=\(sessionId.uuidString.lowercased()) role=user text_length=\(text.count) status=sending seq=\(message.seq) offset=\(message.offset)")
             
             // Update session metadata optimistically
             session.lastModified = Date()
