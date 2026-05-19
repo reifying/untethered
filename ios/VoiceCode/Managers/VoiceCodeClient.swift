@@ -204,7 +204,8 @@ class VoiceCodeClient: ObservableObject {
     private var pongWaiters: [PongWaiter] = []
 
     // Continuations for async command execution requests (commandId -> continuation)
-    private var commandExecutionContinuations: [String: CheckedContinuation<String, Never>] = [:]
+    // Returns nil when the command fails to start (command_error) or the connection drops.
+    private var commandExecutionContinuations: [String: CheckedContinuation<String?, Never>] = [:]
 
     // Quick prompt completion handlers keyed by ios_session_id
     private var quickPromptHandlers: [String: (String) -> Void] = [:]
@@ -537,6 +538,14 @@ class VoiceCodeClient: ObservableObject {
 
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
+
+        // Drain any in-flight executeCommand callers so their Tasks don't hang
+        // after the socket closes. They receive nil, same as command_error.
+        let pendingCommandContinuations = commandExecutionContinuations
+        commandExecutionContinuations.removeAll()
+        for continuation in pendingCommandContinuations.values {
+            continuation.resume(returning: nil)
+        }
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -1177,6 +1186,10 @@ class VoiceCodeClient: ObservableObject {
                     print("❌ [VoiceCodeClient] Command error: \(commandId) - \(error)")
                     // Command error means it failed to start, not tracked in runningCommands
                     scheduleUpdate(key: "currentError", value: "Command failed: \(error)" as String?)
+                    // Resume any waiting continuation so the caller's Task does not hang.
+                    if let continuation = commandExecutionContinuations.removeValue(forKey: commandId) {
+                        continuation.resume(returning: nil)
+                    }
                 }
 
             case "command_history":
@@ -2192,16 +2205,19 @@ class VoiceCodeClient: ObservableObject {
 
     // MARK: - Command Execution
 
-    /// Execute a command and return the command session ID when it starts
+    /// Execute a command and return the command session ID when it starts, or nil on failure.
+    /// Returns nil when the backend replies with `command_error` or the connection drops
+    /// before `command_started` arrives. Callers should treat nil as a failed launch.
     /// - Parameters:
     ///   - commandId: The command identifier to execute
     ///   - workingDirectory: The directory to execute the command in
-    /// - Returns: The command session ID assigned by the backend
-    func executeCommand(commandId: String, workingDirectory: String) async -> String {
+    /// - Returns: The command session ID assigned by the backend, or nil on failure.
+    func executeCommand(commandId: String, workingDirectory: String) async -> String? {
         print("📤 [VoiceCodeClient] Executing command: \(commandId) in \(workingDirectory)")
 
         return await withCheckedContinuation { continuation in
-            // Store continuation to be resumed when command_started arrives
+            // Store continuation to be resumed when command_started (or command_error) arrives.
+            // disconnect() also drains this dictionary so the Task never hangs.
             commandExecutionContinuations[commandId] = continuation
 
             let message: [String: Any] = [

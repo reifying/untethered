@@ -149,9 +149,15 @@ struct CommandMenuView: View {
         print("📤 [CommandMenuView] Executing command: \(commandId)")
         sorter.markCommandUsed(commandId: commandId)
 
-        // Execute command asynchronously and navigate to the correct session
+        // Execute command asynchronously and navigate to the correct session.
+        // nil means the server rejected the command (command_error) or the
+        // connection dropped; skip navigation so the UI doesn't open an empty
+        // CommandExecutionView with no session to follow.
         Task {
-            let commandSessionId = await client.executeCommand(commandId: commandId, workingDirectory: workingDirectory)
+            guard let commandSessionId = await client.executeCommand(commandId: commandId, workingDirectory: workingDirectory) else {
+                print("⚠️ [CommandMenuView] Command \(commandId) failed to start; skipping navigation")
+                return
+            }
             await MainActor.run {
                 activeCommandSessionId = commandSessionId
                 navigateToExecution = true

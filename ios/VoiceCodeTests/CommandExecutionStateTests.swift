@@ -381,6 +381,46 @@ final class CommandExecutionStateTests: XCTestCase {
         XCTAssertTrue(client.currentError?.contains("Command failed") ?? false)
     }
 
+    func testCommandErrorResumesWaitingContinuation() async throws {
+        // command_error must resume the stored continuation so the caller's
+        // Task doesn't hang indefinitely. Without the fix, this test times out.
+        let commandId = "bad.command"
+
+        let executeTask = Task<String?, Never> {
+            await client.executeCommand(commandId: commandId, workingDirectory: "/tmp")
+        }
+
+        // Give the Task time to store its continuation before we fire command_error.
+        try await Task.sleep(nanoseconds: 10_000_000) // 10 ms
+
+        simulateMessage([
+            "type": "command_error",
+            "command_id": commandId,
+            "error": "Command not found"
+        ])
+
+        let result = await executeTask.value
+        XCTAssertNil(result, "executeCommand must return nil when command_error arrives")
+    }
+
+    func testDisconnectResumesWaitingContinuations() async throws {
+        // disconnect() must drain pending continuations so in-flight
+        // executeCommand callers don't hang after the socket closes.
+        let commandId = "slow.command"
+
+        let executeTask = Task<String?, Never> {
+            await client.executeCommand(commandId: commandId, workingDirectory: "/tmp")
+        }
+
+        try await Task.sleep(nanoseconds: 10_000_000) // 10 ms — let the Task park
+
+        // Disconnect should drain the continuation.
+        client.disconnect()
+
+        let result = await executeTask.value
+        XCTAssertNil(result, "executeCommand must return nil when disconnect drains the continuation")
+    }
+
     // MARK: - Helper Methods
 
     private func simulateMessage(_ json: [String: Any]) {
