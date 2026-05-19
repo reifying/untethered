@@ -150,7 +150,7 @@
    and only for new (non-resume) sessions — it is a startup-only flag and the
    CLI has already launched by the time a resumed session needs it. Blank or
    whitespace-only values are dropped silently."
-  [provider {:keys [session-uuid resume? system-prompt]}]
+  [provider {:keys [session-uuid resume? system-prompt model]}]
   (let [trimmed-system-prompt (when system-prompt (str/trim system-prompt))
         include-system-prompt? (and (= provider :claude)
                                     (not resume?)
@@ -165,7 +165,8 @@
              (str "--resume " session-uuid)
              (str "--session-id " session-uuid))
            (when include-system-prompt?
-             (str " --append-system-prompt " (shell-single-quote trimmed-system-prompt))))
+             (str " --append-system-prompt " (shell-single-quote trimmed-system-prompt)))
+           (when model (str " --model " model)))
 
       :copilot
       (str (providers/cli-path :copilot) " "
@@ -314,6 +315,58 @@
   "Kill a tmux window by session and window name."
   [tmux-session window]
   (sh "tmux" "kill-window" "-t" (format "=%s:=%s" tmux-session window)))
+
+(defn capture-pane
+  "Capture the last `lines` of output from a tmux pane. Returns the string
+   content, or nil if the pane/window doesn't exist."
+  [tmux-session window & {:keys [lines] :or {lines 50}}]
+  (let [target (format "=%s:=%s.0" tmux-session window)
+        {:keys [out exit]} (sh "tmux" "capture-pane" "-t" target "-p"
+                               "-S" (str "-" lines))]
+    (when (zero? exit) out)))
+
+(defn pane-command
+  "Return the current command name for the pane (e.g. \"node\", \"bash\").
+   Returns nil if the window doesn't exist."
+  [tmux-session window]
+  (let [target (format "=%s:=%s.0" tmux-session window)
+        {:keys [out exit]} (sh "tmux" "display-message" "-t" target
+                               "-p" "#{pane_current_command}")]
+    (when (zero? exit) (str/trim (or out "")))))
+
+(defn agent-status
+  "Return :running, :idle, or :dead for an agent."
+  [tmux-session window]
+  (if-let [cmd (pane-command tmux-session window)]
+    (if (or (= cmd "node") (= cmd "claude")
+            (re-matches #"\d+\.\d+\.\d+" cmd))
+      :running
+      :idle)
+    :dead))
+
+(defn resolve-agent
+  "Look up an agent in live-windows by exact session-uuid, exact window name,
+   or window-name prefix. Returns [session-uuid descriptor] or nil.
+   Throws ex-info with {:kind :ambiguous} if multiple prefix matches."
+  [id]
+  (or
+   (when-let [desc (get @live-windows id)]
+     [id desc])
+   (let [matches (->> @live-windows
+                      (filter (fn [[_ desc]]
+                                (or (= id (:tmux-window desc))
+                                    (str/starts-with? (:tmux-window desc)
+                                                      (str id "-")))))
+                      vec)]
+     (case (count matches)
+       0 nil
+       1 (first matches)
+       (throw (ex-info "Ambiguous agent name"
+                       {:kind :ambiguous
+                        :matches (mapv (fn [[uuid desc]]
+                                         {:session-id uuid
+                                          :name (:tmux-window desc)})
+                                       matches)}))))))
 
 (defn list-agent-windows
   "Return [{:window :session-uuid :last-activity-ms}] for a tmux session.

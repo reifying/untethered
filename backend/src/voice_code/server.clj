@@ -20,7 +20,8 @@
             [voice-code.supervisor :as supervisor]
             [voice-code.env :as env]
             [voice-code.providers :as providers]
-            [voice-code.tmux :as tmux])
+            [voice-code.tmux :as tmux]
+            [voice-code.agent-api :as agent-api])
   (:import [java.util.concurrent Executors TimeUnit])
   (:gen-class))
 
@@ -3187,53 +3188,62 @@
 
 ;; WebSocket handler
 (defn websocket-handler
-  "Handle WebSocket connections and HTTP upload requests"
+  "Handle WebSocket connections, HTTP upload requests, and agent API routes."
   [request]
-  ;; Check for HTTP POST to /upload BEFORE with-channel
-  (if (and (= :post (:request-method request))
-           (= "/upload" (:uri request)))
-    ;; Handle synchronous HTTP upload
-    (http/with-channel request channel
-      (handle-http-upload request channel)
-      ;; For synchronous response, we don't keep the channel open
-      (http/close channel))
+  (let [method (:request-method request)
+        uri    (:uri request)]
+    (cond
+      ;; Existing upload route
+      (and (= :post method) (= "/upload" uri))
+      (http/with-channel request channel
+        (handle-http-upload request channel)
+        ;; For synchronous response, we don't keep the channel open
+        (http/close channel))
 
-    ;; Handle WebSocket connections
-    (http/with-channel request channel
-      (if (http/websocket? channel)
-        (do
-          (log/info "WebSocket connection established" {:remote-addr (:remote-addr request)})
+      ;; Agent API routes
+      (str/starts-with? (or uri "") "/api/agents")
+      (http/with-channel request channel
+        ((agent-api/with-bearer-auth api-key
+           (fn [req ch] (agent-api/dispatch req ch))) request channel)
+        (http/close channel))
 
-          ;; Send hello message with auth_version. The advertised :version is
-          ;; the server's *preferred* (max-cap) protocol version per §3.2 of
-          ;; voice-code-sync-kafka-redesign-2026-05-10.md — the client may
-          ;; still negotiate lower via connect.protocol_version, and the
-          ;; resulting per-channel value is echoed back in the :connected
-          ;; reply (negotiated_protocol_version).
+      ;; WebSocket and everything else
+      :else
+      (http/with-channel request channel
+        (if (http/websocket? channel)
+          (do
+            (log/info "WebSocket connection established" {:remote-addr (:remote-addr request)})
+
+            ;; Send hello message with auth_version. The advertised :version is
+            ;; the server's *preferred* (max-cap) protocol version per §3.2 of
+            ;; voice-code-sync-kafka-redesign-2026-05-10.md — the client may
+            ;; still negotiate lower via connect.protocol_version, and the
+            ;; resulting per-channel value is echoed back in the :connected
+            ;; reply (negotiated_protocol_version).
+            (http/send! channel
+                        (generate-json
+                         {:type :hello
+                          :message "Welcome to voice-code backend"
+                          :version (message-stream-version-string @server-max-protocol-version)
+                          :auth-version 1
+                          :instructions "Send connect message with api_key"}))
+
+            ;; Handle incoming messages
+            (http/on-receive channel
+                             (fn [msg]
+                               (handle-message channel msg)))
+
+            ;; Handle connection close
+            (http/on-close channel
+                           (fn [status]
+                             (log/info "WebSocket connection closed" {:status status})
+                             (unregister-channel! channel))))
+
+          ;; Not a WebSocket request and not /upload
           (http/send! channel
-                      (generate-json
-                       {:type :hello
-                        :message "Welcome to voice-code backend"
-                        :version (message-stream-version-string @server-max-protocol-version)
-                        :auth-version 1
-                        :instructions "Send connect message with api_key"}))
-
-          ;; Handle incoming messages
-          (http/on-receive channel
-                           (fn [msg]
-                             (handle-message channel msg)))
-
-          ;; Handle connection close
-          (http/on-close channel
-                         (fn [status]
-                           (log/info "WebSocket connection closed" {:status status})
-                           (unregister-channel! channel))))
-
-        ;; Not a WebSocket request and not /upload
-        (http/send! channel
-                    {:status 400
-                     :headers {"Content-Type" "text/plain"}
-                     :body "This endpoint requires WebSocket connection"})))))
+                      {:status 400
+                       :headers {"Content-Type" "text/plain"}
+                       :body "This endpoint requires WebSocket connection"}))))))
 
 (defn register-supervisor-tool-handlers!
   "Register external tool handlers that bridge supervisor tools to server

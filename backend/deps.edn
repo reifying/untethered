@@ -48,4 +48,8 @@
                          :main-opts ["-m" "cognitect.test-runner"]}
 
            ;; CLI for utility commands (recipe sync, etc.)
-           :main {:main-opts ["-m" "voice-code.cli"]}}}
+           :main {:main-opts ["-m" "voice-code.cli"]}
+
+           ;; CLI entry points for vc-agent shell script
+           :agent {:extra-paths []
+                   :exec-fn voice-code.agent-cli/start}}}

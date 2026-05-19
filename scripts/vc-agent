@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# vc-agent — CLI wrapper for voice-code tmux agent operations.
+# All tmux logic is in voice-code.agent-cli (Clojure). This script handles
+# argument parsing only.
+
+set -euo pipefail
+
+VC_PROJECT_DIR="${VC_PROJECT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+VC_BACKEND_DIR="$VC_PROJECT_DIR/backend"
+
+# Implementer-mode prefix: prepend to prompt when workdir is ~/assist
+IMPL_PREFIX="${IMPL_PREFIX:-}"
+
+_clj_x() {
+  cd "$VC_BACKEND_DIR" && clojure -X:agent "$@"
+}
+
+_canonicalize_dir() {
+  cd "$1" 2>/dev/null && pwd || echo "$1"
+}
+
+_escape_str() {
+  printf '%s' "$1" | sed 's/"/\\"/g'
+}
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: vc-agent <command> [args]
+
+Commands:
+  start <name> [-d dir] [--model M] [--session-id UUID] [--provider P] <prompt|-f file>
+  stop <name>
+  nudge <name> <message|-f file>
+  resume <name-or-uuid> [-d workdir] [--provider P]
+  list
+  status <name>
+  capture <name> [lines]
+  session-id <name>
+  attach <name>
+EOF
+  exit 1
+}
+
+cmd_start() {
+  local name="${1:?'name required'}"; shift
+  local workdir="$HOME" provider="claude" prompt="" model="" session_id=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -d)           workdir="$2"; shift 2 ;;
+      --model)      model="$2"; shift 2 ;;
+      --session-id) session_id="$2"; shift 2 ;;
+      --provider)   provider="$2"; shift 2 ;;
+      -f)           prompt="$(cat "$2")"; shift 2 ;;
+      *)            prompt="$1"; shift ;;
+    esac
+  done
+
+  # Implementer-mode prefix injection
+  if [[ -n "$IMPL_PREFIX" ]] && \
+     [[ "$(_canonicalize_dir "$workdir")" == "$(_canonicalize_dir "$HOME/assist")" ]]; then
+    prompt="${IMPL_PREFIX}${prompt}"
+  fi
+
+  local args=(voice-code.agent-cli/start
+    :name "\"$(_escape_str "$name")\"")
+  [[ -n "$workdir" ]] && args+=(:workdir "\"$(_escape_str "$workdir")\"")
+  [[ -n "$provider" ]] && args+=(:provider "\"$(_escape_str "$provider")\"")
+  [[ -n "$prompt" ]] && args+=(:prompt "\"$(_escape_str "$prompt")\"")
+  [[ -n "$model" ]] && args+=(:model "\"$(_escape_str "$model")\"")
+  [[ -n "$session_id" ]] && args+=(:session-id "\"$(_escape_str "$session_id")\"")
+
+  _clj_x "${args[@]}"
+}
+
+cmd_stop() {
+  local id="${1:?'name or uuid required'}"
+  _clj_x voice-code.agent-cli/stop :id "\"$(_escape_str "$id")\""
+}
+
+cmd_nudge() {
+  local id="${1:?'name or uuid required'}"; shift
+  local message=""
+  if [[ "$1" == "-f" ]]; then
+    message="$(cat "$2")"
+  else
+    message="$*"
+  fi
+  _clj_x voice-code.agent-cli/nudge \
+    :id "\"$(_escape_str "$id")\"" \
+    :message "\"$(_escape_str "$message")\""
+}
+
+cmd_resume() {
+  local id="${1:?'name or uuid required'}"; shift
+  local workdir="" provider=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -d)         workdir="$2"; shift 2 ;;
+      --provider) provider="$2"; shift 2 ;;
+      *)          shift ;;
+    esac
+  done
+  local args=(voice-code.agent-cli/resume :id "\"$(_escape_str "$id")\"")
+  [[ -n "$workdir" ]] && args+=(:workdir "\"$(_escape_str "$workdir")\"")
+  [[ -n "$provider" ]] && args+=(:provider "\"$(_escape_str "$provider")\"")
+  _clj_x "${args[@]}"
+}
+
+cmd_list() {
+  _clj_x voice-code.agent-cli/list-agents :_ '""'
+}
+
+cmd_status() {
+  local id="${1:?'name or uuid required'}"
+  _clj_x voice-code.agent-cli/status :id "\"$(_escape_str "$id")\""
+}
+
+cmd_capture() {
+  local id="${1:?'name or uuid required'}"
+  local lines="${2:-}"
+  local args=(voice-code.agent-cli/capture :id "\"$(_escape_str "$id")\"")
+  [[ -n "$lines" ]] && args+=(:lines "$lines")
+  _clj_x "${args[@]}"
+}
+
+cmd_session_id() {
+  local id="${1:?'name or uuid required'}"
+  _clj_x voice-code.agent-cli/session-id :id "\"$(_escape_str "$id")\""
+}
+
+cmd_attach() {
+  local id="${1:?'name or uuid required'}"
+  local match
+  match=$(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null \
+    | grep -m1 ":${id}") || { echo "No window matching: $id" >&2; exit 1; }
+  local session="${match%%:*}" window="${match#*:}"
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux switch-client -t "=${session}" \; select-window -t "=${session}:=${window}"
+  else
+    tmux attach-session -t "=${session}" \; select-window -t "=${session}:=${window}"
+  fi
+}
+
+main() {
+  local cmd="${1:-}"
+  [[ -z "$cmd" ]] && usage
+  shift
+  case "$cmd" in
+    start)      cmd_start "$@" ;;
+    stop)       cmd_stop "$@" ;;
+    nudge)      cmd_nudge "$@" ;;
+    resume)     cmd_resume "$@" ;;
+    list)       cmd_list ;;
+    status)     cmd_status "$@" ;;
+    capture)    cmd_capture "$@" ;;
+    session-id) cmd_session_id "$@" ;;
+    attach)     cmd_attach "$@" ;;
+    help|--help|-h) usage ;;
+    *) echo "Unknown command: $cmd" >&2; usage ;;
+  esac
+}
+
+main "$@"

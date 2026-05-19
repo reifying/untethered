@@ -1,0 +1,139 @@
+(ns voice-code.agent-cli-test
+  "Tests for pure helper functions in voice-code.agent-cli.
+   Functions that call clj -X entry points (init!, start, etc.) are not tested
+   here because they exercise tmux live I/O and the full JVM startup path.
+   We focus on the pure helpers that are testable without a real tmux server."
+  (:require [clojure.test :refer [deftest is testing]]
+            [voice-code.agent-cli :as cli]
+            [voice-code.tmux :as tmux]))
+
+;; ============================================================================
+;; uuid-str?
+;; ============================================================================
+
+(deftest uuid-str?-test
+  (testing "returns true for valid UUID string"
+    (is (true? (#'cli/uuid-str? "f8e22197-1234-5678-abcd-ef0123456789"))))
+
+  (testing "returns true for another valid UUID"
+    (is (true? (#'cli/uuid-str? "00000000-0000-0000-0000-000000000000"))))
+
+  (testing "returns false for non-UUID strings"
+    (is (false? (#'cli/uuid-str? "my-agent")))
+    (is (false? (#'cli/uuid-str? "not-a-uuid")))
+    (is (false? (#'cli/uuid-str? "")))
+    (is (false? (#'cli/uuid-str? "f8e22197-1234-5678-abcd-ef012345678"))) ; too short
+    (is (false? (#'cli/uuid-str? "f8e22197-1234-5678-abcd-ef01234567890")))) ; too long
+
+  (testing "returns false for nil"
+    (is (false? (#'cli/uuid-str? nil))))
+
+  (testing "returns false for non-string types"
+    (is (false? (#'cli/uuid-str? 42)))
+    (is (false? (#'cli/uuid-str? :keyword)))))
+
+;; ============================================================================
+;; resolve-uuid-from-tmux-env
+;; ============================================================================
+
+(deftest resolve-uuid-from-tmux-env-test
+  (testing "returns nil when no sessions exist"
+    (let [invoker (fn [& _] {:exit 0 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (nil? (#'cli/resolve-uuid-from-tmux-env "my-agent"))))))
+
+  (testing "finds UUID by exact slug match"
+    (let [uuid "aabbccdd-1111-0000-0000-000000000000"
+          invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "my-project\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0
+                       :out (str "VC_SESSION_UUID_my_agent=" uuid "\n"
+                                 "VC_WORKDIR_my_agent=/tmp/proj\n"
+                                 "VC_PROVIDER_my_agent=claude\n")
+                       :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (let [result (#'cli/resolve-uuid-from-tmux-env "my-agent")]
+          (is (= uuid (:uuid result)))
+          (is (= "/tmp/proj" (:workdir result)))
+          (is (= :claude (:provider result)))))))
+
+  (testing "returns nil when agent name not found"
+    (let [invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "my-project\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0
+                       :out "VC_SESSION_UUID_other_agent=some-uuid\n"
+                       :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (nil? (#'cli/resolve-uuid-from-tmux-env "my-agent")))))))
+
+;; ============================================================================
+;; recover-workdir-from-tmux-env
+;; ============================================================================
+
+(deftest recover-workdir-from-tmux-env-test
+  (testing "returns workdir when UUID found in tmux env"
+    (let [uuid "ccddaabb-0000-0000-0000-000000000000"
+          invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "sess\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0
+                       :out (str "VC_SESSION_UUID_some_window=" uuid "\n"
+                                 "VC_WORKDIR_some_window=/home/user/code\n")
+                       :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= "/home/user/code"
+               (#'cli/recover-workdir-from-tmux-env uuid))))))
+
+  (testing "returns nil when UUID not found in any session"
+    (let [invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "sess\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0 :out "VC_SESSION_UUID_win=different-uuid\n" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (nil? (#'cli/recover-workdir-from-tmux-env "not-present-uuid")))))))
+
+;; ============================================================================
+;; recover-provider-from-tmux-env
+;; ============================================================================
+
+(deftest recover-provider-from-tmux-env-test
+  (testing "returns provider keyword when UUID found in tmux env"
+    (let [uuid "eeff0011-0000-0000-0000-000000000000"
+          invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "sess\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0
+                       :out (str "VC_SESSION_UUID_some_window=" uuid "\n"
+                                 "VC_PROVIDER_some_window=copilot\n")
+                       :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :copilot
+               (#'cli/recover-provider-from-tmux-env uuid))))))
+
+  (testing "returns nil when UUID not found"
+    (let [invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "sess\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0 :out "" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (nil? (#'cli/recover-provider-from-tmux-env "missing-uuid")))))))

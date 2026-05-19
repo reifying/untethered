@@ -1095,3 +1095,181 @@
           "respawn must be attempted after nudge failure")
       (is (some #(clojure.string/includes? (str %) "--resume") @new-window-args)
           "respawn must use --resume"))))
+
+;; ============================================================================
+;; capture-pane
+;; ============================================================================
+
+(deftest capture-pane-test
+  (testing "returns output when pane exists (exit 0)"
+    (let [invoker (fn [& args]
+                    (if (some #{"capture-pane"} args)
+                      {:exit 0 :out "some pane output\n" :err ""}
+                      {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= "some pane output\n"
+               (tmux/capture-pane "my-session" "my-window"))))))
+
+  (testing "returns nil when pane doesn't exist (non-zero exit)"
+    (let [invoker (fn [& _args]
+                    {:exit 1 :out "" :err "can't find window"})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (nil? (tmux/capture-pane "no-session" "no-window"))))))
+
+  (testing "passes -S with negated lines count"
+    (let [captured-args (atom nil)
+          invoker (fn [& args]
+                    (when (some #{"capture-pane"} args)
+                      (reset! captured-args (vec args)))
+                    {:exit 0 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (tmux/capture-pane "sess" "win" :lines 100))
+      (is (some #(= "-100" %) @captured-args)
+          "expected -S -100 in args")))
+
+  (testing "uses correct target format"
+    (let [captured-args (atom nil)
+          invoker (fn [& args]
+                    (when (some #{"capture-pane"} args)
+                      (reset! captured-args (vec args)))
+                    {:exit 0 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (tmux/capture-pane "my-session" "my-window"))
+      (is (some #(= "=my-session:=my-window.0" %) @captured-args)
+          "expected correct target address"))))
+
+;; ============================================================================
+;; pane-command
+;; ============================================================================
+
+(deftest pane-command-test
+  (testing "returns trimmed command name when pane exists"
+    (let [invoker (fn [& _args]
+                    {:exit 0 :out "node\n" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= "node" (tmux/pane-command "sess" "win"))))))
+
+  (testing "returns nil when display-message fails (non-zero exit)"
+    (let [invoker (fn [& _args]
+                    {:exit 1 :out "" :err "no such window"})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (nil? (tmux/pane-command "sess" "win"))))))
+
+  (testing "trims whitespace from output"
+    (let [invoker (fn [& _args]
+                    {:exit 0 :out "  bash  \n" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= "bash" (tmux/pane-command "sess" "win")))))))
+
+;; ============================================================================
+;; agent-status
+;; ============================================================================
+
+(deftest agent-status-test
+  (testing "returns :running when pane command is 'node'"
+    (let [invoker (fn [& _args] {:exit 0 :out "node\n" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :running (tmux/agent-status "sess" "win"))))))
+
+  (testing "returns :running when pane command is 'claude'"
+    (let [invoker (fn [& _args] {:exit 0 :out "claude\n" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :running (tmux/agent-status "sess" "win"))))))
+
+  (testing "returns :running when pane command matches semver pattern"
+    (let [invoker (fn [& _args] {:exit 0 :out "1.2.3\n" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :running (tmux/agent-status "sess" "win"))))))
+
+  (testing "returns :idle when pane command is 'bash'"
+    (let [invoker (fn [& _args] {:exit 0 :out "bash\n" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :idle (tmux/agent-status "sess" "win"))))))
+
+  (testing "returns :dead when display-message fails"
+    (let [invoker (fn [& _args] {:exit 1 :out "" :err "no such window"})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :dead (tmux/agent-status "sess" "win")))))))
+
+;; ============================================================================
+;; resolve-agent
+;; ============================================================================
+
+(deftest resolve-agent-test
+  (testing "finds by exact session-uuid"
+    (let [uuid "aaaaaaaa-0000-0000-0000-000000000000"
+          desc {:tmux-session "sess" :tmux-window "myagent-aaaaaa" :provider :claude}]
+      (reset! tmux/live-windows {uuid desc})
+      (is (= [uuid desc] (tmux/resolve-agent uuid)))))
+
+  (testing "finds by exact window name"
+    (let [uuid "bbbbbbbb-0000-0000-0000-000000000000"
+          desc {:tmux-session "sess" :tmux-window "myagent-bbbbbb" :provider :claude}]
+      (reset! tmux/live-windows {uuid desc})
+      (is (= [uuid desc] (tmux/resolve-agent "myagent-bbbbbb")))))
+
+  (testing "finds by window-name prefix (name without UUID suffix)"
+    (let [uuid "cccccccc-0000-0000-0000-000000000000"
+          desc {:tmux-session "sess" :tmux-window "myagent-cccccc" :provider :claude}]
+      (reset! tmux/live-windows {uuid desc})
+      ;; "myagent" is a prefix of "myagent-cccccc"
+      (is (= [uuid desc] (tmux/resolve-agent "myagent")))))
+
+  (testing "returns nil when no match found"
+    (reset! tmux/live-windows {})
+    (is (nil? (tmux/resolve-agent "nonexistent"))))
+
+  (testing "throws ex-info with :kind :ambiguous when prefix matches multiple windows"
+    (let [uuid1 "dddddddd-0000-0000-0000-000000000000"
+          uuid2 "eeeeeeee-0000-0000-0000-000000000000"
+          desc1 {:tmux-session "sess" :tmux-window "proj-ddd111" :provider :claude}
+          desc2 {:tmux-session "sess" :tmux-window "proj-eee222" :provider :claude}]
+      (reset! tmux/live-windows {uuid1 desc1 uuid2 desc2})
+      (let [thrown (try
+                     (tmux/resolve-agent "proj")
+                     nil
+                     (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? thrown))
+        (is (= :ambiguous (:kind (ex-data thrown)))))))
+
+  (testing "session-uuid lookup takes priority over window-name lookup"
+    (let [uuid "ffffffff-0000-0000-0000-000000000000"
+          desc {:tmux-session "sess" :tmux-window "some-window-ffffff" :provider :claude}]
+      (reset! tmux/live-windows {uuid desc})
+      (is (= [uuid desc] (tmux/resolve-agent uuid))))))
+
+;; ============================================================================
+;; build-provider-command with :model
+;; ============================================================================
+
+(deftest build-provider-command-model-test
+  (testing "claude includes --model flag when model is provided"
+    (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/claude")]
+      (let [cmd (tmux/build-provider-command :claude {:session-uuid "abc123"
+                                                       :resume? false
+                                                       :model "claude-opus-4-5"})]
+        (is (clojure.string/includes? cmd "--model claude-opus-4-5")))))
+
+  (testing "claude omits --model when model is nil"
+    (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/claude")]
+      (let [cmd (tmux/build-provider-command :claude {:session-uuid "abc123"
+                                                       :resume? false
+                                                       :model nil})]
+        (is (not (clojure.string/includes? cmd "--model"))))))
+
+  (testing "claude --model appears after other flags"
+    (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/claude")]
+      (let [cmd (tmux/build-provider-command :claude {:session-uuid "abc123"
+                                                       :resume? false
+                                                       :system-prompt "Be concise"
+                                                       :model "claude-haiku-4-5"})]
+        (is (clojure.string/includes? cmd "--append-system-prompt"))
+        (is (clojure.string/includes? cmd "--model claude-haiku-4-5")))))
+
+  (testing "claude resume also includes --model when provided"
+    (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/claude")]
+      (let [cmd (tmux/build-provider-command :claude {:session-uuid "abc123"
+                                                       :resume? true
+                                                       :model "claude-sonnet-4-5"})]
+        (is (clojure.string/includes? cmd "--resume abc123"))
+        (is (clojure.string/includes? cmd "--model claude-sonnet-4-5"))))))
