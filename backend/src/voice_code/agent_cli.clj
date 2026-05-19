@@ -83,6 +83,23 @@
                     env)))
           sessions)))
 
+(defn- recover-session-name-from-tmux-env
+  "Given a UUID, find the original session name by scanning tmux environments.
+   Returns the VC_SESSION_NAME value stored when the agent was first started, or nil."
+  [uuid]
+  (let [sessions (->> (sh "tmux" "list-sessions" "-F" "#{session_name}")
+                      :out str/split-lines (remove str/blank?))]
+    (some (fn [s]
+            (let [env (tmux/parse-show-environment
+                       (:out (sh "tmux" "show-environment" "-t" (str "=" s))))]
+              (some (fn [[k v]]
+                      (when (and (str/starts-with? k "VC_SESSION_UUID_")
+                                 (= v uuid))
+                        (let [suffix (subs k (count "VC_SESSION_UUID_"))]
+                          (not-empty (get env (str "VC_SESSION_NAME_" suffix))))))
+                    env)))
+          sessions)))
+
 (defn- resolve-session-uuid
   "Resolve a name-or-uuid `id` to a UUID string for resume operations."
   [id workdir]
@@ -220,10 +237,14 @@
                               (recover-provider-from-tmux-env uuid)
                               (:provider index-meta)
                               :claude)
-        agent-name (or id
-                       (some-> (:name index-meta)
-                               (subs 0 (min 30 (count (:name index-meta)))))
-                       "resumed")]
+        ;; When id is a UUID, recover the original human-readable name so the
+        ;; resumed agent can still be referenced by that name after resume.
+        agent-name (cond
+                     (not (uuid-str? id)) id
+                     :else (or (recover-session-name-from-tmux-env uuid)
+                               (some-> (:name index-meta)
+                                       (subs 0 (min 30 (count (:name index-meta)))))
+                               "resumed"))]
     (tmux/start-window! {:session-uuid uuid
                          :session-name agent-name
                          :provider resolved-provider

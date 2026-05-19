@@ -355,8 +355,7 @@
    (let [matches (->> @live-windows
                       (filter (fn [[_ desc]]
                                 (or (= id (:tmux-window desc))
-                                    (str/starts-with? (:tmux-window desc)
-                                                      (str id "-")))))
+                                    (str/starts-with? (:tmux-window desc) id))))
                       vec)]
      (case (count matches)
        0 nil
@@ -433,12 +432,13 @@
    TUI does not become ready within the timeout. Callers wrap dispatch in
    try/catch so this surfaces as an {type: error, session_id} envelope to
    the client rather than a silent hang (tmux-untethered-8vb)."
-  [{:keys [session-uuid session-name provider workdir initial-prompt resume? system-prompt]}]
+  [{:keys [session-uuid session-name provider workdir initial-prompt resume? system-prompt model]}]
   (let [window (window-name session-name session-uuid)
         cmd (build-provider-command provider
                                     {:session-uuid session-uuid
                                      :resume? (boolean resume?)
-                                     :system-prompt system-prompt})]
+                                     :system-prompt system-prompt
+                                     :model model})]
     ;; All state reads and mutations run under eviction-lock so collision
     ;; detection, eviction, window creation, env writes, and live-windows
     ;; update are one atomic critical section. evict-if-needed! also acquires
@@ -458,7 +458,8 @@
                                  {"VC_SESSION_UUID" session-uuid
                                   "VC_WORKDIR" workdir
                                   "VC_PROVIDER" (name provider)
-                                  "VC_STARTED_AT" started-at})
+                                  "VC_STARTED_AT" started-at
+                                  "VC_SESSION_NAME" (or session-name "")})
                 (let [descriptor {:tmux-session tmux-session
                                   :tmux-window window
                                   :provider provider

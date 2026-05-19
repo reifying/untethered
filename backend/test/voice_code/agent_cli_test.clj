@@ -137,3 +137,50 @@
                       :else {:exit 0 :out "" :err ""}))]
       (binding [tmux/*tmux-invoker* invoker]
         (is (nil? (#'cli/recover-provider-from-tmux-env "missing-uuid")))))))
+
+;; ============================================================================
+;; recover-session-name-from-tmux-env
+;; ============================================================================
+
+(deftest recover-session-name-from-tmux-env-test
+  (testing "returns session name when UUID found in tmux env"
+    (let [uuid "aabb1122-0000-0000-0000-000000000000"
+          invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "sess\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0
+                       :out (str "VC_SESSION_UUID_my_agent=" uuid "\n"
+                                 "VC_SESSION_NAME_my_agent=my-feature-work\n")
+                       :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= "my-feature-work"
+               (#'cli/recover-session-name-from-tmux-env uuid))))))
+
+  (testing "returns nil when UUID not found"
+    (let [invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "sess\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0 :out "VC_SESSION_UUID_win=different-uuid\n" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (nil? (#'cli/recover-session-name-from-tmux-env "not-present"))))))
+
+  (testing "returns nil when VC_SESSION_NAME is empty string"
+    (let [uuid "ccdd3344-0000-0000-0000-000000000000"
+          invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args)
+                      {:exit 0 :out "sess\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0
+                       :out (str "VC_SESSION_UUID_win=" uuid "\n"
+                                 "VC_SESSION_NAME_win=\n")
+                       :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (nil? (#'cli/recover-session-name-from-tmux-env uuid)))))))
