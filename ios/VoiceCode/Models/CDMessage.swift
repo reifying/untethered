@@ -65,10 +65,13 @@ public class CDMessage: NSManagedObject {
 
     /// Display text with truncation for UI rendering
     /// Truncates at platform-specific threshold (macOS: 2000 chars, iOS: 500 chars)
-    /// Cached based on text.count to avoid recomputation during layout
+    /// Cached based on text.hashValue to avoid recomputation during layout.
+    /// Uses hashValue (not text.count) so that equal-length but different-content
+    /// strings (e.g. after server-side text updates on an existing offset row)
+    /// correctly invalidate the cache. tmux-untethered-5z0.
     var displayText: String {
-        // Check cache validity (keyed by text length)
-        let cacheKey = text.count
+        // Check cache validity (keyed by content hash, not length)
+        let cacheKey = text.hashValue
         if let cached = _displayTextCache, _displayTextCacheKey == cacheKey {
             return cached
         }
@@ -86,9 +89,9 @@ public class CDMessage: NSManagedObject {
             result = "\(head)\n\n[... \(omittedCount) characters omitted ...]\n\n\(tail)"
         }
 
-        // Cache result
+        // Cache result keyed by content hash
         _displayTextCache = result
-        _displayTextCacheKey = cacheKey
+        _displayTextCacheKey = text.hashValue
 
         return result
     }
