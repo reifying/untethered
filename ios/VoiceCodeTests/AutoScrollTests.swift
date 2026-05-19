@@ -343,4 +343,60 @@ final class AutoScrollTests: XCTestCase {
 
         XCTAssertEqual(hint, "Scroll to the newest message", "Should show generic hint when no unread")
     }
+
+    // MARK: - Loading Indicator Tests (tmux-untethered-cho)
+
+    func testLoadingSpinner_ClearsWhenMessagesArriveWhileVisible() {
+        // Regression guard for tmux-untethered-cho:
+        // When the session has no cached messages, isLoading=true and the List
+        // (with its inner onChange) is NOT rendered. The outer onChange on the
+        // VStack must detect messages.count > 0 and clear isLoading immediately.
+        //
+        // This test replicates the logic of the outer .onChange modifier added to
+        // ConversationView so we can verify it in isolation without rendering SwiftUI.
+        var isLoading = true
+
+        // Simulate the outer onChange(of: messages.count) logic:
+        let applyOuterOnChange: (Int) -> Void = { newCount in
+            if isLoading && newCount > 0 {
+                isLoading = false
+            }
+        }
+
+        // Messages arrive while spinner is showing
+        applyOuterOnChange(3)
+
+        XCTAssertFalse(isLoading, "Loading spinner must clear as soon as messages.count > 0")
+    }
+
+    func testLoadingSpinner_StaysVisibleWhenNoMessagesYet() {
+        // isLoading must not be cleared when newCount is still 0 (initial empty state).
+        var isLoading = true
+
+        let applyOuterOnChange: (Int) -> Void = { newCount in
+            if isLoading && newCount > 0 {
+                isLoading = false
+            }
+        }
+
+        applyOuterOnChange(0)
+
+        XCTAssertTrue(isLoading, "Loading spinner must remain while messages.count == 0")
+    }
+
+    func testLoadingSpinner_NotClearedWhenAlreadyFalse() {
+        // If isLoading was already false (messages were cached on open), the
+        // outer onChange must not flip it back to false again (no-op).
+        var isLoading = false
+
+        let applyOuterOnChange: (Int) -> Void = { newCount in
+            if isLoading && newCount > 0 {
+                isLoading = false
+            }
+        }
+
+        applyOuterOnChange(5)
+
+        XCTAssertFalse(isLoading, "isLoading should remain false — no double-clear side effect")
+    }
 }

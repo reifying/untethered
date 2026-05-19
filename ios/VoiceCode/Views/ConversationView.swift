@@ -562,6 +562,18 @@ struct ConversationView: View {
             }
             #endif
         }
+        // Clear the loading spinner as soon as messages arrive, regardless of
+        // which branch the ZStack is showing. The onChange(of: messages.count)
+        // inside the List only fires when the List is in the hierarchy (i.e.,
+        // when isLoading == false), so without this outer observer messages can
+        // arrive and sit in the @FetchRequest while the spinner stays visible
+        // for the full 5-second timeout. See tmux-untethered-cho.
+        .onChange(of: messages.count) { _, newCount in
+            if isLoading && newCount > 0 {
+                logger.info("⏱️ [ConversationView] Messages arrived (\(newCount)) while loading, hiding spinner")
+                isLoading = false
+            }
+        }
         .overlay(alignment: .top) {
             if showingCopyConfirmation {
                 Text(compactSuccessMessage ?? copyConfirmationMessage)
