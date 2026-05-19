@@ -995,6 +995,64 @@
       (is (contains? @tmux/live-windows uuid)))))
 
 ;; ============================================================================
+;; scan-window-for-uuid!
+;; ============================================================================
+
+(deftest scan-window-for-uuid!-test
+  (testing "finds window and backfills live-windows when UUID exists in a live window"
+    (let [uuid "scanuuid-1111-0000-0000-000000000000"
+          invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args) {:exit 0 :out "my-session\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0
+                       :out (str "VC_SESSION_UUID_my_agent=" uuid "\n"
+                                 "VC_PROVIDER_my_agent=claude\n"
+                                 "VC_WORKDIR_my_agent=/tmp/proj\n"
+                                 "VC_STARTED_AT_my_agent=2026-01-01T00:00:00Z\n")
+                       :err ""}
+                      (some #{"list-windows"} args) {:exit 0 :out "my-agent\n" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (let [desc (#'tmux/scan-window-for-uuid! uuid)]
+          (is (some? desc) "should return descriptor when window found")
+          (is (= "my-session" (:tmux-session desc)))
+          (is (= "my-agent" (:tmux-window desc)))
+          (is (= :claude (:provider desc)))
+          (is (= "/tmp/proj" (:workdir desc)))
+          (is (contains? @tmux/live-windows uuid) "should backfill live-windows")))))
+
+  (testing "returns nil when window does not actually exist (stale env var)"
+    (let [uuid "scanuuid-2222-0000-0000-000000000000"
+          invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args) {:exit 0 :out "my-session\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0
+                       :out (str "VC_SESSION_UUID_dead_window=" uuid "\n")
+                       :err ""}
+                      ;; list-windows returns _holder only — dead_window is gone
+                      (some #{"list-windows"} args) {:exit 0 :out "_holder\n" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (is (nil? (#'tmux/scan-window-for-uuid! uuid))
+            "should return nil when env var exists but window is gone"))))
+
+  (testing "returns nil when UUID not found in any session"
+    (let [invoker (fn [& args]
+                    (cond
+                      (some #{"list-sessions"} args) {:exit 0 :out "my-session\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0 :out "VC_SESSION_UUID_other=different-uuid\n" :err ""}
+                      (some #{"list-windows"} args) {:exit 0 :out "other\n" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (is (nil? (#'tmux/scan-window-for-uuid! "missing-uuid-000-000-000-000000000000")))))))
+
+;; ============================================================================
 ;; deliver!
 ;; ============================================================================
 
@@ -1094,7 +1152,35 @@
       (is (some? @new-window-args)
           "respawn must be attempted after nudge failure")
       (is (some #(clojure.string/includes? (str %) "--resume") @new-window-args)
-          "respawn must use --resume"))))
+          "respawn must use --resume")))
+
+  (testing "lazy-backfill: nudges CLI-created window found via tmux scan when not in live-windows"
+    ;; Simulates the fluid-switching scenario: a window was created by vc-agent CLI
+    ;; after the server started, so it is not in the server's live-windows. deliver!
+    ;; should discover it via scan-window-for-uuid! and nudge it rather than respawning.
+    (let [uuid "cli-created-0000-0000-0000-000000000000"
+          send-keys-calls (atom [])
+          new-window-calls (atom [])
+          invoker (fn [& args]
+                    (when (some #{"send-keys"} args) (swap! send-keys-calls conj (vec args)))
+                    (when (some #{"new-window"} args) (swap! new-window-calls conj (vec args)))
+                    (cond
+                      (some #{"list-sessions"} args) {:exit 0 :out "my-session\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0
+                       :out (str "VC_SESSION_UUID_cli_agent=" uuid "\n"
+                                 "VC_PROVIDER_cli_agent=claude\n"
+                                 "VC_WORKDIR_cli_agent=/tmp/cli\n"
+                                 "VC_STARTED_AT_cli_agent=2026-01-01T00:00:00Z\n")
+                       :err ""}
+                      (some #{"list-windows"} args) {:exit 0 :out "cli-agent\n" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (tmux/deliver! uuid "hello from server"))
+      (is (empty? @new-window-calls) "should NOT spawn a new window")
+      (is (some #(some #{"hello from server"} %) @send-keys-calls)
+          "should nudge the existing CLI-created window"))))
 
 ;; ============================================================================
 ;; capture-pane

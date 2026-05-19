@@ -224,31 +224,36 @@
 (defn resume
   [{:keys [id workdir provider]}]
   (init!)
-  (let [uuid (resolve-session-uuid id workdir)
-        tmux-info (resolve-uuid-from-tmux-env id)
-        index-meta (get @repl/session-index uuid)
-        resolved-workdir (or workdir
-                             (:workdir tmux-info)
-                             (recover-workdir-from-tmux-env uuid)
-                             (:working-directory index-meta)
-                             (System/getProperty "user.home"))
-        resolved-provider (or (when provider (keyword provider))
-                              (:provider tmux-info)
-                              (recover-provider-from-tmux-env uuid)
-                              (:provider index-meta)
-                              :claude)
-        ;; When id is a UUID, recover the original human-readable name so the
-        ;; resumed agent can still be referenced by that name after resume.
-        agent-name (cond
-                     (not (uuid-str? id)) id
-                     :else (or (recover-session-name-from-tmux-env uuid)
-                               (some-> (:name index-meta)
-                                       (subs 0 (min 30 (count (:name index-meta)))))
-                               "resumed"))]
-    (tmux/start-window! {:session-uuid uuid
-                         :session-name agent-name
-                         :provider resolved-provider
-                         :workdir resolved-workdir
-                         :resume? true})
-    (println (str "Resumed: " agent-name " (session " uuid ")")))
+  (let [uuid (resolve-session-uuid id workdir)]
+    ;; init! calls scan-existing-windows! so live-windows reflects all tmux windows,
+    ;; including those created by vc-agent start in a separate process. Skip creation
+    ;; if the window is already running to prevent duplicate windows on fluid switching.
+    (if-let [{:keys [tmux-session tmux-window]} (get @tmux/live-windows uuid)]
+      (println (str "Already running: " tmux-window " in " tmux-session " (session " uuid ")"))
+      (let [tmux-info (resolve-uuid-from-tmux-env id)
+            index-meta (get @repl/session-index uuid)
+            resolved-workdir (or workdir
+                                 (:workdir tmux-info)
+                                 (recover-workdir-from-tmux-env uuid)
+                                 (:working-directory index-meta)
+                                 (System/getProperty "user.home"))
+            resolved-provider (or (when provider (keyword provider))
+                                  (:provider tmux-info)
+                                  (recover-provider-from-tmux-env uuid)
+                                  (:provider index-meta)
+                                  :claude)
+            ;; When id is a UUID, recover the original human-readable name so the
+            ;; resumed agent can still be referenced by that name after resume.
+            agent-name (cond
+                         (not (uuid-str? id)) id
+                         :else (or (recover-session-name-from-tmux-env uuid)
+                                   (some-> (:name index-meta)
+                                           (subs 0 (min 30 (count (:name index-meta)))))
+                                   "resumed"))]
+        (tmux/start-window! {:session-uuid uuid
+                             :session-name agent-name
+                             :provider resolved-provider
+                             :workdir resolved-workdir
+                             :resume? true})
+        (println (str "Resumed: " agent-name " (session " uuid ")")))))
   (shutdown-agents))

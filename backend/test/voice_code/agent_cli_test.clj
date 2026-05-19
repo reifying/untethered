@@ -184,3 +184,28 @@
                       :else {:exit 0 :out "" :err ""}))]
       (binding [tmux/*tmux-invoker* invoker]
         (is (nil? (#'cli/recover-session-name-from-tmux-env uuid)))))))
+
+;; ============================================================================
+;; resume idempotency
+;; ============================================================================
+
+(deftest resume-idempotency-test
+  (testing "prints 'Already running' and skips start-window! when window is live"
+    ;; After init! -> scan-existing-windows!, live-windows is populated. When the
+    ;; window already exists, resume should report it without creating a duplicate.
+    (let [uuid "aaaabbbb-cccc-0000-0000-000000000000"
+          start-window-called (atom false)
+          output (java.io.StringWriter.)]
+      (reset! tmux/live-windows
+              {uuid {:tmux-session "my-proj"
+                     :tmux-window "my-agent-aaaabb"
+                     :provider :claude
+                     :workdir "/tmp/proj"}})
+      (with-redefs [voice-code.agent-cli/init! (fn [] nil)
+                    tmux/start-window! (fn [_] (reset! start-window-called true) {})]
+        (binding [*out* output]
+          (cli/resume {:id uuid :workdir nil :provider nil})))
+      (is (false? @start-window-called)
+          "start-window! must not be called when window is already live")
+      (is (clojure.string/includes? (str output) "Already running")
+          "should print 'Already running' message"))))

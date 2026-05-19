@@ -532,16 +532,47 @@
                       :workdir (get env (str "VC_WORKDIR_" suffix))
                       :started-at (get env (str "VC_STARTED_AT_" suffix))}))))))))
 
+(defn- scan-window-for-uuid!
+  "Search all live tmux windows for one whose VC_SESSION_UUID_<suffix> matches uuid.
+   Uses the same window-enumeration approach as scan-existing-windows! so only
+   windows that actually exist are considered (no stale env-var false positives).
+   When found, backfills live-windows and returns the descriptor; otherwise nil.
+   Called by deliver! when uuid is absent from live-windows so that windows created
+   outside this JVM process (e.g. by vc-agent CLI) are discovered lazily."
+  [uuid]
+  (let [sessions (->> (sh "tmux" "list-sessions" "-F" "#{session_name}")
+                      :out str/split-lines (remove str/blank?))]
+    (some (fn [s]
+            (let [env (parse-show-environment (:out (sh "tmux" "show-environment" "-t" (str "=" s))))
+                  windows (->> (sh "tmux" "list-windows" "-t" (str "=" s) "-F" "#{window_name}")
+                               :out str/split-lines (remove #{"_holder" "tile" ""}))]
+              (some (fn [w]
+                      (let [suffix (env-suffix w)]
+                        (when (= uuid (get env (str "VC_SESSION_UUID_" suffix)))
+                          (let [descriptor {:tmux-session s
+                                            :tmux-window w
+                                            :provider (keyword (get env (str "VC_PROVIDER_" suffix)))
+                                            :workdir (get env (str "VC_WORKDIR_" suffix))
+                                            :started-at (get env (str "VC_STARTED_AT_" suffix))}]
+                            (swap! live-windows assoc uuid descriptor)
+                            descriptor))))
+                    windows)))
+          sessions)))
+
 (defn deliver!
   "Public entry point for both initial and follow-up prompts.
    Nudges the existing window if live, otherwise respawns with --resume.
-   If nudge fails (stale live-windows entry after external eviction), evicts
-   the entry and falls through to respawn-and-deliver! so the prompt is not
-   silently dropped."
+   Live-windows is checked first; on a miss, tmux is scanned directly so that
+   windows created by external processes (e.g. vc-agent CLI) are found without
+   a server restart. If nudge fails (stale live-windows entry after external
+   eviction), evicts the entry and falls through to respawn-and-deliver! so
+   the prompt is not silently dropped."
   [session-uuid prompt-text]
-  (if-let [{:keys [tmux-session tmux-window]} (get @live-windows session-uuid)]
-    (let [result (nudge! tmux-session tmux-window prompt-text)]
-      (when (= :failed result)
-        (swap! live-windows dissoc session-uuid)
-        (respawn-and-deliver! session-uuid prompt-text)))
-    (respawn-and-deliver! session-uuid prompt-text)))
+  (let [desc (or (get @live-windows session-uuid)
+                 (scan-window-for-uuid! session-uuid))]
+    (if-let [{:keys [tmux-session tmux-window]} desc]
+      (let [result (nudge! tmux-session tmux-window prompt-text)]
+        (when (= :failed result)
+          (swap! live-windows dissoc session-uuid)
+          (respawn-and-deliver! session-uuid prompt-text)))
+      (respawn-and-deliver! session-uuid prompt-text))))
