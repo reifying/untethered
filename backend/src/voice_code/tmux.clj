@@ -12,7 +12,7 @@
 ;; Declared up front so start-window! can reference evict-if-needed! and
 ;; deliver! can reference respawn-and-deliver! in the order that reads best.
 (declare evict-if-needed! respawn-and-deliver! list-agent-windows kill-window!
-         parse-show-environment)
+         parse-show-environment scan-window-for-uuid!)
 
 (def ^:private window-cap 4)
 (def ^:private processing-window-minutes 15)
@@ -425,6 +425,12 @@
    When :resume? is true, the provider is launched with its --resume flag;
    otherwise it starts a fresh session keyed to session-uuid.
 
+   Idempotent: if a window for session-uuid already exists in live-windows or
+   in tmux (e.g. created by vc-agent CLI), returns the existing descriptor and
+   delivers initial-prompt to it rather than spawning a duplicate window. This
+   handles the fluid-switching scenario where the iOS Untethered app opens a
+   session that vc-agent already started.
+
    `:system-prompt` is only honored for new :claude sessions; see
    build-provider-command for the trimming/provider rules.
 
@@ -439,46 +445,58 @@
                                      :resume? (boolean resume?)
                                      :system-prompt system-prompt
                                      :model model})]
-    ;; All state reads and mutations run under eviction-lock so collision
-    ;; detection, eviction, window creation, env writes, and live-windows
-    ;; update are one atomic critical section. evict-if-needed! also acquires
-    ;; this lock; Java synchronized is reentrant, so the inner acquisition is
-    ;; a no-op for the same thread. wait-for-ready and nudge! are left outside
-    ;; the lock because they can block for multiple seconds.
-    (let [[tmux-session descriptor]
+    ;; All state reads and mutations run under eviction-lock so the
+    ;; idempotency check, eviction, window creation, env writes, and
+    ;; live-windows update are one atomic critical section. evict-if-needed!
+    ;; also acquires this lock; Java synchronized is reentrant so the inner
+    ;; acquisition is a no-op for the same thread. wait-for-ready and nudge!
+    ;; are left outside the lock because they can block for multiple seconds.
+    (let [[existing? tmux-session descriptor]
           (locking eviction-lock
-            (let [existing-workdirs (map :workdir (vals @live-windows))
-                  tmux-session (sanitize-session-name workdir existing-workdirs)]
-              (ensure-session! tmux-session workdir)
-              (evict-if-needed! tmux-session)
-              (sh "tmux" "new-window" "-d" "-t" (str "=" tmux-session ":")
-                  "-n" window "-c" workdir cmd)
-              (let [started-at (.toString (java.time.Instant/now))]
-                (set-window-env! tmux-session window
-                                 {"VC_SESSION_UUID" session-uuid
-                                  "VC_WORKDIR" workdir
-                                  "VC_PROVIDER" (name provider)
-                                  "VC_STARTED_AT" started-at
-                                  "VC_SESSION_NAME" (or session-name "")})
-                (let [descriptor {:tmux-session tmux-session
-                                  :tmux-window window
-                                  :provider provider
-                                  :workdir workdir
-                                  :started-at started-at}]
-                  (swap! live-windows assoc session-uuid descriptor)
-                  [tmux-session descriptor]))))
-          ready-result (wait-for-ready tmux-session window provider)]
-      (if (= :ready ready-result)
-        (do (when initial-prompt
-              (nudge! tmux-session window initial-prompt))
-            descriptor)
-        (throw (ex-info "Provider TUI did not become ready before timeout"
-                        {:kind :wait-for-ready-timeout
-                         :session-uuid session-uuid
-                         :tmux-session tmux-session
-                         :tmux-window window
-                         :provider provider
-                         :resume? (boolean resume?)}))))))
+            (if-let [existing (or (get @live-windows session-uuid)
+                                  (scan-window-for-uuid! session-uuid))]
+              [true (:tmux-session existing) existing]
+              (let [existing-workdirs (map :workdir (vals @live-windows))
+                    tmux-session (sanitize-session-name workdir existing-workdirs)]
+                (ensure-session! tmux-session workdir)
+                (evict-if-needed! tmux-session)
+                (sh "tmux" "new-window" "-d" "-t" (str "=" tmux-session ":")
+                    "-n" window "-c" workdir cmd)
+                (let [started-at (.toString (java.time.Instant/now))]
+                  (set-window-env! tmux-session window
+                                   {"VC_SESSION_UUID" session-uuid
+                                    "VC_WORKDIR" workdir
+                                    "VC_PROVIDER" (name provider)
+                                    "VC_STARTED_AT" started-at
+                                    "VC_SESSION_NAME" (or session-name "")})
+                  (let [descriptor {:tmux-session tmux-session
+                                    :tmux-window window
+                                    :provider provider
+                                    :workdir workdir
+                                    :started-at started-at}]
+                    (swap! live-windows assoc session-uuid descriptor)
+                    [false tmux-session descriptor])))))]
+      (if existing?
+        (do
+          (log/info "start-window!: reusing existing window for session-uuid"
+                    {:session-uuid session-uuid
+                     :tmux-session tmux-session
+                     :tmux-window (:tmux-window descriptor)})
+          (when initial-prompt
+            (nudge! tmux-session (:tmux-window descriptor) initial-prompt))
+          descriptor)
+        (let [ready-result (wait-for-ready tmux-session window provider)]
+          (if (= :ready ready-result)
+            (do (when initial-prompt
+                  (nudge! tmux-session window initial-prompt))
+                descriptor)
+            (throw (ex-info "Provider TUI did not become ready before timeout"
+                            {:kind :wait-for-ready-timeout
+                             :session-uuid session-uuid
+                             :tmux-session tmux-session
+                             :tmux-window window
+                             :provider provider
+                             :resume? (boolean resume?)}))))))))
 
 (defn- respawn-and-deliver!
   "Respawn an evicted session with --resume and deliver the prompt.

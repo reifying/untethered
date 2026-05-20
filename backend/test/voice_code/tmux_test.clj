@@ -753,6 +753,138 @@
                                :workdir "/tmp/proj"}))
         (is (seq @kill-window-calls) "expected kill-window to be called for evicted window")))))
 
+;; ============================================================================
+;; start-window! idempotency
+;; ============================================================================
+
+(deftest start-window!-idempotent-live-windows-test
+  (testing "returns existing descriptor from live-windows without creating a new window"
+    (let [uuid "idem-live-0000-0000-0000-000000000000"
+          existing-desc {:tmux-session "assist"
+                         :tmux-window "hi-agent-idemli"
+                         :provider :claude
+                         :workdir "/home/user/assist"
+                         :started-at "2026-01-01T00:00:00Z"}
+          new-window-calls (atom [])
+          send-keys-calls (atom [])
+          invoker (fn [& args]
+                    (when (some #{"new-window"} args)
+                      (swap! new-window-calls conj (vec args)))
+                    (when (some #{"send-keys"} args)
+                      (swap! send-keys-calls conj (vec args)))
+                    {:exit 0 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {uuid existing-desc})
+        (with-redefs [voice-code.providers/cli-path (constantly "/usr/bin/claude")
+                      voice-code.providers/session-metadata (constantly nil)]
+          (let [result (tmux/start-window! {:session-uuid uuid
+                                            :session-name "different-name"
+                                            :provider :claude
+                                            :workdir "/tmp/other"
+                                            :initial-prompt nil})]
+            (is (= existing-desc result)
+                "must return the pre-existing descriptor unchanged")
+            (is (empty? @new-window-calls)
+                "must not spawn a new tmux window")
+            (is (empty? @send-keys-calls)
+                "must not nudge when no initial-prompt"))))))
+
+  (testing "reuses existing live-windows entry and delivers initial-prompt via nudge"
+    (let [uuid "idem-nudge-0000-0000-0000-000000000000"
+          existing-desc {:tmux-session "assist"
+                         :tmux-window "hi-agent-idemnud"
+                         :provider :claude
+                         :workdir "/home/user/assist"
+                         :started-at "2026-01-01T00:00:00Z"}
+          new-window-calls (atom [])
+          send-keys-calls (atom [])
+          invoker (fn [& args]
+                    (when (some #{"new-window"} args)
+                      (swap! new-window-calls conj (vec args)))
+                    (when (some #{"send-keys"} args)
+                      (swap! send-keys-calls conj (vec args)))
+                    {:exit 0 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {uuid existing-desc})
+        (with-redefs [voice-code.providers/cli-path (constantly "/usr/bin/claude")
+                      voice-code.providers/session-metadata (constantly nil)]
+          (tmux/start-window! {:session-uuid uuid
+                               :session-name "hi-agent"
+                               :provider :claude
+                               :workdir "/home/user/assist"
+                               :initial-prompt "hello from iOS"}))
+        (is (empty? @new-window-calls)
+            "must not spawn a new window when one exists")
+        (is (some #(some #{"hello from iOS"} %) @send-keys-calls)
+            "must nudge initial-prompt to the existing window")))))
+
+(deftest start-window!-idempotent-tmux-scan-test
+  (testing "discovers CLI-created window via scan and reuses it without spawning a duplicate"
+    ;; Simulates the fluid-switching bug: vc-agent created the window so live-windows
+    ;; is empty, but scan-window-for-uuid! finds it in tmux. start-window! must reuse
+    ;; the window instead of calling new-window.
+    (let [uuid "idem-scan-0000-0000-0000-000000000000"
+          new-window-calls (atom [])
+          send-keys-calls (atom [])
+          invoker (fn [& args]
+                    (when (some #{"new-window"} args)
+                      (swap! new-window-calls conj (vec args)))
+                    (when (some #{"send-keys"} args)
+                      (swap! send-keys-calls conj (vec args)))
+                    (cond
+                      (some #{"list-sessions"} args) {:exit 0 :out "assist\n" :err ""}
+                      (some #{"list-windows"} args) {:exit 0 :out "hi-agent-idemsc\n" :err ""}
+                      (some #{"show-environment"} args)
+                      {:exit 0
+                       :out (str "VC_SESSION_UUID_hi_agent_idemsc=" uuid "\n"
+                                 "VC_PROVIDER_hi_agent_idemsc=claude\n"
+                                 "VC_WORKDIR_hi_agent_idemsc=/home/user/assist\n"
+                                 "VC_STARTED_AT_hi_agent_idemsc=2026-01-01T00:00:00Z\n")
+                       :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (with-redefs [voice-code.providers/cli-path (constantly "/usr/bin/claude")
+                      voice-code.providers/session-metadata (constantly nil)]
+          (let [result (tmux/start-window! {:session-uuid uuid
+                                            :session-name "hi-agent"
+                                            :provider :claude
+                                            :workdir "/home/user/assist"
+                                            :initial-prompt "hello from iOS"})]
+            (is (empty? @new-window-calls)
+                "must not spawn a new tmux window when CLI-created window exists")
+            (is (= "hi-agent-idemsc" (:tmux-window result))
+                "must return the CLI-created window name, not compute a new one")
+            (is (= "assist" (:tmux-session result)))
+            (is (some #(some #{"hello from iOS"} %) @send-keys-calls)
+                "must nudge initial-prompt to the discovered window")
+            (is (contains? @tmux/live-windows uuid)
+                "must backfill live-windows after scan discovery"))))))
+
+  (testing "still creates new window when scan finds nothing"
+    (let [uuid "idem-new-00000-0000-0000-000000000000"
+          new-window-calls (atom [])
+          invoker (fn [& args]
+                    (when (some #{"new-window"} args)
+                      (swap! new-window-calls conj (vec args)))
+                    (cond
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      (some #{"list-sessions"} args) {:exit 0 :out "" :err ""}
+                      (some #{"list-windows"} args) {:exit 0 :out "_holder\n" :err ""}
+                      (some #{"show-environment"} args) {:exit 0 :out "" :err ""}
+                      (some #{"capture-pane"} args) {:exit 0 :out "bypass permissions" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (with-redefs [voice-code.providers/cli-path (constantly "/usr/bin/claude")
+                      voice-code.providers/session-metadata (constantly nil)]
+          (tmux/start-window! {:session-uuid uuid
+                               :session-name "fresh"
+                               :provider :claude
+                               :workdir "/tmp/fresh"}))
+        (is (seq @new-window-calls)
+            "must create a new window when no existing window is found")))))
+
 (deftest start-window!-timeout-test
   (testing "throws ex-info when wait-for-ready times out, and does not nudge"
     (let [uuid "ffffffff-0000-0000-0000-000000000000"
