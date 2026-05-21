@@ -345,16 +345,17 @@
     :dead))
 
 (defn resolve-agent
-  "Look up an agent in live-windows by exact session-uuid, exact window name,
-   or window-name prefix. Returns [session-uuid descriptor] or nil.
+  "Look up an agent in live-windows by exact session-uuid, UUID prefix,
+   exact window name, or window-name prefix. Returns [session-uuid descriptor] or nil.
    Throws ex-info with {:kind :ambiguous} if multiple prefix matches."
   [id]
   (or
    (when-let [desc (get @live-windows id)]
      [id desc])
    (let [matches (->> @live-windows
-                      (filter (fn [[_ desc]]
-                                (or (= id (:tmux-window desc))
+                      (filter (fn [[uuid desc]]
+                                (or (str/starts-with? uuid id)
+                                    (= id (:tmux-window desc))
                                     (str/starts-with? (:tmux-window desc) id))))
                       vec)]
      (case (count matches)

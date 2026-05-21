@@ -1454,7 +1454,33 @@
     (let [uuid "ffffffff-0000-0000-0000-000000000000"
           desc {:tmux-session "sess" :tmux-window "some-window-ffffff" :provider :claude}]
       (reset! tmux/live-windows {uuid desc})
-      (is (= [uuid desc] (tmux/resolve-agent uuid))))))
+      (is (= [uuid desc] (tmux/resolve-agent uuid)))))
+
+  (testing "finds by UUID prefix"
+    (let [uuid "1a2b3c4d-5e6f-0000-0000-000000000000"
+          desc {:tmux-session "sess" :tmux-window "myagent-1a2b3c" :provider :claude}]
+      (reset! tmux/live-windows {uuid desc})
+      (is (= [uuid desc] (tmux/resolve-agent "1a2b3c4d")))
+      (is (= [uuid desc] (tmux/resolve-agent "1a2b3c4d-5e6f")))))
+
+  (testing "throws :ambiguous when UUID prefix matches multiple sessions"
+    (let [uuid1 "aabbccdd-1111-0000-0000-000000000000"
+          uuid2 "aabbccdd-2222-0000-0000-000000000000"
+          desc1 {:tmux-session "sess" :tmux-window "proj1-aabbcc" :provider :claude}
+          desc2 {:tmux-session "sess" :tmux-window "proj2-aabbcc" :provider :claude}]
+      (reset! tmux/live-windows {uuid1 desc1 uuid2 desc2})
+      (let [thrown (try
+                     (tmux/resolve-agent "aabbccdd")
+                     nil
+                     (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? thrown))
+        (is (= :ambiguous (:kind (ex-data thrown)))))))
+
+  (testing "UUID prefix does not match unrelated UUIDs"
+    (let [uuid "11223344-0000-0000-0000-000000000000"
+          desc {:tmux-session "sess" :tmux-window "agent-112233" :provider :claude}]
+      (reset! tmux/live-windows {uuid desc})
+      (is (nil? (tmux/resolve-agent "99887766"))))))
 
 ;; ============================================================================
 ;; build-provider-command with :model
