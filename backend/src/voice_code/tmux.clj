@@ -427,10 +427,10 @@
    otherwise it starts a fresh session keyed to session-uuid.
 
    Idempotent: if a window for session-uuid already exists in live-windows or
-   in tmux (e.g. created by vc-agent CLI), returns the existing descriptor and
+   in tmux (e.g. created by tmux-agent CLI), returns the existing descriptor and
    delivers initial-prompt to it rather than spawning a duplicate window. This
    handles the fluid-switching scenario where the iOS Untethered app opens a
-   session that vc-agent already started.
+   session that tmux-agent already started.
 
    `:system-prompt` is only honored for new :claude sessions; see
    build-provider-command for the trimming/provider rules.
@@ -557,7 +557,7 @@
    windows that actually exist are considered (no stale env-var false positives).
    When found, backfills live-windows and returns the descriptor; otherwise nil.
    Called by deliver! when uuid is absent from live-windows so that windows created
-   outside this JVM process (e.g. by vc-agent CLI) are discovered lazily."
+   outside this JVM process (e.g. by tmux-agent CLI) are discovered lazily."
   [uuid]
   (let [sessions (->> (sh "tmux" "list-sessions" "-F" "#{session_name}")
                       :out str/split-lines (remove str/blank?))]
@@ -582,7 +582,7 @@
   "Public entry point for both initial and follow-up prompts.
    Nudges the existing window if live, otherwise respawns with --resume.
    Live-windows is checked first; on a miss, tmux is scanned directly so that
-   windows created by external processes (e.g. vc-agent CLI) are found without
+   windows created by external processes (e.g. tmux-agent CLI) are found without
    a server restart. If nudge fails (stale live-windows entry after external
    eviction), evicts the entry and falls through to respawn-and-deliver! so
    the prompt is not silently dropped."

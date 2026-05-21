@@ -226,7 +226,7 @@
   (init!)
   (let [uuid (resolve-session-uuid id workdir)]
     ;; init! calls scan-existing-windows! so live-windows reflects all tmux windows,
-    ;; including those created by vc-agent start in a separate process. Skip creation
+    ;; including those created by tmux-agent start in a separate process. Skip creation
     ;; if the window is already running to prevent duplicate windows on fluid switching.
     (if-let [{:keys [tmux-session tmux-window]} (get @tmux/live-windows uuid)]
       (println (str "Already running: " tmux-window " in " tmux-session " (session " uuid ")"))

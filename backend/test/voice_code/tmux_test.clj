@@ -820,7 +820,7 @@
 
 (deftest start-window!-idempotent-tmux-scan-test
   (testing "discovers CLI-created window via scan and reuses it without spawning a duplicate"
-    ;; Simulates the fluid-switching bug: vc-agent created the window so live-windows
+    ;; Simulates the fluid-switching bug: tmux-agent created the window so live-windows
     ;; is empty, but scan-window-for-uuid! finds it in tmux. start-window! must reuse
     ;; the window instead of calling new-window.
     (let [uuid "idem-scan-0000-0000-0000-000000000000"
@@ -1287,7 +1287,7 @@
           "respawn must use --resume")))
 
   (testing "lazy-backfill: nudges CLI-created window found via tmux scan when not in live-windows"
-    ;; Simulates the fluid-switching scenario: a window was created by vc-agent CLI
+    ;; Simulates the fluid-switching scenario: a window was created by tmux-agent CLI
     ;; after the server started, so it is not in the server's live-windows. deliver!
     ;; should discover it via scan-window-for-uuid! and nudge it rather than respawning.
     (let [uuid "cli-created-0000-0000-0000-000000000000"
