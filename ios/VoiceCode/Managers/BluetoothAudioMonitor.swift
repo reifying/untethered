@@ -116,9 +116,16 @@ class BluetoothAudioMonitor {
             deviceID, &address, 0, nil, &size, bufferList
         ) == noErr else { return false }
 
+        // UnsafeBufferPointer over the flexible array tail — mBuffers[0] alone is wrong
+        // for multi-stream devices where channels live in buffers beyond index 0.
         let list = bufferList.assumingMemoryBound(to: AudioBufferList.self)
-        return list.pointee.mNumberBuffers > 0
-            && list.pointee.mBuffers.mNumberChannels > 0
+        let count = Int(list.pointee.mNumberBuffers)
+        guard count > 0 else { return false }
+        // Work inside withUnsafePointer so the pointer never escapes its valid lifetime.
+        return withUnsafePointer(to: &list.pointee.mBuffers) { firstBuffer in
+            UnsafeBufferPointer(start: firstBuffer, count: count)
+                .contains { $0.mNumberChannels > 0 }
+        }
     }
 
     private func deviceName(_ deviceID: AudioDeviceID) -> String? {

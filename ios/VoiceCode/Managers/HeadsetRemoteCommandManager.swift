@@ -226,7 +226,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
             case .recording:
                 self.stopRecordingAndSend()
             case .speaking:
-                self.handleInterrupt()
+                self.performInterrupt()
             case .sending:
                 break
             }
@@ -254,11 +254,18 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private func handleInterrupt() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.voiceOutput.stop()
-            self.state = .ready
-            self.updateNowPlayingState()
-            logger.info("Headset interrupt: stopped TTS")
+            self.performInterrupt()
         }
+    }
+
+    // Single authoritative implementation of the interrupt action. Called from
+    // handleTogglePlayPause (.speaking case), handleInterrupt (next-track button),
+    // and simulateInterrupt (test hook) — all of which are already on the main queue.
+    private func performInterrupt() {
+        voiceOutput.stop()
+        state = .ready
+        updateNowPlayingState()
+        logger.info("Headset interrupt: stopped TTS")
     }
 
     // MARK: - Recording Lifecycle
@@ -342,14 +349,14 @@ extension HeadsetRemoteCommandManager {
     func startPTTMonitoring() {
         guard bluetoothMonitor == nil else { return }
         let monitor = BluetoothAudioMonitor()
+        // BluetoothAudioMonitor delivers onMuteChanged on DispatchQueue.main already
+        // (AudioObjectAddPropertyListenerBlock is given DispatchQueue.main). No re-dispatch needed.
         monitor.startMonitoring { [weak self] isMuted in
             guard let self = self else { return }
-            DispatchQueue.main.async {
-                if !isMuted && self.state == .ready {
-                    self.startRecording()
-                } else if isMuted && self.state == .recording {
-                    self.stopRecordingAndSend()
-                }
+            if !isMuted && self.state == .ready {
+                self.startRecording()
+            } else if isMuted && self.state == .recording {
+                self.stopRecordingAndSend()
             }
         }
         bluetoothMonitor = monitor
@@ -374,9 +381,7 @@ extension HeadsetRemoteCommandManager {
         case .recording:
             stopRecordingAndSend()
         case .speaking:
-            voiceOutput.stop()
-            state = .ready
-            updateNowPlayingState()
+            performInterrupt()
         case .sending:
             break
         }
@@ -391,9 +396,7 @@ extension HeadsetRemoteCommandManager {
     }
 
     func simulateInterrupt() {
-        voiceOutput.stop()
-        state = .ready
-        updateNowPlayingState()
+        performInterrupt()
     }
 
     func simulateMuteChanged(isMuted: Bool) {

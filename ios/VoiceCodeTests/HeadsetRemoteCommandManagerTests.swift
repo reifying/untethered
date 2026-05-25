@@ -432,6 +432,17 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         XCTAssertEqual(mocks.voiceInput.startRecordingCalled, callsBefore)
     }
 
+    func testMuteOn_fromReady_isIgnored() {
+        let (manager, mocks) = makeManager()
+        manager.activate()
+        XCTAssertEqual(manager.state, .ready)
+
+        manager.simulateMuteChanged(isMuted: true) // not in .recording → ignored
+
+        XCTAssertEqual(manager.state, .ready)
+        XCTAssertFalse(mocks.voiceInput.stopRecordingCalled)
+    }
+
     // MARK: - PTT Settings Integration
 
     func testActivate_withPTTEnabled_startsPTTMonitoring() {
