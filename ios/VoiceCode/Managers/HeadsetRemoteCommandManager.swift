@@ -16,6 +16,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private let settings: AppSettings
     private let resolveActiveSession: () -> (sessionId: UUID, workingDirectory: String)?
     private var cancellables = Set<AnyCancellable>()
+    private var bluetoothMonitor: BluetoothAudioMonitor?
 
     enum HeadsetState: CustomStringConvertible, Equatable {
         case ready
@@ -75,11 +76,24 @@ class HeadsetRemoteCommandManager: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+
+        settings.$headsetPTTEnabled
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                guard let self = self, self.isActive else { return }
+                if enabled {
+                    self.startPTTMonitoring()
+                } else {
+                    self.stopPTTMonitoring()
+                }
+            }
+            .store(in: &cancellables)
     }
 
     func activate() {
         guard !isActive else { return }
         registerRemoteCommands()
+        if settings.headsetPTTEnabled { startPTTMonitoring() }
         updateNowPlayingState()
         isActive = true
         logger.info("Headset remote control activated")
@@ -91,6 +105,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
         if state == .recording {
             voiceInput.stopRecording()
         }
+        stopPTTMonitoring()
         unregisterRemoteCommands()
         MPNowPlayingInfoCenter.default().playbackState = .unknown
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -320,10 +335,38 @@ class HeadsetRemoteCommandManager: ObservableObject {
     }
 }
 
+// MARK: - PTT Monitoring
+
+extension HeadsetRemoteCommandManager {
+
+    func startPTTMonitoring() {
+        guard bluetoothMonitor == nil else { return }
+        let monitor = BluetoothAudioMonitor()
+        monitor.startMonitoring { [weak self] isMuted in
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                if !isMuted && self.state == .ready {
+                    self.startRecording()
+                } else if isMuted && self.state == .recording {
+                    self.stopRecordingAndSend()
+                }
+            }
+        }
+        bluetoothMonitor = monitor
+    }
+
+    func stopPTTMonitoring() {
+        bluetoothMonitor?.stopMonitoring()
+        bluetoothMonitor = nil
+    }
+}
+
 // MARK: - Debug Test Hooks
 
 #if DEBUG
 extension HeadsetRemoteCommandManager {
+    var isPTTMonitoring: Bool { bluetoothMonitor != nil }
+
     func simulateTogglePlayPause() {
         switch state {
         case .ready:

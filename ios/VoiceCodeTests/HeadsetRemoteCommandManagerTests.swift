@@ -432,6 +432,109 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         XCTAssertEqual(mocks.voiceInput.startRecordingCalled, callsBefore)
     }
 
+    // MARK: - PTT Settings Integration
+
+    func testActivate_withPTTEnabled_startsPTTMonitoring() {
+        let mocks = HeadsetMockDependencies()
+        mocks.settings.headsetPTTEnabled = true
+        let manager = makeManagerWithDeps(mocks)
+        drainMainQueue()
+
+        manager.activate()
+
+        XCTAssertTrue(manager.isPTTMonitoring)
+    }
+
+    func testActivate_withPTTDisabled_doesNotStartPTTMonitoring() {
+        let (manager, _) = makeManager()
+        drainMainQueue()
+
+        manager.activate()
+
+        XCTAssertFalse(manager.isPTTMonitoring)
+    }
+
+    func testDeactivate_stopsPTTMonitoring() {
+        let mocks = HeadsetMockDependencies()
+        mocks.settings.headsetPTTEnabled = true
+        let manager = makeManagerWithDeps(mocks)
+        drainMainQueue()
+        manager.activate()
+        XCTAssertTrue(manager.isPTTMonitoring)
+
+        manager.deactivate()
+
+        XCTAssertFalse(manager.isPTTMonitoring)
+    }
+
+    func testStartPTTMonitoring_isIdempotent() {
+        let mocks = HeadsetMockDependencies()
+        mocks.settings.headsetPTTEnabled = true
+        let manager = makeManagerWithDeps(mocks)
+        drainMainQueue()
+        manager.activate()
+        XCTAssertTrue(manager.isPTTMonitoring)
+
+        // A second call (e.g. from the $headsetPTTEnabled Combine delivery after activate)
+        // must not replace and leak the existing monitor.
+        manager.startPTTMonitoring()
+
+        // Still monitoring with the same (first) monitor — no replacement occurred.
+        XCTAssertTrue(manager.isPTTMonitoring)
+    }
+
+    func testHeadsetPTTEnabledSetting_whenActive_startsPTTMonitoring() {
+        let (manager, mocks) = makeManager()
+        // Drain initial Combine deliveries (headsetModeEnabled=false, headsetPTTEnabled=false)
+        // before activating — same pattern as testHeadsetModeEnabledSetting_activatesManager.
+        drainMainQueue()
+        manager.activate()
+        XCTAssertFalse(manager.isPTTMonitoring)
+
+        mocks.settings.headsetPTTEnabled = true
+
+        let expectation = expectation(description: "PTT monitoring starts from setting")
+        DispatchQueue.main.async {
+            XCTAssertTrue(manager.isPTTMonitoring)
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    func testHeadsetPTTDisabledSetting_whenActive_stopsPTTMonitoring() {
+        let mocks = HeadsetMockDependencies()
+        mocks.settings.headsetPTTEnabled = true
+        let manager = makeManagerWithDeps(mocks)
+        drainMainQueue()
+        manager.activate()
+        // headsetPTTEnabled is already true, activate() calls startPTTMonitoring() synchronously
+        XCTAssertTrue(manager.isPTTMonitoring)
+
+        mocks.settings.headsetPTTEnabled = false
+
+        let expectation = expectation(description: "PTT monitoring stops from setting")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isPTTMonitoring)
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    func testHeadsetPTTEnabledSetting_whenInactive_doesNotStartPTTMonitoring() {
+        let (manager, mocks) = makeManager()
+        drainMainQueue()
+        XCTAssertFalse(manager.isActive)
+
+        mocks.settings.headsetPTTEnabled = true
+
+        let expectation = expectation(description: "PTT monitoring does not start when inactive")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isPTTMonitoring)
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+    }
+
     // MARK: - Message Shape
 
     func testSentMessage_containsRequiredFields() {
