@@ -150,7 +150,38 @@ private func stopRecordingAndSend() {
 }
 ```
 
-The PTT extension (`startPTTMonitoring` / `stopPTTMonitoring`) and `BluetoothAudioMonitor` stay inside `#if os(macOS)` in their existing extension file.
+After removing the outer `#if os(macOS)` file guard, two additional blocks inside `HeadsetRemoteCommandManager.swift` must each get their own `#if os(macOS)` wrapper — without them the iOS build fails because the guarded methods don't exist on iOS:
+
+1. **The PTT extension** — the `// MARK: - PTT Monitoring` extension at the bottom of the file calls `BluetoothAudioMonitor()`, which is macOS-only:
+
+```swift
+#if os(macOS)
+extension HeadsetRemoteCommandManager {
+    func startPTTMonitoring() { ... }
+    func stopPTTMonitoring() { ... }
+}
+#endif
+```
+
+2. **The `settings.$headsetPTTEnabled` sink in `init()`** — calls `startPTTMonitoring()` / `stopPTTMonitoring()`, which only exist in the macOS PTT extension. Wrap the entire subscription:
+
+```swift
+#if os(macOS)
+settings.$headsetPTTEnabled
+    .receive(on: DispatchQueue.main)
+    .sink { [weak self] enabled in
+        guard let self = self, self.isActive else { return }
+        if enabled {
+            self.startPTTMonitoring()
+        } else {
+            self.stopPTTMonitoring()
+        }
+    }
+    .store(in: &cancellables)
+#endif
+```
+
+`BluetoothAudioMonitor` and its file (`BluetoothAudioMonitor.swift`) remain entirely `#if os(macOS)` — no change needed there.
 
 #### Change 2: iOS audio session keep-alive
 
@@ -207,6 +238,7 @@ Add the backing storage to the class body (inside `#if os(iOS)`):
 #if os(iOS)
 private var keepAlivePlayer: AVAudioPlayer?
 private var keepAliveTimer: Timer?
+private var interruptionObserver: NSObjectProtocol?
 #endif
 ```
 
@@ -371,7 +403,7 @@ To access `headsetManager` inside `RootView` (for the foreground re-assertion ob
 #endif
 ```
 
-To access it in `SettingsView` for the headset section, add the same declaration inside `#if os(iOS)` in `SettingsView`.
+`SettingsView` does not need an `@EnvironmentObject` declaration for `headsetManager` — the iOS headset settings section (Change 4) binds only to `AppSettings` properties (`$settings.headsetModeEnabled`, `$settings.headsetAutoSend`). Toggling those settings flows through the `AppSettings.$headsetModeEnabled` subscriber already in `HeadsetRemoteCommandManager.init()`, so no direct reference to the manager is needed in the settings UI.
 
 ### Component Interactions
 
@@ -425,9 +457,8 @@ voiceOutput.$isSpeaking → true
 
 voiceOutput.$isSpeaking → false
     └── HeadsetRemoteCommandManager: state = .ready
-        └── (iOS: audio session was released by VoiceOutputManager; re-assert on next activate() cycle
-             or next recording stop — not needed until the next recording attempt since
-             MPRemoteCommandCenter will deliver commands while isSpeaking is true via VoiceOutputManager's session)
+        └── (iOS: $isSpeaking sink calls activateAudioSession() — re-asserts .playback + .mixWithOthers
+             immediately so the next AirPods press is delivered without a gap)
 ```
 
 **Session gap note:** There is a window between TTS ending and the next user press where VoiceOutputManager has released its session and our keep-alive has not re-asserted. During this window, the next AirPods press might not be delivered. To close this gap, observe `voiceOutput.$isSpeaking` in the iOS path and re-call `activateAudioSession()` when it transitions to `false` and state returns to `.ready`:
