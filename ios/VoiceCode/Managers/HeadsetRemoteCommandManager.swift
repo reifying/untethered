@@ -1,8 +1,10 @@
-#if os(macOS)
 import Foundation
 import MediaPlayer
 import Combine
 import os.log
+#if os(iOS)
+import AVFoundation
+#endif
 
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "HeadsetRemote")
 
@@ -16,7 +18,14 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private let settings: AppSettings
     private let resolveActiveSession: () -> (sessionId: UUID, workingDirectory: String)?
     private var cancellables = Set<AnyCancellable>()
+    #if os(macOS)
     private var bluetoothMonitor: BluetoothAudioMonitor?
+    #endif
+    #if os(iOS)
+    private var keepAlivePlayer: AVAudioPlayer?
+    private var keepAliveTimer: Timer?
+    private var interruptionObserver: NSObjectProtocol?
+    #endif
 
     enum HeadsetState: CustomStringConvertible, Equatable {
         case ready
@@ -62,6 +71,9 @@ class HeadsetRemoteCommandManager: ObservableObject {
                 } else if !isSpeaking && self.state == .speaking {
                     self.state = .ready
                     self.updateNowPlayingState()
+                    #if os(iOS)
+                    self.activateAudioSession()
+                    #endif
                 }
             }
             .store(in: &cancellables)
@@ -77,6 +89,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
             }
             .store(in: &cancellables)
 
+        #if os(macOS)
         settings.$headsetPTTEnabled
             .receive(on: DispatchQueue.main)
             .sink { [weak self] enabled in
@@ -88,12 +101,38 @@ class HeadsetRemoteCommandManager: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        #endif
+
+        #if os(iOS)
+        setupKeepAlive()
+        #endif
     }
 
     func activate() {
         guard !isActive else { return }
         registerRemoteCommands()
+        #if os(macOS)
         if settings.headsetPTTEnabled { startPTTMonitoring() }
+        #elseif os(iOS)
+        activateAudioSession()
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self, self.isActive else { return }
+            guard let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: typeValue),
+                  type == .ended else { return }
+            let shouldResume = (notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt)
+                .flatMap { AVAudioSession.InterruptionOptions(rawValue: $0) }
+                .map { $0.contains(.shouldResume) } ?? false
+            if shouldResume {
+                self.activateAudioSession()
+                logger.info("Headset: audio session restored after interruption")
+            }
+        }
+        #endif
         updateNowPlayingState()
         isActive = true
         logger.info("Headset remote control activated")
@@ -105,8 +144,17 @@ class HeadsetRemoteCommandManager: ObservableObject {
         if state == .recording {
             voiceInput.stopRecording()
         }
+        #if os(macOS)
         stopPTTMonitoring()
+        #endif
         unregisterRemoteCommands()
+        #if os(iOS)
+        if let token = interruptionObserver {
+            NotificationCenter.default.removeObserver(token)
+            interruptionObserver = nil
+        }
+        deactivateAudioSession()
+        #endif
         MPNowPlayingInfoCenter.default().playbackState = .unknown
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         isActive = false
@@ -283,6 +331,12 @@ class HeadsetRemoteCommandManager: ObservableObject {
 
     private func stopRecordingAndSend() {
         voiceInput.stopRecording()
+        #if os(iOS)
+        // Re-assert playback session now that .record is released.
+        // Without this, MPRemoteCommandCenter loses our app as the delivery
+        // target during the sending/ready gap before TTS starts.
+        activateAudioSession()
+        #endif
         state = .sending
         updateNowPlayingState()
 
@@ -342,8 +396,71 @@ class HeadsetRemoteCommandManager: ObservableObject {
     }
 }
 
+// MARK: - iOS Audio Session Keep-Alive
+
+#if os(iOS)
+extension HeadsetRemoteCommandManager {
+
+    func activateAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, options: .mixWithOthers)
+            try session.setActive(true)
+            startKeepAlive()
+            logger.info("Headset: iOS audio session activated (.playback + .mixWithOthers)")
+        } catch {
+            logger.error("Headset: failed to activate audio session: \(error.localizedDescription)")
+        }
+    }
+
+    func deactivateAudioSession() {
+        stopKeepAlive()
+        do {
+            try AVAudioSession.sharedInstance().setActive(
+                false, options: .notifyOthersOnDeactivation
+            )
+            logger.info("Headset: iOS audio session deactivated")
+        } catch {
+            logger.error("Headset: failed to deactivate audio session: \(error.localizedDescription)")
+        }
+    }
+
+    private func startKeepAlive() {
+        stopKeepAlive()
+        keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 25.0, repeats: true) { [weak self] _ in
+            self?.keepAlivePlayer?.play()
+        }
+    }
+
+    private func stopKeepAlive() {
+        keepAliveTimer?.invalidate()
+        keepAliveTimer = nil
+    }
+
+    private func setupKeepAlive() {
+        // 100ms silent PCM buffer — identical to VoiceOutputManager.setupSilencePlayer()
+        let sampleRate: Double = 44100.0
+        let frameCount = UInt32(0.1 * sampleRate)
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+        buffer.frameLength = frameCount
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("headset_silence.caf")
+        do {
+            let file = try AVAudioFile(forWriting: tempURL, settings: format.settings)
+            try file.write(from: buffer)
+            keepAlivePlayer = try AVAudioPlayer(contentsOf: tempURL)
+            keepAlivePlayer?.prepareToPlay()
+        } catch {
+            logger.error("Headset: failed to create silence player: \(error.localizedDescription)")
+        }
+    }
+}
+#endif
+
 // MARK: - PTT Monitoring
 
+#if os(macOS)
 extension HeadsetRemoteCommandManager {
 
     func startPTTMonitoring() {
@@ -367,12 +484,15 @@ extension HeadsetRemoteCommandManager {
         bluetoothMonitor = nil
     }
 }
+#endif
 
 // MARK: - Debug Test Hooks
 
 #if DEBUG
 extension HeadsetRemoteCommandManager {
+    #if os(macOS)
     var isPTTMonitoring: Bool { bluetoothMonitor != nil }
+    #endif
 
     func simulateTogglePlayPause() {
         switch state {
@@ -399,6 +519,7 @@ extension HeadsetRemoteCommandManager {
         performInterrupt()
     }
 
+    #if os(macOS)
     func simulateMuteChanged(isMuted: Bool) {
         if !isMuted && state == .ready {
             startRecording()
@@ -406,6 +527,6 @@ extension HeadsetRemoteCommandManager {
             stopRecordingAndSend()
         }
     }
+    #endif
 }
-#endif
 #endif
