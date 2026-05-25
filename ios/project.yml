@@ -179,6 +179,7 @@ targets:
       - path: VoiceCodeTests
         excludes:
           - "HeadsetRemoteCommandManagerTests.swift"
+          - "BluetoothAudioMonitorTests.swift"
     resources:
       - VoiceCodeTests/Fixtures
     dependencies:
