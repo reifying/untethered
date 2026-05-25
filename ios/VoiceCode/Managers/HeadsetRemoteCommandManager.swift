@@ -40,7 +40,6 @@ class HeadsetRemoteCommandManager: ObservableObject {
     #endif
     #if os(iOS)
     private var keepAlivePlayer: AVAudioPlayer?
-    private var keepAliveTimer: Timer?
     private var interruptionObserver: NSObjectProtocol?
     #endif
 
@@ -331,7 +330,12 @@ class HeadsetRemoteCommandManager: ObservableObject {
             case .speaking:
                 self.performInterrupt()
             case .sending:
-                hLog("Headset: ▶︎/❚❚ ignored — state=sending")
+                // Reset to ready so a second press can start a new recording.
+                // State can strand here if TTS is disabled or the isSpeaking
+                // transition never fires (e.g. the response was silent).
+                hLog("Headset: ▶︎/❚❚ while sending — resetting to ready")
+                self.state = .ready
+                self.updateNowPlayingState()
             }
         }
     }
@@ -497,23 +501,22 @@ extension HeadsetRemoteCommandManager {
     }
 
     private func startKeepAlive() {
-        stopKeepAlive()
-        keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 25.0, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            let played = self.keepAlivePlayer?.play() ?? false
-            logger.debug("Headset: keep-alive tick — played=\(played), category=\(AVAudioSession.sharedInstance().category.rawValue)")
-        }
+        // Silence player loops indefinitely; nothing to schedule.
+        let played = keepAlivePlayer?.play() ?? false
+        hLog("Headset: keep-alive started — looping=\(played), category=\(AVAudioSession.sharedInstance().category.rawValue)")
     }
 
     private func stopKeepAlive() {
-        keepAliveTimer?.invalidate()
-        keepAliveTimer = nil
+        keepAlivePlayer?.stop()
     }
 
     private func setupKeepAlive() {
-        // 100ms silent PCM buffer — identical to VoiceOutputManager.setupSilencePlayer()
+        // 1-second silent PCM buffer that loops indefinitely. Continuous silent
+        // output keeps our audio session "active" so iOS treats us as the Now
+        // Playing app throughout recording, preventing other apps (e.g. an
+        // audiobook) from stealing the Now Playing slot and AirPod stem presses.
         let sampleRate: Double = 44100.0
-        let frameCount = UInt32(0.1 * sampleRate)
+        let frameCount = UInt32(sampleRate)  // 1 second
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
         buffer.frameLength = frameCount
@@ -523,6 +526,7 @@ extension HeadsetRemoteCommandManager {
             let file = try AVAudioFile(forWriting: tempURL, settings: format.settings)
             try file.write(from: buffer)
             keepAlivePlayer = try AVAudioPlayer(contentsOf: tempURL)
+            keepAlivePlayer?.numberOfLoops = -1  // Loop indefinitely
             keepAlivePlayer?.prepareToPlay()
         } catch {
             logger.error("Headset: failed to create silence player: \(error.localizedDescription)")

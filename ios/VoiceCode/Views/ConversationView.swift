@@ -1403,13 +1403,15 @@ struct ConversationVoiceInputView: View {
         VStack {
             if voiceInput.isRecording {
                 Button(action: {
+                    // Capture text BEFORE stopping, then clear it. Clearing prevents
+                    // HeadsetRemoteCommandManager's $isRecording subscriber from also
+                    // sending the same text (double-send) when it sees isRecording→false
+                    // while state is .recording.
+                    let text = voiceInput.transcribedText
                     voiceInput.stopRecording()
+                    voiceInput.transcribedText = ""
 
-                    // Defer completion callback to avoid re-entrant SwiftUI updates
-                    // stopRecording() sets isRecording=false which triggers a view update
-                    // We need to wait for that update to complete before calling onTranscriptionComplete
-                    if !voiceInput.transcribedText.isEmpty {
-                        let text = voiceInput.transcribedText
+                    if !text.isEmpty {
                         DispatchQueue.main.async {
                             onTranscriptionComplete(text)
                         }
