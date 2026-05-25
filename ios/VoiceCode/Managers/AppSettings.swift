@@ -116,6 +116,7 @@ class AppSettings: ObservableObject {
         }
         recentDirectories = dirs
     }
+    #endif
 
     /// When true, registers with MPRemoteCommandCenter so headset buttons control recording.
     /// Defaults to false to avoid claiming the now-playing slot unexpectedly.
@@ -141,7 +142,6 @@ class AppSettings: ObservableObject {
             UserDefaults.standard.set(headsetAutoSend, forKey: "headsetAutoSend")
         }
     }
-    #endif
 
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
@@ -334,10 +334,10 @@ class AppSettings: ObservableObject {
         #if os(macOS)
         self.lastUsedDirectory = UserDefaults.standard.string(forKey: "lastUsedDirectory")
         self.recentDirectories = UserDefaults.standard.stringArray(forKey: "recentDirectories") ?? []
+        #endif
         self.headsetModeEnabled = UserDefaults.standard.bool(forKey: "headsetModeEnabled")
         self.headsetPTTEnabled = UserDefaults.standard.bool(forKey: "headsetPTTEnabled")
         self.headsetAutoSend = UserDefaults.standard.object(forKey: "headsetAutoSend") as? Bool ?? true
-        #endif
 
         // Set up debounced publishers for text fields (serverURL and serverPort)
         // dropFirst() skips the initial value to avoid writing on init

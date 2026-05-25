@@ -829,9 +829,8 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(voices1.map { $0.identifier }, voices2.map { $0.identifier })
     }
 
-    // MARK: - Headset Settings Tests (macOS only)
+    // MARK: - Headset Settings Tests
 
-    #if os(macOS)
     func testDefaultHeadsetModeEnabled() {
         XCTAssertFalse(settings.headsetModeEnabled)
     }
@@ -883,5 +882,4 @@ final class AppSettingsTests: XCTestCase {
         settings.headsetModeEnabled = false
         XCTAssertFalse(settings.headsetModeEnabled)
     }
-    #endif
 }

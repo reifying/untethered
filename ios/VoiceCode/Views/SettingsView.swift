@@ -109,6 +109,20 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+
+            Section(header: Text("Headset")) {
+                Toggle("Enable headset control", isOn: $settings.headsetModeEnabled)
+                Text("Single-press play/pause on AirPods or any Bluetooth headset starts and stops recording.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                if settings.headsetModeEnabled {
+                    Toggle("Auto-send on recording stop", isOn: $settings.headsetAutoSend)
+                    Text("Transcription is sent to the active session automatically when you press stop.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
             #endif
 
             Section(header: Text("Recent")) {
