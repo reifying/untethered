@@ -29,6 +29,7 @@ struct VoiceCodeApp: App {
     @StateObject private var resourcesManager: ResourcesManager
     #if os(macOS)
     @StateObject private var voiceInput: VoiceInputManager
+    @StateObject private var headsetManager: HeadsetRemoteCommandManager
     #endif
 
     init() {
@@ -49,7 +50,14 @@ struct VoiceCodeApp: App {
         _client = StateObject(wrappedValue: voiceClient)
         _resourcesManager = StateObject(wrappedValue: resManager)
         #if os(macOS)
-        _voiceInput = StateObject(wrappedValue: VoiceInputManager(voiceOutputManager: voiceManager))
+        let sharedVoiceInput = VoiceInputManager(voiceOutputManager: voiceManager)
+        _voiceInput = StateObject(wrappedValue: sharedVoiceInput)
+        _headsetManager = StateObject(wrappedValue: HeadsetRemoteCommandManager(
+            voiceInput: sharedVoiceInput,
+            voiceOutput: voiceManager,
+            client: voiceClient,
+            settings: settings
+        ))
         #endif
     }
 
@@ -97,6 +105,13 @@ struct VoiceCodeApp: App {
                     NotificationCenter.default.post(name: .showCommandPalette, object: nil)
                 }
                 .keyboardShortcut("k", modifiers: [.command])
+
+                Divider()
+
+                Button("Reclaim Headset") {
+                    headsetManager.reclaimNowPlaying()
+                }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
             }
 
             // View menu additions
@@ -160,6 +175,7 @@ struct VoiceCodeApp: App {
                 .environmentObject(settings)
                 .environmentObject(client)
                 .environmentObject(voiceOutput)
+                .environmentObject(headsetManager)
         }
 
         VoiceCodeMenuBarExtra(
