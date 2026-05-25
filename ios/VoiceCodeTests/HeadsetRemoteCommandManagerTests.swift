@@ -1,7 +1,7 @@
 // HeadsetRemoteCommandManagerTests.swift
 // Unit tests for HeadsetRemoteCommandManager state machine and auto-send logic.
-// Included in both VoiceCodeMacTests and VoiceCodeTests targets; #if os(macOS)
-// guards make the file compile to nothing on iOS.
+// Included in VoiceCodeMacTests only; excluded from iOS VoiceCodeTests target
+// via project.yml. The #if os(macOS) guard is a secondary safeguard.
 
 import XCTest
 @testable import VoiceCode
@@ -51,9 +51,16 @@ struct HeadsetMockDependencies {
     init() {
         let output = MockVoiceOutputForHeadset()
         self.voiceOutput = output
+        // Use an in-memory store so createOptimisticMessage doesn't touch the
+        // real on-disk SQLite database during test runs.
+        let syncManager = SessionSyncManager(
+            persistenceController: PersistenceController(inMemory: true),
+            voiceOutputManager: output
+        )
         self.client = MockVoiceCodeClientForHeadset(
             serverURL: "ws://localhost:8080",
             voiceOutputManager: output,
+            sessionSyncManager: syncManager,
             appSettings: settings,
             setupObservers: false
         )
@@ -94,6 +101,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
 
     func testTogglePlayPause_fromRecording_stopsAndSends() {
         let (manager, mocks) = makeManager()
+        let expectedSessionId = testSessionId.uuidString.lowercased()
         manager.activate()
         manager.simulateTogglePlayPause() // → .recording
         mocks.voiceInput.transcribedText = "test prompt"
@@ -105,6 +113,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
             XCTAssertTrue(mocks.voiceInput.stopRecordingCalled)
             XCTAssertEqual(mocks.client.lastSentMessage?["text"] as? String, "test prompt")
             XCTAssertEqual(mocks.client.lastSentMessage?["working_directory"] as? String, "/test/working-dir")
+            XCTAssertEqual(mocks.client.lastSentMessage?["resume_session_id"] as? String, expectedSessionId)
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 1.0)
@@ -427,6 +436,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
 
     func testSentMessage_containsRequiredFields() {
         let (manager, mocks) = makeManager()
+        let expectedSessionId = testSessionId.uuidString.lowercased()
         manager.activate()
         manager.simulateTogglePlayPause()
         mocks.voiceInput.transcribedText = "hello world"
@@ -442,7 +452,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
             }
             XCTAssertEqual(msg["type"] as? String, "prompt")
             XCTAssertEqual(msg["text"] as? String, "hello world")
-            XCTAssertNotNil(msg["resume_session_id"])
+            XCTAssertEqual(msg["resume_session_id"] as? String, expectedSessionId)
             XCTAssertEqual(msg["working_directory"] as? String, "/test/working-dir")
             expectation.fulfill()
         }
