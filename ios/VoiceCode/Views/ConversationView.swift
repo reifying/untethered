@@ -44,7 +44,11 @@ struct ConversationView: View {
     @ObservedObject var session: CDBackendSession
     @ObservedObject var client: VoiceCodeClient
     @StateObject var voiceOutput: VoiceOutputManager
+    #if os(macOS)
+    @ObservedObject var voiceInput: VoiceInputManager
+    #else
     @StateObject var voiceInput: VoiceInputManager
+    #endif
     @ObservedObject var settings: AppSettings
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.scenePhase) private var scenePhase
@@ -82,11 +86,15 @@ struct ConversationView: View {
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
 
-    init(session: CDBackendSession, client: VoiceCodeClient, voiceOutput: VoiceOutputManager = VoiceOutputManager(), voiceInput: VoiceInputManager = VoiceInputManager(), settings: AppSettings) {
+    init(session: CDBackendSession, client: VoiceCodeClient, voiceOutput: VoiceOutputManager = VoiceOutputManager(), voiceInput: VoiceInputManager, settings: AppSettings) {
         _session = ObservedObject(wrappedValue: session)
         self.client = client
         _voiceOutput = StateObject(wrappedValue: voiceOutput)
+        #if os(macOS)
+        _voiceInput = ObservedObject(wrappedValue: voiceInput)
+        #else
         _voiceInput = StateObject(wrappedValue: voiceInput)
+        #endif
         self.settings = settings
 
         // Setup fetch request for this session's messages

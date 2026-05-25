@@ -27,6 +27,9 @@ struct VoiceCodeApp: App {
     @StateObject private var voiceOutput: VoiceOutputManager
     @StateObject private var client: VoiceCodeClient
     @StateObject private var resourcesManager: ResourcesManager
+    #if os(macOS)
+    @StateObject private var voiceInput: VoiceInputManager
+    #endif
 
     init() {
         // Create instances in correct dependency order
@@ -45,18 +48,33 @@ struct VoiceCodeApp: App {
         _voiceOutput = StateObject(wrappedValue: voiceManager)
         _client = StateObject(wrappedValue: voiceClient)
         _resourcesManager = StateObject(wrappedValue: resManager)
+        #if os(macOS)
+        _voiceInput = StateObject(wrappedValue: VoiceInputManager(voiceOutputManager: voiceManager))
+        #endif
     }
 
     var body: some Scene {
         WindowGroup {
+            #if os(macOS)
+            RootView(
+                settings: settings,
+                voiceOutput: voiceOutput,
+                client: client,
+                resourcesManager: resourcesManager,
+                voiceInput: voiceInput
+            )
+            .environment(\.managedObjectContext, persistenceController.container.viewContext)
+            .environmentObject(draftManager)
+            #else
             RootView(
                 settings: settings,
                 voiceOutput: voiceOutput,
                 client: client,
                 resourcesManager: resourcesManager
             )
-                .environment(\.managedObjectContext, persistenceController.container.viewContext)
-                .environmentObject(draftManager)
+            .environment(\.managedObjectContext, persistenceController.container.viewContext)
+            .environmentObject(draftManager)
+            #endif
         }
         #if os(macOS)
         .commands {
@@ -147,7 +165,8 @@ struct VoiceCodeApp: App {
         VoiceCodeMenuBarExtra(
             client: client,
             settings: settings,
-            voiceOutput: voiceOutput
+            voiceOutput: voiceOutput,
+            voiceInput: voiceInput
         )
         #endif
     }
@@ -160,6 +179,9 @@ struct RootView: View {
     @ObservedObject var voiceOutput: VoiceOutputManager
     @ObservedObject var client: VoiceCodeClient
     @ObservedObject var resourcesManager: ResourcesManager
+    #if os(macOS)
+    @ObservedObject var voiceInput: VoiceInputManager
+    #endif
     @State private var showingSettings = false
     @State private var navigationPath = NavigationPath()
     @State private var recentSessions: [RecentSession] = []
@@ -256,7 +278,8 @@ struct RootView: View {
                     sessionId: sessionId,
                     client: client,
                     voiceOutput: voiceOutput,
-                    settings: settings
+                    settings: settings,
+                    sharedVoiceInput: voiceInput
                 )
             } else {
                 EmptyDetailView()
