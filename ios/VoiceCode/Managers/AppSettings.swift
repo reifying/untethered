@@ -116,6 +116,31 @@ class AppSettings: ObservableObject {
         }
         recentDirectories = dirs
     }
+
+    /// When true, registers with MPRemoteCommandCenter so headset buttons control recording.
+    /// Defaults to false to avoid claiming the now-playing slot unexpectedly.
+    @Published var headsetModeEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(headsetModeEnabled, forKey: "headsetModeEnabled")
+        }
+    }
+
+    /// When true (and headsetModeEnabled), monitors CoreAudio Bluetooth input device mute
+    /// property to detect BlueParrott PTT button presses.
+    @Published var headsetPTTEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(headsetPTTEnabled, forKey: "headsetPTTEnabled")
+        }
+    }
+
+    /// When true, recording stop automatically sends transcription without user confirmation.
+    /// Only applies to headset-initiated recordings. Defaults to true — headset mode without
+    /// auto-send is unusable.
+    @Published var headsetAutoSend: Bool {
+        didSet {
+            UserDefaults.standard.set(headsetAutoSend, forKey: "headsetAutoSend")
+        }
+    }
     #endif
 
     var fullServerURL: String {
@@ -309,6 +334,9 @@ class AppSettings: ObservableObject {
         #if os(macOS)
         self.lastUsedDirectory = UserDefaults.standard.string(forKey: "lastUsedDirectory")
         self.recentDirectories = UserDefaults.standard.stringArray(forKey: "recentDirectories") ?? []
+        self.headsetModeEnabled = UserDefaults.standard.bool(forKey: "headsetModeEnabled")
+        self.headsetPTTEnabled = UserDefaults.standard.bool(forKey: "headsetPTTEnabled")
+        self.headsetAutoSend = UserDefaults.standard.object(forKey: "headsetAutoSend") as? Bool ?? true
         #endif
 
         // Set up debounced publishers for text fields (serverURL and serverPort)
