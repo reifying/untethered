@@ -281,7 +281,10 @@ class HeadsetRemoteCommandManager: ObservableObject {
                 MPMediaItemPropertyPlaybackDuration: 0,
                 MPNowPlayingInfoPropertyElapsedPlaybackTime: 0
             ]
-            playbackState = .paused
+            // Report .playing because we continuously output silent audio to hold
+            // the Now Playing slot. This makes AirPods consistently send ❚❚ for a
+            // single press, which handlePause() treats as a toggle.
+            playbackState = .playing
 
         case .recording:
             info = [
@@ -355,11 +358,25 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private func handlePause() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            #if os(iOS)
+            hLog("Headset: ❚❚ received — state=\(self.state), audioCategory=\(AVAudioSession.sharedInstance().category.rawValue)")
+            #else
             hLog("Headset: ❚❚ received — state=\(self.state)")
-            if self.state == .recording {
+            #endif
+            // Continuous silent audio causes AirPods to always send ❚❚ (pause)
+            // rather than ▶︎ (play), regardless of our NowPlaying playbackState.
+            // Treat ❚❚ as a toggle so it works symmetrically with handleTogglePlayPause.
+            switch self.state {
+            case .ready:
+                self.startRecording()
+            case .recording:
                 self.stopRecordingAndSend()
-            } else {
-                hLog("Headset: ❚❚ ignored — state=\(self.state)")
+            case .speaking:
+                self.performInterrupt()
+            case .sending:
+                hLog("Headset: ❚❚ while sending — resetting to ready")
+                self.state = .ready
+                self.updateNowPlayingState()
             }
         }
     }
