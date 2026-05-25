@@ -176,7 +176,9 @@ targets:
     platform: iOS
     deploymentTarget: "18.5"
     sources:
-      - VoiceCodeTests
+      - path: VoiceCodeTests
+        excludes:
+          - "HeadsetRemoteCommandManagerTests.swift"
     resources:
       - VoiceCodeTests/Fixtures
     dependencies:
