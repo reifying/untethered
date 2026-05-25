@@ -1,12 +1,10 @@
 // HeadsetRemoteCommandManagerTests.swift
 // Unit tests for HeadsetRemoteCommandManager state machine and auto-send logic.
-// Included in VoiceCodeMacTests only; excluded from iOS VoiceCodeTests target
-// via project.yml. The #if os(macOS) guard is a secondary safeguard.
+// Included in both VoiceCodeTests (iOS) and VoiceCodeMacTests targets.
+// PTT-specific tests are guarded by #if os(macOS) because PTT monitoring is macOS-only.
 
 import XCTest
 @testable import VoiceCode
-
-#if os(macOS)
 
 // MARK: - Mock Dependencies
 
@@ -393,6 +391,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
 
     // MARK: - PTT Mute Detection
 
+    #if os(macOS)
     func testMuteOff_fromReady_startsRecording() {
         let (manager, mocks) = makeManager()
         manager.activate()
@@ -442,9 +441,11 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         XCTAssertEqual(manager.state, .ready)
         XCTAssertFalse(mocks.voiceInput.stopRecordingCalled)
     }
+    #endif
 
     // MARK: - PTT Settings Integration
 
+    #if os(macOS)
     func testActivate_withPTTEnabled_startsPTTMonitoring() {
         let mocks = HeadsetMockDependencies()
         mocks.settings.headsetPTTEnabled = true
@@ -545,6 +546,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         }
         wait(for: [expectation], timeout: 1.0)
     }
+    #endif
 
     // MARK: - Message Shape
 
@@ -640,5 +642,3 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         )
     }
 }
-
-#endif
