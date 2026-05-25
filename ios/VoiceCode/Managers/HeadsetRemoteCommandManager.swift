@@ -8,6 +8,23 @@ import AVFoundation
 
 private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "HeadsetRemote")
 
+/// Log to both the system log (os.log) and the in-app LogManager so messages
+/// appear in the in-app debug log viewer as well as Console.app.
+private func hLog(_ msg: String) {
+    logger.info("\(msg, privacy: .public)")
+    LogManager.shared.log(msg, category: "HeadsetRemote")
+}
+
+private func hLogWarning(_ msg: String) {
+    logger.warning("\(msg, privacy: .public)")
+    LogManager.shared.log("⚠️ \(msg)", category: "HeadsetRemote")
+}
+
+private func hLogError(_ msg: String) {
+    logger.error("\(msg, privacy: .public)")
+    LogManager.shared.log("❌ \(msg)", category: "HeadsetRemote")
+}
+
 class HeadsetRemoteCommandManager: ObservableObject {
     @Published var isActive = false
     @Published private(set) var state: HeadsetState = .ready
@@ -61,6 +78,8 @@ class HeadsetRemoteCommandManager: ObservableObject {
         self.settings = settings
         self.resolveActiveSession = resolveActiveSession
 
+        hLog("Headset: init — headsetModeEnabled=\(settings.headsetModeEnabled), autoSend=\(settings.headsetAutoSend)")
+
         voiceOutput.$isSpeaking
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isSpeaking in
@@ -103,6 +122,22 @@ class HeadsetRemoteCommandManager: ObservableObject {
             .store(in: &cancellables)
         #endif
 
+        // Observe speech recognizer auto-finalize. When SFSpeechRecognizer hits
+        // its silence timeout (~30s) it sets isRecording=false from inside the
+        // recognition callback — without a second button press. If our state is
+        // still .recording at that point, advance to the send flow so the user
+        // doesn't need a second press to unstick the state machine.
+        voiceInput.$isRecording
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isRecording in
+                guard let self = self, self.isActive else { return }
+                if !isRecording && self.state == .recording {
+                    hLog("Headset: isRecording→false while state=.recording (auto-finalize) — triggering send")
+                    self.stopRecordingAndSend()
+                }
+            }
+            .store(in: &cancellables)
+
         #if os(iOS)
         setupKeepAlive()
         #endif
@@ -110,6 +145,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
 
     func activate() {
         guard !isActive else { return }
+        hLog("Headset: activating remote control")
         registerRemoteCommands()
         #if os(macOS)
         if settings.headsetPTTEnabled { startPTTMonitoring() }
@@ -122,20 +158,28 @@ class HeadsetRemoteCommandManager: ObservableObject {
         ) { [weak self] notification in
             guard let self = self, self.isActive else { return }
             guard let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  let type = AVAudioSession.InterruptionType(rawValue: typeValue),
-                  type == .ended else { return }
+                  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+                logger.warning("Headset: interruption notification with unreadable type")
+                return
+            }
             let shouldResume = (notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt)
                 .flatMap { AVAudioSession.InterruptionOptions(rawValue: $0) }
                 .map { $0.contains(.shouldResume) } ?? false
-            if shouldResume {
-                self.activateAudioSession()
-                logger.info("Headset: audio session restored after interruption")
+            let typeStr = type == .began ? "began" : "ended"
+            hLog("Headset: interruption \(typeStr) — shouldResume=\(shouldResume), state=\(self.state)")
+            if type == .ended {
+                if shouldResume {
+                    self.activateAudioSession()
+                    hLog("Headset: audio session restored after interruption")
+                } else {
+                    hLogWarning("Headset: interruption ended without shouldResume — NOT restored, state=\(self.state)")
+                }
             }
         }
         #endif
         updateNowPlayingState()
         isActive = true
-        logger.info("Headset remote control activated")
+        hLog("Headset remote control activated")
     }
 
     func deactivate() {
@@ -159,13 +203,19 @@ class HeadsetRemoteCommandManager: ObservableObject {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         isActive = false
         state = .ready
-        logger.info("Headset remote control deactivated")
+        hLog("Headset remote control deactivated")
     }
 
     func reclaimNowPlaying() {
         guard settings.headsetModeEnabled else { return }
+        #if os(iOS)
+        // Re-activate audio session first — if iOS suspended us while backgrounded
+        // the session may be inactive, and updating NowPlayingInfo alone won't
+        // restore MPRemoteCommandCenter delivery without an active audio session.
+        activateAudioSession()
+        #endif
         updateNowPlayingState()
-        logger.info("Headset: reclaimed now-playing slot")
+        hLog("Headset: reclaimed now-playing slot — state=\(self.state)")
     }
 
     deinit {
@@ -268,6 +318,11 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private func handleTogglePlayPause() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            #if os(iOS)
+            hLog("Headset: ▶︎/❚❚ received — state=\(self.state), audioCategory=\(AVAudioSession.sharedInstance().category.rawValue)")
+            #else
+            hLog("Headset: ▶︎/❚❚ received — state=\(self.state)")
+            #endif
             switch self.state {
             case .ready:
                 self.startRecording()
@@ -276,7 +331,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
             case .speaking:
                 self.performInterrupt()
             case .sending:
-                break
+                hLog("Headset: ▶︎/❚❚ ignored — state=sending")
             }
         }
     }
@@ -284,8 +339,11 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private func handlePlay() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            hLog("Headset: ▶︎ received — state=\(self.state)")
             if self.state == .ready {
                 self.startRecording()
+            } else {
+                hLog("Headset: ▶︎ ignored — state=\(self.state)")
             }
         }
     }
@@ -293,8 +351,11 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private func handlePause() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            hLog("Headset: ❚❚ received — state=\(self.state)")
             if self.state == .recording {
                 self.stopRecordingAndSend()
+            } else {
+                hLog("Headset: ❚❚ ignored — state=\(self.state)")
             }
         }
     }
@@ -302,6 +363,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private func handleInterrupt() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            hLog("Headset: ⏭ received — state=\(self.state)")
             self.performInterrupt()
         }
     }
@@ -320,22 +382,28 @@ class HeadsetRemoteCommandManager: ObservableObject {
 
     private func startRecording() {
         guard client.isConnected else {
-            logger.warning("Headset record ignored: not connected")
+            hLogWarning("Headset: startRecording ignored — not connected to backend")
             return
         }
+        #if os(iOS)
+        hLog("Headset: startRecording — audioCategory=\(AVAudioSession.sharedInstance().category.rawValue) route=\(AVAudioSession.sharedInstance().currentRoute.inputs.map(\.portName))")
+        #endif
         state = .recording
         updateNowPlayingState()
         voiceInput.startRecording()
-        logger.info("Headset: recording started")
+        hLog("Headset: recording started")
     }
 
     private func stopRecordingAndSend() {
+        #if os(iOS)
+        hLog("Headset: stopRecordingAndSend — pre-stop audioCategory=\(AVAudioSession.sharedInstance().category.rawValue)")
+        #endif
         voiceInput.stopRecording()
         #if os(iOS)
-        // Re-assert playback session now that .record is released.
-        // Without this, MPRemoteCommandCenter loses our app as the delivery
-        // target during the sending/ready gap before TTS starts.
+        // Re-assert .playback session so MPRemoteCommandCenter keeps routing
+        // AirPod/headset button events to our app during the sending/ready gap.
         activateAudioSession()
+        hLog("Headset: stopRecordingAndSend — post-reactivation audioCategory=\(AVAudioSession.sharedInstance().category.rawValue)")
         #endif
         state = .sending
         updateNowPlayingState()
@@ -349,31 +417,32 @@ class HeadsetRemoteCommandManager: ObservableObject {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
             guard !text.isEmpty else {
-                logger.info("Headset: empty transcription, returning to ready")
+                hLog("Headset: empty transcription — returning to ready")
                 self.state = .ready
                 self.updateNowPlayingState()
                 return
             }
 
+            hLog("Headset: transcription ready, length=\(text.count), autoSend=\(self.settings.headsetAutoSend)")
             if self.settings.headsetAutoSend {
                 self.sendToActiveSession(text)
             } else {
                 self.state = .ready
                 self.updateNowPlayingState()
             }
-            logger.info("Headset: recording stopped, text length=\(text.count)")
         }
     }
 
     private func sendToActiveSession(_ text: String) {
         guard let (sessionId, workingDirectory) = resolveActiveSession() else {
-            logger.warning("Headset: no active session for auto-send")
+            hLogWarning("Headset: auto-send failed — no active session")
             state = .ready
             updateNowPlayingState()
             return
         }
 
         let sessionIdStr = sessionId.uuidString.lowercased()
+        hLog("Headset: sending prompt to session=\(sessionIdStr) textLength=\(text.count) dir=\(workingDirectory)")
 
         client.sessionSyncManager.createOptimisticMessage(
             sessionId: sessionId,
@@ -392,7 +461,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
         }
 
         client.sendMessage(message)
-        logger.info("Headset: sent prompt to session \(sessionIdStr)")
+        hLog("Headset: prompt sent to session \(sessionIdStr)")
     }
 }
 
@@ -404,12 +473,14 @@ extension HeadsetRemoteCommandManager {
     func activateAudioSession() {
         do {
             let session = AVAudioSession.sharedInstance()
+            let prevCategory = session.category.rawValue
             try session.setCategory(.playback, options: .mixWithOthers)
             try session.setActive(true)
             startKeepAlive()
-            logger.info("Headset: iOS audio session activated (.playback + .mixWithOthers)")
+            let outputs = session.currentRoute.outputs.map(\.portName).joined(separator: ", ")
+            hLog("Headset: audio session → .playback/.mixWithOthers (was \(prevCategory)), route=[\(outputs)]")
         } catch {
-            logger.error("Headset: failed to activate audio session: \(error.localizedDescription)")
+            hLogError("Headset: failed to activate audio session: \(error.localizedDescription)")
         }
     }
 
@@ -419,16 +490,18 @@ extension HeadsetRemoteCommandManager {
             try AVAudioSession.sharedInstance().setActive(
                 false, options: .notifyOthersOnDeactivation
             )
-            logger.info("Headset: iOS audio session deactivated")
+            hLog("Headset: audio session deactivated")
         } catch {
-            logger.error("Headset: failed to deactivate audio session: \(error.localizedDescription)")
+            hLogError("Headset: failed to deactivate audio session: \(error.localizedDescription)")
         }
     }
 
     private func startKeepAlive() {
         stopKeepAlive()
         keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 25.0, repeats: true) { [weak self] _ in
-            self?.keepAlivePlayer?.play()
+            guard let self = self else { return }
+            let played = self.keepAlivePlayer?.play() ?? false
+            logger.debug("Headset: keep-alive tick — played=\(played), category=\(AVAudioSession.sharedInstance().category.rawValue)")
         }
     }
 

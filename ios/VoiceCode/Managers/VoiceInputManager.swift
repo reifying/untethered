@@ -4,6 +4,9 @@
 import Foundation
 import Speech
 import AVFoundation
+import os.log
+
+private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "VoiceInput")
 
 class VoiceInputManager: NSObject, ObservableObject {
     @Published var isRecording = false
@@ -77,13 +80,28 @@ class VoiceInputManager: NSObject, ObservableObject {
         }
 
         #if os(iOS)
-        // iOS requires explicit audio session configuration
+        // iOS requires explicit audio session configuration.
+        // .playAndRecord keeps the app in the Now Playing slot so MPRemoteCommandCenter
+        // continues delivering AirPod/headset button events during recording.
+        // .record alone loses playback capability and causes the second button press
+        // to be routed to another app instead of ours.
+        // .allowBluetooth enables the Bluetooth HFP mic (AirPods, headsets) for input.
         let audioSession = AVAudioSession.sharedInstance()
+        let prevCategory = audioSession.category.rawValue
+        let prevMode = audioSession.mode.rawValue
         do {
-            try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            // No .allowBluetooth — that forces AirPods into HFP mode which breaks
+            // MPRemoteCommandCenter stem-press delivery. Device mic is used instead,
+            // which gives better quality than HFP's 16kHz anyway.
+            try audioSession.setCategory(.playAndRecord, mode: .measurement, options: .duckOthers)
+            try audioSession.setActive(true)
+            let msg = "VoiceInput: audio session → .playAndRecord/.measurement (was \(prevCategory)/\(prevMode)) route=\(audioSession.currentRoute.inputs.map(\.portName))"
+            logger.info("\(msg, privacy: .public)")
+            LogManager.shared.log(msg, category: "VoiceInput")
         } catch {
-            print("Failed to setup audio session: \(error)")
+            let msg = "VoiceInput: failed to configure audio session: \(error.localizedDescription) (was \(prevCategory)/\(prevMode))"
+            logger.error("\(msg, privacy: .public)")
+            LogManager.shared.log("❌ \(msg)", category: "VoiceInput")
             return
         }
         #endif
@@ -132,11 +150,18 @@ class VoiceInputManager: NSObject, ObservableObject {
                 }
             }
 
-            if error != nil || result?.isFinal == true {
+            if let error = error {
+                logger.warning("VoiceInput: recognition ended with error: \(error.localizedDescription), isFinal=\(result?.isFinal ?? false)")
+                self.stopRecording()
+            } else if result?.isFinal == true {
+                logger.info("VoiceInput: recognition finalized, text='\(result?.bestTranscription.formattedString ?? "")'")
                 self.stopRecording()
             }
         }
 
+        let startMsg = "VoiceInput: recording started — engine running, route=\(audioEngine.inputNode.outputFormat(forBus: 0).sampleRate)Hz"
+        logger.info("\(startMsg, privacy: .public)")
+        LogManager.shared.log(startMsg, category: "VoiceInput")
         DispatchQueue.main.async {
             self.isRecording = true
             self.transcribedText = ""
@@ -148,16 +173,21 @@ class VoiceInputManager: NSObject, ObservableObject {
         audioEngine?.inputNode.removeTap(onBus: 0)
         recognitionRequest?.endAudio()
 
+        #if os(iOS)
+        // Do NOT deactivate the audio session here. HeadsetRemoteCommandManager re-asserts
+        // .playback immediately after calling stopRecording(), and deactivating first creates
+        // a race window where another app can seize the Now Playing slot. For non-headset
+        // usage the session staying active in .playAndRecord until the next action is harmless.
+        let sessionMsg = "VoiceInput: stopRecording — session left active, category=\(AVAudioSession.sharedInstance().category.rawValue)"
+        logger.info("\(sessionMsg, privacy: .public)")
+        LogManager.shared.log(sessionMsg, category: "VoiceInput")
+        #endif
+
+        logger.info("VoiceInput: recording stopped")
+        LogManager.shared.log("VoiceInput: recording stopped", category: "VoiceInput")
         DispatchQueue.main.async {
             self.isRecording = false
-            // Note: onTranscriptionComplete callback is never set - handled by view layer instead
         }
-
-        #if os(iOS)
-        // Reset audio session
-        let audioSession = AVAudioSession.sharedInstance()
-        try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
-        #endif
     }
 
     // MARK: - Cleanup
