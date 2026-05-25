@@ -27,10 +27,8 @@ struct VoiceCodeApp: App {
     @StateObject private var voiceOutput: VoiceOutputManager
     @StateObject private var client: VoiceCodeClient
     @StateObject private var resourcesManager: ResourcesManager
-    #if os(macOS)
     @StateObject private var voiceInput: VoiceInputManager
     @StateObject private var headsetManager: HeadsetRemoteCommandManager
-    #endif
 
     init() {
         // Create instances in correct dependency order
@@ -49,7 +47,6 @@ struct VoiceCodeApp: App {
         _voiceOutput = StateObject(wrappedValue: voiceManager)
         _client = StateObject(wrappedValue: voiceClient)
         _resourcesManager = StateObject(wrappedValue: resManager)
-        #if os(macOS)
         let sharedVoiceInput = VoiceInputManager(voiceOutputManager: voiceManager)
         _voiceInput = StateObject(wrappedValue: sharedVoiceInput)
         _headsetManager = StateObject(wrappedValue: HeadsetRemoteCommandManager(
@@ -58,12 +55,10 @@ struct VoiceCodeApp: App {
             client: voiceClient,
             settings: settings
         ))
-        #endif
     }
 
     var body: some Scene {
         WindowGroup {
-            #if os(macOS)
             RootView(
                 settings: settings,
                 voiceOutput: voiceOutput,
@@ -73,15 +68,8 @@ struct VoiceCodeApp: App {
             )
             .environment(\.managedObjectContext, persistenceController.container.viewContext)
             .environmentObject(draftManager)
-            #else
-            RootView(
-                settings: settings,
-                voiceOutput: voiceOutput,
-                client: client,
-                resourcesManager: resourcesManager
-            )
-            .environment(\.managedObjectContext, persistenceController.container.viewContext)
-            .environmentObject(draftManager)
+            #if os(iOS)
+            .environmentObject(headsetManager)
             #endif
         }
         #if os(macOS)
@@ -195,8 +183,9 @@ struct RootView: View {
     @ObservedObject var voiceOutput: VoiceOutputManager
     @ObservedObject var client: VoiceCodeClient
     @ObservedObject var resourcesManager: ResourcesManager
-    #if os(macOS)
     @ObservedObject var voiceInput: VoiceInputManager
+    #if os(iOS)
+    @EnvironmentObject private var headsetManager: HeadsetRemoteCommandManager
     #endif
     @State private var showingSettings = false
     @State private var navigationPath = NavigationPath()
@@ -263,6 +252,7 @@ struct RootView: View {
                 if client.isConnected {
                     resourcesManager.processPendingUploads()
                 }
+                headsetManager.reclaimNowPlaying()
             }
             #elseif os(macOS)
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -366,7 +356,8 @@ struct RootView: View {
                         sessionId: sessionId,
                         client: client,
                         voiceOutput: voiceOutput,
-                        settings: settings
+                        settings: settings,
+                        sharedVoiceInput: voiceInput
                     )
                 }
                 .navigationDestination(for: ResourcesNavigationTarget.self) { target in

@@ -97,6 +97,23 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         XCTAssertTrue(mocks.voiceInput.startRecordingCalled)
     }
 
+    func testTogglePlayPause_fromReady_setsIsRecordingOnInjectedInstance() {
+        // Verify that the @Published isRecording property is set on the same
+        // VoiceInputManager instance the manager received — the shared-instance
+        // contract that lets the UI observe headset-triggered recording state.
+        let (manager, mocks) = makeManager()
+        manager.activate()
+
+        manager.simulateTogglePlayPause()
+
+        let expectation = expectation(description: "isRecording set on injected instance")
+        DispatchQueue.main.async {
+            XCTAssertTrue(mocks.voiceInput.isRecording)
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+    }
+
     func testTogglePlayPause_fromRecording_stopsAndSends() {
         let (manager, mocks) = makeManager()
         let expectedSessionId = testSessionId.uuidString.lowercased()
