@@ -38,8 +38,13 @@ struct MacSettingsView: View {
                 .tabItem {
                     Label("Advanced", systemImage: "slider.horizontal.3")
                 }
+
+            HeadsetSettingsTab()
+                .tabItem {
+                    Label("Headset", systemImage: "headphones")
+                }
         }
-        .frame(width: 500, height: 400)
+        .frame(width: 500, height: 450)
     }
 }
 
@@ -378,6 +383,60 @@ struct AdvancedSettingsTab: View {
         .onChange(of: settings.maxMessageSizeKB) { newValue in
             client.sendMaxMessageSize(newValue)
         }
+    }
+}
+
+// MARK: - Headset Settings Tab
+
+struct HeadsetSettingsTab: View {
+    @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject var voiceOutput: VoiceOutputManager
+    @EnvironmentObject var headsetManager: HeadsetRemoteCommandManager
+
+    var body: some View {
+        Form {
+            Section("Headset Mode") {
+                Toggle("Enable headset control", isOn: $settings.headsetModeEnabled)
+                Text("Registers VoiceCode as the active media app so Bluetooth headset buttons control recording.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                if settings.headsetModeEnabled {
+                    Toggle("Auto-send on recording stop", isOn: $settings.headsetAutoSend)
+
+                    Toggle("PTT button support (CoreAudio mute detection)",
+                           isOn: $settings.headsetPTTEnabled)
+                    Text("Monitors the Bluetooth input device mute state. Requires the headset's PTT button to be configured as Mute (the default).")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if settings.headsetModeEnabled {
+                if voiceOutput.isMuted {
+                    Section {
+                        Label("Voice output is muted — headset responses will be silent. Unmute with ⌘⇧M.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                    }
+                }
+
+                Section("Status") {
+                    LabeledContent("State") {
+                        Text(headsetManager.state.description)
+                    }
+                    LabeledContent("Now Playing") {
+                        Text(headsetManager.isActive ? "Claimed" : "Not claimed")
+                    }
+                    Button("Reclaim Now-Playing Slot") {
+                        headsetManager.reclaimNowPlaying()
+                    }
+                    .help("Re-register as the media app if another app (e.g. Spotify) took the slot")
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
     }
 }
 
