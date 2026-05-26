@@ -12,8 +12,9 @@ class MockVoiceInputForHeadset: VoiceInputManager {
     var startRecordingCalled = false
     var stopRecordingCalled = false
 
-    override func startRecording() {
+    override func startRecording(onSessionReady: (() -> Void)? = nil) {
         startRecordingCalled = true
+        onSessionReady?()
         DispatchQueue.main.async { self.isRecording = true }
     }
 

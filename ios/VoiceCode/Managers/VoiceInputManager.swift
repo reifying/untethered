@@ -49,7 +49,14 @@ class VoiceInputManager: NSObject, ObservableObject {
 
     // MARK: - Recording
 
-    func startRecording() {
+    /// Start recording.
+    ///
+    /// `onSessionReady` is called (on the main queue) immediately after the iOS
+    /// audio session has been switched to `.playAndRecord` — before the audio
+    /// engine starts. This lets the caller (e.g. `HeadsetRemoteCommandManager`)
+    /// restart any audio-output keep-alive player in the correct session context,
+    /// so it doesn't lose the Now Playing slot mid-recording.
+    func startRecording(onSessionReady: (() -> Void)? = nil) {
         // Stop TTS first so the mic doesn't pick up speech output AND so the
         // synthesizer fully releases the audio session before we flip it to
         // .record. Without waiting, the first tap of the mic during TTS would
@@ -58,15 +65,15 @@ class VoiceInputManager: NSObject, ObservableObject {
         // buffers — the user had to tap stop and tap mic again to recover.
         if let voiceOutputManager = voiceOutputManager, voiceOutputManager.isSpeaking {
             voiceOutputManager.stop { [weak self] in
-                self?.startRecordingAfterTTSStopped()
+                self?.startRecordingAfterTTSStopped(onSessionReady: onSessionReady)
             }
         } else {
             voiceOutputManager?.stop()
-            startRecordingAfterTTSStopped()
+            startRecordingAfterTTSStopped(onSessionReady: onSessionReady)
         }
     }
 
-    private func startRecordingAfterTTSStopped() {
+    private func startRecordingAfterTTSStopped(onSessionReady: (() -> Void)? = nil) {
         // Check authorization
         guard authorizationStatus == .authorized else {
             print("Speech recognition not authorized")
@@ -101,6 +108,12 @@ class VoiceInputManager: NSObject, ObservableObject {
             let msg = "VoiceInput: audio session → .playAndRecord/.default/.mixWithOthers (was \(prevCategory)/\(prevMode)) route=\(audioSession.currentRoute.inputs.map(\.portName))"
             logger.info("\(msg, privacy: .public)")
             LogManager.shared.log(msg, category: "VoiceInput")
+            // Notify caller that session is in .playAndRecord context. Dispatched
+            // async on main so it runs after this function returns and after
+            // audioEngine.start() — but still in the .playAndRecord session.
+            // HeadsetRemoteCommandManager uses this to reconstruct the silence player
+            // in the new session context so it actually starts outputting audio.
+            DispatchQueue.main.async { onSessionReady?() }
         } catch {
             let msg = "VoiceInput: failed to configure audio session: \(error.localizedDescription) (was \(prevCategory)/\(prevMode))"
             logger.error("\(msg, privacy: .public)")

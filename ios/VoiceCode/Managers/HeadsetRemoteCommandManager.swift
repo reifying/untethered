@@ -411,14 +411,23 @@ class HeadsetRemoteCommandManager: ObservableObject {
         #endif
         state = .recording
         updateNowPlayingState()
-        voiceInput.startRecording()
         #if os(iOS)
-        // VoiceInputManager's setCategory(.playAndRecord)+setActive interrupts the
-        // looping silence player. Without audio output AirPods stop routing stem
-        // presses to us, so the second press (stop) is never received. Restart it.
-        let restarted = keepAlivePlayer?.play() ?? false
-        hLog("Headset: recording started — silence player restarted=\(restarted), audioCategory=\(AVAudioSession.sharedInstance().category.rawValue)")
+        // Pass onSessionReady so we restart the silence player AFTER
+        // VoiceInputManager switches the audio session to .playAndRecord.
+        // AVAudioPlayer binds audio routing at prepareToPlay() time. Playing or
+        // replaying it while the session is still .playback causes it to be
+        // interrupted by the subsequent setCategory(.playAndRecord) call, after
+        // which it produces no output — which removes us from the Now Playing
+        // slot and causes AirPods to route the second stem press to another app.
+        // startKeepAlive() calls setupKeepAlive() to reconstruct the player in
+        // the current session context, then immediately starts it.
+        voiceInput.startRecording(onSessionReady: { [weak self] in
+            guard let self = self else { return }
+            self.startKeepAlive()
+            hLog("Headset: recording started — silence player rebuilt+started in .playAndRecord, playing=\(self.keepAlivePlayer?.isPlaying ?? false), audioCategory=\(AVAudioSession.sharedInstance().category.rawValue)")
+        })
         #else
+        voiceInput.startRecording()
         hLog("Headset: recording started")
         #endif
     }
@@ -526,7 +535,13 @@ extension HeadsetRemoteCommandManager {
     }
 
     private func startKeepAlive() {
-        // Silence player loops indefinitely; nothing to schedule.
+        // Always reconstruct the player in the current session so it is prepared
+        // against the active category (either .playback or .playAndRecord).
+        // AVAudioPlayer binds its audio routing at prepareToPlay() time, so reusing
+        // a player built under a different category can silently produce no output.
+        // Called from activateAudioSession() (which sets .playback first) and from
+        // the startRecording() onSessionReady callback (after .playAndRecord is set).
+        setupKeepAlive()
         let played = keepAlivePlayer?.play() ?? false
         hLog("Headset: keep-alive started — looping=\(played), category=\(AVAudioSession.sharedInstance().category.rawValue)")
     }

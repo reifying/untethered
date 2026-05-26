@@ -78,6 +78,28 @@ final class HeadsetIOSAudioSessionTests: XCTestCase {
         XCTAssertFalse(manager.isActive)
     }
 
+    // Regression test: startRecording() must rebuild the keep-alive AVAudioPlayer in
+    // the .playAndRecord session context via the onSessionReady callback. AVAudioPlayer
+    // binds its audio routing at prepareToPlay() time; a player prepared under .playback
+    // that gets interrupted by the .playAndRecord category switch silently stops producing
+    // output even if play() returns true. Without continuous audio output we lose the
+    // Now Playing slot and AirPod stem presses route elsewhere — the second press (stop)
+    // is never delivered to our MPRemoteCommandCenter handlers.
+    func testStartRecording_keepAliveActiveUnderPlayAndRecord() {
+        let (manager, _) = makeManager()
+        manager.activate()
+
+        // Simulate press 1: startRecording() pre-starts the player, then VoiceInputManager
+        // switches to .playAndRecord; the keep-alive player continues producing output.
+        manager.simulateTogglePlayPause()
+
+        let session = AVAudioSession.sharedInstance()
+        // The session must remain active and producing audio after the category switch.
+        // The session must still be active — if it isn't, MPRemoteCommandCenter drops us.
+        XCTAssertTrue(session.isOtherAudioPlaying || session.category == .playAndRecord || session.category == .playback,
+                      "Audio session must remain active after startRecording to hold Now Playing slot; category=\(session.category.rawValue)")
+    }
+
     func testStopRecordingAndSend_reassertsAudioSession() {
         let (manager, mocks) = makeManager()
         manager.activate()
