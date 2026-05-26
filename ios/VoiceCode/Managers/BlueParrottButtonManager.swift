@@ -39,6 +39,10 @@ class BlueParrottButtonManager: NSObject, ObservableObject {
 
     private var headset: BPHeadset?
     private var enabled = false
+    private var retryCount = 0
+    private static let maxRetries = 5
+    private static let retryDelay: TimeInterval = 2.0
+    private var retryWorkItem: DispatchWorkItem?
 
     override init() {
         super.init()
@@ -54,20 +58,36 @@ class BlueParrottButtonManager: NSObject, ObservableObject {
     func start() {
         guard !enabled else { return }
         enabled = true
+        retryCount = 0
         guard let h = BPHeadset.sharedInstance() else {
             bpLogWarning("BPHeadset.sharedInstance() returned nil (simulator?)")
             return
         }
         headset = h
         h.add(self)
-        h.connect()
-        isConnecting = true
-        bpLog("BlueParrott: connecting…")
+        scheduleConnect()
+    }
+
+    private func scheduleConnect() {
+        guard enabled, let h = headset, !h.connected else { return }
+        let delay = retryCount == 0 ? 1.0 : Self.retryDelay
+        let attempt = retryCount
+        bpLog("BlueParrott: scheduling connect (attempt \(attempt + 1), delay \(delay)s)")
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.enabled, let h = self.headset, !h.connected else { return }
+            h.connect()
+            self.isConnecting = true
+            bpLog("BlueParrott: connecting… (attempt \(attempt + 1))")
+        }
+        retryWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     func stop() {
         guard enabled else { return }
         enabled = false
+        retryWorkItem?.cancel()
+        retryWorkItem = nil
         if let h = headset {
             if h.sdkModeEnabled {
                 h.disableSDKMode()
@@ -116,6 +136,7 @@ extension BlueParrottButtonManager: BPHeadsetListener {
         DispatchQueue.main.async { [weak self] in
             self?.isConnected = true
             self?.isConnecting = false
+            self?.retryCount = 0
         }
         bpLog("BlueParrott: connected")
     }
@@ -148,19 +169,29 @@ extension BlueParrottButtonManager: BPHeadsetListener {
 
     func onConnectFailure(_ reasonCode: BPConnectError) {
         DispatchQueue.main.async { [weak self] in
-            self?.isConnecting = false
+            guard let self = self else { return }
+            self.isConnecting = false
+
+            let desc: String
+            switch reasonCode {
+            case .unknown: desc = "unknown"
+            case .bluetoothDisabled: desc = "bluetooth disabled"
+            case .firmwareTooOld: desc = "firmware too old"
+            case .sdkTooOld: desc = "SDK too old"
+            case .bluetoothUnauthorized: desc = "bluetooth unauthorized"
+            case .bluetoothUnsupported: desc = "bluetooth unsupported"
+            @unknown default: desc = "error(\(reasonCode.rawValue))"
+            }
+
+            let retryable = reasonCode == .bluetoothDisabled || reasonCode == .unknown
+            if retryable && self.retryCount < Self.maxRetries {
+                self.retryCount += 1
+                bpLogWarning("BlueParrott: connect failed — \(desc), retrying (\(self.retryCount)/\(Self.maxRetries))")
+                self.scheduleConnect()
+            } else {
+                bpLogError("BlueParrott: connect failed — \(desc)")
+            }
         }
-        let desc: String
-        switch reasonCode {
-        case .unknown: desc = "unknown"
-        case .bluetoothDisabled: desc = "bluetooth disabled"
-        case .firmwareTooOld: desc = "firmware too old"
-        case .sdkTooOld: desc = "SDK too old"
-        case .bluetoothUnauthorized: desc = "bluetooth unauthorized"
-        case .bluetoothUnsupported: desc = "bluetooth unsupported"
-        @unknown default: desc = "error(\(reasonCode.rawValue))"
-        }
-        bpLogError("BlueParrott: connect failed — \(desc)")
     }
 
     func onDisconnect() {
