@@ -67,6 +67,7 @@ final class HeadsetIOSAudioSessionTests: XCTestCase {
 
         XCTAssertEqual(session.category, .playAndRecord)
         XCTAssertTrue(session.categoryOptions.contains(.mixWithOthers))
+        XCTAssertTrue(session.categoryOptions.contains(.allowBluetoothA2DP))
     }
 
     func testDeactivate_setsManagerInactive() {
@@ -113,6 +114,7 @@ final class HeadsetIOSAudioSessionTests: XCTestCase {
         let session = AVAudioSession.sharedInstance()
         XCTAssertEqual(session.category, .playAndRecord)
         XCTAssertTrue(session.categoryOptions.contains(.mixWithOthers))
+        XCTAssertTrue(session.categoryOptions.contains(.allowBluetoothA2DP))
     }
 
     func testTTSEnd_reassertsAudioSession() {
@@ -142,7 +144,9 @@ final class HeadsetIOSAudioSessionTests: XCTestCase {
         let readyExp = expectation(description: "ready + session re-asserted")
         DispatchQueue.main.async {
             XCTAssertEqual(manager.state, .ready)
-            XCTAssertEqual(AVAudioSession.sharedInstance().category, .playAndRecord)
+            let s = AVAudioSession.sharedInstance()
+            XCTAssertEqual(s.category, .playAndRecord)
+            XCTAssertTrue(s.categoryOptions.contains(.allowBluetoothA2DP))
             readyExp.fulfill()
         }
         wait(for: [readyExp], timeout: 1)

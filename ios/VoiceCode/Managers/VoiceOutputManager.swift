@@ -216,10 +216,16 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
                 // Use .ambient category which respects the silent switch
                 // Audio will not play when the ringer switch is on silent/vibrate
                 try audioSessionManager.configureAudioSessionForSilentMode()
+                let msg = "VoiceOutput: audio session → .ambient/.spokenAudio (silentMode)"
+                logger.info("\(msg, privacy: .public)")
+                LogManager.shared.log(msg, category: "VoiceOutput")
             } else {
                 // Use .playback category which ignores the silent switch
                 // Audio plays regardless of ringer switch position
                 try audioSessionManager.configureAudioSessionForForcedPlayback()
+                let msg = "VoiceOutput: audio session → .playback/.spokenAudio (forcedPlayback)"
+                logger.info("\(msg, privacy: .public)")
+                LogManager.shared.log(msg, category: "VoiceOutput")
             }
 
             // Note: continuePlaybackWhenLocked is handled by the category choice:

@@ -92,6 +92,15 @@ class HeadsetRemoteCommandManager: ObservableObject {
                     #if os(iOS)
                     self.activateAudioSession()
                     #endif
+                } else if !isSpeaking {
+                    // TTS ended but state wasn't .speaking — e.g. session-history replay TTS
+                    // or other out-of-band speech. VoiceOutputManager may have set the session
+                    // to .playback; re-assert .playAndRecord so the next recording starts with
+                    // the correct category and the silence player stays on AirPods output.
+                    #if os(iOS)
+                    hLog("Headset: isSpeaking→false (state=\(self.state)) — re-asserting audio session")
+                    self.activateAudioSession()
+                    #endif
                 }
             }
             .store(in: &cancellables)
@@ -424,7 +433,10 @@ class HeadsetRemoteCommandManager: ObservableObject {
         voiceInput.startRecording(onSessionReady: { [weak self] in
             guard let self = self else { return }
             self.startKeepAlive()
-            hLog("Headset: recording started — silence player rebuilt+started in .playAndRecord, playing=\(self.keepAlivePlayer?.isPlaying ?? false), audioCategory=\(AVAudioSession.sharedInstance().category.rawValue)")
+            let s = AVAudioSession.sharedInstance()
+            let outputs = s.currentRoute.outputs.map(\.portName).joined(separator: ", ")
+            let opts = s.categoryOptions.rawValue
+            hLog("Headset: recording started — silence player rebuilt+started, playing=\(self.keepAlivePlayer?.isPlaying ?? false), audioCategory=\(s.category.rawValue), outputs=[\(outputs)], opts=\(opts)")
         })
         #else
         voiceInput.startRecording()
@@ -518,11 +530,17 @@ extension HeadsetRemoteCommandManager {
             // that re-evaluation, stealing AirPod AVRCP routing so the second stem
             // press (stop recording) is never delivered to our MPRemoteCommandCenter
             // handlers. Staying in .playAndRecord throughout eliminates the transition.
-            try session.setCategory(.playAndRecord, mode: .default, options: .mixWithOthers)
+            // .allowBluetoothA2DP: without this, .playAndRecord routes output to
+            // [Receiver] (earpiece) instead of AirPods. AirPods only route stem
+            // presses to us when we are actively outputting to them via A2DP.
+            // Note: .allowBluetoothA2DP is A2DP-only; it does NOT activate HFP,
+            // so AirPods stay in A2DP mode and AVRCP continues working normally.
+            try session.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .allowBluetoothA2DP])
             try session.setActive(true)
             startKeepAlive()
             let outputs = session.currentRoute.outputs.map(\.portName).joined(separator: ", ")
-            hLog("Headset: audio session → .playAndRecord/.mixWithOthers (was \(prevCategory)), route=[\(outputs)]")
+            let opts = session.categoryOptions.rawValue
+            hLog("Headset: audio session → .playAndRecord/opts=\(opts) (was \(prevCategory)), route=[\(outputs)]")
         } catch {
             hLogError("Headset: failed to activate audio session: \(error.localizedDescription)")
         }
