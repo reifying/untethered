@@ -98,7 +98,7 @@ class VoiceInputManager: NSObject, ObservableObject {
             // reaching our MPRemoteCommandCenter handlers after the first press.
             try audioSession.setCategory(.playAndRecord, mode: .default, options: .mixWithOthers)
             try audioSession.setActive(true)
-            let msg = "VoiceInput: audio session → .playAndRecord/.measurement (was \(prevCategory)/\(prevMode)) route=\(audioSession.currentRoute.inputs.map(\.portName))"
+            let msg = "VoiceInput: audio session → .playAndRecord/.default/.mixWithOthers (was \(prevCategory)/\(prevMode)) route=\(audioSession.currentRoute.inputs.map(\.portName))"
             logger.info("\(msg, privacy: .public)")
             LogManager.shared.log(msg, category: "VoiceInput")
         } catch {

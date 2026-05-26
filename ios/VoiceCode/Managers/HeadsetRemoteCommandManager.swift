@@ -412,7 +412,15 @@ class HeadsetRemoteCommandManager: ObservableObject {
         state = .recording
         updateNowPlayingState()
         voiceInput.startRecording()
+        #if os(iOS)
+        // VoiceInputManager's setCategory(.playAndRecord)+setActive interrupts the
+        // looping silence player. Without audio output AirPods stop routing stem
+        // presses to us, so the second press (stop) is never received. Restart it.
+        let restarted = keepAlivePlayer?.play() ?? false
+        hLog("Headset: recording started — silence player restarted=\(restarted), audioCategory=\(AVAudioSession.sharedInstance().category.rawValue)")
+        #else
         hLog("Headset: recording started")
+        #endif
     }
 
     private func stopRecordingAndSend() {
