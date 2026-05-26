@@ -191,9 +191,9 @@ class VoiceInputManager: NSObject, ObservableObject {
 
         #if os(iOS)
         // Do NOT deactivate the audio session here. HeadsetRemoteCommandManager re-asserts
-        // .playback immediately after calling stopRecording(), and deactivating first creates
-        // a race window where another app can seize the Now Playing slot. For non-headset
-        // usage the session staying active in .playAndRecord until the next action is harmless.
+        // .playAndRecord immediately after calling stopRecording(), and deactivating first
+        // creates a race window where another app can seize the Now Playing slot. For
+        // non-headset usage the session staying active in .playAndRecord is harmless.
         let sessionMsg = "VoiceInput: stopRecording — session left active, category=\(AVAudioSession.sharedInstance().category.rawValue)"
         logger.info("\(sessionMsg, privacy: .public)")
         LogManager.shared.log(sessionMsg, category: "VoiceInput")

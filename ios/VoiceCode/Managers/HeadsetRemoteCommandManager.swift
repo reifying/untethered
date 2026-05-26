@@ -512,11 +512,17 @@ extension HeadsetRemoteCommandManager {
         do {
             let session = AVAudioSession.sharedInstance()
             let prevCategory = session.category.rawValue
-            try session.setCategory(.playback, options: .mixWithOthers)
+            // Use .playAndRecord so recording never needs to switch categories.
+            // A .playback → .playAndRecord switch causes iOS to re-evaluate the Now
+            // Playing slot; a competing .playback/.spokenAudio app (audiobook) wins
+            // that re-evaluation, stealing AirPod AVRCP routing so the second stem
+            // press (stop recording) is never delivered to our MPRemoteCommandCenter
+            // handlers. Staying in .playAndRecord throughout eliminates the transition.
+            try session.setCategory(.playAndRecord, mode: .default, options: .mixWithOthers)
             try session.setActive(true)
             startKeepAlive()
             let outputs = session.currentRoute.outputs.map(\.portName).joined(separator: ", ")
-            hLog("Headset: audio session → .playback/.mixWithOthers (was \(prevCategory)), route=[\(outputs)]")
+            hLog("Headset: audio session → .playAndRecord/.mixWithOthers (was \(prevCategory)), route=[\(outputs)]")
         } catch {
             hLogError("Headset: failed to activate audio session: \(error.localizedDescription)")
         }

@@ -65,7 +65,7 @@ final class HeadsetIOSAudioSessionTests: XCTestCase {
 
         manager.activate()
 
-        XCTAssertEqual(session.category, .playback)
+        XCTAssertEqual(session.category, .playAndRecord)
         XCTAssertTrue(session.categoryOptions.contains(.mixWithOthers))
     }
 
@@ -111,7 +111,7 @@ final class HeadsetIOSAudioSessionTests: XCTestCase {
         manager.simulatePause()
 
         let session = AVAudioSession.sharedInstance()
-        XCTAssertEqual(session.category, .playback)
+        XCTAssertEqual(session.category, .playAndRecord)
         XCTAssertTrue(session.categoryOptions.contains(.mixWithOthers))
     }
 
@@ -142,7 +142,7 @@ final class HeadsetIOSAudioSessionTests: XCTestCase {
         let readyExp = expectation(description: "ready + session re-asserted")
         DispatchQueue.main.async {
             XCTAssertEqual(manager.state, .ready)
-            XCTAssertEqual(AVAudioSession.sharedInstance().category, .playback)
+            XCTAssertEqual(AVAudioSession.sharedInstance().category, .playAndRecord)
             readyExp.fulfill()
         }
         wait(for: [readyExp], timeout: 1)
