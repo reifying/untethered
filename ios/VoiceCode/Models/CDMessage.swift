@@ -151,13 +151,14 @@ extension CDMessage: Identifiable {}
 
 // MARK: - Message Pruning
 extension CDMessage {
-    /// Maximum number of messages to retain per session in iOS CoreData
-    /// Backend retains full history in .jsonl files; iOS is just a "window" into recent messages
-    static let maxMessagesPerSession = 50
+    /// Maximum number of messages to retain per session in iOS CoreData.
+    /// Backend retains full history in .jsonl files; iOS is just a "window" into recent messages.
+    /// Kept small so visiting a long-running session shows only recent context, not hours of history.
+    static let maxMessagesPerSession = 20
 
-    /// Threshold for triggering mid-conversation pruning
-    /// When message count exceeds maxMessagesPerSession + pruneThreshold, prune back to maxMessagesPerSession
-    static let pruneThreshold = 10
+    /// Threshold for triggering mid-conversation pruning.
+    /// When message count exceeds maxMessagesPerSession + pruneThreshold, prune back to maxMessagesPerSession.
+    static let pruneThreshold = 5
 
     /// Delete oldest messages for a session, keeping only the newest `keepCount` messages
     /// - Parameters:

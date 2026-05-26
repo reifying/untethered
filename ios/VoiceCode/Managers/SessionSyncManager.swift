@@ -778,12 +778,26 @@ class SessionSyncManager {
                     self.purgeMessagesAtOrAbove(offset: payload.nextOffset, session: session, in: ctx)
                 }
 
-                // TTS boundary — capture on the first *non-empty* reply this
-                // launch. The `nextOffset > 0` guard prevents an empty
-                // caught-up reply from pinning `liveFromOffset=0`, which
-                // would re-speak historical messages on subsequent payloads
+                // TTS boundary — capture on the first *complete* (endOfFile:true)
+                // non-empty reply this launch.
+                //
+                // Why endOfFile is required: in v0.5.0, `nextOffset` is the batch
+                // end (last_message_offset + 1), NOT the global session head like
+                // v0.4.0's `nextSeq`. An endOfFile:false chain re-subscribes from
+                // nextOffset, so the next batch starts at that same offset. If we
+                // anchored liveFromOffset to the first batch's nextOffset (e.g. 100),
+                // chain payloads would contain messages at offsets 100, 101, …—all
+                // ≥ liveFromOffset—and would be spoken aloud as if live. Holding
+                // liveFromOffset=0 keeps the `liveFromOffset > 0` gate closed for
+                // the entire chain; the final endOfFile:true payload carries
+                // nextOffset = file-end-line-count (true global head), which is the
+                // correct TTS boundary (regression fix for "session history replay TTS").
+                //
+                // The `nextOffset > 0` guard prevents an empty caught-up reply
+                // (nextOffset=0) from pinning liveFromOffset=0, which would cause
+                // all subsequent messages to satisfy `offset >= 0` and be spoken
                 // (regression guard for tmux-untethered-i2n).
-                if session.liveFromOffset == 0 && payload.nextOffset > 0 {
+                if session.liveFromOffset == 0 && payload.nextOffset > 0 && payload.endOfFile {
                     session.liveFromOffset = payload.nextOffset
                 }
                 let liveFromOffset = session.liveFromOffset
