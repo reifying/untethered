@@ -66,7 +66,7 @@ final class HeadsetIOSAudioSessionTests: XCTestCase {
         manager.activate()
 
         XCTAssertEqual(session.category, .playAndRecord)
-        XCTAssertTrue(session.categoryOptions.contains(.mixWithOthers))
+        XCTAssertFalse(session.categoryOptions.contains(.mixWithOthers))
         XCTAssertTrue(session.categoryOptions.contains(.allowBluetoothA2DP))
     }
 
@@ -113,7 +113,7 @@ final class HeadsetIOSAudioSessionTests: XCTestCase {
 
         let session = AVAudioSession.sharedInstance()
         XCTAssertEqual(session.category, .playAndRecord)
-        XCTAssertTrue(session.categoryOptions.contains(.mixWithOthers))
+        XCTAssertFalse(session.categoryOptions.contains(.mixWithOthers))
         XCTAssertTrue(session.categoryOptions.contains(.allowBluetoothA2DP))
     }
 

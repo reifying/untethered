@@ -537,7 +537,7 @@ extension HeadsetRemoteCommandManager {
             // presses to us when we are actively outputting to them via A2DP.
             // Note: .allowBluetoothA2DP is A2DP-only; it does NOT activate HFP,
             // so AirPods stay in A2DP mode and AVRCP continues working normally.
-            try session.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .allowBluetoothA2DP])
+            try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
             try session.setActive(true)
             startKeepAlive()
             let outputs = session.currentRoute.outputs.map(\.portName).joined(separator: ", ")

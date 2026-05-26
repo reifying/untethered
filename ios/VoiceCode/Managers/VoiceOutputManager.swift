@@ -208,33 +208,34 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         }
 
         #if os(iOS)
-        // iOS requires explicit audio session configuration
-        do {
-            let shouldRespectSilentMode = respectSilentMode && (appSettings?.respectSilentMode ?? true)
+        // When headset mode is active, HeadsetRemoteCommandManager owns the audio
+        // session in .playAndRecord — switching to .playback/.ambient here would
+        // cause iOS to re-evaluate the Now Playing slot and potentially hand AVRCP
+        // routing to another app, making AirPod stem clicks unresponsive during TTS.
+        // AVSpeechSynthesizer works fine under .playAndRecord so we skip the switch.
+        if appSettings?.headsetModeEnabled != true {
+            do {
+                let shouldRespectSilentMode = respectSilentMode && (appSettings?.respectSilentMode ?? true)
 
-            if shouldRespectSilentMode {
-                // Use .ambient category which respects the silent switch
-                // Audio will not play when the ringer switch is on silent/vibrate
-                try audioSessionManager.configureAudioSessionForSilentMode()
-                let msg = "VoiceOutput: audio session → .ambient/.spokenAudio (silentMode)"
-                logger.info("\(msg, privacy: .public)")
-                LogManager.shared.log(msg, category: "VoiceOutput")
-            } else {
-                // Use .playback category which ignores the silent switch
-                // Audio plays regardless of ringer switch position
-                try audioSessionManager.configureAudioSessionForForcedPlayback()
-                let msg = "VoiceOutput: audio session → .playback/.spokenAudio (forcedPlayback)"
-                logger.info("\(msg, privacy: .public)")
-                LogManager.shared.log(msg, category: "VoiceOutput")
+                if shouldRespectSilentMode {
+                    try audioSessionManager.configureAudioSessionForSilentMode()
+                    let msg = "VoiceOutput: audio session → .ambient/.spokenAudio (silentMode)"
+                    logger.info("\(msg, privacy: .public)")
+                    LogManager.shared.log(msg, category: "VoiceOutput")
+                } else {
+                    try audioSessionManager.configureAudioSessionForForcedPlayback()
+                    let msg = "VoiceOutput: audio session → .playback/.spokenAudio (forcedPlayback)"
+                    logger.info("\(msg, privacy: .public)")
+                    LogManager.shared.log(msg, category: "VoiceOutput")
+                }
+            } catch {
+                print("Failed to setup audio session: \(error)")
+                return
             }
-
-            // Note: continuePlaybackWhenLocked is handled by the category choice:
-            // - .ambient stops when screen locks (regardless of setting)
-            // - .playback can continue when locked (if iOS allows background audio)
-            // For silent mode respect, we always use .ambient, which takes precedence
-        } catch {
-            print("Failed to setup audio session: \(error)")
-            return
+        } else {
+            let msg = "VoiceOutput: headset mode active — keeping .playAndRecord session"
+            logger.info("\(msg, privacy: .public)")
+            LogManager.shared.log(msg, category: "VoiceOutput")
         }
         #endif
         // macOS: No audio session management needed, AVSpeechSynthesizer works directly
@@ -365,9 +366,10 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         // Stop keep-alive timer
         stopKeepAliveTimer()
 
-        // Only deactivate audio session if background playback is disabled
-        // Keeping it active when locked allows subsequent TTS to play without app suspension
-        if !(appSettings?.continuePlaybackWhenLocked ?? true) {
+        // When headset mode is active, HeadsetRemoteCommandManager owns the session
+        // lifecycle — deactivating here would kill the Now Playing slot.
+        if appSettings?.headsetModeEnabled != true,
+           !(appSettings?.continuePlaybackWhenLocked ?? true) {
             let audioSession = AVAudioSession.sharedInstance()
             do {
                 try audioSession.setActive(false, options: .notifyOthersOnDeactivation)

@@ -100,15 +100,16 @@ class VoiceInputManager: NSObject, ObservableObject {
             // No .allowBluetooth — that forces AirPods into HFP mode which breaks
             // MPRemoteCommandCenter stem-press delivery. Device mic is used instead,
             // which gives better quality than HFP's 16kHz anyway.
-            // .mixWithOthers: ducking the audiobook causes it to react and reclaim
-            // the Now Playing slot, so AirPod presses stop reaching our handlers.
+            // No .mixWithOthers — it disqualifies us from being the Now Playing app,
+            // which means iOS stops delivering AVRCP commands (AirPod stem clicks)
+            // to our MPRemoteCommandCenter handlers.
             // .allowBluetoothA2DP: without this, .playAndRecord routes output to
             // the earpiece [Receiver] rather than AirPods. Our silence keep-alive
             // player must output to AirPods via A2DP or they route stem presses
             // elsewhere. Does NOT activate HFP — AirPods stay in A2DP mode.
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .allowBluetoothA2DP])
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
             try audioSession.setActive(true)
-            let msg = "VoiceInput: audio session → .playAndRecord/.default/.mixWithOthers (was \(prevCategory)/\(prevMode)) route=\(audioSession.currentRoute.inputs.map(\.portName))"
+            let msg = "VoiceInput: audio session → .playAndRecord/.default (was \(prevCategory)/\(prevMode)) route=\(audioSession.currentRoute.inputs.map(\.portName))"
             logger.info("\(msg, privacy: .public)")
             LogManager.shared.log(msg, category: "VoiceInput")
             // Notify caller that session is in .playAndRecord context. Dispatched
